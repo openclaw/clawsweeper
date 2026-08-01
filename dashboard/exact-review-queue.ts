@@ -556,9 +556,10 @@ const RECORD_EXPORT_SECTIONS: readonly RecordSection[] = [
 ];
 
 export class ExactReviewQueue {
+  private state;
   private storage;
   private env;
-  private ready: Promise<void>;
+  private ready: Promise<void> | null = null;
   private migratedAt = 0;
   private legacyMirrorDisabled = false;
   private legacyMirrorWarningReported = false;
@@ -576,6 +577,7 @@ export class ExactReviewQueue {
   >();
 
   constructor(state, env) {
+    this.state = state;
     this.storage = state.storage;
     this.env = env;
     this.batchStore = new ExactReviewPublicationBatchStore(this.storage);
@@ -588,17 +590,25 @@ export class ExactReviewQueue {
     this.stateWriterCoordinator = new StateWriterCoordinator(this.storage);
     this.lifecycleProjectionStore = new ExactReviewLifecycleProjectionStore(this.storage);
     this.lifecycleTelemetryStore = new ExactReviewLifecycleTelemetryStore(this.storage);
-    const initialize = () => this.initializeStorage();
-    this.ready =
-      typeof state.blockConcurrencyWhile === "function"
-        ? Promise.resolve(state.blockConcurrencyWhile(initialize))
-        : initialize();
+    // Direct in-process users retain the established eager setup behavior.
+    // A real Durable Object has blockConcurrencyWhile; defer that setup until a
+    // non-Bay request so constructing it for the public pure reader cannot
+    // initialize or migrate storage before the route is known.
+    if (typeof state.blockConcurrencyWhile !== "function") {
+      this.ready = this.initializeStorage();
+    }
   }
 
   async fetch(request: Request) {
-    await this.ready;
-    this.cleanupLegacyCompatibilitySync();
     const url = new URL(request.url);
+    // This is deliberately the only route that may observe lifecycle rows
+    // before storage initialization. It must stay a pure reader: no schema
+    // creation, cleanup, queue reclamation, alarm scheduling, or GitHub work.
+    if (request.method === "GET" && url.pathname === "/lifecycle-bay") {
+      return json({ durable_lifecycle_bay: this.lifecycleProjectionStore.readBaySnapshot() });
+    }
+    await this.ensureReady();
+    this.cleanupLegacyCompatibilitySync();
     if (request.method === "POST" && url.pathname === "/review-coverage/inventory") {
       const inventory = normalizeReviewCoverageInventory(await request.json().catch(() => null));
       if (!inventory) return json({ error: "invalid_review_coverage_inventory" }, 400);
@@ -3094,7 +3104,7 @@ export class ExactReviewQueue {
   }
 
   async alarm() {
-    await this.ready;
+    await this.ensureReady();
     this.cleanupLegacyCompatibilitySync();
     const startedAt = Date.now();
     await this.storage.deleteAlarm();
@@ -3829,6 +3839,16 @@ export class ExactReviewQueue {
     }
     if (currentChanged) await this.writeState(current);
     await this.scheduleNext(current, completedAt);
+  }
+
+  private ensureReady() {
+    if (this.ready) return this.ready;
+    const initialize = () => this.initializeStorage();
+    this.ready =
+      typeof this.state.blockConcurrencyWhile === "function"
+        ? Promise.resolve(this.state.blockConcurrencyWhile(initialize))
+        : initialize();
+    return this.ready;
   }
 
   private async terminalizePublicationCandidates(

@@ -1,0 +1,19 @@
+CSW-093 controlled Worker/DO initialization transcript
+source: f05643e215b8026276b3b1b05483437055132d5b
+environment: local Wrangler Worker and Durable Object inside Linux Docker Crabbox
+
+1. PURE UNINITIALIZED READ
+   Worker route: GET /api/durable-lifecycle-bay
+   Durable Object route: GET /lifecycle-bay
+   HTTP: 200
+   Result: collection=unknown; inventory=null; lanes=null; sample=null
+   Observation: uninitialized pure lifecycle read failed closed without cards or counts.
+
+2. ORDINARY INITIALIZED QUEUE READ AFTER PURE READ
+   Worker route: GET /api/recent-durable-publication-events?window=24h
+   Durable Object route: GET /recent-durable-publication-events?window=24h
+   HTTP: 200
+   Result: collection=complete; complete=true
+   Observation: the normal aggregate-only queue endpoint still succeeded after the pure read.
+
+Fixture boundary: this disposable local proof DO is the only state initialized by the ordinary request. No production or external endpoint was contacted. This transcript intentionally excludes fence, run, claim, delivery, receipt, comment, and digest identifiers.

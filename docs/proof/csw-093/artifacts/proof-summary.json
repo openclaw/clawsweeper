@@ -1,0 +1,92 @@
+{
+  "proof": "CSW-093 controlled durable lifecycle Bay proof",
+  "source_sha": "f05643e215b8026276b3b1b05483437055132d5b",
+  "source_tree_sha256": "e1a0719ba50b5991403e32f36cc3da0f9143e47b319d072c0cdadf80f8a0cfc3",
+  "worker_do_read": "actual local Wrangler-built GET /api/durable-lifecycle-bay captured separately",
+  "worker_do_initialization_sequence": {
+    "pure_uninitialized_read": {
+      "worker_api": "GET /api/durable-lifecycle-bay",
+      "durable_object_route": "GET /lifecycle-bay",
+      "http_status": 200,
+      "collection": {
+        "state": "unknown",
+        "reason": "unavailable"
+      },
+      "inventory": null,
+      "lanes": null,
+      "sample": null
+    },
+    "ordinary_initialized_queue_read": {
+      "worker_api": "GET /api/recent-durable-publication-events?window=24h",
+      "durable_object_route": "GET /recent-durable-publication-events?window=24h",
+      "http_status": 200,
+      "collection": {
+        "state": "complete",
+        "complete": true,
+        "scan_limit": 10000
+      },
+      "activity": {
+        "state": "idle"
+      }
+    }
+  },
+  "ui": "actual local Wrangler-built /bay-demo with synthetic, contract-validated lifecycle fixtures",
+  "fixture": {
+    "lifecycle_records": 25,
+    "sample_cards": 24,
+    "unknown_reason": "mixed"
+  },
+  "assertions": [
+    {
+      "name": "pure uninitialized Worker to DO lifecycle read fail-closes without cards or counts"
+    },
+    {
+      "name": "ordinary queue request succeeds after the pure lifecycle read"
+    },
+    {
+      "name": "complete renderer shows exactly the bounded 24-card sample",
+      "sample_cards": 24
+    },
+    {
+      "name": "complete renderer shows durable lanes including terminal attention"
+    },
+    {
+      "name": "renderer accepts public repository names containing lifecycle-sensitive words"
+    },
+    {
+      "name": "renderer exposes no operational identifiers"
+    },
+    {
+      "name": "mixed snapshot renders Unknown with no partial cards"
+    },
+    {
+      "name": "browser proof makes no external request",
+      "external_requests": []
+    },
+    {
+      "name": "browser proof makes no mutation request",
+      "mutating_requests": []
+    }
+  ],
+  "network": {
+    "request_count": 13,
+    "external_requests": [],
+    "mutating_requests": []
+  },
+  "screenshots": [
+    "complete-lifecycle-kanban.jpg",
+    "unknown-lifecycle-kanban.jpg"
+  ],
+  "artifacts": {
+    "pure_worker_do_response": "actual-worker-do-read.json",
+    "worker_do_initialization_sequence": "worker-do-initialization-sequence.json",
+    "worker_do_initialization_transcript": "worker-do-initialization-transcript.txt",
+    "runtime_transcript": "runtime-transcript.md",
+    "machine_summary": "proof-summary.json",
+    "screenshots": [
+      "complete-lifecycle-kanban.jpg",
+      "unknown-lifecycle-kanban.jpg"
+    ]
+  },
+  "generated_at": "2026-08-01T11:57:47.475Z"
+}

@@ -1,0 +1,11 @@
+✔ durable lifecycle Bay is a pure, redacted per-target-revision reducer snapshot (146.444668ms)
+✔ durable lifecycle Bay keeps ordinary queue initialization available after a pure direct read (42.677301ms)
+✔ durable lifecycle Bay fail-closes unknown snapshots without partial cards or counts (199.364784ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1345.909156

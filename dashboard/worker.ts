@@ -720,6 +720,8 @@ export default {
       return authenticatedExactReviewReconcile(request, env);
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
       return exactReviewQueueRequest(env, "/stats");
+    if (url.pathname === "/api/durable-lifecycle-bay" && request.method === "GET")
+      return json({ durable_lifecycle_bay: await durableLifecycleBaySnapshot(env) });
     if (url.pathname === "/api/recent-durable-publication-events" && request.method === "GET")
       return exactReviewQueueRequest(
         env,
@@ -1777,6 +1779,173 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
       headers: body ? { "content-type": "application/json" } : undefined,
       ...(body ? { body } : {}),
     }),
+  );
+}
+
+export async function durableLifecycleBaySnapshot(env, now = Date.now()) {
+  let response: Response;
+  let body: Record<string, unknown>;
+  try {
+    response = await exactReviewQueueRequest(env, "/lifecycle-bay");
+    body = objectValue(await response.json().catch(() => null));
+  } catch {
+    return unknownDurableLifecycleBay("unavailable", now);
+  }
+  const snapshot = objectValue(body.durable_lifecycle_bay) as Record<string, unknown>;
+  const checkedAt = Date.now();
+  if (!response.ok) return unknownDurableLifecycleBay("unavailable", now);
+  if (!validDurableLifecycleBaySnapshot(snapshot, checkedAt)) {
+    return unknownDurableLifecycleBay("malformed", checkedAt);
+  }
+  if (checkedAt - Date.parse(String(snapshot.generated_at)) > 60_000) {
+    return unknownDurableLifecycleBay("stale", checkedAt);
+  }
+  return snapshot;
+}
+
+function unknownDurableLifecycleBay(reason, now = Date.now()) {
+  return {
+    version: 1,
+    source: "exact-review-lifecycle-projection-v1",
+    generated_at: new Date(now).toISOString(),
+    freshness: { maximum_age_ms: 60_000 },
+    collection: { state: "unknown", reason },
+    inventory: null,
+    lanes: null,
+    sample: null,
+  };
+}
+
+function validDurableLifecycleBaySnapshot(value, now = Date.now()) {
+  const snapshot = objectValue(value);
+  if (
+    snapshot.version !== 1 ||
+    snapshot.source !== "exact-review-lifecycle-projection-v1" ||
+    !Number.isFinite(Date.parse(String(snapshot.generated_at || ""))) ||
+    Date.parse(String(snapshot.generated_at)) > now + 60_000 ||
+    !objectValue(snapshot.freshness) ||
+    Number(snapshot.freshness.maximum_age_ms) !== 60_000
+  ) {
+    return false;
+  }
+  const collection = objectValue(snapshot.collection);
+  if (collection.state === "unknown") {
+    return (
+      ["unavailable", "malformed", "mixed", "stale", "over_cap"].includes(
+        String(collection.reason),
+      ) &&
+      snapshot.inventory === null &&
+      snapshot.lanes === null &&
+      snapshot.sample === null
+    );
+  }
+  if (collection.state !== "complete") return false;
+  const inventory = objectValue(snapshot.inventory);
+  const lanes = objectValue(snapshot.lanes);
+  const sample = objectValue(snapshot.sample);
+  if (
+    !["lifecycle_records", "target_revisions", "unique_targets"].every(
+      (key) => Number.isSafeInteger(inventory[key]) && Number(inventory[key]) >= 0,
+    ) ||
+    ![
+      "pending",
+      "acknowledgement_pending",
+      "completed",
+      "superseded",
+      "requeued",
+      "terminal_attention",
+    ].every((key) => Number.isSafeInteger(lanes[key]) && Number(lanes[key]) >= 0) ||
+    Number(sample.limit) !== 24 ||
+    !Number.isSafeInteger(sample.returned) ||
+    !Number.isSafeInteger(sample.omitted) ||
+    !Array.isArray(sample.cards) ||
+    sample.returned !== sample.cards.length ||
+    sample.cards.length > 24 ||
+    sample.omitted !== Math.max(0, Number(inventory.lifecycle_records) - sample.cards.length)
+  ) {
+    return false;
+  }
+  return sample.cards.every(validDurableLifecycleBayCard);
+}
+
+function validDurableLifecycleBayCard(value) {
+  const card = objectValue(value);
+  const target = objectValue(card.target);
+  const facts = objectValue(card.facts);
+  return (
+    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(target.repository || "")) &&
+    Number.isSafeInteger(target.number) &&
+    Number(target.number) > 0 &&
+    target.url === `https://github.com/${target.repository}/issues/${target.number}` &&
+    Number.isSafeInteger(card.revision) &&
+    Number(card.revision) > 0 &&
+    [
+      "pending",
+      "completed",
+      "acknowledgement_pending",
+      "acknowledgement_skipped",
+      "superseded",
+      "requeue",
+      "dead_letter",
+      "target_closed",
+      "target_missing",
+      "policy_noop",
+      "guarded_open",
+      "failed",
+    ].includes(String(card.state)) &&
+    [
+      "pending",
+      "acknowledgement_pending",
+      "completed",
+      "superseded",
+      "requeued",
+      "terminal_attention",
+    ].includes(String(card.lane)) &&
+    (card.terminal_label === null ||
+      [
+        "review_completed_routed",
+        "superseded",
+        "requeue",
+        "acknowledgement_skipped",
+        "dead_letter",
+        "target_closed",
+        "target_missing",
+        "policy_noop",
+        "guarded_open",
+        "failure",
+      ].includes(String(card.terminal_label))) &&
+    Array.isArray(card.terminal_history) &&
+    card.terminal_history.every((entry) =>
+      [
+        "review_completed_routed",
+        "superseded",
+        "requeue",
+        "dead_letter",
+        "target_closed",
+        "target_missing",
+        "policy_noop",
+        "guarded_open",
+        "failure",
+      ].includes(String(entry)),
+    ) &&
+    typeof card.current_revision === "boolean" &&
+    facts.admission === "recorded" &&
+    Number.isSafeInteger(facts.claim_count) &&
+    Number(facts.claim_count) >= 0 &&
+    [null, "completed", "failed", "cancelled"].includes(facts.review_result) &&
+    typeof facts.github_effect_recorded === "boolean" &&
+    Array.isArray(facts.canonical_receipts) &&
+    facts.canonical_receipts.every((entry) =>
+      ["accepted", "deduped", "superseded"].includes(entry),
+    ) &&
+    [null, "durable", "not_required"].includes(facts.router_receipt) &&
+    ["not_required", "pending", "observed", "skipped_locked", "unavailable"].includes(
+      facts.acknowledgement,
+    ) &&
+    Number.isFinite(Date.parse(String(card.updated_at || ""))) &&
+    Number.isSafeInteger(card.age_ms) &&
+    Number(card.age_ms) >= 0 &&
+    card.provenance === "exact-review-lifecycle-projection-v1"
   );
 }
 

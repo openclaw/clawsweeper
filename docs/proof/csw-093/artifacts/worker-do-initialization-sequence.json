@@ -1,0 +1,35 @@
+{
+  "proof": "CSW-093 Worker/DO initialization safety sequence",
+  "source_sha": "f05643e215b8026276b3b1b05483437055132d5b",
+  "sequence": {
+    "pure_uninitialized_read": {
+      "worker_api": "GET /api/durable-lifecycle-bay",
+      "durable_object_route": "GET /lifecycle-bay",
+      "http_status": 200,
+      "collection": {
+        "state": "unknown",
+        "reason": "unavailable"
+      },
+      "inventory": null,
+      "lanes": null,
+      "sample": null
+    },
+    "ordinary_initialized_queue_read": {
+      "worker_api": "GET /api/recent-durable-publication-events?window=24h",
+      "durable_object_route": "GET /recent-durable-publication-events?window=24h",
+      "http_status": 200,
+      "collection": {
+        "state": "complete",
+        "complete": true,
+        "scan_limit": 10000
+      },
+      "activity": {
+        "state": "idle"
+      }
+    }
+  },
+  "redaction": {
+    "exposed_operational_identifiers": false,
+    "note": "Records only routes, status, aggregate state, and null/non-null public fields."
+  }
+}

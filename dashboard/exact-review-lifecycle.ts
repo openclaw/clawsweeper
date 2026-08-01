@@ -1,5 +1,7 @@
 export const EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE = "exact_review_lifecycle_projection_v1";
 export const EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS = 5 * 60 * 1000;
+export const EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT = 512;
+export const EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT = 24;
 
 type SqlStorage = {
   exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
@@ -41,6 +43,65 @@ export type CommandAcknowledgementState =
   | "observed"
   | "skipped_locked"
   | "unavailable";
+
+export type DurableLifecycleBayLane =
+  | "pending"
+  | "acknowledgement_pending"
+  | "completed"
+  | "superseded"
+  | "requeued"
+  | "terminal_attention";
+
+export type DurableLifecycleBayUnknownReason =
+  | "unavailable"
+  | "malformed"
+  | "mixed"
+  | "stale"
+  | "over_cap";
+
+export type DurableLifecycleBaySnapshot = {
+  version: 1;
+  source: "exact-review-lifecycle-projection-v1";
+  generated_at: string;
+  freshness: { maximum_age_ms: number };
+  collection:
+    | { state: "complete" }
+    | { state: "unknown"; reason: DurableLifecycleBayUnknownReason };
+  inventory: {
+    lifecycle_records: number;
+    target_revisions: number;
+    unique_targets: number;
+  } | null;
+  lanes: Record<DurableLifecycleBayLane, number> | null;
+  sample: {
+    limit: number;
+    returned: number;
+    omitted: number;
+    cards: DurableLifecycleBayCard[];
+  } | null;
+};
+
+export type DurableLifecycleBayCard = {
+  target: { repository: string; number: number; url: string };
+  revision: number;
+  state: LifecycleState;
+  lane: DurableLifecycleBayLane;
+  terminal_label: string | null;
+  terminal_history: LifecycleTerminalDisposition[];
+  current_revision: boolean;
+  facts: {
+    admission: "recorded";
+    claim_count: number;
+    review_result: "completed" | "failed" | "cancelled" | null;
+    github_effect_recorded: boolean;
+    canonical_receipts: Array<"accepted" | "deduped" | "superseded">;
+    router_receipt: "durable" | "not_required" | null;
+    acknowledgement: CommandAcknowledgementState;
+  };
+  updated_at: string;
+  age_ms: number;
+  provenance: "exact-review-lifecycle-projection-v1";
+};
 
 type LifecycleClaimFact = {
   fenceKey: string;
@@ -130,12 +191,14 @@ type ProjectionIdentity = {
 
 export class ExactReviewLifecycleProjectionStore {
   private readonly storage: DurableStorage;
+  private schemaReady = false;
 
   constructor(storage: DurableStorage) {
     this.storage = storage;
   }
 
   ensureSchemaSync() {
+    if (this.schemaReady) return;
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} (
          canonical_target_key TEXT NOT NULL,
@@ -148,8 +211,14 @@ export class ExactReviewLifecycleProjectionStore {
     );
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_fence
-         ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} (fence_key, revision)`,
+          ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} (fence_key, revision)`,
     );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay
+          ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          (updated_at DESC, canonical_target_key, fence_key, revision)`,
+    );
+    this.schemaReady = true;
   }
 
   recordAdmission(
@@ -172,6 +241,7 @@ export class ExactReviewLifecycleProjectionStore {
     if (input.statusCommentId !== null && !positiveInteger(input.statusCommentId)) {
       throw new Error("invalid lifecycle status comment id");
     }
+    this.ensureSchemaSync();
     return this.storage.transactionSync(() => {
       const existing = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
       if (existing) {
@@ -605,11 +675,135 @@ export class ExactReviewLifecycleProjectionStore {
     return this.readSync(canonicalTargetKey, fenceKey, revision);
   }
 
+  /**
+   * This reader is intentionally side-effect free. In particular, it does not
+   * ensure schema, normalize legacy rows, or write an index: the public Bay
+   * route must never turn an observation into queue maintenance.
+   */
+  readBaySnapshot(now = Date.now()): DurableLifecycleBaySnapshot {
+    const unknown = (reason: DurableLifecycleBayUnknownReason): DurableLifecycleBaySnapshot => ({
+      version: 1,
+      source: "exact-review-lifecycle-projection-v1",
+      generated_at: new Date(now).toISOString(),
+      freshness: { maximum_age_ms: 60_000 },
+      collection: { state: "unknown", reason },
+      inventory: null,
+      lanes: null,
+      sample: null,
+    });
+
+    let rows: Array<Record<string, unknown>>;
+    try {
+      rows = Array.from(
+        this.storage.sql.exec(
+          `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+           ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+           LIMIT ?`,
+          EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1,
+        ),
+      );
+      // The fixed 512+1 public source bound is deliberately fail-closed. Do
+      // not paginate, prune, or otherwise maintain storage while observing it.
+      if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT) return unknown("over_cap");
+    } catch {
+      return unknown("unavailable");
+    }
+
+    let projections: ExactReviewLifecycleProjection[];
+    try {
+      projections = rows.map((row) => projectionFromRow(String(row.projection_json || "")));
+    } catch {
+      return unknown("malformed");
+    }
+    try {
+      if (!projections.every(validDurableLifecycleBayProjection)) return unknown("mixed");
+    } catch {
+      return unknown("mixed");
+    }
+
+    const maxRevisionByTarget = new Map<string, number>();
+    for (const projection of projections) {
+      maxRevisionByTarget.set(
+        projection.canonicalTargetKey,
+        Math.max(maxRevisionByTarget.get(projection.canonicalTargetKey) ?? 0, projection.revision),
+      );
+    }
+
+    let cards: DurableLifecycleBayCard[];
+    try {
+      cards = projections.map((projection) =>
+        durableLifecycleBayCard(
+          projection,
+          now,
+          maxRevisionByTarget.get(projection.canonicalTargetKey),
+        ),
+      );
+    } catch {
+      return unknown("mixed");
+    }
+
+    const lanes = emptyDurableLifecycleBayLanes();
+    const cardsByLane = new Map<DurableLifecycleBayLane, DurableLifecycleBayCard[]>();
+    for (const lane of Object.keys(lanes) as DurableLifecycleBayLane[]) cardsByLane.set(lane, []);
+    for (const card of cards) {
+      lanes[card.lane] += 1;
+      cardsByLane.get(card.lane)?.push(card);
+    }
+    for (const laneCards of cardsByLane.values()) {
+      laneCards.sort(
+        (left, right) =>
+          Date.parse(right.updated_at) - Date.parse(left.updated_at) ||
+          left.target.repository.localeCompare(right.target.repository) ||
+          left.target.number - right.target.number ||
+          right.revision - left.revision,
+      );
+    }
+
+    const sample: DurableLifecycleBayCard[] = [];
+    const laneOrder = Object.keys(lanes) as DurableLifecycleBayLane[];
+    for (let index = 0; sample.length < EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT; index += 1) {
+      let added = false;
+      for (const lane of laneOrder) {
+        const card = cardsByLane.get(lane)?.[index];
+        if (!card) continue;
+        sample.push(card);
+        added = true;
+        if (sample.length === EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT) break;
+      }
+      if (!added) break;
+    }
+
+    return {
+      version: 1,
+      source: "exact-review-lifecycle-projection-v1",
+      generated_at: new Date(now).toISOString(),
+      freshness: { maximum_age_ms: 60_000 },
+      collection: { state: "complete" },
+      inventory: {
+        lifecycle_records: cards.length,
+        target_revisions: new Set(
+          cards.map((card) => `${card.target.repository}#${card.target.number}:${card.revision}`),
+        ).size,
+        unique_targets: new Set(
+          cards.map((card) => `${card.target.repository}#${card.target.number}`),
+        ).size,
+      },
+      lanes,
+      sample: {
+        limit: EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT,
+        returned: sample.length,
+        omitted: Math.max(0, cards.length - sample.length),
+        cards: sample,
+      },
+    };
+  }
+
   private mutate<T>(
     input: ProjectionIdentity,
     apply: (projection: ExactReviewLifecycleProjection) => T,
     writeResult = true,
   ): T {
+    this.ensureSchemaSync();
     return this.storage.transactionSync(() => {
       const projection = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
       if (!projection) throw new Error("missing lifecycle admission fact");
@@ -724,6 +918,242 @@ export function commandAcknowledgementState(
   }
   if (projection.terminalDisposition?.kind === "requeue") return "unavailable";
   return projection.terminalDisposition ? "pending" : "unavailable";
+}
+
+function emptyDurableLifecycleBayLanes(): Record<DurableLifecycleBayLane, number> {
+  return {
+    pending: 0,
+    acknowledgement_pending: 0,
+    completed: 0,
+    superseded: 0,
+    requeued: 0,
+    terminal_attention: 0,
+  };
+}
+
+function durableLifecycleBayLane(state: LifecycleState): DurableLifecycleBayLane {
+  switch (state) {
+    case "pending":
+      return "pending";
+    case "acknowledgement_pending":
+      return "acknowledgement_pending";
+    case "completed":
+      return "completed";
+    case "superseded":
+      return "superseded";
+    case "requeue":
+      return "requeued";
+    case "acknowledgement_skipped":
+    case "dead_letter":
+    case "target_closed":
+    case "target_missing":
+    case "policy_noop":
+    case "guarded_open":
+    case "failed":
+      return "terminal_attention";
+  }
+}
+
+function durableLifecycleBayCard(
+  projection: ExactReviewLifecycleProjection,
+  now: number,
+  maxRevision: number | undefined,
+): DurableLifecycleBayCard {
+  const target = canonicalTarget(projection.canonicalTargetKey);
+  if (!target) throw new Error("invalid durable lifecycle Bay target");
+  const state = lifecycleState(projection);
+  const latestReviewResult = projection.reviewResults.reduce<
+    ExactReviewLifecycleProjection["reviewResults"][number] | null
+  >(
+    (latest, result) => (!latest || result.observedAt >= latest.observedAt ? result : latest),
+    null,
+  );
+  const terminalLabel =
+    state === "acknowledgement_skipped"
+      ? "acknowledgement_skipped"
+      : durableLifecycleBayLane(state) === "terminal_attention"
+        ? (projection.terminalDisposition?.kind ?? null)
+        : null;
+  return {
+    target,
+    revision: projection.revision,
+    state,
+    lane: durableLifecycleBayLane(state),
+    terminal_label: terminalLabel,
+    terminal_history: Array.from(
+      new Set(projection.terminalDispositions.map((entry) => entry.kind)),
+    ),
+    current_revision:
+      projection.revision === maxRevision && state !== "superseded" && state !== "requeue",
+    facts: {
+      admission: "recorded",
+      claim_count: projection.claims.length,
+      review_result: latestReviewResult?.outcome ?? null,
+      github_effect_recorded: projection.githubEffect !== null,
+      canonical_receipts: Array.from(
+        new Set(projection.canonicalReceipts.map((receipt) => receipt.outcome)),
+      ),
+      router_receipt: projection.routerReceipt?.outcome ?? null,
+      acknowledgement: commandAcknowledgementState(projection),
+    },
+    updated_at: new Date(projection.updatedAt).toISOString(),
+    age_ms: Math.max(0, now - projection.updatedAt),
+    provenance: "exact-review-lifecycle-projection-v1",
+  };
+}
+
+function canonicalTarget(value: string) {
+  const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(value);
+  if (!match) return null;
+  return {
+    repository: match[1],
+    number: Number(match[2]),
+    url: `https://github.com/${match[1]}/issues/${match[2]}`,
+  };
+}
+
+function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjection) {
+  const terminalKinds = new Set<LifecycleTerminalDisposition>([
+    "review_completed_routed",
+    "superseded",
+    "requeue",
+    "dead_letter",
+    "target_closed",
+    "target_missing",
+    "policy_noop",
+    "guarded_open",
+    "failure",
+  ]);
+  if (
+    !value ||
+    typeof value !== "object" ||
+    value.version !== 1 ||
+    !validCanonicalTargetKey(value.canonicalTargetKey) ||
+    !validFenceKey(value.fenceKey) ||
+    !positiveInteger(value.revision) ||
+    !finiteTimestamp(value.updatedAt) ||
+    !validText(value.admission.deliveryId, 1, 300) ||
+    !validText(value.admission.sourceAction, 1, 200) ||
+    (value.admission.statusMarker !== null && !validText(value.admission.statusMarker, 1, 300)) ||
+    (value.admission.statusCommentId !== null &&
+      !positiveInteger(value.admission.statusCommentId)) ||
+    typeof value.admission.commandOriginated !== "boolean" ||
+    !finiteTimestamp(value.admission.admittedAt) ||
+    !Array.isArray(value.claims) ||
+    !Array.isArray(value.reviewResults) ||
+    !Array.isArray(value.canonicalReceipts) ||
+    !Array.isArray(value.routerReceipts) ||
+    !Array.isArray(value.terminalDispositions) ||
+    !value.acknowledgement ||
+    typeof value.acknowledgement.required !== "boolean" ||
+    !Array.isArray(value.acknowledgement.attempts)
+  ) {
+    return false;
+  }
+  if (
+    !value.claims.every(
+      (claim) =>
+        validFenceKey(claim.fenceKey) &&
+        positiveInteger(claim.claimGeneration) &&
+        validRunId(claim.runId) &&
+        (claim.runAttempt === null || positiveInteger(claim.runAttempt)) &&
+        finiteTimestamp(claim.claimedAt),
+    ) ||
+    !value.reviewResults.every(
+      (result) =>
+        validFenceKey(result.fenceKey) &&
+        positiveInteger(result.claimGeneration) &&
+        validRunId(result.runId) &&
+        (result.runAttempt === null || positiveInteger(result.runAttempt)) &&
+        ["completed", "failed", "cancelled"].includes(result.outcome) &&
+        finiteTimestamp(result.observedAt),
+    ) ||
+    !value.canonicalReceipts.every(
+      (receipt) =>
+        ["accepted", "deduped", "superseded"].includes(receipt.outcome) &&
+        validText(receipt.receiptId, 1, 300) &&
+        finiteTimestamp(receipt.observedAt),
+    ) ||
+    !value.routerReceipts.every(
+      (receipt) =>
+        ["durable", "not_required"].includes(receipt.outcome) &&
+        validText(receipt.receiptId, 1, 300) &&
+        finiteTimestamp(receipt.observedAt),
+    ) ||
+    !value.terminalDispositions.every(
+      (disposition) =>
+        terminalKinds.has(disposition.kind) && finiteTimestamp(disposition.observedAt),
+    ) ||
+    !value.acknowledgement.attempts.every(
+      (attempt) =>
+        /^ack:[1-9]\d*$/.test(attempt.attemptId) &&
+        (attempt.statusMarker === null || validText(attempt.statusMarker, 1, 300)) &&
+        (attempt.statusCommentId === null || positiveInteger(attempt.statusCommentId)) &&
+        finiteTimestamp(attempt.attemptedAt) &&
+        (attempt.failedAt === undefined || finiteTimestamp(attempt.failedAt)) &&
+        (attempt.expiredAt === undefined || finiteTimestamp(attempt.expiredAt)) &&
+        (attempt.terminalSkip === undefined ||
+          (attempt.terminalSkip.reason === "locked_conversation" &&
+            finiteTimestamp(attempt.terminalSkip.observedAt))),
+    )
+  ) {
+    return false;
+  }
+  if (
+    value.githubEffect === undefined ||
+    (value.githubEffect !== null &&
+      (!positiveInteger(value.githubEffect.commentId) ||
+        !/^[0-9a-f]{64}$/.test(value.githubEffect.digest) ||
+        !finiteTimestamp(value.githubEffect.observedAt)))
+  ) {
+    return false;
+  }
+  if (
+    value.acknowledgement.observed &&
+    (!positiveInteger(value.acknowledgement.observed.commandCommentId) ||
+      !positiveInteger(value.acknowledgement.observed.completionCommentId) ||
+      (value.acknowledgement.observed.statusMarker !== null &&
+        !validText(value.acknowledgement.observed.statusMarker, 1, 300)) ||
+      !finiteTimestamp(value.acknowledgement.observed.observedAt))
+  ) {
+    return false;
+  }
+  if (value.routerReceipt) {
+    if (
+      !["durable", "not_required"].includes(value.routerReceipt.outcome) ||
+      !value.routerReceipts.some(
+        (receipt) =>
+          receipt.receiptId === value.routerReceipt?.receiptId &&
+          receipt.outcome === value.routerReceipt.outcome,
+      )
+    ) {
+      return false;
+    }
+  }
+  if (value.terminalDisposition) {
+    const latest = value.terminalDispositions.at(-1);
+    if (
+      !terminalKinds.has(value.terminalDisposition.kind) ||
+      !finiteTimestamp(value.terminalDisposition.observedAt) ||
+      !latest ||
+      latest.kind !== value.terminalDisposition.kind ||
+      latest.observedAt !== value.terminalDisposition.observedAt
+    ) {
+      return false;
+    }
+  } else if (value.terminalDispositions.length) {
+    return false;
+  }
+  return true;
+}
+
+function finiteTimestamp(value: unknown) {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= 8_640_000_000_000_000
+  );
 }
 
 function commandAcknowledgementTerminalSkip(projection: ExactReviewLifecycleProjection) {

@@ -1,0 +1,17 @@
+{
+  "durable_lifecycle_bay": {
+    "version": 1,
+    "source": "exact-review-lifecycle-projection-v1",
+    "generated_at": "2026-08-01T11:57:39.410Z",
+    "freshness": {
+      "maximum_age_ms": 60000
+    },
+    "collection": {
+      "state": "unknown",
+      "reason": "unavailable"
+    },
+    "inventory": null,
+    "lanes": null,
+    "sample": null
+  }
+}
