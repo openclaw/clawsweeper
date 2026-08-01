@@ -1,6 +1,6 @@
 {
   "proof": "OpenClaw Bay deterministic Playwright browser proof",
-  "source_sha": "5ce5e29622a28a68e019fce25d2ee03c5396e527",
+  "source_sha": "ef3b016046258f4d4b98dc473cd269e1863c2028",
   "route": "/bay-demo",
   "data_classification": "fully synthetic and redacted; no live/private dashboard payloads",
   "fixture_sha256": "B0180F79C465964AD39E6E45F730211294742E1206EA4CE1A4C39DEB61AFCB71",
@@ -19,7 +19,7 @@
     }
   ],
   "derived_real_tide_snapshot_sha256": "18FAF63BD6529D1F4EB03BF880343E20244413F82FE62029F055AABC13F44DA9",
-  "generated_at": "2026-08-01T07:36:21.493Z",
+  "generated_at": "2026-08-01T08:05:14.146Z",
   "assertions": [
     {
       "name": "real Bay route loaded",
@@ -40,7 +40,7 @@
       "name": "Bay mirrors cached aggregate events, admission, publication, state-writer, and handoff telemetry",
       "status": "PASS",
       "cards": 5,
-      "review": "RECENT DURABLE EVENTS\n\nUnknown · aggregate unavailable.\n\nREVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 6 HOURS\n50\n25\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 6 HOURS\n10\n5\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY\nSTATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 6 HOURS\n10\n5\n0\nLAST 60M\n17 items\n9 state commits\nBatch writer · terminal telemetry fresh",
+      "review": "RECENT DURABLE EVENTS\n24h\ncomplete\nACCEPTED\n3\nDEDUPED\n1\nFALLBACK\n0\nNo events is idle · workflow activity is not lifecycle completion.\nREVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 6 HOURS\n50\n25\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 6 HOURS\n10\n5\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY\nSTATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 6 HOURS\n10\n5\n0\nLAST 60M\n17 items\n9 state commits\nBatch writer · terminal telemetry fresh",
       "waiting_hover_label": "12:02 PM · 38 waiting",
       "rate_hover_label": "12:07 PM · +12 / hour · provisional window",
       "queue_items": 1,
@@ -59,7 +59,7 @@
     {
       "name": "Bay does not present stale State writer terminal totals as current",
       "status": "PASS",
-      "state_writer": "RECENT DURABLE EVENTS\n\nUnknown · aggregate unavailable.\n\nREVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 6 HOURS\n50\n25\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 6 HOURS\n10\n5\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY\nSTATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 6 HOURS\n10\n5\n0\nLAST 60M\nunknown items\nterminal metrics unavailable\nBatch writer · coordinator live · terminal metrics unavailable"
+      "state_writer": "RECENT DURABLE EVENTS\n24h\ncomplete\nACCEPTED\n3\nDEDUPED\n1\nFALLBACK\n0\nNo events is idle · workflow activity is not lifecycle completion.\nREVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 6 HOURS\n50\n25\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 6 HOURS\n10\n5\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY\nSTATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 6 HOURS\n10\n5\n0\nLAST 60M\nunknown items\nterminal metrics unavailable\nBatch writer · coordinator live · terminal metrics unavailable"
     },
     {
       "name": "completed and attention pools keep terminal outcomes distinct",
@@ -82,11 +82,8 @@
     {
       "name": "Bay switches cached telemetry ranges with matching labels and axes",
       "status": "PASS",
-      "ranges": [
-        "24h",
-        "7d"
-      ],
-      "text": "RECENT DURABLE EVENTS\n\nUnknown · aggregate unavailable.\n\nREVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 7 DAYS\n50\n25\n0\nNET RATE · 7 DAYS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 7 DAYS\n10\n5\n0\nNET RATE · 7 DAYS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY\nSTATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 7 DAYS\n10\n5\n0\nLAST 60M\n17 items\n9 state commits\nBatch writer · terminal telemetry fresh"
+      "ranges": ["24h", "7d"],
+      "text": "RECENT DURABLE EVENTS\n24h\ncomplete\nACCEPTED\n3\nDEDUPED\n1\nFALLBACK\n0\nNo events is idle · workflow activity is not lifecycle completion.\nREVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 7 DAYS\n50\n25\n0\nNET RATE · 7 DAYS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 7 DAYS\n10\n5\n0\nNET RATE · 7 DAYS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY\nSTATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 7 DAYS\n10\n5\n0\nLAST 60M\n17 items\n9 state commits\nBatch writer · terminal telemetry fresh"
     },
     {
       "name": "Bay does not reuse a stale rate after a history counter reset",
@@ -175,41 +172,41 @@
       "stages": [
         {
           "left": 13,
-          "top": 1171,
-          "bottom": 1447
+          "top": 1228,
+          "bottom": 1504
         },
         {
           "left": 13,
-          "top": 1447,
-          "bottom": 1779
+          "top": 1504,
+          "bottom": 1836
         },
         {
           "left": 13,
-          "top": 1779,
-          "bottom": 1999
+          "top": 1836,
+          "bottom": 2056
         },
         {
           "left": 13,
-          "top": 1999,
-          "bottom": 2275
+          "top": 2056,
+          "bottom": 2332
         },
         {
           "left": 13,
-          "top": 2275,
-          "bottom": 2495
+          "top": 2332,
+          "bottom": 2552
         },
         {
           "left": 13,
-          "top": 2495,
-          "bottom": 2827
+          "top": 2552,
+          "bottom": 2884
         }
       ],
-      "terminal_top": 2855
+      "terminal_top": 2912
     },
     {
       "name": "crustacean claw animation advances",
       "status": "PASS",
-      "elapsed_animation_ms": 300
+      "elapsed_animation_ms": 333
     },
     {
       "name": "forward transition raises READY flag",
@@ -231,7 +228,7 @@
       "status": "PASS",
       "source_hole": 1,
       "target_hole": 1,
-      "target_hole_opacity": 0.541869,
+      "target_hole_opacity": 0.430768,
       "label": "openclaw/openclaw#97722 burrowing"
     },
     {
@@ -248,10 +245,7 @@
     {
       "name": "repository filter isolates selected repo",
       "status": "PASS",
-      "visible_keys": [
-        "openclaw/clawhub#3058",
-        "openclaw/clawhub#97002"
-      ]
+      "visible_keys": ["openclaw/clawhub#3058", "openclaw/clawhub#97002"]
     },
     {
       "name": "drawer exposes safe GitHub links",
@@ -280,25 +274,20 @@
     {
       "name": "layered preview tide visibly animates",
       "status": "PASS",
-      "elapsed_animation_ms": 67,
+      "elapsed_animation_ms": 83,
       "tide_layers": 3
     },
     {
       "name": "preview tide follows explicit visual phases",
       "status": "PASS",
-      "phases": [
-        "incoming",
-        "crest",
-        "receding",
-        "idle"
-      ]
+      "phases": ["incoming", "crest", "receding", "idle"]
     },
     {
       "name": "reduced-motion tide is brief and non-spatial",
       "status": "PASS",
       "duration": "520ms",
       "animation_name": "none",
-      "elapsed_ms": 624
+      "elapsed_ms": 631
     },
     {
       "name": "tide previews do not poll status",
@@ -414,19 +403,7 @@
       "name": "mini control board caches each selected dashboard history range",
       "status": "PASS",
       "health_history_gets": 11,
-      "ranges": [
-        "6h",
-        "24h",
-        "7d",
-        "6h",
-        "6h",
-        "6h",
-        "6h",
-        "6h",
-        "6h",
-        "6h",
-        "6h"
-      ]
+      "ranges": ["6h", "24h", "7d", "6h", "6h", "6h", "6h", "6h", "6h", "6h", "6h"]
     },
     {
       "name": "no unexpected browser console errors",
@@ -580,12 +557,7 @@
     }
   ],
   "tide_isolation": {
-    "phases": [
-      "incoming",
-      "crest",
-      "receding",
-      "idle"
-    ],
+    "phases": ["incoming", "crest", "receding", "idle"],
     "before_keys": [
       "openclaw/clawhub#97002",
       "openclaw/clawsweeper#97003",
