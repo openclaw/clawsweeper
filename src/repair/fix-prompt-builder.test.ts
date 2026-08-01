@@ -103,7 +103,7 @@ test("fix prompt makes Codex own the validation loop", () => {
   assert.match(prompt, /use one repair loop against the pinned base/);
   assert.match(prompt, /use the dependency toolchain ClawSweeper already prepared/);
   assert.match(prompt, /never run an unrestricted package-manager install/);
-  assert.match(prompt, /use --ignore-scripts/);
+  assert.match(prompt, /every package-manager install or deploy must include --ignore-scripts/);
   assert.match(prompt, /never change core\.hooksPath/);
   assert.doesNotMatch(prompt, /always fetch latest origin\/main/);
   assert.match(prompt, /run the changed-surface validation in this checkout before returning/);

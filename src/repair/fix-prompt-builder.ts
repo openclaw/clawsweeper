@@ -42,7 +42,7 @@ export function buildFixPrompt({
     "- after validation passes against the pinned base, return the repair; ClawSweeper performs one deterministic final base sync, then exact-head review and GitHub checks provide the final proof;",
     "- keep built runtime outputs needed for validation, but place generated archives under TMPDIR and remove checkout-local temporary archives or incremental validation caches you created before returning; independent validation must preserve the target checkout identity;",
     "- run local git status/diff/log/rebase/merge commands needed to reconcile this branch with the pinned base;",
-    "- use the dependency toolchain ClawSweeper already prepared; never run an unrestricted package-manager install, hook installer, git config, or git config write; if an installation is unavoidable, use --ignore-scripts and never change core.hooksPath or other Git callback settings;",
+    "- use the dependency toolchain ClawSweeper already prepared; never run an unrestricted package-manager install, hook installer, git config, or git config write; every package-manager install or deploy must include --ignore-scripts; never change core.hooksPath or other Git callback settings;",
     "- when git conflicts exist, resolve every conflict marker and leave the checkout in a normal non-rebasing state;",
     "- use one repair loop against the pinned base: inspect review comments and failing checks, make the narrowest fix, run validation, and repeat only for actionable failures until the branch is merge-ready or a concrete external blocker is proven;",
     "- preserve contributor credit in the PR body or commit history; edit a changelog only when the artifact explicitly requires it and repository policy permits it;",
