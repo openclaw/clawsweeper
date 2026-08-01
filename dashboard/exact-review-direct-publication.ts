@@ -48,6 +48,23 @@ export type DirectPublicationOperation = {
   contentBase64?: string;
 };
 
+export const DIRECT_PUBLICATION_LIFECYCLE_KINDS = [
+  "router",
+  "router_deferred_coverage",
+  "router_not_required",
+  "requeue",
+  "target_missing",
+  "target_closed",
+  "guarded_open",
+  "policy_noop",
+] as const;
+
+export type DirectPublicationLifecycleKind = (typeof DIRECT_PUBLICATION_LIFECYCLE_KINDS)[number];
+
+export type DirectPublicationLifecyclePlan = {
+  kind: DirectPublicationLifecycleKind;
+};
+
 export type DirectPublicationPlan = {
   canonicalTargetKey: string;
   fenceKey: string;
@@ -61,6 +78,7 @@ export type DirectPublicationPlan = {
   };
   operations: DirectPublicationOperation[];
   totalBytes: number;
+  lifecycle?: DirectPublicationLifecyclePlan;
 };
 
 export type CanonicalDirectPublicationOperation = DirectPublicationOperation & {
@@ -82,8 +100,9 @@ export type DirectPublicationStoredOperation = {
   deleted: boolean;
 };
 
-export type DirectPublicationRow = Omit<DirectPublicationPlan, "operations"> & {
+export type DirectPublicationRow = Omit<DirectPublicationPlan, "operations" | "lifecycle"> & {
   operations: DirectPublicationStoredOperation[] | DirectPublicationOperation[];
+  lifecycle: DirectPublicationLifecyclePlan | null;
   state: "pending" | "committing" | "retryable" | "published" | "superseded" | "failed";
   attempts: number;
   createdAt: number;
@@ -192,6 +211,7 @@ export class ExactReviewDirectPublicationStore {
          identity_revision INTEGER NOT NULL CHECK (identity_revision >= 1),
          claim_generation INTEGER NOT NULL CHECK (claim_generation >= 1),
          operations_json TEXT NOT NULL,
+         lifecycle_json TEXT NOT NULL DEFAULT '{}',
          total_bytes INTEGER NOT NULL CHECK (total_bytes >= 0),
          file_count INTEGER NOT NULL CHECK (file_count >= 1),
          state TEXT NOT NULL CHECK (
@@ -223,6 +243,12 @@ export class ExactReviewDirectPublicationStore {
       this.storage.sql.exec(
         `ALTER TABLE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
            ADD COLUMN fence_key TEXT NOT NULL DEFAULT ''`,
+      );
+    }
+    if (!directPublicationColumns.has("lifecycle_json")) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+           ADD COLUMN lifecycle_json TEXT NOT NULL DEFAULT '{}'`,
       );
     }
     // Every pre-envelope receipt used its sole item key for both roles. Keep
@@ -1250,9 +1276,9 @@ export class ExactReviewDirectPublicationStore {
       `INSERT INTO ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
        (item_key, canonical_target_key, fence_key, revision,
         identity_item_key, identity_revision, claim_generation,
-        operations_json, total_bytes, file_count, state, attempts, created_at, updated_at,
+        operations_json, lifecycle_json, total_bytes, file_count, state, attempts, created_at, updated_at,
         next_attempt_at, commit_sha, failure_reason)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       row.fenceKey,
       row.canonicalTargetKey,
       row.fenceKey,
@@ -1261,6 +1287,7 @@ export class ExactReviewDirectPublicationStore {
       row.identity.revision,
       row.identity.claimGeneration,
       JSON.stringify(row.operations),
+      JSON.stringify(row.lifecycle ?? {}),
       row.totalBytes,
       row.operations.length,
       row.state,
@@ -1538,6 +1565,10 @@ export async function validateDirectPublicationPlan(
   if (!Number.isSafeInteger(plan.revision) || plan.revision < 1) {
     throw new Error("invalid direct publication revision");
   }
+  const lifecycle = directPublicationLifecyclePlan(plan.lifecycle);
+  if (plan.lifecycle !== undefined && !lifecycle) {
+    throw new Error("invalid direct publication lifecycle plan");
+  }
   const identity = plan.identity;
   if (
     !identity ||
@@ -1626,6 +1657,7 @@ export async function validateDirectPublicationPlan(
     },
     operations,
     totalBytes,
+    ...(lifecycle ? { lifecycle } : {}),
   };
 }
 
@@ -1655,6 +1687,7 @@ function directPublicationRowFromPlan(options: {
     identity: options.plan.identity,
     operations: options.operations,
     totalBytes: options.plan.totalBytes,
+    lifecycle: options.plan.lifecycle ?? null,
     state: options.state,
     attempts: 0,
     createdAt: options.now,
@@ -1678,6 +1711,7 @@ function directPublicationRow(row: Record<string, unknown>): DirectPublicationRo
     },
     operations: JSON.parse(String(row.operations_json)) as DirectPublicationStoredOperation[],
     totalBytes: Number(row.total_bytes),
+    lifecycle: storedDirectPublicationLifecycle(row.lifecycle_json),
     state: row.state as DirectPublicationRow["state"],
     attempts: Number(row.attempts),
     createdAt: Number(row.created_at),
@@ -1702,6 +1736,7 @@ function canonicalIncomingPlan(
     identity: stablePublicationIdentity(plan.identity),
     operations,
     totalBytes: plan.totalBytes,
+    lifecycle: plan.lifecycle ?? null,
   });
 }
 
@@ -1713,7 +1748,28 @@ function canonicalStoredPlan(plan: DirectPublicationRow) {
     identity: stablePublicationIdentity(plan.identity),
     operations: plan.operations,
     totalBytes: plan.totalBytes,
+    lifecycle: plan.lifecycle,
   });
+}
+
+function directPublicationLifecyclePlan(value: unknown): DirectPublicationLifecyclePlan | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const lifecycle = value as Record<string, unknown>;
+  if (Object.keys(lifecycle).length !== 1) return null;
+  const kind = lifecycle.kind;
+  return typeof kind === "string" &&
+    (DIRECT_PUBLICATION_LIFECYCLE_KINDS as readonly string[]).includes(kind)
+    ? { kind: kind as DirectPublicationLifecycleKind }
+    : null;
+}
+
+function storedDirectPublicationLifecycle(value: unknown): DirectPublicationLifecyclePlan | null {
+  if (typeof value !== "string") return null;
+  try {
+    return directPublicationLifecyclePlan(JSON.parse(value));
+  } catch {
+    return null;
+  }
 }
 
 function stablePublicationIdentity(identity: DirectPublicationPlan["identity"]) {

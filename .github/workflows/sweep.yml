@@ -1320,6 +1320,7 @@ jobs:
           EXACT_REVIEW_DIRECT_MUTATION_OUTPUT: .artifacts/direct-publication-outcome.json
           EXACT_REVIEW_DIRECT_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
           EXACT_REVIEW_DIRECT_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          EXACT_REVIEW_DIRECT_SOURCE_ACTION: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction }}
           EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: pnpm run --silent repair:exact-review-direct-publication
@@ -1895,12 +1896,44 @@ jobs:
                 const decision = response.decision;
                 const publication = decision?.publication;
                 const producerDecision = publication?.producerDecision;
+                const leaseRevision = Number(response.lease_revision);
+                const claimGeneration = Number(response.claim_generation);
+                const publicationLeaseRevision = Number(publication?.leaseRevision);
                 const directItemKey = `${decision?.targetRepo}#${decision?.itemNumber}`;
                 const expectedDeferredItemKey = `${directItemKey}@publish:${publication?.producerRunId}:${publication?.producerRunAttempt}`;
                 // Direct publication converts its already-leased base item into a
-                // recoverable publication. Deferred publication has its own key.
+                // recoverable publication. Its saved revision must still match
+                // this publisher lease before any external router handoff;
+                // deferred publication has its own key.
                 const directLifecycleRecovery =
-                  response.item_key === directItemKey && publication?.itemKey === directItemKey;
+                  response.item_key === directItemKey &&
+                  publication?.itemKey === directItemKey &&
+                  Number.isInteger(publicationLeaseRevision) &&
+                  publicationLeaseRevision === leaseRevision;
+                const directLifecycle = directLifecycleRecovery ? publication?.directLifecycle : null;
+                const directLifecyclePlan = directLifecycle?.plan;
+                const directLifecycleReceiptOutcome = directLifecycle?.receiptOutcome;
+                const directLifecycleKinds = new Set([
+                  "router",
+                  "router_deferred_coverage",
+                  "router_not_required",
+                  "requeue",
+                  "target_missing",
+                  "target_closed",
+                  "guarded_open",
+                  "policy_noop",
+                ]);
+                // Pre-projection rows have no saved post-effect intent. They
+                // deliberately retain artifact recovery rather than inferring a
+                // router or terminal result from a newer publisher run.
+                const directLifecycleRecoveryReady =
+                  directLifecycleRecovery &&
+                  directLifecyclePlan &&
+                  typeof directLifecyclePlan === "object" &&
+                  !Array.isArray(directLifecyclePlan) &&
+                  Object.keys(directLifecyclePlan).length === 1 &&
+                  directLifecycleKinds.has(directLifecyclePlan.kind) &&
+                  ["accepted", "deduped", "superseded"].includes(directLifecycleReceiptOutcome);
                 const deferredPublication = response.item_key === expectedDeferredItemKey;
                 if (
                   response.claimed !== true ||
@@ -1915,8 +1948,6 @@ jobs:
                   producerDecision.itemNumber !== decision.itemNumber ||
                   producerDecision.itemKind !== decision.itemKind
                 ) process.exit(1);
-                const leaseRevision = Number(response.lease_revision);
-                const claimGeneration = Number(response.claim_generation);
                 if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
                 if (!Number.isInteger(claimGeneration) || claimGeneration < 1) process.exit(1);
                 const targetRepo = String(decision.targetRepo);
@@ -1950,6 +1981,13 @@ jobs:
                   publisher_item_key: response.item_key,
                   publisher_lease_revision: leaseRevision,
                   publisher_claim_generation: claimGeneration,
+                  direct_lifecycle_recovery: directLifecycleRecoveryReady,
+                  direct_lifecycle_plan: directLifecycleRecoveryReady
+                    ? JSON.stringify(directLifecyclePlan)
+                    : "",
+                  direct_lifecycle_receipt_outcome: directLifecycleRecoveryReady
+                    ? directLifecycleReceiptOutcome
+                    : "",
                 };
                 fs.appendFileSync(process.env.GITHUB_OUTPUT, "claimed=true\n");
                 for (const [key, value] of Object.entries(values)) {
@@ -1971,8 +2009,146 @@ jobs:
           done
           exit 1
 
+      - name: Replay committed direct lifecycle handoff
+        id: replay-direct-lifecycle
+        # A direct receipt already owns the GitHub effect. Its persisted plan is
+        # the only safe source for post-effect recovery; old receipts fall back
+        # to the artifact path above rather than being inferred here.
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
+          TARGET_BRANCH: ${{ steps.publication-context.outputs.target_branch }}
+          ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
+          FENCE_KEY: ${{ steps.publication-context.outputs.publisher_item_key }}
+          REVISION: ${{ steps.publication-context.outputs.publisher_lease_revision }}
+          CLAIM_DECISION: ${{ steps.publication-context.outputs.decision }}
+          DIRECT_LIFECYCLE_PLAN: ${{ steps.publication-context.outputs.direct_lifecycle_plan }}
+          DIRECT_LIFECYCLE_RECEIPT_OUTCOME: ${{ steps.publication-context.outputs.direct_lifecycle_receipt_outcome }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
+          CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
+        run: |
+          set -euo pipefail
+          test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
+          queue_url="${QUEUE_URL%/}"
+          lifecycle_kind="$(DIRECT_LIFECYCLE_PLAN="$DIRECT_LIFECYCLE_PLAN" node -e '
+            const plan = JSON.parse(process.env.DIRECT_LIFECYCLE_PLAN || "");
+            const kinds = new Set([
+              "router", "router_deferred_coverage", "router_not_required", "requeue",
+              "target_missing", "target_closed", "guarded_open", "policy_noop",
+            ]);
+            if (!plan || typeof plan !== "object" || Array.isArray(plan) || Object.keys(plan).length !== 1 || !kinds.has(plan.kind)) process.exit(1);
+            process.stdout.write(plan.kind);
+          ')"
+          receipt_outcome="$DIRECT_LIFECYCLE_RECEIPT_OUTCOME"
+          case "$receipt_outcome" in
+            accepted|deduped|superseded) ;;
+            *) exit 1 ;;
+          esac
+          post_router_receipt() {
+            local outcome="$1"
+            local deferred_coverage="$2"
+            lifecycle_payload="$(LIFECYCLE_ROUTER_OUTCOME="$outcome" LIFECYCLE_DEFERRED_COVERAGE="$deferred_coverage" node -e '
+              const revision = Number(process.env.REVISION);
+              if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY) process.exit(1);
+              const prefix = process.env.LIFECYCLE_DEFERRED_COVERAGE === "true"
+                ? "router-direct-recovery-proof"
+                : process.env.LIFECYCLE_ROUTER_OUTCOME === "not_required"
+                  ? "router-direct-recovery-not-required"
+                  : "router-direct-recovery";
+              process.stdout.write(JSON.stringify({
+                canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
+                fence_key: process.env.FENCE_KEY,
+                revision,
+                outcome: process.env.LIFECYCLE_ROUTER_OUTCOME,
+                receipt_id: `${prefix}:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
+              }));
+            ')"
+            lifecycle_signature="$(PAYLOAD="$lifecycle_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
+            lifecycle_response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              --request POST \
+              --header "content-type: application/json" \
+              --header "x-clawsweeper-exact-review-signature: $lifecycle_signature" \
+              --data "$lifecycle_payload" \
+              "$queue_url/internal/exact-review/lifecycle/router-receipt")"
+            jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
+          }
+          post_terminal_disposition() {
+            local terminal_kind="$1"
+            lifecycle_payload="$(LIFECYCLE_TERMINAL="$terminal_kind" node -e '
+              const revision = Number(process.env.REVISION);
+              if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY || !process.env.LIFECYCLE_TERMINAL) process.exit(1);
+              process.stdout.write(JSON.stringify({
+                canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
+                fence_key: process.env.FENCE_KEY,
+                revision,
+                kind: process.env.LIFECYCLE_TERMINAL,
+              }));
+            ')"
+            lifecycle_signature="$(PAYLOAD="$lifecycle_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
+            lifecycle_response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+              --request POST \
+              --header "content-type: application/json" \
+              --header "x-clawsweeper-exact-review-signature: $lifecycle_signature" \
+              --data "$lifecycle_payload" \
+              "$queue_url/internal/exact-review/lifecycle/terminal-disposition")"
+            jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
+          }
+          completion_kind=published
+          reason_code=publication_applied
+          requeue_latest=false
+          direct_requeue=false
+          if [ "$receipt_outcome" = "superseded" ]; then
+            # The direct receipt already committed the terminal supersession.
+            # Do not manufacture a router, requeue, or acknowledgement attempt.
+            completion_kind=superseded
+            reason_code=remote_newer_tuple
+          else
+            case "$lifecycle_kind" in
+              router)
+                gh workflow run repair-comment-router.yml \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --ref main \
+                  -f execute=true \
+                  -f target_repo="$TARGET_REPO" \
+                  -f target_branch="$TARGET_BRANCH" \
+                  -f item_numbers="$ITEM_NUMBER" \
+                  -f lookback_minutes="$CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES" \
+                  -f max_comments="$CLAWSWEEPER_COMMENT_MAX_COMMENTS"
+                post_router_receipt durable false
+                ;;
+              router_deferred_coverage)
+                post_router_receipt durable true
+                ;;
+              router_not_required)
+                post_router_receipt not_required false
+                ;;
+              requeue)
+                post_terminal_disposition requeue
+                # The completion endpoint atomically changes this exact direct
+                # publication into a new fenced source-drift review revision.
+                # A separate enqueue here could be ignored while this lease is
+                # still active and would leave the old receipt replayable.
+                direct_requeue=true
+                ;;
+              target_missing|target_closed|guarded_open|policy_noop)
+                post_terminal_disposition "$lifecycle_kind"
+                ;;
+              *) exit 1 ;;
+            esac
+          fi
+          {
+            echo "outcome=success"
+            echo "completion_kind=$completion_kind"
+            echo "reason_code=$reason_code"
+            echo "requeue_latest=$requeue_latest"
+            echo "direct_requeue=$direct_requeue"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v7
-        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' }}
         with:
           # The artifact validator binds the producer SHA. The publisher itself
           # must run the current repaired implementation, not historical code.
@@ -1982,17 +2158,17 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-action-ledger
-        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' }}
         continue-on-error: true
 
       - uses: ./.github/actions/setup-pnpm
-        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' }}
         id: setup-publish-pnpm
         with:
           build-script: build:all
 
       - name: Download exact review artifact bundle
-        if: ${{ steps.publication-context.outputs.claimed == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' }}
         id: download-exact-review-bundle
         continue-on-error: true
         uses: actions/download-artifact@v8
@@ -2004,7 +2180,7 @@ jobs:
           path: .artifacts/exact-review-bundle
 
       - name: Validate exact review artifact bundle
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.download-exact-review-bundle.outcome == 'success' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.download-exact-review-bundle.outcome == 'success' }}
         id: validate-exact-review-bundle
         continue-on-error: true
         env:
@@ -2030,7 +2206,7 @@ jobs:
 
       - name: Identify legacy tuple-less exact artifact
         id: legacy-exact-artifact
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
         env:
           REPORT_PATH: .artifacts/exact-review-bundle/review/${{ steps.publication-context.outputs.item_number }}.md
         run: |
@@ -2056,7 +2232,7 @@ jobs:
           NODE
 
       - name: Stage validated exact review artifact
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
         run: |
           set -euo pipefail
           mkdir -p artifacts/event
@@ -2066,7 +2242,7 @@ jobs:
           fi
 
       - name: Create target write token
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
         id: target-write-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -2082,7 +2258,7 @@ jobs:
           permission-statuses: read
 
       - uses: ./.github/actions/setup-state
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: setup-state
         with:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -2093,7 +2269,7 @@ jobs:
           hydrate-state-blobs: "false"
 
       - name: Publish event result and apply safe close
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: publish-event-result
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
@@ -2239,7 +2415,7 @@ jobs:
 
       - name: Record fallback canonical exact review lifecycle receipt
         id: record-fallback-canonical-lifecycle-receipt
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publish-event-result.outcome == 'success' && (steps.publish-event-result.outputs.remote_tuple_verified == 'true' || (steps.publish-event-result.outputs.completion_kind == 'deferred' && steps.publish-event-result.outputs.reason_code == 'close_coverage_deferred')) }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.publish-event-result.outcome == 'success' && (steps.publish-event-result.outputs.remote_tuple_verified == 'true' || (steps.publish-event-result.outputs.completion_kind == 'deferred' && steps.publish-event-result.outputs.reason_code == 'close_coverage_deferred')) }}
         env:
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
@@ -2271,7 +2447,7 @@ jobs:
 
       - name: Queue deferred exact verdict router
         id: queue-deferred-verdict-router
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
@@ -2315,7 +2491,7 @@ jobs:
 
       - name: Record deferred close-proof exact review lifecycle receipt
         id: record-deferred-close-proof-lifecycle-receipt
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.completion_kind == 'deferred' && steps.publish-event-result.outputs.reason_code == 'close_coverage_deferred' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.completion_kind == 'deferred' && steps.publish-event-result.outputs.reason_code == 'close_coverage_deferred' }}
         env:
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
@@ -2347,7 +2523,7 @@ jobs:
 
       - name: Record no-router exact review lifecycle receipt
         id: record-no-router-lifecycle-receipt
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' }}
         env:
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
@@ -2378,7 +2554,7 @@ jobs:
             "$queue_url/internal/exact-review/lifecycle/router-receipt" >/dev/null
 
       - name: Dispatch deferred high-confidence bug implementation
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.record-fallback-canonical-lifecycle-receipt.outcome == 'success' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.publication-context.outputs.target_repo == 'openclaw/openclaw' && fromJSON(steps.publication-context.outputs.decision).itemKind == 'issue' && ((fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && steps.record-no-router-lifecycle-receipt.outcome == 'success') || (fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && (steps.publish-event-result.outputs.routing_deferred != 'true' || steps.queue-deferred-verdict-router.outcome == 'success'))) }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.record-fallback-canonical-lifecycle-receipt.outcome == 'success' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && steps.publication-context.outputs.target_repo == 'openclaw/openclaw' && fromJSON(steps.publication-context.outputs.decision).itemKind == 'issue' && ((fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && steps.record-no-router-lifecycle-receipt.outcome == 'success') || (fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && (steps.publish-event-result.outputs.routing_deferred != 'true' || steps.queue-deferred-verdict-router.outcome == 'success'))) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -2393,7 +2569,7 @@ jobs:
 
       - name: Queue fresh review after source drift
         id: queue-source-drift-review
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && (steps.publish-event-result.outputs.requeue_latest == 'true' || steps.legacy-exact-artifact.outputs.legacy_tupleless == 'true') }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && (steps.publish-event-result.outputs.requeue_latest == 'true' || steps.legacy-exact-artifact.outputs.legacy_tupleless == 'true') }}
         env:
           CLAIM_DECISION: ${{ steps.publication-context.outputs.decision }}
           PRODUCER_RUN_ATTEMPT: ${{ steps.publication-context.outputs.generation_attempt }}
@@ -2433,7 +2609,7 @@ jobs:
 
       - name: Release terminal review leases
         id: release-terminal-review-leases
-        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && (steps.publish-event-result.outputs.terminal_noop == 'true' || steps.publish-event-result.outputs.terminal_closed == 'true') }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && (steps.publish-event-result.outputs.terminal_noop == 'true' || steps.publish-event-result.outputs.terminal_closed == 'true') }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
@@ -2461,7 +2637,7 @@ jobs:
 
       - name: Confirm terminal item remains closed
         id: confirm-terminal-item
-        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.release-terminal-review-leases.outcome == 'success' }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.release-terminal-review-leases.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
@@ -2471,7 +2647,7 @@ jobs:
           echo "confirmed=true" >> "$GITHUB_OUTPUT"
 
       - name: React to target item completion
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.publish-event-result.outputs.terminal_closed == 'true' || steps.publish-event-result.outputs.guarded_open == 'true' || steps.publish-event-result.outputs.policy_noop == 'true' || steps.queue-deferred-verdict-router.outcome == 'success' || (fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && steps.publish-event-result.outputs.remote_tuple_verified == 'true')) }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.publish-event-result.outputs.terminal_closed == 'true' || steps.publish-event-result.outputs.guarded_open == 'true' || steps.publish-event-result.outputs.policy_noop == 'true' || steps.queue-deferred-verdict-router.outcome == 'success' || (fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && steps.publish-event-result.outputs.remote_tuple_verified == 'true')) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -2495,7 +2671,7 @@ jobs:
           done <<< "$reaction_ids"
 
       - name: Release superseded or unsuccessful publisher-owned review lease
-        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.live_proceeded == 'true' && (steps.publish-event-result.outputs.completion_kind == 'superseded' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.requeue_latest == 'true' && steps.queue-source-drift-review.outcome != 'success')) }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.publication-context.outputs.live_proceeded == 'true' && (steps.publish-event-result.outputs.completion_kind == 'superseded' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.requeue_latest == 'true' && steps.queue-source-drift-review.outcome != 'success')) }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
@@ -2519,7 +2695,7 @@ jobs:
 
       - name: Probe GitHub pressure after publication failure
         id: publication-pressure
-        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && failure() }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && failure() }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -2562,6 +2738,11 @@ jobs:
           PUBLISH_RETRY_AT: ${{ steps.publish-event-result.outputs.retry_at }}
           ERROR_FINGERPRINT: ${{ steps.publish-event-result.outputs.error_fingerprint }}
           STATE_WRITER_JSON: ${{ steps.publish-event-result.outputs.state_writer_json }}
+          DIRECT_RECOVERY_OUTCOME: ${{ steps.replay-direct-lifecycle.outputs.outcome }}
+          DIRECT_RECOVERY_COMPLETION_KIND: ${{ steps.replay-direct-lifecycle.outputs.completion_kind }}
+          DIRECT_RECOVERY_REASON_CODE: ${{ steps.replay-direct-lifecycle.outputs.reason_code }}
+          DIRECT_RECOVERY_REQUEUE_LATEST: ${{ steps.replay-direct-lifecycle.outputs.requeue_latest }}
+          DIRECT_RECOVERY_DIRECT_REQUEUE: ${{ steps.replay-direct-lifecycle.outputs.direct_requeue }}
           REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
         run: |
           set -euo pipefail
@@ -2569,7 +2750,28 @@ jobs:
           completion_kind=permanent_failure
           reason_code=unknown_failure
           retry_at=
-          if [ "$PUBLISH_COMPLETION_KIND" = "superseded" ] && { [ "$PUBLISH_REASON_CODE" = "remote_newer_tuple" ] || [ "$PUBLISH_REASON_CODE" = "remote_closed" ]; }; then
+          requeue_latest="$REQUEUE_LATEST"
+          direct_requeue=false
+          if [ "$DIRECT_RECOVERY_OUTCOME" = "success" ]; then
+            case "$DIRECT_RECOVERY_COMPLETION_KIND:$DIRECT_RECOVERY_REASON_CODE" in
+              published:publication_applied|superseded:remote_newer_tuple) ;;
+              *) exit 1 ;;
+            esac
+            if [ "$DIRECT_RECOVERY_REQUEUE_LATEST" != "" ] && [ "$DIRECT_RECOVERY_REQUEUE_LATEST" != "false" ]; then
+              exit 1
+            fi
+            if [ "$DIRECT_RECOVERY_DIRECT_REQUEUE" = "true" ]; then
+              if [ "$DIRECT_RECOVERY_COMPLETION_KIND" != "published" ] || [ "$DIRECT_RECOVERY_REASON_CODE" != "publication_applied" ]; then
+                exit 1
+              fi
+              direct_requeue=true
+            elif [ "$DIRECT_RECOVERY_DIRECT_REQUEUE" != "" ] && [ "$DIRECT_RECOVERY_DIRECT_REQUEUE" != "false" ]; then
+              exit 1
+            fi
+            outcome=success
+            completion_kind="$DIRECT_RECOVERY_COMPLETION_KIND"
+            reason_code="$DIRECT_RECOVERY_REASON_CODE"
+          elif [ "$PUBLISH_COMPLETION_KIND" = "superseded" ] && { [ "$PUBLISH_REASON_CODE" = "remote_newer_tuple" ] || [ "$PUBLISH_REASON_CODE" = "remote_closed" ]; }; then
             outcome=success
             completion_kind=superseded
             reason_code="$PUBLISH_REASON_CODE"
@@ -2633,6 +2835,8 @@ jobs:
           echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
           echo "completion_kind=$completion_kind" >> "$GITHUB_OUTPUT"
           echo "reason_code=$reason_code" >> "$GITHUB_OUTPUT"
+          echo "requeue_latest=$requeue_latest" >> "$GITHUB_OUTPUT"
+          echo "direct_requeue=$direct_requeue" >> "$GITHUB_OUTPUT"
           if [ -n "$ERROR_FINGERPRINT" ]; then
             echo "error_fingerprint=$ERROR_FINGERPRINT" >> "$GITHUB_OUTPUT"
           fi
@@ -2669,6 +2873,7 @@ jobs:
           GUARDED_OPEN: ${{ steps.publish-event-result.outputs.guarded_open }}
           POLICY_NOOP: ${{ steps.publish-event-result.outputs.policy_noop }}
           REQUEUE_LATEST: ${{ steps.publish-event-result.outputs.requeue_latest }}
+          DIRECT_LIFECYCLE_REQUEUE: ${{ steps.exact-review-publication-result.outputs.direct_requeue }}
           LEGACY_TUPLELESS: ${{ steps.legacy-exact-artifact.outputs.legacy_tupleless }}
           QUEUE_LEASE_ID: ${{ steps.publication-context.outputs.publisher_lease_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -2702,8 +2907,9 @@ jobs:
             const retryAt = String(process.env.RETRY_AT || "").trim();
             if (retryAt && !Number.isFinite(Date.parse(retryAt))) process.exit(1);
             if (!completionKind || !reasonCode) process.exit(1);
+            const directLifecycleRequeue = process.env.DIRECT_LIFECYCLE_REQUEUE === "true";
             const lifecycleTerminal =
-              process.env.REQUEUE_LATEST === "true"
+              directLifecycleRequeue || process.env.REQUEUE_LATEST === "true"
                 ? "requeue"
                 : process.env.LEGACY_TUPLELESS === "true" || ["retryable_failure", "refresh_required"].includes(completionKind)
                   ? "requeue"
@@ -2740,6 +2946,7 @@ jobs:
               ...(errorFingerprint ? { error_fingerprint: errorFingerprint } : {}),
               ...(retryAt ? { retry_at: retryAt } : {}),
               ...(outcome === "failure" && failureKind ? { failure_kind: failureKind } : {}),
+              ...(directLifecycleRequeue ? { direct_lifecycle_requeue: true } : {}),
               ...(lifecycleTerminal ? { lifecycle_terminal_disposition: lifecycleTerminal } : {}),
               ...(stateWriter ? { state_writer: stateWriter } : {}),
             }));
@@ -2867,14 +3074,19 @@ jobs:
           const response = JSON.parse(process.env.RESPONSE || "{}");
           const decision = response.decision;
           const finalization = response.terminal_finalization;
+          const lifecycleProjection = response.lifecycle_projection;
           const leaseRevision = Number(response.lease_revision);
           const claimGeneration = Number(response.claim_generation);
           if (
             response.claimed !== true || response.protocol_version !== 2 ||
             response.item_key !== process.env.ITEM_KEY ||
-            decision?.sourceAction !== "exact_review_artifact_publish" || !decision?.publication ||
+            decision?.sourceAction !== "exact_review_artifact_publish" ||
             !finalization || !["Complete", "Failed"].includes(finalization.statusState) ||
             typeof finalization.statusDetail !== "string" ||
+            !lifecycleProjection ||
+            lifecycleProjection.canonicalTargetKey !== `${decision.targetRepo}#${decision.itemNumber}` ||
+            typeof lifecycleProjection.fenceKey !== "string" || !lifecycleProjection.fenceKey ||
+            !Number.isInteger(lifecycleProjection.revision) || lifecycleProjection.revision < 1 ||
             !Number.isInteger(leaseRevision) || leaseRevision < 1 ||
             !Number.isInteger(claimGeneration) || claimGeneration < 1
           ) process.exit(1);
@@ -2888,6 +3100,8 @@ jobs:
             status_comment_id: decision.statusCommentId || "",
             item_key: response.item_key,
             lease_revision: leaseRevision,
+            lifecycle_fence_key: lifecycleProjection.fenceKey,
+            lifecycle_revision: lifecycleProjection.revision,
             claim_generation: claimGeneration,
             status_state: finalization.statusState,
             status_detail: finalization.statusDetail,
@@ -2974,8 +3188,8 @@ jobs:
           STATUS_STATE: ${{ steps.finalization-context.outputs.status_state }}
           STATUS_DETAIL: ${{ steps.finalization-context.outputs.status_detail }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          FENCE_KEY: ${{ steps.finalization-context.outputs.item_key }}
-          REVISION: ${{ steps.finalization-context.outputs.lease_revision }}
+          FENCE_KEY: ${{ steps.finalization-context.outputs.lifecycle_fence_key }}
+          REVISION: ${{ steps.finalization-context.outputs.lifecycle_revision }}
           ATTEMPT_ID: ${{ steps.terminal-acknowledgement.outputs.attempt_id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}

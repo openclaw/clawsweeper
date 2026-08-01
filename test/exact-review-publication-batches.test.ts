@@ -253,6 +253,38 @@ test("direct publication preserves canonical targets and exact publication fence
   );
 });
 
+test("direct publication retains an immutable lifecycle recovery plan without backfill", async () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  const plan = await validateDirectPublicationPlan({
+    ...directPlan("openclaw/openclaw#220", 1),
+    lifecycle: { kind: "router" },
+  });
+  assert.equal(store.accept(plan, 1_000).outcome, "accepted");
+  assert.deepEqual(store.get(plan.fenceKey, plan.revision)?.lifecycle, { kind: "router" });
+  assert.equal(store.accept(plan, 1_001).outcome, "deduped");
+
+  const conflicting = await validateDirectPublicationPlan({
+    ...directPlan("openclaw/openclaw#220", 1),
+    lifecycle: { kind: "policy_noop" },
+  });
+  assert.throws(() => store.accept(conflicting, 1_002), /conflicting direct publication retry/);
+  await assert.rejects(
+    validateDirectPublicationPlan({
+      ...directPlan("openclaw/openclaw#221", 1),
+      lifecycle: { kind: "router", extra: true },
+    }),
+    /invalid direct publication lifecycle plan/,
+  );
+
+  const preLifecyclePlan = await validateDirectPublicationPlan(
+    directPlan("openclaw/openclaw#222", 1),
+  );
+  assert.equal(store.accept(preLifecyclePlan, 1_003).outcome, "accepted");
+  assert.equal(store.get(preLifecyclePlan.fenceKey, preLifecyclePlan.revision)?.lifecycle, null);
+});
+
 test("direct publication dedupes an accepted tuple after its batch fence is reclaimed", async () => {
   const storage = new TestStorage();
   const store = new ExactReviewDirectPublicationStore(storage);

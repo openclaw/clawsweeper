@@ -697,6 +697,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     ".artifacts/direct-publication-outcome.json",
   );
   assert.match(postDirect.run ?? "", /repair:exact-review-direct-publication/);
+  assert.equal(
+    postDirect.env?.EXACT_REVIEW_DIRECT_SOURCE_ACTION,
+    "${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction }}",
+  );
   assert.match(
     finalizeDirect.if ?? "",
     /direct-exact-review-publication\.outputs\.accepted == 'true'/,
@@ -806,10 +810,18 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     /producerDecision\.commandStatusMarker \|\| producerDecision\.statusCommentId/,
   );
   assert.match(publicationContext.run ?? "", /directLifecycleRecovery/);
+  assert.match(publicationContext.run ?? "", /directLifecycleRecoveryReady/);
+  assert.match(
+    publicationContext.run ?? "",
+    /const publicationLeaseRevision = Number\(publication\?\.leaseRevision\);/,
+  );
+  assert.match(publicationContext.run ?? "", /publicationLeaseRevision === leaseRevision/);
+  assert.match(publicationContext.run ?? "", /direct_lifecycle_plan/);
+  assert.match(publicationContext.run ?? "", /direct_lifecycle_receipt_outcome/);
   assert.match(publicationContext.run ?? "", /deferredPublication/);
   assert.match(
     publicationContext.run ?? "",
-    /response\.item_key === directItemKey && publication\?\.itemKey === directItemKey/,
+    /response\.item_key === directItemKey\s*&&\s*publication\?\.itemKey === directItemKey/,
   );
 
   const download = step(publisher, "Download exact review artifact bundle");
@@ -823,7 +835,9 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.ok(publisherCheckout);
   assert.equal(publisherCheckout.with?.ref, "main");
+  assert.match(publisherCheckout.if ?? "", /direct_lifecycle_recovery != 'true'/);
   assert.equal(download.uses, "actions/download-artifact@v8");
+  assert.match(download.if ?? "", /direct_lifecycle_recovery != 'true'/);
   assert.equal(download["continue-on-error"], true);
   assert.equal(download.with?.name, "${{ steps.publication-context.outputs.artifact_name }}");
   assert.equal(
@@ -831,6 +845,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     "${{ steps.publication-context.outputs.producer_run_id }}",
   );
   assert.match(validate.run ?? "", /repair:exact-review-bundle validate/);
+  assert.match(validate.if ?? "", /direct_lifecycle_recovery != 'true'/);
   assert.equal(validate["continue-on-error"], true);
   assert.match(legacyArtifact.run ?? "", /review_lease_owner/);
   assert.match(legacyArtifact.run ?? "", /review_lease_comment_id/);
@@ -839,6 +854,20 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.ok(publisher.steps.indexOf(validate) < publisher.steps.indexOf(targetWriteStep));
   assert.ok(publisher.steps.indexOf(validate) < publisher.steps.indexOf(stateSetup));
   assert.match(stateSetup.if ?? "", /legacy-exact-artifact\.outputs\.legacy_tupleless != 'true'/);
+  assert.match(stateSetup.if ?? "", /direct_lifecycle_recovery != 'true'/);
+
+  const replayDirect = step(publisher, "Replay committed direct lifecycle handoff");
+  assert.match(replayDirect.if ?? "", /direct_lifecycle_recovery == 'true'/);
+  assert.match(replayDirect.run ?? "", /router_deferred_coverage/);
+  assert.match(replayDirect.run ?? "", /router_not_required/);
+  assert.match(replayDirect.run ?? "", /repair-comment-router\.yml/);
+  assert.match(replayDirect.run ?? "", /lifecycle\/router-receipt/);
+  assert.match(replayDirect.run ?? "", /lifecycle\/terminal-disposition/);
+  assert.match(replayDirect.run ?? "", /direct_requeue=true/);
+  assert.doesNotMatch(replayDirect.run ?? "", /internal\/exact-review\/enqueue/);
+  assert.doesNotMatch(replayDirect.run ?? "", /repair:publish-event-result/);
+  assert.doesNotMatch(replayDirect.run ?? "", /repair:update-command-status/);
+  assert.doesNotMatch(replayDirect.run ?? "", /lifecycle\/command-ack/);
 
   const publish = step(publisher, "Publish event result and apply safe close");
   assert.match(publish.run ?? "", /live_state=.*gh api/);
@@ -906,6 +935,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(publishResult.env?.VALIDATE_OUTCOME ?? "", /validate-exact-review-bundle/);
   assert.match(publishResult.env?.PUBLISH_COMPLETION_KIND ?? "", /publish-event-result/);
   assert.match(publishResult.env?.PUBLISH_RETRY_AT ?? "", /publish-event-result/);
+  assert.match(publishResult.env?.DIRECT_RECOVERY_OUTCOME ?? "", /replay-direct-lifecycle/);
+  assert.match(publishResult.env?.DIRECT_RECOVERY_DIRECT_REQUEUE ?? "", /replay-direct-lifecycle/);
+  assert.match(publishResult.run ?? "", /DIRECT_RECOVERY_OUTCOME/);
+  assert.match(publishResult.run ?? "", /direct_requeue=/);
   assert.match(publicationPressure.if ?? "", /failure\(\)/);
   assert.match(publicationPressure.run ?? "", /gh api rate_limit/);
   assert.match(publicationPressure.run ?? "", /failure_kind=github_rate_limit/);
@@ -936,6 +969,11 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(publishComplete.run ?? "", /completion_kind: completionKind/);
   assert.match(publishComplete.run ?? "", /reason_code: reasonCode/);
   assert.match(publishComplete.run ?? "", /retry_at: retryAt/);
+  assert.match(
+    publishComplete.env?.DIRECT_LIFECYCLE_REQUEUE ?? "",
+    /exact-review-publication-result/,
+  );
+  assert.match(publishComplete.run ?? "", /direct_lifecycle_requeue/);
   assert.ok(publisher.steps.indexOf(publishResult) < publisher.steps.indexOf(publishComplete));
   assert.ok(publisher.steps.indexOf(publishComplete) < publisher.steps.indexOf(activeLeaseWaiting));
   assert.match(activeLeaseWaiting.if ?? "", /reason_code == 'review_lease_active'/);
@@ -983,6 +1021,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     /writePublicationCompletionOutputs\(completionKind, reasonCode, fingerprint\);/,
   );
   assert.doesNotMatch(publisherSource, /retryableFailure \? "github_transient" : undefined/);
+  const directPublisherSource = readText("src/repair/exact-review-direct-publication.ts");
+  assert.match(directPublisherSource, /invalid_direct_source_action/);
+  assert.match(directPublisherSource, /router_deferred_coverage/);
+  assert.match(directPublisherSource, /failed_review_shard_recovery/);
   assert.match(publishComplete.run ?? "", /"state_contention"/);
   assert.ok(
     publisherSource.indexOf("eventSnapshotMatchesCurrent(paths)", completeStart) > completeStart,
@@ -1068,6 +1110,9 @@ test("exact event publication derives lifecycle receipt and final command acknow
   assert.ok(finalizationClaim && acknowledgement && statusEdit && lockedSkip && retry);
   assert.match(finalizer.if ?? "", /exact_review_command_acknowledgement/);
   assert.match(finalizationClaim.run ?? "", /terminal_finalization/);
+  assert.match(finalizationClaim.run ?? "", /lifecycle_projection/);
+  assert.match(finalizationClaim.run ?? "", /lifecycle_fence_key/);
+  assert.match(finalizationClaim.run ?? "", /lifecycle_revision/);
   assert.match(finalizationClaim.run ?? "", /response\.item_key !== process\.env\.ITEM_KEY/);
   assert.doesNotMatch(finalizationClaim.run ?? "", /expectedItemKey/);
   assert.match(finalizationClaim.run ?? "", /lease_not_active/);
@@ -1081,6 +1126,14 @@ test("exact event publication derives lifecycle receipt and final command acknow
   assert.match(statusEdit.run ?? "", /--require-mutation/);
   assert.match(statusEdit.run ?? "", /--locked-conversation-terminal-skip/);
   assert.match(statusEdit.run ?? "", /command-ack\/failed/);
+  assert.equal(
+    statusEdit.env?.FENCE_KEY,
+    "${{ steps.finalization-context.outputs.lifecycle_fence_key }}",
+  );
+  assert.equal(
+    statusEdit.env?.REVISION,
+    "${{ steps.finalization-context.outputs.lifecycle_revision }}",
+  );
   assert.match(lockedSkip.if ?? "", /locked_conversation == 'true'/);
   assert.match(lockedSkip.run ?? "", /terminal-finalization\/skip/);
   assert.match(lockedSkip.run ?? "", /locked_conversation/);
