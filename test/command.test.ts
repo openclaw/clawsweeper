@@ -100,7 +100,7 @@ test("local exact reviews default to item-specific artifacts", () => {
   assert.equal(defaultReviewArtifactDirForTest(false, 357, undefined), "artifacts/reviews");
 });
 
-test("CSW-088 scheduled hot planning suppresses #117063 while explicit re-review remains eligible", () => {
+test("CSW-088 scheduled hot planning suppresses #117063, observes an in-flight update, and leaves explicit re-review eligible", () => {
   const root = mkdtempSync(join(tmpdir(), "cmd-csw-088-"));
   const binDir = join(root, "bin");
   const itemsDir = join(root, "items");
@@ -123,6 +123,12 @@ test("CSW-088 scheduled hot planning suppresses #117063 while explicit re-review
     deletions: 2,
     changed_files: 2,
     commits: 1,
+    updated_at: reviewedAt,
+  };
+  const updatedPull = { ...pull, body: "The PR body changed during the snapshot read." };
+  const commentUpdatedPull = {
+    ...pull,
+    updated_at: new Date(Date.parse(reviewedAt) + 1).toISOString(),
   };
   const issue = {
     number,
@@ -177,6 +183,7 @@ test("CSW-088 scheduled hot planning suppresses #117063 while explicit re-review
         title: pull.title,
         reviewed_at: reviewedAt,
         review_policy: reviewPolicyHashForTest(),
+        item_updated_at: reviewedAt,
         item_source_revision: sourceRevision,
         pull_head_sha: headSha,
         reviewed_pull_state_digest: pullStateDigest,
@@ -198,6 +205,15 @@ const path = args[1] || "";
 const listItem = ${JSON.stringify(listItem)};
 const issue = ${JSON.stringify(issue)};
 const pull = ${JSON.stringify(pull)};
+const updatedPull = ${JSON.stringify(updatedPull)};
+const commentUpdatedPull = ${JSON.stringify(commentUpdatedPull)};
+const raceMarker = process.env.CSW_RACE_MARKER;
+const race = process.env.CSW_RACE === "1";
+const activityRaceMarker = process.env.CSW_ACTIVITY_RACE_MARKER;
+const activityRace = process.env.CSW_ACTIVITY_RACE === "1";
+const commentRaceMarker = process.env.CSW_COMMENT_RACE_MARKER;
+const commentRace = process.env.CSW_COMMENT_RACE === "1";
+const updatedReview = { id: 1, user: { login: "reviewer" }, state: "COMMENTED", body: "new review activity", submitted_at: "2026-07-31T00:00:00Z", commit_id: pull.head.sha };
 if (args[0] === "api" && /issues\\?state=open/.test(path)) {
   console.log(JSON.stringify(listItem));
   process.exit(0);
@@ -207,15 +223,22 @@ if (args[0] === "api" && path === "repos/openclaw/openclaw/issues/${number}") {
   process.exit(0);
 }
 if (args[0] === "api" && path === "repos/openclaw/openclaw/pulls/${number}") {
-  console.log(JSON.stringify(pull));
+  if (activityRace && activityRaceMarker) require("node:fs").writeFileSync(activityRaceMarker, "seen");
+  console.log(JSON.stringify(race && raceMarker && require("node:fs").existsSync(raceMarker) ? updatedPull : commentRace && commentRaceMarker && require("node:fs").existsSync(commentRaceMarker) ? commentUpdatedPull : pull));
   process.exit(0);
 }
-if (args[0] === "api" && /(issues|pulls)\\/${number}\\/comments/.test(path)) {
+if (args[0] === "api" && path.startsWith("repos/openclaw/openclaw/issues/${number}/comments")) {
+  if (commentRace && commentRaceMarker) require("node:fs").writeFileSync(commentRaceMarker, "seen");
+  console.log(JSON.stringify([[]]));
+  process.exit(0);
+}
+if (args[0] === "api" && path.startsWith("repos/openclaw/openclaw/pulls/${number}/comments")) {
+  if (race && raceMarker) require("node:fs").writeFileSync(raceMarker, "seen");
   console.log(JSON.stringify([[]]));
   process.exit(0);
 }
 if (args[0] === "api" && /pulls\\/${number}\\/reviews/.test(path)) {
-  console.log(JSON.stringify([[]]));
+  console.log(JSON.stringify(activityRace && activityRaceMarker && require("node:fs").existsSync(activityRaceMarker) ? [[updatedReview]] : [[]]));
   process.exit(0);
 }
 console.error("unexpected gh args " + JSON.stringify(args));
@@ -247,6 +270,105 @@ process.exit(1);
     );
     assert.equal(scheduled.status, 0, scheduled.stderr);
     assert.deepEqual(JSON.parse(scheduled.stdout).candidates, []);
+
+    const raced = spawnSync(
+      process.execPath,
+      [
+        CLI,
+        "plan",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--items-dir",
+        itemsDir,
+        "--coverage-tracked-items-manifest",
+        coverageManifest,
+        "--hot-intake",
+        "--max-pages",
+        "1",
+        "--batch-size",
+        "1",
+        "--shard-count",
+        "1",
+      ],
+      { encoding: "utf8", env: { ...env, CSW_RACE: "1", CSW_RACE_MARKER: join(root, "race") } },
+    );
+    assert.equal(raced.status, 0, raced.stderr);
+    assert.deepEqual(
+      JSON.parse(raced.stdout).candidates.map((candidate: { number: number }) => candidate.number),
+      [number],
+    );
+
+    const commentRaced = spawnSync(
+      process.execPath,
+      [
+        CLI,
+        "plan",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--items-dir",
+        itemsDir,
+        "--coverage-tracked-items-manifest",
+        coverageManifest,
+        "--hot-intake",
+        "--max-pages",
+        "1",
+        "--batch-size",
+        "1",
+        "--shard-count",
+        "1",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...env,
+          CSW_COMMENT_RACE: "1",
+          CSW_COMMENT_RACE_MARKER: join(root, "comment-race"),
+        },
+      },
+    );
+    assert.equal(commentRaced.status, 0, commentRaced.stderr);
+    assert.deepEqual(
+      JSON.parse(commentRaced.stdout).candidates.map(
+        (candidate: { number: number }) => candidate.number,
+      ),
+      [number],
+    );
+
+    const activityRaced = spawnSync(
+      process.execPath,
+      [
+        CLI,
+        "plan",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--items-dir",
+        itemsDir,
+        "--coverage-tracked-items-manifest",
+        coverageManifest,
+        "--hot-intake",
+        "--max-pages",
+        "1",
+        "--batch-size",
+        "1",
+        "--shard-count",
+        "1",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...env,
+          CSW_ACTIVITY_RACE: "1",
+          CSW_ACTIVITY_RACE_MARKER: join(root, "activity-race"),
+        },
+      },
+    );
+    assert.equal(activityRaced.status, 0, activityRaced.stderr);
+    assert.deepEqual(
+      JSON.parse(activityRaced.stdout).candidates.map(
+        (candidate: { number: number }) => candidate.number,
+      ),
+      [number],
+    );
 
     const explicit = spawnSync(
       process.execPath,

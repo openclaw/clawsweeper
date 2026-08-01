@@ -4463,6 +4463,7 @@ type HotIntakeExactReviewSnapshot = {
   sourceRevision: string;
   pullStateDigest: string;
   reviewActivityCursor: string;
+  itemUpdatedAt: string;
 };
 
 function hotIntakeExactReviewSnapshotFromReport(
@@ -4482,6 +4483,7 @@ function hotIntakeExactReviewSnapshotFromReport(
   const sourceRevision = review.itemSourceRevision?.trim();
   const pullStateDigest = frontMatterValue(review.markdown, "reviewed_pull_state_digest");
   const reviewActivityCursor = frontMatterValue(review.markdown, "review_activity_cursor");
+  const itemUpdatedAt = review.itemUpdatedAt?.trim();
   if (
     !headSha ||
     !sourceRevision ||
@@ -4489,19 +4491,27 @@ function hotIntakeExactReviewSnapshotFromReport(
     !pullStateDigest ||
     pullStateDigest === "unknown" ||
     pullStateDigest === "none" ||
-    !isReviewedPrActivityCursor(reviewActivityCursor)
+    !isReviewedPrActivityCursor(reviewActivityCursor) ||
+    !itemUpdatedAt
   ) {
     return null;
   }
-  return { headSha, sourceRevision, pullStateDigest, reviewActivityCursor };
+  return { headSha, sourceRevision, pullStateDigest, reviewActivityCursor, itemUpdatedAt };
 }
 
 function currentHotIntakePullReviewSnapshot(item: Item): HotIntakeExactReviewSnapshot | null {
   try {
+    const reviewActivityCursor = readStableReviewedPrActivityCursor(() =>
+      fetchReviewedPrActivityCursor(item.number),
+    );
+    if (!reviewActivityCursor) return null;
+    const comments = ghPaged<unknown>(`repos/${item.repo}/issues/${item.number}/comments`);
     const pull = ghJson<unknown>(["api", `repos/${item.repo}/pulls/${item.number}`]);
     const source = asRecord(pull);
     const headSha = stringOrUndefined(asRecord(source.head).sha)?.trim().toLowerCase();
     if (!headSha) return null;
+    const itemUpdatedAt = stringOrUndefined(source.updated_at)?.trim();
+    if (!itemUpdatedAt) return null;
     const baseSha = stringOrUndefined(asRecord(source.base).sha)?.trim().toLowerCase();
     const draft = source.draft;
     const mergeable = source.mergeable;
@@ -4534,16 +4544,16 @@ function currentHotIntakePullReviewSnapshot(item: Item): HotIntakeExactReviewSna
       commitCount,
     });
     if (!pullStateDigest) return null;
-    const reviewActivityCursor = readStableReviewedPrActivityCursor(() =>
+    const revalidatedReviewActivityCursor = readStableReviewedPrActivityCursor(() =>
       fetchReviewedPrActivityCursor(item.number),
     );
-    if (!reviewActivityCursor) return null;
-    const comments = ghPaged<unknown>(`repos/${item.repo}/issues/${item.number}/comments`);
+    if (revalidatedReviewActivityCursor !== reviewActivityCursor) return null;
     return {
       headSha,
       sourceRevision: itemSourceRevisionSha256(pull, comments),
       pullStateDigest,
       reviewActivityCursor,
+      itemUpdatedAt,
     };
   } catch (error) {
     console.error(
@@ -4584,6 +4594,11 @@ function shouldSkipScheduledHotIntakeExactReview(
   const current = currentHotIntakePullReviewSnapshot(item);
   return (
     current !== null &&
+    (current.itemUpdatedAt === reviewed.itemUpdatedAt ||
+      !hasUncapturedActivitySinceExactReview(
+        { ...item, updatedAt: current.itemUpdatedAt },
+        review,
+      )) &&
     current.headSha === reviewed.headSha &&
     current.sourceRevision === reviewed.sourceRevision &&
     current.pullStateDigest === reviewed.pullStateDigest &&
@@ -4602,6 +4617,7 @@ export function shouldSkipScheduledHotIntakeExactReviewForTest(options: {
   currentSourceRevision?: string;
   currentPullStateDigest?: string;
   currentReviewActivityCursor?: string;
+  currentItemUpdatedAt?: string;
   itemUpdatedAt?: string;
   reviewItemUpdatedAt?: string;
   reviewCommentSyncedAt?: string;
@@ -4632,11 +4648,17 @@ export function shouldSkipScheduledHotIntakeExactReviewForTest(options: {
     !options.currentHeadSha ||
     !options.currentSourceRevision ||
     !options.currentPullStateDigest ||
-    !options.currentReviewActivityCursor
+    !options.currentReviewActivityCursor ||
+    !options.currentItemUpdatedAt
   ) {
     return false;
   }
   return (
+    (options.currentItemUpdatedAt === reviewed.itemUpdatedAt ||
+      !hasUncapturedActivitySinceExactReview(
+        { kind: "pull_request", updatedAt: options.currentItemUpdatedAt } as Item,
+        review,
+      )) &&
     reviewed.headSha === options.currentHeadSha.trim().toLowerCase() &&
     reviewed.sourceRevision === options.currentSourceRevision.trim() &&
     reviewed.pullStateDigest === options.currentPullStateDigest.trim() &&

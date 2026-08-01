@@ -737,6 +737,8 @@ test("CSW-088 suppresses only the immediate same-head and same-body hot-intake r
     currentPullStateDigest: pullStateDigest,
     currentReviewActivityCursor: reviewActivityCursor,
     itemUpdatedAt: reviewedAt,
+    reviewItemUpdatedAt: reviewedAt,
+    currentItemUpdatedAt: reviewedAt,
     now,
   };
 
@@ -768,6 +770,21 @@ test("CSW-088 suppresses only the immediate same-head and same-body hot-intake r
       currentReviewActivityCursor: `v1:1:${"d".repeat(64)}`,
     }),
     false,
+  );
+  assert.equal(
+    shouldSkipScheduledHotIntakeExactReviewForTest({
+      ...sameSnapshot,
+      currentItemUpdatedAt: new Date(Date.parse(reviewedAt) + 1).toISOString(),
+    }),
+    false,
+  );
+  assert.equal(
+    shouldSkipScheduledHotIntakeExactReviewForTest({
+      ...sameSnapshot,
+      currentItemUpdatedAt: new Date(Date.parse(reviewedAt) + 1).toISOString(),
+      reviewCommentSyncedAt: new Date(Date.parse(reviewedAt) + 1).toISOString(),
+    }),
+    true,
   );
   assert.equal(
     shouldSkipScheduledHotIntakeExactReviewForTest({
