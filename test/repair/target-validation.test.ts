@@ -3656,7 +3656,7 @@ test(
 const fs = require("node:fs");
 const path = require("node:path");
 const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ args, cwd: process.cwd(), cache: process.env.XDG_CACHE_HOME, jitiFsCache: process.env.JITI_FS_CACHE, offline: process.env.npm_config_offline }) + "\\n");
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ args, cwd: process.cwd(), cache: process.env.XDG_CACHE_HOME, jitiFsCache: process.env.JITI_FS_CACHE, offline: process.env.PNPM_CONFIG_OFFLINE, legacyOffline: process.env.npm_config_offline, registry: process.env.PNPM_CONFIG_REGISTRY }) + "\\n");
 if (args[0] === "install") {
   fs.mkdirSync("node_modules", { recursive: true });
   if (process.cwd().includes(".__clawsweeper_pnpm_helper_cache__")) {
@@ -3678,7 +3678,13 @@ if (args[0] === "install") {
   }
 }
 if (args.at(-1) === "first" || args.at(-1) === "second") {
-  const marker = path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", "a6769c4cf56f1a323ac28af3b6359f2b", "marker");
+  const registry = process.env.PNPM_CONFIG_REGISTRY;
+  const cacheKey = require("node:crypto")
+    .createHash("sha256")
+    .update(JSON.stringify([["knip@6.8.0"], [["@jsr", "https://npm.jsr.io/"], ["default", registry]]]))
+    .digest("hex")
+    .slice(0, 32);
+  const marker = path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", cacheKey, "marker");
   if (fs.readFileSync(marker, "utf8") !== "frozen helper") process.exit(42);
   const knip = path.join(path.dirname(marker), "pinned", "node_modules", ".bin", "knip");
   if (!fs.readFileSync(knip, "utf8").includes("JITI_FS_CACHE=0")) process.exit(43);
@@ -3751,6 +3757,8 @@ if (args[0] === "enable") {
     assert.equal(validations[0].cache, validations[1].cache);
     assert.ok(validations.every(({ jitiFsCache }) => jitiFsCache === undefined));
     assert.ok(validations.every(({ offline }) => offline === "true"));
+    assert.ok(validations.every(({ legacyOffline }) => legacyOffline === "true"));
+    assert.ok(validations.every(({ registry }) => registry === "https://registry.npmjs.org/"));
 
     withCommandOverridesUnset(["corepack", "pnpm"], () =>
       withPathOnlyPrefix(hostBin, () => {
@@ -3765,6 +3773,18 @@ if (args[0] === "enable") {
         process.env.npm_config_registry = "https://registry.example.invalid:8443/";
         try {
           prepareTargetToolchain(cwd, options, ["pnpm check:changed"]);
+          assert.deepEqual(runAllowedValidationCommands(["pnpm first"], cwd, options), [
+            "pnpm first",
+          ]);
+          const customValidation = fs
+            .readFileSync(logPath, "utf8")
+            .trim()
+            .split(/\r?\n/)
+            .map((line) => JSON.parse(line))
+            .findLast(({ args }) => args.at(-1) === "first");
+          assert.equal(customValidation.registry, "https://registry.example.invalid:8443/");
+          assert.equal(customValidation.offline, "true");
+          assert.equal(customValidation.legacyOffline, "true");
         } finally {
           restoreEnv("npm_config_registry", previousRegistry);
         }
@@ -3789,6 +3809,11 @@ if (args[0] === "enable") {
         fs.writeFileSync(path.join(cwd, "README.md"), "# Docs-only repair\n");
         git(cwd, "add", "README.md");
         prepareTargetToolchain(cwd, options, ["pnpm check:changed"]);
+        const untrackedSource = path.join(cwd, "src", "new-feature", "new.ts");
+        fs.mkdirSync(path.dirname(untrackedSource), { recursive: true });
+        fs.writeFileSync(untrackedSource, "export const untracked = true;\n");
+        prepareTargetToolchain(cwd, options, ["pnpm check:changed"]);
+        fs.rmSync(untrackedSource);
         const subsequentPrefetches = fs
           .readFileSync(logPath, "utf8")
           .split(/\r?\n/)
@@ -3800,7 +3825,7 @@ if (args[0] === "enable") {
               invocation.cwd.includes(".__clawsweeper_pnpm_helper_cache__")
             );
           }).length;
-        assert.equal(subsequentPrefetches, previousPrefetches);
+        assert.equal(subsequentPrefetches, previousPrefetches + 1);
       }),
     );
   },

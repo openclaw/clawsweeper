@@ -554,7 +554,12 @@ function openClawValidationNeedsPinnedHelper(
   const changedPaths = options.pinnedBaseRef
     ? gitChangedFilesFromRef(cwd, options.pinnedBaseRef)
     : gitChangedFiles(cwd, DEFAULT_BASE_BRANCH);
-  return changedPaths.some((file) =>
+  const untrackedPaths = run("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
+    cwd,
+  })
+    .split("\0")
+    .filter(Boolean);
+  return [...changedPaths, ...untrackedPaths].some((file) =>
     /^(?:src|extensions|ui|packages)\/.+\.[cm]?[jt]sx?$/.test(file),
   );
 }
@@ -1290,7 +1295,11 @@ export function runAllowedValidationCommandsWithBinding(
       // violates checkout identity despite having no bearing on validation proof.
       validationEnv.OPENCLAW_TEST_PROJECTS_TIMINGS = "0";
       // The changed gate invokes `pnpm dlx`; require its resolver to use the
-      // frozen helper metadata instead of attempting a network-only refresh.
+      // frozen helper metadata and the same approved registry used for setup.
+      // pnpm 11 ignores legacy npm_config_* environment configuration, while
+      // pnpm 10 ignores the newer PNPM_CONFIG_OFFLINE environment variable.
+      validationEnv.PNPM_CONFIG_REGISTRY = approvedTargetInstallRegistry(validationEnv);
+      validationEnv.PNPM_CONFIG_OFFLINE = "true";
       validationEnv.npm_config_offline = "true";
     }
     const validationTimeoutMs = targetValidationTimeoutMs(
