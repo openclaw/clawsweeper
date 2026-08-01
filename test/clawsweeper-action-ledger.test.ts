@@ -617,7 +617,10 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
     didMutate: true,
   });
 
-  const source = readText("src/clawsweeper.ts");
+  const source = [
+    readText("src/clawsweeper.ts"),
+    readText("src/clawsweeper-review-comments-workflow.ts"),
+  ].join("\n");
   const labelSource = readText("src/clawsweeper-label-sync.ts");
   const labelCreates = labelSource.match(/identity: `label_create:/g) ?? [];
   const labelNoMutationClassifiers =

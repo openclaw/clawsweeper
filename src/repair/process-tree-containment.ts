@@ -714,11 +714,17 @@ def reap_adopted_children(primary_pid, background_pids):
     for pid, parent_pid in process_rows():
         if parent_pid != os.getpid() or pid == primary_pid:
             continue
-        background_pids.add(pid)
         try:
-            os.waitpid(pid, os.WNOHANG)
+            reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:
-            pass
+            background_pids.discard(pid)
+            continue
+        if reaped_pid == 0:
+            background_pids.add(pid)
+        else:
+            # Short-lived detached package-manager helpers are already gone while
+            # the primary command is still running; they were not left behind.
+            background_pids.discard(pid)
 
 
 def terminate_and_reap_descendants(primary_pid, background_pids):

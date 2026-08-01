@@ -172,9 +172,10 @@ test("structural cache probes before hydration but acquires a lease before carry
     /pullChecksDigest = sha256\(stableJson\(reviewPullChecksDigestParts\(pullChecks\)\)\)/,
   );
   assert.match(structuralProbeSource, /if \(!options\.git\.releaseStateComplete\) return null/);
-  const gitInfoBlock = source.slice(
-    source.indexOf("function gitInfo("),
-    source.indexOf("function reviewTargetBranch"),
+  const reviewRuntime = readFileSync("src/clawsweeper-review-runtime.ts", "utf8");
+  const gitInfoBlock = reviewRuntime.slice(
+    reviewRuntime.indexOf("function gitInfo("),
+    reviewRuntime.indexOf("function reviewTargetBranch"),
   );
   assert.match(gitInfoBlock, /releaseStateComplete = false/);
   assert.match(gitInfoBlock, /"release",\s+"list"/);
@@ -294,7 +295,10 @@ test("spoofed durable markers cannot suppress a bot-owned start lease", () => {
   };
   assert.equal(canPatchReviewComment(spoofedComment), false);
 
-  const source = readFileSync("src/clawsweeper.ts", "utf8");
+  const source = [
+    readFileSync("src/clawsweeper-review-comments-workflow.ts", "utf8"),
+    readFileSync("src/clawsweeper.ts", "utf8"),
+  ].join("\n");
   const functionStart = source.indexOf("function postReviewStartStatusComment");
   const postStart = source.slice(
     functionStart,
@@ -1336,7 +1340,10 @@ test("superseded review placeholder sweep never selects the durable review comme
 });
 
 test("publishing the durable review comment sweeps superseded placeholders", () => {
-  const source = readFileSync("src/clawsweeper.ts", "utf8");
+  const source = [
+    readFileSync("src/clawsweeper-review-comments-workflow.ts", "utf8"),
+    readFileSync("src/clawsweeper.ts", "utf8"),
+  ].join("\n");
   const functionStart = source.indexOf("function postReviewStartStatusComment");
   const postStart = source.slice(
     functionStart,

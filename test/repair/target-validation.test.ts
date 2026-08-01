@@ -60,6 +60,60 @@ test("OpenClaw repairs require changed-surface validation even when omitted", ()
   ]);
 });
 
+test("OpenClaw ignores mutating formatter hints when its trusted changed gate is available", () => {
+  const cwd = packageFixture({ "check:changed": "node check.js", format: "node format.js" });
+  const command =
+    "pnpm format extensions/active-memory/escalation.ts extensions/active-memory/escalation.test.ts";
+  const options = validationOptions("openclaw/openclaw");
+
+  assert.deepEqual(requiredValidationCommands([command], cwd, options), ["pnpm check:changed"]);
+  assert.deepEqual(
+    preflightTargetValidationPlan(
+      { fixArtifact: { validation_commands: [command] }, targetDir: cwd },
+      options,
+    ),
+    {
+      status: "passed",
+      resolved_commands: ["pnpm check:changed"],
+      available_scripts: ["check:changed", "format"],
+    },
+  );
+});
+
+test("mutating formatter hints still fail closed without a trusted replacement gate", () => {
+  const cwd = packageFixture({ format: "node format.js" });
+  const command = "pnpm format extensions/active-memory/escalation.ts";
+  const options = validationOptions("steipete/example", {
+    toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
+  });
+
+  assert.deepEqual(requiredValidationCommands([command], cwd, options), [command]);
+  assert.throws(
+    () =>
+      preflightTargetValidationPlan(
+        { fixArtifact: { validation_commands: [command] }, targetDir: cwd },
+        options,
+      ),
+    /unsafe validation command/,
+  );
+});
+
+test("formatter-hint filtering does not hide shell injection or write flags", () => {
+  const cwd = packageFixture({ "check:changed": "node check.js", format: "node format.js" });
+  const options = validationOptions("openclaw/openclaw");
+
+  for (const command of ["pnpm format --write", "pnpm format src/index.ts; touch escaped"]) {
+    assert.throws(
+      () =>
+        preflightTargetValidationPlan(
+          { fixArtifact: { validation_commands: [command] }, targetDir: cwd },
+          options,
+        ),
+      /unsafe validation command/,
+    );
+  }
+});
+
 test("non-OpenClaw repairs do not get OpenClaw changed gate injection", () => {
   // The target repo's checkout happens to expose a `check:changed` script,
   // but the per-repo toolchain (resolved from config/target-repositories.json)

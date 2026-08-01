@@ -1666,21 +1666,32 @@ export function requiredValidationCommands(
   options: TargetValidationOptions,
 ) {
   const toolchain = getToolchain(options);
+  const gate = toolchain.changedGate;
+  const injectedChangedGate =
+    gate && !options.skipOpenClawChangedGate && requiresChangedGate(cwd, toolchain)
+      ? gate.command
+      : null;
   const replacementCommands = [
     ...(options.additionalValidationCommands ?? []),
     ...toolchain.baseValidationCommands,
   ];
-  const sanitized = sanitizeStaleChangedGateCommands(
-    commands ?? [],
-    toolchain,
-    replacementCommands,
-  );
-  const out = [...sanitized, ...replacementCommands];
-  const gate = toolchain.changedGate;
-  if (gate && !options.skipOpenClawChangedGate && requiresChangedGate(cwd, toolchain)) {
-    out.push(gate.command);
+  let sanitized = sanitizeStaleChangedGateCommands(commands ?? [], toolchain, replacementCommands);
+  // Model-authored formatter invocations mutate the checkout and can never be
+  // validation. When a trusted repository gate already covers the same change,
+  // discard those narrow hints instead of aborting every issue-fix retry.
+  if (replacementCommands.length > 0 || injectedChangedGate) {
+    sanitized = sanitized.filter((command) => !isMutatingFormatterValidationHint(command));
   }
+  const out = [...sanitized, ...replacementCommands];
+  if (injectedChangedGate) out.push(injectedChangedGate);
   return uniqueStrings(out);
+}
+
+function isMutatingFormatterValidationHint(command: LooseRecord): boolean {
+  if (typeof command !== "string") return false;
+  return /^(?:pnpm(?:\s+run)?|npm\s+run|bun\s+run)\s+format(?:\s+(?!-)[A-Za-z0-9@_./-]+)+$/.test(
+    command.trim(),
+  );
 }
 
 /**

@@ -2401,7 +2401,7 @@ test("background review fanout keeps per-review transient recovery", () => {
 
 test("synchronous Codex review surfaces use the shared bounded runner", () => {
   for (const file of [
-    "src/clawsweeper.ts",
+    "src/clawsweeper-review-runtime.ts",
     "src/commit-sweeper.ts",
     "src/pr-close-coverage-proof.ts",
   ]) {
@@ -2410,7 +2410,10 @@ test("synchronous Codex review surfaces use the shared bounded runner", () => {
     assert.doesNotMatch(source, /runCodexProcess/);
     assert.doesNotMatch(source, /spawnSync\(\s*"codex"/);
   }
-  assert.match(readText("src/clawsweeper.ts"), /"--output-last-message",\s*outputPath,\s*"--json"/);
+  assert.match(
+    readText("src/clawsweeper-review-runtime.ts"),
+    /"--output-last-message",\s*outputPath,\s*"--json"/,
+  );
 });
 
 test("failed Codex workers use bounded automatic retry paths", () => {

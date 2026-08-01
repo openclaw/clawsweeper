@@ -4,7 +4,7 @@ import test from "node:test";
 
 test("gitcrawl readers prefer portable gitcrawl-store before legacy local DB", () => {
   const sources = [
-    readFileSync("src/clawsweeper.ts", "utf8"),
+    readFileSync("src/clawsweeper-related-context.ts", "utf8"),
     readFileSync("src/repair/import-gitcrawl-clusters.ts", "utf8"),
     readFileSync("src/repair/import-gitcrawl-low-signal-prs.ts", "utf8"),
   ];

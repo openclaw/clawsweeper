@@ -3980,7 +3980,7 @@ test("target fanout uses the canonical cursor store without a git publisher", ()
 });
 
 test("review git info follows checked-out target branch", () => {
-  const source = readText("src/clawsweeper.ts");
+  const source = readText("src/clawsweeper-review-runtime.ts");
 
   assert.match(source, /function reviewTargetBranch/);
   assert.match(source, /rev-parse", "--abbrev-ref", "HEAD"/);
