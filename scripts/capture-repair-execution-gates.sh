@@ -3,7 +3,8 @@ set -euo pipefail
 
 job_path="${JOB_PATH:-${CLUSTER_JOB_PATH:-}}"
 job_name="${job_path##*/}"
-allow_merge="${CLAWSWEEPER_REQUESTED_ALLOW_MERGE:-${CLAWSWEEPER_ALLOW_MERGE:-0}}"
+requested_merge="${CLAWSWEEPER_REQUESTED_ALLOW_MERGE:-${CLAWSWEEPER_ALLOW_MERGE:-0}}"
+allow_merge=0
 
 normalize_yaml_scalar() {
   local value="$1"
@@ -17,11 +18,8 @@ normalize_yaml_scalar() {
   printf '%s' "$value"
 }
 
-if [[ ! -f "$job_path" ]]; then
-  allow_merge=0
-elif [[ "$job_name" == issue-*.md || "$job_name" == self-heal-*.md ]]; then
-  allow_merge=0
-elif [[ "$job_name" == automerge-*.md && "$allow_merge" == 1 ]]; then
+if [[ -f "$job_path" && "$job_name" == automerge-*.md && "$requested_merge" == 1 ]]; then
+  allow_merge=1
   repair_mode="$(awk '
     /^---$/ { boundary += 1; if (boundary == 2) exit; next }
     boundary == 1 && $1 == "repair_mode:" {
