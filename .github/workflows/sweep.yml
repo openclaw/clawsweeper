@@ -41,7 +41,7 @@ run-name: >-
         github.event.inputs.apply_min_age_days != '0' ||
         github.event.inputs.apply_min_age_minutes != '' ||
         github.event.inputs.apply_kind != 'all' ||
-        github.event.inputs.apply_close_reasons != 'all' ||
+        (github.event.inputs.apply_close_reasons != '' && github.event.inputs.apply_close_reasons != 'all') ||
         github.event.inputs.apply_stale_min_age_days != '60' ||
         github.event.inputs.apply_close_delay_ms != '2000' ||
         github.event.inputs.apply_checkpoint_size != '40' ||
@@ -115,9 +115,9 @@ on:
         required: false
         default: "all"
       apply_close_reasons:
-        description: "Close reasons enabled in apply-existing mode, comma-separated or all"
+        description: "Optional apply-existing close-reason override; defaults to the shared automatic-close policy"
         required: false
-        default: "all"
+        default: ""
       apply_stale_min_age_days:
         description: "Minimum item age in days before age-gated stale or mostly-implemented closes"
         required: false
@@ -175,9 +175,9 @@ on:
         required: false
         default: "false"
       apply_after_review_close_reasons:
-        description: "Close reasons enabled for immediate post-review apply"
+        description: "Optional immediate-close reason override; defaults to the shared automatic-close policy"
         required: false
-        default: "implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr"
+        default: ""
       apply_after_review_min_age_minutes:
         description: "Minute-level item age floor for immediate post-review apply"
         required: false
@@ -219,6 +219,14 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CLAWSWEEPER_AUTO_CLOSE_REASONS: ${{ vars.CLAWSWEEPER_AUTO_CLOSE_REASONS || 'all' }}
+  CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
+  CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
+  CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED || 'false' }}
+  CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED || 'false' }}
+  CLAWSWEEPER_AUTHOR_PR_BUDGET: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET || '15' }}
+  CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN || '5' }}
+  CLAWSWEEPER_IDEA_REVIVAL_REACTIONS: ${{ vars.CLAWSWEEPER_IDEA_REVIVAL_REACTIONS || '5' }}
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
   CLAWSWEEPER_MODEL: internal
   CLAWSWEEPER_RUNNER: ${{ vars.CLAWSWEEPER_RUNNER || 'codex' }}
@@ -1318,7 +1326,6 @@ jobs:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-          CLOSE_REASONS: implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr
           MIN_AGE_MINUTES: "0"
           REVIEW_ONLY: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
           EXACT_EVENT_PUBLICATION: "true"
@@ -2284,7 +2291,6 @@ jobs:
           REPO_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
-          CLOSE_REASONS: implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr
           MIN_AGE_MINUTES: "0"
           REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
           EXACT_EVENT_PUBLICATION: "true"
@@ -4837,7 +4843,7 @@ jobs:
             exit 0
           fi
           item_count="$(pnpm run --silent workflow -- count-csv --items "$item_numbers")"
-          close_reasons="${{ github.event.inputs.apply_after_review_close_reasons || 'implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr' }}"
+          close_reasons="${{ github.event.inputs.apply_after_review_close_reasons || env.CLAWSWEEPER_AUTO_CLOSE_REASONS }}"
           min_age_minutes="${{ github.event.inputs.apply_after_review_min_age_minutes || '0' }}"
           for attempt in 1 2 3; do
             if gh workflow run sweep.yml \
@@ -4849,7 +4855,7 @@ jobs:
               -f apply_min_age_minutes="$min_age_minutes" \
               -f apply_kind=all \
               -f apply_close_reasons="$close_reasons" \
-              -f apply_stale_min_age_days=30 \
+              -f apply_stale_min_age_days=60 \
               -f apply_close_delay_ms=1000 \
               -f apply_comment_sync_min_age_days=0; then
               echo "Dispatched isolated apply for item numbers: $item_numbers"
@@ -5418,7 +5424,7 @@ jobs:
           min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
           min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
           apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
-          apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
+          apply_close_reasons="${{ github.event.inputs.apply_close_reasons || env.CLAWSWEEPER_AUTO_CLOSE_REASONS }}"
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
           item_numbers="${{ github.event.inputs.apply_item_numbers || '' }}"
           sync_comments_only="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}"
@@ -5505,7 +5511,7 @@ jobs:
             --dry-run \
             --item-numbers "$item_numbers" \
             --apply-kind "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}" \
-            --apply-close-reasons "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}" \
+            --apply-close-reasons "${{ github.event.inputs.apply_close_reasons || env.CLAWSWEEPER_AUTO_CLOSE_REASONS }}" \
             --stale-min-age-days "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}" \
             --min-age-days "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}" \
             "${min_age_minutes_arg[@]}" \
@@ -5792,7 +5798,7 @@ jobs:
           min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
           min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
           apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
-          apply_close_reasons="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_reasons || 'all' }}"
+          apply_close_reasons="${{ github.event.inputs.apply_close_reasons || env.CLAWSWEEPER_AUTO_CLOSE_REASONS }}"
           stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
           close_delay_ms="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}"
           checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '40' }}"

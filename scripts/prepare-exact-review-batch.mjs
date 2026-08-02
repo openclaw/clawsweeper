@@ -246,7 +246,6 @@ async function worker(itemPath, root, workspace) {
       EXACT_REVIEW_WORK_ROOT: root,
       TARGET_REPO: targetRepo,
       ITEM_NUMBER: itemNumber,
-      CLOSE_REASONS: "implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr",
       MIN_AGE_MINUTES: "0",
       REVIEW_ONLY: String(producer.sourceAction === "failed_review_shard_recovery"),
       EXACT_EVENT_PUBLICATION: "true",

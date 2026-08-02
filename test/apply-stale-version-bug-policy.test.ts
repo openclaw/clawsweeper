@@ -202,7 +202,7 @@ for (const [name, options, message] of [
   ["reactions", { reactions: 20 }, /20 or more reactions/],
   ["missing reaction count", { omitReactions: true }, /reaction count is unavailable/],
   ["live age", { createdAt: "2026-07-01T00:00:00Z" }, /older than 120 days/],
-  ["security label", { labels: ["topic:security-regression"] }, /security-labeled/],
+  ["security label", { labels: ["topic:security-regression"] }, /protected label/],
   ["protected label", { labels: ["clawsweeper:human-review"] }, /protected label/],
   ["linked PR", { labels: ["clawsweeper:linked-pr-open"] }, /linked-pr-open/],
   ["maintainer comment", { maintainerComment: true }, /maintainer issue comment/],

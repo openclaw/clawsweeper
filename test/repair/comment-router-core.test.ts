@@ -2507,6 +2507,10 @@ test("trusted close gates block protected labels, source drift, and unsupported 
     trustedCloseBlockReason({ ...base, labels: ["release-blocker"] }),
     "protected label: release-blocker",
   );
+  assert.equal(
+    trustedCloseBlockReason({ ...base, labels: ["impact:security"] }),
+    "protected label: impact:security",
+  );
   assert.match(
     trustedCloseBlockReason({
       ...base,

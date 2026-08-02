@@ -43,9 +43,8 @@ test("review prompt documents gated backlog close policies", () => {
   assert.match(prompt, /extra duplicate scrutiny/);
   assert.match(prompt, /Never route it to proof-nudge or automated fix-dispatch work/);
   assert.match(prompt, /do not invent a bulk-filing close reason/);
-  assert.equal(
-    [...sweepWorkflow.matchAll(/CLAWSWEEPER_IDEA_REVIVAL_REACTIONS:.*\|\| '5'/g)].length,
-    2,
+  assert.ok(
+    [...sweepWorkflow.matchAll(/CLAWSWEEPER_IDEA_REVIVAL_REACTIONS:.*\|\| '5'/g)].length >= 2,
   );
 });
 
@@ -96,6 +95,126 @@ test("external desktop-product bugs close without inventing upstream maintainer 
     reviewActionForDecision({ item: item(), decision, git }).actionTaken,
     "proposed_close",
   );
+});
+
+test("close-first triage keeps actionable upstream work and invites better reports", () => {
+  const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
+
+  assert.match(prompt, /Maintainer attention is scarce/);
+  assert.match(prompt, /Default to closure when an unprotected item does not establish/);
+  assert.match(
+    prompt,
+    /Confidence applies to whether this submission merits scarce maintainer attention/,
+  );
+  assert.match(prompt, /explicitly invite the author to reopen with that evidence/);
+  assert.match(prompt, /Keep open for actual current upstream bugs/);
+  assert.match(prompt, /official affected release or owned source failure/);
+  assert.match(prompt, /security-sensitive items, protected labels, maintainer-engaged work/);
+  assert.match(prompt, /Do not invent a new close reason or misclassify an actual upstream defect/);
+
+  for (const closeReason of ["not_actionable_in_repo", "incoherent", "cannot_reproduce"] as const) {
+    const decision = closeDecision({
+      closeReason,
+      itemCategory: "bug",
+      summary: "This report does not establish an actionable upstream OpenClaw defect.",
+      closeComment:
+        "Please reopen with the official OpenClaw version, affected component, and clear reproduction.",
+      workCandidate: "none",
+    });
+    assert.deepEqual(validateCloseDecision(item(), decision), { ok: true }, closeReason);
+    assert.equal(
+      reviewActionForDecision({ item: item(), decision, git }).actionTaken,
+      "proposed_close",
+      closeReason,
+    );
+    for (const securityLabel of [
+      "security",
+      "impact:security",
+      "clawsweeper:needs-security-review",
+    ]) {
+      assert.equal(
+        validateCloseDecision(item({ labels: [securityLabel] }), decision).actionTaken,
+        "skipped_protected_label",
+        `${closeReason}: ${securityLabel}`,
+      );
+    }
+  }
+});
+
+test("all exact-review publication paths inherit the shared automatic-close policy", () => {
+  const sweepWorkflow = readFileSync(
+    new URL("../.github/workflows/sweep.yml", import.meta.url),
+    "utf8",
+  );
+  const batchWorkflow = readFileSync(
+    new URL("../.github/workflows/exact-review-batch-publish.yml", import.meta.url),
+    "utf8",
+  );
+  const batchPreparation = readFileSync(
+    new URL("../scripts/prepare-exact-review-batch.mjs", import.meta.url),
+    "utf8",
+  );
+  const publisher = readFileSync(
+    new URL("../src/repair/publish-event-result.ts", import.meta.url),
+    "utf8",
+  );
+
+  for (const workflow of [sweepWorkflow, batchWorkflow]) {
+    assert.match(
+      workflow,
+      /CLAWSWEEPER_AUTO_CLOSE_REASONS: \$\{\{ vars\.CLAWSWEEPER_AUTO_CLOSE_REASONS \|\| 'all' \}\}/,
+    );
+    for (const flag of [
+      "UNCONFIRMED_PRODUCT_DIRECTION",
+      "UNSPONSORED_FEATURE",
+      "STALE_VERSION_BUG",
+      "OBSOLETE_FIX_PR",
+    ]) {
+      assert.match(workflow, new RegExp(`CLAWSWEEPER_${flag}_CLOSE_ENABLED:`), flag);
+    }
+    for (const setting of [
+      "AUTHOR_PR_BUDGET",
+      "AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN",
+      "IDEA_REVIVAL_REACTIONS",
+    ]) {
+      assert.match(workflow, new RegExp(`CLAWSWEEPER_${setting}:`), setting);
+    }
+  }
+
+  const sweepGlobalEnv = sweepWorkflow.slice(
+    sweepWorkflow.indexOf("\nenv:\n"),
+    sweepWorkflow.indexOf("\nconcurrency:\n"),
+  );
+  const batchJobEnv = batchWorkflow.slice(
+    batchWorkflow.indexOf("    env:\n"),
+    batchWorkflow.indexOf("    steps:\n"),
+  );
+  assert.doesNotMatch(sweepGlobalEnv, /CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED:/);
+  assert.doesNotMatch(batchJobEnv, /CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED:/);
+  assert.match(sweepWorkflow, /CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED:/);
+  assert.match(
+    sweepWorkflow,
+    /apply_after_review_close_reasons \|\| env\.CLAWSWEEPER_AUTO_CLOSE_REASONS/,
+  );
+  assert.equal(
+    [
+      ...sweepWorkflow.matchAll(
+        /inputs\.apply_close_reasons \|\| env\.CLAWSWEEPER_AUTO_CLOSE_REASONS/g,
+      ),
+    ].length,
+    3,
+  );
+  assert.match(sweepWorkflow, /apply_stale_min_age_days=60/);
+  assert.doesNotMatch(
+    sweepWorkflow,
+    /CLOSE_REASONS: implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr/,
+  );
+  assert.doesNotMatch(batchPreparation, /CLOSE_REASONS:\s*"implemented_on_main/);
+  assert.match(
+    publisher,
+    /process\.env\.CLOSE_REASONS \|\| process\.env\.CLAWSWEEPER_AUTO_CLOSE_REASONS \|\| "all"/,
+  );
+  assert.match(publisher, /"--stale-min-age-days",\s*"60"/);
 });
 
 test("unsponsored feature issue proposals emit source-bound trusted close markers", () => {

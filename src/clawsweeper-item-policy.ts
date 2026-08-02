@@ -80,7 +80,8 @@ export function protectedLabels(labels: readonly string[]): string[] {
     .map((label) => normalizeLabelName(label))
     .filter(
       (label, index, normalized) =>
-        PROTECTED_LABELS.has(label) && normalized.indexOf(label) === index,
+        (PROTECTED_LABELS.has(label) || label.includes("security")) &&
+        normalized.indexOf(label) === index,
     );
 }
 
@@ -96,7 +97,8 @@ export function applyBlockingProtectedLabels(
     .map((label) => normalizeLabelName(label))
     .filter(
       (label, index, normalized) =>
-        APPLY_PROTECTED_LABELS.has(label) && normalized.indexOf(label) === index,
+        (APPLY_PROTECTED_LABELS.has(label) || label.includes("security")) &&
+        normalized.indexOf(label) === index,
     );
   if (!isVerifiedFixedCloseReason(closeReason)) return blocked;
   return blocked.filter((label) => label !== "maintainer");

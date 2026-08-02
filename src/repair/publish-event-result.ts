@@ -430,7 +430,7 @@ function runApplyDecisions(options: EventOptions, paths: EventRecordPaths): void
     options.closeReasons,
     ...(options.reviewOnly ? ["--sync-comments-only", "--suppress-automation-markers"] : []),
     "--stale-min-age-days",
-    "30",
+    "60",
     "--limit",
     options.reviewOnly ? "0" : "1",
     "--processed-limit",
@@ -654,9 +654,7 @@ function eventOptionsFromEnv(): EventOptions {
     workRoot,
     targetRepo: envValue("TARGET_REPO"),
     itemNumber: envValue("ITEM_NUMBER"),
-    closeReasons:
-      process.env.CLOSE_REASONS ||
-      "implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr",
+    closeReasons: process.env.CLOSE_REASONS || process.env.CLAWSWEEPER_AUTO_CLOSE_REASONS || "all",
     minAgeMinutes: process.env.MIN_AGE_MINUTES || "0",
     reviewOnly: process.env.REVIEW_ONLY === "true",
     exactEventPublication: process.env.EXACT_EVENT_PUBLICATION === "true",

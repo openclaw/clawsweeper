@@ -1546,8 +1546,8 @@ function trustedCloseRepositoryProfile(repo: JsonValue) {
 }
 
 function trustedCloseBlockingProtectedLabels(labels: JsonValue, closeReason: JsonValue): string[] {
-  const blocked = normalizedLabels(labels).filter((label) =>
-    TRUSTED_CLOSE_PROTECTED_LABELS.has(label),
+  const blocked = normalizedLabels(labels).filter(
+    (label) => TRUSTED_CLOSE_PROTECTED_LABELS.has(label) || label.includes("security"),
   );
   if (!isVerifiedFixedCloseReason(closeReason)) return unique(blocked);
   return unique(blocked.filter((label) => label !== "maintainer"));
