@@ -9,6 +9,7 @@ const DEFAULT_OUTPUT = ".artifacts/exact-review-dlq/inventory.json";
 const MAX_SELECTED_IDS = 2;
 const MAX_RECONCILE_TARGETS = 100;
 const MAX_RECONCILE_RECOVERIES = 10;
+const MAX_TERMINAL_TARGET_RECHECKS = 10;
 const MAX_RESOLUTION_IDS = 20;
 const MAX_INVENTORY_ROWS = 10_000;
 const MAX_RECONCILE_INVENTORY_PAGES = 250;
@@ -36,8 +37,8 @@ Options:
   --ids <id,id>                 One or two dead-letter ids for mutation actions
   --idempotency-key <key>       Required for recover-fresh
   --note <text>                 Required for resolve
-  --max-targets <count>         Reconcile at most 1-100 canonical targets (default 25)
-  --max-recoveries <count>      Queue at most 0-10 fresh reviews (default 5)
+  --max-targets <count>         Reconcile at most 1-100 canonical targets (default 100)
+  --max-recoveries <count>      Queue at most 0-10 fresh reviews (default 10)
   --execute                     Apply the selected mutation; otherwise preview only
   --output <path>               Inventory artifact path
   -h, --help                    Show this help
@@ -79,6 +80,7 @@ async function main(argv) {
       countedSkippedTargets: new Set(),
       inspectedTargetIds: new Set(),
       pendingRecoveryTargetIds: new Set(),
+      terminalTargetRechecks: 0,
     };
     for (let refreshes = 0; refreshes <= MAX_RECONCILE_INVENTORY_REFRESHES; refreshes += 1) {
       try {
@@ -211,8 +213,8 @@ function parseArgs(argv) {
     idempotencyKey: "",
     note: "",
     execute: false,
-    maxTargets: 25,
-    maxRecoveries: 5,
+    maxTargets: MAX_RECONCILE_TARGETS,
+    maxRecoveries: MAX_RECONCILE_RECOVERIES,
     output: DEFAULT_OUTPUT,
     help: false,
   };
@@ -438,6 +440,11 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
         accountSkippedTarget(live.node_id);
         continue;
       }
+      if (progress.terminalTargetRechecks >= MAX_TERMINAL_TARGET_RECHECKS) {
+        accountSkippedTarget(live.node_id);
+        continue;
+      }
+      progress.terminalTargetRechecks += 1;
       let current;
       try {
         current = await inspectRecoveryTarget(canonicalTarget);
@@ -776,7 +783,7 @@ async function loadInventory(options) {
 
 async function inspectCanonicalTargets(groups, maxTargets) {
   const identities = new Map();
-  if (groups.length <= maxTargets) {
+  if (groups.length <= Math.min(maxTargets, MAX_RECONCILE_RECOVERIES)) {
     for (const group of groups) {
       identities.set(
         normalizeRecoveryTargetKey(group.target),

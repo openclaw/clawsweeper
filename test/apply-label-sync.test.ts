@@ -24,6 +24,199 @@ import {
   workPlanCandidateReport,
 } from "./helpers.ts";
 
+test("partial label-sync authentication failures preserve labels already applied", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const labelState = join(root, "labels.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    writeFileSync(labelState, "[]");
+    const synced = reportWithSyncedReviewComment(
+      workPlanCandidateReport({
+        number: 321,
+        reviewed_at: "2026-05-01T00:00:00Z",
+        item_snapshot_hash: "reviewed-snapshot-321",
+        item_updated_at: "2026-05-01T00:00:00Z",
+        triage_priority: "P2",
+        impact_labels: JSON.stringify(["impact:message-loss"]),
+      }),
+      321,
+    );
+    const itemPath = join(itemsDir, "321.md");
+    writeFileSync(itemPath, synced.report);
+    const ghMock = `
+const { readFileSync, writeFileSync } = require("fs");
+const args = process.argv.slice(2);
+const actual = args[0] === "--repo" ? args.slice(2) : args;
+const path = actual[1] || "";
+const stateFile = ${JSON.stringify(labelState)};
+const labels = () => JSON.parse(readFileSync(stateFile, "utf8"));
+if (actual[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[{ id: 9321, html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9321", created_at: "2026-05-01T01:00:00Z", updated_at: "2026-05-01T01:00:00Z", user: { login: "clawsweeper[bot]" }, body: ${JSON.stringify(synced.comment)} }]]));
+} else if (actual[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify({ number: 321, title: "Render work plans", html_url: "https://github.com/openclaw/clawsweeper/issues/321", created_at: "2026-05-01T00:00:00Z", updated_at: "2026-05-01T00:00:00Z", closed_at: null, state: "open", locked: false, active_lock_reason: null, author_association: "CONTRIBUTOR", user: { login: "reporter" }, labels: labels().map(name => ({ name })), pull_request: null }));
+} else if (actual[0] === "issue" && actual[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (actual[0] === "label" && actual[1] === "create") {
+  console.log("");
+} else if (actual[0] === "issue" && actual[1] === "edit" && actual.includes("P2")) {
+  writeFileSync(stateFile, JSON.stringify(["P2"]));
+  console.log("");
+} else if (actual[0] === "issue" && actual[1] === "edit" && actual.includes("impact:message-loss")) {
+  console.error("HTTP 401: Requires authentication");
+  process.exit(1);
+} else {
+  console.error("unexpected gh args", JSON.stringify(actual));
+  process.exit(1);
+}`;
+    withMockGh(root, ghMock, () =>
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--skip-dashboard", "--item-number", "321"],
+      }),
+    );
+    assert.deepEqual(JSON.parse(readFileSync(labelState, "utf8")), ["P2"]);
+    assert.match(readFileSync(itemPath, "utf8"), /^labels:.*P2/m);
+    assert.match(readFileSync(reportPath, "utf8"), /Requires authentication/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a lost mutation lease preserves labels already applied", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const statePath = join(root, "state.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const number = 321;
+    const reviewedAt = new Date(Date.now() - 180_000).toISOString();
+    const startedAt = new Date(Date.now() - 120_000).toISOString();
+    const expiresAt = new Date(Date.now() + 1_800_000).toISOString();
+    const leaseOwner = "report-owned-review";
+    const leaseId = 700_321;
+    const issue = {
+      number,
+      title: "Preserve label state across a lease race",
+      body: "Reviewed source.",
+      html_url: "https://github.com/openclaw/clawsweeper/issues/321",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: reviewedAt,
+      closed_at: null,
+      state: "open",
+      locked: false,
+      active_lock_reason: null,
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 2,
+      pull_request: null,
+    };
+    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    const synced = reportWithSyncedReviewComment(
+      workPlanCandidateReport({
+        number,
+        repository: "openclaw/clawsweeper",
+        type: "issue",
+        title: issue.title,
+        reviewed_at: reviewedAt,
+        item_snapshot_hash: "reviewed-snapshot-321",
+        item_updated_at: reviewedAt,
+        item_source_revision: sourceRevision,
+        review_lease_owner: leaseOwner,
+        review_lease_comment_id: String(leaseId),
+        labels: JSON.stringify([]),
+        triage_priority: "P2",
+        impact_labels: JSON.stringify(["impact:message-loss"]),
+      }),
+      number,
+    );
+    const itemPath = join(itemsDir, "321.md");
+    writeFileSync(itemPath, synced.report);
+    writeFileSync(statePath, JSON.stringify({ labels: [], leaseActive: true }));
+    const durable = {
+      id: 9321,
+      html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9321",
+      created_at: reviewedAt,
+      updated_at: reviewedAt,
+      user: { login: "clawsweeper[bot]" },
+      body: synced.comment,
+    };
+    const lease = {
+      id: leaseId,
+      html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-700321",
+      created_at: startedAt,
+      updated_at: startedAt,
+      user: { login: "clawsweeper[bot]" },
+      body: renderReviewStartStatusComment({
+        number,
+        kind: "issue",
+        title: issue.title,
+        headSha: sourceRevision,
+        startedAt,
+        leaseExpiresAt: expiresAt,
+        leaseOwner,
+      }),
+    };
+    const ghMock = `
+const { readFileSync, writeFileSync } = require("fs");
+const args = process.argv.slice(2);
+const actual = args[0] === "--repo" ? args.slice(2) : args;
+const path = actual.includes("-i") ? actual[actual.indexOf("-i") + 1] : actual[1] || "";
+const statePath = ${JSON.stringify(statePath)};
+const state = () => JSON.parse(readFileSync(statePath));
+const durable = ${JSON.stringify(durable)};
+const lease = ${JSON.stringify(lease)};
+const issue = ${JSON.stringify(issue)};
+if (actual[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path) && !actual.includes("--method")) {
+  const comments = state().leaseActive ? [durable, lease] : [durable];
+  console.log(JSON.stringify(actual.includes("--slurp") ? [comments] : comments));
+} else if (actual[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify(actual.includes("--slurp") ? [[]] : []));
+} else if (actual[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify({ ...issue, labels: state().labels }));
+} else if (actual[0] === "issue" && actual[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (actual[0] === "label" && actual[1] === "create") {
+  console.log("");
+} else if (actual[0] === "issue" && actual[1] === "edit" && actual.includes("P2")) {
+  writeFileSync(statePath, JSON.stringify({ labels: ["P2"], leaseActive: false }));
+  console.log("");
+} else if (actual[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path) && actual.includes("--method")) {
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(actual));
+  process.exit(1);
+}`;
+    withMockGh(root, ghMock, () =>
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/clawsweeper",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--skip-dashboard", "--item-number", "321"],
+      }),
+    );
+    assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")).labels, ["P2"]);
+    assert.match(readFileSync(itemPath, "utf8"), /^labels:.*P2/m);
+    assert.match(readFileSync(reportPath, "utf8"), /no longer the elected same-revision lease/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("command-only timeline activity is ignored only through the completed review", () => {
   const storedAtMs = Date.parse("2026-07-03T21:42:48Z");
   const reviewedAtMs = Date.parse("2026-07-03T21:44:48Z");

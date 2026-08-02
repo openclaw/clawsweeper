@@ -52,12 +52,14 @@ test("dead-letter workflow is manual, serialized, and bounded to safe actions", 
 test("automatic dead-letter reconciliation is scheduled, bounded, and least privileged", () => {
   const source = readFileSync(reconcileWorkflowPath, "utf8");
   const scheduled = YAML.parse(source);
-  assert.equal(scheduled.on.schedule[0].cron, "*/10 * * * *");
+  assert.equal(scheduled.on.schedule[0].cron, "*/5 * * * *");
   assert.equal(scheduled.concurrency.group, workflow.concurrency.group);
   assert.equal(scheduled.concurrency["cancel-in-progress"], false);
   assert.deepEqual(scheduled.permissions, workflow.permissions);
   assert.equal(scheduled.jobs.reconcile.environment, "exact-review-operator");
   assert.equal(scheduled.on.workflow_dispatch.inputs.execute.default, false);
+  assert.equal(scheduled.on.workflow_dispatch.inputs.max_targets.default, "100");
+  assert.equal(scheduled.on.workflow_dispatch.inputs.max_recoveries.default, "10");
   const step = scheduled.jobs.reconcile.steps.find(
     (candidate) => candidate.name === "Reconcile closed, duplicate, and recoverable dead letters",
   );
@@ -1612,6 +1614,108 @@ test("reconciliation fully inventories more than 2,000 supported dead letters", 
   assert.equal(scenario.recoveries[0]?.ids.length, 1);
 });
 
+test("100-target reconciliation batches canonical lookups within the GitHub token budget", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: Array.from({ length: 100 }, (_, index) =>
+      row(
+        `budget-${index}`,
+        `publication:budget-${index}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${index + 1}`,
+      ),
+    ),
+    maxTargets: 100,
+    maxRecoveries: 10,
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.graphqlRequests, 3);
+  assert.equal(scenario.restRequests, 10);
+  assert.equal(
+    scenario.recoveries.reduce((count, recovery) => count + recovery.ids.length, 0),
+    10,
+  );
+});
+
+test("terminal target rechecks stay bounded for closed issues and pull requests", async () => {
+  const targets = Array.from({ length: 100 }, (_, index) => index + 1);
+  for (const kind of ["issue", "pull_request"]) {
+    const scenario = await automaticReconcileScenario({
+      rows: targets.map((number) =>
+        row(
+          `${kind}-${number}`,
+          `publication:${kind}-${number}`,
+          number,
+          "retry_exhausted",
+          true,
+          "eligible",
+          `openclaw/repo#${number}`,
+        ),
+      ),
+      closedNumbers: targets,
+      maxTargets: 100,
+      maxRecoveries: 10,
+      ...(kind === "pull_request"
+        ? { pullRequestHeads: new Map(targets.map((number) => [number, "a".repeat(40)])) }
+        : {}),
+    });
+    assert.equal(scenario.first.code, 0, scenario.first.stderr);
+    assert.equal(scenario.graphqlRequests, 3);
+    assert.equal(scenario.restRequests, kind === "issue" ? 10 : 20);
+    assert.equal(scenario.resolutions.length, 10, `${kind}: ${scenario.first.stdout}`);
+  }
+});
+
+test("mid-sized closed pull-request inventories use GraphQL identity batching", async () => {
+  for (const count of [32, 40]) {
+    const targets = Array.from({ length: count }, (_, index) => index + 1);
+    const scenario = await automaticReconcileScenario({
+      rows: targets.map((number) =>
+        row(
+          `mid-sized-${number}`,
+          `publication:mid-sized-${number}`,
+          number,
+          "retry_exhausted",
+          true,
+          "eligible",
+          `openclaw/repo#${number}`,
+        ),
+      ),
+      closedNumbers: targets,
+      pullRequestHeads: new Map(targets.map((number) => [number, "b".repeat(40)])),
+      maxTargets: 100,
+      maxRecoveries: 10,
+    });
+    assert.equal(scenario.first.code, 0, scenario.first.stderr);
+    assert.equal(scenario.graphqlRequests, 1, `target count ${count}`);
+    assert.equal(scenario.restRequests, 20, `target count ${count}`);
+    assert.equal(scenario.resolutions.length, 10, `target count ${count}`);
+  }
+});
+
+test("direct reconciliation defaults match the 100-target, ten-recovery schedule", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: Array.from({ length: 100 }, (_, index) =>
+      row(
+        `default-${index}`,
+        `publication:default-${index}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${index + 1}`,
+      ),
+    ),
+    omitLimits: true,
+  });
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.graphqlRequests, 3);
+  assert.equal(scenario.restRequests, 10);
+  assert.equal(JSON.parse(scenario.first.stdout).recovered_targets, 10);
+});
+
 test("merged GraphQL pull requests are terminal and do not block other targets", async () => {
   const scenario = await automaticReconcileScenario({
     rows: [
@@ -1913,6 +2017,8 @@ async function automaticReconcileScenario(options) {
   const recoveries = [];
   const resolutions = [];
   let inventoryRequests = 0;
+  let graphqlRequests = 0;
+  let restRequests = 0;
   let duplicateFailurePending = options.failFirstDuplicateCleanup === true;
   let duplicateSkipsRemaining =
     options.skipDuplicateCleanupCount ?? Number(options.skipFirstDuplicateCleanup === true);
@@ -1937,6 +2043,7 @@ async function automaticReconcileScenario(options) {
       return;
     }
     if (request.url === "/graphql") {
+      graphqlRequests += 1;
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       const data = {};
       for (const match of body.query.matchAll(
@@ -1977,13 +2084,18 @@ async function automaticReconcileScenario(options) {
       return;
     }
     if (request.url?.startsWith("/repos/")) {
+      restRequests += 1;
       const number = Number(request.url.split("/").at(-1));
       if (request.url.includes("/pulls/")) {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(
           JSON.stringify({
             node_id: options.nodeId?.(number) ?? `ISSUE_${number}`,
-            state: "open",
+            state:
+              !options.reopenedNumbers?.includes(number) &&
+              (options.closedNumbers?.includes(number) || options.mergedNumbers?.includes(number))
+                ? "closed"
+                : "open",
             head: { sha: options.pullRequestHeads?.get(number) },
           }),
         );
@@ -2109,15 +2221,15 @@ async function automaticReconcileScenario(options) {
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const directory = await mkdtemp(join(tmpdir(), "clawsweeper-dlq-scenario-"));
-  const args = [
-    "--action",
-    "reconcile",
-    "--execute",
-    "--max-targets",
-    String(options.maxTargets ?? 10),
-    "--max-recoveries",
-    String(options.maxRecoveries ?? 10),
-  ];
+  const args = ["--action", "reconcile", "--execute"];
+  if (!options.omitLimits) {
+    args.push(
+      "--max-targets",
+      String(options.maxTargets ?? 10),
+      "--max-recoveries",
+      String(options.maxRecoveries ?? 10),
+    );
+  }
   try {
     const first = await runOperator(
       [...args, "--output", join(directory, "first.json")],
@@ -2131,7 +2243,15 @@ async function automaticReconcileScenario(options) {
           secret,
         )
       : null;
-    return { first, second, recoveries, resolutions, inventoryRequests };
+    return {
+      first,
+      second,
+      recoveries,
+      resolutions,
+      inventoryRequests,
+      graphqlRequests,
+      restRequests,
+    };
   } finally {
     server.close();
     await rm(directory, { recursive: true, force: true });

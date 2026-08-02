@@ -2016,7 +2016,7 @@ test("recorded label sync covers only matching automation-owned updates", () => 
     false,
   );
   assert.match(
-    readText("src/clawsweeper-apply-decision-workflow.ts"),
+    readText("src/clawsweeper-apply-source-freshness.ts"),
     /recordedLabelSyncMatches[\s\S]*truncationCountsAsActivity: true/,
   );
 });

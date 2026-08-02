@@ -1,9 +1,18 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { createApplyCandidateGuards } from "./clawsweeper-apply-candidate-guards.js";
+import { executeApplyClose } from "./clawsweeper-apply-close-execution.js";
 import { createApplyCloseGuards } from "./clawsweeper-apply-close-guards.js";
+import { evaluateApplyClosePolicy } from "./clawsweeper-apply-close-policies.js";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import { createApplyLeaseGuards } from "./clawsweeper-apply-lease-guards.js";
 import { createApplyProofFreshnessGuards } from "./clawsweeper-apply-proof-freshness.js";
+import { syncApplyPullRequestLabels } from "./clawsweeper-apply-pull-request-labels.js";
+import { promoteApplyPullRequest } from "./clawsweeper-apply-pull-request-promotion.js";
+import { syncApplyReportLabels } from "./clawsweeper-apply-report-labels.js";
+import { createApplyReviewActivityGuard } from "./clawsweeper-apply-review-activity.js";
+import { createApplyReviewGuards } from "./clawsweeper-apply-review-guards.js";
+import { createApplySourceFreshness } from "./clawsweeper-apply-source-freshness.js";
 import { createApplyRecordOperations } from "./clawsweeper-apply-records.js";
 import {
   boolArg,
@@ -13,34 +22,24 @@ import {
   stringArg,
   type Args,
 } from "./clawsweeper-args.js";
-import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import {
-  BULK_FILED_LABEL,
   DAY_MS,
   DEFAULT_CODEX_MODEL,
   DEFAULT_REASONING_EFFORT,
   DEFAULT_SERVICE_TIER,
-  EVENT_GUARDED_OPEN_ACTIONS,
-  GOOD_FIRST_ISSUE_LABEL,
-  REVIEW_SECTIONS,
   STALE_INSUFFICIENT_INFO_MIN_AGE_DAYS,
-  STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
 } from "./clawsweeper-policy.js";
 import { rawCommentBody } from "./clawsweeper-review-comments.js";
-import { trimMiddle } from "./clawsweeper-text.js";
 import type {
   AcquiredReviewStartLease,
   ActionTaken,
   ApplyResult,
-  AuthorPrBudgetApplyGate,
   BulkFilerRepositoryPermissionCache,
   CloseReason,
   GitHubRuntimeBudget,
   ItemContext,
   PrCloseCoverageProofGateBlock,
-  PrCloseCoverageProofGateResult,
   PrStatusLabelKind,
-  PullRequestClosePromotion,
   ReportEntry,
   ReviewCommentRenderOptions,
 } from "./clawsweeper-types.js";
@@ -54,183 +53,94 @@ import {
   isGitHubRequiresAuthenticationError,
   isLockedConversationCommentError,
 } from "./github-retry.js";
-import { IDEA_ARCHIVE_LABEL } from "./idea-archive-revival.js";
 import { type PrCloseCoverageProofRuntime } from "./pr-close-coverage-proof.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
-import {
-  isReviewedPrActivityCursor,
-  readStableReviewedPrActivityCursor,
-  ReviewedPrActivityChangedDuringReadError,
-} from "./review-activity-cursor.js";
 
 export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWorkflowDependencies) {
   const {
-    abandonedPrApplyBlockReasonSafe,
     actionLedgerItemKey,
-    addIssueLabel,
-    applyAuthorPrBudgetStateToReport,
     applyBlockingProtectedLabels,
-    applyClosedUnmergedCanonicalBlockedReport,
     applyKindArg,
     ApplyMutationReviewGuardError,
     applyPrCloseCoverageProofBlockedReport,
-    applyPrCloseCoverageProofReportSection,
     applyProtectedLabelReason,
     applyRuntimeBudgetYieldResults,
-    asRecord,
-    authorPrBudgetAgeSkipReason,
-    authorPrBudgetApplyGateSafe,
-    authorPrBudgetCloseEnabled,
-    authorPrBudgetMaxClosesPerRun,
-    authorPrBudgetPromotion,
-    authorPrBudgetSignalBlockReason,
-    bulkFilerRepositoryPermission,
-    canonicalPullRequestCommentSyncBlock,
-    CLAWSWEEPER_BOT_AUTHORS,
     cleanupSupersededReviewPlaceholderComments,
-    closeItem,
     closeReasonApplyAgeSkipReason,
     closeReasonEnabled,
     closeReasonFilterText,
     closeReasonsArg,
     closingPullRequestsForIssue,
     collectItemContext,
-    commentBody,
     commentBodyMatches,
     commentId,
     commentUpdatedAt,
     completeStaleCanonicalCommentSyncReport,
-    contextHasNonAutomationActivityAfter,
-    coverageProofRetryExhaustedRuntimeBudget,
     decisionPacketsDirFromArgs,
     defaultClosedDir,
     defaultItemsDir,
     defaultPlansDir,
     deleteOwnedDedicatedReviewStartLease,
     duplicateCanonicalPullRequestBlockReason,
-    ensureCloseAppliedComment,
     ensureDir,
-    ensureIdeaArchiveLabel,
-    ensureRuntimeDelayFits,
     exactEventReviewLeaseDisposition,
-    fetchIssueReviewComments,
     fetchItem,
-    fetchReviewedPrActivityCursor,
     finishApplyMutationAttempt,
-    freshPullRequestReviewHead,
-    frontMatterBoolean,
     frontMatterStringArray,
     frontMatterValue,
     ghJson,
-    GitHubRuntimeBudgetError,
     guardedOpenApplyProofFields,
-    hasNormalizedLabel,
     hasVerifiedLocalCheckoutAccess,
-    impactLabelsFromReport,
     isApplyCloseCandidateReport,
-    isBulkFilerExemptAuthorAssociation,
-    isExactEventSourceRevisionChange,
-    isGoodFirstIssue,
     isLiveRecheckCloseGuardReport,
     isMaintainerAuthorAssociation,
     isPairBlockedCloseReport,
     isRetryableCloseSkipReport,
     isRetryableKeptOpenCloseReport,
     isRetryablePrCloseCoverageProofReport,
-    issueAdvisoryLabelStateFromReport,
-    issueRecentHumanCommentBlockReasonSafe,
     issueReviewComment,
     isVerifiedFixedCloseReason,
     itemSnapshotHash,
     liveIssueSourceRevision,
-    livePullRequestHasNoDiff,
     lockedConversationApplyReason,
-    login,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
     markedReviewCommentBody,
-    maturityLabelsFromReport,
-    mergeRiskLabelsFromReport,
     mutationErrorMessage,
     normalizeAuthorAssociation,
-    normalizeLabelName,
-    obsoleteFixPrApplyBlockReasonSafe,
     openClosingPullRequestApplyReason,
     orderedApplyItemNumbers,
     pairCloseKey,
     PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH,
     prAutoCloseExemptDecisionReason,
-    prCloseCoverageProofGateResult,
     prCloseCoverageProofPromptTemplate,
-    prStatusLabelKindFromReport,
     pullHeadShaFromContext,
-    pullRequestClosePromotion,
     recordApplyActionEvents,
     recordApplyActionLedgerItemResults,
     recordApplyMutationBoundary,
-    recordedLabelSyncCoversUpdate,
     removeCurrentCursorTraceItem,
     renderReviewCommentFromReport,
     replaceFrontMatterValue,
-    replaceSectionValue,
     repoFromArgs,
     reportDecision,
     reportEntriesForDir,
-    reportFeatureShowcase,
-    reportOverallCorrectness,
-    reportPrRating,
-    reportRealBehaviorProof,
-    reportSecurityReview,
-    reportTelegramVisibleProof,
     reviewCommentBodyDigest,
-    reviewCommentHasCloseVerdictForCanonical,
     reviewCommentHashMatches,
     reviewLeaseRevisionFromReport,
-    reviewReportCanPromoteToClose,
     reviewSectionValue,
-    reviewStartLeaseOwner,
     ROOT,
     runtimeBudgetExceeded,
     sameAuthorCounterpartApplyReason,
-    sha256,
     shouldProbeClosedStateReport,
     shouldSyncReviewComment,
-    sleepMs,
     staleCanonicalCommentSyncPendingReason,
-    staleCanonicalPullRequestNumber,
     stalePullRequestReviewComment,
     stalePullRequestReviewHead,
-    staleReviewCommentSyncReason,
-    staleVersionBugApplyBlockReasonSafe,
-    stalledUnprovenPrApplyBlockReasonSafe,
     startApplyActionLedger,
     startApplyActionLedgerItem,
     startApplyMutationAttempt,
-    stringOrUndefined,
-    syncBulkFilerLabel,
-    syncFeatureShowcaseLabel,
-    syncImpactLabels,
-    syncIssueAdvisoryLabels,
-    syncMaturityLabels,
-    syncMergeRiskLabels,
-    syncPriorityLabel,
-    syncPrRatingLabel,
-    syncPrStatusLabel,
-    syncRealBehaviorProofMediaLabels,
-    syncRealBehaviorProofSufficientLabel,
-    syncStalePullRequestReviewLabels,
-    syncTelegramVisibleProofLabel,
     syncWorkPlanFromReport,
     targetRepo,
-    timeoutWithinRuntimeBudget,
-    timestampMs,
-    triagePriorityFromReport,
-    unconfirmedProductDirectionApplyBlockReasonSafe,
-    unconfirmedProductDirectionCloseEnabled,
-    unsponsoredFeatureApplyBlockReasonSafe,
-    unsponsoredFeatureCloseEnabled,
     updateReviewCommentMetadata,
-    upgradeNoDiffPullRequestReport,
-    upgradePullRequestClosePromotionReport,
     upsertReviewComment,
     validateCloseDecision,
   } = dependencies;
@@ -802,44 +712,16 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let clawSweeperLabelsChanged = false;
       let issueAdvisoryLabelsChanged = false;
       const allowedSelfMutationUpdatedAts = new Set<string>();
-      let staleCanonicalClosedUnmergedValidated = false;
       const currentItemContext = (): ItemContext => {
         currentContext ??= collectItemContext(item, { fullTimelineForRelations: true });
         return currentContext;
       };
       const markdownBeforeApplyDecisionMutations = markdown;
-      const expectedReviewActivityCursor = frontMatterValue(
-        markdownBeforeApplyDecisionMutations,
-        "review_activity_cursor",
-      );
-      const currentReviewActivityBlock = (): string | null => {
-        if (item.kind !== "pull_request") return null;
-        if (!isReviewedPrActivityCursor(expectedReviewActivityCursor)) {
-          return "stored pull request review activity cursor is missing or invalid; fresh review required";
-        }
-        try {
-          const currentReviewActivityCursor = readStableReviewedPrActivityCursor(() =>
-            fetchReviewedPrActivityCursor(number),
-          );
-          if (!currentReviewActivityCursor) {
-            return "pull request review activity exceeds the bounded reviewed cursor";
-          }
-          if (currentReviewActivityCursor !== expectedReviewActivityCursor) {
-            return "pull request review activity changed since review";
-          }
-          return null;
-        } catch (error) {
-          if (error instanceof GitHubRuntimeBudgetError) throw error;
-          if (error instanceof ReviewedPrActivityChangedDuringReadError) {
-            return "pull request review activity changed since review";
-          }
-          const detail = trimMiddle(
-            (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " "),
-            180,
-          );
-          return `pull request review activity could not be refreshed; next apply will retry: ${detail}`;
-        }
-      };
+      const currentReviewActivityBlock = createApplyReviewActivityGuard(dependencies, {
+        expectedCursor: frontMatterValue(markdownBeforeApplyDecisionMutations, "review_activity_cursor"),
+        itemKind: item.kind,
+        number,
+      });
       const reportReviewRevision = reviewLeaseRevisionFromReport(
         markdownBeforeApplyDecisionMutations,
       );
@@ -892,6 +774,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           continue;
         }
       }
+      let canonicalBoundStaleReviewReason: (
+        sourceMarkdown: string,
+        comment: Record<string, unknown> | undefined,
+      ) => string | null;
       const {
         acquireApplyMutationLease,
         currentApplyMutationLeaseBlockReason,
@@ -919,58 +805,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
 
 
       currentApplyMutationGuard = currentApplyMutationLeaseBlockReason;
-      const recordReviewGuardSkip = (
-        action: "kept_open" | "skipped_stale_review_comment_sync",
-        reason: string,
-        restoreOriginal = true,
-        activeReviewLeaseExpiresAt?: string,
-      ): boolean => {
-        markdown = replaceFrontMatterValue(
-          restoreOriginal ? markdownBeforeApplyDecisionMutations : markdown,
-          "apply_checked_at",
-          new Date().toISOString(),
-        );
-        if (!dryRun) writeReportMarkdown(path, markdown);
-        results.push({
-          number,
-          action,
-          reason,
-          ...(emitEventApplyProof && action === "kept_open" && activeReviewLeaseExpiresAt
-            ? {
-                activeReviewLeaseVerified: true,
-                activeReviewLeaseExpiresAt,
-              }
-            : {}),
-        });
-        processedCount += 1;
-        maybeLogProgress(`skipped #${number}: ${reason}`);
-        return processedCount >= processedLimit;
-      };
-      const reviewActivitySourceChanged = (reason: string): boolean =>
-        reason === "pull request review activity changed since review" ||
-        reason === "pull request review activity exceeds the bounded reviewed cursor";
-      const exactEventSourceRevisionChanged = (reason: string): boolean =>
-        exactEventPublication && isExactEventSourceRevisionChange(item.kind, reason);
-      const recordReviewLeaseSkip = (
-        reason: string,
-        restoreOriginal = true,
-        activeReviewLeaseExpiresAt?: string,
-      ): boolean =>
-        reviewActivitySourceChanged(reason) || exactEventSourceRevisionChanged(reason)
-          ? markApplySkipped("skipped_changed_since_review", reason)
-          : staleCanonicalCommentSyncPending
-          ? markApplySkipped(
-              "retry_stale_canonical_comment_sync",
-              `${reason}; stale canonical comment correction remains pending`,
-            )
-          : recordReviewGuardSkip("kept_open", reason, restoreOriginal, activeReviewLeaseExpiresAt);
-      recordApplyMutationGuardReason = (reason) => recordReviewLeaseSkip(reason, false);
-      const recordActiveReviewLeaseSkip = (expiresAt: string): boolean =>
-        recordReviewLeaseSkip(
-          `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper review is active until ${expiresAt}`,
-          true,
-          expiresAt,
-        );
       let existingReviewComment: Record<string, unknown> | undefined;
       const pendingStaleCanonicalCommentReason = staleCanonicalCommentSyncPending
         ? staleCanonicalCommentSyncPendingReason(markdown)
@@ -979,223 +813,78 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         pendingStaleCanonicalCommentReason
           ? { actionTaken: "kept_open", reason: pendingStaleCanonicalCommentReason }
           : null;
-      let canonicalCommentSyncChecked = false;
-      const shouldCheckCanonicalCommentSync = (): boolean =>
-        state === "open" &&
-        (staleCanonicalCommentSyncPending ||
-          (closeReason === "duplicate_or_superseded" &&
-            (isCloseProposal || (decision === "close" && shouldProbeClosedState))));
-      const applyCanonicalCommentSyncGuard = (
-        forceRecheck = false,
-      ): {
-        skipCurrentItem: boolean;
-        stopApply: boolean;
-      } => {
-        if ((canonicalCommentSyncChecked && !forceRecheck) || !shouldCheckCanonicalCommentSync()) {
-          return { skipCurrentItem: false, stopApply: false };
-        }
-        canonicalCommentSyncChecked = true;
-        staleCanonicalClosedUnmergedValidated = false;
-        const pendingCanonicalNumber = staleCanonicalCommentSyncPending
-          ? staleCanonicalPullRequestNumber(markdown)
-          : null;
-        if (staleCanonicalCommentSyncPending && pendingCanonicalNumber === null) {
-          const reason =
-            "pending stale canonical comment correction lacks its canonical PR identity; fresh review required";
-          return {
-            skipCurrentItem: true,
-            stopApply: markApplySkipped("retry_stale_canonical_comment_sync", reason),
-          };
-        }
-        const block = canonicalPullRequestCommentSyncBlock(markdown, item);
-        if (block?.kind === "unreadable") {
-          const actionTaken: ActionTaken = staleCanonicalCommentSyncPending
-            ? "retry_stale_canonical_comment_sync"
-            : "retry_pr_close_coverage_proof";
-          return {
-            skipCurrentItem: true,
-            stopApply: staleCanonicalCommentSyncPending
-              ? markApplySkipped(actionTaken, block.reason)
-              : recordApplySkipped(actionTaken, block.reason),
-          };
-        }
-        if (block?.kind === "closed_unmerged") {
-          staleCanonicalClosedUnmergedValidated = true;
-          closeBlockedForCommentSync = {
-            actionTaken: "kept_open",
-            reason: block.reason,
-          };
-          markdown = applyClosedUnmergedCanonicalBlockedReport(
-            markdown,
-            closeBlockedForCommentSync,
-            block.number,
-          );
-          staleCanonicalCommentSyncPending = true;
-          closeReason = "none";
-          isCloseProposal = false;
-        } else if (staleCanonicalCommentSyncPending && pendingCanonicalNumber !== null) {
-          const reason = `linked canonical PR #${pendingCanonicalNumber} is no longer closed and unmerged; fresh review required before stale comment correction`;
-          return {
-            skipCurrentItem: true,
-            stopApply: markApplySkipped("retry_stale_canonical_comment_sync", reason),
-          };
-        }
-        return { skipCurrentItem: false, stopApply: false };
-      };
+      const reviewGuards = createApplyReviewGuards(dependencies, {
+        currentItemContext,
+        decision,
+        dryRun,
+        emitEventApplyProof,
+        exactEventPublication,
+        getProcessedCount: () => processedCount,
+        getState: () => ({
+          closeBlockedForCommentSync,
+          closeReason,
+          isCloseProposal,
+          markdown,
+          staleCanonicalCommentSyncPending,
+        }),
+        item,
+        liveState: state,
+        markApplySkipped,
+        markdownBeforeApplyDecisionMutations,
+        maybeLogProgress,
+        number,
+        path,
+        processedLimit,
+        recordApplySkipped,
+        results,
+        setProcessedCount: (next) => {
+          processedCount = next;
+        },
+        setState: (next) => {
+          closeBlockedForCommentSync = next.closeBlockedForCommentSync;
+          closeReason = next.closeReason;
+          isCloseProposal = next.isCloseProposal;
+          markdown = next.markdown;
+          staleCanonicalCommentSyncPending = next.staleCanonicalCommentSyncPending;
+        },
+        shouldProbeClosedState,
+        writeReportMarkdown,
+      });
+      const {
+        applyCanonicalCommentSyncGuard,
+        recordActiveReviewLeaseSkip,
+        recordRefreshedReviewStaleReason,
+        recordReviewLeaseSkip,
+        refreshedReviewStaleReason,
+        shouldCheckCanonicalCommentSync,
+      } = reviewGuards;
+      canonicalBoundStaleReviewReason = reviewGuards.canonicalBoundStaleReviewReason;
+      recordApplyMutationGuardReason = (reason) => recordReviewLeaseSkip(reason, false);
       const initialCanonicalCommentSyncGuard = applyCanonicalCommentSyncGuard();
       if (initialCanonicalCommentSyncGuard.stopApply) break;
       if (initialCanonicalCommentSyncGuard.skipCurrentItem) continue;
-      const canonicalBoundStaleReviewReason = (
-        sourceMarkdown: string,
-        comment: Record<string, unknown> | undefined,
-      ): string | null => {
-        const staleReason = staleReviewCommentSyncReason(
-          sourceMarkdown,
-          comment,
-          number,
-          item.kind === "pull_request" ? currentItemContext() : undefined,
-        );
-        const pendingCanonicalNumber = staleCanonicalPullRequestNumber(markdown);
-        if (staleCanonicalClosedUnmergedValidated && pendingCanonicalNumber !== null) {
-          if (
-            reviewCommentHasCloseVerdictForCanonical(
-              comment,
-              number,
-              "duplicate_or_superseded",
-              pendingCanonicalNumber,
-            )
-          ) {
-            return null;
-          }
-          return (
-            staleReason ??
-            `live durable review comment is not bound to stored canonical PR #${pendingCanonicalNumber}; fresh review required before stale comment correction`
-          );
-        }
-        return staleReason;
-      };
-      const refreshedReviewStaleReason = (comment: Record<string, unknown> | undefined) =>
-        canonicalBoundStaleReviewReason(markdownBeforeApplyDecisionMutations, comment);
-      const recordRefreshedReviewStaleReason = (reason: string): boolean =>
-        staleCanonicalCommentSyncPending
-          ? markApplySkipped(
-              "retry_stale_canonical_comment_sync",
-              `${reason}; stale canonical comment correction remains pending`,
-            )
-          : recordReviewGuardSkip("skipped_stale_review_comment_sync", reason);
       const rememberSelfMutationUpdatedAt = (): void => {
         if (!dryRun) allowedSelfMutationUpdatedAts.add(fetchItem(number).item.updatedAt);
       };
-      let cachedPrCloseCoverageProofGateResult: PrCloseCoverageProofGateResult | undefined;
-      let cachedAuthorPrBudgetApplyGate: AuthorPrBudgetApplyGate | undefined;
-      let cachedStaleVersionBugBlockReason: string | null | undefined;
-      let cachedObsoleteFixPrBlockReason: string | null | undefined;
-      const currentStaleVersionBugBlockReason = (): string | null => {
-        if (cachedStaleVersionBugBlockReason === undefined) {
-          cachedStaleVersionBugBlockReason = staleVersionBugApplyBlockReasonSafe(number, item);
-        }
-        return cachedStaleVersionBugBlockReason;
-      };
-      const currentObsoleteFixPrBlockReason = (): string | null => {
-        if (cachedObsoleteFixPrBlockReason === undefined) {
-          cachedObsoleteFixPrBlockReason = obsoleteFixPrApplyBlockReasonSafe(number, item);
-        }
-        return cachedObsoleteFixPrBlockReason;
-      };
-      const currentAuthorPrBudgetApplyGate = (): AuthorPrBudgetApplyGate => {
-        const authorKey = item.author.trim().toLowerCase();
-        const closedForAuthor = authorPrBudgetClosesThisRun.get(authorKey) ?? 0;
-        const maxCloses = authorPrBudgetMaxClosesPerRun();
-        if (closedForAuthor >= maxCloses) {
-          return {
-            allowed: false,
-            reason: `author PR-budget per-run close cap of ${maxCloses} reached for @${item.author.replace(/^@/, "")}`,
-          };
-        }
-        cachedAuthorPrBudgetApplyGate ??= authorPrBudgetApplyGateSafe(number, item, markdown);
-        if (!cachedAuthorPrBudgetApplyGate.allowed) return cachedAuthorPrBudgetApplyGate;
-        // GitHub Search may not reflect this run's own closes yet, so project them
-        // onto the live count: one run must never trim an author below the budget.
-        // Uses the all-reasons counter — a same-author PR closed as abandoned or
-        // duplicate earlier in this run stales the search count just the same.
-        const projectedOpenPrCount =
-          cachedAuthorPrBudgetApplyGate.state.openPrCount -
-          (authorPrClosesThisRun.get(authorKey) ?? 0);
-        if (projectedOpenPrCount <= cachedAuthorPrBudgetApplyGate.state.budget) {
-          return {
-            allowed: false,
-            reason: `author is projected at ${projectedOpenPrCount} open PRs after this run's closes; author PR budget is ${cachedAuthorPrBudgetApplyGate.state.budget}`,
-          };
-        }
-        return cachedAuthorPrBudgetApplyGate;
-      };
-      let prCloseCoverageProofGateChecked = false;
-      let prCloseCoverageProofStartedAtMs: number | null = null;
-      const runtimeBudgetProofBlock = (phase = "before"): PrCloseCoverageProofGateResult => ({
-        status: "blocked",
-        block: {
-          actionTaken: "skipped_runtime_budget",
-          reason: `max runtime ${maxRuntimeMs}ms reached ${phase} PR close coverage proof`,
-        },
+      const candidateGuards = createApplyCandidateGuards(dependencies, {
+        authorPrBudgetClosesThisRun,
+        authorPrClosesThisRun,
+        currentDecisionState: () => ({ closeReason, markdown }),
+        currentItemContext,
+        item,
+        maxRuntimeMs,
+        number,
+        prCloseCoverageProofRuntime,
+        requirePrecomputedPrCloseCoverageProof,
+        startedAtMs,
       });
-      const currentPrCloseCoverageProofGateBlock = (): PrCloseCoverageProofGateBlock | null => {
-        if (cachedPrCloseCoverageProofGateResult === undefined) {
-          prCloseCoverageProofGateChecked = true;
-          if (
-            frontMatterValue(markdown, "decision") === "close" &&
-            closeReason === "duplicate_or_superseded"
-          ) {
-            let proofTimeoutMs = timeoutWithinRuntimeBudget(
-              startedAtMs,
-              maxRuntimeMs,
-              prCloseCoverageProofRuntime.timeoutMs,
-              Date.now(),
-            );
-            if (proofTimeoutMs === null) {
-              cachedPrCloseCoverageProofGateResult = runtimeBudgetProofBlock();
-            } else {
-              const context = currentItemContext();
-              proofTimeoutMs = timeoutWithinRuntimeBudget(
-                startedAtMs,
-                maxRuntimeMs,
-                prCloseCoverageProofRuntime.timeoutMs,
-                Date.now(),
-              );
-              if (proofTimeoutMs === null) {
-                cachedPrCloseCoverageProofGateResult = runtimeBudgetProofBlock();
-              } else {
-                const proofGateResult = prCloseCoverageProofGateResult({
-                  markdown,
-                  item,
-                  context,
-                  runtime: { ...prCloseCoverageProofRuntime, timeoutMs: proofTimeoutMs },
-                  requirePrecomputedProof: requirePrecomputedPrCloseCoverageProof,
-                  runtimeBudget: { startedAtMs, maxRuntimeMs },
-                });
-                cachedPrCloseCoverageProofGateResult =
-                  proofGateResult?.status === "blocked" &&
-                  coverageProofRetryExhaustedRuntimeBudget(
-                    startedAtMs,
-                    maxRuntimeMs,
-                    proofGateResult.block.actionTaken,
-                    Date.now(),
-                  )
-                    ? runtimeBudgetProofBlock("during")
-                    : proofGateResult;
-                if (cachedPrCloseCoverageProofGateResult?.status === "allowed") {
-                  prCloseCoverageProofStartedAtMs =
-                    cachedPrCloseCoverageProofGateResult.covering.provedAtMs;
-                }
-              }
-            }
-          } else {
-            cachedPrCloseCoverageProofGateResult = null;
-          }
-        }
-        return cachedPrCloseCoverageProofGateResult?.status === "blocked"
-          ? cachedPrCloseCoverageProofGateResult.block
-          : null;
-      };
+      const {
+        coverageProofState,
+        currentAuthorPrBudgetApplyGate,
+        currentObsoleteFixPrBlockReason,
+        currentPrCloseCoverageProofGateBlock,
+        currentStaleVersionBugBlockReason,
+      } = candidateGuards;
       const recordRuntimeBudgetYield = (reason: string): void => {
         if (clawSweeperLabelsChanged && !dryRun) {
           markdown = replaceFrontMatterValue(
@@ -1346,196 +1035,63 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       if (isUpgradedCloseCandidate) {
         markdown = replaceFrontMatterValue(markdown, "action_taken", "proposed_close");
       }
-      const hasLiveNoDiffPullRequestPromotion =
-        state === "open" &&
-        !isCloseProposal &&
-        item.kind === "pull_request" &&
-        decision === "keep_open" &&
-        action === "kept_open" &&
-        storedUpdatedAt &&
-        item.updatedAt === storedUpdatedAt &&
-        livePullRequestHasNoDiff(currentItemContext()) &&
-        reviewReportCanPromoteToClose(markdown);
-      if (
-        hasLiveNoDiffPullRequestPromotion &&
-        closeReasonEnabled("duplicate_or_superseded", applyCloseReasons)
-      ) {
-        markdown = upgradeNoDiffPullRequestReport(markdown, item);
-        closeReason = "duplicate_or_superseded";
-        isCloseProposal = true;
-        cachedPrCloseCoverageProofGateResult = undefined;
-      }
-      let attemptedPullRequestClosePromotion = hasLiveNoDiffPullRequestPromotion;
-      if (
-        state === "open" &&
-        !isCloseProposal &&
-        !hasLiveNoDiffPullRequestPromotion &&
-        item.kind === "pull_request" &&
-        decision === "keep_open" &&
-        action === "kept_open"
-      ) {
-        attemptedPullRequestClosePromotion = true;
-        const promotionContext = currentItemContext();
-        let promotion: PullRequestClosePromotion | null = null;
-        if (
-          authorPrBudgetCloseEnabled() &&
-          closeReasonEnabled("author_pr_budget_exceeded", applyCloseReasons) &&
-          !authorPrBudgetAgeSkipReason(item) &&
-          !authorPrBudgetSignalBlockReason(markdown)
-        ) {
-          const authorBudgetGate = currentAuthorPrBudgetApplyGate();
-          if (authorBudgetGate.allowed) {
-            promotion = authorPrBudgetPromotion(markdown, authorBudgetGate.state);
-          }
-        }
-        promotion ??= pullRequestClosePromotion(markdown, item, promotionContext, staleMinAgeDays, {
-          reportDirs: [itemsDir, closedDir],
-        });
-        if (promotion && closeReasonEnabled(promotion.closeReason, applyCloseReasons)) {
-          markdown = upgradePullRequestClosePromotionReport(
-            markdown,
-            item,
-            promotionContext,
-            promotion,
-          );
-          storedUpdatedAt = item.updatedAt;
-          storedHash = itemSnapshotHash(item, promotionContext);
-          closeReason = promotion.closeReason;
-          isCloseProposal = true;
-          cachedPrCloseCoverageProofGateResult = undefined;
-        }
-      }
-      if (
-        state === "open" &&
-        isCloseProposal &&
-        closeReason === "author_pr_budget_exceeded" &&
-        !syncCommentsOnly &&
-        (applyKind === "all" || item.kind === applyKind) &&
-        closeReasonEnabled(closeReason, applyCloseReasons)
-      ) {
-        const authorBudgetGate = currentAuthorPrBudgetApplyGate();
-        if (!authorBudgetGate.allowed) {
-          if (markApplySkipped("kept_open", authorBudgetGate.reason)) break;
-          continue;
-        }
-        markdown = applyAuthorPrBudgetStateToReport(markdown, authorBudgetGate.state);
-      }
-      if (
-        state === "open" &&
-        isCloseProposal &&
-        closeReason === "unsponsored_feature_request" &&
-        !syncCommentsOnly &&
-        (applyKind === "all" || item.kind === applyKind) &&
-        closeReasonEnabled(closeReason, applyCloseReasons)
-      ) {
-        if (!unsponsoredFeatureCloseEnabled()) {
-          if (
-            recordApplySkipped("kept_open", "unsponsored feature-request apply policy is disabled")
-          ) {
-            break;
-          }
-          continue;
-        }
-        const unsponsoredFeatureBlockReason = unsponsoredFeatureApplyBlockReasonSafe(number, item);
-        if (unsponsoredFeatureBlockReason) {
-          if (markApplySkipped("kept_open", unsponsoredFeatureBlockReason)) break;
-          continue;
-        }
-      }
-      if (
-        state === "open" &&
-        isCloseProposal &&
-        closeReason === "stale_version_bug" &&
-        !syncCommentsOnly &&
-        (applyKind === "all" || item.kind === applyKind) &&
-        closeReasonEnabled(closeReason, applyCloseReasons)
-      ) {
-        const staleVersionBlockReason = currentStaleVersionBugBlockReason();
-        if (staleVersionBlockReason) {
-          if (markApplySkipped("kept_open", staleVersionBlockReason)) break;
-          continue;
-        }
-      }
-      if (
-        state === "open" &&
-        isCloseProposal &&
-        closeReason === "obsolete_fix_pr" &&
-        !syncCommentsOnly &&
-        (applyKind === "all" || item.kind === applyKind) &&
-        closeReasonEnabled(closeReason, applyCloseReasons)
-      ) {
-        const obsoleteFixBlockReason = currentObsoleteFixPrBlockReason();
-        if (obsoleteFixBlockReason) {
-          if (markApplySkipped("kept_open", obsoleteFixBlockReason)) break;
-          continue;
-        }
-      }
-      if (
-        state === "open" &&
-        isCloseProposal &&
-        closeReason === "stale_insufficient_info" &&
-        !syncCommentsOnly &&
-        (applyKind === "all" || item.kind === applyKind) &&
-        closeReasonEnabled(closeReason, applyCloseReasons)
-      ) {
-        const staleCommentBlockReason = issueRecentHumanCommentBlockReasonSafe(
+      const promotion = promoteApplyPullRequest(dependencies, {
+        action,
+        applyCloseReasons,
+        closedDir,
+        closeReason,
+        currentAuthorPrBudgetApplyGate,
+        currentItemContext,
+        decision,
+        isCloseProposal,
+        item,
+        itemsDir,
+        markdown,
+        resetCoverageProof: candidateGuards.resetCoverageProof,
+        staleMinAgeDays,
+        state,
+        storedHash,
+        storedUpdatedAt,
+      });
+      ({ closeReason, isCloseProposal, markdown, storedHash, storedUpdatedAt } = promotion);
+      const attemptedPullRequestClosePromotion = promotion.attempted;
+      const applyClosePolicy = (phase: "before-canonical" | "after-canonical") =>
+        evaluateApplyClosePolicy(dependencies, {
+          applyCloseReasons,
+          applyKind,
+          closeReason,
+          currentAuthorPrBudgetApplyGate,
+          currentObsoleteFixPrBlockReason,
+          currentStaleVersionBugBlockReason,
+          isCloseProposal,
+          item,
+          markdown,
           number,
-          STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
-        );
-        if (staleCommentBlockReason) {
-          if (markApplySkipped("kept_open", staleCommentBlockReason)) break;
-          continue;
-        }
+          phase,
+          state,
+          storedUpdatedAt,
+          syncCommentsOnly,
+        });
+      const earlyClosePolicy = applyClosePolicy("before-canonical");
+      markdown = earlyClosePolicy.markdown;
+      if (earlyClosePolicy.block) {
+        const stopped = earlyClosePolicy.block.preserveOriginalAction
+          ? recordApplySkipped("kept_open", earlyClosePolicy.block.reason)
+          : markApplySkipped("kept_open", earlyClosePolicy.block.reason);
+        if (stopped) break;
+        continue;
       }
       const promotedCanonicalCommentSyncGuard = applyCanonicalCommentSyncGuard();
       if (promotedCanonicalCommentSyncGuard.stopApply) break;
       if (promotedCanonicalCommentSyncGuard.skipCurrentItem) continue;
-      if (
-        state === "open" &&
-        isCloseProposal &&
-        closeReason === "unconfirmed_product_direction" &&
-        !syncCommentsOnly &&
-        (applyKind === "all" || item.kind === applyKind) &&
-        closeReasonEnabled(closeReason, applyCloseReasons)
-      ) {
-        if (!unconfirmedProductDirectionCloseEnabled()) {
-          if (
-            recordApplySkipped(
-              "kept_open",
-              "unconfirmed product-direction apply policy is disabled",
-            )
-          ) {
-            break;
-          }
-          continue;
-        }
-        const productDirectionBlockReason = unconfirmedProductDirectionApplyBlockReasonSafe(
-          number,
-          item,
-          storedUpdatedAt,
-          frontMatterValue(markdown, "reviewed_at"),
-        );
-        if (productDirectionBlockReason) {
-          if (markApplySkipped("kept_open", productDirectionBlockReason)) break;
-          continue;
-        }
-      }
-      if (
-        state === "open" &&
-        isCloseProposal &&
-        (closeReason === "stalled_unproven_pr" || closeReason === "abandoned_pr") &&
-        !syncCommentsOnly &&
-        (applyKind === "all" || item.kind === applyKind) &&
-        closeReasonEnabled(closeReason, applyCloseReasons)
-      ) {
-        const inactivityBlockReason =
-          closeReason === "stalled_unproven_pr"
-            ? stalledUnprovenPrApplyBlockReasonSafe(number, item)
-            : abandonedPrApplyBlockReasonSafe(number, item);
-        if (inactivityBlockReason) {
-          if (markApplySkipped("kept_open", inactivityBlockReason)) break;
-          continue;
-        }
+      const lateClosePolicy = applyClosePolicy("after-canonical");
+      markdown = lateClosePolicy.markdown;
+      if (lateClosePolicy.block) {
+        const stopped = lateClosePolicy.block.preserveOriginalAction
+          ? recordApplySkipped("kept_open", lateClosePolicy.block.reason)
+          : markApplySkipped("kept_open", lateClosePolicy.block.reason);
+        if (stopped) break;
+        continue;
       }
       if (state === "open" && isCloseProposal && closeReason === "low_signal_unmergeable_pr") {
         // Reject stale low-signal verdicts before they can become durable public comments. The
@@ -1558,31 +1114,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       ]);
       const markedReviewCommentForApply = (body: string): string =>
         markedReviewCommentBody(number, body);
-      const existingReviewCommentUpdatedAt = commentUpdatedAt(existingReviewComment);
-      if (existingReviewCommentUpdatedAt) {
-        allowedSelfMutationUpdatedAts.add(existingReviewCommentUpdatedAt);
-      }
-      const reportOwnedLeaseComments = requiresApplyMutationLease
-        ? earlyLeaseState.leaseComments.filter(
-            (leaseComment) =>
-              commentId(leaseComment) === reportReviewLeaseCommentId &&
-              reviewStartLeaseOwner(leaseComment) === reportReviewLeaseOwner,
-          )
-        : [];
-      const reportOwnedLeaseUpdatedAts = reportOwnedLeaseComments
-        .map(commentUpdatedAt)
-        .filter((updatedAt): updatedAt is string => timestampMs(updatedAt) !== null);
-      for (const updatedAt of reportOwnedLeaseUpdatedAts) {
-        allowedSelfMutationUpdatedAts.add(updatedAt);
-      }
-      const latestLabelFreshnessAutomationUpdatedAt = [
-        existingReviewComment,
-        ...reportOwnedLeaseComments,
-      ]
-        .map(commentUpdatedAt)
-        .filter((updatedAt): updatedAt is string => timestampMs(updatedAt) !== null)
-        .sort((left, right) => (timestampMs(left) ?? 0) - (timestampMs(right) ?? 0))
-        .at(-1);
       const staleReviewCommentReason = canonicalBoundStaleReviewReason(
         markdown,
         existingReviewComment,
@@ -1611,131 +1142,27 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (processedCount >= processedLimit) break;
         continue;
       }
-      const updatedSinceReview = Boolean(storedUpdatedAt && item.updatedAt !== storedUpdatedAt);
-      const reviewCommentOnlyUpdate = item.updatedAt === existingReviewCommentUpdatedAt;
-      const storedUpdatedAtMs = timestampMs(storedUpdatedAt);
-      const recordedLabelSyncMatches =
-        updatedSinceReview &&
-        recordedLabelSyncCoversUpdate({
-          itemUpdatedAt: item.updatedAt,
-          labelsSyncedAt: frontMatterValue(markdown, "labels_synced_at"),
-          liveLabels: item.labels,
-          recordedLabels: reportLabelsBeforeApply,
-          hasNonAutomationActivity: false,
-        });
-      const labelSyncOnlyUpdate = Boolean(
-        recordedLabelSyncMatches &&
-        storedUpdatedAtMs !== null &&
-        !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs, {
-          truncationCountsAsActivity: true,
-        }),
-      );
-      // Exact issue reviews acquire their same-revision lease after context capture. GitHub then
-      // advances issue.updated_at to the bot-owned lease comment even though the reviewed source is
-      // unchanged. The lease/source CAS above already proved this exact report tuple is still live;
-      // only admit its server timestamp when no human activity followed the reviewed timestamp.
-      const ownedIssueReviewLeaseOnlyUpdate = Boolean(
-        item.kind === "issue" &&
-        updatedSinceReview &&
-        storedUpdatedAtMs !== null &&
-        reportOwnedLeaseComments.some(
-          (leaseComment) => commentUpdatedAt(leaseComment) === item.updatedAt,
-        ) &&
-        !contextHasNonAutomationActivityAfter(currentItemContext(), storedUpdatedAtMs, {
-          truncationCountsAsActivity: true,
-        }),
-      );
-      // A deferred duplicate/superseded close is not eligible to mutate until
-      // apply-proof has produced a new read-only coverage proof. Its publisher
-      // updates the command acknowledgement to make that handoff visible, which
-      // advances issue.updated_at without changing the reviewed source. Admit
-      // only that exact configured ClawSweeper status-comment churn; any human activity still
-      // forces a fresh review before proof or close work proceeds.
-      let retryCloseCoverageCommandStatusComments: Record<string, unknown>[] | undefined;
-      const reviewedSourceRevision = frontMatterValue(
+      const {
+        automationOnlyUpdate,
+        labelSyncFreshEnough,
+        retryCloseCoverageCommandStatusOnlyUpdate,
+        reviewCommentOnlyUpdate,
+        updatedSinceReview,
+      } = createApplySourceFreshness(dependencies, {
+        action,
+        allowedSelfMutationUpdatedAts,
+        currentItemContext,
+        currentState: () => ({ isCloseProposal, markdown, storedUpdatedAt }),
+        existingReviewComment,
+        item,
+        leaseComments: earlyLeaseState.leaseComments,
         markdownBeforeApplyDecisionMutations,
-        "item_source_revision",
-      );
-      const retryCloseCoverageCommandStatusOnlyUpdate = (
-        candidate: typeof item,
-        candidateContext: ItemContext,
-      ): boolean => {
-        if (
-          action !== "retry_pr_close_coverage_proof" ||
-          candidate.updatedAt === storedUpdatedAt ||
-          storedUpdatedAtMs === null ||
-          !reviewedSourceRevision ||
-          reviewedSourceRevision === "unknown" ||
-          candidateContext.sourceRevision !== reviewedSourceRevision
-        ) {
-          return false;
-        }
-        // Command-status comments are deliberately excluded from review context as bot noise.
-        // Read raw comments only for this narrow, trusted handoff and reuse them through the
-        // post-proof freshness check. The source-revision match prevents a human title/body
-        // edit made before this bot comment from being masked; ordinary drift remains fail-closed.
-        const rawComments =
-          retryCloseCoverageCommandStatusComments ??= fetchIssueReviewComments(number);
-        const statusComment = rawComments.find(
-          (comment) =>
-            commentUpdatedAt(comment) === candidate.updatedAt &&
-            CLAWSWEEPER_BOT_AUTHORS.has(
-              (login(asRecord(comment).user) ?? "").trim().toLowerCase(),
-            ) &&
-            (commentBody(comment) ?? "").includes("<!-- clawsweeper-command-status:"),
-        );
-        const statusCreatedAt = statusComment
-          ? stringOrUndefined(statusComment.created_at)
-          : undefined;
-        return Boolean(
-          statusCreatedAt &&
-            !contextHasNonAutomationActivityAfter(candidateContext, storedUpdatedAtMs, {
-              truncationCountsAsActivity: true,
-              ignoreTrustedTimelineComment: {
-                authors: CLAWSWEEPER_BOT_AUTHORS,
-                createdAt: statusCreatedAt,
-              },
-            }),
-        );
-      };
-      const commandStatusOnlyUpdate =
-        action === "retry_pr_close_coverage_proof" &&
-        retryCloseCoverageCommandStatusOnlyUpdate(item, currentItemContext());
-      const automationOnlyUpdate =
-        reviewCommentOnlyUpdate ||
-        labelSyncOnlyUpdate ||
-        ownedIssueReviewLeaseOnlyUpdate ||
-        commandStatusOnlyUpdate;
-      const labelSyncFreshEnough = (): boolean => {
-        if (!storedUpdatedAt) return false;
-        if (!updatedSinceReview || automationOnlyUpdate) return true;
-        const completeFreshHeadReview =
-          !isCloseProposal &&
-          item.kind === "pull_request" &&
-          frontMatterValue(markdown, "review_status") === "complete" &&
-          freshPullRequestReviewHead(markdown, currentItemContext());
-        if (!completeFreshHeadReview) {
-          const existingReviewCommentUpdatedAtMs = timestampMs(
-            latestLabelFreshnessAutomationUpdatedAt,
-          );
-          const itemUpdatedAtMs = timestampMs(item.updatedAt);
-          if (existingReviewCommentUpdatedAtMs === null || itemUpdatedAtMs === null) return false;
-          if (Math.abs(itemUpdatedAtMs - existingReviewCommentUpdatedAtMs) > 5 * 60 * 1000) {
-            return false;
-          }
-        }
-        const storedUpdatedAtMs = timestampMs(storedUpdatedAt);
-        if (storedUpdatedAtMs === null) return false;
-        const reviewedAtMs = timestampMs(frontMatterValue(markdown, "reviewed_at"));
-        return !contextHasNonAutomationActivityAfter(
-          currentItemContext(),
-          storedUpdatedAtMs,
-          {
-            useCompleteActivityContext: true,
-            ...(reviewedAtMs === null ? {} : { ignoreTimelineCommentsThroughMs: reviewedAtMs }),
-          },
-        );
-      };
+        number,
+        reportLabelsBeforeApply,
+        reportReviewLeaseCommentId,
+        reportReviewLeaseOwner,
+        requiresApplyMutationLease,
+      });
       const stalePrReviewHead =
         state === "open" && item.kind === "pull_request"
           ? stalePullRequestReviewHead(markdown, currentItemContext())
@@ -1768,88 +1195,20 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         }
       }
       if (state === "open" && item.kind === "pull_request") {
-        if (stalePrReviewHead) {
-          const staleLabelSyncResult = syncStalePullRequestReviewLabels({
-            number,
-            labels: item.labels,
-            dryRun,
-            onMutation: recordMutation,
-          });
-          item.labels = staleLabelSyncResult.labels;
-          clawSweeperLabelsChanged ||= staleLabelSyncResult.changed;
-          markdown = replaceFrontMatterValue(
-            markdown,
-            "current_pull_head_sha",
-            stalePrReviewHead.liveHeadSha,
-          );
-        } else if (labelSyncFreshEnough()) {
-          const realBehaviorProof = reportRealBehaviorProof(markdown);
-          const proofSufficientSyncResult = syncRealBehaviorProofSufficientLabel({
-            number,
-            labels: item.labels,
-            proof: realBehaviorProof,
-            dryRun,
-            onMutation: recordMutation,
-          });
-          item.labels = proofSufficientSyncResult.labels;
-          clawSweeperLabelsChanged ||= proofSufficientSyncResult.changed;
-          const proofMediaSyncResult = syncRealBehaviorProofMediaLabels({
-            number,
-            labels: item.labels,
-            proof: realBehaviorProof,
-            dryRun,
-            onMutation: recordMutation,
-          });
-          item.labels = proofMediaSyncResult.labels;
-          clawSweeperLabelsChanged ||= proofMediaSyncResult.changed;
-          const prRatingSyncResult = syncPrRatingLabel({
-            number,
-            labels: item.labels,
-            rating: reportPrRating(markdown),
-            reviewFailed: frontMatterValue(markdown, "review_status") === "failed",
-            dryRun,
-            onMutation: recordMutation,
-          });
-          item.labels = prRatingSyncResult.labels;
-          clawSweeperLabelsChanged ||= prRatingSyncResult.changed;
-          const featureShowcaseSyncResult = syncFeatureShowcaseLabel({
-            number,
-            labels: item.labels,
-            isPullRequest: true,
-            itemCategory: frontMatterValue(markdown, "item_category"),
-            requiresNewFeature: frontMatterValue(markdown, "requires_new_feature") === "true",
-            showcase: reportFeatureShowcase(markdown),
-            securityReview: reportSecurityReview(markdown),
-            overallCorrectness: reportOverallCorrectness(markdown),
-            dryRun,
-            onMutation: recordMutation,
-          });
-          item.labels = featureShowcaseSyncResult.labels;
-          clawSweeperLabelsChanged ||= featureShowcaseSyncResult.changed;
-          currentPrStatusKind = prStatusLabelKindFromReport(
-            markdown,
-            currentItemContext(),
-            item.labels,
-          );
-          const prStatusSyncResult = syncPrStatusLabel({
-            number,
-            labels: item.labels,
-            statusKind: currentPrStatusKind,
-            dryRun,
-            onMutation: recordMutation,
-          });
-          item.labels = prStatusSyncResult.labels;
-          clawSweeperLabelsChanged ||= prStatusSyncResult.changed;
-          const telegramVisibleProofSyncResult = syncTelegramVisibleProofLabel({
-            number,
-            labels: item.labels,
-            proof: reportTelegramVisibleProof(markdown),
-            dryRun,
-            onMutation: recordMutation,
-          });
-          item.labels = telegramVisibleProofSyncResult.labels;
-          clawSweeperLabelsChanged ||= telegramVisibleProofSyncResult.changed;
-        }
+        const pullRequestLabels = syncApplyPullRequestLabels(dependencies, {
+          currentItemContext,
+          dryRun,
+          item,
+          labelSyncFreshEnough,
+          markdown,
+          number,
+          onMutation: recordMutation,
+          staleReviewHead: stalePrReviewHead,
+        });
+        item.labels = pullRequestLabels.labels;
+        markdown = pullRequestLabels.markdown;
+        currentPrStatusKind = pullRequestLabels.currentPrStatusKind;
+        clawSweeperLabelsChanged ||= pullRequestLabels.changed;
       }
       markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
       if (clawSweeperLabelsChanged && !dryRun) {
@@ -1953,9 +1312,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           action,
           allowedSelfMutationUpdatedAts,
           currentProofState: () => ({
-            cachedPrCloseCoverageProofGateResult,
-            prCloseCoverageProofGateChecked,
-            prCloseCoverageProofStartedAtMs,
+            ...coverageProofState,
             storedHash,
             storedUpdatedAt,
           }),
@@ -2073,156 +1430,34 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const isCurrentLabelSyncReport = !stalePrReviewHead && labelSyncFreshEnough();
       const isCurrentCompleteReport =
         frontMatterValue(markdown, "review_status") === "complete" && isCurrentLabelSyncReport;
-      if (state === "open" && isCurrentLabelSyncReport) {
-        const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
-        if (mutationLeaseBlockReason) {
-          if (recordReviewLeaseSkip(mutationLeaseBlockReason, false)) break;
-          continue;
-        }
-        try {
-          const bulkFilerDetected = frontMatterBoolean(markdown, "bulk_filer_detected");
-          const needsBulkFilerPermissionLookup =
-            item.kind === "issue" &&
-            !isBulkFilerExemptAuthorAssociation(item.authorAssociation) &&
-            (bulkFilerDetected || hasNormalizedLabel(item.labels, BULK_FILED_LABEL));
-          const bulkFilerSyncResult = syncBulkFilerLabel({
-            number,
-            labels: item.labels,
-            bulkFilerDetected,
-            authorAssociation: item.authorAssociation,
-            repositoryPermission: needsBulkFilerPermissionLookup
-              ? bulkFilerRepositoryPermission(item.author, bulkFilerRepositoryPermissionCache)
-              : null,
-            dryRun,
-            onMutation: recordMutation,
-          });
-          item.labels = bulkFilerSyncResult.labels;
-          clawSweeperLabelsChanged ||= bulkFilerSyncResult.changed;
-          markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
-          if (bulkFilerSyncResult.changed) rememberSelfMutationUpdatedAt();
-        } catch (error) {
-          if (!isGitHubRequiresAuthenticationError(error)) throw error;
-          if (markLabelSyncAuthSkipped("ClawSweeper bulk-filer")) break;
-          continue;
-        }
-      }
-      if (state === "open" && isCurrentCompleteReport) {
-        const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
-        if (mutationLeaseBlockReason) {
-          if (recordReviewLeaseSkip(mutationLeaseBlockReason, false)) break;
-          continue;
-        }
-        try {
-          const syncResult = syncPriorityLabel({
-            number,
-            labels: item.labels,
-            triagePriority: triagePriorityFromReport(markdown),
-            dryRun,
-            onMutation: recordMutation,
-          });
-          item.labels = syncResult.labels;
-          clawSweeperLabelsChanged ||= syncResult.changed;
-          markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
-          const impactSyncResult = syncImpactLabels({
-            number,
-            labels: item.labels,
-            impactLabels: item.kind === "pull_request" ? [] : impactLabelsFromReport(markdown),
-            dryRun,
-            onMutation: recordMutation,
-          });
-          item.labels = impactSyncResult.labels;
-          clawSweeperLabelsChanged ||= impactSyncResult.changed;
-          markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
-          const maturitySyncResult = syncMaturityLabels({
-            number,
-            labels: item.labels,
-            maturityLabels: item.kind === "pull_request" ? [] : maturityLabelsFromReport(markdown),
-            dryRun,
-            onMutation: recordMutation,
-          });
-          item.labels = maturitySyncResult.labels;
-          clawSweeperLabelsChanged ||= maturitySyncResult.changed;
-          markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
-          let mergeRiskLabelsChanged = false;
-          if (item.kind === "pull_request") {
-            const mergeRiskSyncResult = syncMergeRiskLabels({
-              number,
-              labels: item.labels,
-              mergeRiskLabels: mergeRiskLabelsFromReport(markdown),
-              dryRun,
-              onMutation: recordMutation,
-            });
-            item.labels = mergeRiskSyncResult.labels;
-            mergeRiskLabelsChanged = mergeRiskSyncResult.changed;
-            clawSweeperLabelsChanged ||= mergeRiskSyncResult.changed;
-            markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
-          }
-          if (
-            syncResult.changed ||
-            impactSyncResult.changed ||
-            maturitySyncResult.changed ||
-            mergeRiskLabelsChanged
-          ) {
-            rememberSelfMutationUpdatedAt();
-          }
-        } catch (error) {
-          if (!isGitHubRequiresAuthenticationError(error)) throw error;
-          if (markLabelSyncAuthSkipped("ClawSweeper")) break;
-          continue;
-        }
-      }
-      if (
-        state === "open" &&
-        item.kind === "issue" &&
-        !isCloseProposal &&
-        isCurrentCompleteReport
-      ) {
-        const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
-        if (mutationLeaseBlockReason) {
-          if (recordReviewLeaseSkip(mutationLeaseBlockReason, false)) break;
-          continue;
-        }
-        currentClosingPullRequests = closingPullRequestsForIssue(number);
-        try {
-          const hasOpenLinkedPullRequest =
-            openClosingPullRequestApplyReason(currentClosingPullRequests) !== null;
-          renderOptions.hasOpenLinkedPullRequest = hasOpenLinkedPullRequest;
-          const advisoryState = issueAdvisoryLabelStateFromReport(markdown, {
-            hasOpenLinkedPullRequest,
-            locked: item.locked === true,
-          });
-          const currentHasGoodFirstIssue = item.labels.some(
-            (label) => label.toLowerCase() === GOOD_FIRST_ISSUE_LABEL,
-          );
-          if (!currentHasGoodFirstIssue && isGoodFirstIssue(advisoryState, item.labels)) {
-            const reportHadGoodFirstIssue = reportLabelsBeforeApply.some(
-              (label) => label.toLowerCase() === GOOD_FIRST_ISSUE_LABEL,
-            );
-            const humanLabelState = currentItemContext().goodFirstIssueHumanLabelState ?? "unknown";
-            advisoryState.goodFirstIssueOptedOut =
-              humanLabelState === "removed" ||
-              (humanLabelState === "unknown" && reportHadGoodFirstIssue);
-          }
-          const syncResult = syncIssueAdvisoryLabels({
-            number,
-            labels: item.labels,
-            state: advisoryState,
-            dryRun,
-            onMutation: recordMutation,
-          });
-          item.labels = syncResult.labels;
-          issueAdvisoryLabelsChanged = syncResult.changed;
-          clawSweeperLabelsChanged ||= syncResult.changed;
-          markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
-          if (syncResult.changed) {
-            rememberSelfMutationUpdatedAt();
-          }
-        } catch (error) {
-          if (!isGitHubRequiresAuthenticationError(error)) throw error;
-          if (markLabelSyncAuthSkipped("advisory issue")) break;
-          continue;
-        }
-      }
+      const reportLabelSync = syncApplyReportLabels(dependencies, {
+        bulkFilerRepositoryPermissionCache,
+        clawSweeperLabelsChanged,
+        currentApplyMutationLeaseBlockReason,
+        currentClosingPullRequests,
+        currentItemContext,
+        dryRun,
+        isCloseProposal,
+        isCurrentCompleteReport,
+        isCurrentLabelSyncReport,
+        item,
+        markLabelSyncAuthSkipped,
+        markdown,
+        number,
+        onMutation: recordMutation,
+        recordReviewLeaseSkip,
+        rememberSelfMutationUpdatedAt,
+        renderOptions,
+        reportLabelsBeforeApply,
+        setMarkdown: (value) => { markdown = value; },
+        state,
+      });
+      clawSweeperLabelsChanged = reportLabelSync.clawSweeperLabelsChanged;
+      currentClosingPullRequests = reportLabelSync.currentClosingPullRequests;
+      issueAdvisoryLabelsChanged = reportLabelSync.issueAdvisoryLabelsChanged;
+      markdown = reportLabelSync.markdown;
+      if (reportLabelSync.stopApply) break;
+      if (reportLabelSync.skipCurrentItem) continue;
       reviewComment = renderCurrentReviewComment();
       markedReviewComment = markedReviewCommentForApply(reviewComment);
       if (isCloseProposal && item.kind === "issue") {
@@ -2646,249 +1881,59 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (!isCloseProposal && attemptedPullRequestClosePromotion) markApplyChecked();
         continue;
       }
-      if (
-        requiredMaintainerDecision?.required &&
-        closeReason !== "unsponsored_feature_request" &&
-        closeReason !== "author_pr_budget_exceeded"
-      ) {
-        if (
-          markApplySkipped(
-            "kept_open",
-            `maintainer decision required: ${requiredMaintainerDecision.question}`,
-          )
-        )
-          break;
-        continue;
-      }
-      if (closedCount >= limit) {
-        removeCurrentCursorTraceItem(examinedItemNumbers, number);
-        break;
-      }
-      if (applyKind !== "all" && item.kind !== applyKind) {
-        if (recordApplySkipped("kept_open", `type is ${item.kind}; apply kind is ${applyKind}`))
-          break;
-        continue;
-      }
-      if (!closeReasonEnabled(closeReason, applyCloseReasons)) {
-        if (
-          recordApplySkipped(
-            "kept_open",
-            `close reason ${closeReason} is not enabled for this apply run`,
-          )
-        )
-          break;
-        continue;
-      }
-      const currentReportValidation = validateCloseDecision(
-        {
-          repo,
-          kind: item.kind,
-          labels: item.labels,
-          authorAssociation: item.authorAssociation,
-        },
-        reportDecision(markdown, closeReason),
-        { requireCloseComment: !isRetryableSkippedClose },
-      );
-      if (!currentReportValidation.ok && currentReportValidation.actionTaken !== "kept_open") {
-        if (
-          markApplySkipped(
-            currentReportValidation.actionTaken,
-            currentReportValidation.reason,
-            EVENT_GUARDED_OPEN_ACTIONS.has(currentReportValidation.actionTaken),
-          )
-        )
-          break;
-        continue;
-      }
-      const duplicateCanonicalBlockReason =
-        closeReason === "duplicate_or_superseded"
-          ? duplicateCanonicalPullRequestBlockReason(markdown, item, {
-              reportDirs: [itemsDir, closedDir],
-            })
-          : null;
-      if (duplicateCanonicalBlockReason) {
-        if (markApplySkipped("kept_open", duplicateCanonicalBlockReason)) break;
-        continue;
-      }
-      const ageSkipReason = closeReasonApplyAgeSkipReason(item, closeReason, {
-        minAgeMs,
+      const appliedCloseReason = closeReason;
+      const closeFlow = executeApplyClose(dependencies, {
+        applyCloseReasons,
+        applyKind,
+        archiveClosed,
+        closeDelayMs,
+        closeLimitReached: closedCount >= limit,
+        closeReason: appliedCloseReason,
+        closedDir,
+        currentApplyMutationLeaseBlockReason,
+        currentAuthorPrBudgetApplyGate,
+        currentObsoleteFixPrBlockReason,
+        currentPrCloseCoverageProofGateBlock,
+        currentStaleVersionBugBlockReason,
+        dryRun,
+        emitEventApplyProof,
+        examinedItemNumbers,
+        getMarkdown: () => markdown,
+        isRetryableSkippedClose,
+        item,
+        itemsDir,
+        logProgress,
+        markApplySkipped,
+        markChangedSinceReview,
         minAgeDescription,
+        minAgeMs,
+        number,
+        onClosed: (result, simulated) => {
+          closedCount += 1;
+          processedCount += 1;
+          results.push(result);
+          logProgress(`${simulated ? "would close" : "closed"} #${number}`);
+          closedThisRun.add(pairCloseKey(repo, number));
+          if (item.kind === "pull_request") recordAuthorPrClose(item.author, appliedCloseReason);
+          return processedCount >= processedLimit;
+        },
+        postProofCoveringPrFreshnessBlock,
+        postProofFreshnessBlock,
+        proofResult: () => coverageProofState.cachedPrCloseCoverageProofGateResult,
+        recordApplySkipped,
+        recordMutation,
+        recordReviewLeaseSkip,
+        recordRuntimeBudgetYield,
+        repo,
+        requiredMaintainerDecision,
+        reviewComment,
+        runtimeBudget,
+        setMarkdown: (value) => { markdown = value; },
         staleMinAgeDays,
       });
-      if (ageSkipReason) {
-        if (recordApplySkipped("kept_open", ageSkipReason)) break;
-        continue;
-      }
-      const prCloseCoverageBlock =
-        closeReason === "duplicate_or_superseded" ? currentPrCloseCoverageProofGateBlock() : null;
-      if (prCloseCoverageBlock) {
-        if (prCloseCoverageBlock.actionTaken === "skipped_runtime_budget") {
-          recordRuntimeBudgetYield(prCloseCoverageBlock.reason);
-          break;
-        }
-        if (markApplySkipped(prCloseCoverageBlock.actionTaken, prCloseCoverageBlock.reason)) break;
-        continue;
-      }
-      const postProofDuplicateCanonicalBlockReason =
-        closeReason === "duplicate_or_superseded"
-          ? duplicateCanonicalPullRequestBlockReason(markdown, item, {
-              reportDirs: [itemsDir, closedDir],
-            })
-          : null;
-      if (postProofDuplicateCanonicalBlockReason) {
-        if (markApplySkipped("kept_open", postProofDuplicateCanonicalBlockReason)) break;
-        continue;
-      }
-      const coveringFreshnessBlock = postProofCoveringPrFreshnessBlock();
-      if (coveringFreshnessBlock) {
-        if (markApplySkipped(coveringFreshnessBlock.actionTaken, coveringFreshnessBlock.reason))
-          break;
-        continue;
-      }
-      const freshnessBlock = postProofFreshnessBlock();
-      if (freshnessBlock) {
-        if (markChangedSinceReview(freshnessBlock)) break;
-        continue;
-      }
-      if (closeReason === "duplicate_or_superseded") {
-        markdown = applyPrCloseCoverageProofReportSection(
-          markdown,
-          cachedPrCloseCoverageProofGateResult,
-        );
-      }
-      const lowSignalBlockReason =
-        closeReason === "low_signal_unmergeable_pr"
-          ? lowSignalUnmergeablePrApplyBlockReasonSafe(number, staleMinAgeDays)
-          : null;
-      if (lowSignalBlockReason) {
-        if (markApplySkipped("skipped_low_signal_live_guard", lowSignalBlockReason, true)) break;
-        continue;
-      }
-      const inactivityCloseBlockReason =
-        closeReason === "stalled_unproven_pr"
-          ? stalledUnprovenPrApplyBlockReasonSafe(number, item)
-          : closeReason === "abandoned_pr"
-            ? abandonedPrApplyBlockReasonSafe(number, item)
-          : closeReason === "unsponsored_feature_request"
-            ? unsponsoredFeatureApplyBlockReasonSafe(number, item)
-            : closeReason === "author_pr_budget_exceeded"
-              ? (() => {
-                  const gate = currentAuthorPrBudgetApplyGate();
-                  return gate.allowed ? null : gate.reason;
-                })()
-            : closeReason === "stale_version_bug"
-              ? currentStaleVersionBugBlockReason()
-              : closeReason === "obsolete_fix_pr"
-                ? currentObsoleteFixPrBlockReason()
-            : closeReason === "stale_insufficient_info"
-                ? issueRecentHumanCommentBlockReasonSafe(
-                    number,
-                    STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
-                  )
-                : null;
-      if (inactivityCloseBlockReason) {
-        if (markApplySkipped("kept_open", inactivityCloseBlockReason)) break;
-        continue;
-      }
-      const closeMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
-      if (closeMutationLeaseBlockReason) {
-        if (recordReviewLeaseSkip(closeMutationLeaseBlockReason, false)) break;
-        continue;
-      }
-      logProgress(`closing #${number}`);
-      if (dryRun) {
-        const closeAppliedCommentReason =
-          item.kind === "pull_request"
-            ? ensureCloseAppliedComment({
-                number,
-                closeReason,
-                markdown,
-                itemUrl: item.url,
-                dryRun,
-              })
-            : null;
-        closedCount += 1;
-        processedCount += 1;
-        results.push({
-          number,
-          action: "closed",
-          reason: [
-            `dry-run: would close as ${closeReasonText(closeReason)}`,
-            closeAppliedCommentReason,
-          ]
-            .filter(Boolean)
-            .join("; "),
-        });
-        logProgress(`would close #${number}`);
-        closedThisRun.add(pairCloseKey(repo, number));
-        if (item.kind === "pull_request") recordAuthorPrClose(item.author, closeReason);
-        if (processedCount >= processedLimit) break;
-        continue;
-      }
-      const closeAppliedCommentReason =
-        item.kind === "pull_request"
-          ? ensureCloseAppliedComment({
-              number,
-              closeReason,
-              markdown,
-              itemUrl: item.url,
-              dryRun,
-            })
-          : null;
-      const preCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
-      if (preCloseMutationLeaseBlockReason) {
-        if (recordReviewLeaseSkip(preCloseMutationLeaseBlockReason, false)) break;
-        continue;
-      }
-      ensureRuntimeDelayFits(closeDelayMs, "before close");
-      const appliedCloseReason = closeReason;
-      const needsIdeaArchiveLabel =
-        appliedCloseReason === "unsponsored_feature_request" &&
-        !item.labels.map(normalizeLabelName).includes(IDEA_ARCHIVE_LABEL);
-      if (appliedCloseReason === "unsponsored_feature_request") {
-        ensureIdeaArchiveLabel(recordMutation);
-        if (needsIdeaArchiveLabel) {
-          addIssueLabel(number, IDEA_ARCHIVE_LABEL, recordMutation);
-          item.labels.push(IDEA_ARCHIVE_LABEL);
-          markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
-        }
-      }
-      // On a failed/uncertain close the archive label deliberately stays: the
-      // revival watcher removes it if the issue is still open, and if the close
-      // actually landed the issue stays discoverable in the archive.
-      closeItem({ number, kind: item.kind, reason: appliedCloseReason });
-      let postCloseRuntimeYieldReason: string | null = null;
-      try {
-        ensureRuntimeDelayFits(closeDelayMs, "before close delay");
-        sleepMs(closeDelayMs);
-      } catch (error) {
-        if (!(error instanceof GitHubRuntimeBudgetError)) throw error;
-        postCloseRuntimeYieldReason = error.reason;
-      }
-      markdown = replaceSectionValue(markdown, REVIEW_SECTIONS.closeComment, reviewComment);
-      markdown = replaceFrontMatterValue(markdown, "close_comment_sha256", sha256(reviewComment));
-      markdown = replaceFrontMatterValue(markdown, "action_taken", "closed");
-      markdown = replaceFrontMatterValue(markdown, "applied_at", new Date().toISOString());
-      markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
-      archiveClosed(markdown);
-      closedCount += 1;
-      processedCount += 1;
-      results.push({
-        number,
-        action: "closed",
-        reason: [closeReasonText(closeReason), closeAppliedCommentReason]
-          .filter(Boolean)
-          .join("; "),
-        ...(emitEventApplyProof ? { terminalStateVerified: true } : {}),
-      });
-      logProgress(`closed #${number}`);
-      closedThisRun.add(pairCloseKey(repo, number));
-      if (item.kind === "pull_request") recordAuthorPrClose(item.author, closeReason);
-      if (postCloseRuntimeYieldReason) {
-        runtimeBudget.onYield?.(postCloseRuntimeYieldReason, false);
-        return;
-      }
-      if (processedCount >= processedLimit) break;
+      if (closeFlow === "yield") return;
+      if (closeFlow === "stop") break;
+      continue;
       } catch (error) {
         if (error instanceof ApplyMutationReviewGuardError && recordApplyMutationGuardReason) {
           if (recordApplyMutationGuardReason(error.message)) break;

@@ -112,6 +112,7 @@ test("review and apply paths persist and revalidate the cursor", () => {
     fs.readFileSync("src/clawsweeper-report-orchestration.ts", "utf8"),
     fs.readFileSync("src/clawsweeper-report-rendering.ts", "utf8"),
     fs.readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8"),
+    fs.readFileSync("src/clawsweeper-apply-review-activity.ts", "utf8"),
   ].join("\n");
 
   assert.match(source, /review_activity_cursor: \$\{options\.context\.pullReviewActivityCursor/);

@@ -543,7 +543,11 @@ test("apply receipts start per item and persist mutation observation before fina
     source,
     /const commentMutationOccurred = result\.commentMutationOccurred === true;[\s\S]*applyActionEventDisposition\([\s\S]*commentMutationOccurred,[\s\S]*reviewCommentPublicationEventDisposition\([\s\S]*commentMutationOccurred,/,
   );
-  assert.match(applyLoop, /closeItem\(\{ number, kind: item\.kind/);
+  assert.match(applyLoop, /executeApplyClose\(dependencies, \{/);
+  assert.match(
+    readText("src/clawsweeper-apply-close-execution.ts"),
+    /closeItem\(\{ number, kind: item\.kind/,
+  );
   const mutationAttemptStart = source.indexOf("function startApplyMutationAttempt(");
   const mutationIdentityStart = source.indexOf(
     "const businessIdempotencyIdentity = applyMutationBusinessIdempotencyIdentityForTest({",
@@ -769,9 +773,20 @@ test("retry and review publication lanes finalize unexpected failures", () => {
   );
   assert.match(
     source,
-    /syncStalePullRequestReviewLabels\(\{[\s\S]{0,240}onMutation: recordMutation/,
+    /syncApplyPullRequestLabels\(dependencies, \{[\s\S]{0,350}onMutation: recordMutation/,
   );
-  assert.match(source, /syncPriorityLabel\(\{[\s\S]{0,240}onMutation: recordMutation/);
+  assert.match(
+    source,
+    /syncApplyReportLabels\(dependencies, \{[\s\S]{0,550}onMutation: recordMutation/,
+  );
+  assert.match(
+    readText("src/clawsweeper-apply-pull-request-labels.ts"),
+    /syncStalePullRequestReviewLabels\(\{[\s\S]{0,180}onMutation/,
+  );
+  assert.match(
+    readText("src/clawsweeper-apply-report-labels.ts"),
+    /syncPriorityLabel\(\{[\s\S]{0,220}onMutation/,
+  );
   assert.match(
     readText("src/clawsweeper-label-sync.ts"),
     /tryAddOptionalLabel\(\{[\s\S]{0,220}onMutation: options\.onMutation/,

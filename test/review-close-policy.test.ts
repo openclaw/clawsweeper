@@ -63,6 +63,41 @@ test("review prompt closes independently disproven nonexistent-source bug report
   assert.match(prompt, /Keep open when an affected shipped version/);
 });
 
+test("external desktop-product bugs close without inventing upstream maintainer work", () => {
+  const prompt = readFileSync(new URL("../prompts/review-item.md", import.meta.url), "utf8");
+
+  assert.match(prompt, /QClaw `0\.x` desktop\/client reports/);
+  assert.match(prompt, /`qclaw\/\*` providers/);
+  assert.match(prompt, /externally maintained WeChat adapters/);
+  assert.match(prompt, /propose a high-confidence `not_actionable_in_repo` close immediately/);
+  assert.match(prompt, /do not request private\/encrypted third-party traces/);
+  assert.match(prompt, /do not turn missing third-party logs into a maintainer-review blocker/);
+  assert.match(
+    prompt,
+    /evidence demonstrates an actual failure in an official OpenClaw release or owned source path/,
+  );
+  assert.match(
+    prompt,
+    /Merely citing healthy owned source paths, generic fallback\/delivery plumbing/,
+  );
+  assert.match(prompt, /set `workCandidate: "none"`/);
+
+  const decision = closeDecision({
+    closeReason: "not_actionable_in_repo",
+    itemCategory: "bug",
+    summary:
+      "QClaw owns the affected renderer and provider; OpenClaw delivery-evidence and fallback source paths show no defect.",
+    closeComment:
+      "Please report this QClaw desktop and provider issue to the QClaw application maintainers.",
+    workCandidate: "none",
+  });
+  assert.deepEqual(validateCloseDecision(item(), decision), { ok: true });
+  assert.equal(
+    reviewActionForDecision({ item: item(), decision, git }).actionTaken,
+    "proposed_close",
+  );
+});
+
 test("unsponsored feature issue proposals emit source-bound trusted close markers", () => {
   const markers = reviewAutomationMarkersFromReport(
     reportFrontMatter({

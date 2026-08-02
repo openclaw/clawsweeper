@@ -1037,6 +1037,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     readText("src/clawsweeper-runtime.ts"),
     readText("src/clawsweeper-command-operations.ts"),
     readText("src/clawsweeper-apply-decision-workflow.ts"),
+    readText("src/clawsweeper-apply-source-freshness.ts"),
   ].join("\n");
   assert.match(reviewSource, /reserveReviewLeaseCommand/);
   assert.match(reviewSource, /suppliedReviewStartLeaseFromArgs/);

@@ -478,12 +478,16 @@ test("apply retains its mutation lease until the item action is complete", () =>
   const source = readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8");
   const acquire = source.indexOf("const mutationLeaseBlockReason = acquireApplyMutationLease");
   const commentSync = source.indexOf("syncedComment = upsertReviewComment(", acquire);
-  const close = source.indexOf("closeItem({ number, kind: item.kind", commentSync);
+  const close = source.indexOf("const closeFlow = executeApplyClose(", commentSync);
   const release = source.indexOf("releaseActiveApplyMutationLease();", close);
   assert.ok(acquire >= 0);
   assert.ok(commentSync > acquire);
   assert.ok(close > commentSync);
   assert.ok(release > close);
+  assert.match(
+    readFileSync("src/clawsweeper-apply-close-execution.ts", "utf8"),
+    /currentApplyMutationLeaseBlockReason\(\)[\s\S]*closeItem\(\{ number, kind: item\.kind/,
+  );
   assert.doesNotMatch(source, /deleteSupersededDedicatedReviewStartLeases/);
 });
 

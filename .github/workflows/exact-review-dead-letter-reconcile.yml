@@ -2,19 +2,19 @@ name: Automatically reconcile exact-review dead letters
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       max_targets:
         description: "Maximum canonical targets to inspect (1-100)"
         required: false
         type: string
-        default: "25"
+        default: "100"
       max_recoveries:
         description: "Maximum fresh review recoveries (0-10)"
         required: false
         type: string
-        default: "5"
+        default: "10"
       execute:
         description: "Resolve terminal rows and enqueue safe fresh reviews"
         required: false
@@ -53,8 +53,8 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}
           GITHUB_TOKEN: ${{ github.token }}
-          MAX_TARGETS: ${{ github.event.inputs.max_targets || '25' }}
-          MAX_RECOVERIES: ${{ github.event.inputs.max_recoveries || '5' }}
+          MAX_TARGETS: ${{ github.event.inputs.max_targets || '100' }}
+          MAX_RECOVERIES: ${{ github.event.inputs.max_recoveries || '10' }}
           EXECUTE: ${{ github.event_name == 'schedule' && 'true' || github.event.inputs.execute }}
         run: |
           set -euo pipefail
