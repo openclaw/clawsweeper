@@ -16889,6 +16889,74 @@ test("guarded dead-letter resolution preserves a concurrently active transferred
   assert.equal(state.items["openclaw/new#19"].state, "pending");
 });
 
+test("guarded dead-letter resolution rejects an entire mixed-safe batch atomically", async () => {
+  const { storage, queue, id: safeId } = await guardedDeadLetterFixture(17951);
+  const unsafe = leasedExactReviewPublicationItem(17952, "179520");
+  unsafe.attempts = 2;
+  Object.assign(unsafe, { publicationFailureAttempts: 2 });
+  const state = (await storage.get("exact-review-queue")) as {
+    deliveries: Record<string, unknown>;
+    items: Record<string, typeof unsafe>;
+  };
+  state.items[unsafe.key] = unsafe;
+  await storage.put("exact-review-queue", state);
+  const completed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: unsafe.leaseId,
+        item_key: unsafe.key,
+        lease_revision: unsafe.leaseRevision,
+        claim_generation: unsafe.claimGeneration,
+        run_id: unsafe.claimedRunId,
+        run_attempt: unsafe.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "permanent_failure",
+        reason_code: "invalid_artifact",
+      }),
+    }),
+  );
+  assert.deepEqual(await completed.json(), { ok: true, requeued: false });
+  const before = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/dead-letters/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 10 }),
+      }),
+    )
+  ).json();
+  const unsafeId = before.dead_letters.find(
+    (entry) => entry.dead_letter_id !== safeId,
+  ).dead_letter_id;
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/dead-letters/resolve", {
+      method: "POST",
+      body: JSON.stringify({
+        ids: [safeId, unsafeId],
+        note: "automatic duplicate cleanup",
+        resolution_aliases: [
+          { id: safeId, aliases: ["openclaw/openclaw#17951"] },
+          { id: unsafeId, aliases: ["openclaw/incorrect#1"] },
+        ],
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), { ok: true, resolved: 0, skipped: 2, unparked: 0 });
+  const after = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/dead-letters/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 10 }),
+      }),
+    )
+  ).json();
+  assert.deepEqual(
+    after.dead_letters.map((entry) => entry.dead_letter_id).sort(),
+    [safeId, unsafeId].sort(),
+  );
+});
+
 test("guarded dead-letter recovery retries remain idempotent after inventory changes", async () => {
   const { queue, id } = await guardedDeadLetterFixture(1796);
   const payload = {

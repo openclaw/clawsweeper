@@ -428,6 +428,46 @@ test("concurrent duplicate cleanup refreshes inventory before safe recovery", as
   assert.deepEqual(scenario.recoveries[0]?.ids, ["primary"]);
 });
 
+test("reconciliation rejects a non-atomic guarded cleanup response", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "primary",
+        "publication:primary",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "duplicate-a",
+        "publication:duplicate-a",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "duplicate-b",
+        "publication:duplicate-b",
+        3,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+    ],
+    nonAtomicFirstCleanup: true,
+  });
+
+  assert.equal(scenario.first.code, 1);
+  assert.match(scenario.first.stderr, /guarded dead-letter cleanup was not atomic/);
+  assert.equal(scenario.inventoryRequests, 1);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
 test("repeated cleanup races remain bounded and never recover stale aliases", async () => {
   const rows = Array.from({ length: 3 }, (_, index) => [
     row(
@@ -1479,6 +1519,12 @@ async function automaticReconcileScenario(options) {
       }
       response.end(
         JSON.stringify({ ok: true, resolved: 0, skipped: body.ids.length, unparked: 0 }),
+      );
+      return;
+    }
+    if (options.nonAtomicFirstCleanup && resolutions.length === 1) {
+      response.end(
+        JSON.stringify({ ok: true, resolved: 1, skipped: body.ids.length - 1, unparked: 0 }),
       );
       return;
     }

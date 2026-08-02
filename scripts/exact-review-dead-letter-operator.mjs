@@ -76,7 +76,11 @@ async function main(argv) {
         return;
       } catch (error) {
         if (!(error instanceof DeadLetterInventoryChangedError)) throw error;
-        progress.summary.resolved_rows += error.summary.resolved;
+        // Guarded resolution is one Worker transaction: an inventory race skips
+        // every requested row. Refuse recovery if that safety contract changes.
+        if (error.summary.resolved !== 0 || error.summary.unparked !== 0) {
+          throw new Error("guarded dead-letter cleanup was not atomic; refusing stale recovery");
+        }
         if (
           refreshes === MAX_RECONCILE_INVENTORY_REFRESHES ||
           progress.summary.inspected_targets >= args.maxTargets
