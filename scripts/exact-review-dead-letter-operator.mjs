@@ -18,10 +18,13 @@ const ACTIVE_RECOVERY_REASONS = new Set(["fresh_review_already_active", "publica
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9:._-]{1,200}$/;
 
 class DeadLetterInventoryChangedError extends Error {
-  constructor(summary) {
+  constructor(summary, rowIds, targetKeys, blockedGroups) {
     super("dead-letter cleanup changed during reconciliation; refusing stale recovery");
     this.name = "DeadLetterInventoryChangedError";
     this.summary = summary;
+    this.rowIds = [...new Set(rowIds)];
+    this.targetKeys = [...new Set(targetKeys.filter(Boolean).map(normalizeRecoveryTargetKey))];
+    this.blockedGroups = blockedGroups ?? [{ rowIds: this.rowIds, targetKeys: this.targetKeys }];
   }
 }
 
@@ -69,7 +72,14 @@ async function main(argv) {
   }
 
   if (args.action === "reconcile") {
-    const progress = { summary: null };
+    const progress = {
+      summary: null,
+      blockedRows: new Set(),
+      blockedTargets: new Set(),
+      countedSkippedTargets: new Set(),
+      inspectedTargetIds: new Set(),
+      pendingRecoveryTargetIds: new Set(),
+    };
     for (let refreshes = 0; refreshes <= MAX_RECONCILE_INVENTORY_REFRESHES; refreshes += 1) {
       try {
         await reconcileDeadLetters({ inventory, queueUrl, secret, args, progress });
@@ -78,12 +88,17 @@ async function main(argv) {
         if (!(error instanceof DeadLetterInventoryChangedError)) throw error;
         // Guarded resolution is one Worker transaction: an inventory race skips
         // every requested row. Refuse recovery if that safety contract changes.
-        if (error.summary.resolved !== 0 || error.summary.unparked !== 0) {
+        if (
+          error.summary.resolved !== 0 ||
+          error.summary.unparked !== 0 ||
+          error.summary.skipped !== error.rowIds.length
+        ) {
           throw new Error("guarded dead-letter cleanup was not atomic; refusing stale recovery");
         }
         if (
           refreshes === MAX_RECONCILE_INVENTORY_REFRESHES ||
-          progress.summary.inspected_targets >= args.maxTargets
+          (progress.summary.inspected_targets >= args.maxTargets &&
+            progress.pendingRecoveryTargetIds.size === 0)
         ) {
           // Never recover against stale aliases if producers keep changing the
           // inventory faster than this bounded operator can inspect it. Keep
@@ -100,6 +115,24 @@ async function main(argv) {
           secret,
           maxPages: MAX_RECONCILE_INVENTORY_PAGES,
         });
+        const openRowIds = new Set(inventory.dead_letters.map((row) => row.dead_letter_id));
+        for (const blocked of error.blockedGroups) {
+          const unchangedRowIds = blocked.rowIds.filter((id) => openRowIds.has(id));
+          for (const id of unchangedRowIds) progress.blockedRows.add(id);
+          if (unchangedRowIds.length) {
+            if (
+              blocked.targetKeys.every((target) => !/^([^/]+)\/([^#]+)#([1-9]\d*)$/.test(target))
+            ) {
+              for (const row of inventory.dead_letters) {
+                const target = row.fresh_recovery.item_key;
+                if (!target || !/^([^/]+)\/([^#]+)#([1-9]\d*)$/.test(target)) {
+                  progress.blockedRows.add(row.dead_letter_id);
+                }
+              }
+            }
+            for (const target of blocked.targetKeys) progress.blockedTargets.add(target);
+          }
+        }
         await writeFile(args.output, `${JSON.stringify(inventory, null, 2)}\n`, "utf8");
       }
     }
@@ -253,12 +286,13 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
   });
   summary.inventory_complete = inventory.complete;
   summary.queue_pressure = initialPressure.status;
+  progress.pendingRecoveryTargetIds.clear();
   const groups = new Map();
   const invalidRows = [];
   for (const row of inventory.dead_letters) {
     const target = row.fresh_recovery.item_key;
     if (!target || !/^([^/]+)\/([^#]+)#([1-9]\d*)$/.test(target)) {
-      invalidRows.push(row);
+      if (!progress.blockedRows.has(row.dead_letter_id)) invalidRows.push(row);
       continue;
     }
     const key = normalizeRecoveryTargetKey(target);
@@ -266,13 +300,57 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
     group.rows.push(row);
     groups.set(key, group);
   }
+  const blockedResolutions = [];
+  const resolveForReconciliation = async (options) => {
+    try {
+      return await reconcileResolve(options);
+    } catch (error) {
+      if (
+        !(error instanceof DeadLetterInventoryChangedError) ||
+        error.summary.resolved !== 0 ||
+        error.summary.unparked !== 0 ||
+        error.summary.skipped !== error.rowIds.length
+      ) {
+        throw error;
+      }
+      blockedResolutions.push(error);
+      return { ...error.summary, blocked: true };
+    }
+  };
+  const refreshBlockedInventory = () => {
+    if (!blockedResolutions.length) return;
+    throw new DeadLetterInventoryChangedError(
+      {
+        resolved: 0,
+        skipped: blockedResolutions.reduce((total, error) => total + error.summary.skipped, 0),
+        unparked: 0,
+      },
+      blockedResolutions.flatMap((error) => error.rowIds),
+      blockedResolutions.flatMap((error) => error.targetKeys),
+      blockedResolutions.flatMap((error) => error.blockedGroups),
+    );
+  };
+  const accountSkippedTarget = (nodeId) => {
+    if (progress.countedSkippedTargets.has(nodeId)) return;
+    progress.countedSkippedTargets.add(nodeId);
+    summary.skipped_targets += 1;
+  };
+  const canInspectTarget = (nodeId) =>
+    progress.inspectedTargetIds.has(nodeId) || summary.inspected_targets < args.maxTargets;
+  const reserveTargetInspection = (nodeId) => {
+    if (progress.inspectedTargetIds.has(nodeId)) return true;
+    if (summary.inspected_targets >= args.maxTargets) return false;
+    progress.inspectedTargetIds.add(nodeId);
+    summary.inspected_targets += 1;
+    return true;
+  };
 
   // A partial page window cannot prove that a transferred alias or an active
   // sibling was observed. Invalid rows are independently terminal and safe to
   // drain; every GitHub-targeted mutation waits for a complete inventory.
   if (!inventory.complete) {
     if (invalidRows.length) {
-      const resolution = await reconcileResolve({
+      const resolution = await resolveForReconciliation({
         queueUrl,
         secret,
         rows: invalidRows.slice(0, MAX_RESOLUTION_IDS),
@@ -283,6 +361,7 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
       summary.resolved_rows += resolution.resolved;
       summary.invalid_rows += resolution.resolved;
     }
+    refreshBlockedInventory();
     summary.skipped_targets += groups.size;
     printResult(summary);
     return;
@@ -293,7 +372,7 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
     identities = await inspectCanonicalTargets([...groups.values()], args.maxTargets);
   } catch {
     if (invalidRows.length) {
-      const resolution = await reconcileResolve({
+      const resolution = await resolveForReconciliation({
         queueUrl,
         secret,
         rows: invalidRows.slice(0, MAX_RESOLUTION_IDS),
@@ -304,6 +383,7 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
       summary.resolved_rows += resolution.resolved;
       summary.invalid_rows += resolution.resolved;
     }
+    refreshBlockedInventory();
     summary.skipped_targets += groups.size;
     printResult(summary);
     return;
@@ -342,31 +422,35 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
         ...(live.canonical_target ? [normalizeRecoveryTargetKey(live.canonical_target)] : []),
       ]),
     ];
+    if (groupAliases.some((alias) => progress.blockedTargets.has(alias))) {
+      accountSkippedTarget(live.node_id);
+      continue;
+    }
     if (
       hasActiveWork ||
       (live.state === "open" && !rows.some((row) => row.fresh_recovery.eligible))
     ) {
-      summary.skipped_targets += 1;
+      accountSkippedTarget(live.node_id);
       continue;
     }
     if (live.state === "closed") {
-      if (summary.inspected_targets >= args.maxTargets) {
-        summary.skipped_targets += 1;
+      if (!canInspectTarget(live.node_id)) {
+        accountSkippedTarget(live.node_id);
         continue;
       }
       let current;
       try {
         current = await inspectRecoveryTarget(canonicalTarget);
       } catch {
-        summary.skipped_targets += 1;
+        accountSkippedTarget(live.node_id);
         continue;
       }
       if (current.state !== "closed" || current.node_id !== live.node_id) {
-        summary.skipped_targets += 1;
+        accountSkippedTarget(live.node_id);
         continue;
       }
-      summary.inspected_targets += 1;
-      const resolution = await reconcileResolve({
+      reserveTargetInspection(live.node_id);
+      const resolution = await resolveForReconciliation({
         queueUrl,
         secret,
         rows: rows.slice(0, MAX_RESOLUTION_IDS),
@@ -376,6 +460,9 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
         canonicalTarget: current.canonical_target,
         aliases: groupAliases,
       });
+      if (resolution.blocked) {
+        continue;
+      }
       summary.resolved_rows += resolution.resolved;
       summary.closed_rows += resolution.resolved;
       if (resolution.unparked) {
@@ -391,24 +478,23 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
           row.fresh_recovery.source_head_sha === live.head_sha),
     );
     if (!primary || summary.recovered_targets + recoveries.length >= args.maxRecoveries) {
-      summary.skipped_targets += 1;
+      accountSkippedTarget(live.node_id);
       continue;
     }
     const pressure = await readQueuePressure(queueUrl);
     summary.queue_pressure = pressure.status;
     if (pressure.status !== "idle" || pressure.availableSlots <= recoveries.length) {
-      summary.skipped_targets += 1;
+      accountSkippedTarget(live.node_id);
       continue;
     }
-    if (summary.inspected_targets >= args.maxTargets) {
-      summary.skipped_targets += 1;
+    if (!reserveTargetInspection(live.node_id)) {
+      accountSkippedTarget(live.node_id);
       continue;
     }
-    summary.inspected_targets += 1;
     const duplicates = rows.filter((row) => row.dead_letter_id !== primary.dead_letter_id);
     if (duplicates.length) {
       const selectedDuplicates = duplicates.slice(0, MAX_RESOLUTION_IDS);
-      const resolution = await reconcileResolve({
+      const resolution = await resolveForReconciliation({
         queueUrl,
         secret,
         rows: selectedDuplicates,
@@ -418,6 +504,9 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
         canonicalTarget: live.canonical_target,
         aliases: groupAliases,
       });
+      if (resolution.blocked) {
+        continue;
+      }
       summary.resolved_rows += resolution.resolved;
       summary.duplicate_rows += resolution.resolved;
       if (
@@ -425,7 +514,7 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
         resolution.resolved !== selectedDuplicates.length ||
         duplicates.length > MAX_RESOLUTION_IDS
       ) {
-        summary.skipped_targets += 1;
+        accountSkippedTarget(live.node_id);
         if (resolution.unparked) {
           printResult(summary);
           return;
@@ -439,10 +528,11 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
       live,
       aliases: groupAliases,
     });
+    progress.pendingRecoveryTargetIds.add(live.node_id);
   }
 
   if (invalidRows.length) {
-    const resolution = await reconcileResolve({
+    const resolution = await resolveForReconciliation({
       queueUrl,
       secret,
       rows: invalidRows.slice(0, MAX_RESOLUTION_IDS),
@@ -458,6 +548,7 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
     }
   }
 
+  refreshBlockedInventory();
   if (recoveries.length) {
     for (const recovery of recoveries) {
       let current;
@@ -601,7 +692,15 @@ async function reconcileResolve({
   });
   const summary = mutationSummary("resolve", result);
   if (summary.resolved !== rows.length || summary.skipped !== 0) {
-    throw new DeadLetterInventoryChangedError(summary);
+    throw new DeadLetterInventoryChangedError(
+      summary,
+      rows.map((row) => row.dead_letter_id),
+      [
+        ...rows.map((row) => row.fresh_recovery.item_key),
+        ...(canonicalTarget ? [canonicalTarget] : []),
+        ...aliases,
+      ],
+    );
   }
   for (const row of rows) openIds?.delete(row.dead_letter_id);
   return summary;

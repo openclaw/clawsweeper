@@ -428,6 +428,465 @@ test("concurrent duplicate cleanup refreshes inventory before safe recovery", as
   assert.deepEqual(scenario.recoveries[0]?.ids, ["primary"]);
 });
 
+test("an unchanged blocked cleanup cannot starve independent fresh recovery", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "blocked",
+        "publication:blocked",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "recoverable",
+        "publication:recoverable",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    closedNumbers: [1],
+    blockedCleanupIds: ["blocked"],
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.inspected_targets, 2);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.skipped_targets, 1);
+  assert.equal(scenario.inventoryRequests, 2);
+  assert.deepEqual(
+    scenario.resolutions.map((resolution) => resolution.ids),
+    [["blocked"]],
+  );
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["recoverable"]],
+  );
+});
+
+test("a blocked targetless legacy row cannot starve independent fresh recovery", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "legacy-blocked",
+        "publication:legacy-blocked",
+        1,
+        "tuple_protocol_invalid",
+        false,
+        "invalid_dead_letter_item",
+        null,
+      ),
+      row(
+        "recoverable",
+        "publication:recoverable",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    blockedCleanupIds: ["legacy-blocked"],
+    maxTargets: 1,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.inspected_targets, 1);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.invalid_rows, 0);
+  assert.equal(scenario.inventoryRequests, 2);
+  assert.deepEqual(
+    scenario.resolutions.map((resolution) => resolution.ids),
+    [["legacy-blocked"]],
+  );
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["recoverable"]],
+  );
+});
+
+test("many blocked targetless legacy rows cannot exhaust the inventory refresh budget", async () => {
+  const blocked = Array.from({ length: 60 }, (_, index) =>
+    row(
+      `legacy-${index}`,
+      `publication:legacy-${index}`,
+      index + 1,
+      "tuple_protocol_invalid",
+      false,
+      "invalid_dead_letter_item",
+      null,
+    ),
+  );
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      ...blocked,
+      row(
+        "recoverable",
+        "publication:recoverable",
+        61,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    blockedCleanupIds: blocked.map((entry) => entry.dead_letter_id),
+    maxTargets: 1,
+    maxRecoveries: 1,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.inspected_targets, 1);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(scenario.inventoryRequests, 2);
+  assert.equal(scenario.resolutions.length, 1);
+  assert.equal(scenario.resolutions[0]?.ids.length, 20);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["recoverable"]],
+  );
+});
+
+test("multiple independently blocked groups share one authoritative refresh", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      ...Array.from({ length: 3 }, (_, index) =>
+        row(
+          `blocked-${index + 1}`,
+          `publication:blocked-${index + 1}`,
+          index + 1,
+          "retry_exhausted",
+          true,
+          "eligible",
+          `openclaw/repo#${index + 1}`,
+        ),
+      ),
+      row(
+        "recoverable",
+        "publication:recoverable",
+        4,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#4",
+      ),
+    ],
+    closedNumbers: [1, 2, 3],
+    blockedCleanupIds: ["blocked-1", "blocked-2", "blocked-3"],
+    maxTargets: 4,
+    maxRecoveries: 1,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.inspected_targets, 4);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.skipped_targets, 3);
+  assert.equal(scenario.inventoryRequests, 2);
+  assert.deepEqual(
+    scenario.resolutions.map((resolution) => resolution.ids),
+    [["blocked-1"], ["blocked-2"], ["blocked-3"]],
+  );
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["recoverable"]],
+  );
+});
+
+test("blocked canonical targets are counted only once across inventory refreshes", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      ...Array.from({ length: 2 }, (_, index) =>
+        row(
+          `blocked-${index + 1}`,
+          `publication:blocked-${index + 1}`,
+          index + 1,
+          "retry_exhausted",
+          true,
+          "eligible",
+          `openclaw/repo#${index + 1}`,
+        ),
+      ),
+      row(
+        "recoverable",
+        "publication:recoverable",
+        3,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#3",
+      ),
+    ],
+    closedNumbers: [1, 2],
+    blockedCleanupIds: ["blocked-1", "blocked-2"],
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.inspected_targets, 3);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.skipped_targets, 2);
+  assert.equal(scenario.inventoryRequests, 2);
+});
+
+test("active and capped targets are counted only once across blocked inventory refreshes", async () => {
+  for (const active of [true, false]) {
+    const scenario = await automaticReconcileScenario({
+      rows: [
+        row(
+          "blocked",
+          "publication:blocked",
+          1,
+          "retry_exhausted",
+          true,
+          "eligible",
+          "openclaw/repo#1",
+        ),
+        row(
+          "recoverable",
+          "publication:recoverable",
+          2,
+          "retry_exhausted",
+          true,
+          "eligible",
+          "openclaw/repo#2",
+        ),
+        row(
+          "deferred",
+          "publication:deferred",
+          3,
+          "retry_exhausted",
+          !active,
+          active ? "fresh_review_already_active" : "eligible",
+          "openclaw/repo#3",
+        ),
+      ],
+      closedNumbers: [1],
+      blockedCleanupIds: ["blocked"],
+      maxTargets: 3,
+      maxRecoveries: 1,
+    });
+
+    assert.equal(scenario.first.code, 0, scenario.first.stderr);
+    const summary = JSON.parse(scenario.first.stdout);
+    assert.equal(summary.recovered_targets, 1);
+    assert.equal(summary.skipped_targets, 2);
+    assert.equal(scenario.inventoryRequests, 2);
+  }
+});
+
+test("staged recovery retains its original target budget across a blocked refresh", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "blocked",
+        "publication:blocked",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "recoverable",
+        "publication:recoverable",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+      row(
+        "over-budget",
+        "publication:over-budget",
+        3,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#3",
+      ),
+    ],
+    closedNumbers: [1],
+    blockedCleanupIds: ["blocked"],
+    maxTargets: 2,
+    maxRecoveries: 1,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.inspected_targets, 2);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(scenario.inventoryRequests, 2);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["recoverable"]],
+  );
+});
+
+test("blocked duplicate cleanup fences its primary without starving another target", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "blocked-primary",
+        "publication:blocked-primary",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "blocked-duplicate",
+        "publication:blocked-duplicate",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "recoverable",
+        "publication:recoverable",
+        3,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    blockedCleanupIds: ["blocked-duplicate"],
+    maxTargets: 2,
+    maxRecoveries: 1,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.inspected_targets, 2);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.skipped_targets, 1);
+  assert.equal(scenario.inventoryRequests, 2);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["recoverable"]],
+  );
+});
+
+test("only unchanged blocked groups fence aliases after an aggregated refresh", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "blocked",
+        "publication:blocked",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "primary",
+        "publication:primary",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+      row(
+        "duplicate",
+        "publication:duplicate",
+        3,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+      row(
+        "recoverable",
+        "publication:recoverable",
+        4,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#3",
+      ),
+    ],
+    closedNumbers: [1],
+    blockedCleanupIds: ["blocked"],
+    skipDuplicateCleanupCount: 1,
+    maxTargets: 3,
+    maxRecoveries: 2,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.inspected_targets, 3);
+  assert.equal(summary.recovered_targets, 2);
+  assert.equal(summary.skipped_targets, 1);
+  assert.equal(scenario.inventoryRequests, 2);
+  assert.deepEqual(
+    scenario.resolutions.map((resolution) => resolution.ids),
+    [["blocked"], ["duplicate"]],
+  );
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["primary", "recoverable"]],
+  );
+});
+
+test("a blocked transferred alias fences its whole target without starving another", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "blocked-old",
+        "publication:blocked-old",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/old#1",
+      ),
+      row(
+        "blocked-new",
+        "publication:blocked-new",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/new#19",
+      ),
+      row(
+        "recoverable",
+        "publication:recoverable",
+        3,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    closedNumbers: [1, 19],
+    blockedCleanupIds: ["blocked-old"],
+    nodeId: (number) => (number === 2 ? "INDEPENDENT" : "BLOCKED_TRANSFER"),
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(JSON.parse(scenario.first.stdout).recovered_targets, 1);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["recoverable"]],
+  );
+  assert.equal(scenario.resolutions.length, 1);
+});
+
 test("reconciliation rejects a non-atomic guarded cleanup response", async () => {
   const scenario = await automaticReconcileScenario({
     rows: [
@@ -468,7 +927,39 @@ test("reconciliation rejects a non-atomic guarded cleanup response", async () =>
   assert.equal(scenario.recoveries.length, 0);
 });
 
-test("repeated cleanup races remain bounded and never recover stale aliases", async () => {
+test("reconciliation rejects a malformed zero-mutation guarded cleanup response", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "blocked",
+        "publication:blocked",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "recoverable",
+        "publication:recoverable",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    closedNumbers: [1],
+    malformedGuardIds: ["blocked"],
+  });
+
+  assert.equal(scenario.first.code, 1);
+  assert.match(scenario.first.stderr, /guarded dead-letter cleanup was not atomic/);
+  assert.equal(scenario.inventoryRequests, 1);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("independent cleanup races refresh once before recovering current aliases", async () => {
   const rows = Array.from({ length: 3 }, (_, index) => [
     row(
       `primary-${index}`,
@@ -495,10 +986,18 @@ test("repeated cleanup races remain bounded and never recover stale aliases", as
   });
 
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
-  assert.equal(JSON.parse(scenario.first.stdout).inventory_changed, true);
-  assert.equal(JSON.parse(scenario.first.stdout).recovered_targets, 0);
-  assert.equal(scenario.inventoryRequests, 3);
-  assert.equal(scenario.recoveries.length, 0);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.recovered_targets, 3);
+  assert.equal(summary.inspected_targets, 3);
+  assert.equal(scenario.inventoryRequests, 2);
+  assert.deepEqual(
+    scenario.resolutions.map((resolution) => resolution.ids),
+    [["duplicate-0"], ["duplicate-1"], ["duplicate-2"]],
+  );
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["primary-0", "primary-1", "primary-2"]],
+  );
 });
 
 test("inventory refreshes preserve the original per-run target budget", async () => {
@@ -1571,6 +2070,16 @@ async function automaticReconcileScenario(options) {
       return;
     }
     resolutions.push(body);
+    if (options.malformedGuardIds?.some((id) => body.ids.includes(id))) {
+      response.end(JSON.stringify({ ok: true, resolved: 0, skipped: 0, unparked: 0 }));
+      return;
+    }
+    if (options.blockedCleanupIds?.some((id) => body.ids.includes(id))) {
+      response.end(
+        JSON.stringify({ ok: true, resolved: 0, skipped: body.ids.length, unparked: 0 }),
+      );
+      return;
+    }
     if (duplicateSkipsRemaining > 0 || options.skipCleanupAtResolution === resolutions.length) {
       if (duplicateSkipsRemaining > 0) duplicateSkipsRemaining -= 1;
       for (const id of body.ids) {
