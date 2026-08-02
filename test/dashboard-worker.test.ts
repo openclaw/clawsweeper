@@ -9207,6 +9207,187 @@ test("durable lifecycle Bay is a pure, redacted per-target-revision reducer snap
   assert.doesNotMatch(publicText, /claimGeneration|commentId|digest|cursor/i);
 });
 
+test("operator lifecycle audit inventory is signed, redacted, paginated, snapshot-stable, and short-lived", async () => {
+  const coldQueue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const cold = await coldQueue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/lifecycle-audit/inventory", {
+      method: "POST",
+      body: JSON.stringify({ page_size: 1 }),
+    }),
+  );
+  const coldInventory = (await cold.json()) as {
+    exact_review_lifecycle_audit_inventory: {
+      collection: { state: string };
+      snapshot: { total_records: number } | null;
+      page: { returned: number } | null;
+    };
+  };
+  assert.equal(cold.status, 200);
+  assert.equal(coldInventory.exact_review_lifecycle_audit_inventory.collection.state, "complete");
+  assert.equal(coldInventory.exact_review_lifecycle_audit_inventory.snapshot?.total_records, 0);
+  assert.equal(coldInventory.exact_review_lifecycle_audit_inventory.page?.returned, 0);
+
+  const unavailableStorage = new MemoryDurableStorage();
+  new ExactReviewLifecycleProjectionStore(unavailableStorage).ensureSchemaSync();
+  unavailableStorage.failNextSql(/exact_review_lifecycle_audit_snapshots_v1/);
+  const unavailableQueue = new ExactReviewQueue(
+    {
+      storage: unavailableStorage,
+      blockConcurrencyWhile: async (callback: () => Promise<void>) => callback(),
+    },
+    {},
+  );
+  const unavailable = await unavailableQueue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/lifecycle-audit/inventory", {
+      method: "POST",
+      body: JSON.stringify({ page_size: 1 }),
+    }),
+  );
+  const unavailableInventory = (await unavailable.json()) as {
+    exact_review_lifecycle_audit_inventory: { collection: { state: string; reason: string } };
+  };
+  assert.deepEqual(unavailableInventory.exact_review_lifecycle_audit_inventory.collection, {
+    state: "unknown",
+    reason: "unavailable",
+  });
+
+  const now = Date.now();
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  lifecycle.ensureSchemaSync();
+  for (const number of [960, 961, 962]) {
+    const identity = {
+      canonicalTargetKey: `openclaw/openclaw#${number}`,
+      fenceKey: `fence-secret-${number}`,
+      revision: 1,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `delivery-secret-${number}`,
+      sourceAction: "re_review",
+      commandOriginated: number === 960,
+      statusMarker: number === 960 ? `status-secret-${number}` : null,
+      statusCommentId: number === 960 ? number : null,
+      observedAt: now - number,
+    });
+  }
+  const queue = new ExactReviewQueue({ storage }, {});
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "shared-secret",
+    EXACT_REVIEW_OPERATOR_SECRET: "operator-secret",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const endpoint =
+    "https://clawsweeper.openclaw.ai/internal/exact-review/lifecycle-audit/inventory";
+  const request = async (body: string, secret = "operator-secret") =>
+    worker.fetch(
+      new Request(endpoint, {
+        method: "POST",
+        headers: {
+          "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret)
+            .update(body)
+            .digest("hex")}`,
+        },
+        body,
+      }),
+      env,
+    );
+
+  const unsigned = await worker.fetch(new Request(endpoint, { method: "POST", body: "{}" }), env);
+  assert.equal(unsigned.status, 401);
+  const sharedSigned = await request(JSON.stringify({ page_size: 2 }), "shared-secret");
+  assert.equal(sharedSigned.status, 401);
+  for (const malformedBody of ["", "null", "[]", "true", "{not-json"]) {
+    const malformed = await request(malformedBody);
+    assert.equal(
+      malformed.status,
+      400,
+      `expected invalid signed body ${JSON.stringify(malformedBody)}`,
+    );
+  }
+
+  const firstBody = JSON.stringify({ page_size: 2 });
+  const first = await request(firstBody);
+  assert.equal(first.status, 200);
+  const firstInventory = (await first.json()) as {
+    exact_review_lifecycle_audit_inventory: {
+      collection: { state: string };
+      snapshot: { id: string; total_records: number; retention_ms: number } | null;
+      page: {
+        records: Array<{ target: { number: number }; state: string }>;
+        next_cursor: string | null;
+      } | null;
+    };
+  };
+  const inventory = firstInventory.exact_review_lifecycle_audit_inventory;
+  assert.equal(inventory.collection.state, "complete");
+  assert.equal(inventory.snapshot?.total_records, 3);
+  assert.equal(inventory.snapshot?.retention_ms, 300_000);
+  assert.deepEqual(
+    inventory.page?.records.map((record) => record.target.number),
+    [960, 961],
+  );
+  assert.ok(inventory.page?.next_cursor);
+  const redacted = JSON.stringify(firstInventory);
+  for (const secret of ["fence-secret", "delivery-secret", "status-secret"]) {
+    assert.doesNotMatch(redacted, new RegExp(secret));
+  }
+  assert.doesNotMatch(redacted, /commentId|digest|receiptId|runId/i);
+
+  lifecycle.recordTerminalDisposition({
+    canonicalTargetKey: "openclaw/openclaw#962",
+    fenceKey: "fence-secret-962",
+    revision: 1,
+    kind: "dead_letter",
+    observedAt: now + 1,
+  });
+  const nextBody = JSON.stringify({ page_size: 2, cursor: inventory.page?.next_cursor });
+  const next = await request(nextBody);
+  const nextInventory = (await next.json()) as {
+    exact_review_lifecycle_audit_inventory: {
+      collection: { state: string };
+      page: {
+        records: Array<{ target: { number: number }; state: string }>;
+        next_cursor: string | null;
+      } | null;
+    };
+  };
+  assert.equal(next.status, 200);
+  assert.equal(nextInventory.exact_review_lifecycle_audit_inventory.collection.state, "complete");
+  assert.deepEqual(
+    nextInventory.exact_review_lifecycle_audit_inventory.page?.records.map((record) => [
+      record.target.number,
+      record.state,
+    ]),
+    [[962, "pending"]],
+  );
+  assert.equal(nextInventory.exact_review_lifecycle_audit_inventory.page?.next_cursor, null);
+
+  const invalid = await request(JSON.stringify({ page_size: 101 }));
+  assert.equal(invalid.status, 400);
+  const expiredAt = Date.now() - 1;
+  storage.sql.exec(
+    "UPDATE exact_review_lifecycle_audit_snapshots_v1 SET created_at = ?, expires_at = ?",
+    expiredAt - 300_000,
+    expiredAt,
+  );
+  const replacement = await request(firstBody);
+  assert.equal(
+    replacement.status,
+    200,
+    "a new snapshot prunes expired rows but retains a stale tombstone",
+  );
+  const stale = await request(nextBody);
+  const staleInventory = (await stale.json()) as {
+    exact_review_lifecycle_audit_inventory: { collection: { state: string; reason: string } };
+  };
+  assert.equal(stale.status, 200);
+  assert.deepEqual(staleInventory.exact_review_lifecycle_audit_inventory.collection, {
+    state: "unknown",
+    reason: "stale",
+  });
+});
+
 test("durable lifecycle Bay keeps ordinary queue initialization available after a pure direct read", async () => {
   const storage = new MemoryDurableStorage();
   let initialized = 0;

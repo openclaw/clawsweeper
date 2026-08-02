@@ -633,6 +633,11 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/claimed-runs");
     if (url.pathname === "/internal/exact-review/dead-letters/list" && request.method === "POST")
       return authenticatedExactReviewOperatorRequest(request, env, "/dead-letters/list");
+    if (
+      url.pathname === "/internal/exact-review/lifecycle-audit/inventory" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewOperatorRequest(request, env, "/lifecycle-audit/inventory");
     if (url.pathname === "/internal/exact-review/dead-letters/replay" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/replay");
     if (

@@ -65,6 +65,7 @@ import {
   EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS,
   ExactReviewLifecycleProjectionStore,
   lifecycleState,
+  parseDurableLifecycleAuditCursor,
   type ExactReviewLifecycleProjection,
   type LifecycleTerminalDisposition,
 } from "./exact-review-lifecycle.ts";
@@ -606,6 +607,9 @@ export class ExactReviewQueue {
     // creation, cleanup, queue reclamation, alarm scheduling, or GitHub work.
     if (request.method === "GET" && url.pathname === "/lifecycle-bay") {
       return json({ durable_lifecycle_bay: this.lifecycleProjectionStore.readBaySnapshot() });
+    }
+    if (request.method === "POST" && url.pathname === "/lifecycle-audit/inventory") {
+      return this.readLifecycleAuditInventory(await request.json().catch(() => null));
     }
     await this.ensureReady();
     this.cleanupLegacyCompatibilitySync();
@@ -3028,6 +3032,31 @@ export class ExactReviewQueue {
     }
 
     return new Response("not found", { status: 404 });
+  }
+
+  private readLifecycleAuditInventory(input: unknown) {
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      return json({ error: "invalid_lifecycle_audit_request" }, 400);
+    }
+    const body = input as Record<string, unknown>;
+    const pageSize = body.page_size === undefined ? 50 : Number(body.page_size);
+    if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+      return json({ error: "invalid_lifecycle_audit_page_size" }, 400);
+    }
+    if (body.cursor === undefined) {
+      return json({
+        exact_review_lifecycle_audit_inventory:
+          this.lifecycleProjectionStore.createAuditInventorySnapshot(pageSize),
+      });
+    }
+    const cursor = parseDurableLifecycleAuditCursor(body.cursor);
+    if (!cursor) return json({ error: "invalid_lifecycle_audit_cursor" }, 400);
+    return json({
+      exact_review_lifecycle_audit_inventory: this.lifecycleProjectionStore.readAuditInventoryPage(
+        cursor,
+        pageSize,
+      ),
+    });
   }
 
   private recentDurablePublicationEvents(window: string) {

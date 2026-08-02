@@ -2,6 +2,14 @@ export const EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE = "exact_review_lifecycle_p
 export const EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS = 5 * 60 * 1000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT = 512;
 export const EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT = 24;
+export const EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT = 10_000;
+export const EXACT_REVIEW_LIFECYCLE_AUDIT_PAGE_MAX = 100;
+export const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
+export const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_MAX_ACTIVE = 4;
+
+const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TABLE = "exact_review_lifecycle_audit_snapshots_v1";
+const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_ROW_TABLE =
+  "exact_review_lifecycle_audit_snapshot_rows_v1";
 
 type SqlStorage = {
   exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
@@ -113,6 +121,28 @@ export type DurableLifecycleBayCard = {
   provenance: "exact-review-lifecycle-projection-v1";
 };
 
+export type DurableLifecycleAuditInventory = {
+  version: 1;
+  source: "exact-review-lifecycle-projection-v1";
+  generated_at: string;
+  collection:
+    | { state: "complete" }
+    | { state: "unknown"; reason: DurableLifecycleBayUnknownReason };
+  snapshot: {
+    id: string;
+    created_at: string;
+    expires_at: string;
+    total_records: number;
+    retention_ms: number;
+  } | null;
+  page: {
+    limit: number;
+    returned: number;
+    next_cursor: string | null;
+    records: DurableLifecycleBayCard[];
+  } | null;
+};
+
 type LifecycleClaimFact = {
   fenceKey: string;
   claimGeneration: number;
@@ -202,6 +232,7 @@ type ProjectionIdentity = {
 export class ExactReviewLifecycleProjectionStore {
   private readonly storage: DurableStorage;
   private schemaReady = false;
+  private auditSchemaReady = false;
 
   constructor(storage: DurableStorage) {
     this.storage = storage;
@@ -810,6 +841,242 @@ export class ExactReviewLifecycleProjectionStore {
     };
   }
 
+  createAuditInventorySnapshot(
+    pageLimit: number,
+    now = Date.now(),
+  ): DurableLifecycleAuditInventory {
+    if (!validAuditPageLimit(pageLimit)) return this.unknownAuditInventory("malformed", now);
+    try {
+      // Unlike the public Bay reader, this authenticated snapshot operation may
+      // initialize its own durable schema so a cold DO has a known empty inventory.
+      this.ensureSchemaSync();
+      this.ensureAuditSchemaSync();
+      return this.storage.transactionSync(() => {
+        this.pruneExpiredAuditSnapshotsSync(now);
+        const active = Array.from(
+          this.storage.sql.exec(
+            `SELECT snapshot_id FROM ${EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TABLE}
+             WHERE expires_at > ? LIMIT ?`,
+            now,
+            EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_MAX_ACTIVE + 1,
+          ),
+        );
+        if (active.length >= EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_MAX_ACTIVE) {
+          return this.unknownAuditInventory("over_cap", now);
+        }
+
+        const rows = Array.from(
+          this.storage.sql.exec(
+            `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+             ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+             LIMIT ?`,
+            EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT + 1,
+          ),
+        );
+        if (rows.length > EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT) {
+          return this.unknownAuditInventory("over_cap", now);
+        }
+        const projections = rows.map((row) => projectionFromRow(String(row.projection_json || "")));
+        if (!projections.every(validDurableLifecycleBayProjection)) {
+          return this.unknownAuditInventory("mixed", now);
+        }
+        const maxRevisionByTarget = new Map<string, number>();
+        for (const projection of projections) {
+          maxRevisionByTarget.set(
+            projection.canonicalTargetKey,
+            Math.max(
+              maxRevisionByTarget.get(projection.canonicalTargetKey) ?? 0,
+              projection.revision,
+            ),
+          );
+        }
+        const records = projections.map((projection) =>
+          durableLifecycleBayCard(
+            projection,
+            now,
+            maxRevisionByTarget.get(projection.canonicalTargetKey),
+          ),
+        );
+        records.sort(compareAuditInventoryRecords);
+
+        const snapshotId = crypto.randomUUID();
+        const expiresAt = now + EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TTL_MS;
+        this.storage.sql.exec(
+          `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TABLE}
+             (snapshot_id, created_at, expires_at, total_records)
+           VALUES (?, ?, ?, ?)`,
+          snapshotId,
+          now,
+          expiresAt,
+          records.length,
+        );
+        for (const [ordinal, record] of records.entries()) {
+          this.storage.sql.exec(
+            `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_ROW_TABLE}
+               (snapshot_id, ordinal, record_json) VALUES (?, ?, ?)`,
+            snapshotId,
+            ordinal,
+            JSON.stringify(record),
+          );
+        }
+        return this.auditInventoryPageSync(snapshotId, 0, pageLimit, now);
+      });
+    } catch (error) {
+      return this.unknownAuditInventory(
+        isMalformedLifecycleError(error) ? "malformed" : "unavailable",
+        now,
+      );
+    }
+  }
+
+  readAuditInventoryPage(
+    cursor: { snapshotId: string; offset: number },
+    pageLimit: number,
+    now = Date.now(),
+  ): DurableLifecycleAuditInventory {
+    if (
+      !validAuditPageLimit(pageLimit) ||
+      !validAuditSnapshotId(cursor.snapshotId) ||
+      !Number.isSafeInteger(cursor.offset) ||
+      cursor.offset < 0
+    ) {
+      return this.unknownAuditInventory("malformed", now);
+    }
+    try {
+      this.ensureAuditSchemaSync();
+      return this.storage.transactionSync(() =>
+        this.auditInventoryPageSync(cursor.snapshotId, cursor.offset, pageLimit, now),
+      );
+    } catch (error) {
+      return this.unknownAuditInventory(
+        isMalformedLifecycleError(error) ? "malformed" : "unavailable",
+        now,
+      );
+    }
+  }
+
+  private ensureAuditSchemaSync() {
+    if (this.auditSchemaReady) return;
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TABLE} (
+         snapshot_id TEXT PRIMARY KEY,
+         created_at INTEGER NOT NULL,
+         expires_at INTEGER NOT NULL,
+         total_records INTEGER NOT NULL CHECK (total_records >= 0)
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_ROW_TABLE} (
+         snapshot_id TEXT NOT NULL,
+         ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+         record_json TEXT NOT NULL,
+         PRIMARY KEY (snapshot_id, ordinal)
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_audit_snapshot_expiry
+         ON ${EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TABLE} (expires_at)`,
+    );
+    this.auditSchemaReady = true;
+  }
+
+  private pruneExpiredAuditSnapshotsSync(now: number) {
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_ROW_TABLE}
+       WHERE snapshot_id IN (
+         SELECT snapshot_id FROM ${EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TABLE}
+         WHERE expires_at <= ?
+       )`,
+      now,
+    );
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TABLE}
+       WHERE expires_at <= ?`,
+      now - EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TTL_MS,
+    );
+  }
+
+  private auditInventoryPageSync(
+    snapshotId: string,
+    offset: number,
+    pageLimit: number,
+    now: number,
+  ): DurableLifecycleAuditInventory {
+    const snapshot = Array.from(
+      this.storage.sql.exec(
+        `SELECT created_at, expires_at, total_records
+         FROM ${EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TABLE} WHERE snapshot_id = ?`,
+        snapshotId,
+      ),
+    )[0];
+    if (!snapshot) return this.unknownAuditInventory("unavailable", now);
+    const createdAt = Number(snapshot.created_at);
+    const expiresAt = Number(snapshot.expires_at);
+    const totalRecords = Number(snapshot.total_records);
+    if (
+      !finiteTimestamp(createdAt) ||
+      !finiteTimestamp(expiresAt) ||
+      expiresAt - createdAt !== EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TTL_MS ||
+      !Number.isSafeInteger(totalRecords) ||
+      totalRecords < 0 ||
+      totalRecords > EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT ||
+      offset > totalRecords
+    ) {
+      return this.unknownAuditInventory("mixed", now);
+    }
+    if (expiresAt <= now) return this.unknownAuditInventory("stale", now);
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `SELECT record_json FROM ${EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_ROW_TABLE}
+         WHERE snapshot_id = ? AND ordinal >= ? ORDER BY ordinal ASC LIMIT ?`,
+        snapshotId,
+        offset,
+        pageLimit + 1,
+      ),
+    );
+    const hasMore = rows.length > pageLimit;
+    const records = rows
+      .slice(0, pageLimit)
+      .map((row) => auditRecordFromRow(String(row.record_json || "")));
+    const expectedRecords = Math.min(pageLimit, totalRecords - offset);
+    if (records.length !== expectedRecords || !records.every(validAuditInventoryRecord)) {
+      return this.unknownAuditInventory("mixed", now);
+    }
+    return {
+      version: 1,
+      source: "exact-review-lifecycle-projection-v1",
+      generated_at: new Date(now).toISOString(),
+      collection: { state: "complete" },
+      snapshot: {
+        id: snapshotId,
+        created_at: new Date(createdAt).toISOString(),
+        expires_at: new Date(expiresAt).toISOString(),
+        total_records: totalRecords,
+        retention_ms: EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TTL_MS,
+      },
+      page: {
+        limit: pageLimit,
+        returned: records.length,
+        next_cursor: hasMore ? encodeAuditCursor(snapshotId, offset + records.length) : null,
+        records,
+      },
+    };
+  }
+
+  private unknownAuditInventory(
+    reason: DurableLifecycleBayUnknownReason,
+    now: number,
+  ): DurableLifecycleAuditInventory {
+    return {
+      version: 1,
+      source: "exact-review-lifecycle-projection-v1",
+      generated_at: new Date(now).toISOString(),
+      collection: { state: "unknown", reason },
+      snapshot: null,
+      page: null,
+    };
+  }
+
   private mutate<T>(
     input: ProjectionIdentity,
     apply: (projection: ExactReviewLifecycleProjection) => T,
@@ -1027,6 +1294,152 @@ function canonicalTarget(value: string) {
     number: Number(match[2]),
     url: `https://github.com/${match[1]}/issues/${match[2]}`,
   };
+}
+
+export function parseDurableLifecycleAuditCursor(value: unknown) {
+  if (typeof value !== "string") return null;
+  const match = /^([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\.(0|[1-9]\d*)$/i.exec(value);
+  if (!match) return null;
+  const offset = Number(match[2]);
+  if (!Number.isSafeInteger(offset)) return null;
+  return { snapshotId: match[1].toLowerCase(), offset };
+}
+
+function encodeAuditCursor(snapshotId: string, offset: number) {
+  return `${snapshotId}.${offset}`;
+}
+
+function compareAuditInventoryRecords(
+  left: DurableLifecycleBayCard,
+  right: DurableLifecycleBayCard,
+) {
+  return (
+    Date.parse(right.updated_at) - Date.parse(left.updated_at) ||
+    left.target.repository.localeCompare(right.target.repository) ||
+    left.target.number - right.target.number ||
+    right.revision - left.revision
+  );
+}
+
+function auditRecordFromRow(value: string): DurableLifecycleBayCard {
+  const parsed = JSON.parse(value) as DurableLifecycleBayCard;
+  if (!validAuditInventoryRecord(parsed)) throw new Error("invalid lifecycle audit snapshot row");
+  return {
+    target: {
+      repository: parsed.target.repository,
+      number: parsed.target.number,
+      url: parsed.target.url,
+    },
+    revision: parsed.revision,
+    state: parsed.state,
+    lane: parsed.lane,
+    terminal_label: parsed.terminal_label,
+    terminal_history: [...parsed.terminal_history],
+    current_revision: parsed.current_revision,
+    facts: {
+      admission: "recorded",
+      claim_count: parsed.facts.claim_count,
+      review_result: parsed.facts.review_result,
+      github_effect_recorded: parsed.facts.github_effect_recorded,
+      canonical_receipts: [...parsed.facts.canonical_receipts],
+      router_receipt: parsed.facts.router_receipt,
+      acknowledgement: parsed.facts.acknowledgement,
+    },
+    updated_at: parsed.updated_at,
+    age_ms: parsed.age_ms,
+    provenance: "exact-review-lifecycle-projection-v1",
+  };
+}
+
+function validAuditInventoryRecord(value: unknown): value is DurableLifecycleBayCard {
+  if (!value || typeof value !== "object") return false;
+  const card = value as DurableLifecycleBayCard;
+  return (
+    !!card.target &&
+    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(card.target.repository) &&
+    positiveInteger(card.target.number) &&
+    card.target.url ===
+      `https://github.com/${card.target.repository}/issues/${card.target.number}` &&
+    positiveInteger(card.revision) &&
+    [
+      "pending",
+      "completed",
+      "acknowledgement_pending",
+      "acknowledgement_skipped",
+      "superseded",
+      "requeue",
+      "dead_letter",
+      "target_closed",
+      "target_missing",
+      "policy_noop",
+      "guarded_open",
+      "failed",
+    ].includes(card.state) &&
+    [
+      "pending",
+      "acknowledgement_pending",
+      "completed",
+      "superseded",
+      "requeued",
+      "terminal_attention",
+    ].includes(card.lane) &&
+    (card.terminal_label === null || typeof card.terminal_label === "string") &&
+    Array.isArray(card.terminal_history) &&
+    card.terminal_history.every((entry) =>
+      [
+        "review_completed_routed",
+        "superseded",
+        "requeue",
+        "dead_letter",
+        "target_closed",
+        "target_missing",
+        "policy_noop",
+        "guarded_open",
+        "failure",
+      ].includes(entry),
+    ) &&
+    typeof card.current_revision === "boolean" &&
+    !!card.facts &&
+    card.facts.admission === "recorded" &&
+    Number.isSafeInteger(card.facts.claim_count) &&
+    card.facts.claim_count >= 0 &&
+    ["completed", "failed", "cancelled", null].includes(card.facts.review_result) &&
+    typeof card.facts.github_effect_recorded === "boolean" &&
+    Array.isArray(card.facts.canonical_receipts) &&
+    card.facts.canonical_receipts.every((receipt) =>
+      ["accepted", "deduped", "superseded"].includes(receipt),
+    ) &&
+    ["durable", "not_required", null].includes(card.facts.router_receipt) &&
+    [
+      "not_required",
+      "pending",
+      "observed",
+      "skipped_locked",
+      "skipped_missing_comment",
+      "unavailable",
+    ].includes(card.facts.acknowledgement) &&
+    Number.isFinite(Date.parse(card.updated_at)) &&
+    Number.isFinite(card.age_ms) &&
+    card.age_ms >= 0 &&
+    card.provenance === "exact-review-lifecycle-projection-v1"
+  );
+}
+
+function validAuditPageLimit(value: number) {
+  return (
+    Number.isSafeInteger(value) && value >= 1 && value <= EXACT_REVIEW_LIFECYCLE_AUDIT_PAGE_MAX
+  );
+}
+
+function validAuditSnapshotId(value: string) {
+  return /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value);
+}
+
+function isMalformedLifecycleError(error: unknown) {
+  return (
+    error instanceof SyntaxError ||
+    (error instanceof Error && /invalid lifecycle (projection|audit snapshot)/.test(error.message))
+  );
 }
 
 function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjection) {
