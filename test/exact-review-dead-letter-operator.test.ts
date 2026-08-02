@@ -537,6 +537,65 @@ test("inventory refreshes preserve the original per-run target budget", async ()
   );
 });
 
+test("inventory refreshes preserve cleanup counters when later target discovery fails", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "closed-one",
+        "publication:closed-one",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "closed-two",
+        "publication:closed-two",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+      row(
+        "open-three",
+        "publication:open-three",
+        3,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#3",
+      ),
+      row(
+        "invalid",
+        "publication:invalid",
+        4,
+        "tuple_protocol_invalid",
+        false,
+        "invalid_dead_letter_item",
+        null,
+      ),
+    ],
+    closedNumbers: [1, 2],
+    skipCleanupAtResolution: 2,
+    failTargetAfterCleanup: 3,
+    maxTargets: 3,
+    maxRecoveries: 1,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.resolved_rows, 2);
+  assert.equal(summary.closed_rows, 1);
+  assert.equal(summary.invalid_rows, 1);
+  assert.equal(scenario.inventoryRequests, 2);
+  assert.deepEqual(
+    scenario.resolutions.map((resolution) => resolution.ids),
+    [["closed-one"], ["closed-two"], ["invalid"]],
+  );
+});
+
 test("automatic recovery rechecks pressure immediately after duplicate cleanup", async () => {
   const scenario = await automaticReconcileScenario({
     rows: [
@@ -1432,8 +1491,9 @@ async function automaticReconcileScenario(options) {
         return;
       }
       if (
-        options.failedRepository &&
-        request.url.includes(`/${options.failedRepository}/issues/`)
+        (options.failedRepository &&
+          request.url.includes(`/${options.failedRepository}/issues/`)) ||
+        (options.failTargetAfterCleanup === number && resolutions.length >= 2)
       ) {
         response.writeHead(503, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: "temporary" }));
@@ -1511,8 +1571,8 @@ async function automaticReconcileScenario(options) {
       return;
     }
     resolutions.push(body);
-    if (duplicateSkipsRemaining > 0) {
-      duplicateSkipsRemaining -= 1;
+    if (duplicateSkipsRemaining > 0 || options.skipCleanupAtResolution === resolutions.length) {
+      if (duplicateSkipsRemaining > 0) duplicateSkipsRemaining -= 1;
       for (const id of body.ids) {
         const selected = rows.find((entry) => entry.dead_letter_id === id);
         if (selected) selected.status = "resolved";

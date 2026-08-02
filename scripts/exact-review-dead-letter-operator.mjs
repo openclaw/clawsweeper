@@ -280,10 +280,10 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
         execute: args.execute,
         openIds,
       });
-      summary.resolved_rows = resolution.resolved;
-      summary.invalid_rows = resolution.resolved;
+      summary.resolved_rows += resolution.resolved;
+      summary.invalid_rows += resolution.resolved;
     }
-    summary.skipped_targets = groups.size;
+    summary.skipped_targets += groups.size;
     printResult(summary);
     return;
   }
@@ -301,10 +301,10 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
         execute: args.execute,
         openIds,
       });
-      summary.resolved_rows = resolution.resolved;
-      summary.invalid_rows = resolution.resolved;
+      summary.resolved_rows += resolution.resolved;
+      summary.invalid_rows += resolution.resolved;
     }
-    summary.skipped_targets = groups.size;
+    summary.skipped_targets += groups.size;
     printResult(summary);
     return;
   }
@@ -312,7 +312,7 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
   for (const group of groups.values()) {
     const live = identities.get(normalizeRecoveryTargetKey(group.target));
     if (!live || !["open", "closed"].includes(live.state)) {
-      summary.skipped_targets = groups.size;
+      summary.skipped_targets += groups.size;
       printResult(summary);
       return;
     }
