@@ -1,0 +1,16 @@
+{
+  "live_activity_bay": {
+    "version": 1,
+    "source": "dashboard-status-v1",
+    "generated_at": "2026-08-02T10:50:18.775Z",
+    "freshness": {
+      "maximum_age_ms": 60000,
+      "expires_at": "2026-08-02T10:51:18.775Z"
+    },
+    "collection": {
+      "state": "unknown",
+      "reason": "unavailable"
+    },
+    "activity": null
+  }
+}

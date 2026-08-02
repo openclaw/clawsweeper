@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "source_sha": "7e4d8cb7cee432b87afec79e1fbfa3209c084474",
+  "source_tree_sha": "f4b349a0c44d7f73416f311581b08a4b5c5b467480cc882d66dd667c636fd8dc",
+  "worker_endpoint_status": 200,
+  "assertions": [
+    {
+      "name": "active transient signals render outside the durable Kanban"
+    },
+    {
+      "name": "active panel exposes observed source and expiry while redacting operational identities"
+    },
+    {
+      "name": "expired signal becomes Unknown and leaves the durable completed card unchanged"
+    },
+    {
+      "name": "Bay reads do not invoke mutating routes"
+    }
+  ],
+  "worker_activity_collection": {
+    "state": "unknown",
+    "reason": "unavailable"
+  },
+  "mutating_requests": []
+}

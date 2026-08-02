@@ -4,6 +4,7 @@ import {
 } from "../src/repair/comment-command-text.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
 import { bayHtml } from "./bay-page.ts";
+import { liveActivityBaySnapshot } from "./live-activity.ts";
 import { summarizeDashboardHealth } from "./dashboard-health.ts";
 import {
   HEALTH_HISTORY_RETENTION_DAYS,
@@ -722,6 +723,10 @@ export default {
       return exactReviewQueueRequest(env, "/stats");
     if (url.pathname === "/api/durable-lifecycle-bay" && request.method === "GET")
       return json({ durable_lifecycle_bay: await durableLifecycleBaySnapshot(env) });
+    if (url.pathname === "/api/live-activity-bay" && request.method === "GET")
+      return json({
+        live_activity_bay: await liveActivityBaySnapshotForRequest(request, env, ctx),
+      });
     if (url.pathname === "/api/recent-durable-publication-events" && request.method === "GET")
       return exactReviewQueueRequest(
         env,
@@ -1801,6 +1806,21 @@ export async function durableLifecycleBaySnapshot(env, now = Date.now()) {
     return unknownDurableLifecycleBay("stale", checkedAt);
   }
   return snapshot;
+}
+
+export async function liveActivityBaySnapshotForRequest(
+  request: Request,
+  env,
+  ctx,
+  now = Date.now(),
+) {
+  try {
+    const statusRequest = new Request(new URL("/api/status", request.url).toString());
+    const response = await statusJson(statusRequest, env, ctx);
+    return liveActivityBaySnapshot(await response.json(), now);
+  } catch {
+    return liveActivityBaySnapshot(null, now);
+  }
 }
 
 function unknownDurableLifecycleBay(reason, now = Date.now()) {

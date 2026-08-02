@@ -39,6 +39,7 @@ import {
   lifecycleState,
 } from "../dashboard/exact-review-lifecycle.ts";
 import { ExactReviewLifecycleTelemetryStore } from "../dashboard/exact-review-lifecycle-telemetry.ts";
+import { LIVE_ACTIVITY_SOURCE_LIMIT, liveActivityBaySnapshot } from "../dashboard/live-activity.ts";
 import { captureCanonicalRecordBaseline } from "../dist/repair/canonical-record-baseline.js";
 import { publishMainWithStateAppend } from "../dist/repair/publish-main.js";
 
@@ -52,6 +53,110 @@ test("exact-review queue defaults to all 128 global workers", () => {
       EXACT_REVIEW_ACTIONS_BUDGET: "64",
     }),
     64,
+  );
+});
+
+test("live activity is bounded, redacted, expiring, and separate from lifecycle data", () => {
+  const now = 1_770_000_000_000;
+  const snapshot = liveActivityBaySnapshot(
+    {
+      generated_at: new Date(now).toISOString(),
+      diagnostics: { errors: [] },
+      workers: [
+        {
+          work_kind: "pr_repair",
+          mode: "repair",
+          status: "in_progress",
+          run_id: "sensitive-run-id",
+          repository: "openclaw/openclaw",
+          current_step: "do not publish this detail",
+        },
+        { work_kind: "other", mode: "exact-review", status: "queued" },
+      ],
+      control_plane: {
+        publishers: { running: 1, waiting: 0 },
+        comment_routers: { running: 0, waiting: 1 },
+        reconcilers: { running: 1, waiting: 0 },
+      },
+    },
+    now,
+  );
+
+  assert.equal(snapshot.collection.state, "complete");
+  assert.equal(snapshot.activity?.returned, 5);
+  assert.equal(snapshot.activity?.omitted, 0);
+  assert.deepEqual(
+    snapshot.activity?.signals.map((signal) => signal.label),
+    [
+      "publication scheduler active",
+      "lease reconciler active",
+      "repair worker active",
+      "comment router active",
+      "worker active",
+    ],
+  );
+  assert.equal(snapshot.freshness.maximum_age_ms, 60_000);
+  assert.equal(Date.parse(snapshot.freshness.expires_at), now + 60_000);
+  assert.doesNotMatch(JSON.stringify(snapshot), /sensitive|openclaw\/openclaw|current_step/i);
+  assert.equal("lanes" in snapshot, false);
+  assert.equal("cards" in snapshot, false);
+
+  const fullCapacity = liveActivityBaySnapshot(
+    {
+      generated_at: new Date(now).toISOString(),
+      diagnostics: { errors: [] },
+      workers: Array.from({ length: LIVE_ACTIVITY_SOURCE_LIMIT }, () => ({
+        work_kind: "exact_review",
+        mode: "exact-review",
+        status: "in_progress",
+      })),
+      control_plane: {
+        publishers: { running: 0, waiting: 0 },
+        comment_routers: { running: 0, waiting: 0 },
+        reconcilers: { running: 0, waiting: 0 },
+      },
+    },
+    now,
+  );
+  assert.equal(fullCapacity.collection.state, "complete");
+  assert.equal(fullCapacity.activity?.returned, 16);
+  assert.equal(fullCapacity.activity?.omitted, LIVE_ACTIVITY_SOURCE_LIMIT - 16);
+});
+
+test("live activity fails closed for stale, mixed, unavailable, and over-bound sources", () => {
+  const now = 1_770_000_000_000;
+  const source = {
+    generated_at: new Date(now).toISOString(),
+    diagnostics: { errors: [] },
+    workers: [],
+    control_plane: {
+      publishers: { running: 0, waiting: 0 },
+      comment_routers: { running: 0, waiting: 0 },
+      reconcilers: { running: 0, waiting: 0 },
+    },
+  };
+  assert.equal(liveActivityBaySnapshot(source, now + 60_001).collection.state, "unknown");
+  assert.equal(
+    liveActivityBaySnapshot({ ...source, diagnostics: { errors: ["GitHub unavailable"] } }, now)
+      .collection.state,
+    "unknown",
+  );
+  assert.equal(
+    liveActivityBaySnapshot(
+      { ...source, workers: Array.from({ length: LIVE_ACTIVITY_SOURCE_LIMIT + 1 }, () => ({})) },
+      now,
+    ).collection.state,
+    "unknown",
+  );
+  assert.equal(
+    liveActivityBaySnapshot(
+      {
+        ...source,
+        control_plane: { ...source.control_plane, reconcilers: { running: -1, waiting: 0 } },
+      },
+      now,
+    ).collection.state,
+    "unknown",
   );
 });
 
@@ -7616,6 +7721,10 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.match(body, /workflow activity is not lifecycle completion/);
   assert.match(body, /id="durable-lifecycle-kanban"/);
   assert.match(body, /Durable lifecycle Kanban/);
+  assert.match(body, /id="live-activity-panel"/);
+  assert.match(body, /Transient operational signals only/);
+  assert.match(body, /fetch\("\/api\/live-activity-bay"/);
+  assert.match(body, /never create, move, count, or complete a durable lifecycle card/);
   assert.match(body, /function durableSnapshot/);
   assert.match(body, /fetch\("\/api\/durable-lifecycle-bay"/);
   assert.match(body, /durableLifecycleLoading/);
@@ -7632,6 +7741,14 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.ok(durableScriptStart > 0 && durableScriptEnd > durableScriptStart);
   const durableScript = body.slice(durableScriptStart, durableScriptEnd);
   assert.doesNotMatch(durableScript, /\/api\/status|workers|current_step|stageFor/);
+  const liveScriptStart = body.indexOf("function liveActivitySnapshot");
+  const liveScriptEnd = body.indexOf("function hash", liveScriptStart);
+  assert.ok(liveScriptStart > 0 && liveScriptEnd > liveScriptStart);
+  const liveScript = body.slice(liveScriptStart, liveScriptEnd);
+  assert.doesNotMatch(
+    liveScript,
+    /durable-lifecycle-bay|durableLifecycle|stageFor|\/api\/status|workers|current_step/,
+  );
   assert.match(body, /function durableNoSensitiveFields/);
   assert.doesNotMatch(durableScript, /JSON\.stringify\(card\|\|\{\}\)/);
   assert.match(body, /function loadBayHistory/);
