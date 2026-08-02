@@ -27,8 +27,9 @@ test("sweep status preserves a retained apply-health run URL", () => {
 
 test("sweep status writer preserves non-apply health and clears stale apply updates", () => {
   const source = [
-    readText("src/clawsweeper.ts"),
+    readText("src/clawsweeper-runtime.ts"),
     readText("src/clawsweeper-dashboard-audit.ts"),
+    readText("src/clawsweeper-sweep-status.ts"),
   ].join("\n");
 
   assert.match(

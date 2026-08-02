@@ -1,5 +1,10 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { createApplyCloseGuards } from "./clawsweeper-apply-close-guards.js";
+import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
+import { createApplyLeaseGuards } from "./clawsweeper-apply-lease-guards.js";
+import { createApplyProofFreshnessGuards } from "./clawsweeper-apply-proof-freshness.js";
+import { createApplyRecordOperations } from "./clawsweeper-apply-records.js";
 import {
   boolArg,
   itemNumbersArg,
@@ -26,49 +31,21 @@ import { trimMiddle } from "./clawsweeper-text.js";
 import type {
   AcquiredReviewStartLease,
   ActionTaken,
-  ApplyActionLedger,
-  ApplyKind,
-  ApplyLedgerItem,
-  ApplyMutationAttempt,
   ApplyResult,
   AuthorPrBudgetApplyGate,
-  AuthorPrBudgetApplyState,
   BulkFilerRepositoryPermissionCache,
-  CanonicalPullRequestCommentSyncBlock,
   CloseReason,
-  Decision,
-  ExactEventReviewLeaseDisposition,
-  ExactReviewQueueAuthority,
-  FeatureShowcase,
   GitHubRuntimeBudget,
-  ImpactLabelName,
-  IssueAdvisoryLabelState,
-  Item,
   ItemContext,
-  ItemKind,
-  MaturityLabelName,
-  MergeRiskLabelName,
-  MutationRunner,
-  OverallCorrectness,
   PrCloseCoverageProofGateBlock,
   PrCloseCoverageProofGateResult,
-  PrCloseCoverageRuntimeBudget,
-  PrRating,
   PrStatusLabelKind,
   PullRequestClosePromotion,
-  RealBehaviorProof,
   ReportEntry,
   ReviewCommentRenderOptions,
-  ReviewStartStatusCommentResult,
-  SecurityReview,
-  StalePullRequestReviewHead,
-  TelegramVisibleProof,
-  TriagePriority,
 } from "./clawsweeper-types.js";
 import {
-  maintainerDecisionBlocksClose,
   maintainerDecisionFromReport,
-  syncDecisionPacketRecord,
   type DecisionPacketSubjectState,
   type MaintainerDecision,
 } from "./decision-packets.js";
@@ -79,605 +56,12 @@ import {
 } from "./github-retry.js";
 import { IDEA_ARCHIVE_LABEL } from "./idea-archive-revival.js";
 import { type PrCloseCoverageProofRuntime } from "./pr-close-coverage-proof.js";
-import { captureCanonicalRecordBaseline } from "./repair/canonical-record-baseline.js";
-import { freshExactHeadReviewStartLease } from "./repair/comment-router-core.js";
-import {
-  isAutoCloseAllowed,
-  repositoryProfileFor,
-  type RepositoryProfile,
-} from "./repository-profiles.js";
+import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
 import {
   isReviewedPrActivityCursor,
   readStableReviewedPrActivityCursor,
   ReviewedPrActivityChangedDuringReadError,
 } from "./review-activity-cursor.js";
-
-interface CreateApplyDecisionWorkflowDependencies {
-  abandonedPrApplyBlockReasonSafe: (
-    number: number,
-    item: Pick<Item, "createdAt" | "labels">,
-  ) => string | null;
-  actionLedgerItemKey: (item: Pick<Item, "repo" | "number">) => string;
-  activeApplyMutationRunner: MutationRunner | null;
-  addIssueLabel: (number: number, label: string, onMutation?: () => void) => void;
-  applyAuthorPrBudgetStateToReport: (markdown: string, state: AuthorPrBudgetApplyState) => string;
-  applyBlockingProtectedLabels: (labels: readonly string[], closeReason: unknown) => string[];
-  applyClosedUnmergedCanonicalBlockedReport: (
-    markdown: string,
-    block: PrCloseCoverageProofGateBlock,
-    canonicalNumber: number,
-  ) => string;
-  applyKindArg: (value: string | boolean | string[] | undefined) => ApplyKind;
-  ApplyMutationReviewGuardError: new (reason: string) => Error;
-  applyPrCloseCoverageProofBlockedReport: (
-    markdown: string,
-    block: PrCloseCoverageProofGateBlock,
-  ) => string;
-  applyPrCloseCoverageProofReportSection: (
-    markdown: string,
-    gateResult: PrCloseCoverageProofGateResult | undefined,
-  ) => string;
-  applyProtectedLabelReason: (labels: readonly string[], closeReason: unknown) => string;
-  applyQueueSortFields: (
-    markdown: string,
-    syncCommentsOnly: boolean,
-    applyKind: ApplyKind,
-  ) => { priority: number; applyCheckedAt: number };
-  applyRuntimeBudgetYieldResults: (number: number, reason: string) => ApplyResult[];
-  asRecord: (value: unknown) => Record<string, unknown>;
-  authorPrBudgetAgeSkipReason: (item: Pick<Item, "createdAt">, now?: number) => string | null;
-  authorPrBudgetApplyGateSafe: (
-    number: number,
-    item: Pick<Item, "author" | "authorAssociation" | "createdAt" | "kind" | "labels">,
-    markdown: string,
-  ) => AuthorPrBudgetApplyGate;
-  authorPrBudgetCloseEnabled: (env?: Record<string, string | undefined>) => boolean;
-  authorPrBudgetMaxClosesPerRun: (env?: Record<string, string | undefined>) => number;
-  authorPrBudgetPromotion: (
-    markdown: string,
-    state: AuthorPrBudgetApplyState,
-  ) => PullRequestClosePromotion;
-  authorPrBudgetSignalBlockReason: (markdown: string) => string | null;
-  bulkFilerRepositoryPermission: (
-    author: string,
-    cache: BulkFilerRepositoryPermissionCache,
-  ) => string | null;
-  canonicalPullRequestCommentSyncBlock: (
-    markdown: string,
-    item: Item,
-  ) => CanonicalPullRequestCommentSyncBlock | null;
-  CLAWSWEEPER_BOT_AUTHORS: Set<string>;
-  cleanupSupersededReviewPlaceholderComments: (options: {
-    number: number;
-    comments: readonly Record<string, unknown>[];
-    keepCommentIds: ReadonlySet<number>;
-  }) => void;
-  closeItem: (options: { number: number; kind: ItemKind; reason: CloseReason }) => void;
-  closeReasonApplyAgeSkipReason: (
-    item: Pick<Item, "createdAt">,
-    closeReason: CloseReason,
-    options: { minAgeMs: number; minAgeDescription: string; staleMinAgeDays: number; now?: number },
-  ) => string | null;
-  closeReasonEnabled: (
-    closeReason: CloseReason,
-    filter: ReadonlySet<CloseReason> | null,
-  ) => boolean;
-  closeReasonFilterText: (filter: ReadonlySet<CloseReason> | null) => string;
-  closeReasonsArg: (value: string | boolean | string[] | undefined) => Set<CloseReason> | null;
-  closingPullRequestsForIssue: (number: number) => unknown[];
-  collectItemContext: (
-    item: Item,
-    options?: {
-      fullTimelineForRelations?: boolean;
-      reviewCacheDigest?: boolean;
-      reviewCacheGitDir?: string;
-    },
-  ) => ItemContext;
-  commentBody: (comment: Record<string, unknown> | undefined) => string | undefined;
-  commentBodyMatches: (
-    comment: Record<string, unknown> | undefined,
-    body: string,
-    options?: { allowApplyCloseActionUpgrade?: boolean },
-  ) => boolean;
-  commentId: (comment: Record<string, unknown> | undefined) => number | null;
-  commentUpdatedAt: (comment: Record<string, unknown> | undefined) => string | undefined;
-  completeStaleCanonicalCommentSyncReport: (markdown: string) => string;
-  contextHasNonAutomationActivityAfter: (
-    context: ItemContext,
-    reviewedAtMs: number,
-    options?: {
-      truncationCountsAsActivity?: boolean;
-      useCompleteActivityContext?: boolean;
-      ignoreTimelineCommentsThroughMs?: number;
-      ignoreTrustedTimelineComment?: { authors: ReadonlySet<string>; createdAt: string };
-    },
-  ) => boolean;
-  coverageProofRetryExhaustedRuntimeBudget: (
-    startedAtMs: number,
-    maxRuntimeMs: number,
-    actionTaken: string,
-    nowMs: number,
-  ) => boolean;
-  coveringPrCloseCoveragePullRequestUpdatedAt: (number: number) => string | null;
-  decisionPacketsDirFromArgs: (args: Args, itemsDir: string, closedDir: string) => string;
-  defaultClosedDir: (profile?: RepositoryProfile) => string;
-  defaultItemsDir: (profile?: RepositoryProfile) => string;
-  defaultPlansDir: (profile?: RepositoryProfile) => string;
-  deleteOwnedDedicatedReviewStartLease: (
-    itemNumber: number,
-    lease: AcquiredReviewStartLease,
-    options?: { throwOnError?: boolean },
-  ) => boolean;
-  duplicateCanonicalPullRequestBlockReason: (
-    markdown: string,
-    item: Item,
-    options?: { reportDirs?: readonly string[] },
-  ) => string | null;
-  ensureCloseAppliedComment: (options: {
-    number: number;
-    closeReason: CloseReason;
-    markdown: string;
-    itemUrl: string;
-    dryRun: boolean;
-  }) => string;
-  ensureDir: (path: string) => void;
-  ensureIdeaArchiveLabel: (onMutation?: () => void) => void;
-  ensureRuntimeDelayFits: (waitMs: number, phase: string) => void;
-  exactEventReviewLeaseDisposition: (
-    markdown: string,
-    liveRevision: string,
-  ) => ExactEventReviewLeaseDisposition;
-  fetchIssueReviewComments: (number: number) => Record<string, unknown>[];
-  fetchItem: (number: number) => { item: Item; state: string };
-  fetchReviewedPrActivityCursor: (
-    number: number,
-    prefetchedInlineComments?: unknown[],
-  ) => string | null;
-  finishApplyMutationAttempt: (options: {
-    ledger: ApplyActionLedger;
-    entry: ReportEntry;
-    attempt: ApplyMutationAttempt;
-    outcome: "accepted" | "rejected" | "unknown";
-  }) => string | null;
-  freshPullRequestReviewHead: (markdown: string, context: ItemContext) => boolean;
-  frontMatterBoolean: (markdown: string, key: string) => boolean;
-  frontMatterStringArray: (markdown: string, key: string) => string[];
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
-  ghJson: <T>(args: string[]) => T;
-  GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
-  guardedOpenApplyProofFields: (
-    actionTaken: string,
-    options: { emitEventApplyProof: boolean; liveGuardVerified: boolean },
-  ) => { guardedOpenStateVerified?: true };
-  hasAutoCloseAllowedMetadata: (markdown: string) => boolean;
-  hasNormalizedLabel: (labels: readonly string[], label: string) => boolean;
-  hasVerifiedLocalCheckoutAccess: (markdown: string) => boolean;
-  impactLabelsFromReport: (markdown: string) => ImpactLabelName[];
-  isApplyCloseCandidateReport: (markdown: string) => boolean;
-  isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
-  isExactEventSourceRevisionChange: (itemKind: Item["kind"], reason: string) => boolean;
-  isGoodFirstIssue: (state: IssueAdvisoryLabelState, currentLabels: readonly string[]) => boolean;
-  isLiveRecheckCloseGuardReport: (markdown: string) => boolean;
-  isMaintainerAuthorAssociation: (value: unknown) => boolean;
-  isPairBlockedCloseReport: (markdown: string) => boolean;
-  isRetryableCloseSkipReport: (markdown: string) => boolean;
-  isRetryableKeptOpenCloseReport: (markdown: string) => boolean;
-  isRetryablePrCloseCoverageProofReport: (markdown: string) => boolean;
-  issueAdvisoryLabelStateFromReport: (
-    markdown: string,
-    options?: {
-      goodFirstIssueOptedOut?: boolean;
-      hasOpenLinkedPullRequest?: boolean;
-      locked?: boolean;
-    },
-  ) => IssueAdvisoryLabelState;
-  issueRecentHumanCommentBlockReasonSafe: (number: number, days: number) => string | null;
-  issueReviewComment: (
-    number: number,
-    fallbackBodies?: readonly string[],
-  ) => Record<string, unknown> | undefined;
-  issueReviewCommentState: (
-    number: number,
-    fallbackBodies?: readonly string[],
-  ) => {
-    comments: Record<string, unknown>[];
-    reviewComment: Record<string, unknown> | undefined;
-    leaseComment: Record<string, unknown> | undefined;
-    leaseComments: Record<string, unknown>[];
-    dedicatedLeaseComment: Record<string, unknown> | undefined;
-    dedicatedLeaseComments: Record<string, unknown>[];
-  };
-  isVerifiedFixedCloseReason: (reason: unknown) => boolean;
-  itemSnapshotHash: (item: Item, context: ItemContext) => string;
-  liveIssueSourceRevision: (number: number) => string;
-  livePullRequestHasNoDiff: (context: ItemContext) => boolean;
-  lockedConversationApplyReason: (item: Pick<Item, "activeLockReason" | "locked">) => string | null;
-  login: (value: unknown) => string | undefined;
-  lowSignalUnmergeablePrApplyBlockReasonSafe: (
-    number: number,
-    staleMinAgeDays: number,
-  ) => string | null;
-  markdownRepository: (markdown: string, file?: string) => string;
-  markedReviewCommentBody: (number: number, body: string) => string;
-  maturityLabelsFromReport: (markdown: string) => MaturityLabelName[];
-  mergeRiskLabelsFromReport: (markdown: string) => MergeRiskLabelName[];
-  mutationErrorMessage: (error: unknown) => string;
-  normalizeAuthorAssociation: (value: unknown) => string;
-  normalizeLabelName: (label: string) => string;
-  numberForMarkdownFile: (file: string) => number;
-  obsoleteFixPrApplyBlockReasonSafe: (
-    number: number,
-    item: Pick<Item, "createdAt">,
-  ) => string | null;
-  openClosingPullRequestApplyReason: (
-    pullRequests: readonly unknown[],
-    canPairClose?: (number: number, repo?: string) => boolean,
-  ) => string | null;
-  orderedApplyItemNumbers: (
-    itemNumbers: string | boolean | string[] | undefined,
-    itemNumber: string | boolean | string[] | undefined,
-  ) => number[];
-  pairCloseKey: (repo: string, number: number) => string;
-  PATCHABLE_REVIEW_COMMENT_AUTHORS: Set<string>;
-  postReviewStartStatusComment: (options: {
-    item: Item;
-    headSha?: string;
-    reviewTimeoutMs: number;
-    position: number;
-    total: number;
-    shardIndex: number;
-    shardCount: number;
-    purpose?: "review" | "apply";
-    queueAuthority?: ExactReviewQueueAuthority | null;
-    allowSupersededLeaseCleanup?: boolean;
-  }) => ReviewStartStatusCommentResult;
-  PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH: string;
-  prAutoCloseExemptDecisionReason: (
-    item: Pick<Item, "kind" | "labels">,
-    closeReason: CloseReason | undefined,
-  ) => string | null;
-  prCloseCoverageProofGateResult: (options: {
-    markdown: string;
-    item: Item;
-    context: ItemContext;
-    runtime: PrCloseCoverageProofRuntime;
-    requirePrecomputedProof?: boolean;
-    runtimeBudget?: PrCloseCoverageRuntimeBudget;
-  }) => PrCloseCoverageProofGateResult;
-  prCloseCoverageProofPromptTemplate: () => string;
-  prStatusLabelKindFromReport: (
-    markdown: string,
-    context: ItemContext,
-    currentLabels: readonly string[],
-  ) => PrStatusLabelKind | null;
-  pullHeadShaFromContext: (context: ItemContext) => string | null;
-  pullRequestClosePromotion: (
-    markdown: string,
-    item: Item,
-    context: ItemContext,
-    staleMinAgeDays: number,
-    options?: { reportDirs?: readonly string[] },
-  ) => PullRequestClosePromotion | null;
-  recordApplyActionEvents: (options: {
-    ledger: ApplyActionLedger;
-    results: readonly ApplyResult[];
-    entries: ReadonlyMap<number, ReportEntry>;
-    mutationByItem: ReadonlyMap<string, boolean>;
-    dryRun: boolean;
-    reportPath: string;
-    failed?: boolean;
-    failure?: unknown;
-    inFlightItem?: { repo: string; number: number; mutationOccurred: boolean };
-  }) => void;
-  recordApplyActionLedgerItemResults: (options: {
-    ledger: ApplyActionLedger;
-    state: ApplyLedgerItem;
-    results: readonly ApplyResult[];
-    entry: ReportEntry;
-    mutationOccurred: boolean;
-    dryRun: boolean;
-  }) => void;
-  recordApplyMutationBoundary: (
-    ledger: ApplyActionLedger,
-    entry: ReportEntry,
-    parentEventId?: string | null,
-  ) => void;
-  recordedLabelSyncCoversUpdate: (options: {
-    itemUpdatedAt: string;
-    labelsSyncedAt: string | undefined;
-    liveLabels: readonly string[];
-    recordedLabels: readonly string[];
-    hasNonAutomationActivity: boolean;
-  }) => boolean;
-  removeCurrentCursorTraceItem: (examinedItemNumbers: number[], currentNumber: number) => void;
-  renderReviewCommentFromReport: (
-    markdown: string,
-    reason: CloseReason,
-    options?: ReviewCommentRenderOptions,
-  ) => string;
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
-  replaceSectionValue: (markdown: string, heading: string, value: string) => string;
-  repoFromArgs: (args: Args) => RepositoryProfile;
-  reportCloseReason: (markdown: string) => CloseReason | undefined;
-  reportDecision: (markdown: string, closeReason: CloseReason) => Decision;
-  reportEntriesForDir: (dir: string, itemNumbers?: ReadonlySet<number>) => ReportEntry[];
-  reportFeatureShowcase: (markdown: string) => FeatureShowcase;
-  reportItemKind: (markdown: string) => ItemKind | undefined;
-  reportOverallCorrectness: (markdown: string) => OverallCorrectness;
-  reportPrRating: (markdown: string) => PrRating;
-  reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
-  reportSecurityReview: (markdown: string) => SecurityReview;
-  reportTelegramVisibleProof: (markdown: string) => TelegramVisibleProof;
-  reviewCommentBodyDigest: (body: string) => string;
-  reviewCommentHasCloseVerdictForCanonical: (
-    comment: Record<string, unknown> | undefined,
-    number: number,
-    reason: CloseReason,
-    canonicalNumber: number,
-  ) => boolean;
-  reviewCommentHashMatches: (
-    comment: Record<string, unknown> | undefined,
-    body: string,
-    storedHash: string | undefined,
-    expectedHash: string,
-    options?: { allowApplyCloseActionUpgrade?: boolean },
-  ) => boolean;
-  reviewLeaseRevisionFromReport: (markdown: string) => string | null;
-  reviewReportCanPromoteToClose: (markdown: string) => boolean;
-  reviewSectionValue: (
-    markdown: string,
-    section:
-      | "summary"
-      | "changeSummary"
-      | "systemContext"
-      | "architectureDiagram"
-      | "bestSolution"
-      | "maintainerDecision"
-      | "reproductionAssessment"
-      | "solutionAssessment"
-      | "visionFit"
-      | "rootCauseCluster"
-      | "reviewFindings"
-      | "securityReview"
-      | "realBehaviorProof"
-      | "prRating"
-      | "telegramVisibleProof"
-      | "mantisRecommendation"
-      | "featureShowcase"
-      | "agentsPolicyStatus"
-      | "workCandidate"
-      | "repairWorkPrompt"
-      | "evidence"
-      | "likelyOwners"
-      | "risks"
-      | "closeComment",
-  ) => string;
-  reviewStartLeaseOwner: (comment: Record<string, unknown> | undefined) => string | null;
-  ROOT: string;
-  runtimeBudgetExceeded: (startedAtMs: number, maxRuntimeMs: number, nowMs: number) => boolean;
-  sameAuthorCounterpartApplyReason: (
-    item: Pick<Item, "number" | "kind" | "author">,
-    relatedItems: readonly unknown[],
-    canPairClose?: (number: number, kind: ItemKind) => boolean,
-  ) => string | null;
-  sha256: (text: string) => string;
-  shouldPreserveReviewStartLease: (options: {
-    currentHeadSha: string;
-    reportHeadSha: string | undefined;
-    reportLeaseOwner: string | undefined;
-    reportLeaseCommentId: string | undefined;
-    leaseOwner: string | null;
-    leaseCommentId: number | null;
-  }) => boolean;
-  shouldProbeClosedStateReport: (markdown: string) => boolean;
-  shouldSyncReviewComment: (options: {
-    syncCommentsOnly: boolean;
-    isCloseProposal: boolean;
-    commentSyncMinAgeDays: number;
-    reviewCommentSyncedAt: string | undefined;
-    hasExistingReviewComment: boolean;
-    needsReviewCommentBodySync: boolean;
-    needsReviewCommentHashSync: boolean;
-    needsReviewCommentReferenceSync: boolean;
-    forceReviewCommentBodySync?: boolean;
-    now?: number;
-  }) => boolean;
-  sleepMs: (milliseconds: number) => void;
-  staleCanonicalCommentSyncPendingReason: (markdown: string) => string | null;
-  staleCanonicalPullRequestNumber: (markdown: string) => number | null;
-  stalePullRequestReviewComment: (options: {
-    number: number;
-    stale: StalePullRequestReviewHead;
-    previousReviewCommentBody?: string;
-  }) => string;
-  stalePullRequestReviewHead: (
-    markdown: string,
-    context: ItemContext,
-  ) => StalePullRequestReviewHead | null;
-  staleReviewCommentSyncReason: (
-    markdown: string,
-    existingReviewComment: Record<string, unknown> | undefined,
-    number: number,
-    context?: ItemContext,
-  ) => string | null;
-  staleVersionBugApplyBlockReasonSafe: (
-    number: number,
-    item: Pick<Item, "createdAt">,
-  ) => string | null;
-  stalledUnprovenPrApplyBlockReasonSafe: (
-    number: number,
-    item: Pick<Item, "createdAt" | "labels">,
-  ) => string | null;
-  startApplyActionLedger: (options: {
-    applyKind: ApplyKind;
-    closeReasons: ReadonlySet<CloseReason> | null;
-    dryRun: boolean;
-    syncCommentsOnly: boolean;
-    requestedItemNumbers: readonly number[];
-    reportPath: string;
-    candidates: readonly ReportEntry[];
-  }) => ApplyActionLedger;
-  startApplyActionLedgerItem: (
-    ledger: ApplyActionLedger,
-    entry: ReportEntry,
-  ) => ApplyLedgerItem | null;
-  startApplyMutationAttempt: (
-    ledger: ApplyActionLedger,
-    entry: ReportEntry,
-    receiptIdentity: string,
-    idempotencyIdentity: string,
-  ) => ApplyMutationAttempt | null;
-  stringOrUndefined: (value: unknown) => string | undefined;
-  syncBulkFilerLabel: (options: {
-    number: number;
-    labels: readonly string[];
-    bulkFilerDetected: boolean;
-    authorAssociation: string;
-    repositoryPermission?: string | null;
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncFeatureShowcaseLabel: (options: {
-    number: number;
-    labels: readonly string[];
-    isPullRequest: boolean;
-    itemCategory: string | undefined;
-    requiresNewFeature: boolean;
-    showcase: FeatureShowcase;
-    securityReview: Pick<SecurityReview, "status">;
-    overallCorrectness: OverallCorrectness;
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncImpactLabels: (options: {
-    number: number;
-    labels: readonly string[];
-    impactLabels: readonly ImpactLabelName[];
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncIssueAdvisoryLabels: (options: {
-    number: number;
-    labels: readonly string[];
-    state: IssueAdvisoryLabelState;
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncMaturityLabels: (options: {
-    number: number;
-    labels: readonly string[];
-    maturityLabels: readonly MaturityLabelName[];
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncMergeRiskLabels: (options: {
-    number: number;
-    labels: readonly string[];
-    mergeRiskLabels: readonly MergeRiskLabelName[];
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncPriorityLabel: (options: {
-    number: number;
-    labels: readonly string[];
-    triagePriority: TriagePriority;
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncPrRatingLabel: (options: {
-    number: number;
-    labels: readonly string[];
-    rating: Pick<PrRating, "overallTier">;
-    reviewFailed?: boolean;
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncPrStatusLabel: (options: {
-    number: number;
-    labels: readonly string[];
-    statusKind: PrStatusLabelKind | null;
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncRealBehaviorProofMediaLabels: (options: {
-    number: number;
-    labels: readonly string[];
-    proof: Pick<RealBehaviorProof, "evidenceKind">;
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncRealBehaviorProofSufficientLabel: (options: {
-    number: number;
-    labels: readonly string[];
-    proof: Pick<RealBehaviorProof, "status">;
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncStalePullRequestReviewLabels: (options: {
-    number: number;
-    labels: readonly string[];
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncTelegramVisibleProofLabel: (options: {
-    number: number;
-    labels: readonly string[];
-    proof: Pick<TelegramVisibleProof, "status">;
-    dryRun: boolean;
-    onMutation?: () => void;
-  }) => { labels: string[]; changed: boolean };
-  syncWorkPlanFromReport: (options: {
-    markdown: string;
-    reportPath: string;
-    plansDir: string;
-    dryRun?: boolean;
-  }) => boolean;
-  targetRepo: () => string;
-  throttleHeartbeatContext: (() => string) | null;
-  timeoutWithinRuntimeBudget: (
-    startedAtMs: number,
-    maxRuntimeMs: number,
-    requestedTimeoutMs: number,
-    nowMs: number,
-  ) => number | null;
-  timestampMs: (iso: string | undefined) => number | null;
-  triagePriorityFromReport: (markdown: string) => TriagePriority;
-  unconfirmedProductDirectionApplyBlockReasonSafe: (
-    number: number,
-    item: Pick<Item, "createdAt" | "labels">,
-    reviewedUpdatedAt: string | undefined,
-    reviewedAt: string | undefined,
-  ) => string | null;
-  unconfirmedProductDirectionCloseEnabled: (env?: Record<string, string | undefined>) => boolean;
-  unsponsoredFeatureApplyBlockReasonSafe: (
-    number: number,
-    item: Pick<Item, "createdAt">,
-  ) => string | null;
-  unsponsoredFeatureCloseEnabled: (env?: Record<string, string | undefined>) => boolean;
-  updateReviewCommentMetadata: (
-    markdown: string,
-    comment: Record<string, unknown> | undefined,
-    body: string,
-  ) => string;
-  upgradeNoDiffPullRequestReport: (markdown: string, item: Item) => string;
-  upgradePullRequestClosePromotionReport: (
-    markdown: string,
-    item: Item,
-    context: ItemContext,
-    promotion: PullRequestClosePromotion,
-  ) => string;
-  upsertReviewComment: (
-    number: number,
-    body: string,
-    existing?: Record<string, unknown>,
-    mutationIdentity?: string,
-  ) => Record<string, unknown> | undefined;
-  validateCloseDecision: (
-    item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "repo" | "authorAssociation">>,
-    decision: Decision,
-    options?: { requireCloseComment?: boolean },
-  ) => { ok: true } | { ok: false; actionTaken: ActionTaken; reason: string };
-}
 
 export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWorkflowDependencies) {
   const {
@@ -692,7 +76,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     applyPrCloseCoverageProofBlockedReport,
     applyPrCloseCoverageProofReportSection,
     applyProtectedLabelReason,
-    applyQueueSortFields,
     applyRuntimeBudgetYieldResults,
     asRecord,
     authorPrBudgetAgeSkipReason,
@@ -719,7 +102,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     completeStaleCanonicalCommentSyncReport,
     contextHasNonAutomationActivityAfter,
     coverageProofRetryExhaustedRuntimeBudget,
-    coveringPrCloseCoveragePullRequestUpdatedAt,
     decisionPacketsDirFromArgs,
     defaultClosedDir,
     defaultItemsDir,
@@ -742,7 +124,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     ghJson,
     GitHubRuntimeBudgetError,
     guardedOpenApplyProofFields,
-    hasAutoCloseAllowedMetadata,
     hasNormalizedLabel,
     hasVerifiedLocalCheckoutAccess,
     impactLabelsFromReport,
@@ -759,7 +140,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     issueAdvisoryLabelStateFromReport,
     issueRecentHumanCommentBlockReasonSafe,
     issueReviewComment,
-    issueReviewCommentState,
     isVerifiedFixedCloseReason,
     itemSnapshotHash,
     liveIssueSourceRevision,
@@ -767,20 +147,16 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     lockedConversationApplyReason,
     login,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
-    markdownRepository,
     markedReviewCommentBody,
     maturityLabelsFromReport,
     mergeRiskLabelsFromReport,
     mutationErrorMessage,
     normalizeAuthorAssociation,
     normalizeLabelName,
-    numberForMarkdownFile,
     obsoleteFixPrApplyBlockReasonSafe,
     openClosingPullRequestApplyReason,
     orderedApplyItemNumbers,
     pairCloseKey,
-    PATCHABLE_REVIEW_COMMENT_AUTHORS,
-    postReviewStartStatusComment,
     PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH,
     prAutoCloseExemptDecisionReason,
     prCloseCoverageProofGateResult,
@@ -797,11 +173,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     replaceFrontMatterValue,
     replaceSectionValue,
     repoFromArgs,
-    reportCloseReason,
     reportDecision,
     reportEntriesForDir,
     reportFeatureShowcase,
-    reportItemKind,
     reportOverallCorrectness,
     reportPrRating,
     reportRealBehaviorProof,
@@ -818,7 +192,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     runtimeBudgetExceeded,
     sameAuthorCounterpartApplyReason,
     sha256,
-    shouldPreserveReviewStartLease,
     shouldProbeClosedStateReport,
     shouldSyncReviewComment,
     sleepMs,
@@ -953,78 +326,26 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     const maybeLogProgress = (message: string): void => {
       if (processedCount % progressEvery === 0) logProgress(message);
     };
-    const applyReportEntriesForDir = (
-      dir: string,
-      location: "items" | "closed",
-      filterRequested = true,
-    ): Array<
-      ReportEntry & {
-        location: "items" | "closed";
-        priority: number;
-        applyCheckedAt: number;
-      }
-    > =>
-      reportEntriesForDir(
-        dir,
-        filterRequested && requestedItemNumberSet.size > 0 ? requestedItemNumberSet : undefined,
-      )
-        .filter(
-          (entry) =>
-            entry.repo === targetRepo() &&
-            (!filterRequested ||
-              requestedItemNumberSet.size === 0 ||
-              requestedItemNumberSet.has(entry.number)),
-        )
-        .map((entry) => ({
-          ...entry,
-          location,
-          ...applyQueueSortFields(entry.markdown, syncCommentsOnly, applyKind),
-        }));
-    const captureApplyCanonicalBaseline = (reportPath: string): void => {
-      if (dryRun || !canonicalBaselineDir) return;
-      const file = basename(reportPath);
-      const number = numberForMarkdownFile(file);
-      const packetName = `${number}.json`;
-      captureCanonicalRecordBaseline({
-        baselineRoot: canonicalBaselineDir,
-        repositorySlug: profile.slug,
-        itemNumber: number,
-        sources: [
-          { section: "items", name: file, path: join(itemsDir, file) },
-          { section: "closed", name: file, path: join(closedDir, file) },
-          { section: "plans", name: file, path: join(plansDir, file) },
-          {
-            section: "decision-packets",
-            name: packetName,
-            path: join(decisionPacketsDir, packetName),
-          },
-        ],
-      });
-    };
-    const syncDecisionPacketMarkdown = (
-      reportPath: string,
-      nextMarkdown: string,
-      subjectState: DecisionPacketSubjectState = "open",
-    ): string =>
-      syncDecisionPacketRecord({
-        markdown: nextMarkdown,
-        reportPath,
-        packetsDir: decisionPacketsDir,
-        repoRoot: recordRoot,
-        subjectState,
-      }).markdown;
-    const writeReportMarkdown = (
-      reportPath: string,
-      nextMarkdown: string,
-      subjectState: DecisionPacketSubjectState = "open",
-    ): void => {
-      captureApplyCanonicalBaseline(reportPath);
-      writeFileSync(
-        reportPath,
-        syncDecisionPacketMarkdown(reportPath, nextMarkdown, subjectState),
-        "utf8",
-      );
-    };
+    const {
+      applyReportEntriesForDir,
+      captureApplyCanonicalBaseline,
+      syncDecisionPacketMarkdown,
+      writeReportMarkdown,
+    } = createApplyRecordOperations({
+      ...dependencies,
+      applyKind,
+      canonicalBaselineDir,
+      closedDir,
+      decisionPacketsDir,
+      dryRun,
+      itemsDir,
+      plansDir,
+      profile,
+      recordRoot,
+      requestedItemNumberSet,
+      syncCommentsOnly,
+    });
+
     const fileEntries = applyReportEntriesForDir(itemsDir, "items").sort(
       cursorTracePath
         ? (left, right) =>
@@ -1571,195 +892,32 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           continue;
         }
       }
-      const reviewStartLeaseStateForComments = (
-        leaseComments: Record<string, unknown>[],
-        reviewComment: Record<string, unknown> | undefined,
-        headSha: string,
-      ) => {
-        const lease = freshExactHeadReviewStartLease({
-          comments: leaseComments,
-          itemNumber: number,
-          headSha,
-          trustedAuthors: new Set(
-            [...PATCHABLE_REVIEW_COMMENT_AUTHORS].map((author) => author.toLowerCase()),
-          ),
-        });
-        const preserve = Boolean(
-          lease &&
-          shouldPreserveReviewStartLease({
-            currentHeadSha: headSha,
-            reportHeadSha:
-              reviewLeaseRevisionFromReport(markdownBeforeApplyDecisionMutations) ?? undefined,
-            reportLeaseOwner: frontMatterValue(
-              markdownBeforeApplyDecisionMutations,
-              "review_lease_owner",
-            ),
-            reportLeaseCommentId: frontMatterValue(
-              markdownBeforeApplyDecisionMutations,
-              "review_lease_comment_id",
-            ),
-            leaseOwner: lease.owner,
-            leaseCommentId: lease.commentId,
-          }),
-        );
-        // A matching report tuple deliberately returns `preserve: false`: the exact publisher
-        // adopts that completed review lease as its mutation lock. Any different or incomplete
-        // live lease remains preserved and blocks the older artifact.
-        return {
-          comment: reviewComment,
-          leaseComments,
-          headSha,
-          lease,
-          preserve,
-          blockReason: null as string | null,
-        };
-      };
-      const fetchLiveReviewHeadSha = (): string => {
-        if (item.kind !== "pull_request") return liveIssueSourceRevision(number);
-        const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
-        const sha = asRecord(pull.head).sha;
-        return typeof sha === "string" ? sha.trim().toLowerCase() : "";
-      };
-      const refreshReviewStartLeaseState = () => {
-        try {
-          const headBefore = fetchLiveReviewHeadSha();
-          const refreshed = issueReviewCommentState(number);
-          const headAfter = fetchLiveReviewHeadSha();
-          if (!headBefore || headBefore !== headAfter || headAfter !== initialReviewHeadSha) {
-            return {
-              comment: refreshed.reviewComment,
-              comments: refreshed.comments,
-              leaseComments: refreshed.leaseComments,
-              headSha: headAfter,
-              lease: null,
-              preserve: false,
-              blockReason: `${item.kind === "pull_request" ? "PR head" : "issue source revision"} changed since context capture or during the apply-time review lease check; next apply will retry`,
-            };
-          }
-          if (item.kind === "issue" && reportReviewRevision && headAfter !== reportReviewRevision) {
-            return {
-              comment: refreshed.reviewComment,
-              comments: refreshed.comments,
-              leaseComments: refreshed.leaseComments,
-              headSha: headAfter,
-              lease: null,
-              preserve: false,
-              blockReason: `live issue source revision ${headAfter} differs from reviewed revision ${reportReviewRevision}`,
-            };
-          }
-          return {
-            ...reviewStartLeaseStateForComments(
-              refreshed.leaseComments,
-              refreshed.reviewComment,
-              headAfter,
-            ),
-            comments: refreshed.comments,
-          };
-        } catch (error) {
-          if (error instanceof GitHubRuntimeBudgetError) throw error;
-          const detail = trimMiddle(
-            (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " "),
-            180,
-          );
-          return {
-            comment: undefined,
-            comments: [] as Record<string, unknown>[],
-            leaseComments: [],
-            headSha: "",
-            lease: null,
-            preserve: false,
-            blockReason: `apply-time review lease check failed; next apply will retry: ${detail}`,
-          };
-        }
-      };
-      const ownedApplyMutationLeaseBlockReason = (
-        lease: AcquiredReviewStartLease,
-      ): string | null => {
-        try {
-          const reviewActivityBlock = currentReviewActivityBlock();
-          if (reviewActivityBlock) return reviewActivityBlock;
-          const revisionBefore = fetchLiveReviewHeadSha();
-          const refreshed = issueReviewCommentState(number);
-          const revisionAfter = fetchLiveReviewHeadSha();
-          if (
-            !revisionBefore ||
-            revisionBefore !== revisionAfter ||
-            revisionAfter !== initialReviewHeadSha ||
-            (item.kind === "issue" &&
-              reportReviewRevision !== null &&
-              revisionAfter !== reportReviewRevision)
-          ) {
-            return `${item.kind === "pull_request" ? "PR head" : "issue source revision"} changed while holding the apply mutation lease`;
-          }
-          const winner = freshExactHeadReviewStartLease({
-            comments: refreshed.leaseComments,
-            itemNumber: number,
-            headSha: revisionAfter,
-            trustedAuthors: new Set(
-              [...PATCHABLE_REVIEW_COMMENT_AUTHORS].map((author) => author.toLowerCase()),
-            ),
-          });
-          if (
-            winner?.owner !== lease.owner ||
-            winner.commentId !== lease.commentId ||
-            lease.headSha !== revisionAfter
-          ) {
-            return `apply mutation lease ${lease.commentId} is no longer the elected ${item.kind === "pull_request" ? "same-head" : "same-revision"} lease`;
-          }
-          return canonicalBoundStaleReviewReason(
-            markdownBeforeApplyDecisionMutations,
-            refreshed.reviewComment,
-          );
-        } catch (error) {
-          if (error instanceof GitHubRuntimeBudgetError) throw error;
-          const detail = trimMiddle(
-            (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " "),
-            180,
-          );
-          return `apply mutation lease verification failed; next apply will retry: ${detail}`;
-        }
-      };
-      const acquireApplyMutationLease = (
-        leaseState: ReturnType<typeof refreshReviewStartLeaseState>,
-      ): string | null => {
-        if (dryRun || !requiresApplyMutationLease) return null;
-        let lease: AcquiredReviewStartLease | null = null;
-        if (leaseState.lease && !leaseState.preserve) {
-          if (!leaseState.lease.owner || leaseState.lease.commentId === null) {
-            return "matching review lease lacks a server-confirmed owner and comment id";
-          }
-          lease = {
-            owner: leaseState.lease.owner,
-            commentId: leaseState.lease.commentId,
-            headSha: leaseState.headSha,
-          };
-        } else {
-          const posted = postReviewStartStatusComment({
-            item,
-            headSha: leaseState.headSha,
-            reviewTimeoutMs: Math.max(5 * 60 * 1000, closeDelayMs + 60 * 1000),
-            position: 1,
-            total: 1,
-            shardIndex: 1,
-            shardCount: 1,
-            purpose: "apply",
-          });
-          if (posted.status !== "posted") {
-            return `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper lease was acquired concurrently`;
-          }
-          lease = posted.lease;
-        }
-        activeApplyMutationLease = { itemNumber: number, lease };
-        return ownedApplyMutationLeaseBlockReason(lease);
-      };
-      const currentApplyMutationLeaseBlockReason = (): string | null => {
-        const reviewActivityBlock = currentReviewActivityBlock();
-        if (reviewActivityBlock) return reviewActivityBlock;
-        if (dryRun || !requiresApplyMutationLease) return null;
-        const active = activeApplyMutationLease;
-        if (!active || active.itemNumber !== number) return "apply mutation lease is not held";
-        return ownedApplyMutationLeaseBlockReason(active.lease);
-      };
+      const {
+        acquireApplyMutationLease,
+        currentApplyMutationLeaseBlockReason,
+        refreshReviewStartLeaseState,
+      } = createApplyLeaseGuards({
+        ...dependencies,
+        canonicalBoundStaleReviewReason: (...args) => canonicalBoundStaleReviewReason(...args),
+        closeDelayMs,
+        currentReviewActivityBlock,
+        dryRun,
+        getActiveApplyMutationLease: () => activeApplyMutationLease,
+        initialReviewHeadSha,
+        item,
+        markdownBeforeApplyDecisionMutations,
+        number,
+        reportReviewRevision,
+        requiresApplyMutationLease,
+        setActiveApplyMutationLease: (lease) => {
+          activeApplyMutationLease = lease;
+        },
+      });
+
+
+
+
+
       currentApplyMutationGuard = currentApplyMutationLeaseBlockReason;
       const recordReviewGuardSkip = (
         action: "kept_open" | "skipped_stale_review_comment_sync",
@@ -2051,259 +1209,40 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         results.push(...applyRuntimeBudgetYieldResults(number, reason));
         logProgress(`budget stop, resume next cycle: ${reason}`);
       };
-      const sameAuthorPairStartCloseable = new Map<string, boolean>();
-      const currentCloseGatesPassed = (): boolean => {
-        if (
-          requiredMaintainerDecision?.required &&
-          closeReason !== "unsponsored_feature_request" &&
-          closeReason !== "author_pr_budget_exceeded"
-        )
-          return false;
-        if (!closeReason || !closeReasonEnabled(closeReason, applyCloseReasons)) return false;
-        if (needsReviewCommentSync) return false;
-        if (
-          !validateCloseDecision(
-            {
-              repo,
-              kind: item.kind,
-              labels: item.labels,
-              authorAssociation: item.authorAssociation,
-            },
-            reportDecision(markdown, closeReason),
-            {
-              requireCloseComment: !isRetryableSkippedClose,
-            },
-          ).ok
-        ) {
-          return false;
-        }
-        if (
-          closeReason === "duplicate_or_superseded" &&
-          duplicateCanonicalPullRequestBlockReason(markdown, item, {
-            reportDirs: [itemsDir, closedDir],
-          })
-        ) {
-          return false;
-        }
-        if (
-          closeReasonApplyAgeSkipReason(item, closeReason, {
-            minAgeMs,
-            minAgeDescription,
-            staleMinAgeDays,
-          })
-        ) {
-          return false;
-        }
-        if (
-          closeReason === "unconfirmed_product_direction" &&
-          unconfirmedProductDirectionApplyBlockReasonSafe(
-            number,
-            item,
-            storedUpdatedAt,
-            frontMatterValue(markdown, "reviewed_at"),
-          )
-        ) {
-          return false;
-        }
-        if (
-          closeReason === "unsponsored_feature_request" &&
-          unsponsoredFeatureApplyBlockReasonSafe(number, item)
-        ) {
-          return false;
-        }
-        if (
-          closeReason === "stale_version_bug" &&
-          currentStaleVersionBugBlockReason()
-        ) {
-          return false;
-        }
-        if (
-          closeReason === "obsolete_fix_pr" &&
-          currentObsoleteFixPrBlockReason()
-        ) {
-          return false;
-        }
-        if (
-          closeReason === "author_pr_budget_exceeded" &&
-          !currentAuthorPrBudgetApplyGate().allowed
-        ) {
-          return false;
-        }
-        if (
-          closeReason === "stale_insufficient_info" &&
-          issueRecentHumanCommentBlockReasonSafe(number, STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS)
-        ) {
-          return false;
-        }
-        if (
-          closeReason === "stalled_unproven_pr" &&
-          stalledUnprovenPrApplyBlockReasonSafe(number, item)
-        ) {
-          return false;
-        }
-        if (closeReason === "abandoned_pr" && abandonedPrApplyBlockReasonSafe(number, item)) {
-          return false;
-        }
-        if (currentPrCloseCoverageProofGateBlock()) return false;
-        return true;
-      };
-      const canStartSameAuthorPairCloseInThisRun = (
-        counterpartNumber: number,
-        counterpartKind: ItemKind,
-      ): boolean => {
-        const cacheKey = `${counterpartNumber}:${counterpartKind}`;
-        const cached = sameAuthorPairStartCloseable.get(cacheKey);
-        if (cached !== undefined) return cached;
+      const { canStartSameAuthorPairCloseInThisRun } = createApplyCloseGuards(dependencies, {
+        applyCloseReasons,
+        applyKind,
+        canClosePairCounterpartInThisRun,
+        closedDir,
+        commentSyncMinAgeDays,
+        currentAuthorPrBudgetApplyGate,
+        currentCloseState: () => ({
+          closedCount,
+          closeReason,
+          markdown,
+          needsReviewCommentSync,
+          processedCount,
+          storedUpdatedAt,
+        }),
+        currentObsoleteFixPrBlockReason,
+        currentPrCloseCoverageProofGateBlock,
+        currentStaleVersionBugBlockReason,
+        fileEntries,
+        isRetryableSkippedClose,
+        item,
+        itemsDir,
+        limit,
+        minAgeDescription,
+        minAgeMs,
+        number,
+        openFileEntryByNumber,
+        processedLimit,
+        repo,
+        requiredMaintainerDecision,
+        staleMinAgeDays,
+      });
 
-        let result = false;
-        if (
-          item.kind === "pull_request" &&
-          counterpartKind === "issue" &&
-          applyKind === "all" &&
-          closedCount + 2 <= limit &&
-          processedCount + 2 <= processedLimit &&
-          currentCloseGatesPassed()
-        ) {
-          const counterpartEntry = openFileEntryByNumber.get(counterpartNumber);
-          if (counterpartEntry) {
-            const counterpartMarkdown = readFileSync(counterpartEntry.path, "utf8");
-            const counterpartMaintainerDecisionBlocked =
-              maintainerDecisionBlocksClose(counterpartMarkdown);
-            const counterpartRepo = markdownRepository(counterpartMarkdown, counterpartEntry.path);
-            const counterpartReason = reportCloseReason(counterpartMarkdown);
-            if (
-              counterpartRepo === repo &&
-              reportItemKind(counterpartMarkdown) === counterpartKind &&
-              counterpartReason &&
-              !counterpartMaintainerDecisionBlocked &&
-              closeReasonEnabled(counterpartReason, applyCloseReasons) &&
-              isApplyCloseCandidateReport(counterpartMarkdown) &&
-              hasAutoCloseAllowedMetadata(counterpartMarkdown) &&
-              hasVerifiedLocalCheckoutAccess(counterpartMarkdown)
-            ) {
-              const { item: counterpartItem, state: counterpartState } =
-                fetchItem(counterpartNumber);
-              const counterpartReviewedAuthorAssociation = normalizeAuthorAssociation(
-                frontMatterValue(counterpartMarkdown, "author_association"),
-              );
-              const counterpartStoredUpdatedAt = frontMatterValue(
-                counterpartMarkdown,
-                "item_updated_at",
-              );
-              const counterpartStoredHash = frontMatterValue(
-                counterpartMarkdown,
-                "item_snapshot_hash",
-              );
-              const counterpartReviewCommentBody = renderReviewCommentFromReport(
-                counterpartMarkdown,
-                counterpartReason,
-              );
-              const counterpartReviewComment = issueReviewComment(counterpartNumber, [
-                counterpartReviewCommentBody,
-                reviewSectionValue(counterpartMarkdown, "closeComment"),
-              ]);
-              const counterpartMarkedReviewComment = markedReviewCommentBody(
-                counterpartNumber,
-                counterpartReviewCommentBody,
-              );
-              const counterpartAllowApplyCloseActionUpgrade =
-                isApplyCloseCandidateReport(counterpartMarkdown);
-              const counterpartMarkedReviewCommentHash = reviewCommentBodyDigest(
-                counterpartMarkedReviewComment,
-              );
-              const counterpartNeedsReviewCommentSync = shouldSyncReviewComment({
-                syncCommentsOnly: false,
-                isCloseProposal: true,
-                commentSyncMinAgeDays,
-                reviewCommentSyncedAt: frontMatterValue(
-                  counterpartMarkdown,
-                  "review_comment_synced_at",
-                ),
-                hasExistingReviewComment: Boolean(counterpartReviewComment),
-                needsReviewCommentBodySync: !commentBodyMatches(
-                  counterpartReviewComment,
-                  counterpartMarkedReviewComment,
-                  { allowApplyCloseActionUpgrade: counterpartAllowApplyCloseActionUpgrade },
-                ),
-                needsReviewCommentHashSync: !reviewCommentHashMatches(
-                  counterpartReviewComment,
-                  counterpartMarkedReviewComment,
-                  frontMatterValue(counterpartMarkdown, "review_comment_sha256"),
-                  counterpartMarkedReviewCommentHash,
-                  { allowApplyCloseActionUpgrade: counterpartAllowApplyCloseActionUpgrade },
-                ),
-                needsReviewCommentReferenceSync:
-                  frontMatterValue(counterpartMarkdown, "review_comment_id") === "unknown" ||
-                  frontMatterValue(counterpartMarkdown, "review_comment_url") === "unknown",
-                forceReviewCommentBodySync: false,
-              });
-              const counterpartReviewCommentOnlyUpdate =
-                counterpartItem.updatedAt === commentUpdatedAt(counterpartReviewComment);
-              const counterpartUpdatedSinceReview = Boolean(
-                counterpartStoredUpdatedAt &&
-                counterpartItem.updatedAt !== counterpartStoredUpdatedAt,
-              );
-              const counterpartContext = collectItemContext(counterpartItem, {
-                fullTimelineForRelations: true,
-              });
-              const counterpartSnapshotChanged =
-                !counterpartStoredUpdatedAt &&
-                counterpartStoredHash &&
-                itemSnapshotHash(counterpartItem, counterpartContext) !== counterpartStoredHash &&
-                !counterpartReviewCommentOnlyUpdate;
-              const counterpartOpenClosingPullRequestReason = openClosingPullRequestApplyReason(
-                closingPullRequestsForIssue(counterpartNumber),
-                (pullNumber, pullRepo) =>
-                  canClosePairCounterpartInThisRun(pullNumber, pullRepo) ||
-                  (pullNumber === number && (pullRepo === undefined || pullRepo === repo)),
-              );
-              const counterpartSameAuthorReason = sameAuthorCounterpartApplyReason(
-                counterpartItem,
-                counterpartContext.relatedItems ?? [],
-                (relatedNumber, relatedKind) =>
-                  canClosePairCounterpartInThisRun(relatedNumber) ||
-                  (relatedNumber === number && relatedKind === item.kind),
-              );
-              result =
-                counterpartState === "open" &&
-                counterpartItem.kind === counterpartKind &&
-                applyBlockingProtectedLabels(counterpartItem.labels, counterpartReason).length ===
-                  0 &&
-                (isVerifiedFixedCloseReason(counterpartReason) ||
-                  (!isMaintainerAuthorAssociation(
-                    normalizeAuthorAssociation(counterpartItem.authorAssociation),
-                  ) &&
-                    !isMaintainerAuthorAssociation(counterpartReviewedAuthorAssociation))) &&
-                (!counterpartUpdatedSinceReview || counterpartReviewCommentOnlyUpdate) &&
-                !counterpartSnapshotChanged &&
-                !counterpartNeedsReviewCommentSync &&
-                validateCloseDecision(
-                  {
-                    repo: counterpartRepo,
-                    kind: counterpartItem.kind,
-                    labels: counterpartItem.labels,
-                    authorAssociation: counterpartItem.authorAssociation,
-                  },
-                  reportDecision(counterpartMarkdown, counterpartReason),
-                  { requireCloseComment: !isRetryableCloseSkipReport(counterpartMarkdown) },
-                ).ok &&
-                closeReasonApplyAgeSkipReason(counterpartItem, counterpartReason, {
-                  minAgeMs,
-                  minAgeDescription,
-                  staleMinAgeDays,
-                }) === null &&
-                counterpartOpenClosingPullRequestReason === null &&
-                counterpartSameAuthorReason === null;
-              if (result && !fileEntries.some((entry) => entry.number === counterpartNumber)) {
-                fileEntries.push(counterpartEntry);
-              }
-            }
-          }
-        }
 
-        sameAuthorPairStartCloseable.set(cacheKey, result);
-        return result;
-      };
       if (syncCommentsOnly && state !== "open") {
         markApplyChecked("closed");
         results.push({
@@ -3008,107 +1947,22 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         maybeLogProgress(`skipped #${number}: ${options.reason}`);
         return processedCount >= processedLimit;
       };
-      const postProofFreshnessBlock = (): {
-        reason: string;
-        currentUpdatedAt?: string;
-        currentSnapshotHash?: string;
-      } | null => {
-        if (
-          !prCloseCoverageProofGateChecked ||
-          cachedPrCloseCoverageProofGateResult?.status !== "allowed"
-        ) {
-          return null;
-        }
-        const refreshed = fetchItem(number);
-        if (refreshed.state !== "open") {
-          return {
-            reason: `state changed to ${refreshed.state}`,
-            currentUpdatedAt: refreshed.item.updatedAt,
-          };
-        }
-        let refreshedContext: ItemContext | null = null;
-        const refreshedCommandStatusOnlyUpdate =
-          action === "retry_pr_close_coverage_proof" &&
-          retryCloseCoverageCommandStatusOnlyUpdate(
-            refreshed.item,
-            (refreshedContext ??= collectItemContext(refreshed.item, {
-              fullTimelineForRelations: true,
-            })),
-          );
-        const refreshedSelfMutationOnlyUpdate =
-          allowedSelfMutationUpdatedAts.has(refreshed.item.updatedAt) ||
-          refreshedCommandStatusOnlyUpdate;
-        const selfMutationMaskedNonAutomationActivity = (): boolean => {
-          if (prCloseCoverageProofStartedAtMs === null) return true;
-          refreshedContext ??= collectItemContext(refreshed.item, {
-            fullTimelineForRelations: true,
-          });
-          return contextHasNonAutomationActivityAfter(
-            refreshedContext,
+      const { postProofCoveringPrFreshnessBlock, postProofFreshnessBlock } =
+        createApplyProofFreshnessGuards({
+          ...dependencies,
+          action,
+          allowedSelfMutationUpdatedAts,
+          currentProofState: () => ({
+            cachedPrCloseCoverageProofGateResult,
+            prCloseCoverageProofGateChecked,
             prCloseCoverageProofStartedAtMs,
-            { truncationCountsAsActivity: false },
-          );
-        };
-        if (storedUpdatedAt && refreshed.item.updatedAt !== storedUpdatedAt) {
-          if (refreshedSelfMutationOnlyUpdate) {
-            if (!selfMutationMaskedNonAutomationActivity()) return null;
-            return {
-              reason: "non-automation activity after coverage proof",
-              currentUpdatedAt: refreshed.item.updatedAt,
-            };
-          }
-          return {
-            reason: "updated_at changed",
-            currentUpdatedAt: refreshed.item.updatedAt,
-          };
-        }
-        if (!storedUpdatedAt && storedHash) {
-          const refreshedHash = itemSnapshotHash(
-            refreshed.item,
-            (refreshedContext ??= collectItemContext(refreshed.item, {
-              fullTimelineForRelations: true,
-            })),
-          );
-          if (refreshedHash !== storedHash) {
-            if (refreshedSelfMutationOnlyUpdate && !selfMutationMaskedNonAutomationActivity()) {
-              return null;
-            }
-            return {
-              reason: refreshedSelfMutationOnlyUpdate
-                ? "non-automation activity after coverage proof"
-                : "snapshot changed",
-              currentSnapshotHash: refreshedHash,
-            };
-          }
-        }
-        return null;
-      };
-      const postProofCoveringPrFreshnessBlock = (): PrCloseCoverageProofGateBlock | null => {
-        if (
-          !prCloseCoverageProofGateChecked ||
-          cachedPrCloseCoverageProofGateResult?.status !== "allowed"
-        ) {
-          return null;
-        }
-        const { covering } = cachedPrCloseCoverageProofGateResult;
-        if (!covering.updatedAt) return null;
-        try {
-          const currentUpdatedAt = coveringPrCloseCoveragePullRequestUpdatedAt(covering.number);
-          if (currentUpdatedAt === covering.updatedAt) return null;
-          return {
-            actionTaken: "retry_pr_close_coverage_proof",
-            reason: `linked canonical PR #${covering.number} changed after coverage proof`,
-          };
-        } catch (error) {
-          if (error instanceof GitHubRuntimeBudgetError) throw error;
-          return {
-            actionTaken: "retry_pr_close_coverage_proof",
-            reason: `PR close coverage proof could not recheck linked canonical PR #${covering.number}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-          };
-        }
-      };
+            storedHash,
+            storedUpdatedAt,
+          }),
+          number,
+          retryCloseCoverageCommandStatusOnlyUpdate,
+        });
+
       if (state !== "open") {
         if (item.closedAt) {
           markdown = replaceFrontMatterValue(markdown, "current_item_closed_at", item.closedAt);

@@ -394,6 +394,109 @@ test("duplicate cleanup finishes before target-scoped recovery and safely resume
   assert.deepEqual(manyDuplicates.recoveries[0]?.ids, ["row-00"]);
 });
 
+test("concurrent duplicate cleanup refreshes inventory before safe recovery", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "primary",
+        "publication:primary",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#9",
+      ),
+      row(
+        "duplicate",
+        "publication:duplicate",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#9",
+      ),
+    ],
+    skipFirstDuplicateCleanup: true,
+    repeat: true,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(JSON.parse(scenario.first.stdout).recovered_targets, 1);
+  assert.ok(scenario.inventoryRequests >= 3);
+  assert.equal(scenario.second?.code, 0, scenario.second?.stderr);
+  assert.equal(scenario.recoveries.length, 1);
+  assert.deepEqual(scenario.recoveries[0]?.ids, ["primary"]);
+});
+
+test("repeated cleanup races remain bounded and never recover stale aliases", async () => {
+  const rows = Array.from({ length: 3 }, (_, index) => [
+    row(
+      `primary-${index}`,
+      `publication:primary-${index}`,
+      index * 2 + 1,
+      "retry_exhausted",
+      true,
+      "eligible",
+      `openclaw/repo#${index + 1}`,
+    ),
+    row(
+      `duplicate-${index}`,
+      `publication:duplicate-${index}`,
+      index * 2 + 2,
+      "retry_exhausted",
+      true,
+      "eligible",
+      `openclaw/repo#${index + 1}`,
+    ),
+  ]).flat();
+  const scenario = await automaticReconcileScenario({
+    rows,
+    skipDuplicateCleanupCount: 3,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(JSON.parse(scenario.first.stdout).inventory_changed, true);
+  assert.equal(JSON.parse(scenario.first.stdout).recovered_targets, 0);
+  assert.equal(scenario.inventoryRequests, 3);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("inventory refreshes preserve the original per-run target budget", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "closed-one",
+        "publication:closed-one",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+      row(
+        "closed-two",
+        "publication:closed-two",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    closedNumbers: [1, 2],
+    maxTargets: 1,
+    skipFirstDuplicateCleanup: true,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(JSON.parse(scenario.first.stdout).inspected_targets, 1);
+  assert.equal(JSON.parse(scenario.first.stdout).inventory_changed, true);
+  assert.deepEqual(
+    scenario.resolutions.map((resolution) => resolution.ids),
+    [["closed-one"]],
+  );
+});
+
 test("automatic recovery rechecks pressure immediately after duplicate cleanup", async () => {
   const scenario = await automaticReconcileScenario({
     rows: [
@@ -1213,6 +1316,8 @@ async function automaticReconcileScenario(options) {
   const resolutions = [];
   let inventoryRequests = 0;
   let duplicateFailurePending = options.failFirstDuplicateCleanup === true;
+  let duplicateSkipsRemaining =
+    options.skipDuplicateCleanupCount ?? Number(options.skipFirstDuplicateCleanup === true);
   const server = createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -1366,6 +1471,17 @@ async function automaticReconcileScenario(options) {
       return;
     }
     resolutions.push(body);
+    if (duplicateSkipsRemaining > 0) {
+      duplicateSkipsRemaining -= 1;
+      for (const id of body.ids) {
+        const selected = rows.find((entry) => entry.dead_letter_id === id);
+        if (selected) selected.status = "resolved";
+      }
+      response.end(
+        JSON.stringify({ ok: true, resolved: 0, skipped: body.ids.length, unparked: 0 }),
+      );
+      return;
+    }
     for (const id of body.ids) {
       const selected = rows.find((entry) => entry.dead_letter_id === id);
       if (selected) selected.status = "resolved";

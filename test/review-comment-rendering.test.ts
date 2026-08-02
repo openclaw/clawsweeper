@@ -109,7 +109,7 @@ test("comment matcher recognizes old and new Codex review comments", () => {
 test("structural cache probes before hydration but acquires a lease before carrying a hit", () => {
   const source = [
     readFileSync("src/clawsweeper-review-command-workflow.ts", "utf8"),
-    readFileSync("src/clawsweeper.ts", "utf8"),
+    readFileSync("src/clawsweeper-runtime.ts", "utf8"),
     readFileSync("src/clawsweeper-item-context.ts", "utf8"),
   ].join("\n");
   const reviewLoop = source.slice(
@@ -305,7 +305,7 @@ test("spoofed durable markers cannot suppress a bot-owned start lease", () => {
 
   const source = [
     readFileSync("src/clawsweeper-review-comments-workflow.ts", "utf8"),
-    readFileSync("src/clawsweeper.ts", "utf8"),
+    readFileSync("src/clawsweeper-runtime.ts", "utf8"),
   ].join("\n");
   const functionStart = source.indexOf("function postReviewStartStatusComment");
   const postStart = source.slice(

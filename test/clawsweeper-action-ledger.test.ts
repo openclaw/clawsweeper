@@ -391,7 +391,7 @@ test("apply and retry business idempotency ignore batch order but bind source re
 
 test("lane instrumentation uses stable slots with explicit parent and phase ordering", () => {
   const source = [
-    readText("src/clawsweeper.ts"),
+    readText("src/clawsweeper-runtime.ts"),
     readText("src/clawsweeper-failed-review-retry.ts"),
     readText("src/clawsweeper-review-ledger.ts"),
     readText("src/clawsweeper-apply-ledger.ts"),
@@ -519,7 +519,7 @@ test("review candidates start lazily and deferred items cannot remain active", (
 test("apply receipts start per item and persist mutation observation before finalization", () => {
   const source = [
     readText("src/clawsweeper-apply-decision-workflow.ts"),
-    readText("src/clawsweeper.ts"),
+    readText("src/clawsweeper-runtime.ts"),
     readText("src/clawsweeper-apply-ledger.ts"),
   ].join("\n");
   const applyLoop = source.slice(
@@ -620,7 +620,7 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
   });
 
   const source = [
-    readText("src/clawsweeper.ts"),
+    readText("src/clawsweeper-runtime.ts"),
     readText("src/clawsweeper-review-comments-workflow.ts"),
   ].join("\n");
   const labelSource = readText("src/clawsweeper-label-sync.ts");

@@ -12,9 +12,18 @@ const MAX_RECONCILE_RECOVERIES = 10;
 const MAX_RESOLUTION_IDS = 20;
 const MAX_INVENTORY_ROWS = 10_000;
 const MAX_RECONCILE_INVENTORY_PAGES = 250;
+const MAX_RECONCILE_INVENTORY_REFRESHES = 2;
 const GRAPHQL_IDENTITY_BATCH_SIZE = 40;
 const ACTIVE_RECOVERY_REASONS = new Set(["fresh_review_already_active", "publication_item_active"]);
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9:._-]{1,200}$/;
+
+class DeadLetterInventoryChangedError extends Error {
+  constructor(summary) {
+    super("dead-letter cleanup changed during reconciliation; refusing stale recovery");
+    this.name = "DeadLetterInventoryChangedError";
+    this.summary = summary;
+  }
+}
 
 const HELP = `Usage:
   node scripts/exact-review-dead-letter-operator.mjs --action <inventory|recover-fresh|resolve|reconcile> [options]
@@ -46,7 +55,7 @@ async function main(argv) {
     throw new Error("EXACT_REVIEW_QUEUE_URL and CLAWSWEEPER_WEBHOOK_SECRET are required");
   }
 
-  const inventory = await loadInventory({
+  let inventory = await loadInventory({
     queueUrl,
     secret,
     ...(args.action === "reconcile" ? { maxPages: MAX_RECONCILE_INVENTORY_PAGES } : {}),
@@ -60,7 +69,36 @@ async function main(argv) {
   }
 
   if (args.action === "reconcile") {
-    await reconcileDeadLetters({ inventory, queueUrl, secret, args });
+    const progress = { summary: null };
+    for (let refreshes = 0; refreshes <= MAX_RECONCILE_INVENTORY_REFRESHES; refreshes += 1) {
+      try {
+        await reconcileDeadLetters({ inventory, queueUrl, secret, args, progress });
+        return;
+      } catch (error) {
+        if (!(error instanceof DeadLetterInventoryChangedError)) throw error;
+        progress.summary.resolved_rows += error.summary.resolved;
+        if (
+          refreshes === MAX_RECONCILE_INVENTORY_REFRESHES ||
+          progress.summary.inspected_targets >= args.maxTargets
+        ) {
+          // Never recover against stale aliases if producers keep changing the
+          // inventory faster than this bounded operator can inspect it. Keep
+          // the original target cap and accumulated counters across refreshes.
+          printResult({
+            ...progress.summary,
+            inventory_changed: true,
+            skipped_rows: error.summary.skipped,
+          });
+          return;
+        }
+        inventory = await loadInventory({
+          queueUrl,
+          secret,
+          maxPages: MAX_RECONCILE_INVENTORY_PAGES,
+        });
+        await writeFile(args.output, `${JSON.stringify(inventory, null, 2)}\n`, "utf8");
+      }
+    }
     return;
   }
 
@@ -192,10 +230,10 @@ function boundedInteger(value, flag, minimum, maximum) {
   return parsed;
 }
 
-async function reconcileDeadLetters({ inventory, queueUrl, secret, args }) {
+async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progress }) {
   const initialPressure = await readQueuePressure(queueUrl);
   const openIds = new Set(inventory.dead_letters.map((row) => row.dead_letter_id));
-  const summary = {
+  const summary = (progress.summary ??= {
     action: "reconcile",
     dry_run: !args.execute,
     inventory_complete: inventory.complete,
@@ -208,7 +246,9 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args }) {
     duplicate_rows: 0,
     active_review_rows: 0,
     skipped_targets: 0,
-  };
+  });
+  summary.inventory_complete = inventory.complete;
+  summary.queue_pressure = initialPressure.status;
   const groups = new Map();
   const invalidRows = [];
   for (const row of inventory.dead_letters) {
@@ -346,7 +386,7 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args }) {
         (!row.fresh_recovery.source_head_sha ||
           row.fresh_recovery.source_head_sha === live.head_sha),
     );
-    if (!primary || recoveries.length >= args.maxRecoveries) {
+    if (!primary || summary.recovered_targets + recoveries.length >= args.maxRecoveries) {
       summary.skipped_targets += 1;
       continue;
     }
@@ -557,7 +597,7 @@ async function reconcileResolve({
   });
   const summary = mutationSummary("resolve", result);
   if (summary.resolved !== rows.length || summary.skipped !== 0) {
-    throw new Error("dead-letter cleanup changed during reconciliation; refusing stale recovery");
+    throw new DeadLetterInventoryChangedError(summary);
   }
   for (const row of rows) openIds?.delete(row.dead_letter_id);
   return summary;

@@ -1034,7 +1034,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(publisherSource, /writePublicationCompletionOutputs\(\s*"superseded"/);
   assert.match(publisherSource, /completionKind: completionSupersededReason/);
   const reviewSource = [
-    readText("src/clawsweeper.ts"),
+    readText("src/clawsweeper-runtime.ts"),
     readText("src/clawsweeper-command-operations.ts"),
     readText("src/clawsweeper-apply-decision-workflow.ts"),
   ].join("\n");
