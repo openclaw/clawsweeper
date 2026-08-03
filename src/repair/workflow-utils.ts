@@ -2245,7 +2245,9 @@ function commentSyncCandidates(
       if (repoFor(markdown, name) !== targetRepo) return [];
       const type = frontMatterValue(markdown, "type");
       if (applyKind !== "all" && type !== applyKind) return [];
-      if (frontMatterValue(markdown, "review_status") !== "complete") return [];
+      const reviewStatus = frontMatterValue(markdown, "review_status");
+      const failedReview = reviewStatus === "failed";
+      if (reviewStatus !== "complete" && !failedReview) return [];
       if (!frontMatterValue(markdown, "item_snapshot_hash")) return [];
       const actionTaken = frontMatterValue(markdown, "action_taken");
       if (actionTaken === "skipped_invalid_decision") {
@@ -2286,18 +2288,46 @@ function commentSyncCandidates(
       const invalidReviewCommentHash =
         !reviewCommentHash || !/^[a-f\d]{64}$/i.test(reviewCommentHash);
       const syncedAt = Date.parse(frontMatterValue(markdown, "review_comment_synced_at") ?? "");
+      const hasSyncedTimestamp = Number.isFinite(syncedAt);
+      const verifiedAt = Date.parse(frontMatterValue(markdown, "review_comment_checked_at") ?? "");
+      const commentConfirmedAt = Math.max(
+        hasSyncedTimestamp ? syncedAt : 0,
+        Number.isFinite(verifiedAt) ? verifiedAt : 0,
+      );
+      const guardedSourceDrift =
+        guardedReview &&
+        Boolean(
+          frontMatterValue(markdown, "current_item_updated_at") ||
+          frontMatterValue(markdown, "current_item_snapshot_hash"),
+        );
       const reviewedAt = Math.max(
         Date.parse(frontMatterValue(markdown, "last_full_review_at") || "") || 0,
         Date.parse(frontMatterValue(markdown, "reviewed_at") || "") || 0,
-        guardedReview ? Date.parse(frontMatterValue(markdown, "apply_checked_at") || "") || 0 : 0,
+        guardedReview && !guardedSourceDrift
+          ? Date.parse(frontMatterValue(markdown, "apply_checked_at") || "") || 0
+          : 0,
       );
-      const freshlyReviewedSinceSync = Number.isFinite(syncedAt) && reviewedAt > syncedAt;
+      const freshlyReviewedSinceSync = commentConfirmedAt > 0 && reviewedAt > commentConfirmedAt;
+      if (
+        failedReview &&
+        hasStoredReviewComment &&
+        !requiresDurableCommentRepair &&
+        hasSyncedTimestamp &&
+        commentConfirmedAt > 0 &&
+        !freshlyReviewedSinceSync &&
+        Date.now() - commentConfirmedAt < 7 * 24 * 60 * 60 * 1000
+      ) {
+        return [];
+      }
       if (
         guardedReview &&
+        type === "issue" &&
         hasStoredReviewComment &&
         !invalidReviewCommentHash &&
-        Number.isFinite(syncedAt) &&
-        !freshlyReviewedSinceSync
+        hasSyncedTimestamp &&
+        commentConfirmedAt > 0 &&
+        !freshlyReviewedSinceSync &&
+        (!failedReview || Date.now() - commentConfirmedAt < 7 * 24 * 60 * 60 * 1000)
       ) {
         return [];
       }
@@ -2306,12 +2336,13 @@ function commentSyncCandidates(
         automaticAllItemCursor &&
         type === "issue" &&
         hasStoredReviewComment &&
-        !requiresDurableCommentRepair
+        !requiresDurableCommentRepair &&
+        hasSyncedTimestamp
       ) {
         if (
-          Number.isFinite(syncedAt) &&
-          (!Number.isFinite(reviewedAt) || reviewedAt <= syncedAt) &&
-          Date.now() - syncedAt < 7 * 24 * 60 * 60 * 1000
+          commentConfirmedAt > 0 &&
+          (!Number.isFinite(reviewedAt) || reviewedAt <= commentConfirmedAt) &&
+          Date.now() - commentConfirmedAt < 7 * 24 * 60 * 60 * 1000
         ) {
           return [];
         }
@@ -2333,7 +2364,8 @@ function commentSyncCandidates(
         verifiedLocalCheckout &&
         (!hasStoredReviewComment ||
           invalidReviewCommentHash ||
-          (guardedReview && !Number.isFinite(syncedAt)) ||
+          (!hasSyncedTimestamp && Number.isFinite(verifiedAt)) ||
+          (guardedReview && commentConfirmedAt <= 0) ||
           ((actionTaken === "kept_open" || actionTaken === "proposed_close" || guardedReview) &&
             freshlyReviewedSinceSync))
       ) {

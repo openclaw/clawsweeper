@@ -1121,7 +1121,13 @@ export function createReviewCommentWorkflow({
     const url = commentUrl(comment);
     if (id !== null) next = replaceFrontMatterValue(next, "review_comment_id", String(id));
     if (url) next = replaceFrontMatterValue(next, "review_comment_url", url);
-    next = replaceFrontMatterValue(next, "review_comment_synced_at", new Date().toISOString());
+    const checkedAt = new Date().toISOString();
+    next = replaceFrontMatterValue(
+      next,
+      "review_comment_synced_at",
+      commentUpdatedAt(comment) ?? checkedAt,
+    );
+    next = replaceFrontMatterValue(next, "review_comment_checked_at", checkedAt);
     return next;
   }
 

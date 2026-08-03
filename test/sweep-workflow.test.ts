@@ -3673,8 +3673,7 @@ test("uncursored comment synchronization selects and continues the full eligible
     assert.match(output, /^selected=1,2,3,/m);
     assert.match(output, /^selected=.*39,40$/m);
     assert.match(output, /^resumed=981,982,/m);
-    assert.match(output, /^resumed=.*1001,1002$/m);
-    assert.doesNotMatch(output, /^resumed=.*1003/m);
+    assert.match(output, /^resumed=.*1001,1002,1003$/m);
     assert.doesNotMatch(output, /^resumed=.*1004/m);
     assert.match(output, /results\/comment-sync-cursors\/openclaw-openclaw\.json/);
   } finally {

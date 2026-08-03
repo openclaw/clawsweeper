@@ -426,6 +426,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
     isCloseProposal: boolean;
     commentSyncMinAgeDays: number;
     reviewCommentSyncedAt: string | undefined;
+    reviewCommentVerifiedAt?: string | undefined;
     reviewedAt?: string | undefined;
     lastFullReviewAt?: string | undefined;
     guardedReviewedAt?: string | undefined;

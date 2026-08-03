@@ -103,6 +103,7 @@ export function requiresLockedReviewCommentMutation(
     isCloseProposal: options.isCloseProposal,
     commentSyncMinAgeDays: options.commentSyncMinAgeDays,
     reviewCommentSyncedAt: frontMatterValue(options.markdown, "review_comment_synced_at"),
+    reviewCommentVerifiedAt: frontMatterValue(options.markdown, "review_comment_checked_at"),
     reviewedAt: frontMatterValue(options.markdown, "reviewed_at"),
     lastFullReviewAt: frontMatterValue(options.markdown, "last_full_review_at"),
     guardedReviewedAt: guarded ? frontMatterValue(options.markdown, "apply_checked_at") : undefined,

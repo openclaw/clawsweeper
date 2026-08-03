@@ -66,16 +66,23 @@ export function createApplyChangedSinceReviewMarker(
     reason,
     currentUpdatedAt,
     currentSnapshotHash,
+    currentLabels,
+    preserveAction,
   }: {
     reason: string;
     currentUpdatedAt?: string | undefined;
     currentSnapshotHash?: string | undefined;
+    currentLabels?: string[] | undefined;
+    preserveAction?: string | undefined;
   }): boolean => {
     let markdown = replaceFrontMatterValue(
       options.getMarkdown(),
       "action_taken",
-      "skipped_changed_since_review",
+      preserveAction ?? "skipped_changed_since_review",
     );
+    if (currentLabels) {
+      markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(currentLabels));
+    }
     if (currentUpdatedAt) {
       markdown = replaceFrontMatterValue(markdown, "current_item_updated_at", currentUpdatedAt);
     }
@@ -109,12 +116,22 @@ export function applyReviewedSourceDriftEvidence(
     item: Item;
     storedUpdatedAt: string | undefined;
   },
-): { reason: string; currentUpdatedAt?: string; currentSnapshotHash?: string } {
+): {
+  reason: string;
+  currentUpdatedAt?: string;
+  currentSnapshotHash?: string;
+  currentLabels: string[];
+} {
   return options.storedUpdatedAt
-    ? { reason: "updated_at changed", currentUpdatedAt: options.item.updatedAt }
+    ? {
+        reason: "updated_at changed",
+        currentUpdatedAt: options.item.updatedAt,
+        currentLabels: options.item.labels,
+      }
     : {
         reason: "snapshot changed",
         currentSnapshotHash: itemSnapshotHash(options.item, options.currentItemContext()),
+        currentLabels: options.item.labels,
       };
 }
 

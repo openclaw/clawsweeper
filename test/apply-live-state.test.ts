@@ -13,6 +13,7 @@ import {
 } from "../dist/clawsweeper.js";
 import { capturedCanonicalRecordBaselineKeys } from "../dist/repair/canonical-record-baseline.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
+import { shouldReviewItem } from "../dist/scheduler-policy.js";
 import {
   implementedCloseReport,
   markedReviewCommentForTest,
@@ -1265,7 +1266,7 @@ if (args[0] === "api" && /\\/issues\\/321\\/(comments|timeline)(?:\\?|$)/.test(p
   }
 });
 
-test("guarded reports never publish changed snapshots without a reviewed updated_at", () => {
+test("guarded reports reject changed snapshots even with a zero publication cooldown", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -1361,14 +1362,321 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
           "--item-number",
           "321",
           "--comment-sync-min-age-days",
-          "7",
+          "0",
         ],
       });
     });
-    assert.deepEqual(JSON.parse(readText(reportPath)), []);
+    assert.deepEqual(JSON.parse(readText(reportPath)), [
+      { number: 321, action: "skipped_changed_since_review", reason: "snapshot changed" },
+    ]);
     assert.equal(existsSync(commentWrites), false);
+    assert.match(readText(join(itemsDir, "321.md")), /^action_taken: skipped_invalid_decision$/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("guarded PR source drift is rejected before any label mutation", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const mutationLog = join(root, "mutations.log");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    const reviewed = reportWithSyncedReviewComment(
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        number: 321,
+        type: "pull_request",
+        title: "Protected PR changed after review",
+        url: "https://github.com/openclaw/openclaw/pull/321",
+        action_taken: "skipped_protected_label",
+        author: "reporter",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify(["security"]),
+        pull_head_sha: "reviewed-head",
+        item_updated_at: "2026-05-01T00:00:00Z",
+      }),
+      321,
+      "implemented_on_main",
+    );
+    writeFileSync(join(itemsDir, "321.md"), reviewed.report);
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 321,
+        title: "Protected PR changed after review",
+        labels: ["security"],
+        headSha: "reviewed-head",
+        itemUpdatedAt: "2026-05-02T00:00:00Z",
+        itemUpdatedAtAfterLabelSyncLogPath: mutationLog,
+        comment: reviewed.comment,
+      }),
+      () =>
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: ["--sync-comments-only", "--apply-kind", "all", "--item-number", "321"],
+        }),
+    );
+    assert.deepEqual(JSON.parse(readText(reportPath)), [
+      { number: 321, action: "skipped_changed_since_review", reason: "updated_at changed" },
+    ]);
+    assert.equal(existsSync(mutationLog), false);
+    assert.match(readText(join(itemsDir, "321.md")), /^action_taken: skipped_protected_label$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("protected stale-head proposals clear obsolete readiness labels before exiting", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const mutationLog = join(root, "mutations.log");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    const labels = ["security", "proof: sufficient", "status: 👀 ready for maintainer look"];
+    const reviewed = reportWithSyncedReviewComment(
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        number: 321,
+        type: "pull_request",
+        title: "Protected stale-head proposal",
+        url: "https://github.com/openclaw/openclaw/pull/321",
+        action_taken: "proposed_close",
+        author: "reporter",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify(labels),
+        pull_head_sha: "reviewed-head",
+        item_updated_at: "2026-05-01T00:00:00Z",
+      }),
+      321,
+      "implemented_on_main",
+    );
+    writeFileSync(join(itemsDir, "321.md"), reviewed.report);
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 321,
+        title: "Protected stale-head proposal",
+        labels,
+        headSha: "new-head",
+        itemUpdatedAtAfterLabelSyncLogPath: mutationLog,
+        comment: reviewed.comment,
+      }),
+      () =>
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: ["--sync-comments-only", "--apply-kind", "all", "--item-number", "321"],
+        }),
+    );
+    assert.deepEqual(JSON.parse(readText(reportPath)), [
+      { number: 321, action: "skipped_protected_label", reason: "protected label: security" },
+    ]);
+    const stored = readText(join(itemsDir, "321.md"));
+    assert.equal(existsSync(mutationLog), true);
+    assert.match(stored, /^current_pull_head_sha: new-head$/m);
+    assert.match(stored, /^labels: \["security"\]$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("protected source drift preserves its original guard after lock or label removal", () => {
+  for (const scenario of [
+    { locked: true, labels: ["security", "good first issue"], syncOnly: true },
+    { locked: false, labels: [], syncOnly: false },
+  ]) {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const targetRepo = scenario.locked ? "openclaw/openclaw" : "openclaw/clawsweeper";
+      const itemsDir = join(root, "items");
+      const closedDir = join(root, "closed");
+      const plansDir = join(root, "plans");
+      const reportPath = join(root, "apply-report.json");
+      for (const directory of [itemsDir, closedDir, plansDir])
+        mkdirSync(directory, { recursive: true });
+      const issue = {
+        number: 321,
+        title: "Protected locked issue",
+        html_url: `https://github.com/${targetRepo}/issues/321`,
+        body: "Reviewed source.",
+        created_at: "2026-05-01T00:00:00Z",
+        updated_at: "2026-05-02T00:00:00Z",
+        closed_at: null,
+        state: "open",
+        locked: scenario.locked,
+        active_lock_reason: scenario.locked ? "resolved" : null,
+        author_association: "CONTRIBUTOR",
+        user: { login: "reporter" },
+        labels: scenario.labels,
+        comments: 0,
+        pull_request: null,
+      };
+      writeFileSync(
+        join(itemsDir, "321.md"),
+        implementedCloseReport({
+          repository: targetRepo,
+          title: issue.title,
+          action_taken: "skipped_protected_label",
+          labels: JSON.stringify(["security"]),
+          item_updated_at: "2026-05-01T00:00:00Z",
+          item_source_revision: itemSourceRevisionSha256ForTest(issue, []),
+          ...(scenario.locked
+            ? { review_lease_owner: "review-owner", review_lease_comment_id: "77" }
+            : {}),
+        }),
+      );
+      const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/(comments|timeline)(?:\\?|$)/.test(path)) {
+  if (args.includes("--method")) throw new Error("protected locked source must not be mutated");
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else {
+  throw new Error("unexpected gh args " + JSON.stringify(args));
+}`;
+      withMockGh(root, ghMock, () =>
+        runApplyDecisionsForTest({
+          targetRepo,
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            ...(scenario.syncOnly ? ["--sync-comments-only"] : []),
+            "--item-number",
+            "321",
+            "--event-apply-proof",
+          ],
+        }),
+      );
+      const [result] = JSON.parse(readText(reportPath));
+      assert.equal(result.action, "skipped_changed_since_review");
+      assert.equal(result.sourceDriftVerified, true);
+      const stored = readText(join(itemsDir, "321.md"));
+      assert.match(stored, /^action_taken: skipped_protected_label$/m);
+      assert.match(stored, /^current_item_updated_at: 2026-05-02T00:00:00Z$/m);
+      assert.ok(stored.includes(`\nlabels: ${JSON.stringify(scenario.labels)}\n`));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("live protected labels and maintainer ownership take precedence over source drift", () => {
+  for (const scenario of [
+    {
+      targetRepo: "openclaw/clawsweeper",
+      labels: ["security"],
+      association: "CONTRIBUTOR",
+      closeReason: "implemented_on_main",
+      action: "skipped_protected_label",
+      reason: "protected label: security",
+    },
+    {
+      targetRepo: "openclaw/openclaw",
+      labels: ["triage"],
+      association: "MEMBER",
+      closeReason: "cannot_reproduce",
+      action: "skipped_maintainer_authored",
+      reason: "author association is MEMBER",
+    },
+  ]) {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "items");
+      const closedDir = join(root, "closed");
+      const plansDir = join(root, "plans");
+      const reportPath = join(root, "apply-report.json");
+      for (const directory of [itemsDir, closedDir, plansDir])
+        mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(itemsDir, "321.md"),
+        implementedCloseReport({
+          repository: scenario.targetRepo,
+          labels: "[]",
+          author_association: "CONTRIBUTOR",
+          close_reason: scenario.closeReason,
+        }),
+      );
+      const issue = {
+        number: 321,
+        title: "Live protected or maintainer issue",
+        html_url: `https://github.com/${scenario.targetRepo}/issues/321`,
+        body: "",
+        created_at: "2026-05-01T00:00:00Z",
+        updated_at: "2026-05-02T00:00:00Z",
+        closed_at: null,
+        state: "open",
+        locked: false,
+        active_lock_reason: null,
+        author_association: scenario.association,
+        user: { login: "reporter" },
+        labels: scenario.labels,
+        comments: 0,
+        pull_request: null,
+      };
+      const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/(comments|timeline)(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else {
+  throw new Error("live protected source must not be mutated: " + JSON.stringify(args));
+}`;
+      withMockGh(root, ghMock, () =>
+        runApplyDecisionsForTest({
+          targetRepo: scenario.targetRepo,
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: ["--skip-dashboard", "--item-number", "321", "--event-apply-proof"],
+        }),
+      );
+      assert.deepEqual(JSON.parse(readText(reportPath)), [
+        {
+          number: 321,
+          action: scenario.action,
+          reason: scenario.reason,
+          guardedOpenStateVerified: true,
+        },
+      ]);
+      const stored = readText(join(itemsDir, "321.md"));
+      assert.ok(stored.includes(`\nlabels: ${JSON.stringify(scenario.labels)}\n`));
+      assert.match(stored, new RegExp(`^author_association: ${scenario.association}$`, "m"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 
@@ -1953,6 +2261,130 @@ test("matching durable comments repair stale, missing, and refreshed sync timest
   }
 });
 
+test("metadata-only comment verification never hides newer human source activity", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    const now = Date.now();
+    const reviewedAt = new Date(now - 2 * 60 * 60 * 1000).toISOString();
+    const humanUpdatedAt = new Date(now - 60 * 60 * 1000).toISOString();
+    const commentUpdatedAt = new Date(now - 90 * 60 * 1000).toISOString();
+    const reviewed = reportWithSyncedReviewComment(
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        decision: "keep_open",
+        close_reason: "none",
+        action_taken: "kept_open",
+        reviewed_at: reviewedAt,
+        item_updated_at: reviewedAt,
+        labels: "[]",
+      }),
+      321,
+      "none",
+    );
+    writeFileSync(
+      join(itemsDir, "321.md"),
+      reviewed.report
+        .replace(/^review_comment_synced_at:.*\n/m, "")
+        .replaceAll(
+          "https://github.com/openclaw/clawsweeper/issues/321",
+          "https://github.com/openclaw/openclaw/issues/321",
+        ),
+    );
+    const durable = {
+      id: 9321,
+      html_url: "https://github.com/openclaw/openclaw/issues/321#issuecomment-9321",
+      created_at: commentUpdatedAt,
+      updated_at: commentUpdatedAt,
+      user: { login: "clawsweeper[bot]" },
+      body: reviewed.comment,
+    };
+    const issue = {
+      number: 321,
+      title: "Render work plans",
+      html_url: "https://github.com/openclaw/openclaw/issues/321",
+      body: "Human updated after review.",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: humanUpdatedAt,
+      closed_at: null,
+      state: "open",
+      locked: false,
+      active_lock_reason: null,
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 1,
+      pull_request: null,
+    };
+    const schedulerItem = {
+      repo: "openclaw/openclaw",
+      number: 321,
+      kind: "issue" as const,
+      createdAt: issue.created_at,
+      updatedAt: humanUpdatedAt,
+    };
+    const review = { reviewedAt, itemUpdatedAt: reviewedAt, reviewStatus: "complete" as const };
+    assert.equal(shouldReviewItem(schedulerItem, review, now), true);
+    const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (/\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method")) throw new Error("metadata-only must not mutate GitHub");
+  console.log(JSON.stringify([[${JSON.stringify(durable)}]]));
+} else if (/\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (/\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "label" || (args[0] === "issue" && args[1] === "edit")) {
+  console.log("");
+} else {
+  throw new Error("unexpected gh args " + JSON.stringify(args));
+}`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--skip-dashboard",
+          "--sync-comments-only",
+          "--item-number",
+          "321",
+          "--comment-sync-min-age-days",
+          "0",
+        ],
+      });
+    });
+    const updated = readText(join(itemsDir, "321.md"));
+    const syncedAt = updated.match(/^review_comment_synced_at:\s*(.+)$/m)?.[1];
+    assert.equal(syncedAt, commentUpdatedAt);
+    assert.match(updated, /^review_comment_checked_at: /m);
+    assert.equal(
+      shouldReviewItem(schedulerItem, { ...review, reviewCommentSyncedAt: syncedAt }, Date.now()),
+      true,
+    );
+    assert.deepEqual(JSON.parse(readText(reportPath)), [
+      {
+        number: 321,
+        action: "review_comment_synced",
+        reason: "recorded existing durable comment metadata",
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("locked, already-synchronized maintainer and invalid reports refresh local metadata", () => {
   for (const action of ["skipped_maintainer_authored", "skipped_invalid_decision"]) {
     const root = mkdtempSync(tmpPrefix);
@@ -2068,8 +2500,10 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
       assert.match(updatedReport, new RegExp(`^action_taken: ${action}$`, "m"));
       const refreshedSyncTime = updatedReport.match(/^review_comment_synced_at:\s*(.*)$/m)?.[1];
       const checkedTime = updatedReport.match(/^apply_checked_at:\s*(.*)$/m)?.[1];
-      assert.ok(refreshedSyncTime && checkedTime);
-      assert.ok(Date.parse(refreshedSyncTime) >= Date.parse(checkedTime), action);
+      const verifiedTime = updatedReport.match(/^review_comment_checked_at:\s*(.*)$/m)?.[1];
+      assert.equal(refreshedSyncTime, syncedAt);
+      assert.ok(verifiedTime && checkedTime);
+      assert.ok(Date.parse(verifiedTime) >= Date.parse(checkedTime), action);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

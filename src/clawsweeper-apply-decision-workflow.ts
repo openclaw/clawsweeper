@@ -1183,6 +1183,16 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         state === "open" && item.kind === "pull_request"
           ? stalePullRequestReviewHead(markdown, currentItemContext())
           : null;
+      const guardedReviewAction = isGuardedApplyReviewAction(action, isLiveRecheckGuardClose);
+      const markReviewedSourceDrift = () =>
+        markChangedSinceReview({
+          ...applyReviewedSourceDriftEvidence(dependencies, {
+            currentItemContext,
+            item,
+            storedUpdatedAt,
+          }),
+          preserveAction: guardedReviewAction ? action : undefined,
+        });
       let currentPrStatusKind: PrStatusLabelKind | null = null;
       let lockedMetadataOnly = false;
       if (state === "open") {
@@ -1240,17 +1250,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             continue;
           }
         }
-        if (lockedIssueReason && isCloseProposal && !reviewedSourceFresh()) {
-          if (
-            markChangedSinceReview(
-              applyReviewedSourceDriftEvidence(dependencies, {
-                currentItemContext,
-                item,
-                storedUpdatedAt,
-              }),
-            )
-          )
-            break;
+        if (
+          lockedIssueReason &&
+          (isCloseProposal || guardedReviewAction) &&
+          !reviewedSourceFresh()
+        ) {
+          if (markReviewedSourceDrift()) break;
           continue;
         }
         if (needsLockedCommentMutation) {
@@ -1263,7 +1268,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           currentItemContext,
           dryRun,
           item,
-          labelSyncFreshEnough,
+          labelSyncFreshEnough: () =>
+            labelSyncFreshEnough() && (!guardedReviewAction || reviewedSourceFresh()),
           markdown,
           number,
           onMutation: recordMutation,
@@ -1277,6 +1283,53 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
       if (clawSweeperLabelsChanged && !dryRun) {
         rememberSelfMutationUpdatedAt();
+      }
+      if (
+        state === "open" &&
+        isCloseProposal &&
+        applyBlockingProtectedLabels(item.labels, closeReason).length > 0
+      ) {
+        if (
+          markApplySkipped(
+            "skipped_protected_label",
+            applyProtectedLabelReason(item.labels, closeReason),
+            true,
+          )
+        )
+          break;
+        continue;
+      }
+      const currentAuthorAssociation = normalizeAuthorAssociation(item.authorAssociation);
+      const reviewedAuthorAssociation = normalizeAuthorAssociation(storedAuthorAssociation);
+      if (
+        isCloseProposal &&
+        !isVerifiedFixedCloseReason(closeReason) &&
+        (isMaintainerAuthorAssociation(currentAuthorAssociation) ||
+          isMaintainerAuthorAssociation(reviewedAuthorAssociation))
+      ) {
+        const authorAssociation = isMaintainerAuthorAssociation(currentAuthorAssociation)
+          ? currentAuthorAssociation
+          : reviewedAuthorAssociation;
+        markdown = replaceFrontMatterValue(markdown, "author_association", authorAssociation);
+        markdown = replaceFrontMatterValue(markdown, "action_taken", "skipped_maintainer_authored");
+        if (
+          recordApplySkipped(
+            "skipped_maintainer_authored",
+            `author association is ${authorAssociation}`,
+            true,
+          )
+        )
+          break;
+        continue;
+      }
+      if (
+        state === "open" &&
+        (isCloseProposal || guardedReviewAction) &&
+        !stalePrReviewHead &&
+        !reviewedSourceFresh()
+      ) {
+        if (markReviewedSourceDrift()) break;
+        continue;
       }
       const renderOptions: ReviewCommentRenderOptions = {
         prStatusKind: currentPrStatusKind,
@@ -1304,36 +1357,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         reviewComment = renderCurrentReviewComment();
       }
       let markedReviewComment = markedReviewCommentForApply(reviewComment);
-      const protectedApplyReason = applyProtectedLabelReason(item.labels, closeReason);
-      if (applyBlockingProtectedLabels(item.labels, closeReason).length > 0) {
-        if (isCloseProposal) {
-          if (markApplySkipped("skipped_protected_label", protectedApplyReason, true)) break;
-        }
-        if (isCloseProposal) continue;
-      }
-      const currentAuthorAssociation = normalizeAuthorAssociation(item.authorAssociation);
-      const reviewedAuthorAssociation = normalizeAuthorAssociation(storedAuthorAssociation);
-      if (
-        isCloseProposal &&
-        !isVerifiedFixedCloseReason(closeReason) &&
-        (isMaintainerAuthorAssociation(currentAuthorAssociation) ||
-          isMaintainerAuthorAssociation(reviewedAuthorAssociation))
-      ) {
-        const authorAssociation = isMaintainerAuthorAssociation(currentAuthorAssociation)
-          ? currentAuthorAssociation
-          : reviewedAuthorAssociation;
-        markdown = replaceFrontMatterValue(markdown, "author_association", authorAssociation);
-        markdown = replaceFrontMatterValue(markdown, "action_taken", "skipped_maintainer_authored");
-        if (
-          recordApplySkipped(
-            "skipped_maintainer_authored",
-            `author association is ${authorAssociation}`,
-            true,
-          )
-        )
-          break;
-        continue;
-      }
       const { postProofCoveringPrFreshnessBlock, postProofFreshnessBlock } =
         createApplyProofFreshnessGuards({
           ...dependencies,
@@ -1407,19 +1430,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           break;
         continue;
       }
-      if (isCloseProposal && !reviewedSourceFresh()) {
-        if (
-          markChangedSinceReview(
-            applyReviewedSourceDriftEvidence(dependencies, {
-              currentItemContext,
-              item,
-              storedUpdatedAt,
-            }),
-          )
-        )
-          break;
-        continue;
-      }
       const labelsCanSync = !lockedMetadataOnly && !stalePrReviewHead && labelSyncFreshEnough();
       const complete = frontMatterValue(markdown, "review_status") === "complete" && labelsCanSync;
       const reportLabelSync = syncApplyReportLabels(dependencies, {
@@ -1483,7 +1493,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_id") ?? "") ||
         /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_url") ?? "");
       const guarded =
-        isGuardedApplyReviewAction(action, isLiveRecheckGuardClose) &&
+        guardedReviewAction &&
         reviewedSourceFresh() &&
         !stalePrReviewHead;
       let needsReviewCommentSync = shouldSyncReviewComment({
@@ -1491,6 +1501,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         isCloseProposal,
         commentSyncMinAgeDays,
         reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
+        reviewCommentVerifiedAt: frontMatterValue(markdown, "review_comment_checked_at"),
         reviewedAt: frontMatterValue(markdown, "reviewed_at"),
         lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
         guardedReviewedAt: guarded ? frontMatterValue(markdown, "apply_checked_at") : undefined,
