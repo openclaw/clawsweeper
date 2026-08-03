@@ -1,5 +1,5 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
-import type { Item, ItemContext } from "./clawsweeper-types.js";
+import type { ApplyResult, Item, ItemContext } from "./clawsweeper-types.js";
 
 type ApplySourceFreshnessDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
@@ -12,6 +12,7 @@ type ApplySourceFreshnessDependencies = Pick<
   | "fetchIssueReviewComments"
   | "freshPullRequestReviewHead"
   | "frontMatterValue"
+  | "itemSnapshotHash"
   | "login"
   | "recordedLabelSyncCoversUpdate"
   | "reviewStartLeaseOwner"
@@ -37,6 +38,84 @@ interface ApplySourceFreshnessOptions {
   reportReviewLeaseCommentId: number;
   reportReviewLeaseOwner: string | undefined;
   requiresApplyMutationLease: boolean;
+  storedHash: string | undefined;
+}
+
+interface ApplyChangedSinceReviewMarkerOptions {
+  dryRun: boolean;
+  emitEventApplyProof: boolean;
+  getMarkdown: () => string;
+  getProcessedCount: () => number;
+  maybeLogProgress: (message: string) => void;
+  number: number;
+  path: string;
+  processedLimit: number;
+  results: ApplyResult[];
+  setMarkdown: (markdown: string) => void;
+  setProcessedCount: (count: number) => void;
+  writeReportMarkdown: (path: string, markdown: string) => void;
+}
+
+export function createApplyChangedSinceReviewMarker(
+  {
+    replaceFrontMatterValue,
+  }: Pick<CreateApplyDecisionWorkflowDependencies, "replaceFrontMatterValue">,
+  options: ApplyChangedSinceReviewMarkerOptions,
+) {
+  return ({
+    reason,
+    currentUpdatedAt,
+    currentSnapshotHash,
+  }: {
+    reason: string;
+    currentUpdatedAt?: string | undefined;
+    currentSnapshotHash?: string | undefined;
+  }): boolean => {
+    let markdown = replaceFrontMatterValue(
+      options.getMarkdown(),
+      "action_taken",
+      "skipped_changed_since_review",
+    );
+    if (currentUpdatedAt) {
+      markdown = replaceFrontMatterValue(markdown, "current_item_updated_at", currentUpdatedAt);
+    }
+    if (currentSnapshotHash) {
+      markdown = replaceFrontMatterValue(
+        markdown,
+        "current_item_snapshot_hash",
+        currentSnapshotHash,
+      );
+    }
+    markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
+    options.setMarkdown(markdown);
+    if (!options.dryRun) options.writeReportMarkdown(options.path, markdown);
+    options.results.push({
+      number: options.number,
+      action: "skipped_changed_since_review",
+      reason,
+      ...(options.emitEventApplyProof ? { sourceDriftVerified: true } : {}),
+    });
+    const processedCount = options.getProcessedCount() + 1;
+    options.setProcessedCount(processedCount);
+    options.maybeLogProgress(`skipped #${options.number}: ${reason}`);
+    return processedCount >= options.processedLimit;
+  };
+}
+
+export function applyReviewedSourceDriftEvidence(
+  { itemSnapshotHash }: Pick<CreateApplyDecisionWorkflowDependencies, "itemSnapshotHash">,
+  options: {
+    currentItemContext: () => ItemContext;
+    item: Item;
+    storedUpdatedAt: string | undefined;
+  },
+): { reason: string; currentUpdatedAt?: string; currentSnapshotHash?: string } {
+  return options.storedUpdatedAt
+    ? { reason: "updated_at changed", currentUpdatedAt: options.item.updatedAt }
+    : {
+        reason: "snapshot changed",
+        currentSnapshotHash: itemSnapshotHash(options.item, options.currentItemContext()),
+      };
 }
 
 export function createApplySourceFreshness(
@@ -53,6 +132,7 @@ export function createApplySourceFreshness(
     fetchIssueReviewComments,
     freshPullRequestReviewHead,
     frontMatterValue,
+    itemSnapshotHash,
     login,
     recordedLabelSyncCoversUpdate,
     reviewStartLeaseOwner,
@@ -73,6 +153,7 @@ export function createApplySourceFreshness(
     reportReviewLeaseCommentId,
     reportReviewLeaseOwner,
     requiresApplyMutationLease,
+    storedHash,
   } = options;
   const existingReviewCommentUpdatedAt = commentUpdatedAt(existingReviewComment);
   if (existingReviewCommentUpdatedAt) {
@@ -167,6 +248,10 @@ export function createApplySourceFreshness(
     labelSyncOnlyUpdate ||
     ownedIssueReviewLeaseOnlyUpdate ||
     commandStatusOnlyUpdate;
+  const reviewedSourceFresh = (): boolean =>
+    storedUpdatedAt
+      ? !updatedSinceReview || automationOnlyUpdate
+      : reviewCommentOnlyUpdate || itemSnapshotHash(item, currentItemContext()) === storedHash;
   const labelSyncFreshEnough = (): boolean => {
     const { isCloseProposal, markdown, storedUpdatedAt } = currentState();
     if (!storedUpdatedAt) return false;
@@ -194,6 +279,7 @@ export function createApplySourceFreshness(
   return {
     automationOnlyUpdate,
     labelSyncFreshEnough,
+    reviewedSourceFresh,
     retryCloseCoverageCommandStatusOnlyUpdate,
     reviewCommentOnlyUpdate,
     updatedSinceReview,

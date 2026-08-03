@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-import { guardedOpenApplyProofFields, shouldSyncReviewComment } from "../dist/clawsweeper.js";
+import {
+  guardedOpenApplyProofFields,
+  itemSourceRevisionSha256ForTest,
+  renderReviewCommentFromReport,
+  renderReviewStartStatusComment,
+  shouldSyncReviewComment,
+} from "../dist/clawsweeper.js";
 import { capturedCanonicalRecordBaselineKeys } from "../dist/repair/canonical-record-baseline.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
 import {
   implementedCloseReport,
+  markedReviewCommentForTest,
   promotionGhMock,
   readText,
   reportWithSyncedReviewComment,
@@ -146,6 +154,23 @@ test("apply-decisions rejects recorded PR review activity drift before mutations
       inlineComments: [],
     },
     {
+      name: "locked review",
+      locked: true,
+      reviewedInlineComments: [],
+      reviewedThreads: [],
+      reviews: [
+        {
+          id: 7004,
+          user: { login: "maintainer" },
+          state: "COMMENTED",
+          body: "this locked PR still changed after review",
+          submitted_at: "2026-05-01T00:30:00Z",
+          commit_id: "head-sha",
+        },
+      ],
+      inlineComments: [],
+    },
+    {
       name: "inline comment",
       reviewedInlineComments: [],
       reviewedThreads: [],
@@ -220,7 +245,7 @@ test("apply-decisions rejects recorded PR review activity drift before mutations
           pullReviewComments: scenario.inlineComments,
           reviewThreads: scenario.reviewThreads,
           itemUpdatedAtAfterLabelSyncLogPath: mutationLogPath,
-        }),
+        }).replace("locked: false,", `locked: ${scenario.locked === true},`),
         () => {
           runApplyDecisionsForTest({
             targetRepo: "openclaw/openclaw",
@@ -844,6 +869,938 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   }
 });
 
+test("comment-only apply skips a locked issue before acquiring its mutation lease", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    for (const directory of [itemsDir, closedDir, plansDir]) {
+      mkdirSync(directory, { recursive: true });
+    }
+    const issue = {
+      number: 321,
+      title: "Locked reopened issue",
+      html_url: "https://github.com/openclaw/openclaw/issues/321",
+      body: "",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-01T00:00:00Z",
+      closed_at: null,
+      state: "open",
+      locked: true,
+      active_lock_reason: "resolved",
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 0,
+      pull_request: null,
+    };
+    writeFileSync(
+      join(itemsDir, "321.md"),
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        decision: "keep_open",
+        close_reason: "none",
+        action_taken: "kept_open",
+        author_association: "CONTRIBUTOR",
+        labels: "[]",
+        item_source_revision: itemSourceRevisionSha256ForTest(issue, []),
+        review_lease_owner: "review-owner",
+        review_lease_comment_id: "77",
+      }),
+    );
+
+    const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method")) {
+    console.error("mutation lease must not be posted on a locked issue");
+    process.exit(1);
+  }
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else if (args[0] === "label" || (args[0] === "issue" && args[1] === "edit")) {
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--sync-comments-only",
+          "--item-number",
+          "321",
+          "--comment-sync-min-age-days",
+          "0",
+        ],
+      });
+    });
+
+    assert.deepEqual(JSON.parse(readText(reportPath)), [
+      {
+        number: 321,
+        action: "skipped_locked_conversation",
+        reason: "conversation is locked (resolved)",
+      },
+    ]);
+    assert.match(
+      readText(join(itemsDir, "321.md")),
+      /^action_taken: skipped_locked_conversation$/m,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("exact-event source drift wins over a locked conversation guard", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    for (const directory of [itemsDir, closedDir, plansDir]) {
+      mkdirSync(directory, { recursive: true });
+    }
+    const issue = {
+      number: 321,
+      title: "Locked reopened issue",
+      html_url: "https://github.com/openclaw/openclaw/issues/321",
+      body: "updated issue body",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-01T00:00:00Z",
+      closed_at: null,
+      state: "open",
+      locked: true,
+      active_lock_reason: "resolved",
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 0,
+      pull_request: null,
+    };
+    const reviewedIssue = { ...issue, body: "reviewed issue body" };
+    writeFileSync(
+      join(itemsDir, "321.md"),
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        action_taken: "skipped_locked_conversation",
+        labels: "[]",
+        item_source_revision: itemSourceRevisionSha256ForTest(reviewedIssue, []),
+        review_lease_owner: "review-owner",
+        review_lease_comment_id: "77",
+      }),
+    );
+    const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/(comments|timeline)(?:\\?|$)/.test(path)) {
+  if (args.includes("--method")) {
+    console.error("locked issue source drift must not attempt mutation");
+    process.exit(1);
+  }
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--dry-run",
+          "--item-number",
+          "321",
+          "--event-apply-proof",
+          "--exact-event-publication",
+        ],
+      });
+    });
+
+    const [result] = JSON.parse(readText(reportPath));
+    assert.equal(result.action, "skipped_changed_since_review");
+    assert.equal(result.sourceDriftVerified, true);
+    assert.doesNotMatch(JSON.stringify(result), /guardedOpenStateVerified/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("locked exact-event PRs classify timestamp drift before their conversation lock", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    const number = 337;
+    const head = "abcdef1234567890abcdef1234567890abcdef12";
+    const reviewed = reportWithSyncedReviewComment(
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        number,
+        type: "pull_request",
+        title: "Locked PR with updated-at drift",
+        url: `https://github.com/openclaw/openclaw/pull/${number}`,
+        author: "reporter",
+        author_association: "CONTRIBUTOR",
+        labels: "[]",
+        pull_head_sha: head,
+        review_lease_owner: "review-owner",
+        review_lease_comment_id: "77",
+      }),
+      number,
+      "implemented_on_main",
+    );
+    writeFileSync(join(itemsDir, `${number}.md`), reviewed.report);
+    withMockGh(
+      root,
+      promotionGhMock({
+        number,
+        title: "Locked PR with updated-at drift",
+        labels: [],
+        headSha: head,
+        itemUpdatedAt: "2026-05-02T00:00:00Z",
+        comment: reviewed.comment,
+      }).replace("locked: false,", "locked: true,"),
+      () =>
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--sync-comments-only",
+            "--apply-kind",
+            "all",
+            "--item-number",
+            String(number),
+            "--dry-run",
+            "--event-apply-proof",
+            "--exact-event-publication",
+          ],
+        }),
+    );
+    const [result] = JSON.parse(readText(reportPath));
+    assert.equal(result.action, "skipped_changed_since_review");
+    assert.equal(result.sourceDriftVerified, true);
+    assert.equal(result.guardedOpenStateVerified, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("locked issue timestamp drift persists the observed current revision evidence", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    const issue = {
+      number: 321,
+      title: "Locked issue with timestamp drift",
+      html_url: "https://github.com/openclaw/openclaw/issues/321",
+      body: "Reviewed source.",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-02T00:00:00Z",
+      closed_at: null,
+      state: "open",
+      locked: true,
+      active_lock_reason: "resolved",
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 0,
+      pull_request: null,
+    };
+    writeFileSync(
+      join(itemsDir, "321.md"),
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        item_updated_at: "2026-05-01T00:00:00Z",
+        item_source_revision: itemSourceRevisionSha256ForTest(issue, []),
+        review_lease_owner: "review-owner",
+        review_lease_comment_id: "77",
+        labels: "[]",
+      }),
+    );
+    const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/(comments|timeline)(?:\\?|$)/.test(path)) {
+  if (args.includes("--method")) throw new Error("drift must not mutate a locked issue");
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else {
+  throw new Error("unexpected gh args " + JSON.stringify(args));
+}`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--sync-comments-only", "--item-number", "321", "--event-apply-proof"],
+      });
+    });
+    const [result] = JSON.parse(readText(reportPath));
+    assert.equal(result.action, "skipped_changed_since_review");
+    assert.equal(result.sourceDriftVerified, true);
+    assert.match(
+      readText(join(itemsDir, "321.md")),
+      /^current_item_updated_at: 2026-05-02T00:00:00Z$/m,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("locked issue snapshot drift wins over its lock when updated_at is absent", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    const issue = {
+      number: 321,
+      title: "Locked issue with snapshot drift",
+      html_url: "https://github.com/openclaw/openclaw/issues/321",
+      body: "Reviewed source.",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-01T00:00:00Z",
+      closed_at: null,
+      state: "open",
+      locked: true,
+      active_lock_reason: "resolved",
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 0,
+      pull_request: null,
+    };
+    writeFileSync(
+      join(itemsDir, "321.md"),
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        item_source_revision: itemSourceRevisionSha256ForTest(issue, []),
+        review_lease_owner: "review-owner",
+        review_lease_comment_id: "77",
+        labels: "[]",
+      }).replace(/^item_updated_at:.*\n/m, ""),
+    );
+    const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/(comments|timeline)(?:\\?|$)/.test(path)) {
+  if (args.includes("--method")) throw new Error("drift must not mutate a locked issue");
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else {
+  throw new Error("unexpected gh args " + JSON.stringify(args));
+}`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--sync-comments-only", "--item-number", "321", "--event-apply-proof"],
+      });
+    });
+    const [result] = JSON.parse(readText(reportPath));
+    assert.equal(result.action, "skipped_changed_since_review");
+    assert.equal(result.reason, "snapshot changed");
+    assert.equal(result.sourceDriftVerified, true);
+    assert.match(readText(join(itemsDir, "321.md")), /^current_item_snapshot_hash: /m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("guarded reports never publish changed snapshots without a reviewed updated_at", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const commentWrites = join(root, "comment-writes.json");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    const reviewedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const syncedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const issue = {
+      number: 321,
+      title: "Changed issue body after review",
+      body: "Human edited after review.",
+      html_url: "https://github.com/openclaw/openclaw/issues/321",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: new Date().toISOString(),
+      closed_at: null,
+      state: "open",
+      locked: false,
+      active_lock_reason: null,
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 1,
+      pull_request: null,
+    };
+    const reviewed = reportWithSyncedReviewComment(
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        title: "Old reviewed issue body",
+        action_taken: "skipped_invalid_decision",
+        confidence: "low",
+        reviewed_at: reviewedAt,
+        labels: "[]",
+      }),
+      321,
+      "implemented_on_main",
+    );
+    writeFileSync(
+      join(itemsDir, "321.md"),
+      reviewed.report
+        .replace(/^review_comment_synced_at:.*$/m, `review_comment_synced_at: ${syncedAt}`)
+        .replace(/^item_updated_at:.*\n/m, "")
+        .replaceAll(
+          "https://github.com/openclaw/clawsweeper/issues/321",
+          "https://github.com/openclaw/openclaw/issues/321",
+        ),
+    );
+    const durable = {
+      id: 9321,
+      html_url: "https://github.com/openclaw/openclaw/issues/321#issuecomment-9321",
+      created_at: syncedAt,
+      updated_at: syncedAt,
+      user: { login: "clawsweeper[bot]" },
+      body: `${reviewed.comment}\n\nprevious current verdict`,
+    };
+    const ghMock = `
+const fs = require("node:fs");
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method")) throw new Error("unexpected posting");
+  console.log(JSON.stringify([[${JSON.stringify(durable)}]]));
+} else if (args[0] === "api" && /\\/issues\\/comments\\/9321$/.test(path) && args.includes("PATCH")) {
+  fs.writeFileSync(${JSON.stringify(commentWrites)}, "written");
+  console.log(JSON.stringify(${JSON.stringify(durable)}));
+} else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else if (args[0] === "label" || (args[0] === "issue" && args[1] === "edit")) {
+  console.log("");
+} else {
+  throw new Error("unexpected gh args " + JSON.stringify(args));
+}`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--skip-dashboard",
+          "--sync-comments-only",
+          "--item-number",
+          "321",
+          "--comment-sync-min-age-days",
+          "7",
+        ],
+      });
+    });
+    assert.deepEqual(JSON.parse(readText(reportPath)), []);
+    assert.equal(existsSync(commentWrites), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("locked failed reviews honor the comment-sync cooldown and release their lease", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const leaseDeleted = join(root, "lease-deleted");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    const reviewedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const syncedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const issue = {
+      number: 321,
+      title: "Locked failed review within cooldown",
+      body: "Reviewed source.",
+      html_url: "https://github.com/openclaw/openclaw/issues/321",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: reviewedAt,
+      closed_at: null,
+      state: "open",
+      locked: true,
+      active_lock_reason: "resolved",
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 2,
+      pull_request: null,
+    };
+    const revision = itemSourceRevisionSha256ForTest(issue, []);
+    const reviewed = reportWithSyncedReviewComment(
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        title: issue.title,
+        decision: "keep_open",
+        close_reason: "none",
+        action_taken: "kept_open",
+        review_status: "failed",
+        reviewed_at: reviewedAt,
+        item_updated_at: reviewedAt,
+        item_source_revision: revision,
+        review_lease_owner: "completed-review",
+        review_lease_comment_id: "700321",
+        labels: "[]",
+      }),
+      321,
+      "none",
+    );
+    writeFileSync(
+      join(itemsDir, "321.md"),
+      reviewed.report
+        .replace(/^review_comment_synced_at:.*$/m, `review_comment_synced_at: ${syncedAt}`)
+        .replaceAll(
+          "https://github.com/openclaw/clawsweeper/issues/321",
+          "https://github.com/openclaw/openclaw/issues/321",
+        ),
+    );
+    const durable = {
+      id: 9321,
+      html_url: "https://github.com/openclaw/openclaw/issues/321#issuecomment-9321",
+      created_at: syncedAt,
+      updated_at: syncedAt,
+      user: { login: "clawsweeper[bot]" },
+      body: `${reviewed.comment}\n\nlegacy comment suffix`,
+    };
+    const startedAt = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const lease = {
+      id: 700321,
+      html_url: "https://github.com/openclaw/openclaw/issues/321#issuecomment-700321",
+      created_at: startedAt,
+      updated_at: startedAt,
+      user: { login: "clawsweeper[bot]" },
+      body: renderReviewStartStatusComment({
+        number: 321,
+        kind: "issue",
+        title: issue.title,
+        headSha: revision,
+        startedAt,
+        leaseExpiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        leaseOwner: "completed-review",
+      }),
+    };
+    const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method")) throw new Error("unexpected posting");
+  console.log(JSON.stringify([[${JSON.stringify(durable)}, ${JSON.stringify(lease)}]]));
+} else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else if (args[0] === "api" && /\\/issues\\/comments\\/700321$/.test(path) && args.includes("DELETE")) {
+  require("node:fs").writeFileSync(${JSON.stringify(leaseDeleted)}, "deleted");
+  console.log("");
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else if (args[0] === "label" || (args[0] === "issue" && args[1] === "edit")) {
+  console.log("");
+} else {
+  throw new Error("unexpected gh args " + JSON.stringify(args));
+}`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--skip-dashboard",
+          "--sync-comments-only",
+          "--item-number",
+          "321",
+          "--comment-sync-min-age-days",
+          "7",
+        ],
+      });
+    });
+    assert.deepEqual(JSON.parse(readText(reportPath)), []);
+    assert.match(readText(join(itemsDir, "321.md")), /^action_taken: kept_open$/m);
+    assert.equal(existsSync(leaseDeleted), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("closed legacy reports archive without hydrating their irrelevant source snapshot", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      join(itemsDir, "321.md"),
+      implementedCloseReport({
+        action_taken: "skipped_open_closing_pr",
+        close_reason: "duplicate_or_superseded",
+      })
+        .replace(/^local_checkout_access: verified\n/m, "")
+        .replace(/^item_updated_at:.*\n/m, ""),
+    );
+    const closedIssue = {
+      number: 321,
+      title: "Render work plans",
+      html_url: "https://github.com/openclaw/clawsweeper/issues/321",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-01T00:00:00Z",
+      closed_at: "2026-05-02T00:00:00Z",
+      state: "closed",
+      locked: false,
+      active_lock_reason: null,
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 0,
+      pull_request: null,
+    };
+    const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(closedIssue)}));
+} else {
+  throw new Error("closed records must not hydrate source context: " + JSON.stringify(args));
+}`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--skip-dashboard", "--item-number", "321"],
+      });
+    });
+    const [result] = JSON.parse(readText(reportPath));
+    assert.equal(result.action, "skipped_already_closed");
+    assert.equal(existsSync(join(closedDir, "321.md")), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("locked issues preserve already-synchronized linked-PR review comments", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const leaseDeleted = join(root, "lease-deleted");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    const reviewedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const syncedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const labels = [
+      "issue-rating: 🦀 challenger crab",
+      "clawsweeper:current-main-repro",
+      "clawsweeper:linked-pr-open",
+      "clawsweeper:no-new-fix-pr",
+    ];
+    const issue = {
+      number: 321,
+      title: "Locked issue with linked PR",
+      body: "Reviewed source.",
+      html_url: "https://github.com/openclaw/openclaw/issues/321",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: reviewedAt,
+      closed_at: null,
+      state: "open",
+      locked: true,
+      active_lock_reason: "resolved",
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels,
+      comments: 2,
+      pull_request: null,
+    };
+    const revision = itemSourceRevisionSha256ForTest(issue, []);
+    let report = implementedCloseReport({
+      repository: "openclaw/openclaw",
+      title: issue.title,
+      decision: "keep_open",
+      close_reason: "none",
+      action_taken: "kept_open",
+      work_candidate: "none",
+      work_status: "none",
+      reviewed_at: reviewedAt,
+      item_updated_at: reviewedAt,
+      labels: JSON.stringify(labels),
+      item_source_revision: revision,
+      review_lease_owner: "completed-review",
+      review_lease_comment_id: "700321",
+    });
+    const body = markedReviewCommentForTest(
+      321,
+      renderReviewCommentFromReport(report, "none", {
+        previousLabels: labels,
+        hasOpenLinkedPullRequest: true,
+      }),
+    );
+    report = report.replace(
+      /^---\n/,
+      [
+        "---",
+        `review_comment_sha256: ${createHash("sha256").update(body.trim()).digest("hex")}`,
+        "review_comment_id: 9321",
+        "review_comment_url: https://github.com/openclaw/openclaw/issues/321#issuecomment-9321",
+        `review_comment_synced_at: ${syncedAt}`,
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(join(itemsDir, "321.md"), report);
+    const durable = {
+      id: 9321,
+      html_url: "https://github.com/openclaw/openclaw/issues/321#issuecomment-9321",
+      created_at: syncedAt,
+      updated_at: syncedAt,
+      user: { login: "clawsweeper[bot]" },
+      body,
+    };
+    const startedAt = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const lease = {
+      id: 700321,
+      html_url: "https://github.com/openclaw/openclaw/issues/321#issuecomment-700321",
+      created_at: startedAt,
+      updated_at: startedAt,
+      user: { login: "clawsweeper[bot]" },
+      body: renderReviewStartStatusComment({
+        number: 321,
+        kind: "issue",
+        title: issue.title,
+        headSha: revision,
+        startedAt,
+        leaseExpiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        leaseOwner: "completed-review",
+      }),
+    };
+    const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method")) throw new Error("must not mutate a locked comment");
+  console.log(JSON.stringify([[${JSON.stringify(durable)}, ${JSON.stringify(lease)}]]));
+} else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else if (args[0] === "api" && /\\/pulls\\/400$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 400,
+    title: "Existing fix",
+    state: "open",
+    html_url: "https://github.com/openclaw/openclaw/pull/400",
+    user: { login: "contributor" },
+    head: { sha: "head" },
+    base: { sha: "base" },
+  }));
+} else if (args[0] === "api" && /\\/issues\\/comments\\/700321$/.test(path) && args.includes("DELETE")) {
+  require("node:fs").writeFileSync(${JSON.stringify(leaseDeleted)}, "deleted");
+  console.log("");
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [{ number: 400 }] }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else if (args[0] === "label" || (args[0] === "issue" && args[1] === "edit")) {
+  console.log("");
+} else {
+  throw new Error("unexpected gh args " + JSON.stringify(args));
+}`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--skip-dashboard",
+          "--sync-comments-only",
+          "--item-number",
+          "321",
+          "--comment-sync-min-age-days",
+          "0",
+        ],
+      });
+    });
+    const [result] = JSON.parse(readText(reportPath));
+    assert.equal(result.action, "review_comment_synced");
+    assert.match(readText(join(itemsDir, "321.md")), /^action_taken: kept_open$/m);
+    assert.equal(existsSync(leaseDeleted), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("locked conversations preserve pending stale canonical comment repairs", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "records", "openclaw-openclaw", "items");
+    const closedDir = join(root, "records", "openclaw-openclaw", "closed");
+    const plansDir = join(root, "records", "openclaw-openclaw", "plans");
+    const reportPath = join(root, "apply-report.json");
+    for (const directory of [itemsDir, closedDir, plansDir]) {
+      mkdirSync(directory, { recursive: true });
+    }
+    const issue = {
+      number: 321,
+      title: "Pending locked review correction",
+      html_url: "https://github.com/openclaw/openclaw/issues/321",
+      body: "",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-01T00:00:00Z",
+      closed_at: null,
+      state: "open",
+      locked: true,
+      active_lock_reason: "resolved",
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 0,
+      pull_request: null,
+    };
+    writeFileSync(
+      join(itemsDir, "321.md"),
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        decision: "keep_open",
+        close_reason: "none",
+        confidence: "low",
+        action_taken: "retry_stale_canonical_comment_sync",
+        stale_canonical_pull_request_number: "400",
+        labels: "[]",
+      }),
+    );
+    const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/(comments|timeline)(?:\\?|$)/.test(path)) {
+  if (args.includes("--method")) {
+    console.error("locked stale-canonical repair must not attempt mutation");
+    process.exit(1);
+  }
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--sync-comments-only", "--item-number", "321", "--apply-kind", "all"],
+      });
+    });
+
+    const [result] = JSON.parse(readText(reportPath));
+    assert.equal(result.number, 321);
+    assert.equal(result.action, "retry_stale_canonical_comment_sync");
+    assert.match(result.reason, /stale comment correction/);
+    assert.match(
+      readText(join(itemsDir, "321.md")),
+      /^action_taken: retry_stale_canonical_comment_sync$/m,
+    );
+    assert.match(readText(join(itemsDir, "321.md")), /^stale_canonical_pull_request_number: 400$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("comment-only apply synchronizes guarded reviews without promoting their close actions", () => {
   for (const guard of [
     { action: "skipped_protected_label", labels: ["security"], association: "CONTRIBUTOR" },
@@ -993,6 +1950,256 @@ test("matching durable comments repair stale, missing, and refreshed sync timest
     { guardedReviewedAt: "2026-08-02T11:00:00Z" },
   ]) {
     assert.equal(shouldSyncReviewComment({ ...base, ...metadata }), true);
+  }
+});
+
+test("locked, already-synchronized maintainer and invalid reports refresh local metadata", () => {
+  for (const action of ["skipped_maintainer_authored", "skipped_invalid_decision"]) {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "records", "openclaw-openclaw", "items");
+      const closedDir = join(root, "records", "openclaw-openclaw", "closed");
+      const plansDir = join(root, "records", "openclaw-openclaw", "plans");
+      const reportPath = join(root, "apply-report.json");
+      for (const directory of [itemsDir, closedDir, plansDir]) {
+        mkdirSync(directory, { recursive: true });
+      }
+      const reviewedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      const syncedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const association = action === "skipped_maintainer_authored" ? "MEMBER" : "CONTRIBUTOR";
+      const issue = {
+        number: 321,
+        title: "Guarded issue",
+        html_url: "https://github.com/openclaw/openclaw/issues/321",
+        body: "",
+        created_at: "2026-05-01T00:00:00Z",
+        updated_at: "2026-05-01T00:00:00Z",
+        closed_at: null,
+        state: "open",
+        locked: true,
+        active_lock_reason: "resolved",
+        author_association: association,
+        user: { login: "reporter" },
+        labels: [],
+        comments: 1,
+        pull_request: null,
+      };
+      const reviewed = reportWithSyncedReviewComment(
+        implementedCloseReport({
+          repository: "openclaw/openclaw",
+          action_taken: action,
+          author_association: association,
+          confidence: action === "skipped_invalid_decision" ? "low" : "high",
+          labels: "[]",
+          reviewed_at: reviewedAt,
+          item_source_revision: itemSourceRevisionSha256ForTest(issue, []),
+          review_lease_owner: "review-owner",
+          review_lease_comment_id: "77",
+        }),
+        321,
+        "implemented_on_main",
+      );
+      const report = reviewed.report
+        .replace(/^review_comment_synced_at:.*$/m, `review_comment_synced_at: ${syncedAt}`)
+        .replaceAll(
+          "https://github.com/openclaw/clawsweeper/issues/321",
+          "https://github.com/openclaw/openclaw/issues/321",
+        )
+        .replace(/^---\n/, `---\napply_checked_at: ${new Date().toISOString()}\n`);
+      writeFileSync(join(itemsDir, "321.md"), report);
+      const existing = {
+        id: 9321,
+        html_url: "https://github.com/openclaw/openclaw/issues/321#issuecomment-9321",
+        created_at: syncedAt,
+        updated_at: syncedAt,
+        user: { login: "clawsweeper[bot]" },
+        body: reviewed.comment,
+      };
+      const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method")) {
+    console.error("matching durable review comment must not be edited");
+    process.exit(1);
+  }
+  console.log(JSON.stringify([[${JSON.stringify(existing)}]]));
+} else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else if (args[0] === "label" || (args[0] === "issue" && args[1] === "edit")) {
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+      withMockGh(root, ghMock, () => {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--sync-comments-only",
+            "--item-number",
+            "321",
+            "--comment-sync-min-age-days",
+            "0",
+          ],
+        });
+      });
+
+      assert.deepEqual(JSON.parse(readText(reportPath)), [
+        {
+          number: 321,
+          action: "review_comment_synced",
+          reason: "recorded existing durable comment metadata",
+        },
+      ]);
+      const updatedReport = readText(join(itemsDir, "321.md"));
+      assert.match(updatedReport, new RegExp(`^action_taken: ${action}$`, "m"));
+      const refreshedSyncTime = updatedReport.match(/^review_comment_synced_at:\s*(.*)$/m)?.[1];
+      const checkedTime = updatedReport.match(/^apply_checked_at:\s*(.*)$/m)?.[1];
+      assert.ok(refreshedSyncTime && checkedTime);
+      assert.ok(Date.parse(refreshedSyncTime) >= Date.parse(checkedTime), action);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("locked metadata synchronization adopts and releases its existing review lease", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const deletedLeasePath = join(root, "deleted-lease");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    const reviewedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const syncedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const issue = {
+      number: 321,
+      title: "Locked metadata with matching lease",
+      body: "Reviewed source.",
+      html_url: "https://github.com/openclaw/openclaw/issues/321",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: reviewedAt,
+      closed_at: null,
+      state: "open",
+      locked: true,
+      active_lock_reason: "resolved",
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 2,
+      pull_request: null,
+    };
+    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    const reviewed = reportWithSyncedReviewComment(
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        title: issue.title,
+        decision: "keep_open",
+        close_reason: "none",
+        action_taken: "kept_open",
+        reviewed_at: reviewedAt,
+        item_updated_at: reviewedAt,
+        labels: "[]",
+        item_source_revision: sourceRevision,
+        review_lease_owner: "completed-review",
+        review_lease_comment_id: "700321",
+      }),
+      321,
+      "none",
+    );
+    writeFileSync(
+      join(itemsDir, "321.md"),
+      reviewed.report
+        .replace(/^review_comment_synced_at:.*$/m, `review_comment_synced_at: ${syncedAt}`)
+        .replaceAll(
+          "https://github.com/openclaw/clawsweeper/issues/321",
+          "https://github.com/openclaw/openclaw/issues/321",
+        ),
+    );
+    const durable = {
+      id: 9321,
+      html_url: "https://github.com/openclaw/openclaw/issues/321#issuecomment-9321",
+      created_at: syncedAt,
+      updated_at: syncedAt,
+      user: { login: "clawsweeper[bot]" },
+      body: reviewed.comment,
+    };
+    const leaseStartedAt = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const lease = {
+      id: 700321,
+      html_url: "https://github.com/openclaw/openclaw/issues/321#issuecomment-700321",
+      created_at: leaseStartedAt,
+      updated_at: leaseStartedAt,
+      user: { login: "clawsweeper[bot]" },
+      body: renderReviewStartStatusComment({
+        number: 321,
+        kind: "issue",
+        title: issue.title,
+        headSha: sourceRevision,
+        startedAt: leaseStartedAt,
+        leaseExpiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        leaseOwner: "completed-review",
+      }),
+    };
+    const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method")) throw new Error("locked issue must not post a new lease");
+  console.log(JSON.stringify([[${JSON.stringify(durable)}, ${JSON.stringify(lease)}]]));
+} else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify(${JSON.stringify(issue)}));
+} else if (args[0] === "api" && /\\/issues\\/comments\\/700321$/.test(path) && args.includes("DELETE")) {
+  require("node:fs").writeFileSync(${JSON.stringify(deletedLeasePath)}, "deleted");
+  console.log("");
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else if (args[0] === "label" || (args[0] === "issue" && args[1] === "edit")) {
+  console.log("");
+} else {
+  throw new Error("unexpected gh args " + JSON.stringify(args));
+}`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--sync-comments-only",
+          "--item-number",
+          "321",
+          "--comment-sync-min-age-days",
+          "7",
+        ],
+      });
+    });
+    assert.equal(JSON.parse(readText(reportPath))[0].action, "review_comment_synced");
+    assert.equal(existsSync(deletedLeasePath), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

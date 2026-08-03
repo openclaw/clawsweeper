@@ -116,6 +116,302 @@ test("apply-decisions blocks duplicate close when linked canonical PR closed unm
   }
 });
 
+test("locked duplicate reviews retain newly discovered canonical correction work", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "records", "openclaw-openclaw", "items");
+    const closedDir = join(root, "records", "openclaw-openclaw", "closed");
+    const plansDir = join(root, "records", "openclaw-openclaw", "plans");
+    const reportPath = join(root, "apply-report.json");
+    for (const directory of [itemsDir, closedDir, plansDir]) {
+      mkdirSync(directory, { recursive: true });
+    }
+    const canonicalUrl = "https://github.com/openclaw/openclaw/pull/400";
+    const synced = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number: 336,
+        title: "Locked duplicate review",
+        close_reason: "duplicate_or_superseded",
+        work_cluster_refs: JSON.stringify([`Superseded by ${canonicalUrl}`]),
+      }),
+      336,
+      "duplicate_or_superseded",
+    );
+    writeFileSync(join(itemsDir, "336.md"), synced.report);
+    withMockGh(
+      root,
+      promotionGhMock({
+        number: 336,
+        title: "Locked duplicate review",
+        comment: synced.comment,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Closed unmerged canonical PR",
+            html_url: canonicalUrl,
+            state: "closed",
+            merged_at: null,
+            labels: [],
+          },
+        },
+      }).replace("locked: false,", "locked: true,"),
+      () => {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: ["--sync-comments-only", "--item-number", "336", "--apply-kind", "all"],
+        });
+      },
+    );
+
+    const [result] = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(result.action, "retry_stale_canonical_comment_sync");
+    assert.match(result.reason, /stale canonical comment correction/);
+    const report = readFileSync(join(itemsDir, "336.md"), "utf8");
+    assert.match(report, /^action_taken: retry_stale_canonical_comment_sync$/m);
+    assert.match(report, /^stale_canonical_pull_request_number: 400$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function assertChangedReviewNeverRepublishes(action: string): void {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    const number = 336;
+    const labels = ["proof: override", "rating: 🦞 diamond lobster"];
+    const reviewed = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number,
+        title: "Changed PR with stale close verdict",
+        close_reason: "implemented_on_main",
+        labels: JSON.stringify(labels),
+        pull_head_sha: "head-sha",
+        reviewed_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      }),
+      number,
+      "implemented_on_main",
+    );
+    writeFileSync(
+      join(itemsDir, `${number}.md`),
+      reviewed.report
+        .replace(/^action_taken: proposed_close$/m, `action_taken: ${action}`)
+        .replace(
+          /^review_comment_synced_at:.*$/m,
+          `review_comment_synced_at: ${new Date().toISOString()}`,
+        ),
+    );
+    const commentWrites = join(root, "comment-writes.log");
+    withMockGh(
+      root,
+      promotionGhMock({
+        number,
+        title: "Changed PR with stale close verdict",
+        labels,
+        itemUpdatedAt: "2026-05-02T00:00:00Z",
+        comment: reviewed.comment,
+        commentWriteLogPath: commentWrites,
+      }),
+      () =>
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--sync-comments-only",
+            "--apply-kind",
+            "all",
+            "--item-number",
+            String(number),
+            "--comment-sync-min-age-days",
+            "7",
+          ],
+        }),
+    );
+    assert.deepEqual(
+      JSON.parse(readFileSync(reportPath, "utf8")),
+      action === "skipped_invalid_decision"
+        ? [{ number, action: "skipped_changed_since_review", reason: "updated_at changed" }]
+        : [],
+    );
+    assert.equal(existsSync(commentWrites), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("changed PR reviews never force a recently synchronized stale close verdict", () => {
+  assertChangedReviewNeverRepublishes("skipped_changed_since_review");
+});
+
+test("invalid PR decisions never force stale close verdicts after source drift", () => {
+  assertChangedReviewNeverRepublishes("skipped_invalid_decision");
+});
+
+test("protected PR head changes immediately replace obsolete close markers", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const commentWrites = join(root, "comment-writes.log");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    const number = 336;
+    const labels = ["security"];
+    const reviewed = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number,
+        title: "Protected PR stale head",
+        action_taken: "skipped_protected_label",
+        close_reason: "implemented_on_main",
+        labels: JSON.stringify(labels),
+        pull_head_sha: "old-head",
+        reviewed_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      }),
+      number,
+      "implemented_on_main",
+    );
+    writeFileSync(
+      join(itemsDir, `${number}.md`),
+      reviewed.report.replace(
+        /^review_comment_synced_at:.*$/m,
+        `review_comment_synced_at: ${new Date(Date.now() - 60 * 60 * 1000).toISOString()}`,
+      ),
+    );
+    withMockGh(
+      root,
+      promotionGhMock({
+        number,
+        title: "Protected PR stale head",
+        labels,
+        headSha: "new-head",
+        comment: reviewed.comment,
+        commentWriteLogPath: commentWrites,
+      }),
+      () =>
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--skip-dashboard",
+            "--sync-comments-only",
+            "--apply-kind",
+            "all",
+            "--item-number",
+            String(number),
+            "--comment-sync-min-age-days",
+            "7",
+          ],
+        }),
+    );
+    const [result] = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(result.action, "review_comment_synced");
+    assert.equal(existsSync(commentWrites), true);
+    const updated = readFileSync(join(itemsDir, `${number}.md`), "utf8");
+    assert.match(updated, /^action_taken: skipped_protected_label$/m);
+    assert.match(updated, /^current_pull_head_sha: new-head$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unchanged changed-duplicate records do not consume a bounded comment-sync slot", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    for (const directory of [itemsDir, closedDir, plansDir])
+      mkdirSync(directory, { recursive: true });
+    const number = 338;
+    const canonicalUrl = "https://github.com/openclaw/openclaw/pull/400";
+    const labels = ["proof: override", "rating: 🦞 diamond lobster"];
+    const reviewed = reportWithSyncedReviewComment(
+      lowSignalCloseReport({
+        number,
+        title: "Changed duplicate with open canonical",
+        action_taken: "skipped_changed_since_review",
+        close_reason: "duplicate_or_superseded",
+        labels: JSON.stringify(labels),
+        work_cluster_refs: JSON.stringify([`Superseded by ${canonicalUrl}`]),
+        pull_head_sha: "head-sha",
+        reviewed_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      }),
+      number,
+      "duplicate_or_superseded",
+    );
+    writeFileSync(
+      join(itemsDir, `${number}.md`),
+      reviewed.report
+        .replace(
+          /^review_comment_synced_at:.*$/m,
+          `review_comment_synced_at: ${new Date(Date.now() - 60 * 60 * 1000).toISOString()}`,
+        )
+        .replace(/^---\n/, `---\napply_checked_at: ${new Date().toISOString()}\n`),
+    );
+    withMockGh(
+      root,
+      promotionGhMock({
+        number,
+        title: "Changed duplicate with open canonical",
+        labels,
+        comment: reviewed.comment,
+        linkedPulls: {
+          400: {
+            number: 400,
+            title: "Open canonical PR",
+            html_url: canonicalUrl,
+            state: "open",
+            merged_at: null,
+            labels: [],
+          },
+        },
+      }),
+      () =>
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--sync-comments-only",
+            "--apply-kind",
+            "all",
+            "--item-number",
+            String(number),
+            "--comment-sync-min-age-days",
+            "7",
+          ],
+        }),
+    );
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), []);
+    assert.match(
+      readFileSync(join(itemsDir, `${number}.md`), "utf8"),
+      /^action_taken: skipped_changed_since_review$/m,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-decisions blocks duplicate close when canonical PR is only in close comment", () => {
   const root = mkdtempSync(tmpPrefix);
   try {

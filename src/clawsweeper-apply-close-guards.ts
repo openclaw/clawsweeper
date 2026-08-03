@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import { STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS } from "./clawsweeper-policy.js";
 import type {
+  ActionTaken,
   ApplyKind,
   AuthorPrBudgetApplyGate,
   CloseReason,
@@ -11,6 +12,109 @@ import type {
   ReportEntry,
 } from "./clawsweeper-types.js";
 import { maintainerDecisionBlocksClose, type MaintainerDecision } from "./decision-packets.js";
+
+export function markLockedConversationApplySkipped(
+  reason: string | null,
+  staleCanonicalCommentSyncPending: boolean,
+  markApplySkipped: (action: ActionTaken, reason: string, liveGuardVerified?: boolean) => boolean,
+): boolean | null {
+  if (!reason) return null;
+  const action = staleCanonicalCommentSyncPending
+    ? "retry_stale_canonical_comment_sync"
+    : "skipped_locked_conversation";
+  return markApplySkipped(
+    action,
+    staleCanonicalCommentSyncPending
+      ? `${reason}; stale canonical comment correction remains pending`
+      : reason,
+    !staleCanonicalCommentSyncPending,
+  );
+}
+
+export function isGuardedApplyReviewAction(
+  action: string | undefined,
+  isLiveRecheckGuardClose: boolean,
+): boolean {
+  return (
+    isLiveRecheckGuardClose ||
+    action === "skipped_protected_label" ||
+    action === "skipped_close_exempt_label" ||
+    action === "skipped_maintainer_authored" ||
+    action === "skipped_invalid_decision"
+  );
+}
+
+export function requiresLockedReviewCommentMutation(
+  {
+    commentBody,
+    commentBodyMatches,
+    frontMatterValue,
+    markedReviewCommentBody,
+    renderReviewCommentFromReport,
+    shouldSyncReviewComment,
+  }: Pick<
+    CreateApplyDecisionWorkflowDependencies,
+    | "commentBody"
+    | "commentBodyMatches"
+    | "frontMatterValue"
+    | "markedReviewCommentBody"
+    | "renderReviewCommentFromReport"
+    | "shouldSyncReviewComment"
+  >,
+  options: {
+    action: string | undefined;
+    closeReason: CloseReason;
+    commentSyncMinAgeDays: number;
+    existingReviewComment: Record<string, unknown> | undefined;
+    hasOpenLinkedPullRequest?: boolean;
+    isCloseProposal: boolean;
+    isLiveRecheckGuardClose: boolean;
+    markdown: string;
+    number: number;
+    previousLabels: string[];
+    reviewedSourceFresh: boolean;
+    staleCanonicalCommentSyncPending: boolean;
+    suppressAutomationMarkers: boolean;
+  },
+): boolean {
+  const previousReviewCommentBody = commentBody(options.existingReviewComment);
+  const expectedReviewComment = markedReviewCommentBody(
+    options.number,
+    renderReviewCommentFromReport(options.markdown, options.closeReason, {
+      previousLabels: options.previousLabels,
+      suppressAutomationMarkers: options.suppressAutomationMarkers,
+      ...(options.hasOpenLinkedPullRequest === undefined
+        ? {}
+        : { hasOpenLinkedPullRequest: options.hasOpenLinkedPullRequest }),
+      ...(previousReviewCommentBody?.trim() ? { previousReviewCommentBody } : {}),
+    }),
+  );
+  if (
+    !options.staleCanonicalCommentSyncPending &&
+    commentBodyMatches(options.existingReviewComment, expectedReviewComment)
+  ) {
+    return false;
+  }
+  const guarded =
+    options.reviewedSourceFresh &&
+    isGuardedApplyReviewAction(options.action, options.isLiveRecheckGuardClose);
+  return shouldSyncReviewComment({
+    syncCommentsOnly: true,
+    isCloseProposal: options.isCloseProposal,
+    commentSyncMinAgeDays: options.commentSyncMinAgeDays,
+    reviewCommentSyncedAt: frontMatterValue(options.markdown, "review_comment_synced_at"),
+    reviewedAt: frontMatterValue(options.markdown, "reviewed_at"),
+    lastFullReviewAt: frontMatterValue(options.markdown, "last_full_review_at"),
+    guardedReviewedAt: guarded ? frontMatterValue(options.markdown, "apply_checked_at") : undefined,
+    hasExistingReviewComment: Boolean(options.existingReviewComment),
+    needsReviewCommentBodySync: true,
+    needsReviewCommentHashSync: false,
+    needsReviewCommentReferenceSync:
+      /^(?:none|unknown)?$/.test(frontMatterValue(options.markdown, "review_comment_id") ?? "") ||
+      /^(?:none|unknown)?$/.test(frontMatterValue(options.markdown, "review_comment_url") ?? ""),
+    forceReviewCommentBodySync: options.staleCanonicalCommentSyncPending || guarded,
+  });
+}
 
 interface ApplyCloseGuardContext {
   applyCloseReasons: ReadonlySet<CloseReason> | null;

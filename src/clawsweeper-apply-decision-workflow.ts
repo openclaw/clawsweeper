@@ -2,7 +2,12 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createApplyCandidateGuards } from "./clawsweeper-apply-candidate-guards.js";
 import { executeApplyClose } from "./clawsweeper-apply-close-execution.js";
-import { createApplyCloseGuards } from "./clawsweeper-apply-close-guards.js";
+import {
+  createApplyCloseGuards,
+  isGuardedApplyReviewAction,
+  markLockedConversationApplySkipped,
+  requiresLockedReviewCommentMutation,
+} from "./clawsweeper-apply-close-guards.js";
 import { evaluateApplyClosePolicy } from "./clawsweeper-apply-close-policies.js";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import { createApplyLeaseGuards } from "./clawsweeper-apply-lease-guards.js";
@@ -12,7 +17,11 @@ import { promoteApplyPullRequest } from "./clawsweeper-apply-pull-request-promot
 import { syncApplyReportLabels } from "./clawsweeper-apply-report-labels.js";
 import { createApplyReviewActivityGuard } from "./clawsweeper-apply-review-activity.js";
 import { createApplyReviewGuards } from "./clawsweeper-apply-review-guards.js";
-import { createApplySourceFreshness } from "./clawsweeper-apply-source-freshness.js";
+import {
+  applyReviewedSourceDriftEvidence,
+  createApplyChangedSinceReviewMarker,
+  createApplySourceFreshness,
+} from "./clawsweeper-apply-source-freshness.js";
 import { createApplyRecordOperations } from "./clawsweeper-apply-records.js";
 import {
   boolArg,
@@ -100,7 +109,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     isRetryablePrCloseCoverageProofReport,
     issueReviewComment,
     isVerifiedFixedCloseReason,
-    itemSnapshotHash,
     liveIssueSourceRevision,
     lockedConversationApplyReason,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
@@ -588,6 +596,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         markdown = replaceFrontMatterValue(markdown, "action_taken", actionTaken);
         return recordApplySkipped(actionTaken, reason, liveGuardVerified);
       };
+      const skipLockedConversation = (reason: string | null): boolean | null =>
+        markLockedConversationApplySkipped(reason, staleCanonicalCommentSyncPending, markApplySkipped);
       if (reconciliationDeferredItemNumbers.has(number)) {
         if (
           markApplySkipped(
@@ -799,11 +809,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           activeApplyMutationLease = lease;
         },
       });
-
-
-
-
-
       currentApplyMutationGuard = currentApplyMutationLeaseBlockReason;
       let existingReviewComment: Record<string, unknown> | undefined;
       const pendingStaleCanonicalCommentReason = staleCanonicalCommentSyncPending
@@ -1141,11 +1146,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         continue;
       }
       const {
-        automationOnlyUpdate,
         labelSyncFreshEnough,
+        reviewedSourceFresh,
         retryCloseCoverageCommandStatusOnlyUpdate,
-        reviewCommentOnlyUpdate,
-        updatedSinceReview,
       } = createApplySourceFreshness(dependencies, {
         action,
         allowedSelfMutationUpdatedAts,
@@ -1160,12 +1163,28 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         reportReviewLeaseCommentId,
         reportReviewLeaseOwner,
         requiresApplyMutationLease,
+        storedHash,
+      });
+      const markChangedSinceReview = createApplyChangedSinceReviewMarker(dependencies, {
+        dryRun,
+        emitEventApplyProof,
+        getMarkdown: () => markdown,
+        getProcessedCount: () => processedCount,
+        maybeLogProgress,
+        number,
+        path,
+        processedLimit,
+        results,
+        setMarkdown: (next) => { markdown = next; },
+        setProcessedCount: (next) => { processedCount = next; },
+        writeReportMarkdown,
       });
       const stalePrReviewHead =
         state === "open" && item.kind === "pull_request"
           ? stalePullRequestReviewHead(markdown, currentItemContext())
           : null;
       let currentPrStatusKind: PrStatusLabelKind | null = null;
+      let lockedMetadataOnly = false;
       if (state === "open") {
         const reviewActivityBlock = currentReviewActivityBlock();
         if (reviewActivityBlock) {
@@ -1186,9 +1205,56 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           if (recordActiveReviewLeaseSkip(lateLeaseState.lease.expiresAt)) break;
           continue;
         }
-        const mutationLeaseBlockReason = acquireApplyMutationLease(lateLeaseState);
-        if (mutationLeaseBlockReason) {
-          if (recordReviewLeaseSkip(mutationLeaseBlockReason)) break;
+        const isLockable = syncCommentsOnly && requiresApplyMutationLease && item.kind === "issue";
+        const lockedIssueReason = isLockable ? lockedConversationApplyReason(item) : null;
+        if (lockedIssueReason && previousLabels.includes("clawsweeper:linked-pr-open")) {
+          currentClosingPullRequests ??= closingPullRequestsForIssue(number);
+        }
+        const needsLockedCommentMutation =
+          lockedIssueReason &&
+          requiresLockedReviewCommentMutation(dependencies, {
+            action,
+            closeReason: closeReason ?? "none",
+            commentSyncMinAgeDays,
+            existingReviewComment,
+            ...(currentClosingPullRequests
+              ? {
+                  hasOpenLinkedPullRequest:
+                    openClosingPullRequestApplyReason(currentClosingPullRequests) !== null,
+                }
+              : {}),
+            isCloseProposal,
+            isLiveRecheckGuardClose,
+            markdown,
+            number,
+            previousLabels,
+            reviewedSourceFresh: reviewedSourceFresh(),
+            staleCanonicalCommentSyncPending,
+            suppressAutomationMarkers,
+          });
+        lockedMetadataOnly = Boolean(lockedIssueReason && !lateLeaseState.lease);
+        if (!lockedMetadataOnly) {
+          const mutationLeaseBlockReason = acquireApplyMutationLease(lateLeaseState);
+          if (mutationLeaseBlockReason) {
+            if (recordReviewLeaseSkip(mutationLeaseBlockReason)) break;
+            continue;
+          }
+        }
+        if (lockedIssueReason && isCloseProposal && !reviewedSourceFresh()) {
+          if (
+            markChangedSinceReview(
+              applyReviewedSourceDriftEvidence(dependencies, {
+                currentItemContext,
+                item,
+                storedUpdatedAt,
+              }),
+            )
+          )
+            break;
+          continue;
+        }
+        if (needsLockedCommentMutation) {
+          if (skipLockedConversation(lockedIssueReason)) break;
           continue;
         }
       }
@@ -1268,42 +1334,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           break;
         continue;
       }
-      const markChangedSinceReview = (options: {
-        reason: string;
-        currentUpdatedAt?: string | undefined;
-        currentSnapshotHash?: string | undefined;
-      }): boolean => {
-        markdown = replaceFrontMatterValue(
-          markdown,
-          "action_taken",
-          "skipped_changed_since_review",
-        );
-        if (options.currentUpdatedAt) {
-          markdown = replaceFrontMatterValue(
-            markdown,
-            "current_item_updated_at",
-            options.currentUpdatedAt,
-          );
-        }
-        if (options.currentSnapshotHash) {
-          markdown = replaceFrontMatterValue(
-            markdown,
-            "current_item_snapshot_hash",
-            options.currentSnapshotHash,
-          );
-        }
-        markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
-        if (!dryRun) writeReportMarkdown(path, markdown);
-        results.push({
-          number,
-          action: "skipped_changed_since_review",
-          reason: options.reason,
-          ...eventApplyDispositionProof("skipped_changed_since_review"),
-        });
-        processedCount += 1;
-        maybeLogProgress(`skipped #${number}: ${options.reason}`);
-        return processedCount >= processedLimit;
-      };
       const { postProofCoveringPrFreshnessBlock, postProofFreshnessBlock } =
         createApplyProofFreshnessGuards({
           ...dependencies,
@@ -1317,7 +1347,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           number,
           retryCloseCoverageCommandStatusOnlyUpdate,
         });
-
       if (state !== "open") {
         if (item.closedAt) {
           markdown = replaceFrontMatterValue(markdown, "current_item_closed_at", item.closedAt);
@@ -1378,56 +1407,21 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           break;
         continue;
       }
-      if (isCloseProposal && updatedSinceReview && !automationOnlyUpdate) {
-        markdown = replaceFrontMatterValue(
-          markdown,
-          "action_taken",
-          "skipped_changed_since_review",
-        );
-        markdown = replaceFrontMatterValue(markdown, "current_item_updated_at", item.updatedAt);
-        markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
-        if (!dryRun) writeReportMarkdown(path, markdown);
-        results.push({
-          number,
-          action: "skipped_changed_since_review",
-          reason: "updated_at changed",
-          ...eventApplyDispositionProof("skipped_changed_since_review"),
-        });
-        processedCount += 1;
-        maybeLogProgress(`skipped #${number}: changed since review`);
-        if (processedCount >= processedLimit) break;
+      if (isCloseProposal && !reviewedSourceFresh()) {
+        if (
+          markChangedSinceReview(
+            applyReviewedSourceDriftEvidence(dependencies, {
+              currentItemContext,
+              item,
+              storedUpdatedAt,
+            }),
+          )
+        )
+          break;
         continue;
       }
-      if (isCloseProposal && !storedUpdatedAt) {
-        const currentHash = itemSnapshotHash(item, currentItemContext());
-        if (currentHash !== storedHash && !reviewCommentOnlyUpdate) {
-          markdown = replaceFrontMatterValue(
-            markdown,
-            "action_taken",
-            "skipped_changed_since_review",
-          );
-          markdown = replaceFrontMatterValue(markdown, "current_item_snapshot_hash", currentHash);
-          markdown = replaceFrontMatterValue(
-            markdown,
-            "apply_checked_at",
-            new Date().toISOString(),
-          );
-          if (!dryRun) writeReportMarkdown(path, markdown);
-          results.push({
-            number,
-            action: "skipped_changed_since_review",
-            reason: "snapshot changed",
-            ...eventApplyDispositionProof("skipped_changed_since_review"),
-          });
-          processedCount += 1;
-          maybeLogProgress(`skipped #${number}: snapshot changed`);
-          if (processedCount >= processedLimit) break;
-          continue;
-        }
-      }
-      const isCurrentLabelSyncReport = !stalePrReviewHead && labelSyncFreshEnough();
-      const isCurrentCompleteReport =
-        frontMatterValue(markdown, "review_status") === "complete" && isCurrentLabelSyncReport;
+      const labelsCanSync = !lockedMetadataOnly && !stalePrReviewHead && labelSyncFreshEnough();
+      const complete = frontMatterValue(markdown, "review_status") === "complete" && labelsCanSync;
       const reportLabelSync = syncApplyReportLabels(dependencies, {
         bulkFilerRepositoryPermissionCache,
         clawSweeperLabelsChanged,
@@ -1436,8 +1430,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         currentItemContext,
         dryRun,
         isCloseProposal,
-        isCurrentCompleteReport,
-        isCurrentLabelSyncReport,
+        isCurrentCompleteReport: complete,
+        isCurrentLabelSyncReport: labelsCanSync,
         item,
         markLabelSyncAuthSkipped,
         markdown,
@@ -1488,6 +1482,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let needsReviewCommentReferenceSync =
         /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_id") ?? "") ||
         /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_url") ?? "");
+      const guarded =
+        isGuardedApplyReviewAction(action, isLiveRecheckGuardClose) &&
+        reviewedSourceFresh() &&
+        !stalePrReviewHead;
       let needsReviewCommentSync = shouldSyncReviewComment({
         syncCommentsOnly,
         isCloseProposal,
@@ -1495,15 +1493,14 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
         reviewedAt: frontMatterValue(markdown, "reviewed_at"),
         lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
-        guardedReviewedAt: isLiveRecheckGuardClose
-          ? frontMatterValue(markdown, "apply_checked_at")
-          : undefined,
+        guardedReviewedAt: guarded ? frontMatterValue(markdown, "apply_checked_at") : undefined,
         hasExistingReviewComment: Boolean(existingReviewComment),
         needsReviewCommentBodySync,
         needsReviewCommentHashSync,
         needsReviewCommentReferenceSync,
         forceReviewCommentBodySync:
-          clawSweeperLabelsChanged || Boolean(closeBlockedForCommentSync) || isLiveRecheckGuardClose,
+          clawSweeperLabelsChanged || Boolean(closeBlockedForCommentSync) || guarded ||
+          Boolean(stalePrReviewHead),
       });
       if (
         isCloseProposal &&
@@ -1687,18 +1684,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           if (processedCount >= processedLimit) break;
           continue;
         }
-        const lockedReason = needsReviewCommentBodySync
-          ? lockedConversationApplyReason(item)
-          : null;
-        if (lockedReason) {
-          const actionTaken: ActionTaken = staleCanonicalCommentSyncPending
-            ? "retry_stale_canonical_comment_sync"
-            : "skipped_locked_conversation";
-          const reason = staleCanonicalCommentSyncPending
-            ? `${lockedReason}; stale canonical comment correction remains pending`
-            : lockedReason;
-          if (markApplySkipped(actionTaken, reason, actionTaken === "skipped_locked_conversation"))
-            break;
+        const lockedCommentSkip = skipLockedConversation(
+          needsReviewCommentBodySync ? lockedConversationApplyReason(item) : null,
+        );
+        if (lockedCommentSkip !== null) {
+          if (lockedCommentSkip) break;
           continue;
         }
         let syncedComment = existingReviewComment;
