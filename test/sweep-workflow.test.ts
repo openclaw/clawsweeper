@@ -1072,6 +1072,8 @@ test("exact event publication derives lifecycle receipt and final command acknow
     name?: string;
     id?: string;
     if?: string;
+    uses?: string;
+    with?: Record<string, string | number | boolean>;
     env?: Record<string, string>;
     run?: string;
   };
@@ -1129,6 +1131,11 @@ test("exact event publication derives lifecycle receipt and final command acknow
   assert.doesNotMatch(complete.run ?? "", /outcome !== "success"\s*\?\s*"failure"/);
   assert.match(complete.run ?? "", /completionKind === "permanent_failure"\s*\? "failure"/);
   const finalizer = workflow.jobs["event-review-terminal-finalization"]!;
+  const finalizationCheckout = finalizer.steps.find((candidate) =>
+    candidate.uses?.startsWith("actions/checkout@"),
+  );
+  assert.equal(finalizationCheckout?.with?.filter, undefined);
+  assert.equal(finalizationCheckout?.with?.["fetch-depth"], 1);
   const finalizationClaim = finalizer.steps.find(
     (candidate) => candidate.name === "Claim committed terminal finalization",
   );

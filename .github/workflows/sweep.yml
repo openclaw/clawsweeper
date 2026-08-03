@@ -3146,7 +3146,8 @@ jobs:
       - uses: actions/checkout@v7
         if: ${{ steps.finalization-context.outputs.claimed == 'true' }}
         with:
-          filter: blob:none
+          # Fetch blobs during the retryable fetch instead of lazily fetching
+          # them during checkout, which strands claimed finalizations on 5xx.
           fetch-depth: 1
 
       - uses: ./.github/actions/setup-pnpm
