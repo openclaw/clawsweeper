@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -15,9 +14,7 @@ import {
 } from "./clawsweeper-args.js";
 import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-dispatch.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
-import { resolveCommand, runText } from "./command.js";
-import { parseGhJson, parseGhJsonLinesWithRetry, parseGhJsonWithRetry } from "./github-json.js";
-import { ghRetryKind, ghRetryWaitMs, summarizeGhArgs } from "./github-retry.js";
+import { runText } from "./command.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
 import {
   DEFAULT_TARGET_REPO,
@@ -44,6 +41,7 @@ import { createCommandOperations } from "./clawsweeper-command-operations.js";
 import { createContextHydration } from "./clawsweeper-context-hydration.js";
 import { createDashboardAudit } from "./clawsweeper-dashboard-audit.js";
 import { createGitHubContext } from "./clawsweeper-github-context.js";
+import { createGitHubExecution } from "./clawsweeper-github-execution.js";
 import { createGitHubRuntime } from "./clawsweeper-github-runtime.js";
 import { createItemContext } from "./clawsweeper-item-context.js";
 import {
@@ -110,8 +108,6 @@ import type {
   Decision,
   DecisionNormalizationItem,
   Evidence,
-  GitHubDispatchOutcome,
-  GitHubRetryOptions,
   GitInfo,
   Item,
   ItemContext,
@@ -237,13 +233,9 @@ const {
   docsPageUrl,
   fileUrl,
   isCommitSha,
-  itemUrlFor,
   latestFileUrl,
-  linkedRelease,
   linkedSha,
   markdownLink,
-  repoUrlFor,
-  reportFileUrl,
   reportUrl,
   splitFileAndLine,
 } = repositoryLinks;
@@ -281,17 +273,6 @@ const sweepStatus = createSweepStatus({
   targetProfile,
 });
 export const { sweepStatusApplyHealthForTest } = sweepStatus;
-const {
-  auditStatePath,
-  profileAuditEnd,
-  profileAuditStart,
-  profileStatusEnd,
-  profileStatusStart,
-  sweepStatusPath,
-  sweepStatusRelativePath,
-  writeSweepStatus,
-} = sweepStatus;
-
 const repositoryPaths = createRepositoryPaths({
   frontMatterValue: (...args) => frontMatterValue(...args),
   RECORDS_ROOT,
@@ -301,12 +282,8 @@ const repositoryPaths = createRepositoryPaths({
   targetRepo,
 });
 const {
-  decisionPacketsDirFromArgs,
   defaultClosedDir,
-  defaultFailedReviewRetryStateDir,
   defaultItemsDir,
-  defaultPlansDir,
-  isMarkdownForActiveRepo,
   markdownRepository,
   parseReportFileName,
   reportFileName,
@@ -344,368 +321,28 @@ const gitHubRuntime = createGitHubRuntime({
   targetRepo,
 });
 export const { untrustedCodexEnvForTest } = gitHubRuntime;
+const { GitHubRuntimeBudgetError, sleepMs, untrustedCodexEnv } = gitHubRuntime;
+
+const githubExecution = createGitHubExecution({
+  ROOT,
+  run,
+  gitHubRuntime,
+  sweepStatus,
+  labelAlreadyExistsError: (error) => labelAlreadyExistsError(error),
+});
+export const { classifyGitHubDispatchResultForTest, observedGitHubMutationAttemptsForTest } =
+  githubExecution;
 const {
-  GitHubRuntimeBudgetError,
-  ensureGitHubRetryFits,
-  ensureGitHubRuntimeAvailable,
-  ensureRuntimeDelayFits,
-  gh,
-  ghOnce,
-  ghWithPreparedTimeout,
-  githubCommandTimeoutMs,
-  githubRuntimeBudgetError,
-  sleepBeforeGitHubRetry,
-  sleepMs,
-  untrustedCodexEnv,
-  withGitHubRuntimeBudget,
-} = gitHubRuntime;
-
-let lastThrottleHeartbeatAt = 0;
-let throttleHeartbeatContext: (() => string) | null = null;
-
-function maybePublishThrottleHeartbeat(options: {
-  args: string[];
-  attempt: number;
-  attempts: number;
-  waitMs: number;
-}): void {
-  if (process.env.CLAWSWEEPER_PUBLISH_THROTTLE_STATUS !== "true") return;
-  const minWaitMs = Number(process.env.CLAWSWEEPER_THROTTLE_STATUS_MIN_WAIT_MS ?? 60_000);
-  if (options.waitMs < minWaitMs) return;
-  const minIntervalMs = Number(process.env.CLAWSWEEPER_THROTTLE_STATUS_MIN_INTERVAL_MS ?? 120_000);
-  const now = Date.now();
-  if (now - lastThrottleHeartbeatAt < minIntervalMs) return;
-  lastThrottleHeartbeatAt = now;
-
-  try {
-    const context = throttleHeartbeatContext?.();
-    const checkpoint = process.env.CLAWSWEEPER_APPLY_CHECKPOINT;
-    const checkpointText = checkpoint ? `Checkpoint ${checkpoint}. ` : "";
-    const detail = [
-      `${checkpointText}GitHub throttled while applying close decisions.`,
-      context,
-      `Last throttled command: \`${summarizeGhArgs(options.args)}\`.`,
-      `Retry ${options.attempt + 1}/${Math.max(1, options.attempts - 1)} in ${Math.round(options.waitMs / 1000)}s.`,
-    ]
-      .filter(Boolean)
-      .join(" ");
-    const statusOptions: {
-      state: string;
-      detail: string;
-      runUrl?: string;
-    } = {
-      state: "Apply throttled",
-      detail,
-    };
-    if (process.env.CLAWSWEEPER_RUN_URL) {
-      statusOptions.runUrl = process.env.CLAWSWEEPER_RUN_URL;
-    }
-    writeSweepStatus(statusOptions);
-    run("git", ["add", sweepStatusRelativePath()]);
-    const diff = spawnSync("git", ["diff", "--cached", "--quiet"], { cwd: ROOT });
-    if (diff.status === 0) return;
-    run("git", ["commit", "-m", "chore: update sweep apply throttle status"]);
-    try {
-      run("git", ["push"], { timeoutMs: githubCommandTimeoutMs() });
-    } catch (error) {
-      if (error instanceof GitHubRuntimeBudgetError) throw error;
-      console.error(
-        `Best-effort throttle status push failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  } catch (error) {
-    if (error instanceof GitHubRuntimeBudgetError) throw error;
-    console.error(
-      `Best-effort throttle status update failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
-
-function ghWithRetry(args: string[], attempts = 12, options: GitHubRetryOptions = {}): string {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      return options.request?.(args, attempt) ?? gh(args);
-    } catch (error) {
-      if (error instanceof GitHubRuntimeBudgetError) throw error;
-      lastError = error;
-      ensureGitHubRuntimeAvailable("after GitHub operation");
-      const retryKind = ghRetryKind(error);
-      if (retryKind === "none" || attempt === attempts - 1) throw error;
-      const waitMs = ghRetryWaitMs(retryKind, attempt);
-      ensureGitHubRetryFits(waitMs);
-      const retryLabel =
-        retryKind === "throttle" ? "GitHub throttled" : "Transient GitHub API failure";
-      console.error(
-        `${retryLabel}; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
-      );
-      if (retryKind === "throttle") {
-        maybePublishThrottleHeartbeat({ args, attempt, attempts, waitMs });
-      }
-      if (options.sleepBeforeRetry) options.sleepBeforeRetry(waitMs);
-      else sleepBeforeGitHubRetry(waitMs);
-    }
-  }
-  throw lastError;
-}
-
-class ApplyMutationReviewGuardError extends Error {
-  constructor(reason: string) {
-    super(reason);
-    this.name = "ApplyMutationReviewGuardError";
-  }
-}
-
-let activeApplyMutationRunner: MutationRunner | null = null;
-let activeReviewMutationRunner: MutationRunner | null = null;
-
-function mutationErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function runObservedApplyMutation<T>(options: {
-  identity: string;
-  idempotencyIdentity?: string | undefined;
-  operation: () => T;
-  onMutation?: (() => void) | undefined;
-  didMutate?: ((result: T) => boolean) | undefined;
-  knownNoMutation?: ((error: unknown) => boolean) | undefined;
-}): T {
-  const runner = activeApplyMutationRunner ?? activeReviewMutationRunner;
-  if (runner) {
-    return runner({
-      identity: options.identity,
-      idempotencyIdentity: options.idempotencyIdentity ?? options.identity,
-      operation: options.operation,
-      ...(options.didMutate ? { didMutate: options.didMutate } : {}),
-      ...(options.knownNoMutation ? { knownNoMutation: options.knownNoMutation } : {}),
-    });
-  }
-  const result = options.operation();
-  if (options.didMutate?.(result) ?? true) options.onMutation?.();
-  return result;
-}
-
-function ghObservedMutationCommand(options: {
-  identity: string;
-  args: string[];
-  attempts?: number | undefined;
-  onMutation?: (() => void) | undefined;
-  didMutate?: ((result: string) => boolean) | undefined;
-  knownNoMutation?: ((error: unknown) => boolean) | undefined;
-  request?: ((args: string[], attempt: number) => string) | undefined;
-  prepareRequest?: ((args: string[], attempt: number) => () => string) | undefined;
-  sleepBeforeRetry?: ((waitMs: number) => void) | undefined;
-}): string {
-  return ghWithRetry(options.args, options.attempts ?? 12, {
-    request: (args, attempt) => {
-      let operation: () => string;
-      if (options.prepareRequest) {
-        operation = options.prepareRequest(args, attempt);
-      } else if (options.request) {
-        const request = options.request;
-        operation = () => request(args, attempt);
-      } else {
-        const timeoutMs = githubCommandTimeoutMs();
-        operation = () => ghWithPreparedTimeout(args, timeoutMs);
-      }
-      return runObservedApplyMutation({
-        identity: `${options.identity}:request_attempt:${attempt + 1}`,
-        idempotencyIdentity: options.identity,
-        operation,
-        ...(options.onMutation ? { onMutation: options.onMutation } : {}),
-        ...(options.didMutate ? { didMutate: options.didMutate } : {}),
-        ...(options.knownNoMutation ? { knownNoMutation: options.knownNoMutation } : {}),
-      });
-    },
-    ...(options.sleepBeforeRetry ? { sleepBeforeRetry: options.sleepBeforeRetry } : {}),
-  });
-}
-
-export function observedGitHubMutationAttemptsForTest(
-  outcomes: readonly ("not_started" | "transient" | "accepted" | "already_exists")[],
-): Array<{
-  identity: string;
-  idempotencyIdentity: string;
-  outcome: "accepted" | "rejected" | "unknown";
-}> {
-  const receipts: Array<{
-    identity: string;
-    idempotencyIdentity: string;
-    outcome: "accepted" | "rejected" | "unknown";
-  }> = [];
-  const previousRunner = activeApplyMutationRunner;
-  activeApplyMutationRunner = <T>(options: {
-    identity: string;
-    idempotencyIdentity: string;
-    operation: () => T;
-    didMutate?: ((result: T) => boolean) | undefined;
-    knownNoMutation?: ((error: unknown) => boolean) | undefined;
-  }): T => {
-    try {
-      const result = options.operation();
-      receipts.push({
-        identity: options.identity,
-        idempotencyIdentity: options.idempotencyIdentity,
-        outcome: options.didMutate?.(result) === false ? "rejected" : "accepted",
-      });
-      return result;
-    } catch (error) {
-      receipts.push({
-        identity: options.identity,
-        idempotencyIdentity: options.idempotencyIdentity,
-        outcome: options.knownNoMutation?.(error) === true ? "rejected" : "unknown",
-      });
-      throw error;
-    }
-  };
-  try {
-    ghObservedMutationCommand({
-      identity: "test_mutation",
-      args: ["api", "test"],
-      attempts: outcomes.length,
-      knownNoMutation: labelAlreadyExistsError,
-      prepareRequest: (_args, attempt) => {
-        const outcome = outcomes[attempt];
-        if (outcome === "not_started") {
-          throw new GitHubRuntimeBudgetError("max runtime reached before GitHub operation");
-        }
-        return () => {
-          if (outcome === "accepted") return "ok";
-          if (outcome === "already_exists") throw new Error("label already exists");
-          throw new Error("HTTP 502: transient upstream failure");
-        };
-      },
-      sleepBeforeRetry: () => {},
-    });
-  } catch {
-    // The receipts are the assertion surface for rejected terminal attempts.
-  } finally {
-    activeApplyMutationRunner = previousRunner;
-  }
-  return receipts;
-}
-
-class GitHubDispatchError extends Error {
-  readonly outcome: Exclude<GitHubDispatchOutcome, "accepted">;
-  readonly cause: unknown;
-
-  constructor(outcome: Exclude<GitHubDispatchOutcome, "accepted">, cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause));
-    this.name = "GitHubDispatchError";
-    this.outcome = outcome;
-    this.cause = cause;
-  }
-}
-
-function classifyGitHubDispatchResult(options: {
-  status: number | null;
-  signal?: NodeJS.Signals | null | undefined;
-  errorCode?: string | undefined;
-  stderr?: string | undefined;
-}): GitHubDispatchOutcome {
-  if (options.signal) return "ambiguous_transport";
-  if (options.errorCode) {
-    return options.errorCode === "ETIMEDOUT" || options.errorCode === "ENOBUFS"
-      ? "ambiguous_transport"
-      : "definitely_not_dispatched";
-  }
-  if (options.status === 0) return "accepted";
-  if (options.status === null) return "ambiguous_transport";
-  const error = new Error(options.stderr?.trim() || `GitHub dispatch exited ${options.status}`);
-  return ghRetryKind(error) === "none" ? "definitely_not_dispatched" : "ambiguous_transport";
-}
-
-export function classifyGitHubDispatchResultForTest(options: {
-  status: number | null;
-  signal?: NodeJS.Signals | null | undefined;
-  errorCode?: string | undefined;
-  stderr?: string | undefined;
-}): GitHubDispatchOutcome {
-  return classifyGitHubDispatchResult(options);
-}
-
-function ghRawOnceWithCheckpoint(
-  args: string[],
-  onBeforeRun: () => void,
-): { outcome: "accepted"; output: string } {
-  const env = { ...process.env };
-  const command = resolveCommand("gh", args, env);
-  const timeoutMs = githubCommandTimeoutMs();
-  try {
-    onBeforeRun();
-  } catch (error) {
-    throw new GitHubDispatchError("definitely_not_dispatched", error);
-  }
-  const result = spawnSync(command.command, command.args, {
-    cwd: ROOT,
-    encoding: "utf8",
-    env,
-    maxBuffer: 128 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: timeoutMs,
-  });
-  if (result.error) {
-    const errorCode = (result.error as NodeJS.ErrnoException).code;
-    if (timeoutMs !== undefined && (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
-      throw new GitHubDispatchError(
-        "ambiguous_transport",
-        githubRuntimeBudgetError("during GitHub dispatch"),
-      );
-    }
-    throw new GitHubDispatchError(
-      classifyGitHubDispatchResult({
-        status: result.status,
-        signal: result.signal,
-        ...(errorCode ? { errorCode } : {}),
-      }) as Exclude<GitHubDispatchOutcome, "accepted">,
-      result.error,
-    );
-  }
-  if (result.status !== 0) {
-    const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
-    const error = new Error(
-      [`Command failed: gh ${args.join(" ")}`, stderr].filter(Boolean).join("\n"),
-    );
-    throw new GitHubDispatchError(
-      classifyGitHubDispatchResult({
-        status: result.status,
-        signal: result.signal,
-        stderr,
-      }) as Exclude<GitHubDispatchOutcome, "accepted">,
-      error,
-    );
-  }
-  return { outcome: "accepted", output: (result.stdout ?? "").trim() };
-}
-
-function ghJson<T>(args: string[]): T {
-  return parseGhJsonWithRetry<T>(() => ghWithRetry(args), args, {
-    onRetry: (_error, attempt) => {
-      const waitMs = ghRetryWaitMs("transient", attempt - 1);
-      console.error(
-        `Malformed GitHub JSON response; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
-      );
-      sleepBeforeGitHubRetry(waitMs);
-    },
-  });
-}
-
-function ghJsonOnce<T>(args: string[], timeoutMs: number): T {
-  return parseGhJson<T>(ghOnce(args, timeoutMs), args);
-}
-
-function ghJsonLines<T>(args: string[]): T[] {
-  return parseGhJsonLinesWithRetry<T>(() => ghWithRetry(args), args, {
-    onRetry: (_error, attempt) => {
-      const waitMs = ghRetryWaitMs("transient", attempt - 1);
-      console.error(
-        `Malformed GitHub JSON-lines response; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
-      );
-      sleepBeforeGitHubRetry(waitMs);
-    },
-  });
-}
+  ApplyMutationReviewGuardError,
+  GitHubDispatchError,
+  ghJson,
+  ghJsonLines,
+  ghJsonOnce,
+  ghObservedMutationCommand,
+  ghRawOnceWithCheckpoint,
+  ghWithRetry,
+  mutationErrorMessage,
+} = githubExecution;
 
 function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
@@ -751,7 +388,6 @@ export const {
   reviewCommentContentRevisionForTest,
 } = sourceRevisionTools;
 const {
-  hydratedReviewStructuralItemStateDigest,
   isIgnorableSourceRevisionLabel,
   itemContentDigest,
   itemSnapshotHash,
@@ -759,7 +395,6 @@ const {
   pullCommitContentRevision,
   reviewCommentBodyDigest,
   reviewCommentContentRevision,
-  reviewTimelineDigestParts,
 } = sourceRevisionTools;
 
 function reviewPolicyHash(options: {
@@ -810,14 +445,7 @@ const decisionParser = createDecisionParser({
   neutralizeOwnedSectionSpoofing: (...args) => neutralizeOwnedSectionSpoofing(...args),
   sanitizeArchitectureDiagram: (...args) => sanitizeArchitectureDiagram(...args),
 });
-const {
-  defaultRootCauseCluster,
-  parseGitHubItemRef,
-  parseLabelJustification,
-  parseMergeRiskOption,
-  parseRootCauseCluster,
-  selectedReviewLabels,
-} = decisionParser;
+const { defaultRootCauseCluster, parseGitHubItemRef } = decisionParser;
 
 export function parseDecision(value: unknown, item?: DecisionNormalizationItem): Decision {
   return decisionParser.parseDecision(value, item);
@@ -843,88 +471,32 @@ export const {
   reviewReportCanPromoteToCloseForTest,
   shouldSyncReviewComment,
 } = recordMetadata;
-const {
-  appendSectionValue,
-  applyQueueSortFields,
-  buildExistingReviewIndex,
-  effectiveReviewStatus,
-  exactEventReviewLeaseDisposition,
-  existingReview,
-  failedReviewFailureDetail,
-  failedReviewRetryEligibility,
-  failedReviewRetryResultRevision,
-  failedReviewRetryRevisionForReport,
-  frontMatterBoolean,
-  frontMatterJsonArray,
-  frontMatterStringArray,
-  frontMatterValue,
-  hasAutoCloseAllowedMetadata,
-  hasVerifiedLocalCheckoutAccess,
-  indexedExistingReview,
-  isApplyCloseCandidateReport,
-  isFailedReviewRetryAlreadyExhausted,
-  isLiveRecheckCloseGuardReport,
-  isPairBlockedCloseReport,
-  isRetryableCloseSkipReport,
-  isRetryableKeptOpenCloseReport,
-  isRetryablePrCloseCoverageProofReport,
-  replaceFrontMatterValue,
-  replaceSectionValue,
-  reportCloseReason,
-  reportItemKind,
-  reviewReportCanPromoteToClose,
-  reviewSectionValue,
-  sameFailedReviewRetryRevision,
-  sectionValue,
-  shouldProbeClosedStateReport,
-  storedFailedReviewRetryRevision,
-} = recordMetadata;
+const { frontMatterBoolean, frontMatterStringArray, frontMatterValue } = recordMetadata;
 
 const reportParser = createReportParser({
   agentsPolicyStatusLine: (...args) => agentsPolicyStatusLine(...args),
-  defaultRootCauseCluster,
+  ...decisionParser,
   evidenceEntry,
-  frontMatterJsonArray,
-  frontMatterStringArray,
-  frontMatterValue,
+  ...recordMetadata,
   isDocsOnlyPullRequestReport,
   isExternalPullRequestReport,
   markdownRepository,
   parseBoldListHeading: (...args) => parseBoldListHeading(...args),
-  parseLabelJustification,
-  parseMergeRiskOption,
   parseReviewFindingHeading: (...args) => parseReviewFindingHeading(...args),
-  parseRootCauseCluster,
   parseSecurityConcernHeading: (...args) => parseSecurityConcernHeading(...args),
-  reviewSectionValue,
   sectionLineValue: (...args) => sectionLineValue(...args),
   sectionList: (...args) => sectionList(...args),
-  selectedReviewLabels,
   splitFileAndLine,
 });
 export const { rootCauseClusterFromReportForTest } = reportParser;
 const {
   reportEvidence,
-  reportLikelyOwners,
   reportOverallCorrectness,
-  reportOverallConfidenceScore,
-  triagePriorityFromReport,
-  impactLabelsFromReport,
-  mergeRiskLabelsFromReport,
-  maturityLabelsFromReport,
   mergeRiskOptionsFromReport,
-  labelJustificationsFromReport,
   reportReviewFindings,
   reportSecurityReview,
   reportRealBehaviorProof,
-  reportTelegramVisibleProof,
   reportPrRating,
-  reportMantisRecommendation,
-  reportFeatureShowcase,
-  reportRootCauseCluster,
-  reportAgentsPolicyStatus,
-  defaultAgentsPolicyStatus,
-  reportVisionFit,
 } = reportParser;
 
 const labelPolicy = createLabelPolicy({
@@ -941,16 +513,7 @@ const labelPolicy = createLabelPolicy({
 });
 export const { featureShowcaseLabelsForTest, prStatusLabelsForTest, prStatusLabelSchemeForTest } =
   labelPolicy;
-const {
-  eventTimestampMs,
-  hasRepairLoopPauseLabel,
-  isAfterReview,
-  nextFeatureShowcaseLabels,
-  nextPrStatusLabels,
-  prStatusLabelForKind,
-  prStatusLabelKindFromReport,
-  shouldApplyFeatureShowcaseLabel,
-} = labelPolicy;
+const { hasRepairLoopPauseLabel, prStatusLabelKindFromReport } = labelPolicy;
 
 const applyGuards = createApplyGuards({
   asRecord,
@@ -986,40 +549,21 @@ export const {
   stalledUnprovenPrAgeSkipReason,
   stalledUnprovenProofRequestBlockReason,
 } = applyGuards;
-const {
-  abandonedPrApplyBlockReasonSafe,
-  authorPrBudgetApplyGateSafe,
-  authorPrBudgetSignalBlockReason,
-  issueRecentHumanCommentBlockReasonSafe,
-  lowSignalUnmergeablePrApplyBlockReasonSafe,
-  lowSignalUnmergeablePrAuthorActivityBlockReason,
-  lowSignalUnmergeablePrConflictBlockReason,
-  obsoleteFixPrApplyBlockReasonSafe,
-  prAutoCloseExemptDecisionReason,
-  prAutoCloseExemptLabel,
-  pullRequestHeadActivity,
-  staleVersionBugApplyBlockReasonSafe,
-  stalledUnprovenPrApplyBlockReasonSafe,
-  unconfirmedProductDirectionApplyBlockReasonSafe,
-  unsponsoredFeatureApplyBlockReasonSafe,
-} = applyGuards;
+const { prAutoCloseExemptDecisionReason, prAutoCloseExemptLabel } = applyGuards;
 
 const contextHydration = createContextHydration({
   asRecord,
   CLAWSWEEPER_BOT_AUTHORS,
-  defaultClosedDir,
-  defaultItemsDir,
+  ...repositoryPaths,
   displayTitle: (title) => displayTitle(title),
-  effectiveReviewStatus,
+  ...recordMetadata,
   fetchIssueReviewComments: (number) => fetchIssueReviewComments(number),
-  frontMatterValue,
   ghJson,
   ghJsonOnce,
   githubCount,
   GitHubRuntimeBudgetError,
   isAutomationReportAuthor,
   isBulkFilerExemptAuthorAssociation,
-  isMarkdownForActiveRepo,
   isSafeGitBranchName: (branch) => isSafeGitBranchName(branch),
   labelNames,
   login,
@@ -1027,11 +571,9 @@ const contextHydration = createContextHydration({
   normalizeAuthorAssociation,
   normalizeLabelName,
   numberForMarkdownFile,
-  replaceFrontMatterValue,
   repoRelativePath,
   reportUrl,
   reviewCommentBodyDigest,
-  reviewSectionValue,
   ROOT,
   run,
   stringOrUndefined,
@@ -1068,38 +610,12 @@ export const {
   updateBulkFilerDetectedFrontMatterForTest,
 } = contextHydration;
 const {
-  authorIssueCountInBulkFilerWindow,
-  bulkFilerPolicyInvalidatesCachedReview,
-  bulkFilerRepositoryPermission,
-  closingPullRequestsForIssue,
-  compactComment,
-  compactIssue,
-  compactPullCommit,
-  compactPullFile,
-  compactPullFilePaths,
-  compactPullRequest,
-  compactSemanticPullFile,
-  compactTimelineEvent,
   completePullChecksContext,
-  detectBulkFiler,
-  extractLatestClawSweeperReview,
-  extractLatestClawSweeperReviewFromHydration,
-  filterReviewContextComments,
-  goodFirstIssueHumanLabelState,
   isClawSweeperComment,
-  isDigitsOnly,
-  liveClawSweeperReviewDigest,
-  pairCloseKey,
-  previousClawSweeperReviewDigestFromReport,
   pullChecksContext,
   pullFileTreeIdentity,
   quoteGitHubSearchTerm,
-  referencingMergedPullRequestsForIssue,
-  refreshRelatedItemsContext,
-  relatedItemsContext,
-  semanticPullFilesWithTreeIdentity,
   structuralExternalRelationSensitivity,
-  updateBulkFilerDetectedFrontMatter,
 } = contextHydration;
 
 function ensureDir(path: string): void {
@@ -1111,17 +627,12 @@ const reviewPlanning = createReviewPlanning({
   targetRepo,
   ghJson,
   ghJsonLines,
-  fetchReviewedPrActivityCursor,
-  ghPaged,
-  githubCount,
+  ...githubContext,
   itemSourceRevisionSha256,
   asRecord,
   normalizeAuthorAssociation,
   shouldPlanItem,
-  frontMatterValue,
-  buildExistingReviewIndex,
-  indexedExistingReview,
-  effectiveReviewStatus,
+  ...recordMetadata,
   stringOrUndefined,
   pullHeadShaFromReport: (markdown) => pullHeadShaFromReport(markdown),
   failedReviewRetryStatePath: (stateDir, number) => failedReviewRetryStatePath(stateDir, number),
@@ -1137,26 +648,11 @@ export const {
   shouldSkipScheduledHotIntakeExactReviewForTest,
 } = reviewPlanning;
 const {
-  addDashboardCadenceBucket,
-  capDashboardCadenceBucket,
-  dashboardMarkdownWithFailedReviewRetryState,
-  emptyDashboardActivityStats,
-  emptyDashboardCadenceBucket,
-  emptyDashboardKindStats,
   exactLocalReviewNoCandidateError,
   fetchItem,
-  fetchOpenItemCounts,
   fetchOpenItemNumbers,
-  fetchOpenItems,
-  formatActivityRow,
-  formatCadenceBucket,
-  formatOperationActivityRow,
-  formatPercent,
-  isCurrentForCadence,
   isFresh,
-  latestTimestamp,
   planCandidates,
-  recordDashboardActivity,
   selectCandidates,
   timestampMs,
 } = reviewPlanning;
@@ -1214,33 +710,10 @@ function fetchReviewStructuralRecord(options: {
 
 const { collectItemContext } = createItemContext({
   asRecord,
-  closingPullRequestsForIssue,
-  compactComment,
-  compactIssue,
-  compactMappedSlice,
-  compactMappedWindow,
-  compactPullCommit,
-  compactPullFile,
-  compactPullRequest,
-  compactSemanticPullFile,
-  compactTimelineEvent,
-  extractLatestClawSweeperReviewFromHydration,
-  fetchReviewedPrActivityCursor,
-  filterReviewContextComments,
+  ...contextHydration,
+  ...githubContext,
   ghJson,
-  ghPaged,
-  ghPagedContextWindow,
-  ghPagedLinkHeaderContextWindow,
-  goodFirstIssueHumanLabelState,
-  hydratedReviewStructuralItemStateDigest,
-  itemSourceRevisionSha256,
-  pullChecksContext,
-  pullCommitContentRevision,
-  referencingMergedPullRequestsForIssue,
-  relatedItemsContext,
-  reviewCommentContentRevision,
-  reviewTimelineDigestParts,
-  semanticPullFilesWithTreeIdentity,
+  ...sourceRevisionTools,
   sha256,
   stringOrUndefined,
   targetRepo,
@@ -1279,27 +752,8 @@ export const {
   reviewPromptTemplate,
   runCodexForTest,
 } = reviewRuntime;
-const {
-  CodexReviewError,
-  buildReviewPrompt,
-  codexFailureDecision,
-  codexFailureLogKind,
-  codexFailureReason,
-  codexReviewFailureRetryable,
-  defaultLocalRangeArtifactDir,
-  defaultReviewArtifactDir,
-  displayDurationMs,
-  displayPath,
-  gitInfo,
-  isSafeGitBranchName,
-  localExactReviewItem,
-  makeTreeReadOnly,
-  prCloseCoverageProofPromptTemplate,
-  resolveReviewCheckout,
-  restoreTreeModes,
-  reviewCodexForcedLoginMethod,
-  runCodex,
-} = reviewRuntime;
+const { codexFailureReason, isSafeGitBranchName, prCloseCoverageProofPromptTemplate } =
+  reviewRuntime;
 
 const assistWorkflow = createAssistWorkflow({
   root: ROOT,
@@ -1332,13 +786,8 @@ const {
 const statusContext = createStatusContext({
   targetProfile,
   targetRepo,
-  markdownLink,
-  repoUrlFor,
-  linkedRelease,
-  linkedSha,
-  profileStatusStart,
-  profileStatusEnd,
-  sweepStatusPath,
+  ...repositoryLinks,
+  ...sweepStatus,
   markdownRepository,
   ghJson,
   asRecord,
@@ -1348,19 +797,7 @@ const statusContext = createStatusContext({
   recordOrUndefined,
 });
 export const { fixedPullRequestFromCommitPullsForTest } = statusContext;
-const {
-  attachFixedPullRequest,
-  currentWorkflowStatusBlock,
-  displayTitle,
-  fixedInReportText,
-  fixedInText,
-  fixedPullRequestFromReport,
-  formatReviewFreshnessTimestamp,
-  formatStatusNumber,
-  formatTimestamp,
-  readSweepStatusSummary,
-  workflowStatusSummary,
-} = statusContext;
+const { attachFixedPullRequest, displayTitle, readSweepStatusSummary } = statusContext;
 
 function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
@@ -1393,82 +830,30 @@ const reviewPresentation = createReviewPresentation({
   securityConcernLocation,
   splitFileAndLine,
 });
-const {
-  closeEvidenceLine,
-  confidenceText,
-  isActionablePriorityText,
-  isReportNoneList,
-  isRoutineCiOrReviewText,
-  isSupportedMantisScenario,
-  likelyOwnerLine,
-  normalizePublicReviewText,
-  prStatusLabelKindFromReportLabels,
-  priorityLabel,
-  publicFailedReviewReadinessBlock,
-  publicLikelyOwnerRole,
-  publicMantisRecommendationBlock,
-  publicMergeReadinessBlock,
-  publicNonDispatchableMantisRecommendationBlock,
-  publicPriorityBulletFromText,
-  publicPriorityBulletIfActionable,
-  publicPriorityFromText,
-  publicRankDetailsBlock,
-  publicRealBehaviorProofLine,
-  publicReviewScoresBlock,
-  publicReviewTextDiffers,
-  publicReviewTextIsSame,
-  publicRiskBulletsFromText,
-  publicSecurityReviewLine,
-  publicVerificationBlock,
-  reviewFindingDetailedLine,
-  reviewFindingLocation,
-  reviewFindingSummaryLine,
-  securityConcernDetailedLine,
-  securityConcernSummaryLine,
-  securityReviewLine,
-  sentence,
-  stripPriorityPrefix,
-  validMantisMaintainerComment,
-} = reviewPresentation;
+const { isSupportedMantisScenario, sentence, validMantisMaintainerComment } = reviewPresentation;
 
 const reportOrchestration = createReportOrchestration({
   agentsPolicyStatusLine: (...args) => agentsPolicyStatusLine(...args),
   asRecord,
-  closeEvidenceLine,
+  ...reviewPresentation,
   collectItemContext,
-  compactPullFilePaths,
-  confidenceText,
-  defaultAgentsPolicyStatus,
-  defaultPlansDir,
+  ...contextHydration,
+  ...reportParser,
+  ...repositoryPaths,
   defaultRootCauseCluster,
-  effectiveReviewStatus,
+  ...recordMetadata,
   ensureDir,
-  eventTimestampMs,
-  fileUrl,
-  filterReviewContextComments,
-  fixedInReportText,
-  fixedInText,
-  fixedPullRequestFromReport,
-  formatReviewFreshnessTimestamp,
-  formatTimestamp,
-  frontMatterBoolean,
-  frontMatterJsonArray,
-  frontMatterStringArray,
-  frontMatterValue,
+  ...labelPolicy,
+  ...repositoryLinks,
+  ...statusContext,
   ghJson,
   ghObservedMutationCommand,
-  ghPaged,
-  ghPagedContextWindow,
-  ghPagedLinkHeaderContextWindow,
+  ...githubContext,
   GitHubRuntimeBudgetError,
   hasUsableCloseComment: (...args) => hasUsableCloseComment(...args),
-  impactLabelsFromReport,
-  isActionablePriorityText,
-  isAfterReview,
   isAutomationReportAuthor,
   isBulkFilerExemptAuthorAssociation,
   isBulkFilerExemptRepositoryPermission,
-  isDigitsOnly,
   isDocsOnlyPullRequestReport,
   isExternalPullRequestReport,
   isFresh,
@@ -1476,113 +861,46 @@ const reportOrchestration = createReportOrchestration({
   isIssueAdvisoryLabel: (...args) => isIssueAdvisoryLabel(...args),
   isMaintainerAuthored,
   isOlderThanDays,
-  isReportNoneList,
-  isRoutineCiOrReviewText,
   issueAdvisoryLabelStateFromReport: (...args) => issueAdvisoryLabelStateFromReport(...args),
   isVerifiedFixedCloseReason,
   itemSnapshotHash,
   jsonFrontMatterValue: (...args) => jsonFrontMatterValue(...args),
-  labelJustificationsFromReport,
   labelNames,
   labelPolicy,
-  likelyOwnerLine,
-  linkedRelease,
-  linkedSha,
-  lowSignalUnmergeablePrAuthorActivityBlockReason,
-  lowSignalUnmergeablePrConflictBlockReason,
-  markdownLink,
-  markdownRepository,
-  maturityLabelsFromReport,
-  mergeRiskLabelsFromReport,
-  mergeRiskOptionsFromReport,
+  ...applyGuards,
   neutralizeOwnedSectionSpoofing: (...args) => neutralizeOwnedSectionSpoofing(...args),
-  nextFeatureShowcaseLabels,
   nextImpactLabels: (...args) => nextImpactLabels(...args),
   nextIssueAdvisoryLabels: (...args) => nextIssueAdvisoryLabels(...args),
   nextMaturityLabels: (...args) => nextMaturityLabels(...args),
   nextMergeRiskLabels: (...args) => nextMergeRiskLabels(...args),
   nextPriorityLabels: (...args) => nextPriorityLabels(...args),
-  nextPrStatusLabels,
   nextRealBehaviorProofMediaLabels: (...args) => nextRealBehaviorProofMediaLabels(...args),
   nextRealBehaviorProofSufficientLabels: (...args) =>
     nextRealBehaviorProofSufficientLabels(...args),
   nextTelegramVisibleProofLabels: (...args) => nextTelegramVisibleProofLabels(...args),
   normalizeLabelName,
-  normalizePublicReviewText,
   numberOrUndefined,
   parseGitHubItemRef,
-  priorityLabel,
   protectedLabels,
-  prStatusLabelForKind,
-  prStatusLabelKindFromReportLabels,
-  publicFailedReviewReadinessBlock,
-  publicLikelyOwnerRole,
-  publicMantisRecommendationBlock,
-  publicMergeReadinessBlock,
-  publicNonDispatchableMantisRecommendationBlock,
-  publicPriorityBulletFromText,
-  publicPriorityBulletIfActionable,
-  publicPriorityFromText,
-  publicRankDetailsBlock,
-  publicRealBehaviorProofLine,
-  publicReviewScoresBlock,
-  publicReviewTextDiffers,
-  publicReviewTextIsSame,
-  publicRiskBulletsFromText,
-  publicSecurityReviewLine,
   publicTableCell: (...args) => publicTableCell(...args),
-  publicVerificationBlock,
   pullHeadShaFromContext: (...args) => pullHeadShaFromContext(...args),
   pullHeadShaFromReport: (...args) => pullHeadShaFromReport(...args),
-  pullRequestHeadActivity,
   repairLoopPassModeFromReport: (...args) => repairLoopPassModeFromReport(...args),
-  replaceFrontMatterValue,
-  replaceSectionValue,
   repoRelativePath,
-  reportAgentsPolicyStatus,
-  reportEvidence,
-  reportFeatureShowcase,
-  reportFileName,
-  reportLikelyOwners,
-  reportMantisRecommendation,
-  reportOverallConfidenceScore,
-  reportOverallCorrectness,
-  reportPrRating,
-  reportRealBehaviorProof,
-  reportReviewFindings,
-  reportRootCauseCluster,
-  reportSecurityReview,
-  reportTelegramVisibleProof,
-  reportVisionFit,
-  repoUrlFor,
   reviewAutomationMarkersFromReport: (...args) => reviewAutomationMarkersFromReport(...args),
-  reviewFindingDetailedLine,
-  reviewFindingLocation,
-  reviewFindingSummaryLine,
-  reviewReportCanPromoteToClose,
-  reviewSectionValue,
   reviewStructuralPullStateFromContext: (...args) => reviewStructuralPullStateFromContext(...args),
   reviewVersionMarkerFromReport: (...args) => reviewVersionMarkerFromReport(...args),
   ROOT,
   runtimeBudgetExceeded: (...args) => runtimeBudgetExceeded(...args),
   sanitizeArchitectureDiagram: (...args) => sanitizeArchitectureDiagram(...args),
   sectionLineValue: (...args) => sectionLineValue(...args),
-  sectionValue,
-  securityConcernDetailedLine,
   securityConcernLocation,
-  securityConcernSummaryLine,
-  securityReviewLine,
-  sentence,
   sha256,
-  shouldApplyFeatureShowcaseLabel,
-  splitFileAndLine,
   stringOrUndefined,
-  stripPriorityPrefix,
   targetProfile,
   targetRepo,
   timeoutWithinRuntimeBudget: (...args) => timeoutWithinRuntimeBudget(...args),
   timestampMs,
-  triagePriorityFromReport,
   validateCloseDecision: (...args) => validateCloseDecision(...args),
   workStatusForDecision: (...args) => workStatusForDecision(...args),
 });
@@ -1617,43 +935,10 @@ export const {
 } = reportOrchestration;
 const {
   OWNED_REVIEW_SECTION_HEADINGS,
-  applyAuthorPrBudgetStateToReport,
-  applyClosedUnmergedCanonicalBlockedReport,
-  applyPrCloseCoverageProofBlockedReport,
-  applyPrCloseCoverageProofReportSection,
-  authorPrBudgetPromotion,
-  canonicalPullRequestCommentSyncBlock,
-  closeItem,
-  completeStaleCanonicalCommentSyncReport,
-  configSurfaceReviewRequired,
-  contextHasNonAutomationActivityAfter,
-  coveringPrCloseCoveragePullRequestUpdatedAt,
-  currentReviewRevision,
-  dataModelSurfaceReviewRequired,
-  duplicateCanonicalPullRequestBlockReason,
-  hasNormalizedLabel,
-  isClawSweeperOwnedLabel,
   labelSynchronization,
-  linkedPullRequestRefsFromText,
-  linkedPullRequestSignalContextsFromText,
-  livePullRequestHasNoDiff,
-  markdownFor,
-  normalizedLabelSet,
   parseBacktickLocation,
-  prCloseCoverageProofGateResult,
-  pullRequestClosePromotion,
   pullRequestFilePathsFromReport,
-  pullRequestHeadSha,
-  realBehaviorProofBlocksMerge,
-  reportDecision,
-  reviewHistoryForStaleComment,
-  staleCanonicalCommentSyncPendingReason,
-  staleCanonicalPullRequestNumber,
   syncWorkPlanFromReport,
-  updateReviewSemanticFrontMatter,
-  updateReviewStructuralFrontMatter,
-  upgradeNoDiffPullRequestReport,
-  upgradePullRequestClosePromotionReport,
   workPlanPathForReport,
 } = reportOrchestration;
 
@@ -1665,9 +950,6 @@ function isDocsOnlyPullRequestReport(markdown: string): boolean {
 }
 
 const {
-  addIssueLabel,
-  ensureIdeaArchiveLabel,
-  isGoodFirstIssue,
   isIssueAdvisoryLabel,
   issueAdvisoryLabelStateFromReport,
   labelAlreadyExistsError,
@@ -1680,18 +962,6 @@ const {
   nextRealBehaviorProofSufficientLabels,
   nextTelegramVisibleProofLabels,
   removeIssueLabel,
-  syncBulkFilerLabel,
-  syncFeatureShowcaseLabel,
-  syncImpactLabels,
-  syncIssueAdvisoryLabels,
-  syncMaturityLabels,
-  syncMergeRiskLabels,
-  syncPriorityLabel,
-  syncPrRatingLabel,
-  syncPrStatusLabel,
-  syncRealBehaviorProofMediaLabels,
-  syncRealBehaviorProofSufficientLabel,
-  syncTelegramVisibleProofLabel,
 } = labelSynchronization;
 
 function isAutomationReportAuthor(author: string | undefined): boolean {
@@ -1779,30 +1049,16 @@ const reviewCommentWorkflow = createReviewCommentWorkflow({
   reviewCommentBodyDigest,
   asRecord,
   parseGitHubItemRef,
-  reportSecurityReview,
-  reportReviewFindings,
-  reportOverallCorrectness,
+  ...reportParser,
   ensureDir,
-  frontMatterValue,
-  replaceFrontMatterValue,
-  sectionValue,
-  frontMatterStringArray,
+  ...recordMetadata,
   timestampMs,
   stringOrUndefined,
   sentence,
-  configSurfaceReviewRequired,
-  dataModelSurfaceReviewRequired,
+  ...reportOrchestration,
   isIssueAdvisoryLabel,
   removeIssueLabel,
-  realBehaviorProofBlocksMerge,
-  normalizedLabelSet,
   sectionLineValue,
-  linkedPullRequestRefsFromText,
-  linkedPullRequestSignalContextsFromText,
-  isClawSweeperOwnedLabel,
-  reviewHistoryForStaleComment,
-  currentReviewRevision,
-  pullRequestHeadSha,
   markdownLink,
 });
 export const {
@@ -1824,7 +1080,6 @@ export const {
   withReviewStartStatusLease,
 } = reviewCommentWorkflow;
 const {
-  commentId,
   pullHeadShaFromContext,
   fetchIssueReviewComments,
   reviewLeaseRevisionFromReport,
@@ -1833,29 +1088,6 @@ const {
   repairLoopPassModeFromReport,
   reviewVersionMarkerFromReport,
   reviewStructuralPullStateFromContext,
-  exactReviewQueueAuthorityFromEnv,
-  postReviewStartStatusComment,
-  deleteOwnedDedicatedReviewStartLease,
-  freshDedicatedReviewStartLeases,
-  issueReviewCommentState,
-  PATCHABLE_REVIEW_COMMENT_AUTHORS,
-  staleReviewCommentSyncReason,
-  reviewCommentHasCloseVerdictForCanonical,
-  issueReviewComment,
-  markedReviewCommentBody,
-  commentBodyMatches,
-  reviewCommentHashMatches,
-  commentUpdatedAt,
-  cleanupSupersededReviewPlaceholderComments,
-  reviewStartLeaseOwner,
-  commentBody,
-  freshPullRequestReviewHead,
-  stalePullRequestReviewHead,
-  syncStalePullRequestReviewLabels,
-  stalePullRequestReviewComment,
-  updateReviewCommentMetadata,
-  upsertReviewComment,
-  ensureCloseAppliedComment,
 } = reviewCommentWorkflow;
 
 function securityConcernLocation(concern: SecurityConcern): string {
@@ -1944,76 +1176,36 @@ const reviewActionLedger = createReviewActionLedger({
   isRuntimeBudgetError: (error) => error instanceof GitHubRuntimeBudgetError,
 });
 export const { actionLedgerFailureDisposition } = reviewActionLedger;
-const {
-  actionLedgerItemKey,
-  actionLedgerPrivacy,
-  finishReviewActionLedger,
-  finishReviewActionLedgerItem,
-  recordReviewLogPublication,
-  reviewMutationRunner,
-  startReviewActionLedger,
-  startReviewActionLedgerItem,
-  workflowRunEvidence,
-} = reviewActionLedger;
+const { actionLedgerItemKey } = reviewActionLedger;
 
 const commandOperations = createCommandOperations({
-  actionLedgerFailureDisposition,
-  actionLedgerPrivacy,
-  appendSectionValue,
+  ...reviewActionLedger,
+  ...recordMetadata,
   applyDecisionsCommandInner: (...args) => applyDecisionsCommandInner(...args),
   artifactTargetIsOpen,
   codexFailureReason,
-  currentReviewRevision,
-  decisionPacketsDirFromArgs,
-  defaultClosedDir,
-  defaultItemsDir,
-  defaultPlansDir,
-  effectiveReviewStatus,
+  ...reportOrchestration,
+  ...repositoryPaths,
   ensureDir,
-  ensureGitHubRuntimeAvailable,
-  exactReviewQueueAuthorityFromEnv,
-  failedReviewFailureDetail,
-  failedReviewRetryEligibility,
-  failedReviewRetryResultRevision,
-  failedReviewRetryRevisionForReport,
+  ...gitHubRuntime,
+  ...reviewCommentWorkflow,
   fetchItem,
   fetchOpenItemNumbers,
-  frontMatterValue,
   ghJson,
   ghPaged,
   ghRawOnceWithCheckpoint,
   ghWithRetry,
   GitHubDispatchError,
-  GitHubRuntimeBudgetError,
-  isFailedReviewRetryAlreadyExhausted,
-  isMarkdownForActiveRepo,
   itemSourceRevisionSha256,
-  lockedConversationApplyReason,
   markdownFiles,
-  markdownRepository,
   numberForMarkdownFile,
-  parseReportFileName,
-  postReviewStartStatusComment,
   reconcileFolders: (...args) => reconcileFolders(...args),
-  replaceFrontMatterValue,
-  replaceSectionValue,
   repoFromArgs,
   repoRelativePath,
-  reportFileName,
-  reportItemKind,
   reviewActionLedger,
-  reviewArtifactDestination,
-  reviewLeaseRevisionFromReport,
   ROOT,
-  sameFailedReviewRetryRevision,
-  sectionValue,
   sha256,
-  storedFailedReviewRetryRevision,
-  syncWorkPlanFromReport,
   targetRepo,
-  withGitHubRuntimeBudget,
-  workflowRunEvidence,
-  workPlanPathForReport,
 });
 export const {
   applyActionEventDisposition,
@@ -2033,299 +1225,113 @@ export const {
 const {
   applyArtifactsCommand,
   applyDecisionsCommand,
-  applyRuntimeBudgetYieldResults,
   enforceExpectedIssueSourceRevision,
   failedReviewRetryMarkdownWithState,
   failedReviewRetryStatePath,
-  finishApplyMutationAttempt,
-  liveIssueSourceRevision,
-  orderedApplyItemNumbers,
   readFailedReviewRetryState,
-  recordApplyActionEvents,
-  recordApplyActionLedgerItemResults,
-  recordApplyMutationBoundary,
   reserveReviewLeaseCommand,
   retryFailedReviewsCommand,
-  startApplyActionLedger,
-  startApplyActionLedgerItem,
-  startApplyMutationAttempt,
 } = commandOperations;
 
 const { reviewCommand } = createReviewCommandWorkflow({
-  actionLedgerFailureDisposition,
-  actionLedgerItemKey,
+  ...reviewActionLedger,
   get activeReviewMutationRunner() {
-    return activeReviewMutationRunner;
+    return githubExecution.activeReviewMutationRunner;
   },
   set activeReviewMutationRunner(value: MutationRunner | null) {
-    activeReviewMutationRunner = value;
+    githubExecution.activeReviewMutationRunner = value;
   },
   asRecord,
   attachFixedPullRequest,
-  authorIssueCountInBulkFilerWindow,
+  ...contextHydration,
   buildLocalRangeReview,
-  buildReviewPrompt,
-  bulkFilerPolicyInvalidatesCachedReview,
-  bulkFilerRepositoryPermission,
-  codexFailureDecision,
-  codexFailureLogKind,
-  CodexReviewError,
-  codexReviewFailureRetryable,
+  ...reviewRuntime,
   collectItemContext,
-  commentId,
-  completePullChecksContext,
+  ...reviewCommentWorkflow,
   DEFAULT_PLAN_BATCH_SIZE,
   defaultItemsDir,
-  defaultLocalRangeArtifactDir,
-  defaultReviewArtifactDir,
-  deleteOwnedDedicatedReviewStartLease,
-  detectBulkFiler,
-  displayDurationMs,
-  displayPath,
   enforceExpectedIssueSourceRevision,
   ensureDir,
   exactLocalReviewNoCandidateError,
-  existingReview,
-  extractLatestClawSweeperReview,
-  fetchIssueReviewComments,
+  ...recordMetadata,
   fetchReviewStructuralRecord,
-  finishReviewActionLedger,
-  finishReviewActionLedgerItem,
-  freshDedicatedReviewStartLeases,
-  frontMatterValue,
-  gitInfo,
   isBulkFilerExemptAuthorAssociation,
   isBulkFilerExemptRepositoryPermission,
-  issueReviewCommentState,
   isSuppliedReviewStartLease,
   itemContentDigest,
   itemSnapshotHash,
-  liveClawSweeperReviewDigest,
-  localExactReviewItem,
-  makeTreeReadOnly,
-  markdownFor,
-  postReviewStartStatusComment,
-  previousClawSweeperReviewDigestFromReport,
-  pullChecksContext,
-  pullHeadShaFromContext,
-  pullRequestHeadSha,
-  recordReviewLogPublication,
-  refreshRelatedItemsContext,
-  replaceFrontMatterValue,
+  ...reportOrchestration,
   repoFromArgs,
   reportFileName,
   reportReviewFindings,
-  resolveReviewCheckout,
-  restoreTreeModes,
-  reviewActionForDecision,
-  reviewCodexForcedLoginMethod,
   reviewLeaseStillMatchesContext,
-  reviewMutationRunner,
   reviewPolicyHash,
-  reviewStructuralPullStateFromContext,
-  runCodex,
   selectCandidates,
-  startReviewActionLedger,
-  startReviewActionLedgerItem,
   stringOrUndefined,
   suppliedReviewStartLeaseFromArgs,
   targetRepo,
-  updateBulkFilerDetectedFrontMatter,
-  updateReviewSemanticFrontMatter,
-  updateReviewStructuralFrontMatter,
 });
 
 const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
-  abandonedPrApplyBlockReasonSafe,
+  ...applyGuards,
   actionLedgerItemKey,
   get activeApplyMutationRunner() {
-    return activeApplyMutationRunner;
+    return githubExecution.activeApplyMutationRunner;
   },
   set activeApplyMutationRunner(value: MutationRunner | null) {
-    activeApplyMutationRunner = value;
+    githubExecution.activeApplyMutationRunner = value;
   },
-  addIssueLabel,
-  applyAuthorPrBudgetStateToReport,
+  ...labelSynchronization,
+  ...reportOrchestration,
   applyBlockingProtectedLabels,
-  applyClosedUnmergedCanonicalBlockedReport,
   applyKindArg,
   ApplyMutationReviewGuardError,
-  applyPrCloseCoverageProofBlockedReport,
-  applyPrCloseCoverageProofReportSection,
   applyProtectedLabelReason,
-  applyQueueSortFields,
-  applyRuntimeBudgetYieldResults,
+  ...recordMetadata,
+  ...commandOperations,
   asRecord,
   authorPrBudgetAgeSkipReason,
-  authorPrBudgetApplyGateSafe,
-  authorPrBudgetCloseEnabled,
-  authorPrBudgetMaxClosesPerRun,
-  authorPrBudgetPromotion,
-  authorPrBudgetSignalBlockReason,
-  bulkFilerRepositoryPermission,
-  canonicalPullRequestCommentSyncBlock,
+  ...contextHydration,
   CLAWSWEEPER_BOT_AUTHORS,
-  cleanupSupersededReviewPlaceholderComments,
-  closeItem,
+  ...reviewCommentWorkflow,
   closeReasonApplyAgeSkipReason,
   closeReasonEnabled,
   closeReasonFilterText,
   closeReasonsArg,
-  closingPullRequestsForIssue,
   collectItemContext,
-  commentBody,
-  commentBodyMatches,
-  commentId,
-  commentUpdatedAt,
-  completeStaleCanonicalCommentSyncReport,
-  contextHasNonAutomationActivityAfter,
-  coverageProofRetryExhaustedRuntimeBudget,
-  coveringPrCloseCoveragePullRequestUpdatedAt,
-  decisionPacketsDirFromArgs,
-  defaultClosedDir,
-  defaultItemsDir,
-  defaultPlansDir,
-  deleteOwnedDedicatedReviewStartLease,
-  duplicateCanonicalPullRequestBlockReason,
-  ensureCloseAppliedComment,
+  ...repositoryPaths,
   ensureDir,
-  ensureIdeaArchiveLabel,
-  ensureRuntimeDelayFits,
-  exactEventReviewLeaseDisposition,
-  fetchIssueReviewComments,
+  ...gitHubRuntime,
   fetchItem,
   fetchReviewedPrActivityCursor,
-  finishApplyMutationAttempt,
-  freshPullRequestReviewHead,
-  frontMatterBoolean,
-  frontMatterStringArray,
-  frontMatterValue,
   ghJson,
-  GitHubRuntimeBudgetError,
   guardedOpenApplyProofFields,
-  hasAutoCloseAllowedMetadata,
-  hasNormalizedLabel,
-  hasVerifiedLocalCheckoutAccess,
-  impactLabelsFromReport,
-  isApplyCloseCandidateReport,
+  ...reportParser,
   isBulkFilerExemptAuthorAssociation,
-  isExactEventSourceRevisionChange,
-  isGoodFirstIssue,
-  isLiveRecheckCloseGuardReport,
+  ...sourceRevisionTools,
   isMaintainerAuthorAssociation,
-  isPairBlockedCloseReport,
-  isRetryableCloseSkipReport,
-  isRetryableKeptOpenCloseReport,
-  isRetryablePrCloseCoverageProofReport,
-  issueAdvisoryLabelStateFromReport,
-  issueRecentHumanCommentBlockReasonSafe,
-  issueReviewComment,
-  issueReviewCommentState,
   isVerifiedFixedCloseReason,
-  itemSnapshotHash,
-  liveIssueSourceRevision,
-  livePullRequestHasNoDiff,
-  lockedConversationApplyReason,
   login,
-  lowSignalUnmergeablePrApplyBlockReasonSafe,
-  markdownRepository,
-  markedReviewCommentBody,
-  maturityLabelsFromReport,
-  mergeRiskLabelsFromReport,
   mutationErrorMessage,
   normalizeAuthorAssociation,
   normalizeLabelName,
   numberForMarkdownFile,
-  obsoleteFixPrApplyBlockReasonSafe,
-  openClosingPullRequestApplyReason,
-  orderedApplyItemNumbers,
-  pairCloseKey,
-  PATCHABLE_REVIEW_COMMENT_AUTHORS,
-  postReviewStartStatusComment,
   PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH,
-  prAutoCloseExemptDecisionReason,
-  prCloseCoverageProofGateResult,
   prCloseCoverageProofPromptTemplate,
   prStatusLabelKindFromReport,
-  pullHeadShaFromContext,
-  pullRequestClosePromotion,
-  recordApplyActionEvents,
-  recordApplyActionLedgerItemResults,
-  recordApplyMutationBoundary,
-  recordedLabelSyncCoversUpdate,
-  removeCurrentCursorTraceItem,
-  renderReviewCommentFromReport,
-  replaceFrontMatterValue,
-  replaceSectionValue,
   repoFromArgs,
-  reportCloseReason,
-  reportDecision,
   reportEntriesForDir,
-  reportFeatureShowcase,
-  reportItemKind,
-  reportOverallCorrectness,
-  reportPrRating,
-  reportRealBehaviorProof,
-  reportSecurityReview,
-  reportTelegramVisibleProof,
-  reviewCommentBodyDigest,
-  reviewCommentHasCloseVerdictForCanonical,
-  reviewCommentHashMatches,
-  reviewLeaseRevisionFromReport,
-  reviewReportCanPromoteToClose,
-  reviewSectionValue,
-  reviewStartLeaseOwner,
   ROOT,
-  runtimeBudgetExceeded,
-  sameAuthorCounterpartApplyReason,
   sha256,
-  shouldPreserveReviewStartLease,
-  shouldProbeClosedStateReport,
-  shouldSyncReviewComment,
-  sleepMs,
-  staleCanonicalCommentSyncPendingReason,
-  staleCanonicalPullRequestNumber,
-  stalePullRequestReviewComment,
-  stalePullRequestReviewHead,
-  staleReviewCommentSyncReason,
-  staleVersionBugApplyBlockReasonSafe,
-  stalledUnprovenPrApplyBlockReasonSafe,
-  startApplyActionLedger,
-  startApplyActionLedgerItem,
-  startApplyMutationAttempt,
   stringOrUndefined,
-  syncBulkFilerLabel,
-  syncFeatureShowcaseLabel,
-  syncImpactLabels,
-  syncIssueAdvisoryLabels,
-  syncMaturityLabels,
-  syncMergeRiskLabels,
-  syncPriorityLabel,
-  syncPrRatingLabel,
-  syncPrStatusLabel,
-  syncRealBehaviorProofMediaLabels,
-  syncRealBehaviorProofSufficientLabel,
-  syncStalePullRequestReviewLabels,
-  syncTelegramVisibleProofLabel,
-  syncWorkPlanFromReport,
   targetRepo,
   get throttleHeartbeatContext() {
-    return throttleHeartbeatContext;
+    return githubExecution.throttleHeartbeatContext;
   },
   set throttleHeartbeatContext(value: (() => string) | null) {
-    throttleHeartbeatContext = value;
+    githubExecution.throttleHeartbeatContext = value;
   },
-  timeoutWithinRuntimeBudget,
   timestampMs,
-  triagePriorityFromReport,
-  unconfirmedProductDirectionApplyBlockReasonSafe,
-  unconfirmedProductDirectionCloseEnabled,
-  unsponsoredFeatureApplyBlockReasonSafe,
-  unsponsoredFeatureCloseEnabled,
-  updateReviewCommentMetadata,
-  upgradeNoDiffPullRequestReport,
-  upgradePullRequestClosePromotionReport,
-  upsertReviewComment,
   validateCloseDecision,
 });
 
@@ -2377,68 +1383,30 @@ function repoRelativePath(path: string): string {
 }
 
 const dashboardAudit = createDashboardAudit({
-  addDashboardCadenceBucket,
+  ...reviewPlanning,
   applyBlockingProtectedLabels,
   applyHealthStatusArg,
-  auditStatePath,
-  capDashboardCadenceBucket,
-  currentWorkflowStatusBlock,
-  dashboardMarkdownWithFailedReviewRetryState,
-  decisionPacketsDirFromArgs,
-  defaultClosedDir,
-  defaultFailedReviewRetryStateDir,
-  defaultItemsDir,
-  defaultPlansDir,
-  displayTitle,
-  effectiveReviewStatus,
-  emptyDashboardActivityStats,
-  emptyDashboardCadenceBucket,
-  emptyDashboardKindStats,
+  ...sweepStatus,
+  ...statusContext,
+  ...repositoryPaths,
+  ...recordMetadata,
   ensureDir,
-  fetchItem,
-  fetchOpenItemCounts,
-  fetchOpenItemNumbers,
-  fetchOpenItems,
-  formatActivityRow,
-  formatCadenceBucket,
-  formatOperationActivityRow,
-  formatPercent,
-  formatStatusNumber,
-  formatTimestamp,
-  frontMatterStringArray,
-  frontMatterValue,
   ghJson,
-  isCurrentForCadence,
-  isFresh,
   isMaintainerAuthored,
-  isMarkdownForActiveRepo,
   isProtectedItem,
-  itemUrlFor,
-  latestTimestamp,
+  ...repositoryLinks,
   markdownFiles,
-  markdownLink,
-  markdownRepository,
   numberForMarkdownFile,
-  profileAuditEnd,
-  profileAuditStart,
-  recordDashboardActivity,
-  replaceFrontMatterValue,
   repoFromArgs,
   repoRelativePath,
   reportEntriesForDir,
-  reportFileUrl,
-  repoUrlFor,
   ROOT,
   shouldPlanItem,
-  sweepStatusRelativePath,
   syncWorkPlanFromReport,
   targetProfile,
   targetRepo,
-  timestampMs,
   withTargetProfile,
-  workflowStatusSummary,
   workPlanPathForReport,
-  writeSweepStatus,
 });
 export const {
   auditFromSnapshot,

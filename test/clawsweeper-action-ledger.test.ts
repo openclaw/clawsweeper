@@ -520,6 +520,7 @@ test("apply receipts start per item and persist mutation observation before fina
   const source = [
     readText("src/clawsweeper-apply-decision-workflow.ts"),
     readText("src/clawsweeper-runtime.ts"),
+    readText("src/clawsweeper-github-execution.ts"),
     readText("src/clawsweeper-apply-ledger.ts"),
   ].join("\n");
   const applyLoop = source.slice(
@@ -626,8 +627,13 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
   const source = [
     readText("src/clawsweeper-runtime.ts"),
     readText("src/clawsweeper-review-comments-workflow.ts"),
+    readText("src/clawsweeper-review-comment-leases.ts"),
   ].join("\n");
-  const labelSource = readText("src/clawsweeper-label-sync.ts");
+  const labelSource = [
+    readText("src/clawsweeper-label-sync.ts"),
+    readText("src/clawsweeper-label-mutations.ts"),
+    readText("src/clawsweeper-label-operations.ts"),
+  ].join("\n");
   const labelCreates = labelSource.match(/identity: `label_create:/g) ?? [];
   const labelNoMutationClassifiers =
     labelSource.match(/knownNoMutation: labelAlreadyExistsError/g) ?? [];
@@ -788,7 +794,7 @@ test("retry and review publication lanes finalize unexpected failures", () => {
     /syncPriorityLabel\(\{[\s\S]{0,220}onMutation/,
   );
   assert.match(
-    readText("src/clawsweeper-label-sync.ts"),
+    readText("src/clawsweeper-label-operations.ts"),
     /tryAddOptionalLabel\(\{[\s\S]{0,220}onMutation: options\.onMutation/,
   );
 });

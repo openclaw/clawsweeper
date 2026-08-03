@@ -1959,7 +1959,7 @@ test("coverage proof timeout cannot exceed the remaining apply runtime", () => {
 });
 
 test("coverage proof refreshes its timeout after linked PR hydration", () => {
-  const source = readText("src/clawsweeper-report-orchestration.ts");
+  const source = readText("src/clawsweeper-coverage-proof.ts");
   const gateStart = source.indexOf("function prCloseCoverageProofGateResult");
   const gateEnd = source.indexOf("function renderPrCloseCoverageProofReportSection", gateStart);
   const gate = source.slice(gateStart, gateEnd);

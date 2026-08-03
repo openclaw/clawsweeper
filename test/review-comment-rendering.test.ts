@@ -109,6 +109,7 @@ test("comment matcher recognizes old and new Codex review comments", () => {
 test("structural cache probes before hydration but acquires a lease before carrying a hit", () => {
   const source = [
     readFileSync("src/clawsweeper-review-command-workflow.ts", "utf8"),
+    readFileSync("src/clawsweeper-review-preparation.ts", "utf8"),
     readFileSync("src/clawsweeper-runtime.ts", "utf8"),
     readFileSync("src/clawsweeper-item-context.ts", "utf8"),
   ].join("\n");
@@ -201,6 +202,7 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
   const source = [
     readFileSync("src/clawsweeper-review-command-workflow.ts", "utf8"),
     readFileSync("src/clawsweeper-report-rendering.ts", "utf8"),
+    readFileSync("src/clawsweeper-report-document.ts", "utf8"),
     readFileSync("src/clawsweeper-context-hydration.ts", "utf8"),
   ].join("\n");
   const reviewLoop = source.slice(
@@ -305,6 +307,7 @@ test("spoofed durable markers cannot suppress a bot-owned start lease", () => {
 
   const source = [
     readFileSync("src/clawsweeper-review-comments-workflow.ts", "utf8"),
+    readFileSync("src/clawsweeper-review-comment-leases.ts", "utf8"),
     readFileSync("src/clawsweeper-runtime.ts", "utf8"),
   ].join("\n");
   const functionStart = source.indexOf("function postReviewStartStatusComment");
@@ -1354,6 +1357,7 @@ test("superseded review placeholder sweep never selects the durable review comme
 test("publishing the durable review comment sweeps superseded placeholders", () => {
   const source = [
     readFileSync("src/clawsweeper-review-comments-workflow.ts", "utf8"),
+    readFileSync("src/clawsweeper-review-comment-leases.ts", "utf8"),
     readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8"),
   ].join("\n");
   const functionStart = source.indexOf("function postReviewStartStatusComment");

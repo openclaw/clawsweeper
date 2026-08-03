@@ -1,56 +1,22 @@
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import type { ActionEvent } from "./action-ledger.js";
-import {
-  ACTION_EVENT_REASON_CODES,
-  ACTION_EVENT_STATUSES,
-  type ActionEventReasonCode,
-  type ActionEventStatus,
-} from "./action-ledger.js";
-import { boolArg, itemNumbersArg, numberArg, stringArg, type Args } from "./clawsweeper-args.js";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { ACTION_EVENT_REASON_CODES, ACTION_EVENT_STATUSES } from "./action-ledger.js";
+import type { Args } from "./clawsweeper-args.js";
 import { mediaProofRuntimeHints, prepareMediaProofArtifacts } from "./clawsweeper-media-proof.js";
-import {
-  DEFAULT_CODEX_MODEL,
-  DEFAULT_REASONING_EFFORT,
-  DEFAULT_REVIEW_CODEX_TIMEOUT_MS,
-  DEFAULT_SERVICE_TIER,
-} from "./clawsweeper-policy.js";
 import type {
   AcquiredReviewStartLease,
-  Action,
   BulkFilerCountCache,
-  BulkFilerDetectionOptions,
-  BulkFilerDetectionResult,
   BulkFilerRepositoryPermissionCache,
   Decision,
-  ExactReviewQueueAuthority,
-  ExistingReview,
-  ExpectedIssueSourceRevisionOptions,
-  FileModeSnapshot,
-  GitInfo,
   Item,
   ItemContext,
-  MutationRunner,
   PreparedMediaProof,
   PreviousClawSweeperReview,
   ReviewActionLedger,
-  ReviewCheckout,
-  ReviewFinding,
-  ReviewGitInfoOptions,
-  ReviewPromptBuild,
-  ReviewPromptRuntimeHints,
-  ReviewRuntime,
-  ReviewStartStatusCommentResult,
 } from "./clawsweeper-types.js";
 import { PUBLIC_CODEX_MODEL } from "./codex-env.js";
 import { UserFacingCommandError } from "./command.js";
-import {
-  isolateGitHubConfigDir,
-  LOCAL_REVIEW_WEB_SEARCH_CONFIG,
-  localReviewAdditionalPrompt,
-  scrubGitHubCredentialEnv,
-} from "./commit-sweeper.js";
-import { type RepositoryProfile } from "./repository-profiles.js";
+import { LOCAL_REVIEW_WEB_SEARCH_CONFIG } from "./commit-sweeper.js";
 import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
 import {
   createReviewSemanticRecord,
@@ -59,7 +25,6 @@ import {
   reviewSemanticRevalidationDecision,
   type ReviewSemanticRecord,
 } from "./review-semantic-cache.js";
-import type { ReviewStructuralPullState } from "./review-structural-cache.js";
 import {
   reviewStructuralCacheDecision,
   reviewStructuralCacheProbeDecision,
@@ -71,304 +36,8 @@ import {
   type ReviewStructuralRecord,
 } from "./review-structural-cache.js";
 import { reviewContentCacheHit } from "./scheduler-policy.js";
-
-interface CreateReviewCommandWorkflowDependencies {
-  actionLedgerFailureDisposition: (error: unknown) => {
-    status: ActionEventStatus;
-    reasonCode: ActionEventReasonCode;
-    completionReason: string;
-  };
-  actionLedgerItemKey: (item: Pick<Item, "repo" | "number">) => string;
-  activeReviewMutationRunner: MutationRunner | null;
-  asRecord: (value: unknown) => Record<string, unknown>;
-  attachFixedPullRequest: (decision: Decision, item: Item, context: ItemContext) => Decision;
-  authorIssueCountInBulkFilerWindow: (author: string, windowStart: string) => number;
-  buildLocalRangeReview: (
-    targetDir: string,
-    repo: string,
-    baseRef: string,
-  ) => { item: Item; context: ItemContext; baseSha: string; headSha: string };
-  buildReviewPrompt: (
-    item: Item,
-    context: ItemContext,
-    git: GitInfo,
-    additionalPrompt?: string,
-    runtimeHints?: ReviewPromptRuntimeHints,
-  ) => ReviewPromptBuild;
-  bulkFilerPolicyInvalidatesCachedReview: (
-    markdown: string | null,
-    exemptionApplied: boolean,
-  ) => boolean;
-  bulkFilerRepositoryPermission: (
-    author: string,
-    cache: BulkFilerRepositoryPermissionCache,
-  ) => string | null;
-  codexFailureDecision: (
-    status: number | null,
-    detail: string,
-    stdout?: string,
-    stderr?: string,
-    processResult?: { errorCode?: string | null; signal?: NodeJS.Signals | null },
-  ) => Decision;
-  codexFailureLogKind: (markdown: string) => string;
-  CodexReviewError: new (options: {
-    message: string;
-    status: number | null;
-    stdout?: string;
-    stderr?: string;
-    errorCode?: string | null;
-    signal?: NodeJS.Signals | null;
-    retryable?: boolean;
-  }) => Error & {
-    readonly status: number | null;
-    readonly stdout: string;
-    readonly stderr: string;
-    readonly errorCode: string | null;
-    readonly signal: NodeJS.Signals | null;
-    readonly retryable: boolean;
-  };
-  codexReviewFailureRetryable: (error: unknown) => boolean;
-  collectItemContext: (
-    item: Item,
-    options?: {
-      fullTimelineForRelations?: boolean;
-      reviewCacheDigest?: boolean;
-      reviewCacheGitDir?: string;
-    },
-  ) => ItemContext;
-  commentId: (comment: Record<string, unknown> | undefined) => number | null;
-  completePullChecksContext: (value: unknown) => boolean;
-  DEFAULT_PLAN_BATCH_SIZE: 3;
-  defaultItemsDir: (profile?: RepositoryProfile) => string;
-  defaultLocalRangeArtifactDir: (targetDir: string) => string;
-  defaultReviewArtifactDir: (
-    localOnly: boolean,
-    itemNumber: number | undefined,
-    itemNumbers: number[] | undefined,
-  ) => string;
-  deleteOwnedDedicatedReviewStartLease: (
-    itemNumber: number,
-    lease: AcquiredReviewStartLease,
-    options?: { throwOnError?: boolean },
-  ) => boolean;
-  detectBulkFiler: (options: BulkFilerDetectionOptions) => BulkFilerDetectionResult;
-  displayDurationMs: (ms: number) => string;
-  displayPath: (path: string) => string;
-  enforceExpectedIssueSourceRevision: (options: ExpectedIssueSourceRevisionOptions) => void;
-  ensureDir: (path: string) => void;
-  exactLocalReviewNoCandidateError: (
-    itemNumber: number | undefined,
-    shardIndex: number,
-  ) => UserFacingCommandError;
-  existingReview: (item: Pick<Item, "number" | "repo">, itemsDir: string) => ExistingReview | null;
-  extractLatestClawSweeperReview: (
-    comments: readonly unknown[],
-    number: number,
-  ) => PreviousClawSweeperReview | null;
-  fetchIssueReviewComments: (number: number) => Record<string, unknown>[];
-  fetchReviewStructuralRecord: (options: {
-    item: Item;
-    git: GitInfo;
-    reviewPolicy: string;
-    reviewModel: string;
-  }) => ReviewStructuralRecord | null;
-  finishReviewActionLedger: (options: {
-    ledger: ReviewActionLedger;
-    error?: unknown;
-    activeItem?: Item | null;
-    completedCount: number;
-    cacheHits: number;
-  }) => void;
-  finishReviewActionLedgerItem: (options: {
-    ledger: ReviewActionLedger;
-    item: Item;
-    status: ActionEventStatus;
-    reasonCode: ActionEventReasonCode;
-    retryable: boolean;
-    cached: boolean;
-    startedAtMs: number;
-    sourceRevision?: string;
-    reportPath?: string;
-    findingCount?: number;
-    completionReason?: string;
-  }) => ActionEvent | null;
-  freshDedicatedReviewStartLeases: (options: {
-    comments: Record<string, unknown>[];
-    itemNumber: number;
-    headSha: string;
-    nowMs: number;
-  }) => Array<{
-    comment: Record<string, unknown>;
-    startedAt: string;
-    expiresAt: string;
-    owner: string | null;
-    commentId: number | null;
-  }>;
-  frontMatterValue: (markdown: string, key: string) => string | undefined;
-  gitInfo: (openclawDir: string, options?: ReviewGitInfoOptions) => GitInfo;
-  isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
-  isBulkFilerExemptRepositoryPermission: (value: unknown) => boolean;
-  issueReviewCommentState: (
-    number: number,
-    fallbackBodies?: readonly string[],
-  ) => {
-    comments: Record<string, unknown>[];
-    reviewComment: Record<string, unknown> | undefined;
-    leaseComment: Record<string, unknown> | undefined;
-    leaseComments: Record<string, unknown>[];
-    dedicatedLeaseComment: Record<string, unknown> | undefined;
-    dedicatedLeaseComments: Record<string, unknown>[];
-  };
-  isSuppliedReviewStartLease: (
-    supplied: Pick<AcquiredReviewStartLease, "owner" | "commentId"> | null,
-    lease: Pick<AcquiredReviewStartLease, "owner" | "commentId">,
-  ) => boolean;
-  itemContentDigest: (item: Item, context: ItemContext, git?: GitInfo) => string;
-  itemSnapshotHash: (item: Item, context: ItemContext) => string;
-  liveClawSweeperReviewDigest: (number: number) => string | null;
-  localExactReviewItem: (
-    localOnly: boolean,
-    itemNumber: number | undefined,
-    itemNumbers: number[] | undefined,
-  ) => itemNumber is number;
-  makeTreeReadOnly: (path: string, snapshots?: FileModeSnapshot[]) => FileModeSnapshot[];
-  markdownFor: (options: {
-    item: Item;
-    context: ItemContext;
-    decision: Decision;
-    git: GitInfo;
-    action: Action;
-    reviewMode: "propose" | "apply";
-    snapshotHash: string;
-    contentDigest: string;
-    reviewPolicy: string;
-    runtime: ReviewRuntime;
-    structuralRecord?: ReviewStructuralRecord | null;
-    semanticRecord?: ReviewSemanticRecord | null;
-    reviewLeaseOwner?: string;
-    reviewLeaseCommentId?: number;
-  }) => string;
-  postReviewStartStatusComment: (options: {
-    item: Item;
-    headSha?: string;
-    reviewTimeoutMs: number;
-    position: number;
-    total: number;
-    shardIndex: number;
-    shardCount: number;
-    purpose?: "review" | "apply";
-    queueAuthority?: ExactReviewQueueAuthority | null;
-    allowSupersededLeaseCleanup?: boolean;
-  }) => ReviewStartStatusCommentResult;
-  previousClawSweeperReviewDigestFromReport: (markdown: string) => string | null;
-  pullChecksContext: (number: number, headSha: string) => unknown;
-  pullHeadShaFromContext: (context: ItemContext) => string | null;
-  pullRequestHeadSha: (number: number) => string;
-  recordReviewLogPublication: (options: {
-    ledger: ReviewActionLedger;
-    item: Item;
-    codexWorkDir?: string;
-    cached: boolean;
-    missingStatus?: ActionEventStatus;
-    missingReasonCode?: ActionEventReasonCode;
-    retryable?: boolean;
-  }) => ActionEvent | null;
-  refreshRelatedItemsContext: (item: Item, context: ItemContext) => unknown[];
-  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
-  repoFromArgs: (args: Args) => RepositoryProfile;
-  reportFileName: (repo: string, number: number) => string;
-  reportReviewFindings: (markdown: string) => ReviewFinding[];
-  resolveReviewCheckout: (options: {
-    args: Args;
-    artifactDir: string;
-    humanLocalReview?: boolean;
-    itemNumber: number | undefined;
-    itemNumbers: number[] | undefined;
-    localRange?: boolean;
-    localOnly: boolean;
-    profile: RepositoryProfile;
-    verbose?: boolean;
-  }) => ReviewCheckout;
-  restoreTreeModes: (snapshots: readonly FileModeSnapshot[]) => void;
-  reviewActionForDecision: (options: {
-    item: Item;
-    decision: Decision;
-    git: GitInfo;
-    runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort">;
-  }) => Action;
-  reviewCodexForcedLoginMethod: (args: Args) => string;
-  reviewLeaseStillMatchesContext: (
-    itemKind: "issue" | "pull_request",
-    contextPullHeadSha: string | null,
-    leaseHeadSha: string,
-  ) => boolean;
-  reviewMutationRunner: (ledger: ReviewActionLedger, item: Item) => MutationRunner;
-  reviewPolicyHash: (options: {
-    model?: string;
-    reasoningEffort?: string;
-    sandboxMode?: string;
-    serviceTier?: string;
-  }) => string;
-  reviewStructuralPullStateFromContext: (context: ItemContext) => ReviewStructuralPullState | null;
-  runCodex: (options: {
-    item: Item;
-    context: ItemContext;
-    git: GitInfo;
-    model: string;
-    openclawDir: string;
-    reasoningEffort: string;
-    sandboxMode: string;
-    serviceTier: string;
-    forcedLoginMethod?: string;
-    preserveCodexAuth?: boolean;
-    timeoutMs: number;
-    workDir: string;
-    additionalPrompt?: string;
-    proofScratchDir?: string;
-    prompt?: string;
-    quietLogs?: boolean;
-    extraCodexConfig?: string[];
-  }) => Decision;
-  selectCandidates: (options: {
-    batchSize: number;
-    maxPages: number;
-    shardIndex: number;
-    shardCount: number;
-    itemsDir: string;
-    itemNumber?: number;
-    itemNumbers?: number[];
-    reviewPolicy?: string;
-    hotIntake?: boolean;
-    allowClosed?: boolean;
-  }) => { candidates: Item[]; scannedPages: number };
-  startReviewActionLedger: (options: {
-    candidates: readonly Item[];
-    reviewPolicy: string;
-    shardIndex: number;
-    shardCount: number;
-    batchSize: number;
-  }) => ReviewActionLedger;
-  startReviewActionLedgerItem: (ledger: ReviewActionLedger, item: Item) => ActionEvent | null;
-  stringOrUndefined: (value: unknown) => string | undefined;
-  suppliedReviewStartLeaseFromArgs: (
-    args: Args,
-  ) => Pick<AcquiredReviewStartLease, "owner" | "commentId"> | null;
-  targetRepo: () => string;
-  updateBulkFilerDetectedFrontMatter: (
-    markdown: string,
-    detection: BulkFilerDetectionResult,
-  ) => string;
-  updateReviewSemanticFrontMatter: (
-    markdown: string,
-    record: ReviewSemanticRecord | null,
-    cacheHit: boolean,
-  ) => string;
-  updateReviewStructuralFrontMatter: (
-    markdown: string,
-    record: ReviewStructuralRecord | null,
-    cacheHit: boolean,
-  ) => string;
-}
+import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
+import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
 
 export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWorkflowDependencies) {
   const {
@@ -377,7 +46,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     asRecord,
     attachFixedPullRequest,
     authorIssueCountInBulkFilerWindow,
-    buildLocalRangeReview,
     buildReviewPrompt,
     bulkFilerPolicyInvalidatesCachedReview,
     bulkFilerRepositoryPermission,
@@ -388,16 +56,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     collectItemContext,
     commentId,
     completePullChecksContext,
-    DEFAULT_PLAN_BATCH_SIZE,
-    defaultItemsDir,
-    defaultLocalRangeArtifactDir,
-    defaultReviewArtifactDir,
     deleteOwnedDedicatedReviewStartLease,
     detectBulkFiler,
     displayDurationMs,
     displayPath,
     enforceExpectedIssueSourceRevision,
-    ensureDir,
     exactLocalReviewNoCandidateError,
     existingReview,
     extractLatestClawSweeperReview,
@@ -407,7 +70,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     finishReviewActionLedgerItem,
     freshDedicatedReviewStartLeases,
     frontMatterValue,
-    gitInfo,
     isBulkFilerExemptAuthorAssociation,
     isBulkFilerExemptRepositoryPermission,
     issueReviewCommentState,
@@ -415,7 +77,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     itemContentDigest,
     itemSnapshotHash,
     liveClawSweeperReviewDigest,
-    localExactReviewItem,
     makeTreeReadOnly,
     markdownFor,
     postReviewStartStatusComment,
@@ -426,173 +87,58 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     recordReviewLogPublication,
     refreshRelatedItemsContext,
     replaceFrontMatterValue,
-    repoFromArgs,
     reportFileName,
     reportReviewFindings,
-    resolveReviewCheckout,
     restoreTreeModes,
     reviewActionForDecision,
-    reviewCodexForcedLoginMethod,
     reviewLeaseStillMatchesContext,
     reviewMutationRunner,
-    reviewPolicyHash,
     reviewStructuralPullStateFromContext,
     runCodex,
     selectCandidates,
     startReviewActionLedger,
     startReviewActionLedgerItem,
     stringOrUndefined,
-    suppliedReviewStartLeaseFromArgs,
-    targetRepo,
     updateBulkFilerDetectedFrontMatter,
     updateReviewSemanticFrontMatter,
     updateReviewStructuralFrontMatter,
   } = dependencies;
 
   function reviewCommand(args: Args): void {
-    const profile = repoFromArgs(args);
-    // `--local-range` is inherently a local, offline operation, so it implies `--local-only`
-    // (no GitHub writes, and the local Codex auth path in runCodex below).
-    const localRange = boolArg(args.local_range);
-    const localOnly = boolArg(args.local_only) || localRange;
-    const verbose = boolArg(args.verbose);
-    const itemNumber = numberArg(args.item_number, 0) || undefined;
-    const hasItemNumbersInput = typeof args.item_numbers === "string" && args.item_numbers.trim();
-    const itemNumbers = hasItemNumbersInput
-      ? itemNumbersArg(args.item_numbers, undefined)
-      : undefined;
-    // --local-range synthesizes the review item from the local git range and never fetches a GitHub
-    // item, so an item number is meaningless here and could otherwise route into a managed GitHub
-    // checkout — reject the combination outright rather than silently ignore it.
-    if (localRange && (itemNumber !== undefined || itemNumbers !== undefined)) {
-      throw new UserFacingCommandError(
-        "--item-number / --item-numbers cannot be combined with --local-range (local-range reviews " +
-          "the local git range and never fetches a GitHub item).",
-      );
-    }
-    const localExactItem = localExactReviewItem(localOnly, itemNumber, itemNumbers);
-    const humanLocalReview = localExactItem && !verbose;
-    // Every --local-range review is synthesized as item #0, so its item-numbered artifacts
-    // (0.md, codex/0.json, proof-scratch/0, logs) would collide across repeated/concurrent
-    // pre-PR runs under one default dir. Give each run a unique per-run dir (mirrors #298's
-    // run-<ts>-<pid> identity). An explicit --artifact-dir is still honored as-is.
-    const defaultArtifactDir = defaultReviewArtifactDir(localOnly, itemNumber, itemNumbers);
-    const requestedArtifactDir = stringArg(args.artifact_dir, "");
-    const checkoutArtifactDir = resolve(requestedArtifactDir || defaultArtifactDir);
-    if (humanLocalReview) {
-      console.error(`Local ClawSweeper review for ${targetRepo()}#${itemNumber}`);
-      console.error("");
-      console.error("Preparing target checkout");
-    }
-    const checkout = resolveReviewCheckout({
-      args,
-      artifactDir: checkoutArtifactDir,
-      humanLocalReview,
-      itemNumber,
-      itemNumbers,
+    const preparation = prepareReviewCommand(args, dependencies);
+    const {
       localRange,
       localOnly,
-      profile,
-      verbose,
-    });
-    const openclawDir = checkout.openclawDir;
-    const artifactDir = requestedArtifactDir
-      ? resolve(requestedArtifactDir)
-      : localRange
-        ? defaultLocalRangeArtifactDir(openclawDir)
-        : checkoutArtifactDir;
-    const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
-    const batchSize = numberArg(args.batch_size, DEFAULT_PLAN_BATCH_SIZE);
-    const maxPages = numberArg(args.max_pages, 250);
-    const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
-    const reasoningEffort = stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT);
-    const sandboxMode = stringArg(args.codex_sandbox, "read-only");
-    const serviceTier = stringArg(
-      args.codex_service_tier,
-      localOnly ? "fast" : DEFAULT_SERVICE_TIER,
-    );
-    const timeoutMs = numberArg(args.codex_timeout_ms, DEFAULT_REVIEW_CODEX_TIMEOUT_MS);
-    const expectedSourceRevision = stringArg(args.expected_source_revision, "").trim();
-    if (expectedSourceRevision && !/^[0-9a-f]{64}$/.test(expectedSourceRevision)) {
-      throw new UserFacingCommandError(
-        "--expected-source-revision must be a lowercase SHA-256 digest.",
-      );
-    }
-    let additionalPrompt = stringArg(
-      args.additional_prompt,
-      process.env.CLAWSWEEPER_ADDITIONAL_PROMPT ?? "",
-    );
-    // Local-review extensions (spirit of the standalone local-review lane, folded in):
-    // layer a repo-specific policy file, and/or substitute a hypothetical PR body (e.g.
-    // to test the real-behavior-proof / mantis decision, or to give engines that cannot
-    // fetch the live body — the gh-token-scrubbed ones — the body in the prompt).
-    const additionalPolicyFile = stringArg(args.additional_policy, "");
-    if (additionalPolicyFile) {
-      const policy = readFileSync(additionalPolicyFile, "utf8");
-      additionalPrompt = additionalPrompt
-        ? `${additionalPrompt}\n\n## Additional review policy (layered on the repo's own policy)\n${policy}`
-        : policy;
-    }
-    const allowClosed = boolArg(args.allow_closed);
-    const bodyFile = stringArg(args.body_file, "");
-    if (bodyFile) {
-      const providedBody = readFileSync(bodyFile, "utf8");
-      additionalPrompt = `${additionalPrompt}\n\n## AUTHORITATIVE PR BODY (review THIS exact body)\nTreat the text below as the pull request's current body/description and review it as such — assess its real-behavior proof, telegram-visible-proof, and mantis recommendation against it. Do NOT fetch, prefer, or assume any other version of the body from the GitHub API. The diff, code, and comments are still the live PR.\n\n----- BEGIN PROVIDED PR BODY -----\n${providedBody}\n----- END PROVIDED PR BODY -----`;
-    }
-    const localRangeData = localRange
-      ? buildLocalRangeReview(openclawDir, targetRepo(), stringArg(args.base, ""))
-      : undefined;
-    ensureDir(artifactDir);
-    const coordinationHeldPath = join(artifactDir, "coordination-held.json");
-    if (existsSync(coordinationHeldPath)) unlinkSync(coordinationHeldPath);
-    if (localRangeData) {
-      // Reuse #298's FULL offline envelope (not just token-scrub): withhold every GitHub
-      // credential AND point gh at an empty config dir — token deletion alone can't stop
-      // gh's own cached auth — and prepend the no-network local-review prompt.
-      scrubGitHubCredentialEnv();
-      isolateGitHubConfigDir(artifactDir);
-      additionalPrompt = [
-        localReviewAdditionalPrompt(
-          localRangeData.baseSha,
-          localRangeData.headSha,
-          stringArg(args.base, "") || "origin/main",
-        ),
-        additionalPrompt,
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-    }
-    const shardIndex = numberArg(args.shard_index, 0);
-    const shardCount = numberArg(args.shard_count, 1);
-    const hotIntake = boolArg(args.hot_intake);
-    const readonlyOpenclaw = boolArg(args.readonly_openclaw);
-    const skipStartComment = boolArg(args.skip_start_comment) || localOnly || localRange;
-    const suppliedReviewLease = suppliedReviewStartLeaseFromArgs(args);
-    if (suppliedReviewLease && !skipStartComment) {
-      throw new UserFacingCommandError(
-        "A supplied review lease requires --skip-start-comment to prevent a second lease from being created.",
-      );
-    }
-    if (suppliedReviewLease && localOnly) {
-      throw new UserFacingCommandError(
-        "A supplied review lease cannot be used with local-only review.",
-      );
-    }
-    const forcedLoginMethod = reviewCodexForcedLoginMethod(args);
-    const loadReviewGitInfo = (): GitInfo =>
-      checkout.gitTargetBranch
-        ? gitInfo(openclawDir, { targetBranch: checkout.gitTargetBranch })
-        : gitInfo(openclawDir);
-    let git: GitInfo = localRangeData
-      ? { mainSha: localRangeData.baseSha, releaseStateComplete: true, latestRelease: null }
-      : loadReviewGitInfo();
-    const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
-    // Planned background shards receive exact item numbers from the planner, but they are not
-    // user-requested exact reviews. Only the workflow may opt those batches into cache reuse.
-    const plannedAutomaticReview = boolArg(args.planned_automatic_review);
-    const explicitDispatch =
-      !plannedAutomaticReview && (itemNumber !== undefined || itemNumbers !== undefined);
-    const maintainerRequest = additionalPrompt.trim().length > 0;
+      itemNumber,
+      itemNumbers,
+      humanLocalReview,
+      openclawDir,
+      artifactDir,
+      itemsDir,
+      batchSize,
+      maxPages,
+      model,
+      reasoningEffort,
+      sandboxMode,
+      serviceTier,
+      timeoutMs,
+      expectedSourceRevision,
+      allowClosed,
+      localRangeData,
+      coordinationHeldPath,
+      shardIndex,
+      shardCount,
+      hotIntake,
+      readonlyOpenclaw,
+      skipStartComment,
+      suppliedReviewLease,
+      forcedLoginMethod,
+      loadReviewGitInfo,
+      reviewPolicy,
+      explicitDispatch,
+      maintainerRequest,
+    } = preparation;
+    let { additionalPrompt, git } = preparation;
     const readonlyModeSnapshots = readonlyOpenclaw ? makeTreeReadOnly(openclawDir) : [];
     const acquiredReviewLeases: Array<{ itemNumber: number; lease: AcquiredReviewStartLease }> = [];
     const releaseOwnedReviewLease = (

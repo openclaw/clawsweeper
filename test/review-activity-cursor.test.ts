@@ -111,6 +111,7 @@ test("review and apply paths persist and revalidate the cursor", () => {
   const source = [
     fs.readFileSync("src/clawsweeper-report-orchestration.ts", "utf8"),
     fs.readFileSync("src/clawsweeper-report-rendering.ts", "utf8"),
+    fs.readFileSync("src/clawsweeper-report-document.ts", "utf8"),
     fs.readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8"),
     fs.readFileSync("src/clawsweeper-apply-review-activity.ts", "utf8"),
   ].join("\n");

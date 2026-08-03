@@ -1,0 +1,639 @@
+import {
+  LEGACY_FIXED_CLOSE_SKIP_ACTIONS,
+  LIVE_RECHECK_CLOSE_GUARD_ACTIONS,
+} from "./apply-close-actions.js";
+import {
+  DEFAULT_REVIEW_CODEX_TIMEOUT_MS,
+  PAIR_BLOCKED_CLOSE_ACTIONS,
+  REVIEW_START_STATUS_MARKER_PREFIX,
+} from "./clawsweeper-policy.js";
+import type {
+  CloseReason,
+  Item,
+  ItemContext,
+  ReviewStartStatusCommentOptions,
+} from "./clawsweeper-types.js";
+import { normalizeRepo } from "./repository-profiles.js";
+import { trailingHtmlComments } from "./review-comment-markers.js";
+import { neutralizeReviewControlMarkers } from "./review-history.js";
+import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
+import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
+
+export function createReviewCommentState(
+  dependencies: ReviewCommentWorkflowDependencies & ReturnType<typeof createReviewCommentIdentity>,
+) {
+  const {
+    targetRepo,
+    ghPaged,
+    reviewCommentBodyDigest,
+    asRecord,
+    parseGitHubItemRef,
+    frontMatterValue,
+    timestampMs,
+    linkedPullRequestRefsFromText,
+    linkedPullRequestSignalContextsFromText,
+    reviewCommentMarker,
+    pullHeadShaFromContext,
+    pullHeadShaFromReport,
+    reviewLeaseRevisionFromReport,
+    markerAttributeValue,
+  } = dependencies;
+
+  function markedReviewCommentBody(number: number, body: string): string {
+    return body.includes(reviewCommentMarker(number))
+      ? body
+      : `${body.trimEnd()}\n\n${reviewCommentMarker(number)}`;
+  }
+
+  function reviewStartLeaseCommentMarker(number: number): string {
+    return `<!-- clawsweeper-review-lease item=${number} -->`;
+  }
+
+  function markedReviewStartLeaseCommentBody(number: number, body: string): string {
+    const marker = reviewStartLeaseCommentMarker(number);
+    return body.includes(marker) ? body : `${body.trimEnd()}\n\n${marker}`;
+  }
+
+  function reviewStartStatusCommentMarker(options: ReviewStartStatusCommentOptions): string {
+    const startedAt = options.startedAt ?? new Date().toISOString();
+    const startedAtMs = Date.parse(startedAt);
+    const leaseExpiresAt =
+      options.leaseExpiresAt ??
+      new Date(
+        (Number.isFinite(startedAtMs) ? startedAtMs : Date.now()) +
+          DEFAULT_REVIEW_CODEX_TIMEOUT_MS +
+          10 * 60 * 1000,
+      ).toISOString();
+    const attrs = [
+      `item=${markerAttributeValue(String(options.number))}`,
+      `sha=${markerAttributeValue(options.headSha ?? "na")}`,
+      `started_at=${markerAttributeValue(startedAt)}`,
+      `lease_expires_at=${markerAttributeValue(leaseExpiresAt)}`,
+      ...(options.leaseOwner ? [`owner=${markerAttributeValue(options.leaseOwner)}`] : []),
+      "v=1",
+    ].join(" ");
+    return `${REVIEW_START_STATUS_MARKER_PREFIX}:started ${attrs} -->`;
+  }
+
+  function withReviewStartStatusLease(
+    body: string,
+    options: ReviewStartStatusCommentOptions,
+  ): string {
+    return withReviewStartStatusLeaseIdentity(body, options, reviewCommentMarker(options.number));
+  }
+
+  function withReviewStartStatusLeaseIdentity(
+    body: string,
+    options: ReviewStartStatusCommentOptions,
+    reviewMarker: string,
+  ): string {
+    const reviewMarkerIndex = body.lastIndexOf(reviewMarker);
+    const hasTrailingReviewMarker =
+      reviewMarkerIndex >= 0 && !body.slice(reviewMarkerIndex + reviewMarker.length).trim();
+    const prefix = (hasTrailingReviewMarker ? body.slice(0, reviewMarkerIndex) : body)
+      .trimEnd()
+      .replace(/\n*<!--\s*clawsweeper-review-status:started\b[^>]*-->\s*$/i, "")
+      .trimEnd();
+    return [prefix, reviewStartStatusCommentMarker(options), reviewMarker]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  function shouldPreserveReviewStartLease(options: {
+    currentHeadSha: string;
+    reportHeadSha: string | undefined;
+    reportLeaseOwner: string | undefined;
+    reportLeaseCommentId: string | undefined;
+    leaseOwner: string | null;
+    leaseCommentId: number | null;
+  }): boolean {
+    const currentHeadSha = options.currentHeadSha.trim().toLowerCase();
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(currentHeadSha)) return true;
+    const reportHeadSha = options.reportHeadSha?.trim().toLowerCase();
+    if (reportHeadSha !== currentHeadSha) return true;
+    const reportLeaseOwner = options.reportLeaseOwner?.trim();
+    if (!options.leaseOwner || !reportLeaseOwner || reportLeaseOwner !== options.leaseOwner) {
+      return true;
+    }
+    if (options.leaseCommentId === null) return true;
+    const reportLeaseCommentId = Number(options.reportLeaseCommentId);
+    return (
+      !Number.isInteger(reportLeaseCommentId) || reportLeaseCommentId !== options.leaseCommentId
+    );
+  }
+
+  function renderReviewStartStatusComment(options: ReviewStartStatusCommentOptions): string {
+    const purpose = options.purpose ?? "review";
+    const subject = options.kind === "pull_request" ? "pull request" : "issue";
+    const progress =
+      Number.isInteger(options.position) && Number.isInteger(options.total)
+        ? ` This is item ${options.position}/${options.total} in the current shard.`
+        : "";
+    const shard =
+      Number.isInteger(options.shardIndex) && Number.isInteger(options.shardCount)
+        ? ` Shard ${options.shardIndex}/${options.shardCount}.`
+        : "";
+    const title = neutralizeReviewControlMarkers(options.title.trim());
+    const heading =
+      purpose === "apply"
+        ? title
+          ? `I am applying the reviewed decision for this ${subject}: ${title}`
+          : `I am applying the reviewed decision for this ${subject}.`
+        : title
+          ? `I am starting a fresh review of this ${subject}: ${title}`
+          : `I am starting a fresh review of this ${subject}.`;
+    const body = [
+      purpose === "apply"
+        ? "ClawSweeper status: applying reviewed decision."
+        : "ClawSweeper status: review started.",
+      "",
+      `${heading}${progress}${shard}`,
+      "",
+      purpose === "apply"
+        ? "This transient lease prevents a newer review from overlapping label, comment, or close mutations."
+        : "This placeholder means the worker is alive and reading the current context. I will edit this same comment with the actual review when the claws are done clicking.",
+      "",
+      "Crustacean status: shell secured, claws on keyboard, evidence pebbles being sorted.",
+      "",
+      reviewStartStatusCommentMarker(options),
+    ].join("\n");
+    return markedReviewStartLeaseCommentBody(options.number, body);
+  }
+
+  function isCodexReviewCommentBody(body: string): boolean {
+    return (
+      body.includes("Codex review:") ||
+      body.includes("Codex review notes:") ||
+      body.includes("Codex Review notes:") ||
+      body.includes("Codex automated review:") ||
+      body.includes("after Codex review.") ||
+      body.includes("after Codex automated review.")
+    );
+  }
+
+  function fetchIssueReviewComments(number: number): Record<string, unknown>[] {
+    return ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`).map(asRecord);
+  }
+
+  function selectIssueReviewComment(
+    number: number,
+    comments: Record<string, unknown>[],
+    fallbackBodies: readonly string[] = [],
+  ): Record<string, unknown> | undefined {
+    const marker = reviewCommentMarker(number);
+    const markedComments = comments.filter((candidate) => {
+      const body = candidate.body;
+      return typeof body === "string" && body.includes(marker);
+    });
+    const patchableMarked = markedComments.find(canPatchReviewComment);
+    if (patchableMarked) return patchableMarked;
+    const marked = markedComments[0];
+    if (marked) return marked;
+    const exactBodies = new Set(fallbackBodies.map((body) => body.trim()).filter(Boolean));
+    const exactComments = comments.filter((candidate) => {
+      const body = candidate.body;
+      return typeof body === "string" && exactBodies.has(body.trim());
+    });
+    const patchableExact = exactComments.find(canPatchReviewComment);
+    if (patchableExact) return patchableExact;
+    const exact = exactComments[0];
+    if (exact) return exact;
+    const codexComments = comments.filter((candidate) => {
+      const body = candidate.body;
+      return typeof body === "string" && isCodexReviewCommentBody(body);
+    });
+    return codexComments.find(canPatchReviewComment) ?? codexComments[0];
+  }
+
+  function selectDedicatedReviewStartLeaseComment(
+    number: number,
+    comments: Record<string, unknown>[],
+  ): Record<string, unknown> | undefined {
+    return selectDedicatedReviewStartLeaseComments(number, comments)[0];
+  }
+
+  function selectDedicatedReviewStartLeaseComments(
+    number: number,
+    comments: Record<string, unknown>[],
+  ): Record<string, unknown>[] {
+    const marker = reviewStartLeaseCommentMarker(number);
+    return comments.filter(
+      (candidate) => canPatchReviewComment(candidate) && commentBody(candidate)?.includes(marker),
+    );
+  }
+
+  function issueReviewCommentState(
+    number: number,
+    fallbackBodies: readonly string[] = [],
+  ): {
+    comments: Record<string, unknown>[];
+    reviewComment: Record<string, unknown> | undefined;
+    leaseComment: Record<string, unknown> | undefined;
+    leaseComments: Record<string, unknown>[];
+    dedicatedLeaseComment: Record<string, unknown> | undefined;
+    dedicatedLeaseComments: Record<string, unknown>[];
+  } {
+    const comments = fetchIssueReviewComments(number);
+    const reviewComment = selectIssueReviewComment(number, comments, fallbackBodies);
+    const dedicatedLeaseComments = selectDedicatedReviewStartLeaseComments(number, comments);
+    const dedicatedLeaseComment = selectDedicatedReviewStartLeaseComment(number, comments);
+    const legacyLeaseComment = commentBody(reviewComment)?.includes(
+      "clawsweeper-review-status:started",
+    )
+      ? reviewComment
+      : undefined;
+    const leaseComments = [
+      ...dedicatedLeaseComments,
+      ...(legacyLeaseComment && !dedicatedLeaseComments.includes(legacyLeaseComment)
+        ? [legacyLeaseComment]
+        : []),
+    ];
+    return {
+      comments,
+      reviewComment,
+      leaseComment: leaseComments[0],
+      leaseComments,
+      dedicatedLeaseComment,
+      dedicatedLeaseComments,
+    };
+  }
+
+  function issueReviewComment(
+    number: number,
+    fallbackBodies: readonly string[] = [],
+  ): Record<string, unknown> | undefined {
+    return issueReviewCommentState(number, fallbackBodies).reviewComment;
+  }
+
+  function issueReviewCommentWithBody(
+    number: number,
+    body: string,
+  ): Record<string, unknown> | undefined {
+    const expected = body.trim();
+    if (!expected) return undefined;
+    const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`).map(
+      asRecord,
+    );
+    const exactComments = comments.filter(
+      (candidate) => commentBody(candidate)?.trim() === expected,
+    );
+    return exactComments.find(canPatchReviewComment) ?? exactComments[0];
+  }
+
+  function commentUpdatedAt(comment: Record<string, unknown> | undefined): string | undefined {
+    const updatedAt = comment?.updated_at;
+    if (typeof updatedAt === "string") return updatedAt;
+    const createdAt = comment?.created_at;
+    return typeof createdAt === "string" ? createdAt : undefined;
+  }
+
+  function commentId(comment: Record<string, unknown> | undefined): number | null {
+    const id = comment?.id;
+    return typeof id === "number" && Number.isInteger(id) ? id : null;
+  }
+
+  function commentUrl(comment: Record<string, unknown> | undefined): string | null {
+    const url = comment?.html_url;
+    return typeof url === "string" ? url : null;
+  }
+
+  function commentBody(comment: Record<string, unknown> | undefined): string | undefined {
+    const body = comment?.body;
+    return typeof body === "string" ? body : undefined;
+  }
+
+  function newestReviewMarkerAttribute(
+    comment: Record<string, unknown> | undefined,
+    number: number,
+    attribute: "reviewed_at" | "sha",
+  ): string | undefined {
+    if (!canPatchReviewComment(comment)) return undefined;
+    const body = commentBody(comment);
+    if (!body) return undefined;
+    const reviewMarker = reviewCommentMarker(number);
+    const reviewMarkerIndex = body.lastIndexOf(reviewMarker);
+    if (reviewMarkerIndex < 0) return undefined;
+    if (body.slice(reviewMarkerIndex + reviewMarker.length).trim() !== "") return undefined;
+    const markerComments = trailingHtmlComments(body.slice(0, reviewMarkerIndex));
+    const markerPattern = /^<!--\s+clawsweeper-verdict:[^\s>]+\b([^>]*)-->$/;
+    let lastValue: string | undefined;
+    for (const markerComment of markerComments) {
+      const match = markerComment.match(markerPattern);
+      if (!match) continue;
+      const attributes = match[1] ?? "";
+      if (!new RegExp(`\\bitem=${number}\\b`).test(attributes)) continue;
+      const value = attributes.match(new RegExp(`\\b${attribute}=([^\\s>]+)`))?.[1];
+      if (!value || value === "unknown") continue;
+      lastValue = value;
+    }
+    return lastValue;
+  }
+
+  function durableReviewVersion(
+    comment: Record<string, unknown> | undefined,
+    number: number,
+  ): {
+    reviewedAt: string;
+    headSha: string | null;
+    sourceRevision: string | null;
+    leaseOwner: string | null;
+    leaseCommentId: string | null;
+  } | null {
+    if (!canPatchReviewComment(comment)) return null;
+    const body = commentBody(comment);
+    if (!body) return null;
+    const identity = reviewCommentMarker(number);
+    const identityIndex = body.lastIndexOf(identity);
+    if (identityIndex < 0 || body.slice(identityIndex + identity.length).trim()) return null;
+    for (const markerComment of trailingHtmlComments(body.slice(0, identityIndex)).reverse()) {
+      const match = markerComment.match(/^<!--\s+clawsweeper-review-version\b([^>]*)-->$/);
+      if (!match) continue;
+      const attributes = match[1] ?? "";
+      const attribute = (name: string) =>
+        attributes.match(new RegExp(`\\b${name}=([^\\s>]+)`))?.[1] ?? null;
+      if (Number(attribute("item")) !== number || attribute("v") !== "1") continue;
+      const reviewedAt = attribute("reviewed_at");
+      if (!reviewedAt || timestampMs(reviewedAt) === null) continue;
+      const headSha = attribute("sha");
+      const sourceRevision = attribute("source_revision");
+      return {
+        reviewedAt,
+        headSha: headSha && headSha !== "na" && headSha !== "unknown" ? headSha : null,
+        sourceRevision: sourceRevision && sourceRevision !== "unknown" ? sourceRevision : null,
+        leaseOwner: attribute("lease_owner"),
+        leaseCommentId: attribute("lease_comment_id"),
+      };
+    }
+    return null;
+  }
+
+  function reviewCommentHasCloseVerdictForCanonical(
+    comment: Record<string, unknown> | undefined,
+    number: number,
+    reason: CloseReason,
+    canonicalNumber: number,
+  ): boolean {
+    if (!canPatchReviewComment(comment)) return false;
+    const body = commentBody(comment);
+    if (!body) return false;
+    const reviewMarker = reviewCommentMarker(number);
+    const reviewMarkerIndex = body.lastIndexOf(reviewMarker);
+    if (reviewMarkerIndex < 0) return false;
+    if (body.slice(reviewMarkerIndex + reviewMarker.length).trim() !== "") return false;
+    const markerComments = trailingHtmlComments(body.slice(0, reviewMarkerIndex));
+    const verdictPattern = /^<!--\s+clawsweeper-verdict:([^\s>]+)\b([^>]*)-->$/;
+    let latestVerdict: { verdict: string; reason: string | undefined } | undefined;
+    for (const markerComment of markerComments) {
+      const match = markerComment.match(verdictPattern);
+      if (!match) continue;
+      const attributes = match[2] ?? "";
+      if (!new RegExp(`\\bitem=${number}\\b`).test(attributes)) continue;
+      latestVerdict = {
+        verdict: match[1] ?? "",
+        reason: attributes.match(/\breason=([^\s>]+)/)?.[1],
+      };
+    }
+    const supersessionSignal =
+      /\b(supersed(?:e|ed|es|ing)|replace(?:s|d|ment)?|duplicate|duplicated|canonical|covered by|landed in)\b/i;
+    const signaledRefs = linkedPullRequestRefsFromText(body, number).filter((ref) =>
+      linkedPullRequestSignalContextsFromText(body, number, ref.number).some((context) =>
+        supersessionSignal.test(context),
+      ),
+    );
+    const explicitCanonicalRefs = [...body.matchAll(/^Canonical:\s+(\S+)\s*$/gm)];
+    let commentCanonicalNumber: number | undefined;
+    if (explicitCanonicalRefs.length > 0) {
+      const canonicalNumbers = new Set<number>();
+      for (const match of explicitCanonicalRefs) {
+        try {
+          const parsed = parseGitHubItemRef(
+            match[1] ?? "",
+            "durable review comment root-cause canonical",
+          );
+          // The explicit public canonical is authoritative; never reinterpret a member PR as it.
+          if (parsed.kind !== "pull_request") return false;
+          if (normalizeRepo(parsed.repo) !== normalizeRepo(targetRepo())) return false;
+          canonicalNumbers.add(parsed.number);
+        } catch {
+          return false;
+        }
+      }
+      if (canonicalNumbers.size !== 1) return false;
+      commentCanonicalNumber = [...canonicalNumbers][0];
+    }
+    if (explicitCanonicalRefs.length === 0) {
+      const signaledCanonicalNumbers = new Set(signaledRefs.map((ref) => ref.number));
+      if (signaledCanonicalNumbers.size !== 1) return false;
+      commentCanonicalNumber = [...signaledCanonicalNumbers][0];
+    }
+    return (
+      latestVerdict?.verdict === "close" &&
+      latestVerdict.reason === reason &&
+      commentCanonicalNumber === canonicalNumber
+    );
+  }
+
+  function staleReviewCommentSyncReason(
+    markdown: string,
+    existingReviewComment: Record<string, unknown> | undefined,
+    number: number,
+    context?: ItemContext,
+  ): string | null {
+    // Comment updated_at can move for command/status edits; only review markers prove verdict freshness.
+    const liveVersion = durableReviewVersion(existingReviewComment, number);
+    const itemKind = frontMatterValue(markdown, "type");
+    const liveReviewedAt =
+      liveVersion?.reviewedAt ??
+      (itemKind === "pull_request"
+        ? newestReviewMarkerAttribute(existingReviewComment, number, "reviewed_at")
+        : undefined);
+    const liveReviewedSha =
+      liveVersion?.headSha ??
+      (itemKind === "pull_request"
+        ? newestReviewMarkerAttribute(existingReviewComment, number, "sha")
+        : undefined);
+    const reportReviewedAt = frontMatterValue(markdown, "reviewed_at");
+    const liveReviewedAtMs = timestampMs(liveReviewedAt);
+    const reportReviewedAtMs = timestampMs(reportReviewedAt);
+    if (liveReviewedAtMs === null) return null;
+    const reportLeaseOwner = frontMatterValue(markdown, "review_lease_owner");
+    const reportLeaseCommentId = frontMatterValue(markdown, "review_lease_comment_id");
+    if (
+      liveVersion?.leaseOwner &&
+      liveVersion.leaseOwner !== "unknown" &&
+      liveVersion.leaseOwner === reportLeaseOwner &&
+      liveVersion.leaseCommentId === reportLeaseCommentId
+    ) {
+      return null;
+    }
+    const liveLeaseCommentId = Number(liveVersion?.leaseCommentId);
+    const reportLeaseCommentIdNumber = Number(reportLeaseCommentId);
+    const reportRevision = reviewLeaseRevisionFromReport(markdown);
+    const liveRevision =
+      itemKind === "pull_request" ? liveVersion?.headSha : liveVersion?.sourceRevision;
+    if (
+      liveRevision &&
+      reportRevision &&
+      liveRevision === reportRevision &&
+      Number.isInteger(liveLeaseCommentId) &&
+      liveLeaseCommentId > 0
+    ) {
+      if (!Number.isInteger(reportLeaseCommentIdNumber) || reportLeaseCommentIdNumber <= 0) {
+        return `live durable review tuple has lease comment ${liveLeaseCommentId}, but the local report has no durable lease identity`;
+      }
+      if (liveLeaseCommentId >= reportLeaseCommentIdNumber) {
+        return `live durable review tuple is newer than the local report: comment lease=${liveLeaseCommentId}, report lease=${reportLeaseCommentIdNumber}`;
+      }
+      // GitHub comment ids are monotonic. A report from a later lease may replace an older durable
+      // marker even when worker clocks make reviewed_at ordering ambiguous.
+      return null;
+    }
+    if (itemKind !== "pull_request") {
+      if (reportReviewedAtMs !== null && liveReviewedAtMs > reportReviewedAtMs) {
+        return `live durable review comment is newer than the local report: comment reviewed_at=${liveReviewedAt}, report reviewed_at=${reportReviewedAt}`;
+      }
+      const liveCommentUpdatedAtMs = timestampMs(commentUpdatedAt(existingReviewComment));
+      if (
+        reportReviewedAtMs !== null &&
+        liveCommentUpdatedAtMs !== null &&
+        liveCommentUpdatedAtMs > reportReviewedAtMs &&
+        liveReviewedAt !== reportReviewedAt
+      ) {
+        return `live durable review comment was published after the local report: comment updated_at=${commentUpdatedAt(existingReviewComment)}, report reviewed_at=${reportReviewedAt}`;
+      }
+      return null;
+    }
+    const currentHeadSha = context ? pullHeadShaFromContext(context) : null;
+    const reportHeadSha = pullHeadShaFromReport(markdown);
+    if (!liveReviewedSha || !currentHeadSha) return null;
+    // Trust a newer comment when it matches the live head, or when the live API still reports the
+    // report's head and may be lagging the comment. Otherwise the newer comment is stale too.
+    if (liveReviewedSha !== currentHeadSha && currentHeadSha !== reportHeadSha) return null;
+    if (
+      liveReviewedSha === currentHeadSha &&
+      (!reportHeadSha || reportHeadSha !== liveReviewedSha || reportReviewedAtMs === null)
+    ) {
+      return `live durable review comment is newer than the local report: comment reviewed_at=${liveReviewedAt}, report reviewed_at=${reportReviewedAt ?? "missing"}; comment head=${liveReviewedSha}, report head=${reportHeadSha ?? "missing"}`;
+    }
+    if (reportReviewedAtMs === null) return null;
+    if (liveReviewedAtMs <= reportReviewedAtMs) return null;
+    return `live durable review comment is newer than the local report: comment reviewed_at=${liveReviewedAt}, report reviewed_at=${reportReviewedAt}`;
+  }
+
+  const APPLY_SYNC_EQUIVALENT_CLOSE_MARKER_ACTIONS = new Set([
+    "proposed_close",
+    "kept_open",
+    "skipped_pr_close_coverage_proof",
+    "retry_pr_close_coverage_proof",
+    ...LEGACY_FIXED_CLOSE_SKIP_ACTIONS,
+    ...LIVE_RECHECK_CLOSE_GUARD_ACTIONS,
+    ...PAIR_BLOCKED_CLOSE_ACTIONS,
+  ]);
+
+  function normalizeApplySyncCloseMarkerAction(body: string): string {
+    return body.replace(
+      /(<!-- clawsweeper-(?:verdict:close|action:close-required)\b[^>]*\s)action_taken=([^\s>]+)(?=\s|-->)/g,
+      (match, prefix: string, action: string) =>
+        APPLY_SYNC_EQUIVALENT_CLOSE_MARKER_ACTIONS.has(action)
+          ? `${prefix}action_taken=proposed_close`
+          : match,
+    );
+  }
+
+  function commentBodyMatches(
+    comment: Record<string, unknown> | undefined,
+    body: string,
+    options: { allowApplyCloseActionUpgrade?: boolean } = {},
+  ): boolean {
+    const actual = commentBody(comment)?.trim();
+    const expected = body.trim();
+    if (actual === expected) return true;
+    if (!actual || !options.allowApplyCloseActionUpgrade) return false;
+    return (
+      normalizeApplySyncCloseMarkerAction(actual) === normalizeApplySyncCloseMarkerAction(expected)
+    );
+  }
+
+  function reviewCommentHashMatches(
+    comment: Record<string, unknown> | undefined,
+    body: string,
+    storedHash: string | undefined,
+    expectedHash: string,
+    options: { allowApplyCloseActionUpgrade?: boolean } = {},
+  ): boolean {
+    if (storedHash === expectedHash) return true;
+    if (!storedHash || !options.allowApplyCloseActionUpgrade) return false;
+    const actual = commentBody(comment)?.trim();
+    if (!actual) return false;
+    if (
+      normalizeApplySyncCloseMarkerAction(actual) !==
+      normalizeApplySyncCloseMarkerAction(body.trim())
+    ) {
+      return false;
+    }
+    return storedHash === reviewCommentBodyDigest(actual);
+  }
+
+  const PATCHABLE_REVIEW_COMMENT_AUTHORS = new Set(
+    [
+      "clawsweeper",
+      "clawsweeper[bot]",
+      "openclaw-clawsweeper[bot]",
+      process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN,
+    ].filter((login): login is string => typeof login === "string" && login.length > 0),
+  );
+
+  function commentAuthorLogin(comment: Record<string, unknown> | undefined): string | undefined {
+    const user = comment?.user;
+    if (!user || typeof user !== "object" || Array.isArray(user)) return undefined;
+    const login = (user as Record<string, unknown>).login;
+    return typeof login === "string" ? login : undefined;
+  }
+
+  function canPatchReviewComment(comment: Record<string, unknown> | undefined): boolean {
+    const login = commentAuthorLogin(comment);
+    return Boolean(login && PATCHABLE_REVIEW_COMMENT_AUTHORS.has(login));
+  }
+
+  function lockedConversationApplyReason(
+    item: Pick<Item, "activeLockReason" | "locked">,
+  ): string | null {
+    if (!item.locked) return null;
+    return `conversation is locked${item.activeLockReason ? ` (${item.activeLockReason})` : ""}`;
+  }
+
+  return {
+    markedReviewCommentBody,
+    reviewStartLeaseCommentMarker,
+    markedReviewStartLeaseCommentBody,
+    reviewStartStatusCommentMarker,
+    withReviewStartStatusLease,
+    withReviewStartStatusLeaseIdentity,
+    shouldPreserveReviewStartLease,
+    renderReviewStartStatusComment,
+    isCodexReviewCommentBody,
+    fetchIssueReviewComments,
+    selectIssueReviewComment,
+    selectDedicatedReviewStartLeaseComment,
+    selectDedicatedReviewStartLeaseComments,
+    issueReviewCommentState,
+    issueReviewComment,
+    issueReviewCommentWithBody,
+    commentUpdatedAt,
+    commentId,
+    commentUrl,
+    commentBody,
+    newestReviewMarkerAttribute,
+    durableReviewVersion,
+    reviewCommentHasCloseVerdictForCanonical,
+    staleReviewCommentSyncReason,
+    APPLY_SYNC_EQUIVALENT_CLOSE_MARKER_ACTIONS,
+    normalizeApplySyncCloseMarkerAction,
+    commentBodyMatches,
+    reviewCommentHashMatches,
+    PATCHABLE_REVIEW_COMMENT_AUTHORS,
+    commentAuthorLogin,
+    canPatchReviewComment,
+    lockedConversationApplyReason,
+  };
+}
