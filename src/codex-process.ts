@@ -111,7 +111,13 @@ export function runCodexProcess(options: {
     });
     if (existsSync(resultPath)) {
       const result = deserializeProcessResult(JSON.parse(readFileSync(resultPath, "utf8")));
-      return worker.error ? { ...result, error: worker.error } : result;
+      if (
+        worker.error &&
+        !(result.status === 0 && codexProcessErrorCode(worker.error) === "EPIPE")
+      ) {
+        return { ...result, error: worker.error };
+      }
+      return result;
     }
     if (worker.error) return failedProcessResult(worker.error, worker.status, worker.signal);
     return failedProcessResult(

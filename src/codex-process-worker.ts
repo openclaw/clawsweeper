@@ -31,6 +31,7 @@ const stderr = openCodexOutputCapture(options.stderrPath, {
 process.env.CODEX_BIN = options.command;
 const child = spawnCodex(options.args, { cwd: process.cwd(), env: process.env });
 let spawnError: Error | undefined;
+let stdinError: Error | undefined;
 let timeoutError: Error | undefined;
 let terminating = false;
 let forceKillTimer: NodeJS.Timeout | undefined;
@@ -48,7 +49,7 @@ child.stderr.on("data", (chunk: Buffer) => {
 });
 child.stdin.on("error", () => {});
 pipeline(process.stdin, child.stdin, (error) => {
-  if (error && !terminating && !spawnError) spawnError = error;
+  if (error && !terminating && !spawnError) stdinError = error;
 });
 
 child.once("error", (error) => {
@@ -59,14 +60,18 @@ child.once("close", (status, signal) => {
   clearTimeout(timeout);
   closeCodexOutputCapture(stdout);
   closeCodexOutputCapture(stderr);
+  const processError =
+    timeoutError ??
+    spawnError ??
+    (status === 0 && (stdinError as NodeJS.ErrnoException | undefined)?.code === "EPIPE"
+      ? undefined
+      : stdinError);
   writeFileSync(
     options.resultPath,
     JSON.stringify({
       status,
       signal,
-      ...(timeoutError || spawnError
-        ? { error: serializedError(timeoutError ?? spawnError!) }
-        : {}),
+      ...(processError ? { error: serializedError(processError) } : {}),
       stdout: codexOutputTail(stdout),
       stderr: codexOutputTail(stderr),
     }),

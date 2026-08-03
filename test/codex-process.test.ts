@@ -237,6 +237,20 @@ process.stdout.write("custom-codex-ok");
   }
 });
 
+test("Codex process accepts a successful child that closes stdin early", () => {
+  const result = runCodexProcess({
+    args: ["-e", 'process.stdin.destroy(); process.stdout.write("finished")'],
+    cwd: process.cwd(),
+    env: { ...process.env, CODEX_BIN: process.execPath },
+    input: "prompt".repeat(256 * 1024),
+    timeoutMs: 10_000,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.error, undefined);
+  assert.match(result.stdout, /finished/);
+});
+
 test("Codex process captures bounded rolling tails without terminating large output", () => {
   const root = mkdtempSync(tmpPrefix);
   const binDir = join(root, "bin");

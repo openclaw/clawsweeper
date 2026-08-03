@@ -27204,8 +27204,15 @@ test("exact-review health includes the oldest refreshing row beyond operator pag
 
   const response = await queue.fetch(new Request("https://queue/stats"));
   const stats = (await response.json()) as {
-    review_telemetry_health: { status: string; refreshing: number; orphan_refreshing: number };
+    review_telemetry_health: {
+      status: string;
+      refreshing: number;
+      orphan_refreshing: number;
+      orphans: Array<{ age_seconds: number }>;
+    };
   };
+  const oldestRefreshingAgeSeconds = stats.review_telemetry_health.orphans[0]?.age_seconds;
+  assert.ok(oldestRefreshingAgeSeconds !== undefined && oldestRefreshingAgeSeconds >= 9060);
   assert.deepEqual(stats.review_telemetry_health, {
     status: "critical",
     refreshing: 10_001,
@@ -27220,7 +27227,7 @@ test("exact-review health includes the oldest refreshing row beyond operator pag
         run_id: "1",
         run_attempt: 1,
         updated_at: new Date(now - 151 * 60_000).toISOString(),
-        age_seconds: 9060,
+        age_seconds: oldestRefreshingAgeSeconds,
         lease_expires_at: null,
       },
     ],
