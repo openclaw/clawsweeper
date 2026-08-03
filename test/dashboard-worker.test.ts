@@ -5996,6 +5996,117 @@ test("Worker lifecycle acknowledgement preserves canonical GitHub repository cas
   );
 });
 
+test("Worker converges legacy and non-review acknowledgement receipts without webhook races", async () => {
+  let itemNumber = 780;
+  for (const intent of ["re_review", "automerge", "autofix"]) {
+    for (const legacy of [false, true]) {
+      itemNumber += 1;
+      const storage = new MemoryDurableStorage();
+      const queue = new ExactReviewQueue({ storage }, {});
+      const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+      const statusMarker = `<!-- clawsweeper-command-status:${itemNumber}:${intent}:head -->`;
+      const identity = {
+        canonicalTargetKey: `openclaw/openclaw#${itemNumber}`,
+        fenceKey: `openclaw/openclaw#${itemNumber}@exact`,
+        revision: 1,
+      };
+      lifecycle.recordAdmission({
+        ...identity,
+        deliveryId: `legacy-acknowledgement:${itemNumber}`,
+        sourceAction: intent,
+        commandOriginated: true,
+        statusMarker,
+        statusCommentId: itemNumber + 10_000,
+        observedAt: 1_700_000_000_000,
+      });
+      lifecycle.recordCanonicalReceipt({
+        ...identity,
+        outcome: "accepted",
+        receiptId: `legacy-acknowledgement:${itemNumber}:canonical`,
+        observedAt: 1_700_000_000_001,
+      });
+      lifecycle.recordRouterReceipt({
+        ...identity,
+        outcome: "durable",
+        receiptId: `legacy-acknowledgement:${itemNumber}:router`,
+        observedAt: 1_700_000_000_002,
+      });
+      lifecycle.recordTerminalDisposition({
+        ...identity,
+        kind: "review_completed_routed",
+        observedAt: 1_700_000_000_003,
+      });
+      assert.equal(
+        lifecycle.authorizeCommandAcknowledgement({
+          ...identity,
+          statusMarker,
+          statusCommentId: itemNumber + 10_000,
+          observedAt: 1_700_000_000_004,
+        }).allowed,
+        true,
+      );
+
+      const marker = legacy
+        ? `<!-- clawsweeper-command:123:2026-08-01T08:13:51Z:${intent}:head -->`
+        : "<!-- clawsweeper-command-ack:123 -->";
+      const response = await worker.fetch(
+        signedGithubWebhookRequest({
+          event: "issue_comment",
+          secret: "legacy-acknowledgement-secret",
+          payload: {
+            action: "edited",
+            repository: {
+              full_name: "openclaw/openclaw",
+              private: false,
+              archived: false,
+              fork: false,
+              has_issues: true,
+            },
+            issue: { number: itemNumber },
+            comment: {
+              id: itemNumber + 10_000,
+              body: [
+                marker,
+                statusMarker,
+                "<!-- clawsweeper-command-progress:start -->",
+                "- State: Complete",
+                "- Detail: Done.",
+                "<!-- clawsweeper-command-progress:end -->",
+              ].join("\n"),
+              created_at: "2026-07-30T00:00:00.000Z",
+              updated_at: "2026-07-30T00:01:00.000Z",
+              user: { login: "clawsweeper[bot]" },
+            },
+          },
+        }),
+        {
+          CLAWSWEEPER_WEBHOOK_SECRET: "legacy-acknowledgement-secret",
+          EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+          STATUS_STORE: new MemoryKv(),
+        },
+      );
+      assert.deepEqual(await response.json(), {
+        ok: true,
+        accepted: false,
+        reason:
+          intent === "re_review"
+            ? "recorded Bay journey completion"
+            : "recorded lifecycle acknowledgement",
+      });
+      assert.equal(
+        lifecycle.observeCommandAcknowledgement({
+          canonicalTargetKey: identity.canonicalTargetKey,
+          statusMarker,
+          commandCommentId: 123,
+          completionCommentId: itemNumber + 10_000,
+          observedAt: 1_700_000_000_005,
+        }).accepted,
+        true,
+      );
+    }
+  }
+});
+
 test("Worker lifecycle keeps retryable publication work ineligible for final acknowledgement", async () => {
   const storage = new MemoryDurableStorage();
   const leased = leasedExactReviewPublicationItem(779, "7790");

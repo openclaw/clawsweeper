@@ -1345,7 +1345,10 @@ function bayJourneyTriggerFromGithubWebhook({ decision, payload, deliveryId }) {
 
 function bayJourneyCompletionFromGithubWebhook({ event, payload, env }) {
   const completion = lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env });
-  return completion?.status_marker ? completion : null;
+  return completion?.status_marker &&
+    /<!--\s*clawsweeper-command-status:\d+:(review|re_review):/i.test(completion.status_marker)
+    ? completion
+    : null;
 }
 
 function lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env }) {
@@ -1359,8 +1362,24 @@ function lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env 
   const repository = canonicalRepository.toLowerCase();
   const number = Number(issue.number);
   const body = String(comment.body || "");
-  const sourceCommentId = Number(body.match(/<!--\s*clawsweeper-command-ack:(\d+)\s*-->/i)?.[1]);
-  const status = body.match(/<!--\s*clawsweeper-command-status:(\d+):(review|re_review):[^>]*-->/i);
+  const acknowledgement = body.match(/<!--\s*clawsweeper-command-ack:(\d+)\s*-->/i);
+  const hasAcknowledgement = /<!--\s*clawsweeper-command-ack:[^>]*-->/i.test(body);
+  const status = body.match(/<!--\s*clawsweeper-command-status:(\d+):([^:\s>]+):([^:\s>]+)\s*-->/i);
+  const legacyCommands =
+    !hasAcknowledgement && status
+      ? Array.from(
+          body.matchAll(
+            /<!--\s*clawsweeper-command:(\d+):(?:[^>]*:)?([^:\s>]+):([^:\s>]+)\s*-->/gi,
+          ),
+        )
+      : [];
+  const legacyCommand =
+    legacyCommands.length === 1 &&
+    legacyCommands[0]![2] === status?.[2] &&
+    legacyCommands[0]![3] === status?.[3]
+      ? legacyCommands[0]![1]
+      : undefined;
+  const sourceCommentId = Number(acknowledgement?.[1] ?? legacyCommand ?? Number.NaN);
   const completedAt = exactWebhookTimestamp(comment.updated_at || comment.created_at);
   const progress =
     /<!--\s*clawsweeper-command-progress:start\s*-->([\s\S]*?)<!--\s*clawsweeper-command-progress:end\s*-->/i.exec(

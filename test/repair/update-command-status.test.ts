@@ -252,6 +252,89 @@ test("terminal receipt verification accepts a status-ID-only final status", () =
   );
 });
 
+test("terminal receipt verification accepts the matching legacy command marker", () => {
+  const marker =
+    "<!-- clawsweeper-command-status:115286:re_review:80a1f1ecec31e5611087de2ee662eb27fec2abc1 -->";
+  const legacyMarker =
+    "<!-- clawsweeper-command:5150571675:2026-08-01T08:13:51Z:re_review:80a1f1ecec31e5611087de2ee662eb27fec2abc1 -->";
+  const options = parseOptions([
+    "--repo",
+    "openclaw/openclaw",
+    "--item-number",
+    "115286",
+    "--marker",
+    marker,
+    "--state",
+    "Complete",
+    "--detail",
+    "A newer review tuple already exists; this stale result was superseded.",
+    "--verify-terminal-status-receipt",
+  ]);
+  const comment = {
+    id: 5150578737,
+    body: [
+      marker,
+      legacyMarker,
+      "ClawSweeper re-review requested.",
+      "<!-- clawsweeper-command-progress:start -->",
+      "Re-review progress:",
+      "- State: Complete",
+      "- Detail: A newer review tuple already exists; this stale result was superseded.",
+      "<!-- clawsweeper-command-progress:end -->",
+    ].join("\n"),
+  };
+
+  assert.deepEqual(verifiedTerminalStatusReceipt(comment, options), {
+    commandCommentId: 5150571675,
+    completionCommentId: 5150578737,
+  });
+  assert.equal(
+    verifiedTerminalStatusReceipt(
+      {
+        ...comment,
+        body: comment.body.replace(
+          legacyMarker,
+          legacyMarker.replace(":re_review:", ":automerge:"),
+        ),
+      },
+      options,
+    ),
+    null,
+  );
+  assert.equal(
+    verifiedTerminalStatusReceipt(
+      {
+        ...comment,
+        body: comment.body.replace(
+          legacyMarker,
+          legacyMarker.replace("80a1f1ecec31e5611087de2ee662eb27fec2abc1", "mismatch"),
+        ),
+      },
+      options,
+    ),
+    null,
+  );
+  assert.equal(
+    verifiedTerminalStatusReceipt(
+      { ...comment, body: `${legacyMarker}\n${comment.body}` },
+      options,
+    ),
+    null,
+  );
+  for (const invalidAck of ["0", "9007199254740992", "invalid"]) {
+    assert.equal(
+      verifiedTerminalStatusReceipt(
+        {
+          ...comment,
+          body: `<!-- clawsweeper-command-ack:${invalidAck} -->\n${comment.body}`,
+        },
+        options,
+      ),
+      null,
+    );
+  }
+});
+
 test("parseOptions enables the terminal locked-conversation skip only when requested", () => {
   const options = parseOptions([
     "--repo",
@@ -289,14 +372,27 @@ test("terminal locked-conversation skip covers status selection and duplicate cl
   assert.match(source.slice(selection, caught), /catch \(error\)/);
 });
 
-function runUpdateCommandStatus(tmp: string, args: string[]) {
+function runUpdateCommandStatus(
+  tmp: string,
+  args: string[],
+  comment?: { id: number; body: string; user: { login: string } },
+) {
   const ghPath = path.join(tmp, "gh.js");
+  const patchPath = path.join(tmp, "patched-comment.json");
   fs.writeFileSync(
     ghPath,
     [
-      "const args = process.argv.slice(2).join(' ');",
-      "if (!args.includes('/comments')) process.exit(1);",
-      "process.stdout.write(JSON.stringify([[]]));",
+      "const fs = require('node:fs');",
+      "const args = process.argv.slice(2);",
+      "if (!args.join(' ').includes('/comments')) process.exit(1);",
+      "const comment = JSON.parse(process.env.GH_TEST_STATUS_COMMENT || 'null');",
+      "if (args.includes('PATCH')) {",
+      "  const payload = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));",
+      "  fs.writeFileSync(process.env.GH_TEST_STATUS_PATCH_PATH, JSON.stringify(payload));",
+      "  process.stdout.write(JSON.stringify({ ...comment, body: payload.body }));",
+      "} else {",
+      "  process.stdout.write(JSON.stringify(comment ? [[comment]] : [[]]));",
+      "}",
     ].join("\n"),
   );
   const outputPath = path.join(tmp, "github-output");
@@ -311,6 +407,8 @@ function runUpdateCommandStatus(tmp: string, args: string[]) {
         ...process.env,
         GH_BIN: process.execPath,
         GH_BIN_ARGS: JSON.stringify([ghPath]),
+        GH_TEST_STATUS_COMMENT: JSON.stringify(comment ?? null),
+        GH_TEST_STATUS_PATCH_PATH: patchPath,
         GITHUB_OUTPUT: outputPath,
         CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1",
       },
@@ -321,8 +419,68 @@ function runUpdateCommandStatus(tmp: string, args: string[]) {
     status = failure.status ?? 1;
     stderr = String(failure.stderr ?? "");
   }
-  return { status, stderr, output: fs.readFileSync(outputPath, "utf8") };
+  return {
+    status,
+    stderr,
+    output: fs.readFileSync(outputPath, "utf8"),
+    patchedBody: fs.existsSync(patchPath)
+      ? (JSON.parse(fs.readFileSync(patchPath, "utf8")) as { body: string }).body
+      : null,
+  };
 }
+
+test("legacy command updates verify their receipt without creating duplicate acknowledgements", () => {
+  for (const alreadyComplete of [false, true]) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-legacy-command-status-"));
+    try {
+      const marker = "<!-- clawsweeper-command-status:115286:re_review:80a1f1 -->";
+      const comment = {
+        id: 5150578737,
+        user: { login: "clawsweeper[bot]" },
+        body: [
+          marker,
+          "<!-- clawsweeper-command:5150571675:2026-08-01T08:13:51Z:re_review:80a1f1 -->",
+          "<!-- clawsweeper-command-progress:start -->",
+          `- State: ${alreadyComplete ? "Complete" : "In progress"}`,
+          `- Detail: ${alreadyComplete ? "Done." : "Waiting."}`,
+          "<!-- clawsweeper-command-progress:end -->",
+        ].join("\n"),
+      };
+      const result = runUpdateCommandStatus(
+        tmp,
+        [
+          "--repo",
+          "openclaw/openclaw",
+          "--item-number",
+          "115286",
+          "--marker",
+          marker,
+          "--state",
+          "Complete",
+          "--detail",
+          "Done.",
+          "--require-mutation",
+          "--verify-terminal-status-receipt",
+        ],
+        comment,
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.output, /^terminal_status_verified=true$/m);
+      assert.match(result.output, /^command_comment_id=5150571675$/m);
+      assert.match(result.output, /^completion_comment_id=5150578737$/m);
+      if (alreadyComplete) {
+        assert.equal(result.patchedBody, null);
+      } else {
+        assert.doesNotMatch(result.patchedBody ?? "", /clawsweeper-command-ack:/);
+        assert.match(result.patchedBody ?? "", /clawsweeper-command:5150571675:/);
+      }
+      assert.match(result.patchedBody ?? comment.body, /- State: Complete\n- Detail: Done\./);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+});
 
 test("missing status comment completes the terminal acknowledgement as a skip", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-update-command-status-"));
