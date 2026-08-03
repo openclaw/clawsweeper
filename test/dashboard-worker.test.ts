@@ -7602,7 +7602,7 @@ test("Worker retains a committed terminal command acknowledgement for fenced ret
   const claimedState = storage.sql.readNormalizedQueue() as {
     items: Record<string, { publicationFailureAttempts?: number; firstFailureAt?: number }>;
   };
-  claimedState.items[leased.key]!.publicationFailureAttempts = 11;
+  claimedState.items[leased.key]!.publicationFailureAttempts = 47;
   claimedState.items[leased.key]!.firstFailureAt = Date.now();
   storage.sql.replaceNormalizedQueue(claimedState);
   const committed = await queue.fetch(
@@ -17740,12 +17740,18 @@ test("exact-review publication gives state contention the transient retry budget
   const state = (await storage.get("exact-review-queue")) as {
     items: Record<
       string,
-      { state: string; lastFailureReason?: string; publicationFailureAttempts?: number }
+      {
+        state: string;
+        lastFailureReason?: string;
+        publicationFailureAttempts?: number;
+        nextAttemptAt?: number;
+      }
     >;
   };
   assert.equal(state.items[item.key]?.state, "pending");
   assert.equal(state.items[item.key]?.lastFailureReason, "state_contention");
   assert.equal(state.items[item.key]?.publicationFailureAttempts, 5);
+  assert.ok((state.items[item.key]?.nextAttemptAt ?? Infinity) <= Date.now() + 6 * 60_000);
 
   const stats = await (
     await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))

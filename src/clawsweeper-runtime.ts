@@ -4,14 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { flushWorkflowActionEvents } from "./action-ledger-runtime.js";
-import {
-  boolArg,
-  itemNumbersArg,
-  numberArg,
-  parseArgs,
-  stringArg,
-  type Args,
-} from "./clawsweeper-args.js";
+import { parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
 import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-dispatch.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import { runText } from "./command.js";
@@ -23,7 +16,6 @@ import {
   type RepositoryProfile,
 } from "./repository-profiles.js";
 import { reviewPullChecksDigestParts } from "./review-checks-digest.js";
-import { coverageTrackedItemIdsFromManifest } from "./review-coverage-manifest.js";
 import {
   reviewStructuralQuery,
   reviewStructuralRecordFromGraphql,
@@ -75,11 +67,9 @@ import {
 import { createLabelPolicy } from "./clawsweeper-label-policy.js";
 import { createRepositoryLinks } from "./clawsweeper-links.js";
 import { createLocalRangeReviewer } from "./clawsweeper-local-review.js";
+import { createPlanCommand } from "./clawsweeper-plan-command.js";
 import {
-  DEFAULT_BACKFILL_REVIEW_AGE_MINUTES,
-  DEFAULT_CODEX_MODEL,
   DEFAULT_REASONING_EFFORT,
-  DEFAULT_SERVICE_TIER,
   EVENT_GUARDED_OPEN_ACTIONS,
   FRESH_DAYS,
   REVIEW_POLICY_VERSION,
@@ -1095,57 +1085,15 @@ function securityConcernLocation(concern: SecurityConcern): string {
   return `${concern.file}${concern.line ? `:${concern.line}` : ""}`;
 }
 
-function planCommand(args: Args): void {
-  repoFromArgs(args);
-  const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
-  const batchSize = numberArg(args.batch_size, DEFAULT_PLAN_BATCH_SIZE);
-  const maxPages = numberArg(args.max_pages, 250);
-  const shardCount = numberArg(args.shard_count, DEFAULT_PLAN_SHARD_COUNT);
-  const minimumActiveShards = numberArg(args.min_active_shards, 0);
-  const minimumBackfillReviewAgeMs =
-    numberArg(args.min_backfill_review_age_minutes, DEFAULT_BACKFILL_REVIEW_AGE_MINUTES) *
-    60 *
-    1000;
-  const itemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
-  const hasItemNumbersInput = typeof args.item_numbers === "string" && args.item_numbers.trim();
-  const hotIntake = boolArg(args.hot_intake);
-  const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
-  const reasoningEffort = stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT);
-  const sandboxMode = stringArg(args.codex_sandbox, "read-only");
-  const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
-  const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
-  const coverageManifest = stringArg(args.coverage_tracked_items_manifest, "").trim();
-  const coverageTrackedItemIds = coverageManifest
-    ? coverageTrackedItemIdsFromManifest(resolve(coverageManifest), targetProfile().slug)
-    : undefined;
-  const planOptions: Parameters<typeof planCandidates>[0] = {
-    batchSize,
-    maxPages,
-    shardCount,
-    itemsDir,
-    reviewPolicy,
-    minimumActiveShards,
-    minimumBackfillReviewAgeMs,
-    ...(coverageTrackedItemIds ? { coverageTrackedItemIds } : {}),
-  };
-  if (hasItemNumbersInput || itemNumbers.length > 0) planOptions.itemNumbers = itemNumbers;
-  if (hotIntake) planOptions.hotIntake = true;
-  const plan = planCandidates(planOptions);
-  console.log(
-    JSON.stringify(
-      {
-        ...plan,
-        reviewPolicy,
-        matrix: plan.shards.map((shard) => ({
-          shard: shard.shard,
-          item_numbers: shard.itemNumbers.join(",") || "none",
-        })),
-      },
-      null,
-      2,
-    ),
-  );
-}
+const planCommand = createPlanCommand({
+  defaultBatchSize: DEFAULT_PLAN_BATCH_SIZE,
+  defaultItemsDir,
+  defaultShardCount: DEFAULT_PLAN_SHARD_COUNT,
+  planCandidates,
+  repoFromArgs,
+  reviewPolicyHash,
+  targetProfile,
+});
 
 // Offline local-range review: synthesize the Item + ItemContext from the local
 // git range (merge-base(base, HEAD)..HEAD) so the FULL review (real-behavior

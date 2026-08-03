@@ -17,6 +17,10 @@ import {
   type PublicationBatchObservationStage,
 } from "./exact-review-publication-batches.ts";
 import {
+  exactReviewPublicationRetryDelayMs,
+  exactReviewPublicationRetryExhausted,
+} from "./exact-review-publication-retry.ts";
+import {
   CanonicalRecordTupleConflictError,
   DIRECT_PUBLICATION_LIFECYCLE_KINDS,
   EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
@@ -452,11 +456,6 @@ type ExactReviewScheduledLane = "hot_intake" | "normal_backfill";
 type ExactReviewScheduledBucket = ExactReviewScheduledLane | "global";
 const EXACT_REVIEW_COMPLETION_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
 const EXACT_REVIEW_ARTIFACT_RETRY_MAX_MS = 80 * 24 * 60 * 60 * 1000;
-const EXACT_REVIEW_PUBLICATION_TRANSIENT_RETRY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_MAX_AGE_MS = 60 * 60 * 1000;
-const EXACT_REVIEW_PUBLICATION_TRANSIENT_RETRY_LIMIT = 12;
-const EXACT_REVIEW_PUBLICATION_PERMANENT_RETRY_LIMIT = 3;
-const EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_LIMIT = 5;
 const EXACT_REVIEW_PUBLICATION_ARTIFACT_RETRY_LIMIT = 3;
 const EXACT_REVIEW_RETRY_LIMIT = 8;
 const EXACT_REVIEW_PARKED_RECOVERY_LIMIT = 3;
@@ -10676,59 +10675,6 @@ function finishExactReviewPublicationQueueItem({
       : "publication_retry";
   item.updatedAt = now;
   return { requeued: true, retried: true, refreshed: false, parked: false };
-}
-
-function exactReviewPublicationRetryExhausted(
-  completion: ExactReviewPublicationCompletion,
-  attempt: number,
-  firstFailureAt: number,
-  now: number,
-) {
-  if (completion.kind === "retryable_failure") {
-    if (completion.reasonCode === "artifact_unavailable") return false;
-    if (completion.reasonCode === "unknown_failure") {
-      return (
-        attempt >= EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_LIMIT ||
-        now >= firstFailureAt + EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_MAX_AGE_MS
-      );
-    }
-    return (
-      attempt >= EXACT_REVIEW_PUBLICATION_TRANSIENT_RETRY_LIMIT ||
-      now >= firstFailureAt + EXACT_REVIEW_PUBLICATION_TRANSIENT_RETRY_MAX_AGE_MS
-    );
-  }
-  if (completion.kind === "permanent_failure") {
-    const limit =
-      completion.reasonCode === "unknown_failure"
-        ? EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_LIMIT
-        : EXACT_REVIEW_PUBLICATION_PERMANENT_RETRY_LIMIT;
-    return (
-      attempt >= limit ||
-      (completion.reasonCode === "unknown_failure" &&
-        now >= firstFailureAt + EXACT_REVIEW_PUBLICATION_UNKNOWN_RETRY_MAX_AGE_MS)
-    );
-  }
-  return false;
-}
-
-function exactReviewPublicationRetryDelayMs(
-  itemKey: string,
-  completion: ExactReviewPublicationCompletion,
-  attempt: number,
-) {
-  let delay: number;
-  if (completion.kind === "permanent_failure" || completion.reasonCode === "unknown_failure") {
-    const steps = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000];
-    delay = steps[Math.min(attempt - 1, steps.length - 1)];
-  } else {
-    const maximum = completion.reasonCode === "github_rate_limit" ? 60 * 60_000 : 30 * 60_000;
-    delay = Math.min(maximum, 60_000 * 2 ** Math.min(attempt - 1, 6));
-  }
-  const hash = [...`${itemKey}:${attempt}`].reduce(
-    (current, character) => (current * 33 + character.charCodeAt(0)) >>> 0,
-    5381,
-  );
-  return delay + Math.floor(delay * ((hash % 21) / 100));
 }
 
 function exactReviewDeadLetterId(item: ExactReviewQueueItem, ownedRevision?: number) {
