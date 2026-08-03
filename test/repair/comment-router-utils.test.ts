@@ -19,6 +19,7 @@ import {
   normalizeGitHubActor,
   readLedger,
   routerDispatchReceiptKey,
+  routedCommentSourceDeliveryId,
   selectCommentsForRouting,
   shouldSuppressProcessedCommentVersion,
   sortCommentsForRouting,
@@ -115,6 +116,84 @@ test("terminal cleanup requires the same live comment version", () => {
       body: `${body} now`,
     }),
     false,
+  );
+});
+
+test("command delivery identity follows only its authenticated exact comment version", () => {
+  const body = "@clawsweeper re-review";
+  const comment = {
+    id: 456,
+    updated_at: "2026-07-12T20:00:00Z",
+    body,
+  };
+  const event = {
+    authenticated: true,
+    commentId: 456,
+    commentUpdatedAt: comment.updated_at,
+    commentBodySha256: commentBodySha256(body),
+    sourceDeliveryId: "github-original-delivery",
+  };
+  const options = {
+    comment,
+    event,
+    priorClaim: null,
+    targetRepo: "openclaw/openclaw",
+  };
+
+  assert.equal(routedCommentSourceDeliveryId(options), "github-original-delivery");
+  assert.equal(
+    routedCommentSourceDeliveryId({
+      ...options,
+      comment: { ...comment, updated_at: "2026-07-12T20:01:00Z" },
+    }),
+    null,
+  );
+  assert.equal(
+    routedCommentSourceDeliveryId({ ...options, comment: { ...comment, body: `${body} edited` } }),
+    null,
+  );
+  assert.equal(
+    routedCommentSourceDeliveryId({
+      ...options,
+      event: { ...event, authenticated: false },
+    }),
+    null,
+  );
+  const priorClaim = {
+    repo: "openclaw/openclaw",
+    comment_id: "456",
+    comment_updated_at: comment.updated_at,
+    comment_body_sha256: commentBodySha256(body),
+    source_delivery_id: "github-durable-delivery",
+  };
+  assert.equal(
+    routedCommentSourceDeliveryId({
+      ...options,
+      event: { ...event, authenticated: false, sourceDeliveryId: null },
+      priorClaim,
+    }),
+    "github-durable-delivery",
+  );
+  assert.equal(
+    routedCommentSourceDeliveryId({
+      ...options,
+      comment: { ...comment, body: `${body} edited` },
+      event: { ...event, authenticated: false, sourceDeliveryId: null },
+      priorClaim,
+    }),
+    null,
+  );
+  assert.equal(
+    routedCommentSourceDeliveryId({
+      ...options,
+      priorClaim: {
+        ...priorClaim,
+        source_delivery_id: undefined,
+        source_delivery_conflict: true,
+      },
+    }),
+    null,
+    "an authenticated redelivery must never resurrect conflicted durable provenance",
   );
 });
 
@@ -1032,6 +1111,77 @@ test("appendLedger preserves the original timestamp while a claim waits", () => 
   ]);
 
   assert.equal(ledger.commands[0].processed_at, processedAt);
+});
+
+test("appendLedger persists authenticated delivery identities across durable dispatch retries", () => {
+  const ledger = { updated_at: null, commands: [] };
+  const body = "@clawsweeper re-review";
+  appendLedger(ledger, [
+    {
+      idempotency_key: "claim-before-dispatch",
+      comment_id: "125",
+      comment_version_key: "125:2026-04-29T03:01:00Z",
+      comment_updated_at: "2026-04-29T03:01:00Z",
+      comment_body_sha256: commentBodySha256(body),
+      source_delivery_id: "github-original-command-delivery",
+      status: "claimed",
+      intent: "clawsweeper_re_review",
+      issue_number: 74499,
+      repo: "openclaw/openclaw",
+      actions: [{ action: "dispatch_clawsweeper", status: "claimed" }],
+    },
+  ]);
+  const restoredClaim = ledger.commands[0];
+  assert.equal(restoredClaim.source_delivery_id, "github-original-command-delivery");
+  assert.equal(
+    routedCommentSourceDeliveryId({
+      comment: { id: 125, updated_at: "2026-04-29T03:01:00Z", body },
+      event: {
+        authenticated: false,
+        commentId: null,
+        commentUpdatedAt: null,
+        commentBodySha256: null,
+        sourceDeliveryId: null,
+      },
+      priorClaim: restoredClaim,
+      targetRepo: "openclaw/openclaw",
+    }),
+    "github-original-command-delivery",
+  );
+});
+
+test("appendLedger keeps delivery-conflict tombstones while durable commands advance", () => {
+  const base = {
+    idempotency_key: "claim-before-dispatch",
+    comment_id: "125",
+    comment_version_key: "125:2026-04-29T03:01:00Z",
+    comment_updated_at: "2026-04-29T03:01:00Z",
+    comment_body_sha256: commentBodySha256("@clawsweeper re-review"),
+    status: "waiting",
+    intent: "clawsweeper_re_review",
+    issue_number: 74499,
+    repo: "openclaw/openclaw",
+    processed_at: "2026-04-29T03:01:00Z",
+  };
+  const ledger = {
+    updated_at: null,
+    commands: [{ ...base, source_delivery_conflict: true }],
+  };
+
+  assert.equal(
+    appendLedger(ledger, [
+      {
+        ...base,
+        status: "executed",
+        source_delivery_id: "must-not-be-resurrected",
+        actions: [{ action: "dispatch_clawsweeper", status: "executed" }],
+      },
+    ]),
+    true,
+  );
+  assert.equal(ledger.commands[0]?.status, "executed");
+  assert.equal(ledger.commands[0]?.source_delivery_conflict, true);
+  assert.equal(ledger.commands[0]?.source_delivery_id, undefined);
 });
 
 test("appendLedger upgrades claimed dispatch commands after execution", () => {

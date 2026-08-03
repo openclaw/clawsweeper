@@ -205,6 +205,7 @@ export type ExactReviewLifecycleProjection = {
   revision: number;
   admission: {
     deliveryId: string;
+    sourceDeliveryId?: string;
     sourceAction: string;
     commandOriginated: boolean;
     statusMarker: string | null;
@@ -297,6 +298,7 @@ export class ExactReviewLifecycleProjectionStore {
   recordAdmission(
     input: ProjectionIdentity & {
       deliveryId: string;
+      sourceDeliveryId?: string;
       sourceAction: string;
       commandOriginated: boolean;
       statusMarker: string | null;
@@ -307,6 +309,9 @@ export class ExactReviewLifecycleProjectionStore {
     this.validateIdentity(input);
     if (!validText(input.deliveryId, 1, 300) || !validText(input.sourceAction, 1, 200)) {
       throw new Error("invalid lifecycle admission fact");
+    }
+    if (input.sourceDeliveryId !== undefined && !validText(input.sourceDeliveryId, 1, 200)) {
+      throw new Error("invalid lifecycle source delivery identity");
     }
     if (input.statusMarker !== null && !validText(input.statusMarker, 1, 300)) {
       throw new Error("invalid lifecycle status marker");
@@ -322,6 +327,7 @@ export class ExactReviewLifecycleProjectionStore {
         const admission = existing.admission;
         if (
           admission.deliveryId !== input.deliveryId ||
+          admission.sourceDeliveryId !== input.sourceDeliveryId ||
           admission.sourceAction !== input.sourceAction ||
           admission.commandOriginated !== input.commandOriginated ||
           admission.statusMarker !== input.statusMarker ||
@@ -338,6 +344,7 @@ export class ExactReviewLifecycleProjectionStore {
         revision: input.revision,
         admission: {
           deliveryId: input.deliveryId,
+          ...(input.sourceDeliveryId ? { sourceDeliveryId: input.sourceDeliveryId } : {}),
           sourceAction: input.sourceAction,
           commandOriginated: input.commandOriginated,
           statusMarker: input.statusMarker,
@@ -681,6 +688,8 @@ export class ExactReviewLifecycleProjectionStore {
 
   observeCommandAcknowledgement(input: {
     canonicalTargetKey: string;
+    fenceKey?: string;
+    revision?: number;
     statusMarker: string | null;
     commandCommentId: number;
     completionCommentId: number;
@@ -690,6 +699,9 @@ export class ExactReviewLifecycleProjectionStore {
   }) {
     if (
       !validCanonicalTargetKey(input.canonicalTargetKey) ||
+      (input.fenceKey === undefined) !== (input.revision === undefined) ||
+      (input.fenceKey !== undefined && !validFenceKey(input.fenceKey)) ||
+      (input.revision !== undefined && !positiveInteger(input.revision)) ||
       (input.statusMarker !== null && !validText(input.statusMarker, 1, 300)) ||
       !positiveInteger(input.commandCommentId) ||
       !positiveInteger(input.completionCommentId) ||
@@ -705,8 +717,15 @@ export class ExactReviewLifecycleProjectionStore {
           input.canonicalTargetKey,
         ),
       );
+      const matchedProjections: ExactReviewLifecycleProjection[] = [];
       for (const row of rows) {
         const projection = projectionFromRow(String(row.projection_json || ""));
+        if (
+          input.fenceKey !== undefined &&
+          (projection.fenceKey !== input.fenceKey || projection.revision !== input.revision)
+        ) {
+          continue;
+        }
         const attempted = projection.acknowledgement.attempts.some(
           (attempt) =>
             (input.statusCommentId === undefined ||
@@ -723,7 +742,26 @@ export class ExactReviewLifecycleProjectionStore {
                 input.statusMarker !== null &&
                 attempt.statusMarker === input.statusMarker)),
         );
-        if (!attempted || !projection.acknowledgement.required) continue;
+        if (attempted && projection.acknowledgement.required) matchedProjections.push(projection);
+      }
+      const exactStatusCommentMatches =
+        input.fenceKey === undefined && matchedProjections.length > 1
+          ? matchedProjections.filter((projection) =>
+              projection.acknowledgement.attempts.some(
+                (attempt) => attempt.statusCommentId === input.completionCommentId,
+              ),
+            )
+          : [];
+      if (
+        input.fenceKey === undefined &&
+        matchedProjections.length > 1 &&
+        exactStatusCommentMatches.length !== 1
+      ) {
+        return { accepted: false, projection: null, state: null, acknowledgement: null };
+      }
+      for (const projection of exactStatusCommentMatches.length
+        ? exactStatusCommentMatches
+        : matchedProjections) {
         const observed = {
           statusMarker: input.statusMarker,
           commandCommentId: input.commandCommentId,
@@ -1669,6 +1707,8 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
     !positiveInteger(value.revision) ||
     !finiteTimestamp(value.updatedAt) ||
     !validText(value.admission.deliveryId, 1, 300) ||
+    (value.admission.sourceDeliveryId !== undefined &&
+      !validText(value.admission.sourceDeliveryId, 1, 200)) ||
     !validText(value.admission.sourceAction, 1, 200) ||
     (value.admission.statusMarker !== null && !validText(value.admission.statusMarker, 1, 300)) ||
     (value.admission.statusCommentId !== null &&

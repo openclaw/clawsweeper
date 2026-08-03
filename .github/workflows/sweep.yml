@@ -335,6 +335,9 @@ jobs:
           const queueClaim = payload.queue_claim && typeof payload.queue_claim === "object"
             ? payload.queue_claim
             : {};
+          const reviewOptions = payload.review_options && typeof payload.review_options === "object"
+            ? payload.review_options
+            : {};
           const dispatchKey = String(payload.dispatch_key || "").trim();
           const ingressFingerprint = String(payload.ingress_fingerprint || "").trim().toLowerCase();
           const ingress =
@@ -366,6 +369,9 @@ jobs:
                 sourceEvent,
                 sourceAction: payload.source_action || "legacy_dispatch",
                 supersedesInProgress: payload.supersedes_in_progress === true,
+                ...(typeof payload.source_delivery_id === "string" && payload.source_delivery_id
+                  ? { sourceDeliveryId: payload.source_delivery_id }
+                  : {}),
                 ...(/^[0-9a-f]{40}$/.test(sourceHeadSha)
                   ? { sourceHeadSha }
                   : {}),
@@ -379,15 +385,27 @@ jobs:
                 ...(sourceUpdatedAt && Number.isFinite(Date.parse(sourceUpdatedAt))
                   ? { sourceUpdatedAt }
                   : {}),
-                ...(Number.isFinite(Number(queueClaim.codex_timeout_ms ?? payload.codex_timeout_ms))
-                  ? { codexTimeoutMs: Number(queueClaim.codex_timeout_ms ?? payload.codex_timeout_ms) }
+                ...(Number.isFinite(
+                  Number(queueClaim.codex_timeout_ms ?? reviewOptions.codex_timeout_ms ?? payload.codex_timeout_ms),
+                )
+                  ? {
+                      codexTimeoutMs: Number(
+                        queueClaim.codex_timeout_ms ?? reviewOptions.codex_timeout_ms ?? payload.codex_timeout_ms,
+                      ),
+                    }
                   : {}),
                 ...(Number.isFinite(
-                  Number(queueClaim.media_proof_timeout_ms ?? payload.media_proof_timeout_ms),
+                  Number(
+                    queueClaim.media_proof_timeout_ms ??
+                      reviewOptions.media_proof_timeout_ms ??
+                      payload.media_proof_timeout_ms,
+                  ),
                 )
                   ? {
                       mediaProofTimeoutMs: Number(
-                        queueClaim.media_proof_timeout_ms ?? payload.media_proof_timeout_ms,
+                        queueClaim.media_proof_timeout_ms ??
+                          reviewOptions.media_proof_timeout_ms ??
+                          payload.media_proof_timeout_ms,
                       ),
                     }
                   : {}),
@@ -3248,6 +3266,8 @@ jobs:
         env:
           TARGET_REPO: ${{ steps.finalization-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.finalization-context.outputs.item_number }}
+          FENCE_KEY: ${{ steps.finalization-context.outputs.lifecycle_fence_key }}
+          REVISION: ${{ steps.finalization-context.outputs.lifecycle_revision }}
           STATUS_MARKER: ${{ steps.finalization-context.outputs.status_marker }}
           STATUS_COMMENT_ID: ${{ steps.finalization-context.outputs.status_comment_id }}
           COMMAND_COMMENT_ID: ${{ steps.update-final-command-status.outputs.command_comment_id }}
@@ -3258,12 +3278,15 @@ jobs:
         run: |
           set -euo pipefail
           payload="$(node -e '
+            const fenceKey = process.env.FENCE_KEY || "";
+            const revision = Number(process.env.REVISION);
             const statusMarker = process.env.STATUS_MARKER || null;
             const statusCommentId = process.env.STATUS_COMMENT_ID === "" ? null : Number(process.env.STATUS_COMMENT_ID);
             const commandCommentId = Number(process.env.COMMAND_COMMENT_ID);
             const completionCommentId = Number(process.env.COMPLETION_COMMENT_ID);
             const completedAt = process.env.COMPLETION_COMPLETED_AT || "";
             if (
+              !fenceKey || !Number.isSafeInteger(revision) || revision < 1 ||
               (!statusMarker && statusCommentId === null) ||
               (statusCommentId !== null && (!Number.isInteger(statusCommentId) || statusCommentId < 1)) ||
               !Number.isInteger(commandCommentId) || commandCommentId < 1 ||
@@ -3272,6 +3295,8 @@ jobs:
             ) process.exit(1);
             process.stdout.write(JSON.stringify({
               canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
+              fence_key: fenceKey,
+              revision,
               ...(statusMarker ? { status_marker: statusMarker } : {}),
               ...(statusCommentId === null ? {} : { status_comment_id: statusCommentId }),
               command_comment_id: commandCommentId,

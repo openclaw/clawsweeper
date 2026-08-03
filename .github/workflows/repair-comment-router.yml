@@ -222,7 +222,8 @@ jobs:
             item_numbers="${{ github.event.client_payload.item_number || '' }}"
             comment_ids="${{ github.event.client_payload.comment_id || '' }}"
             status_comment_id="${{ github.event.client_payload.status_comment_id || '' }}"
-            source_event="${{ github.event.client_payload.source_event || '' }}"
+            source_delivery_id="${{ github.event.client_payload.source_delivery_id || '' }}"
+            source_event="${{ github.event.client_payload.source_event || 'issue_comment' }}"
             source_action="${{ github.event.client_payload.source_action || '' }}"
             dispatch_actor="${{ github.actor }}"
             comment_event_auth="${{ github.event.client_payload.comment_event_auth || '' }}"
@@ -232,6 +233,7 @@ jobs:
             attempt_id="${{ github.event.client_payload.attempt_id || '' }}"
           else
             status_comment_id=""
+            source_delivery_id=""
             source_event=""
             source_action=""
             dispatch_actor=""
@@ -270,6 +272,9 @@ jobs:
           fi
           if [ -n "$status_comment_id" ]; then
             args+=(--status-comment-id "$status_comment_id")
+          fi
+          if [ -n "$source_delivery_id" ]; then
+            args+=(--source-delivery-id "$source_delivery_id")
           fi
           if [ -n "$source_event" ]; then
             args+=(--source-event "$source_event")
@@ -373,7 +378,8 @@ jobs:
             item_numbers="${{ github.event.client_payload.item_number || '' }}"
             comment_ids="${{ github.event.client_payload.comment_id || '' }}"
             status_comment_id="${{ github.event.client_payload.status_comment_id || '' }}"
-            source_event="${{ github.event.client_payload.source_event || '' }}"
+            source_delivery_id="${{ github.event.client_payload.source_delivery_id || '' }}"
+            source_event="${{ github.event.client_payload.source_event || 'issue_comment' }}"
             source_action="${{ github.event.client_payload.source_action || '' }}"
             dispatch_actor="${{ github.actor }}"
             comment_event_auth="${{ github.event.client_payload.comment_event_auth || '' }}"
@@ -383,6 +389,7 @@ jobs:
             attempt_id="${{ github.event.client_payload.attempt_id || '' }}"
           else
             status_comment_id=""
+            source_delivery_id=""
             source_event=""
             source_action=""
             dispatch_actor=""
@@ -421,6 +428,9 @@ jobs:
           fi
           if [ -n "$status_comment_id" ]; then
             args+=(--status-comment-id "$status_comment_id")
+          fi
+          if [ -n "$source_delivery_id" ]; then
+            args+=(--source-delivery-id "$source_delivery_id")
           fi
           if [ -n "$source_event" ]; then
             args+=(--source-event "$source_event")

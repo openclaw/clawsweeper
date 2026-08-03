@@ -13,7 +13,41 @@ export function mergeCommentRouterLedgers(localText: string, remoteText: string)
   for (const entry of [...remote.commands, ...local.commands]) {
     const key = ledgerEntryKey(entry);
     const previous = byKey.get(key);
-    if (!previous || compareEntries(previous, entry) < 0) byKey.set(key, entry);
+    if (!previous) {
+      byKey.set(key, entry);
+      continue;
+    }
+    const winner = compareEntries(previous, entry) < 0 ? entry : previous;
+    const alternate = winner === entry ? previous : entry;
+    const matchingCommentIdentity =
+      winner.repo === alternate.repo &&
+      winner.comment_id === alternate.comment_id &&
+      winner.comment_updated_at === alternate.comment_updated_at &&
+      typeof winner.comment_body_sha256 === "string" &&
+      /^[a-f0-9]{64}$/i.test(winner.comment_body_sha256) &&
+      winner.comment_body_sha256 === alternate.comment_body_sha256;
+    const deliveryIds = [winner.source_delivery_id, alternate.source_delivery_id]
+      .map((value) => String(value ?? ""))
+      .filter((value) => /^[A-Za-z0-9_.:-]{1,200}$/.test(value))
+      .sort();
+    const conflicted =
+      winner.source_delivery_conflict === true ||
+      alternate.source_delivery_conflict === true ||
+      (!matchingCommentIdentity &&
+        (deliveryIds.length > 0 ||
+          typeof winner.comment_body_sha256 === "string" ||
+          typeof alternate.comment_body_sha256 === "string"));
+    if (conflicted) {
+      const { source_delivery_id: _discardedDeliveryId, ...unverifiedWinner } = winner;
+      byKey.set(key, { ...unverifiedWinner, source_delivery_conflict: true });
+    } else {
+      byKey.set(
+        key,
+        matchingCommentIdentity && deliveryIds.length > 0
+          ? { ...winner, source_delivery_id: deliveryIds[0] }
+          : winner,
+      );
+    }
   }
 
   const commands = [...byKey.values()]
@@ -59,7 +93,16 @@ function compareEntries(left: JsonRecord, right: JsonRecord): number {
   if (status !== 0) return status;
   const processed = timestamp(left.processed_at) - timestamp(right.processed_at);
   if (processed !== 0) return processed;
-  return JSON.stringify(left).localeCompare(JSON.stringify(right));
+  return canonicalEntryText(left).localeCompare(canonicalEntryText(right));
+}
+
+function canonicalEntryText(entry: JsonRecord): string {
+  const {
+    source_delivery_id: _sourceDeliveryId,
+    source_delivery_conflict: _sourceDeliveryConflict,
+    ...canonical
+  } = entry;
+  return JSON.stringify(canonical);
 }
 
 function compareLedgerOrder(left: JsonRecord, right: JsonRecord): number {

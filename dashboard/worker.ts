@@ -1158,18 +1158,28 @@ async function githubWebhook(request, env, ctx) {
 
   const completion = bayJourneyCompletionFromGithubWebhook({ event, payload, env });
   if (completion) {
-    if (!(await recordLifecycleCommandAcknowledgement(env, completion))) {
+    const acknowledgement = await recordLifecycleCommandAcknowledgement(env, completion);
+    if (!acknowledgement.accepted) {
       return json(
         { ok: true, accepted: false, reason: "unmatched lifecycle acknowledgement" },
         202,
       );
     }
-    await recordBayJourneyTelemetry(env, ctx, [], [completion]);
+    await recordBayJourneyTelemetry(
+      env,
+      ctx,
+      [],
+      [
+        acknowledgement.sourceDeliveryId
+          ? { ...completion, source_delivery_id: acknowledgement.sourceDeliveryId }
+          : completion,
+      ],
+    );
     return json({ ok: true, accepted: false, reason: "recorded Bay journey completion" }, 202);
   }
   const acknowledgement = lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env });
   if (acknowledgement) {
-    if (!(await recordLifecycleCommandAcknowledgement(env, acknowledgement))) {
+    if (!(await recordLifecycleCommandAcknowledgement(env, acknowledgement)).accepted) {
       return json(
         { ok: true, accepted: false, reason: "unmatched lifecycle acknowledgement" },
         202,
@@ -1308,6 +1318,7 @@ async function githubWebhook(request, env, ctx) {
     token: dispatchToken,
     decision: commentDecision,
     statusCommentId,
+    sourceDeliveryId: trigger?.source_delivery_id,
   });
   settleFastAckComments({
     token: targetToken,
@@ -1728,7 +1739,7 @@ function exactReviewQueueStub(env): DurableObjectStub | null {
 
 async function recordLifecycleCommandAcknowledgement(env, completion) {
   const queue = exactReviewQueueStub(env);
-  if (!queue) return true;
+  if (!queue) return { accepted: true, sourceDeliveryId: null };
   const observedAt = Date.parse(String(completion.completed_at || ""));
   const response = await queue.fetch(
     new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
@@ -1739,6 +1750,7 @@ async function recordLifecycleCommandAcknowledgement(env, completion) {
         status_marker: completion.status_marker,
         command_comment_id: completion.source_comment_id,
         completion_comment_id: completion.completion_comment_id,
+        include_delivery_identity: true,
         ...(completion.require_exact_status_comment ? { require_exact_status_comment: true } : {}),
         observed_at: Number.isFinite(observedAt) ? observedAt : Date.now(),
       }),
@@ -1746,7 +1758,10 @@ async function recordLifecycleCommandAcknowledgement(env, completion) {
   );
   if (!response.ok) throw new Error("lifecycle acknowledgement receipt unavailable");
   const result = objectValue(await response.json());
-  return result.accepted !== false;
+  return {
+    accepted: result.accepted !== false,
+    sourceDeliveryId: nullableString(result.source_delivery_id),
+  };
 }
 
 async function reserveExactReviewSourceAuthority(
@@ -2126,6 +2141,9 @@ async function authenticatedLifecycleCommandAcknowledgement(request, env, ctx) {
               repository: target[1],
               number: Number(target[2]),
               source_comment_id: Number(receipt.command_comment_id),
+              ...(nullableString(result.source_delivery_id)
+                ? { source_delivery_id: nullableString(result.source_delivery_id) }
+                : {}),
               completed_at: completedAt,
               completion_kind: "final_command_status",
               completion_comment_id: completionCommentId,
@@ -2604,7 +2622,7 @@ async function addIssueCommentReaction({ token, repo, commentId, content }) {
   });
 }
 
-async function dispatchClawsweeperComment({ token, decision, statusCommentId }) {
+async function dispatchClawsweeperComment({ token, decision, statusCommentId, sourceDeliveryId }) {
   const exactVersion =
     decision.commentUpdatedAt && typeof decision.commentBody === "string"
       ? {
@@ -2625,8 +2643,9 @@ async function dispatchClawsweeperComment({ token, decision, statusCommentId }) 
         item_number: decision.itemNumber,
         comment_id: decision.commentId,
         status_comment_id: statusCommentId,
-        source_event: "issue_comment",
+        ...(sourceDeliveryId ? {} : { source_event: "issue_comment" }),
         source_action: decision.sourceAction,
+        ...(sourceDeliveryId ? { source_delivery_id: sourceDeliveryId } : {}),
         ...exactVersion,
       },
     },
@@ -4096,13 +4115,15 @@ function bayJourneyCompletionId(
   sourceCommentId,
   completionCommentId,
   completedAt,
+  sourceDeliveryId,
 ) {
   const completedMarker = Date.parse(completedAt);
   const marker =
     Number.isSafeInteger(Number(completionCommentId)) && Number(completionCommentId) > 0
       ? `comment:${Number(completionCommentId)}:at:${completedMarker}`
       : `at:${completedMarker}`;
-  return `${String(repository || "").toLowerCase()}#${Number(itemNumber)}:command:${Number(sourceCommentId)}:completion:${marker}`;
+  const delivery = sourceDeliveryId ? `:delivery:${sourceDeliveryId}` : "";
+  return `${String(repository || "").toLowerCase()}#${Number(itemNumber)}:command:${Number(sourceCommentId)}${delivery}:completion:${marker}`;
 }
 
 function bayJourneyTimestamp(value) {
@@ -4143,6 +4164,7 @@ function normalizeBayJourneyCompletion(value) {
   const repository = nullableString(completion.repository)?.toLowerCase() || null;
   const number = Number(completion.number);
   const sourceCommentId = Number(completion.source_comment_id);
+  const sourceDeliveryId = nullableString(completion.source_delivery_id);
   const completedAt = bayJourneyTimestamp(completion.completed_at);
   const completionKind = nullableString(completion.completion_kind);
   const completionCommentId = Number(completion.completion_comment_id);
@@ -4163,11 +4185,13 @@ function normalizeBayJourneyCompletion(value) {
       sourceCommentId,
       completionCommentId,
       completedAt,
+      sourceDeliveryId,
     ),
     item_key: `${repository}#${number}`,
     repository,
     number,
     source_comment_id: sourceCommentId,
+    ...(sourceDeliveryId ? { source_delivery_id: sourceDeliveryId } : {}),
     completed_at: completedAt,
     completion_kind: completionKind || "final_command_status",
     completion_comment_id:
@@ -4180,7 +4204,10 @@ function normalizeBayJourneyCompletion(value) {
 function normalizeBayJourneyRecord(value) {
   const record = objectValue(value);
   const trigger = normalizeBayJourneyTrigger(record);
-  const completion = normalizeBayJourneyCompletion(record);
+  const completion = normalizeBayJourneyCompletion({
+    ...record,
+    source_delivery_id: nullableString(record.completion_source_delivery_id),
+  });
   if (!trigger && !completion) return null;
   const source = trigger || completion;
   return {
@@ -4189,11 +4216,14 @@ function normalizeBayJourneyRecord(value) {
     repository: source.repository,
     number: source.number,
     source_comment_id: source.source_comment_id,
-    source_delivery_id: trigger?.source_delivery_id || null,
+    source_delivery_id: trigger?.source_delivery_id || completion?.source_delivery_id || null,
     triggered_at: trigger?.triggered_at || null,
     completed_at: completion?.completed_at || null,
     completion_kind: completion?.completion_kind || null,
     completion_comment_id: completion?.completion_comment_id || null,
+    ...(completion?.source_delivery_id
+      ? { completion_source_delivery_id: completion.source_delivery_id }
+      : {}),
   };
 }
 
@@ -4219,13 +4249,20 @@ export function mergeBayJourneyState(previous, triggers, completions, generatedA
           record.repository === trigger.repository &&
           record.number === trigger.number &&
           record.source_comment_id === trigger.source_comment_id &&
+          (!record.source_delivery_id ||
+            !trigger.source_delivery_id ||
+            record.source_delivery_id === trigger.source_delivery_id) &&
           !record.triggered_at &&
           (Date.parse(String(record.completed_at || "")) || 0) >= Date.parse(trigger.triggered_at),
       )
       .sort(
         (left, right) =>
+          (trigger.source_delivery_id
+            ? Number(right.source_delivery_id === trigger.source_delivery_id) -
+              Number(left.source_delivery_id === trigger.source_delivery_id)
+            : 0) ||
           (Date.parse(String(left.completed_at || "")) || 0) -
-          (Date.parse(String(right.completed_at || "")) || 0),
+            (Date.parse(String(right.completed_at || "")) || 0),
       )[0];
     const current = records.get(trigger.id) || completedOrphan || {};
     if (completedOrphan && completedOrphan.id !== trigger.id) records.delete(completedOrphan.id);
@@ -4239,36 +4276,122 @@ export function mergeBayJourneyState(previous, triggers, completions, generatedA
   for (const value of Array.isArray(completions) ? completions : []) {
     const completion = normalizeBayJourneyCompletion(value);
     if (!completion) continue;
-    const current =
-      [...records.values()].find(
+    if (completion.source_delivery_id) {
+      const legacyCompletionOnIdentifiedJourney = [...records.values()].find(
         (record) =>
           record.repository === completion.repository &&
           record.number === completion.number &&
           record.source_comment_id === completion.source_comment_id &&
-          record.completion_comment_id === completion.completion_comment_id &&
-          record.completed_at === completion.completed_at,
-      ) ||
+          record.source_delivery_id === completion.source_delivery_id &&
+          record.triggered_at &&
+          record.completed_at &&
+          !record.completion_source_delivery_id &&
+          (record.completed_at !== completion.completed_at ||
+            record.completion_comment_id !== completion.completion_comment_id),
+      );
+      if (legacyCompletionOnIdentifiedJourney) {
+        const legacyCompletion = normalizeBayJourneyCompletion({
+          ...legacyCompletionOnIdentifiedJourney,
+          source_delivery_id: undefined,
+        });
+        if (legacyCompletion) {
+          records.set(legacyCompletion.id, {
+            ...legacyCompletion,
+            id: legacyCompletion.id,
+            source_delivery_id: null,
+            triggered_at: null,
+            completed_at: legacyCompletion.completed_at,
+            completion_kind: legacyCompletion.completion_kind,
+            completion_comment_id: legacyCompletion.completion_comment_id,
+          });
+        }
+        records.set(legacyCompletionOnIdentifiedJourney.id, {
+          ...legacyCompletionOnIdentifiedJourney,
+          completed_at: null,
+          completion_kind: null,
+          completion_comment_id: null,
+        });
+      }
+    }
+    let exactCompletion = [...records.values()].find(
+      (record) =>
+        record.repository === completion.repository &&
+        record.number === completion.number &&
+        record.source_comment_id === completion.source_comment_id &&
+        (!completion.source_delivery_id ||
+          !record.completion_source_delivery_id ||
+          record.completion_source_delivery_id === completion.source_delivery_id) &&
+        record.completion_comment_id === completion.completion_comment_id &&
+        record.completed_at === completion.completed_at,
+    );
+    if (
+      exactCompletion &&
+      completion.source_delivery_id &&
+      exactCompletion.source_delivery_id !== completion.source_delivery_id &&
+      !exactCompletion.completion_source_delivery_id
+    ) {
+      if (!exactCompletion.triggered_at) {
+        records.delete(exactCompletion.id);
+      } else {
+        records.set(exactCompletion.id, {
+          ...exactCompletion,
+          completed_at: null,
+          completion_kind: null,
+          completion_comment_id: null,
+        });
+      }
+      exactCompletion = undefined;
+    }
+    const current =
+      exactCompletion ||
+      (completion.source_delivery_id
+        ? [...records.values()].find(
+            (record) =>
+              record.repository === completion.repository &&
+              record.number === completion.number &&
+              record.source_comment_id === completion.source_comment_id &&
+              record.source_delivery_id === completion.source_delivery_id &&
+              record.completion_source_delivery_id === completion.source_delivery_id &&
+              (!record.triggered_at ||
+                Date.parse(record.triggered_at) <= Date.parse(completion.completed_at)),
+          )
+        : undefined) ||
       [...records.values()]
         .filter(
           (record) =>
             record.repository === completion.repository &&
             record.number === completion.number &&
             record.source_comment_id === completion.source_comment_id &&
+            (!completion.source_delivery_id ||
+              !record.source_delivery_id ||
+              record.source_delivery_id === completion.source_delivery_id) &&
             record.triggered_at &&
             !record.completed_at &&
             Date.parse(record.triggered_at) <= Date.parse(completion.completed_at),
         )
         .sort(
           (left, right) =>
+            (completion.source_delivery_id
+              ? Number(right.source_delivery_id === completion.source_delivery_id) -
+                Number(left.source_delivery_id === completion.source_delivery_id)
+              : 0) ||
             (Date.parse(String(right.triggered_at || "")) || 0) -
-            (Date.parse(String(left.triggered_at || "")) || 0),
+              (Date.parse(String(left.triggered_at || "")) || 0),
         )[0] ||
       records.get(completion.id) ||
       {};
     const recordId = current.id || completion.id;
     const currentCompletedAt = Date.parse(String(current.completed_at || ""));
     const completionAt = Date.parse(completion.completed_at);
-    if (Number.isFinite(currentCompletedAt) && currentCompletedAt > completionAt) continue;
+    if (
+      Number.isFinite(currentCompletedAt) &&
+      (currentCompletedAt > completionAt ||
+        (currentCompletedAt === completionAt &&
+          Number(current.completion_comment_id || 0) >
+            Number(completion.completion_comment_id || 0)))
+    ) {
+      continue;
+    }
     if (current.id && current.id !== recordId) records.delete(current.id);
     records.set(recordId, {
       ...current,
@@ -4277,6 +4400,49 @@ export function mergeBayJourneyState(previous, triggers, completions, generatedA
       completed_at: completion.completed_at,
       completion_kind: completion.completion_kind,
       completion_comment_id: completion.completion_comment_id,
+      ...(completion.source_delivery_id
+        ? { completion_source_delivery_id: completion.source_delivery_id }
+        : {}),
+    });
+  }
+  for (const record of records.values()) {
+    if (!record.triggered_at || record.completed_at || !record.source_delivery_id) continue;
+    const completedOrphan = [...records.values()]
+      .filter(
+        (candidate) =>
+          !candidate.triggered_at &&
+          candidate.completed_at &&
+          candidate.repository === record.repository &&
+          candidate.number === record.number &&
+          candidate.source_comment_id === record.source_comment_id &&
+          (candidate.source_delivery_id === record.source_delivery_id ||
+            (!candidate.source_delivery_id &&
+              [...records.values()].filter(
+                (journey) =>
+                  journey.triggered_at &&
+                  !journey.completed_at &&
+                  journey.repository === candidate.repository &&
+                  journey.number === candidate.number &&
+                  journey.source_comment_id === candidate.source_comment_id &&
+                  Date.parse(journey.triggered_at) <= Date.parse(candidate.completed_at),
+              ).length === 1)) &&
+          Date.parse(candidate.completed_at) >= Date.parse(record.triggered_at),
+      )
+      .sort(
+        (left, right) =>
+          (Date.parse(String(left.completed_at || "")) || 0) -
+          (Date.parse(String(right.completed_at || "")) || 0),
+      )[0];
+    if (!completedOrphan) continue;
+    records.delete(completedOrphan.id);
+    records.set(record.id, {
+      ...record,
+      completed_at: completedOrphan.completed_at,
+      completion_kind: completedOrphan.completion_kind,
+      completion_comment_id: completedOrphan.completion_comment_id,
+      ...(completedOrphan.completion_source_delivery_id
+        ? { completion_source_delivery_id: completedOrphan.completion_source_delivery_id }
+        : {}),
     });
   }
   const journeys = [...records.values()]

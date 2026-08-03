@@ -1179,6 +1179,14 @@ test("exact event publication derives lifecycle receipt and final command acknow
   );
   assert.match(observedReceipt.if ?? "", /terminal_status_verified == 'true'/);
   assert.equal(
+    observedReceipt.env?.FENCE_KEY,
+    "${{ steps.finalization-context.outputs.lifecycle_fence_key }}",
+  );
+  assert.equal(
+    observedReceipt.env?.REVISION,
+    "${{ steps.finalization-context.outputs.lifecycle_revision }}",
+  );
+  assert.equal(
     observedReceipt.env?.STATUS_COMMENT_ID,
     "${{ steps.finalization-context.outputs.status_comment_id }}",
   );
@@ -1191,6 +1199,8 @@ test("exact event publication derives lifecycle receipt and final command acknow
     observedReceipt.run ?? "",
     /const statusCommentId = process\.env\.STATUS_COMMENT_ID/,
   );
+  assert.match(observedReceipt.run ?? "", /fence_key: fenceKey/);
+  assert.match(observedReceipt.run ?? "", /revision,/);
   assert.match(
     observedReceipt.run ?? "",
     /\.\.\.\(statusMarker \? \{ status_marker: statusMarker \} : \{\}\)/,
@@ -4547,6 +4557,11 @@ test("comment commands keep the router-to-sweep dispatch contract", () => {
     /status_comment_id="\$\{\{ github\.event\.client_payload\.status_comment_id \|\| '' \}\}"/,
   );
   assert.match(routerWorkflow, /--status-comment-id "\$status_comment_id"/);
+  assert.match(
+    routerWorkflow,
+    /source_delivery_id="\$\{\{ github\.event\.client_payload\.source_delivery_id \|\| '' \}\}"/,
+  );
+  assert.match(routerWorkflow, /--source-delivery-id "\$source_delivery_id"/);
   assert.match(routerWorkflow, /dispatch_actor="\$\{\{ github\.actor \}\}"/);
   assert.match(routerWorkflow, /--dispatch-actor "\$dispatch_actor"/);
   assert.match(routerWorkflow, /--comment-event-auth "\$comment_event_auth"/);
@@ -4559,13 +4574,18 @@ test("comment commands keep the router-to-sweep dispatch contract", () => {
   );
   assert.match(routerSource, /event_type:\s*"clawsweeper_item"/);
   assert.match(routerSource, /adaptiveReviewBudgetForPullRequest\(command\.target\)/);
+  assert.match(routerSource, /review_options:\s*\{/);
   assert.match(routerSource, /media_proof_timeout_ms: reviewBudget\.mediaProofTimeoutMs/);
   assert.match(routerSource, /dispatch_key:\s*dispatchKey/);
+  assert.match(routerSource, /source_delivery_id:\s*String\(command\.source_delivery_id\)/);
   assert.match(routerSource, /`item_numbers=\$\{dispatchKey\}`/);
   assert.match(routerSource, /event:\s*"workflow_dispatch"/);
   assert.match(sweepWorkflow, /types:\s*\[clawsweeper_item,\s*clawsweeper_target_sweep\]/);
   assert.match(sweepWorkflow, /Review event item \{0\}#\{1\} \[\{2\}\]/);
   assert.match(sweepWorkflow, /startsWith\(github\.event\.inputs\.item_numbers, 'router-'\)/);
+  assert.match(sweepWorkflow, /sourceDeliveryId:\s*payload\.source_delivery_id/);
+  assert.match(sweepWorkflow, /reviewOptions\.codex_timeout_ms/);
+  assert.match(sweepWorkflow, /reviewOptions\.media_proof_timeout_ms/);
   assert.doesNotMatch(sweepWorkflow, /types:\s*\[[^\]]*clawsweeper_comment/);
 });
 
@@ -5254,8 +5274,10 @@ test("legacy event field serializer preserves branchless issue and PR intake", (
     (step) => step.name === "Enqueue legacy event through the durable control plane",
   )?.run;
   assert.ok(run);
-  const script = run.match(/node <<'NODE'\n([\s\S]*?)\nNODE\n/)?.[1];
+  const scripts = [...run.matchAll(/node <<'NODE'\n([\s\S]*?)\nNODE\n/g)].map((match) => match[1]);
+  const script = scripts[0];
   assert.ok(script);
+  assert.equal(scripts.length, 2);
 
   const serialize = (payload: Record<string, unknown>): string[] => {
     const output = execFileSync(process.execPath, ["-"], {
@@ -5314,6 +5336,31 @@ test("legacy event field serializer preserves branchless issue and PR intake", (
     }),
     ["openclaw/clawhub", "main", "0"],
   );
+
+  const reviewDecision = JSON.parse(
+    execFileSync(process.execPath, ["-"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CLIENT_PAYLOAD: JSON.stringify({
+          target_repo: "openclaw/openclaw",
+          item_number: 117838,
+          item_kind: "pull_request",
+          source_delivery_id: "original-review-delivery",
+          review_options: {
+            codex_timeout_ms: 1_200_000,
+            media_proof_timeout_ms: 480_000,
+          },
+        }),
+        TARGET_REPO: "openclaw/openclaw",
+        TARGET_BRANCH: "main",
+      },
+      input: scripts[1],
+    }),
+  );
+  assert.equal(reviewDecision.decision.codexTimeoutMs, 1_200_000);
+  assert.equal(reviewDecision.decision.mediaProofTimeoutMs, 480_000);
+  assert.equal(reviewDecision.decision.sourceDeliveryId, "original-review-delivery");
 });
 
 test("sweep issue and PR event reviews and target fanout avoid storm amplification", () => {

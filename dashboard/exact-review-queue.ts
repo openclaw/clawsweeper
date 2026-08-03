@@ -106,6 +106,7 @@ export type ExactReviewBaseDecision = {
   sourceHeadVerified?: boolean;
   sourceAuthoritySeq?: number;
   sourceUpdatedAt?: string;
+  sourceDeliveryId?: string;
   codexTimeoutMs?: number;
   mediaProofTimeoutMs?: number;
   commandStatusMarker?: string;
@@ -6105,6 +6106,9 @@ export class ExactReviewQueue {
         commandOriginated,
         statusMarker: sourceDecision.commandStatusMarker ?? null,
         statusCommentId: sourceDecision.statusCommentId ?? null,
+        ...(sourceDecision.sourceDeliveryId
+          ? { sourceDeliveryId: sourceDecision.sourceDeliveryId }
+          : {}),
         observedAt: now,
       });
     }
@@ -6154,6 +6158,9 @@ export class ExactReviewQueue {
           ),
           statusMarker: sourceDecision.commandStatusMarker ?? null,
           statusCommentId: sourceDecision.statusCommentId ?? null,
+          ...(sourceDecision.sourceDeliveryId
+            ? { sourceDeliveryId: sourceDecision.sourceDeliveryId }
+            : {}),
           observedAt: now,
         });
       }
@@ -6234,6 +6241,9 @@ export class ExactReviewQueue {
         commandOriginated,
         statusMarker,
         statusCommentId,
+        ...(sourceDecision?.sourceDeliveryId
+          ? { sourceDeliveryId: sourceDecision.sourceDeliveryId }
+          : {}),
         observedAt: now,
       });
     }
@@ -6837,6 +6847,8 @@ export class ExactReviewQueue {
     const body = objectValue(value);
     const canonicalTargetKey =
       typeof body.canonical_target_key === "string" ? body.canonical_target_key : "";
+    const fenceKey = body.fence_key;
+    const revision = body.revision;
     const statusMarker =
       body.status_marker === undefined || body.status_marker === null
         ? null
@@ -6846,10 +6858,14 @@ export class ExactReviewQueue {
     const commandCommentId = Number(body.command_comment_id);
     const completionCommentId = Number(body.completion_comment_id);
     const statusCommentId = body.status_comment_id;
+    const includeDeliveryIdentity = body.include_delivery_identity;
     const requireExactStatusComment = body.require_exact_status_comment;
     const observedAt = Number(body.observed_at);
     if (
       !canonicalTargetKey ||
+      (fenceKey === undefined) !== (revision === undefined) ||
+      (fenceKey !== undefined && (typeof fenceKey !== "string" || !fenceKey)) ||
+      (revision !== undefined && (!Number.isSafeInteger(revision) || Number(revision) < 1)) ||
       (statusMarker !== null && !statusMarker) ||
       !Number.isSafeInteger(commandCommentId) ||
       commandCommentId < 1 ||
@@ -6857,6 +6873,7 @@ export class ExactReviewQueue {
       completionCommentId < 1 ||
       (statusCommentId !== undefined &&
         (!Number.isSafeInteger(statusCommentId) || Number(statusCommentId) < 1)) ||
+      (includeDeliveryIdentity !== undefined && typeof includeDeliveryIdentity !== "boolean") ||
       (requireExactStatusComment !== undefined && typeof requireExactStatusComment !== "boolean") ||
       !Number.isSafeInteger(observedAt) ||
       observedAt < 1
@@ -6866,6 +6883,9 @@ export class ExactReviewQueue {
     try {
       const result = this.lifecycleProjectionStore.observeCommandAcknowledgement({
         canonicalTargetKey,
+        ...(fenceKey === undefined
+          ? {}
+          : { fenceKey: String(fenceKey), revision: Number(revision) }),
         statusMarker,
         commandCommentId,
         completionCommentId,
@@ -6896,6 +6916,10 @@ export class ExactReviewQueue {
         lifecycle_state: result.state,
         acknowledgement_state: result.acknowledgement,
         ...(result.projection ? { version: result.projection.version } : {}),
+        ...((fenceKey !== undefined || includeDeliveryIdentity === true) &&
+        result.projection?.admission.sourceDeliveryId
+          ? { source_delivery_id: result.projection.admission.sourceDeliveryId }
+          : {}),
       });
     } catch (error) {
       console.warn(`lifecycle acknowledgement receipt rejected: ${sanitizedServerError(error)}`);
@@ -9488,6 +9512,8 @@ function exactReviewBaseDecisionFrom(value): ExactReviewBaseDecision | null {
   const sourceUpdatedAt = hasSourceUpdatedAt
     ? String(decision.sourceUpdatedAt || "").trim()
     : undefined;
+  const hasSourceDeliveryId = Object.hasOwn(decision, "sourceDeliveryId");
+  const sourceDeliveryId = hasSourceDeliveryId ? decision.sourceDeliveryId : undefined;
   const hasCommandStatusMarker = Object.hasOwn(decision, "commandStatusMarker");
   const commandStatusMarker = hasCommandStatusMarker ? decision.commandStatusMarker : undefined;
   const hasStatusCommentId = Object.hasOwn(decision, "statusCommentId");
@@ -9514,6 +9540,12 @@ function exactReviewBaseDecisionFrom(value): ExactReviewBaseDecision | null {
     return null;
   }
   if (hasSourceUpdatedAt && !Number.isFinite(Date.parse(sourceUpdatedAt || ""))) return null;
+  if (
+    hasSourceDeliveryId &&
+    (typeof sourceDeliveryId !== "string" || !/^[A-Za-z0-9_.:-]{1,200}$/.test(sourceDeliveryId))
+  ) {
+    return null;
+  }
   if (
     hasCommandStatusMarker &&
     (typeof commandStatusMarker !== "string" ||
@@ -9550,6 +9582,7 @@ function exactReviewBaseDecisionFrom(value): ExactReviewBaseDecision | null {
     ...(hasSourceHeadVerified ? { sourceHeadVerified: decision.sourceHeadVerified } : {}),
     ...(hasSourceAuthoritySeq ? { sourceAuthoritySeq } : {}),
     ...(hasSourceUpdatedAt ? { sourceUpdatedAt } : {}),
+    ...(hasSourceDeliveryId ? { sourceDeliveryId } : {}),
     ...(Number.isFinite(Number(decision.codexTimeoutMs))
       ? { codexTimeoutMs: Number(decision.codexTimeoutMs) }
       : {}),
@@ -9755,12 +9788,17 @@ function mergePendingExactReviewDecision(
   next: ExactReviewDecision,
 ): ExactReviewDecision {
   const merged = { ...current, ...next };
-  if (
+  const commandMarkerChanged =
     Object.hasOwn(next, "commandStatusMarker") &&
-    next.commandStatusMarker !== current.commandStatusMarker &&
-    !Object.hasOwn(next, "statusCommentId")
-  ) {
+    next.commandStatusMarker !== current.commandStatusMarker;
+  if (commandMarkerChanged && !Object.hasOwn(next, "statusCommentId")) {
     delete merged.statusCommentId;
+  }
+  if (
+    (Object.hasOwn(next, "commandStatusMarker") || Object.hasOwn(next, "statusCommentId")) &&
+    !Object.hasOwn(next, "sourceDeliveryId")
+  ) {
+    delete merged.sourceDeliveryId;
   }
   return merged;
 }

@@ -21,6 +21,7 @@ const LEDGER_COMMAND_STRING_FIELDS = [
   "comment_version_key",
   "comment_created_at",
   "comment_updated_at",
+  "source_delivery_id",
   "repo",
   "processed_at",
 ] as const;
@@ -196,6 +197,47 @@ export function exactCommentVersionMatchesLive(command: LooseRecord, live: JsonV
     String(comment.updated_at ?? "") === String(command.comment_updated_at ?? "") &&
     commentBodySha256(comment.body) === String(command.comment_body_sha256 ?? "")
   );
+}
+
+export function routedCommentSourceDeliveryId({
+  comment,
+  event,
+  priorClaim,
+  targetRepo,
+}: {
+  comment: JsonValue;
+  event: {
+    authenticated: boolean;
+    commentId: JsonValue;
+    commentUpdatedAt: JsonValue;
+    commentBodySha256: JsonValue;
+    sourceDeliveryId: JsonValue;
+  };
+  priorClaim: LooseRecord | null;
+  targetRepo: string;
+}): string | null {
+  if (priorClaim?.source_delivery_conflict === true) return null;
+  const eventDeliveryId = String(event.sourceDeliveryId ?? "").trim();
+  if (
+    event.authenticated &&
+    /^[A-Za-z0-9_.:-]{1,200}$/.test(eventDeliveryId) &&
+    exactCommentVersionMatchesLive(
+      {
+        comment_id: event.commentId,
+        comment_updated_at: event.commentUpdatedAt,
+        comment_body_sha256: event.commentBodySha256,
+      },
+      comment,
+    )
+  ) {
+    return eventDeliveryId;
+  }
+  const claimedDeliveryId = String(priorClaim?.source_delivery_id ?? "").trim();
+  return priorClaim?.repo === targetRepo &&
+    /^[A-Za-z0-9_.:-]{1,200}$/.test(claimedDeliveryId) &&
+    exactCommentVersionMatchesLive(priorClaim, comment)
+    ? claimedDeliveryId
+    : null;
 }
 
 export function exactCommentVersionFastPathDecision({
@@ -497,6 +539,9 @@ export function readLedger(file: JsonValue) {
 }
 
 export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
+  const byCommentVersion = new Map(
+    (current.commands ?? []).map((entry: JsonValue) => [ledgerEntryKey(entry), entry]),
+  );
   const compact = entries
     .filter((entry: JsonValue) =>
       ["claimed", "executed", "skipped", "waiting"].includes(entry.status),
@@ -504,6 +549,9 @@ export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
     .filter((entry: JsonValue) => !isNoopSkip(entry))
     .map((entry: JsonValue) => {
       const actions = compactLedgerActions(entry.actions);
+      const previous = byCommentVersion.get(ledgerEntryKey(entry)) as LooseRecord | undefined;
+      const deliveryConflicted =
+        entry.source_delivery_conflict === true || previous?.source_delivery_conflict === true;
       return {
         idempotency_key: entry.idempotency_key,
         comment_id: entry.comment_id,
@@ -512,6 +560,11 @@ export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
         comment_created_at: entry.comment_created_at ?? null,
         comment_updated_at: entry.comment_updated_at ?? null,
         ...(entry.comment_body_sha256 ? { comment_body_sha256: entry.comment_body_sha256 } : {}),
+        ...(deliveryConflicted
+          ? { source_delivery_conflict: true }
+          : /^[A-Za-z0-9_.:-]{1,200}$/.test(String(entry.source_delivery_id ?? ""))
+            ? { source_delivery_id: entry.source_delivery_id }
+            : {}),
         repo: entry.repo,
         issue_number: entry.issue_number,
         author: entry.author,
@@ -543,9 +596,6 @@ export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
       };
     });
   if (compact.length === 0) return false;
-  const byCommentVersion = new Map(
-    (current.commands ?? []).map((entry: JsonValue) => [ledgerEntryKey(entry), entry]),
-  );
   let changed = false;
   for (const entry of compact) {
     const key = ledgerEntryKey(entry);
@@ -574,6 +624,19 @@ function validatedLedgerCommand(entry: JsonValue): LooseRecord {
   }
   if (!LEDGER_COMMAND_STATUSES.has(command.status)) {
     throw new Error("comment router ledger command status is invalid");
+  }
+  if (
+    command.source_delivery_id !== undefined &&
+    command.source_delivery_id !== null &&
+    !/^[A-Za-z0-9_.:-]{1,200}$/.test(String(command.source_delivery_id))
+  ) {
+    throw new Error("comment router ledger command source_delivery_id is invalid");
+  }
+  if (
+    command.source_delivery_conflict !== undefined &&
+    (command.source_delivery_conflict !== true || command.source_delivery_id !== undefined)
+  ) {
+    throw new Error("comment router ledger delivery conflict must suppress delivery provenance");
   }
   if (
     typeof command.processed_at !== "string" ||

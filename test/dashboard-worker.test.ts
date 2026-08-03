@@ -1684,6 +1684,81 @@ test("exact-review queue bypasses debounce for commands and publications", async
   }
 });
 
+test("replacing a queued command cannot inherit another command's delivery identity", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const firstMarker = "<!-- clawsweeper-command-status:751:re_review:first -->";
+  const replacementMarker = "<!-- clawsweeper-command-status:751:autofix:replacement -->";
+  await queue.fetch(
+    buildExactReviewQueueRequest(
+      "delivery-first-command",
+      751,
+      "legacy_dispatch",
+      "issue",
+      undefined,
+      {
+        commandStatusMarker: firstMarker,
+        statusCommentId: 9301,
+        sourceDeliveryId: "github-first-command-delivery",
+      },
+    ),
+  );
+  await queue.fetch(
+    buildExactReviewQueueRequest(
+      "delivery-replacement-command",
+      751,
+      "legacy_dispatch",
+      "issue",
+      undefined,
+      {
+        commandStatusMarker: replacementMarker,
+        statusCommentId: 9401,
+      },
+    ),
+  );
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: Record<string, unknown> }>;
+  };
+  assert.equal(state.items["openclaw/gogcli#751"]?.decision.commandStatusMarker, replacementMarker);
+  assert.equal(state.items["openclaw/gogcli#751"]?.decision.statusCommentId, 9401);
+  assert.equal(state.items["openclaw/gogcli#751"]?.decision.sourceDeliveryId, undefined);
+
+  await queue.fetch(
+    buildExactReviewQueueRequest(
+      "delivery-shared-original",
+      752,
+      "legacy_dispatch",
+      "issue",
+      undefined,
+      {
+        commandStatusMarker: firstMarker,
+        statusCommentId: 9301,
+        sourceDeliveryId: "github-shared-original-delivery",
+      },
+    ),
+  );
+  await queue.fetch(
+    buildExactReviewQueueRequest(
+      "delivery-shared-replacement",
+      752,
+      "legacy_dispatch",
+      "issue",
+      undefined,
+      {
+        commandStatusMarker: firstMarker,
+        statusCommentId: 9301,
+      },
+    ),
+  );
+  const sameMarkerState = (await storage.get("exact-review-queue")) as typeof state;
+  assert.equal(
+    sameMarkerState.items["openclaw/gogcli#752"]?.decision.commandStatusMarker,
+    firstMarker,
+  );
+  assert.equal(sameMarkerState.items["openclaw/gogcli#752"]?.decision.statusCommentId, 9301);
+  assert.equal(sameMarkerState.items["openclaw/gogcli#752"]?.decision.sourceDeliveryId, undefined);
+});
+
 test("exact-review queue coalesces one pending publication lineage across producer runs", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
@@ -6363,12 +6438,13 @@ test("signed migrated receipts cannot complete a newer same-marker lifecycle rev
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const statusStore = new MemoryKv();
   const now = Date.now();
   const target = "openclaw/openclaw#917";
   const marker = "<!-- clawsweeper-command-status:917:re_review:same-head -->";
   for (const [revision, statusCommentId, name] of [
     [1, 9301, "older"],
-    [2, 9401, "newer"],
+    [2, 9301, "newer"],
   ] as const) {
     const identity = {
       canonicalTargetKey: target,
@@ -6377,7 +6453,8 @@ test("signed migrated receipts cannot complete a newer same-marker lifecycle rev
     };
     lifecycle.recordAdmission({
       ...identity,
-      deliveryId: `same-head:${name}`,
+      deliveryId: `publisher:${name}:1`,
+      sourceDeliveryId: `github-delivery:${name}`,
       sourceAction: "re_review",
       commandOriginated: true,
       statusMarker: marker,
@@ -6410,8 +6487,41 @@ test("signed migrated receipts cannot complete a newer same-marker lifecycle rev
   }
 
   const secret = "same-head-revision-secret";
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    STATUS_STORE: statusStore,
+  };
+  await statusStore.put(
+    "openclaw-bay:journey-state:v1",
+    JSON.stringify(
+      mergeBayJourneyState(
+        null,
+        [
+          {
+            repository: "openclaw/openclaw",
+            number: 917,
+            source_comment_id: 555,
+            source_delivery_id: "github-delivery:older",
+            triggered_at: new Date(now + 1).toISOString(),
+          },
+          {
+            repository: "openclaw/openclaw",
+            number: 917,
+            source_comment_id: 555,
+            source_delivery_id: "github-delivery:newer",
+            triggered_at: new Date(now + 2).toISOString(),
+          },
+        ],
+        [],
+        new Date(now).toISOString(),
+      ),
+    ),
+  );
   const payload = {
     canonical_target_key: target,
+    fence_key: `${target}@exact:older`,
+    revision: 1,
     status_marker: marker,
     status_comment_id: 9301,
     command_comment_id: 555,
@@ -6419,6 +6529,47 @@ test("signed migrated receipts cannot complete a newer same-marker lifecycle rev
     completed_at: new Date(now + 50).toISOString(),
     observed_at: now + 51,
   };
+  const ambiguousWebhook = await worker.fetch(
+    signedGithubWebhookRequest({
+      event: "issue_comment",
+      secret,
+      payload: {
+        action: "edited",
+        repository: {
+          full_name: "openclaw/openclaw",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        issue: { number: 917 },
+        comment: {
+          id: 9302,
+          body: [
+            "<!-- clawsweeper-command-ack:555 -->",
+            marker,
+            "<!-- clawsweeper-command-progress:start -->",
+            "- State: Complete",
+            "- Detail: Done.",
+            "<!-- clawsweeper-command-progress:end -->",
+          ].join("\n"),
+          created_at: payload.completed_at,
+          updated_at: payload.completed_at,
+          user: { login: "clawsweeper[bot]" },
+        },
+      },
+    }),
+    env,
+  );
+  assert.equal((await ambiguousWebhook.json()).reason, "unmatched lifecycle acknowledgement");
+  assert.equal(
+    lifecycleState(lifecycle.read(target, `${target}@exact:older`, 1)!),
+    "acknowledgement_pending",
+  );
+  assert.equal(
+    lifecycleState(lifecycle.read(target, `${target}@exact:newer`, 2)!),
+    "acknowledgement_pending",
+  );
   const body = JSON.stringify(payload);
   const response = await worker.fetch(
     new Request(
@@ -6434,18 +6585,27 @@ test("signed migrated receipts cannot complete a newer same-marker lifecycle rev
         body,
       },
     ),
-    {
-      CLAWSWEEPER_WEBHOOK_SECRET: secret,
-      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
-    },
+    env,
   );
 
-  assert.equal((await response.json()).accepted, true);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    accepted: true,
+    lifecycle_state: "completed",
+    acknowledgement_state: "observed",
+    version: 1,
+    source_delivery_id: "github-delivery:older",
+  });
   assert.equal(lifecycleState(lifecycle.read(target, `${target}@exact:older`, 1)!), "completed");
   assert.equal(
     lifecycleState(lifecycle.read(target, `${target}@exact:newer`, 2)!),
     "acknowledgement_pending",
   );
+  const journeys = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1"))!).journeys;
+  const older = journeys.find((journey) => journey.source_delivery_id === "github-delivery:older");
+  const newer = journeys.find((journey) => journey.source_delivery_id === "github-delivery:newer");
+  assert.equal(older.completed_at, payload.completed_at);
+  assert.equal(newer.completed_at, null);
 
   const malformed = await queue.fetch(
     new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
@@ -6455,6 +6615,453 @@ test("signed migrated receipts cannot complete a newer same-marker lifecycle rev
     }),
   );
   assert.equal(malformed.status, 400);
+
+  for (const invalidIdentity of [
+    { fence_key: `${target}@exact:older`, revision: undefined },
+    { fence_key: undefined, revision: 1 },
+    { fence_key: `${target}@exact:older`, revision: "1" },
+  ]) {
+    const malformedIdentity = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...payload, ...invalidIdentity }),
+      }),
+    );
+    assert.equal(malformedIdentity.status, 400);
+  }
+});
+
+test("unfenced acknowledgements prefer a unique exact status comment over a shared marker", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const canonicalTargetKey = "openclaw/openclaw#918";
+  const statusMarker = "<!-- clawsweeper-command-status:918:re_review:same-head -->";
+  const observedAt = 1_780_000_000_000;
+  for (const [revision, statusCommentId] of [
+    [1, 9301],
+    [2, 9401],
+  ] as const) {
+    const identity = {
+      canonicalTargetKey,
+      fenceKey: `${canonicalTargetKey}@exact:${revision}`,
+      revision,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `publisher:${revision}`,
+      sourceDeliveryId: `github-command-delivery:${revision}`,
+      sourceAction: "re_review",
+      commandOriginated: true,
+      statusMarker,
+      statusCommentId,
+      observedAt: observedAt + revision,
+    });
+    lifecycle.recordCanonicalReceipt({
+      ...identity,
+      outcome: "accepted",
+      receiptId: `canonical:${revision}`,
+      observedAt: observedAt + 10 + revision,
+    });
+    lifecycle.recordRouterReceipt({
+      ...identity,
+      outcome: "durable",
+      receiptId: `router:${revision}`,
+      observedAt: observedAt + 20 + revision,
+    });
+    lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "review_completed_routed",
+      observedAt: observedAt + 30 + revision,
+    });
+    lifecycle.authorizeCommandAcknowledgement({
+      ...identity,
+      statusMarker,
+      statusCommentId,
+      observedAt: observedAt + 40 + revision,
+    });
+  }
+
+  const observation = lifecycle.observeCommandAcknowledgement({
+    canonicalTargetKey,
+    statusMarker,
+    commandCommentId: 555,
+    completionCommentId: 9301,
+    observedAt: observedAt + 100,
+  });
+  assert.equal(observation.accepted, true);
+  assert.equal(observation.projection?.revision, 1);
+  assert.equal(
+    lifecycleState(lifecycle.read(canonicalTargetKey, `${canonicalTargetKey}@exact:1`, 1)!),
+    "completed",
+  );
+  assert.equal(
+    lifecycleState(lifecycle.read(canonicalTargetKey, `${canonicalTargetKey}@exact:2`, 2)!),
+    "acknowledgement_pending",
+  );
+});
+
+test("Bay reconciles fenced completion delivery, legacy journeys, and same-second orphans", () => {
+  const generatedAt = "2026-08-03T12:00:06.000Z";
+  const completedAt = "2026-08-03T12:00:05.000Z";
+  const triggers = ["delivery-a", "delivery-b"].map((sourceDeliveryId, index) => ({
+    repository: "openclaw/openclaw",
+    number: 917,
+    source_comment_id: 555,
+    source_delivery_id: sourceDeliveryId,
+    triggered_at: `2026-08-03T12:00:0${index}.000Z`,
+  }));
+  const completion = {
+    repository: "openclaw/openclaw",
+    number: 917,
+    source_comment_id: 555,
+    completed_at: completedAt,
+    completion_comment_id: 9302,
+  };
+
+  for (const order of ["webhook-first", "receipt-first"] as const) {
+    let state = mergeBayJourneyState(null, triggers, [], generatedAt);
+    for (const source of order === "webhook-first"
+      ? ["webhook", "receipt"]
+      : ["receipt", "webhook"]) {
+      state = mergeBayJourneyState(
+        state,
+        [],
+        [
+          {
+            ...completion,
+            ...(source === "receipt" ? { source_delivery_id: "delivery-a" } : {}),
+          },
+        ],
+        generatedAt,
+      );
+    }
+    const older = state.journeys.find((journey) => journey.source_delivery_id === "delivery-a");
+    const newer = state.journeys.find((journey) => journey.source_delivery_id === "delivery-b");
+    assert.equal(older?.completed_at, completedAt, order);
+    assert.equal(newer?.completed_at, null, order);
+    assert.equal(summarizeBayJourneyTimings(state.journeys, generatedAt).overall.samples, 1, order);
+  }
+
+  const legacy = mergeBayJourneyState(
+    {
+      schema_version: 1,
+      journeys: [
+        {
+          id: "openclaw/openclaw#917:command:555:at:1785758400000",
+          item_key: "openclaw/openclaw#917",
+          repository: "openclaw/openclaw",
+          number: 917,
+          source_comment_id: 555,
+          triggered_at: "2026-08-03T12:00:00.000Z",
+          completed_at: null,
+          completion_kind: null,
+          completion_comment_id: null,
+        },
+      ],
+    },
+    [],
+    [{ ...completion, source_delivery_id: "delivery-a" }],
+    generatedAt,
+  );
+  assert.equal(legacy.journeys.length, 1);
+  assert.equal(legacy.journeys[0]?.completed_at, completedAt);
+
+  const orphaned = mergeBayJourneyState(
+    null,
+    [],
+    [
+      { ...completion, source_delivery_id: "delivery-a" },
+      { ...completion, source_delivery_id: "delivery-b" },
+    ],
+    generatedAt,
+  );
+  assert.equal(orphaned.journeys.length, 2);
+  assert.notEqual(orphaned.journeys[0]?.id, orphaned.journeys[1]?.id);
+  const resolved = mergeBayJourneyState(orphaned, triggers, [], generatedAt);
+  assert.equal(resolved.journeys.length, 2);
+  assert.equal(
+    resolved.journeys.filter((journey) => journey.completed_at === completedAt).length,
+    2,
+  );
+
+  const identifiedOrphan = mergeBayJourneyState(
+    null,
+    [],
+    [{ ...completion, source_delivery_id: "delivery-a" }],
+    generatedAt,
+  );
+  const legacyTrigger = mergeBayJourneyState(
+    identifiedOrphan,
+    [{ ...triggers[0], source_delivery_id: undefined }],
+    [],
+    generatedAt,
+  );
+  assert.equal(legacyTrigger.journeys.length, 1);
+  assert.equal(legacyTrigger.journeys[0]?.completed_at, completedAt);
+  assert.equal(summarizeBayJourneyTimings(legacyTrigger.journeys, generatedAt).overall.samples, 1);
+
+  let legacyThenTagged = mergeBayJourneyState(
+    null,
+    [{ ...triggers[0], source_delivery_id: undefined }],
+    [],
+    generatedAt,
+  );
+  legacyThenTagged = mergeBayJourneyState(legacyThenTagged, [], [completion], generatedAt);
+  legacyThenTagged = mergeBayJourneyState(legacyThenTagged, [triggers[0]], [], generatedAt);
+  legacyThenTagged = mergeBayJourneyState(
+    legacyThenTagged,
+    [],
+    [{ ...completion, source_delivery_id: "delivery-a" }],
+    generatedAt,
+  );
+  legacyThenTagged = mergeBayJourneyState(legacyThenTagged, [], [], generatedAt);
+  assert.equal(legacyThenTagged.journeys.length, 2);
+  assert.equal(
+    legacyThenTagged.journeys.find((journey) => journey.source_delivery_id === "delivery-a")
+      ?.completed_at,
+    completedAt,
+  );
+  assert.equal(
+    legacyThenTagged.journeys.find((journey) => !journey.source_delivery_id)?.completed_at,
+    null,
+  );
+  assert.equal(
+    summarizeBayJourneyTimings(legacyThenTagged.journeys, generatedAt).overall.samples,
+    1,
+  );
+
+  const newerCompletion = {
+    ...completion,
+    completed_at: "2026-08-03T12:00:05.500Z",
+    completion_comment_id: 9303,
+    source_delivery_id: "delivery-b",
+  };
+  const events = [
+    { triggers: [triggers[0]], completions: [] },
+    { triggers: [triggers[1]], completions: [] },
+    { triggers: [], completions: [completion] },
+    { triggers: [], completions: [newerCompletion] },
+    { triggers: [], completions: [{ ...completion, source_delivery_id: "delivery-a" }] },
+  ];
+  function* permutations<T>(values: T[]): Generator<T[]> {
+    if (values.length === 0) {
+      yield [];
+      return;
+    }
+    for (let index = 0; index < values.length; index += 1) {
+      for (const tail of permutations(values.filter((_value, position) => position !== index))) {
+        yield [values[index]!, ...tail];
+      }
+    }
+  }
+  for (const [index, order] of [...permutations(events)].entries()) {
+    let state = null;
+    for (const event of order) {
+      state = mergeBayJourneyState(state, event.triggers, event.completions, generatedAt);
+    }
+    const older = state!.journeys.find((journey) => journey.source_delivery_id === "delivery-a");
+    const newer = state!.journeys.find((journey) => journey.source_delivery_id === "delivery-b");
+    assert.equal(state!.journeys.length, 2, `permutation ${index}`);
+    assert.equal(older?.completed_at, completedAt, `older permutation ${index}`);
+    assert.equal(newer?.completed_at, newerCompletion.completed_at, `newer permutation ${index}`);
+    assert.equal(
+      summarizeBayJourneyTimings(state!.journeys, generatedAt).overall.samples,
+      2,
+      `samples permutation ${index}`,
+    );
+  }
+});
+
+test("Bay transfers a stolen legacy completion when the correct fenced completion arrives", () => {
+  const generatedAt = "2026-08-03T12:00:20.000Z";
+  const shared = {
+    repository: "openclaw/openclaw",
+    number: 917,
+    source_comment_id: 555,
+  };
+  const modernTrigger = {
+    ...shared,
+    source_delivery_id: "modern-a",
+    triggered_at: "2026-08-03T12:00:01.000Z",
+  };
+  const legacyTrigger = {
+    ...shared,
+    source_delivery_id: "legacy-b",
+    triggered_at: "2026-08-03T12:00:02.000Z",
+  };
+  const legacyCompletion = {
+    ...shared,
+    completed_at: "2026-08-03T12:00:07.000Z",
+    completion_comment_id: 9301,
+  };
+  const modernCompletion = {
+    ...shared,
+    source_delivery_id: "modern-a",
+    completed_at: "2026-08-03T12:00:08.000Z",
+    completion_comment_id: 9301,
+  };
+
+  let state = mergeBayJourneyState(null, [modernTrigger], [], generatedAt);
+  state = mergeBayJourneyState(state, [], [legacyCompletion], generatedAt);
+  state = mergeBayJourneyState(state, [], [modernCompletion], generatedAt);
+  state = mergeBayJourneyState(state, [legacyTrigger], [], generatedAt);
+
+  assert.equal(
+    state.journeys.find((journey) => journey.source_delivery_id === "modern-a")?.completed_at,
+    modernCompletion.completed_at,
+  );
+  assert.equal(
+    state.journeys.find((journey) => journey.source_delivery_id === "legacy-b")?.completed_at,
+    legacyCompletion.completed_at,
+  );
+  assert.equal(summarizeBayJourneyTimings(state.journeys, generatedAt).overall.samples, 2);
+});
+
+test("Bay prefers a delivery-matched orphan over an earlier anonymous completion", () => {
+  const generatedAt = "2026-08-03T12:00:30.000Z";
+  const shared = {
+    repository: "openclaw/openclaw",
+    number: 917,
+    source_comment_id: 555,
+  };
+  const identifiedCompletion = {
+    ...shared,
+    source_delivery_id: "delivery-a",
+    completed_at: "2026-08-03T12:00:08.000Z",
+    completion_comment_id: 9302,
+  };
+  const earlierAnonymousCompletion = {
+    ...shared,
+    completed_at: "2026-08-03T12:00:05.000Z",
+    completion_comment_id: 9301,
+  };
+  const trigger = {
+    ...shared,
+    source_delivery_id: "delivery-a",
+    triggered_at: "2026-08-03T12:00:01.000Z",
+  };
+
+  const orphaned = mergeBayJourneyState(
+    null,
+    [],
+    [identifiedCompletion, earlierAnonymousCompletion],
+    generatedAt,
+  );
+  const resolved = mergeBayJourneyState(orphaned, [trigger], [], generatedAt);
+
+  assert.equal(
+    resolved.journeys.find((journey) => journey.source_delivery_id === "delivery-a")?.completed_at,
+    identifiedCompletion.completed_at,
+  );
+  assert.equal(
+    resolved.journeys.find((journey) => !journey.source_delivery_id)?.completed_at,
+    earlierAnonymousCompletion.completed_at,
+  );
+});
+
+test("Bay reassigns a displaced anonymous completion once its sole journey is identifiable", () => {
+  const generatedAt = "2026-08-03T12:00:30.000Z";
+  const shared = {
+    repository: "openclaw/openclaw",
+    number: 917,
+    source_comment_id: 555,
+  };
+  const modernTrigger = {
+    ...shared,
+    source_delivery_id: "delivery-a",
+    triggered_at: "2026-08-03T12:00:01.000Z",
+  };
+  const legacyTrigger = {
+    ...shared,
+    source_delivery_id: "delivery-b",
+    triggered_at: "2026-08-03T12:00:02.000Z",
+  };
+  const anonymousCompletion = {
+    ...shared,
+    completed_at: "2026-08-03T12:00:06.000Z",
+    completion_comment_id: 9311,
+  };
+  const fencedCompletion = {
+    ...shared,
+    source_delivery_id: "delivery-a",
+    completed_at: "2026-08-03T12:00:05.000Z",
+    completion_comment_id: 9310,
+  };
+
+  let state = mergeBayJourneyState(null, [modernTrigger], [], generatedAt);
+  state = mergeBayJourneyState(state, [], [anonymousCompletion], generatedAt);
+  state = mergeBayJourneyState(state, [legacyTrigger], [], generatedAt);
+  state = mergeBayJourneyState(state, [], [fencedCompletion], generatedAt);
+
+  assert.equal(
+    state.journeys.find((journey) => journey.source_delivery_id === "delivery-a")?.completed_at,
+    fencedCompletion.completed_at,
+  );
+  assert.equal(
+    state.journeys.find((journey) => journey.source_delivery_id === "delivery-b")?.completed_at,
+    anonymousCompletion.completed_at,
+  );
+  assert.equal(summarizeBayJourneyTimings(state.journeys, generatedAt).overall.samples, 2);
+});
+
+test("Bay keeps the newest fenced completion received before its trigger", () => {
+  const generatedAt = "2026-08-03T12:00:30.000Z";
+  const shared = {
+    repository: "openclaw/openclaw",
+    number: 917,
+    source_comment_id: 555,
+    source_delivery_id: "delivery-a",
+  };
+  const first = {
+    ...shared,
+    completed_at: "2026-08-03T12:00:05.000Z",
+    completion_comment_id: 9310,
+  };
+  const newer = {
+    ...shared,
+    completed_at: "2026-08-03T12:00:06.000Z",
+    completion_comment_id: 9311,
+  };
+  const trigger = { ...shared, triggered_at: "2026-08-03T12:00:01.000Z" };
+
+  for (const completions of [
+    [first, newer],
+    [newer, first],
+  ]) {
+    let state = mergeBayJourneyState(null, [], completions, generatedAt);
+    state = mergeBayJourneyState(state, [trigger], [], generatedAt);
+    assert.equal(state.journeys.length, 1);
+    assert.equal(state.journeys[0]?.completed_at, newer.completed_at);
+    assert.equal(state.journeys[0]?.completion_comment_id, newer.completion_comment_id);
+  }
+});
+
+test("same-second fenced completions deterministically retain the newest comment identity", () => {
+  const generatedAt = "2026-08-03T12:00:30.000Z";
+  const shared = {
+    repository: "openclaw/openclaw",
+    number: 917,
+    source_comment_id: 555,
+    source_delivery_id: "delivery-a",
+  };
+  const trigger = { ...shared, triggered_at: "2026-08-03T12:00:01.000Z" };
+  const completedAt = "2026-08-03T12:00:05.000Z";
+  const first = { ...shared, completed_at: completedAt, completion_comment_id: 9310 };
+  const second = { ...shared, completed_at: completedAt, completion_comment_id: 9311 };
+
+  for (const completions of [
+    [first, second],
+    [second, first],
+  ]) {
+    let state = mergeBayJourneyState(null, [trigger], [], generatedAt);
+    for (const completion of completions) {
+      state = mergeBayJourneyState(state, [], [completion], generatedAt);
+    }
+    assert.equal(state.journeys.length, 1);
+    assert.equal(state.journeys[0]?.completed_at, completedAt);
+    assert.equal(state.journeys[0]?.completion_comment_id, second.completion_comment_id);
+  }
 });
 
 test("verified unchanged legacy receipts complete Bay journeys without a webhook", async () => {
@@ -25012,7 +25619,7 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
           installation: { id: 123 },
           comment: {
             id: 456,
-            body: "@clawsweeper status",
+            body: "@clawsweeper review",
             updated_at: "2026-07-12T20:00:00Z",
             author_association: "OWNER",
             user: { login: "steipete" },
@@ -25024,6 +25631,7 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
         CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
         CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS: "0",
+        STATUS_STORE: new MemoryKv(),
       },
     );
 
@@ -25038,17 +25646,16 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
         item_number: 597,
         comment_id: 456,
         status_comment_id: 777,
-        source_event: "issue_comment",
         source_action: "created",
+        source_delivery_id: "test-delivery",
         comment_event_auth: "github_webhook_v1",
         comment_updated_at: "2026-07-12T20:00:00Z",
-        comment_body_sha256: createHash("sha256").update("@clawsweeper status").digest("hex"),
+        comment_body_sha256: createHash("sha256").update("@clawsweeper review").digest("hex"),
       },
     });
-    assert.equal(
+    assert.ok(
       Object.keys((dispatchBody as { client_payload: Record<string, unknown> }).client_payload)
-        .length,
-      10,
+        .length <= 10,
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
   } finally {
