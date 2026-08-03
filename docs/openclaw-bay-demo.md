@@ -1,8 +1,10 @@
-# OpenClaw Bay Demo
+# OpenClaw Bay
 
-OpenClaw Bay is an experimental, read-only visualisation of the live
+OpenClaw Bay is a public, indexable, read-only visualisation of the live
 ClawSweeper pipeline. It lives at `/bay-demo` on the existing dashboard Worker
-and turns active work into animated crustaceans moving across a shoreline.
+and turns active work into animated crustaceans moving across a shoreline. It
+is linked from the Overview, issue-triage, and PR-proof headers as a normal
+ClawSweeper web-page destination.
 
 ![OpenClaw Bay running against the shared dashboard status feed](openclaw-bay-demo.jpg)
 
@@ -20,11 +22,11 @@ redacted status sequence; it covers the forward sweep, retrigger tunnel,
 search, repository filter, safe drawer links, local-only tide, and visible
 network diagnostics without reading live dashboard data.
 
-The demo is intentionally absent from the Overview, issue-triage, and PR-proof
-navigation. `X-Robots-Tag` and page metadata ask crawlers not to index it, but
-that is not access control: anyone who has or guesses the URL can open it. A
-maintainer-only preview would require Cloudflare Access or application
-authentication as a separate rollout decision.
+Bay is an observer-only surface: it displays bounded public status but never
+triggers or offers queue, workflow, GitHub, DLQ, recovery, deploy, or rollback
+actions. Its public visibility is not an authorization boundary; any future
+restricted surface would require separate authentication or access-control
+design.
 
 ## What It Shows
 
@@ -71,8 +73,8 @@ three rather than four browser status requests per minute after initial load.
 That is 25% fewer requests to the Worker, not a claim of 25% fewer GitHub API
 calls. The existing 20-second server cache, snapshot age, edge location, and
 other viewers determine when either page causes a GitHub refresh. In
-particular, Bay's 20-second timer can align with cache expiry, so the demo does
-not claim a lower upstream GitHub refresh rate than Overview.
+particular, Bay's 20-second timer can align with cache expiry, so Bay does not
+claim a lower upstream GitHub refresh rate than Overview.
 
 The displayed end-to-end timing is an observed sample of the latest completed
 jobs found in the previous hour, not a complete one-hour census. Per-lane wait
@@ -89,9 +91,9 @@ The page, status API, and image assets all belong to `openclaw/clawsweeper`:
 - `.github/workflows/dashboard.yml` deploys the existing
   `clawsweeper-status` Worker to `clawsweeper.openclaw.ai`.
 
-The demo HTML is `no-store`, `noindex`, frame-blocked, and protected by a
-content security policy. `/bay` remains unpublished so this experiment is not
-mistaken for a permanent dashboard route.
+The Bay HTML is `no-store`, frame-blocked, and protected by a content security
+policy. `/bay` remains unpublished so `/bay-demo` remains the one documented
+public route rather than gaining an undocumented alias.
 
 ## Local Proof
 
@@ -108,7 +110,7 @@ same-origin in its request behavior; the CSP allows only self and OpenClaw
 HTTPS subdomains so Wrangler's localhost preview can reach that production
 snapshot.
 
-The deployment smoke test also checks the demo route, security headers,
+The deployment smoke test also checks the Bay route, security headers,
 unpublished `/bay` route, and all three WebP assets:
 
 ```bash

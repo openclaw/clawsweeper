@@ -71,34 +71,37 @@ async function main() {
   if (!html.includes("ClawSweeper Live")) throw new Error("dashboard HTML title missing");
   if (!html.includes("System Overview")) throw new Error("dashboard system overview missing");
   if (!html.includes('id="worker-dialog"')) throw new Error("dashboard worker drill-down missing");
-  if (html.includes('href="/bay-demo"')) {
-    throw new Error("experimental Bay route leaked into the overview navigation");
+  if (!html.includes('href="/bay-demo"')) {
+    throw new Error("public Bay route is missing from the overview navigation");
   }
 
   const bayResponse = await fetch(`${baseUrl}/bay-demo`);
   if (!bayResponse.ok) throw new Error(`${baseUrl}/bay-demo returned ${bayResponse.status}`);
   if (bayResponse.headers.get("cache-control") !== "no-store") {
-    throw new Error("Bay demo HTML is not marked no-store");
+    throw new Error("Bay HTML is not marked no-store");
   }
-  if (bayResponse.headers.get("x-robots-tag") !== "noindex, nofollow, noarchive") {
-    throw new Error("Bay demo is missing its noindex response policy");
+  if (bayResponse.headers.get("x-robots-tag") !== null) {
+    throw new Error("public Bay route has an unexpected robots response policy");
   }
   const bayCsp = bayResponse.headers.get("content-security-policy") || "";
   if (
     !bayCsp.includes("connect-src 'self' https://*.openclaw.ai") ||
     !bayCsp.includes("frame-ancestors 'none'")
   ) {
-    throw new Error("Bay demo is missing its expected content security policy");
+    throw new Error("Bay is missing its expected content security policy");
   }
   const bayHtml = await bayResponse.text();
   if (!bayHtml.includes("OpenClaw Bay · ClawSweeper")) {
-    throw new Error("Bay demo HTML title missing");
+    throw new Error("Bay HTML title missing");
+  }
+  if (bayHtml.includes('<meta name="robots"')) {
+    throw new Error("public Bay route has unexpected robots page metadata");
   }
   if (!bayHtml.includes('fetch("/api/status"')) {
-    throw new Error("Bay demo does not use the shared status endpoint");
+    throw new Error("Bay does not use the shared status endpoint");
   }
   if (containsDirectGitHubApiUrl(bayHtml)) {
-    throw new Error("Bay demo contains a direct browser-to-GitHub request");
+    throw new Error("Bay contains a direct browser-to-GitHub request");
   }
 
   const unpublishedBay = await fetch(`${baseUrl}/bay`);
@@ -140,7 +143,8 @@ async function main() {
         diagnostic_errors: status.diagnostics?.errors || [],
         bay_demo: {
           route: "/bay-demo",
-          unlisted: true,
+          public: true,
+          indexable: true,
           direct_github_requests: 0,
           assets: bayAssets,
         },

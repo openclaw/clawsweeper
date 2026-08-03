@@ -1,14 +1,18 @@
 # OpenClaw Bay deterministic browser proof
 
 This proof package exercises the real `/bay-demo` page and its checked-in
-artwork in Chromium. Playwright replaces the dashboard's `/api/status` and
-`/api/health-history` reads with fully synthetic, redacted fixtures so stage
-changes and telemetry controls can be reproduced without live dashboard data,
-credentials, or GitHub API traffic.
+artwork in Chromium. Playwright replaces the dashboard's status, history, and
+triage reads with fully synthetic, redacted fixtures so stage changes,
+telemetry controls, and navigation can be reproduced without live dashboard
+data, credentials, or GitHub API traffic.
 
 The sequence proves:
 
 - visible partial-telemetry diagnostics;
+- public indexability: no robots metadata or `X-Robots-Tag`, while preserving
+  `no-store`, CSP, and frame protections;
+- the consistent public dashboard header, including a visible Bay link from
+  Overview, issue triage, and PR-proof triage;
 - the Bay timing badge naming its bounded **review trigger → final review** measurement, completed by the command-status update emitted after the durable review summary;
 - a 390px portrait layout that stacks Arriving through Publishing and Applying vertically, keeps the terminal pools at the waterline, and has no horizontal page overflow;
 - advancing crustacean-claw and master-sweeper animations;
@@ -37,7 +41,7 @@ The sequence proves:
 - [`trace.zip`](trace.zip) is the Playwright action, DOM snapshot, and network
   trace. Open it with
   `npx --yes playwright@1.60.0 show-trace docs/proof/openclaw-bay/trace.zip`.
-- [`proof-summary.json`](proof-summary.json) records all 42 passing assertions
+- [`proof-summary.json`](proof-summary.json) records all 51 passing assertions
   from its accompanying deterministic proof run,
   sanitized request/response metadata, safe drawer links, the unchanged
   terminal keys before and after both preview modes, the proved real-tide
@@ -74,9 +78,9 @@ crabbox run \
 
 ## Provenance and privacy
 
-- implementation source: `854d8923e523f0cd2d76b4fdf92fec18fb4d012a`
+- implementation source: `50955ad1a55f22b6a32e8f598c9f1d4d312a998e+public-indexable-governance-dirty`
 - provider: Crabbox `local-container`
-- lease: `cbx_862b38501790` (`brisk-lobster`)
+- lease: `cbx_3754beb76e5c` (`violet-barnacle`)
 - image: `mcr.microsoft.com/playwright:v1.60.0-noble`
 - fixture SHA-256:
   `B0180F79C465964AD39E6E45F730211294742E1206EA4CE1A4C39DEB61AFCB71`

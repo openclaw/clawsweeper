@@ -37,6 +37,17 @@ test("dashboard smoke requires the bounded Bay journey timing contract", () => {
   assert.doesNotMatch(source, /latest_completed_jobs/);
 });
 
+test("dashboard smoke requires Bay's public indexability and overview navigation", () => {
+  const source = readFileSync(new URL("../scripts/dashboard-smoke.mjs", import.meta.url), "utf8");
+
+  assert.match(source, /public Bay route is missing from the overview navigation/);
+  assert.match(source, /x-robots-tag"\) !== null/);
+  assert.match(source, /public Bay route has unexpected robots page metadata/);
+  assert.match(source, /public: true/);
+  assert.match(source, /indexable: true/);
+  assert.doesNotMatch(source, /unlisted: true/);
+});
+
 test("dashboard smoke waits for the exact deployed revision", async () => {
   const observed = ["old-sha", "expected-sha"];
   let sleeps = 0;

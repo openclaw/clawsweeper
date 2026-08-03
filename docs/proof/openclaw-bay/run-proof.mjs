@@ -632,7 +632,7 @@ await context.addInitScript(() => {
 });
 
 const page = await context.newPage();
-page.on("request", (request) => {
+context.on("request", (request) => {
   const safe = sanitizeUrl(request.url());
   requests.push({
     method: request.method(),
@@ -642,7 +642,7 @@ page.on("request", (request) => {
     resource_type: request.resourceType(),
   });
 });
-page.on("response", (response) => {
+context.on("response", (response) => {
   const safe = sanitizeUrl(response.url());
   responses.push({
     status: response.status(),
@@ -657,7 +657,7 @@ page.on("console", (message) => {
 });
 page.on("pageerror", (error) => pageErrors.push(String(error.message || error)));
 
-await page.route("**/*", async (route) => {
+await context.route("**/*", async (route) => {
   const request = route.request();
   const url = new URL(request.url());
   if (url.pathname === "/api/status") {
@@ -693,6 +693,15 @@ await page.route("**/*", async (route) => {
         retention_days: 7,
         samples: healthHistory,
       }),
+    });
+    return;
+  }
+  if (url.pathname === "/api/triage" || url.pathname === "/api/pr-proof-triage") {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json; charset=utf-8",
+      headers: { "cache-control": "no-store", "x-clawsweeper-cache": "synthetic-proof" },
+      body: JSON.stringify({ items: [], total: 0 }),
     });
     return;
   }
@@ -758,7 +767,7 @@ async function capture(id, title, detail) {
 
 let proofError = null;
 try {
-  await page.goto(proofUrl, { waitUntil: "networkidle" });
+  const bayResponse = await page.goto(proofUrl, { waitUntil: "networkidle" });
   await page.locator("#loading").waitFor({ state: "hidden", timeout: 15_000 });
   await page.locator("#stage-grid .critter").first().waitFor({ state: "visible" });
   await page.locator("#bay-control-board .bay-control-point").first().waitFor({ state: "visible" });
@@ -767,6 +776,52 @@ try {
   assertProof("real Bay route loaded", (await page.title()).includes("OpenClaw Bay"), {
     route: "/bay-demo",
   });
+  assertProof(
+    "Bay is indexable and retains hardened response headers",
+    Boolean(bayResponse) &&
+      bayResponse.headers()["x-robots-tag"] === undefined &&
+      (await page.locator('meta[name="robots"]').count()) === 0 &&
+      (bayResponse.headers()["cache-control"] || "").includes("no-store") &&
+      (bayResponse.headers()["x-frame-options"] || "").toUpperCase() === "DENY" &&
+      (bayResponse.headers()["content-security-policy"] || "").includes("frame-ancestors 'none'"),
+    {
+      x_robots_tag: bayResponse?.headers()["x-robots-tag"] || null,
+      robots_meta_count: await page.locator('meta[name="robots"]').count(),
+      cache_control: bayResponse?.headers()["cache-control"] || null,
+      x_frame_options: bayResponse?.headers()["x-frame-options"] || null,
+    },
+  );
+  const bayHeaderLinks = await page.locator('nav[aria-label="Dashboard views"] a').evaluateAll((links) =>
+    links.map((link) => ({ label: link.textContent?.trim(), href: link.getAttribute("href") })),
+  );
+  assertProof(
+    "Bay header exposes the consistent public dashboard navigation",
+    JSON.stringify(bayHeaderLinks) ===
+      JSON.stringify([
+        { label: "Overview", href: "/" },
+        { label: "OpenClaw Bay", href: "/bay-demo" },
+        { label: "Issue triage", href: "/triage" },
+        { label: "PR proof triage", href: "/pr-proof-triage" },
+      ]),
+    { links: bayHeaderLinks },
+  );
+  const headerRoutes = ["/", "/triage", "/pr-proof-triage"];
+  const headerNavigation = [];
+  for (const route of headerRoutes) {
+    const navigationPage = await context.newPage();
+    await navigationPage.goto(`${origin}${route}`, { waitUntil: "domcontentloaded" });
+    headerNavigation.push({
+      route,
+      bay_links: await navigationPage.locator('a[href="/bay-demo"]').count(),
+      visible: await navigationPage.locator('a[href="/bay-demo"]').first().isVisible(),
+    });
+    await navigationPage.close();
+  }
+  assertProof(
+    "Overview and triage headers visibly link to Bay",
+    headerNavigation.every((entry) => entry.bay_links === 1 && entry.visible),
+    { headers: headerNavigation },
+  );
   assertProof(
     "manual poll hook captured",
     await page.evaluate(() => typeof window.__bayProofPoll === "function"),
@@ -2005,7 +2060,7 @@ for (const item of evidence) {
 }
 const reportHtml = `<!doctype html><html><head><meta charset="utf-8"><title>OpenClaw Bay Playwright proof</title><style>
 *{box-sizing:border-box}body{margin:0;padding:28px;background:#edf7f5;color:#263533;font:16px/1.45 system-ui,sans-serif}header{max-width:1640px;margin:0 auto 24px;padding:24px 28px;border-radius:18px;background:#174e52;color:white;box-shadow:0 14px 35px rgba(24,67,69,.18)}header h1{margin:0 0 8px;font-size:34px}header p{margin:4px 0;color:#d9f1ed}.pass{display:inline-block;margin-top:12px;padding:7px 11px;border-radius:999px;background:#dff5dc;color:#174e52;font-weight:850}.grid{max-width:1640px;margin:auto;display:grid;grid-template-columns:1fr 1fr;gap:22px}article{overflow:hidden;border:1px solid #b8d3cf;border-radius:16px;background:white;box-shadow:0 10px 25px rgba(25,70,70,.11)}.copy{min-height:112px;padding:16px 18px;border-bottom:1px solid #d6e5e2}.copy h2{margin:0 0 6px;color:#bc4b31;font-size:21px}.copy p{margin:0;color:#536864}img{display:block;width:100%;height:auto}@media(max-width:900px){.grid{grid-template-columns:1fr}}
-</style></head><body><header><h1>OpenClaw Bay · deterministic Playwright proof</h1><p>Real <code>/bay-demo</code> page and artwork; only dashboard reads <code>/api/status</code> and <code>/api/health-history</code> are replaced with fully synthetic, redacted fixtures.</p><p>Source ${escapeHtml(sourceSha)} · fixture SHA-256 ${escapeHtml(fixtureSha256)}</p><span class="pass">${assertions.length} assertions passed · 0 GitHub API requests · 0 mutation requests</span></header><main class="grid">${cards.join("")}</main></body></html>`;
+</style></head><body><header><h1>OpenClaw Bay · deterministic Playwright proof</h1><p>Real <code>/bay-demo</code> page and artwork; dashboard status, history, and triage reads are replaced with fully synthetic, redacted fixtures.</p><p>Source ${escapeHtml(sourceSha)} · fixture SHA-256 ${escapeHtml(fixtureSha256)}</p><span class="pass">${assertions.length} assertions passed · 0 GitHub API requests · 0 mutation requests</span></header><main class="grid">${cards.join("")}</main></body></html>`;
 const reportPath = path.join(outputDir, "playwright-proof-report.html");
 await writeFile(reportPath, reportHtml);
 

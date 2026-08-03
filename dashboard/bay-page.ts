@@ -5,7 +5,6 @@ export function bayHtml() {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#edf7f5">
-<meta name="robots" content="noindex,nofollow,noarchive">
 <title>OpenClaw Bay · ClawSweeper</title>
 <style>
 :root {

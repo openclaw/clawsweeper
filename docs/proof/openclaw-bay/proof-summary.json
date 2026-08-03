@@ -1,6 +1,6 @@
 {
   "proof": "OpenClaw Bay deterministic Playwright browser proof",
-  "source_sha": "854d8923e523f0cd2d76b4fdf92fec18fb4d012a",
+  "source_sha": "50955ad1a55f22b6a32e8f598c9f1d4d312a998e+public-indexable-governance-dirty",
   "route": "/bay-demo",
   "data_classification": "fully synthetic and redacted; no live/private dashboard payloads",
   "fixture_sha256": "B0180F79C465964AD39E6E45F730211294742E1206EA4CE1A4C39DEB61AFCB71",
@@ -18,13 +18,64 @@
       "sha256": "9BAF0B764E413369EC8D9554D731A4E6B008B2DCB266B5D2837E94E820CEEBFE"
     }
   ],
-  "derived_real_tide_snapshot_sha256": "18FAF63BD6529D1F4EB03BF880343E20244413F82FE62029F055AABC13F44DA9",
-  "generated_at": "2026-07-17T23:53:20.248Z",
+  "derived_real_tide_snapshot_sha256": "078023220BCDBF72E4CF212011760751EB63A841CF98070A77E4777A5BD4386E",
+  "generated_at": "2026-08-03T20:11:25.379Z",
   "assertions": [
     {
       "name": "real Bay route loaded",
       "status": "PASS",
       "route": "/bay-demo"
+    },
+    {
+      "name": "Bay is indexable and retains hardened response headers",
+      "status": "PASS",
+      "x_robots_tag": null,
+      "robots_meta_count": 0,
+      "cache_control": "no-store",
+      "x_frame_options": "DENY"
+    },
+    {
+      "name": "Bay header exposes the consistent public dashboard navigation",
+      "status": "PASS",
+      "links": [
+        {
+          "label": "Overview",
+          "href": "/"
+        },
+        {
+          "label": "OpenClaw Bay",
+          "href": "/bay-demo"
+        },
+        {
+          "label": "Issue triage",
+          "href": "/triage"
+        },
+        {
+          "label": "PR proof triage",
+          "href": "/pr-proof-triage"
+        }
+      ]
+    },
+    {
+      "name": "Overview and triage headers visibly link to Bay",
+      "status": "PASS",
+      "headers": [
+        {
+          "route": "/",
+          "bay_links": 1,
+          "visible": true
+        },
+        {
+          "route": "/triage",
+          "bay_links": 1,
+          "visible": true
+        },
+        {
+          "route": "/pr-proof-triage",
+          "bay_links": 1,
+          "visible": true
+        }
+      ]
     },
     {
       "name": "manual poll hook captured",
@@ -37,21 +88,29 @@
       "title": "Synthetic proof fixture: optional telemetry unavailable [REDACTED]"
     },
     {
-      "name": "Bay mirrors cached exact-review admission, publication, and handoff telemetry",
+      "name": "Bay mirrors cached admission, publication, state-writer, and handoff telemetry",
       "status": "PASS",
-      "cards": 3,
-      "review": "REVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 6 HOURS\n50\n25\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 6 HOURS\n10\n5\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY",
+      "cards": 4,
+      "review": "REVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 6 HOURS\n50\n25\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 6 HOURS\n10\n5\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY\nSTATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 6 HOURS\n10\n5\n0\nLAST 60M\n17 items\n9 state commits\nBatch writer · terminal telemetry fresh",
       "waiting_hover_label": "12:02 PM · 38 waiting",
       "rate_hover_label": "12:07 PM · +12 / hour · provisional window",
       "queue_items": 1,
       "arriving_queue_samples": 6,
+      "publishing_queue_samples": 6,
+      "applying_queue_samples": 0,
       "queue_header": "ARRIVING 9i",
+      "publishing_header": "PUBLISHING 9i",
       "queue_omission": 1,
       "queue_omission_label": "+3 queued IDs not shown",
       "queue_omission_role": null,
-      "labelled_axes": 12,
+      "labelled_axes": 15,
       "range_controls": 3,
       "lane_help": 1
+    },
+    {
+      "name": "Bay does not present stale State writer terminal totals as current",
+      "status": "PASS",
+      "state_writer": "REVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 6 HOURS\n50\n25\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 6 HOURS\n10\n5\n0\nNET RATE · 6 HOURS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY\nSTATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 6 HOURS\n10\n5\n0\nLAST 60M\nunknown items\nterminal metrics unavailable\nBatch writer · coordinator live · terminal metrics unavailable"
     },
     {
       "name": "completed and attention pools keep terminal outcomes distinct",
@@ -64,7 +123,7 @@
     {
       "name": "journey timing names the trigger-to-final-review duration",
       "status": "PASS",
-      "text": "LAST HOUR\nAVG TRIGGER → FINAL REVIEW 12M\n4 JOURNEYS"
+      "text": "LAST HOUR\nTYPICAL TRIGGER → FINAL REVIEW 11M\nMEAN 12M · 4 JOURNEYS"
     },
     {
       "name": "overflow button explains the bounded public queue sample without inventing hidden IDs",
@@ -78,7 +137,7 @@
         "24h",
         "7d"
       ],
-      "text": "REVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 7 DAYS\n50\n25\n0\nNET RATE · 7 DAYS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 7 DAYS\n10\n5\n0\nNET RATE · 7 DAYS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY"
+      "text": "REVIEW ADMISSION\n29 waiting\n4 ready · 25 backoff · 2 dispatching · 19 leased\nWAITING · 7 DAYS\n50\n25\n0\nNET RATE · 7 DAYS\n+20\n0\n−20\nDraining · −2 in 1h · Catching up · +12 / hour\nRESULT PUBLICATION\n2 waiting\n2 backoff · 1 dispatching · 14 leased\nWAITING · 7 DAYS\n10\n5\n0\nNET RATE · 7 DAYS\n+20\n0\n−20\nDraining · −1 in 1h · Catching up · +12 / hour\nQUEUE HANDOFF\nPENDING\n29\nDISPATCHING\n3\nLEASED\n33\nHEALTHY\nSTATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 7 DAYS\n10\n5\n0\nLAST 60M\n17 items\n9 state commits\nBatch writer · terminal telemetry fresh"
     },
     {
       "name": "Bay does not reuse a stale rate after a history counter reset",
@@ -104,9 +163,58 @@
       "review_pending_path": "M27.0 18.2 M207.0 19.0"
     },
     {
+      "name": "Bay renders failed State writer history collections as a gap",
+      "status": "PASS",
+      "state_writer_pending_path": "M27.0 7.0 M207.0 15.0"
+    },
+    {
+      "name": "Bay labels a current failed State writer collection as a history gap",
+      "status": "PASS",
+      "state_writer": "STATE WRITER\n8 waiting\n1 active · 1 writer max\nWAITING · 6 HOURS\n10\n5\n0\nLAST 60M\n17 items\n9 state commits\nBatch writer · history gap · awaiting current sample"
+    },
+    {
       "name": "Bay retains legacy pending-only history samples",
       "status": "PASS",
       "review_pending_path": "M27.0 18.2 L117.0 18.2 L207.0 19.0"
+    },
+    {
+      "name": "intermediate landscape stacks six Bay lanes before they reach terminal pools",
+      "status": "PASS",
+      "scroll_width": 900,
+      "viewport_width": 900,
+      "stages": [
+        {
+          "left": 13,
+          "top": 1059,
+          "bottom": 1335
+        },
+        {
+          "left": 13,
+          "top": 1335,
+          "bottom": 1667
+        },
+        {
+          "left": 13,
+          "top": 1667,
+          "bottom": 1887
+        },
+        {
+          "left": 13,
+          "top": 1887,
+          "bottom": 2163
+        },
+        {
+          "left": 13,
+          "top": 2163,
+          "bottom": 2383
+        },
+        {
+          "left": 13,
+          "top": 2383,
+          "bottom": 2715
+        }
+      ],
+      "terminal_top": 2743
     },
     {
       "name": "portrait layout stacks the workflow from sand to waterline without horizontal overflow",
@@ -114,39 +222,45 @@
       "scroll_width": 390,
       "viewport_width": 390,
       "grid_columns": "364px",
+      "control_columns": "366px",
       "stages": [
         {
           "left": 13,
-          "top": 977,
-          "bottom": 1253
+          "top": 1483,
+          "bottom": 1759
         },
         {
           "left": 13,
-          "top": 1253,
-          "bottom": 1585
+          "top": 1759,
+          "bottom": 2091
         },
         {
           "left": 13,
-          "top": 1585,
-          "bottom": 1805
+          "top": 2091,
+          "bottom": 2311
         },
         {
           "left": 13,
-          "top": 1805,
-          "bottom": 2081
+          "top": 2311,
+          "bottom": 2587
         },
         {
           "left": 13,
-          "top": 2081,
-          "bottom": 2413
+          "top": 2587,
+          "bottom": 2807
+        },
+        {
+          "left": 13,
+          "top": 2807,
+          "bottom": 3139
         }
       ],
-      "terminal_top": 2441
+      "terminal_top": 3167
     },
     {
       "name": "crustacean claw animation advances",
       "status": "PASS",
-      "elapsed_animation_ms": 300
+      "elapsed_animation_ms": 317
     },
     {
       "name": "forward transition raises READY flag",
@@ -156,7 +270,7 @@
       "name": "master sweeper animation advances",
       "status": "PASS",
       "phase": "sweeping",
-      "elapsed_animation_ms": 317
+      "elapsed_animation_ms": 300
     },
     {
       "name": "forward transition lands in applying",
@@ -168,7 +282,7 @@
       "status": "PASS",
       "source_hole": 1,
       "target_hole": 1,
-      "target_hole_opacity": 0.431002,
+      "target_hole_opacity": 0.541758,
       "label": "openclaw/openclaw#97722 burrowing"
     },
     {
@@ -217,7 +331,7 @@
     {
       "name": "layered preview tide visibly animates",
       "status": "PASS",
-      "elapsed_animation_ms": 67,
+      "elapsed_animation_ms": 50,
       "tide_layers": 3
     },
     {
@@ -235,13 +349,13 @@
       "status": "PASS",
       "duration": "520ms",
       "animation_name": "none",
-      "elapsed_ms": 636
+      "elapsed_ms": 577
     },
     {
       "name": "tide previews do not poll status",
       "status": "PASS",
-      "before_status_gets": 10,
-      "after_status_gets": 10
+      "before_status_gets": 14,
+      "after_status_gets": 14
     },
     {
       "name": "dense completed pool renders every buffered outcome",
@@ -263,12 +377,13 @@
       "known_terminal_outcomes": 20
     },
     {
-      "name": "real tide washes terminal outcomes before clearing",
+      "name": "real tide shows the final terminal completion time before clearing",
       "status": "PASS",
       "washed_terminal_count": 20,
       "preview_class_used": false,
       "terminal_after": 0,
       "countdown": "0 / 20",
+      "displayed_last_tide": "Last tide 17:58 UTC",
       "active_keys_unchanged": true
     },
     {
@@ -304,6 +419,20 @@
       "queue_state": "pending"
     },
     {
+      "name": "durable batch ownership places known publication items in Applying & writing",
+      "status": "PASS",
+      "item_key": "openclaw/openclaw#108003",
+      "stage": "applying",
+      "batch_id": "exact-review-batch:9001"
+    },
+    {
+      "name": "legacy Applying queue records are normalized into Publishing without duplicate Applying cards",
+      "status": "PASS",
+      "item_key": "openclaw/openclaw#108003",
+      "legacy_stage": "applying",
+      "rendered_stage": "publishing"
+    },
+    {
       "name": "preview tide preserves live outcome data",
       "status": "PASS",
       "before_keys": [
@@ -336,11 +465,12 @@
     {
       "name": "mini control board caches each selected dashboard history range",
       "status": "PASS",
-      "health_history_gets": 10,
+      "health_history_gets": 11,
       "ranges": [
         "6h",
         "24h",
         "7d",
+        "6h",
         "6h",
         "6h",
         "6h",
@@ -371,7 +501,7 @@
     {
       "id": "01a-mini-control-board",
       "title": "Mini queue control board",
-      "detail": "Bay reuses the dashboard’s cached six-hour review-admission, publication, and handoff telemetry; each sparkline point has an exact hover label.",
+      "detail": "Bay reuses the dashboard’s cached six-hour review-admission, publication, state-writer, and handoff telemetry; each sparkline point has an exact hover label.",
       "storyboard_panel": 2
     },
     {
@@ -389,7 +519,7 @@
     {
       "id": "01b-portrait-workflow",
       "title": "Portrait workflow: top to bottom",
-      "detail": "Phone portrait mode stacks Arriving through Applying vertically, then places the terminal pools at the waterline without horizontal scrolling.",
+      "detail": "Phone portrait mode stacks Arriving through Publishing and Applying vertically, then places the terminal pools at the waterline without horizontal scrolling.",
       "storyboard_panel": 5
     },
     {
@@ -571,6 +701,20 @@
       {
         "method": "GET",
         "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
         "path": "/bay-assets/master-sweeper.webp",
         "search": "",
         "resource_type": "image"
@@ -588,6 +732,90 @@
         "path": "/bay-assets/crustaceans-atlas.webp",
         "search": "",
         "resource_type": "image"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/",
+        "search": "",
+        "resource_type": "document"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/triage",
+        "search": "",
+        "resource_type": "document"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/triage",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/pr-proof-triage",
+        "search": "",
+        "resource_type": "document"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/pr-proof-triage",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
       },
       {
         "method": "GET",
@@ -613,14 +841,14 @@
       {
         "method": "GET",
         "host": "bay-proof.test:8787",
-        "path": "/api/health-history",
-        "search": "?range=6h",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
         "resource_type": "fetch"
       },
       {
         "method": "GET",
         "host": "bay-proof.test:8787",
-        "path": "/api/status",
+        "path": "/api/live-activity-bay",
         "search": "",
         "resource_type": "fetch"
       },
@@ -641,21 +869,14 @@
       {
         "method": "GET",
         "host": "bay-proof.test:8787",
-        "path": "/api/health-history",
-        "search": "?range=6h",
-        "resource_type": "fetch"
-      },
-      {
-        "method": "GET",
-        "host": "bay-proof.test:8787",
-        "path": "/api/status",
+        "path": "/api/durable-lifecycle-bay",
         "search": "",
         "resource_type": "fetch"
       },
       {
         "method": "GET",
         "host": "bay-proof.test:8787",
-        "path": "/api/status",
+        "path": "/api/live-activity-bay",
         "search": "",
         "resource_type": "fetch"
       },
@@ -676,6 +897,20 @@
       {
         "method": "GET",
         "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
         "path": "/api/health-history",
         "search": "?range=6h",
         "resource_type": "fetch"
@@ -684,6 +919,125 @@
         "method": "GET",
         "host": "bay-proof.test:8787",
         "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
         "search": "",
         "resource_type": "fetch"
       },
@@ -711,7 +1065,14 @@
       {
         "method": "GET",
         "host": "bay-proof.test:8787",
-        "path": "/api/status",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
         "search": "",
         "resource_type": "fetch"
       },
@@ -725,7 +1086,14 @@
       {
         "method": "GET",
         "host": "bay-proof.test:8787",
-        "path": "/api/status",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
         "search": "",
         "resource_type": "fetch"
       },
@@ -739,7 +1107,77 @@
       {
         "method": "GET",
         "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
         "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
         "search": "",
         "resource_type": "fetch"
       },
@@ -767,6 +1205,20 @@
       {
         "method": "GET",
         "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
         "path": "/bay-assets/master-sweeper.webp",
         "search": "",
         "resource_type": "image"
@@ -791,6 +1243,62 @@
         "path": "/api/status",
         "search": "",
         "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": "",
+        "resource_type": "fetch"
+      },
+      {
+        "method": "GET",
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": "",
+        "resource_type": "fetch"
       }
     ],
     "responses": [
@@ -809,13 +1317,19 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/bay-assets/master-sweeper.webp",
+        "path": "/api/status",
         "search": ""
       },
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/api/status",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/bay-assets/master-sweeper.webp",
         "search": ""
       },
       {
@@ -829,6 +1343,84 @@
         "host": "bay-proof.test:8787",
         "path": "/api/health-history",
         "search": "?range=6h"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/triage",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/triage",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/pr-proof-triage",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/pr-proof-triage",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": ""
       },
       {
         "status": 200,
@@ -851,13 +1443,13 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/api/health-history",
-        "search": "?range=6h"
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
       },
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/api/status",
+        "path": "/api/live-activity-bay",
         "search": ""
       },
       {
@@ -870,6 +1462,42 @@
         "status": 200,
         "host": "bay-proof.test:8787",
         "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
         "search": ""
       },
       {
@@ -887,7 +1515,31 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
         "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
         "search": ""
       },
       {
@@ -905,6 +1557,18 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
         "path": "/api/health-history",
         "search": "?range=6h"
       },
@@ -912,6 +1576,42 @@
         "status": 200,
         "host": "bay-proof.test:8787",
         "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/health-history",
+        "search": "?range=6h"
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
         "search": ""
       },
       {
@@ -935,7 +1635,13 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/api/status",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
         "search": ""
       },
       {
@@ -947,7 +1653,13 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/api/status",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
         "search": ""
       },
       {
@@ -959,7 +1671,67 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
         "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
         "search": ""
       },
       {
@@ -977,13 +1749,19 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
         "path": "/bay-assets/master-sweeper.webp",
         "search": ""
       },
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/api/status",
+        "path": "/api/durable-lifecycle-bay",
         "search": ""
       },
       {
@@ -1001,7 +1779,61 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
         "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/status",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/durable-lifecycle-bay",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
+        "path": "/api/live-activity-bay",
         "search": ""
       }
     ],

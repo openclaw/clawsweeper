@@ -33,8 +33,9 @@ pnpm run check
 Use the narrowest meaningful validation for the changed surface first. For a
 docs-only change, run `git diff --check` and verify the changed links and
 commands. For code, test, workflow, queue, API, UI, package, or integration
-changes, follow `AGENTS.md`: run focused behavior validation and the mandatory
-Codex review loop before opening or updating a PR.
+changes, follow `AGENTS.md`: satisfy the real-behavior proof contract and
+mandatory Codex review loop before opening even a draft PR or updating one.
+Only Martin may expressly approve an evidence-in-progress exception.
 
 ## Create or Update a Pull Request
 
@@ -53,10 +54,11 @@ main-body sections current:
 
 For code-bearing changes, keep an executed `## Real Behavior Proof` package in
 the main PR body. State the claim, exercised surface, scenario or fixture,
-command and environment, observed result, artifact or trace, and limits. Tests
-and CI support the claim but do not replace proof of a changed runtime,
-workflow, queue, API, UI, package, or integration path. Redact tokens, private
-URLs, user data, and unrelated logs before posting evidence.
+command and environment, observed result, artifact or trace, and limits. Tests,
+CI, mocks, and clean review support the claim but do not replace proof of a
+changed runtime, workflow, queue, API, UI, package, or integration path.
+Redact tokens, private URLs, user data, and unrelated logs before posting
+evidence.
 
 ## Review Conversations Are Author-Owned
 

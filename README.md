@@ -320,10 +320,10 @@ proof, supplied-but-not-sufficient proof, mock-only proof, and proof label
 mismatches. See
 [`docs/pr-proof-triage-dashboard.md`](docs/pr-proof-triage-dashboard.md).
 
-The unlisted OpenClaw Bay experiment at `/bay-demo` renders the same read-only
-operational status as an animated shoreline. It is public to anyone with the
-URL, deliberately absent from dashboard navigation, and adds no browser-to-GitHub
-requests or new GitHub query path. See
+OpenClaw Bay at `/bay-demo` is a public, indexable ClawSweeper dashboard
+destination that renders the same read-only operational status as an animated
+shoreline. It is linked from the Overview, issue-triage, and PR-proof headers,
+and adds no browser-to-GitHub requests or new GitHub query path. See
 [`docs/openclaw-bay-demo.md`](docs/openclaw-bay-demo.md).
 
 The default-off unconfirmed product-direction policy can propose closure for a

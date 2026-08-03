@@ -9347,12 +9347,12 @@ test("dashboard health identifies the deployed revision", async () => {
   assert.equal(response.headers.get("cache-control"), "no-store");
 });
 
-test("OpenClaw Bay is an unlisted, hardened route", async () => {
+test("OpenClaw Bay is a public, indexable, hardened route", async () => {
   const response = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/bay-demo"), {});
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
   assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.equal(response.headers.get("x-robots-tag"), "noindex, nofollow, noarchive");
+  assert.equal(response.headers.get("x-robots-tag"), null);
   assert.equal(response.headers.get("referrer-policy"), "no-referrer");
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.equal(response.headers.get("x-frame-options"), "DENY");
@@ -9361,7 +9361,7 @@ test("OpenClaw Bay is an unlisted, hardened route", async () => {
   assert.match(contentSecurityPolicy, /frame-ancestors 'none'/);
   const body = await response.text();
   assert.match(body, /<title>OpenClaw Bay · ClawSweeper<\/title>/);
-  assert.match(body, /<meta name="robots" content="noindex,nofollow,noarchive">/);
+  assert.doesNotMatch(body, /<meta name="robots"/);
   assert.doesNotMatch(body, /Experimental demo/);
   assert.match(body, /href="\/bay-demo" aria-current="page"/);
   assert.match(body, /Where's my crustacean\?/);

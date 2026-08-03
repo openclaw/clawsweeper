@@ -71,18 +71,25 @@ not split reports into issue/PR subtrees.
   actionable finding and repeat the relevant proof and review. CI, an older
   ClawSweeper comment, prior review comments, or manual self-review alone do
   not replace this loop.
-- Keep real-behavior proof current in the PR body. Tests, mocks, snapshots,
-  lint, typechecks, and CI support the claim but do not by themselves prove a
-  changed runtime, workflow, queue, API, UI, package, or integration path.
-  Use the narrowest meaningful proof first and broaden it for shared or
-  higher-risk behavior. Docs-only changes normally need `git diff --check` and
-  relevant link or command sanity instead.
+- At task kickoff, define the `pr-behavior-proof` contract for every
+  code-bearing PR: claim, exercised surface, scenario or fixture, command and
+  environment, observable result, artifact or trace, and limits. Run its
+  controlled real-behavior proof before opening even a draft PR; only Martin
+  may expressly approve an evidence-in-progress exception.
+- Keep that proof current in the PR body. Tests, CI, mocks, snapshots, lint,
+  typechecks, and clean review support the claim but never replace proof of a
+  changed runtime, workflow, queue, API, UI, package, or integration path. On
+  this Windows host, proof for those surfaces uses Docker-backed Crabbox
+  `local-container` and records the current head, provider, image, lease,
+  artifact, and limits. Use the narrowest meaningful proof first and broaden
+  it for shared or higher-risk behavior. Docs-only changes normally need
+  `git diff --check` and relevant link or command sanity instead.
 - For lifecycle/review publication, queue/workflow, status/telemetry, or
   dashboard data-contract changes, state in the PR or handoff whether
   OpenClaw Bay is affected. If it is, update Bay and its proof; otherwise
-  record why no Bay change is needed. Bay is observer-only: it may display
-  status but must never trigger or offer queue, workflow, GitHub, DLQ,
-  recovery, deploy, or rollback actions.
+  record why no Bay change is needed. OpenClaw Bay is a public, indexable,
+  observer-only surface: it may display status but must never trigger or offer
+  queue, workflow, GitHub, DLQ, recovery, deploy, or rollback actions.
 - A ClawSweeper result that requires proof or identifies an accepted/actionable
   finding remains PR-owner work, not a handoff. Before a manually requested
   review or re-review, put current proof and the finding disposition or evidence

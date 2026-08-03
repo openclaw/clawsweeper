@@ -7129,7 +7129,6 @@ function demoHtml(value) {
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
       "x-frame-options": "DENY",
-      "x-robots-tag": "noindex, nofollow, noarchive",
     },
   });
 }
