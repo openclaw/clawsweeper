@@ -213,7 +213,7 @@ realTideSnapshot.bay = {
   recently_washed: denseTerminalBuffer,
   terminal_count: 0,
   tide_generation: 1,
-  last_tide_at: "2026-07-11T18:02:00.000Z",
+  last_tide_at: "2026-07-11T17:58:00.000Z",
   washed_at: "2026-07-11T18:02:00.000Z",
 };
 const realTideSnapshotSha256 = createHash("sha256")
@@ -364,6 +364,13 @@ function denseFilteredQueueProjection() {
 
 const proofSnapshots = [...snapshots, denseTerminalSnapshot, realTideSnapshot].map((snapshot) => ({
   ...snapshot,
+  bay: {
+    ...snapshot.bay,
+    timings: {
+      ...snapshot.bay.timings,
+      overall: { ...snapshot.bay.timings.overall, median_ms: 660000 },
+    },
+  },
   exact_review_queue: queueProjection(),
 }));
 proofSnapshots.push({
@@ -598,10 +605,12 @@ await context.addInitScript(() => {
   };
   window.__bayProofReduceMotion = true;
   window.__bayProofPoll = null;
+  const bayPollers = [];
   window.setInterval = (callback, delay, ...args) => {
     if (Number(delay) === 20000) {
-      window.__bayProofPoll = callback;
-      return 4242;
+      bayPollers.push(callback);
+      window.__bayProofPoll = () => Promise.all(bayPollers.map((poller) => poller()));
+      return 4242 + bayPollers.length;
     }
     return nativeSetInterval(callback, delay, ...args);
   };
@@ -799,11 +808,8 @@ try {
     lane_help: await page.locator('[data-stage="arriving"] .lane-help summary').count(),
   };
   assertProof(
-    "Bay mirrors cached aggregate events, admission, publication, state-writer, and handoff telemetry",
-    bayControl.cards === 5 &&
-      /Recent durable events/i.test(bayControl.review) &&
-      /ACCEPTED\s*3/.test(bayControl.review) &&
-      /DEDUPED\s*1/.test(bayControl.review) &&
+    "Bay mirrors cached admission, publication, state-writer, and handoff telemetry",
+    bayControl.cards === 4 &&
       /Review admission/i.test(bayControl.review) &&
       /Result publication/i.test(bayControl.review) &&
       /State writer/i.test(bayControl.review) &&
@@ -826,7 +832,9 @@ try {
   );
 
   stateWriterTerminalFresh = false;
-  await page.evaluate(() => window.__bayProofPoll());
+  await page.evaluate(async () => {
+    await window.__bayProofPoll();
+  });
   await page.waitForFunction(() =>
     /terminal metrics unavailable/.test(
       document.querySelector("#bay-control-board")?.textContent || "",
@@ -842,7 +850,9 @@ try {
     { state_writer: staleStateWriter },
   );
   stateWriterTerminalFresh = true;
-  await page.evaluate(() => window.__bayProofPoll());
+  await page.evaluate(async () => {
+    await window.__bayProofPoll();
+  });
   const terminalPoolCounts = {
     completed: await page.locator('[data-stage="completed"] .critter').count(),
     attention: await page.locator(".pool.attention .critter").count(),
@@ -861,7 +871,8 @@ try {
   const timingSummary = await page.locator("#overall-average").innerText();
   assertProof(
     "journey timing names the trigger-to-final-review duration",
-    /Avg trigger.*final review/i.test(timingSummary) && /4 journeys/i.test(timingSummary),
+    /Typical trigger.*final review.*11m/i.test(timingSummary) &&
+      /mean.*12m.*4 journeys/i.test(timingSummary),
     { text: timingSummary },
   );
   await capture(
@@ -1658,18 +1669,21 @@ try {
     .locator(".stage .critter[data-key]")
     .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-key")).sort());
   const realCountdown = await page.locator("#tide-countdown").innerText();
+  const realTideSummary = await page.locator("#tide-summary").innerText();
   assertProof(
-    "real tide washes terminal outcomes before clearing",
+    "real tide shows the final terminal completion time before clearing",
     realWashCount === denseTerminalBuffer.length &&
       !realUsesPreviewClass &&
       (await page.locator(".pool .critter[data-key]").count()) === 0 &&
       realCountdown === "0 / 20" &&
+      /Last tide 17:58 UTC/.test(realTideSummary) &&
       JSON.stringify(activeAfterRealTide) === JSON.stringify(activeBeforeRealTide),
     {
       washed_terminal_count: realWashCount,
       preview_class_used: realUsesPreviewClass,
       terminal_after: 0,
       countdown: realCountdown,
+      displayed_last_tide: realTideSummary,
       active_keys_unchanged:
         JSON.stringify(activeAfterRealTide) === JSON.stringify(activeBeforeRealTide),
     },

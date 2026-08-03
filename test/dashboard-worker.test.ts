@@ -9323,10 +9323,15 @@ test("issue triage exposes impact-group controls without changing PR proof triag
     new Request("https://clawsweeper.openclaw.ai/pr-proof-triage"),
     {},
   );
+  const overviewPage = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/"), {});
   const issueHtml = await issuePage.text();
+  const proofHtml = await proofPage.text();
   assert.match(issueHtml, /id="routing-group"/);
   assert.match(issueHtml, /Impact group/);
-  assert.doesNotMatch(await proofPage.text(), /id="routing-group"/);
+  assert.match(issueHtml, /href="\/bay-demo">OpenClaw Bay/);
+  assert.match(proofHtml, /href="\/bay-demo">OpenClaw Bay/);
+  assert.match(await overviewPage.text(), /href="\/bay-demo">OpenClaw Bay/);
+  assert.doesNotMatch(proofHtml, /id="routing-group"/);
 });
 
 test("dashboard health identifies the deployed revision", async () => {
@@ -9342,7 +9347,7 @@ test("dashboard health identifies the deployed revision", async () => {
   assert.equal(response.headers.get("cache-control"), "no-store");
 });
 
-test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
+test("OpenClaw Bay is an unlisted, hardened route", async () => {
   const response = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/bay-demo"), {});
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
@@ -9357,23 +9362,23 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   const body = await response.text();
   assert.match(body, /<title>OpenClaw Bay · ClawSweeper<\/title>/);
   assert.match(body, /<meta name="robots" content="noindex,nofollow,noarchive">/);
-  assert.match(body, /Experimental demo/);
+  assert.doesNotMatch(body, /Experimental demo/);
   assert.match(body, /href="\/bay-demo" aria-current="page"/);
   assert.match(body, /Where's my crustacean\?/);
-  assert.match(body, /Terminal pools clear together at 20 outcomes/);
+  assert.match(body, /20 distinct terminal items per tide/);
   assert.match(body, /Master Sweeper/);
   assert.match(body, /id="bay-control-board"/);
   assert.match(body, /Review admission/);
   assert.match(body, /Result publication/);
   assert.match(body, /State writer/);
   assert.match(body, /Queue handoff/);
-  assert.match(body, /Recent durable events/);
-  assert.match(body, /function bayRecentPublicationEvents/);
-  assert.match(body, /workflow activity is not lifecycle completion/);
+  assert.doesNotMatch(body, /Recent durable events/);
+  assert.doesNotMatch(body, /function bayRecentPublicationEvents/);
   assert.match(body, /id="durable-lifecycle-kanban"/);
   assert.match(body, /Durable lifecycle Kanban/);
   assert.match(body, /id="live-activity-panel"/);
-  assert.match(body, /Transient operational signals only/);
+  assert.match(body, /Transient signals only/);
+  assert.match(body, /class="live-activity hero-live-activity"/);
   assert.match(body, /fetch\("\/api\/live-activity-bay"/);
   assert.match(body, /never create, move, count, or complete a durable lifecycle card/);
   assert.match(body, /function durableSnapshot/);
@@ -9386,7 +9391,10 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
     body,
     /No counts or cards are shown until a complete, fresh projection is available/,
   );
-  assert.match(body, /transient worker and queue activity, not a durable lifecycle Kanban/);
+  assert.match(
+    body,
+    /Transient signals only; they never create, move, count, or complete a durable lifecycle card/,
+  );
   const durableScriptStart = body.indexOf("function durableSnapshot");
   const durableScriptEnd = body.indexOf("function hash", durableScriptStart);
   assert.ok(durableScriptStart > 0 && durableScriptEnd > durableScriptStart);
@@ -9441,7 +9449,8 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   assert.match(body, /function terminalCapacity\(stage\)/);
   assert.match(body, /stage==="completed"&&terminalStack&&terminalStack\.clientWidth>=340\?20:12/);
   assert.match(body, /columns===4/);
-  assert.match(body, /Avg trigger → final review/);
+  assert.match(body, /Typical trigger → final review/);
+  assert.match(body, /median; mean is shown for context/);
   assert.match(body, /Awaiting a completed journey/);
   assert.match(body, /id="queue-sample-drawer"/);
   assert.match(body, /-reference public sample/);
@@ -9671,7 +9680,7 @@ test("OpenClaw Bay is an unlisted, hardened demo route", async () => {
   for (const path of ["/", "/triage", "/pr-proof-triage"]) {
     const page = await worker.fetch(new Request(`https://clawsweeper.openclaw.ai${path}`), {});
     const pageBody = await page.text();
-    assert.doesNotMatch(pageBody, /href="\/bay-demo"/);
+    assert.match(pageBody, /href="\/bay-demo">OpenClaw Bay/);
     if (path === "/") assert.match(pageBody, /setInterval\(load, 15000\)/);
   }
 });
@@ -9696,7 +9705,7 @@ test("OpenClaw Bay shares a bounded 20-outcome tide buffer", () => {
   assert.equal(tide.terminal_count, 0);
   assert.equal(tide.tide_generation, 1);
   assert.equal(tide.recently_washed.length, 20);
-  assert.equal(tide.last_tide_at, "2026-07-10T20:00:20Z");
+  assert.equal(tide.last_tide_at, "2026-07-10T20:00:19Z");
   assert.equal(tide.terminal_window_started_at, "2026-07-10T20:00:19Z");
   assert.deepEqual(tide.terminal_window_event_ids, [
     "worker:20:1019:openclaw/openclaw#9019:cancelled:2026-07-10T20:00:19Z",
@@ -9976,8 +9985,25 @@ test("OpenClaw Bay averages completed trigger-to-summary journeys from the last 
 
   assert.equal(timings.window_minutes, 60);
   assert.equal("lanes" in timings, false);
-  assert.deepEqual(timings.overall, { average_ms: 210_000, samples: 2 });
+  assert.deepEqual(timings.overall, { average_ms: 210_000, median_ms: 210_000, samples: 2 });
   assert.equal(timings.sample_kind, "completed_review_journeys");
+});
+
+test("OpenClaw Bay reports the median completed journey alongside the mean", () => {
+  const timings = summarizeBayJourneyTimings(
+    [
+      { triggered_at: "2026-07-13T11:58:00Z", completed_at: "2026-07-13T12:00:00Z" },
+      { triggered_at: "2026-07-13T11:56:00Z", completed_at: "2026-07-13T12:00:00Z" },
+      { triggered_at: "2026-07-13T11:15:00Z", completed_at: "2026-07-13T12:00:00Z" },
+    ],
+    "2026-07-13T12:00:00Z",
+  );
+
+  assert.deepEqual(timings.overall, {
+    average_ms: 1_020_000,
+    median_ms: 240_000,
+    samples: 3,
+  });
 });
 
 test("OpenClaw Bay retains pre-delivery journey records during normalization", () => {
@@ -10007,6 +10033,7 @@ test("OpenClaw Bay retains pre-delivery journey records during normalization", (
   assert.equal(state.journeys[0]?.triggered_at, "2026-07-13T11:56:00Z");
   assert.deepEqual(summarizeBayJourneyTimings(state.journeys, "2026-07-13T12:00:00Z").overall, {
     average_ms: 180_000,
+    median_ms: 180_000,
     samples: 1,
   });
 });
@@ -10061,6 +10088,7 @@ test("OpenClaw Bay retains a completed journey for each edit of the same command
   assert.notEqual(second.journeys[0]?.id, second.journeys[1]?.id);
   assert.deepEqual(summarizeBayJourneyTimings(second.journeys, "2026-07-13T12:15:00Z").overall, {
     average_ms: 270_000,
+    median_ms: 270_000,
     samples: 2,
   });
 });
@@ -10107,6 +10135,7 @@ test("OpenClaw Bay retains same-second command edits from separate GitHub delive
   assert.notEqual(journeys.journeys[0]?.id, journeys.journeys[1]?.id);
   assert.deepEqual(summarizeBayJourneyTimings(journeys.journeys, "2026-07-13T12:07:00Z").overall, {
     average_ms: 330_000,
+    median_ms: 330_000,
     samples: 2,
   });
 });
@@ -10173,6 +10202,7 @@ test("OpenClaw Bay joins an out-of-order reused status completion to its later t
   assert.equal(completed.journeys.filter((journey) => !journey.triggered_at).length, 0);
   assert.deepEqual(summarizeBayJourneyTimings(completed.journeys, "2026-07-13T12:15:00Z").overall, {
     average_ms: 270_000,
+    median_ms: 270_000,
     samples: 2,
   });
 });
@@ -10338,7 +10368,11 @@ test("hosted webhook records an edited review command through its final command 
     },
   ]);
   const timings = summarizeBayJourneyTimings(state.journeys, at(5_213_000));
-  assert.deepEqual(timings.overall, { average_ms: 4_820_000, samples: 1 });
+  assert.deepEqual(timings.overall, {
+    average_ms: 4_820_000,
+    median_ms: 4_820_000,
+    samples: 1,
+  });
 });
 
 class MemoryKv {
@@ -22038,7 +22072,11 @@ test("dashboard reports worker error and recovery rates from completed job steps
     assert.equal(status.bay.tide_generation, 0);
     assert.equal(status.bay.terminal_count, 3);
     assert.equal(status.bay.timings.lanes, undefined);
-    assert.deepEqual(status.bay.timings.overall, { average_ms: null, samples: 0 });
+    assert.deepEqual(status.bay.timings.overall, {
+      average_ms: null,
+      median_ms: null,
+      samples: 0,
+    });
     assert.deepEqual(
       status.bay.terminal_buffer.map((item: { number: number }) => item.number),
       [100, 200, 300],

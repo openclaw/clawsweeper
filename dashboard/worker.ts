@@ -4097,6 +4097,15 @@ export function summarizeBayJourneyTimings(journeys, generatedAt) {
             overallDurations.reduce((total, value) => total + value, 0) / overallDurations.length,
           )
         : null,
+      median_ms: overallDurations.length
+        ? (() => {
+            const ordered = [...overallDurations].sort((left, right) => left - right);
+            const middle = Math.floor(ordered.length / 2);
+            return ordered.length % 2
+              ? ordered[middle]
+              : Math.round((ordered[middle - 1] + ordered[middle]) / 2);
+          })()
+        : null,
       samples: overallDurations.length,
     },
   };
@@ -4696,9 +4705,10 @@ export function mergeBayTerminalState(
   let washed = recentlyWashed;
   while (buffer.length >= BAY_TIDE_THRESHOLD) {
     washed = buffer.splice(0, BAY_TIDE_THRESHOLD);
+    const tideCompletedAt = nullableString(washed.at(-1)?.completed_at) || generatedAt;
     washedAt = generatedAt;
-    lastTideAt = generatedAt;
-    terminalWindowStartedAt = nullableString(washed.at(-1)?.completed_at) || generatedAt;
+    lastTideAt = tideCompletedAt;
+    terminalWindowStartedAt = tideCompletedAt;
     terminalWindowEventIds = washed
       .filter((item) => item.completed_at === terminalWindowStartedAt)
       .map((item) => String(item.event_id));
@@ -7148,6 +7158,7 @@ function issueTriagePageConfig() {
     highlightLabelPrefixes: ["clawsweeper:"],
     links: [
       { href: "/", label: "Live pipeline" },
+      { href: "/bay-demo", label: "OpenClaw Bay" },
       { href: "/pr-proof-triage", label: "PR proof triage" },
     ],
     columns: [
@@ -7196,6 +7207,7 @@ function prProofTriagePageConfig() {
     highlightLabelPrefixes: ["triage:", "proof:", "mantis:"],
     links: [
       { href: "/", label: "Live pipeline" },
+      { href: "/bay-demo", label: "OpenClaw Bay" },
       { href: "/triage", label: "Issue triage" },
     ],
     columns: [
@@ -9309,6 +9321,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   <header>
     <h1>ClawSweeper <span class="live-tag">Live</span></h1>
     <div class="top-links">
+      <a class="top-link" href="/bay-demo">OpenClaw Bay</a>
       <a class="top-link" href="/triage">Issue triage</a>
       <a class="top-link" href="/pr-proof-triage">PR proof triage</a>
       <a class="top-link" href="${escapeHtml(crabfleetUrl)}">Live terminals</a>
