@@ -77,6 +77,12 @@ not split reports into issue/PR subtrees.
   Use the narrowest meaningful proof first and broaden it for shared or
   higher-risk behavior. Docs-only changes normally need `git diff --check` and
   relevant link or command sanity instead.
+- For lifecycle/review publication, queue/workflow, status/telemetry, or
+  dashboard data-contract changes, state in the PR or handoff whether
+  OpenClaw Bay is affected. If it is, update Bay and its proof; otherwise
+  record why no Bay change is needed. Bay is observer-only: it may display
+  status but must never trigger or offer queue, workflow, GitHub, DLQ,
+  recovery, deploy, or rollback actions.
 - A ClawSweeper result that requires proof or identifies an accepted/actionable
   finding remains PR-owner work, not a handoff. Before a manually requested
   review or re-review, put current proof and the finding disposition or evidence
