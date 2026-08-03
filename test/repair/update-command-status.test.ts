@@ -264,6 +264,8 @@ test("terminal receipt verification accepts the matching legacy command marker",
     "115286",
     "--marker",
     marker,
+    "--status-comment-id",
+    "5150578737",
     "--state",
     "Complete",
     "--detail",
@@ -288,6 +290,22 @@ test("terminal receipt verification accepts the matching legacy command marker",
     commandCommentId: 5150571675,
     completionCommentId: 5150578737,
   });
+  assert.equal(verifiedTerminalStatusReceipt({ ...comment, id: 5150578738 }, options), null);
+  assert.deepEqual(
+    verifiedTerminalStatusReceipt(
+      comment,
+      parseOptions([
+        "--marker",
+        marker,
+        "--state",
+        "Complete",
+        "--detail",
+        "A newer review tuple already exists; this stale result was superseded.",
+        "--verify-terminal-status-receipt",
+      ]),
+    ),
+    { commandCommentId: 5150571675, completionCommentId: 5150578737 },
+  );
   assert.equal(
     verifiedTerminalStatusReceipt(
       {
@@ -375,7 +393,13 @@ test("terminal locked-conversation skip covers status selection and duplicate cl
 function runUpdateCommandStatus(
   tmp: string,
   args: string[],
-  comment?: { id: number; body: string; user: { login: string } },
+  comment?: { id: number; body: string; user: { login: string }; updated_at?: string },
+  additionalComments: Array<{
+    id: number;
+    body: string;
+    user: { login: string };
+    updated_at?: string;
+  }> = [],
 ) {
   const ghPath = path.join(tmp, "gh.js");
   const patchPath = path.join(tmp, "patched-comment.json");
@@ -386,12 +410,18 @@ function runUpdateCommandStatus(
       "const args = process.argv.slice(2);",
       "if (!args.join(' ').includes('/comments')) process.exit(1);",
       "const comment = JSON.parse(process.env.GH_TEST_STATUS_COMMENT || 'null');",
+      "const comments = JSON.parse(process.env.GH_TEST_STATUS_COMMENTS || '[]');",
       "if (args.includes('PATCH')) {",
       "  const payload = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));",
       "  fs.writeFileSync(process.env.GH_TEST_STATUS_PATCH_PATH, JSON.stringify(payload));",
-      "  process.stdout.write(JSON.stringify({ ...comment, body: payload.body }));",
+      "  process.stdout.write(JSON.stringify({ ...comment, body: payload.body, updated_at: '2026-08-01T08:14:07Z' }));",
+      "} else if (args.some((arg) => /\\/issues\\/comments\\/\\d+$/.test(arg))) {",
+      "  const commentId = Number(args.find((arg) => /\\/issues\\/comments\\/\\d+$/.test(arg)).split('/').at(-1));",
+      "  const exact = comments.find((candidate) => Number(candidate.id) === commentId);",
+      "  if (!exact) { console.error('HTTP 404: Not Found'); process.exit(1); }",
+      "  process.stdout.write(JSON.stringify({ ...exact, issue_url: process.env.GH_TEST_ISSUE_URL }));",
       "} else {",
-      "  process.stdout.write(JSON.stringify(comment ? [[comment]] : [[]]));",
+      "  process.stdout.write(JSON.stringify([comments]));",
       "}",
     ].join("\n"),
   );
@@ -408,6 +438,11 @@ function runUpdateCommandStatus(
         GH_BIN: process.execPath,
         GH_BIN_ARGS: JSON.stringify([ghPath]),
         GH_TEST_STATUS_COMMENT: JSON.stringify(comment ?? null),
+        GH_TEST_STATUS_COMMENTS: JSON.stringify([
+          ...additionalComments,
+          ...(comment ? [comment] : []),
+        ]),
+        GH_TEST_ISSUE_URL: `https://api.github.com/repos/openclaw/openclaw/issues/${args[args.indexOf("--item-number") + 1]}`,
         GH_TEST_STATUS_PATCH_PATH: patchPath,
         GITHUB_OUTPUT: outputPath,
         CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1",
@@ -431,53 +466,75 @@ function runUpdateCommandStatus(
 
 test("legacy command updates verify their receipt without creating duplicate acknowledgements", () => {
   for (const alreadyComplete of [false, true]) {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-legacy-command-status-"));
-    try {
-      const marker = "<!-- clawsweeper-command-status:115286:re_review:80a1f1 -->";
-      const comment = {
-        id: 5150578737,
-        user: { login: "clawsweeper[bot]" },
-        body: [
-          marker,
-          "<!-- clawsweeper-command:5150571675:2026-08-01T08:13:51Z:re_review:80a1f1 -->",
-          "<!-- clawsweeper-command-progress:start -->",
-          `- State: ${alreadyComplete ? "Complete" : "In progress"}`,
-          `- Detail: ${alreadyComplete ? "Done." : "Waiting."}`,
-          "<!-- clawsweeper-command-progress:end -->",
-        ].join("\n"),
-      };
-      const result = runUpdateCommandStatus(
-        tmp,
-        [
-          "--repo",
-          "openclaw/openclaw",
-          "--item-number",
-          "115286",
-          "--marker",
-          marker,
-          "--state",
-          "Complete",
-          "--detail",
-          "Done.",
-          "--require-mutation",
-          "--verify-terminal-status-receipt",
-        ],
-        comment,
-      );
+    for (const statusAddress of ["exact", "marker-only", "deleted", "replaced"]) {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-legacy-command-status-"));
+      try {
+        const marker = "<!-- clawsweeper-command-status:115286:re_review:80a1f1 -->";
+        const comment = {
+          id: 5150578737,
+          user: { login: "clawsweeper[bot]" },
+          updated_at: "2026-08-01T08:13:59Z",
+          body: [
+            marker,
+            "<!-- clawsweeper-command:5150571675:2026-08-01T08:13:51Z:re_review:80a1f1 -->",
+            "<!-- clawsweeper-command-progress:start -->",
+            `- State: ${alreadyComplete ? "Complete" : "In progress"}`,
+            `- Detail: ${alreadyComplete ? "Done." : "Waiting."}`,
+            "<!-- clawsweeper-command-progress:end -->",
+          ].join("\n"),
+        };
+        const result = runUpdateCommandStatus(
+          tmp,
+          [
+            "--repo",
+            "openclaw/openclaw",
+            "--item-number",
+            "115286",
+            "--marker",
+            marker,
+            ...(statusAddress === "marker-only"
+              ? []
+              : ["--status-comment-id", statusAddress === "exact" ? "5150578737" : "5150578738"]),
+            "--state",
+            "Complete",
+            "--detail",
+            "Done.",
+            "--require-mutation",
+            "--verify-terminal-status-receipt",
+          ],
+          comment,
+          statusAddress === "replaced"
+            ? [
+                {
+                  id: 5150578738,
+                  user: { login: "clawsweeper[bot]" },
+                  body: "<!-- clawsweeper-command-status:115286:re_review:old -->\n<!-- clawsweeper-command-ack:999 -->",
+                },
+              ]
+            : [],
+        );
 
-      assert.equal(result.status, 0, result.stderr);
-      assert.match(result.output, /^terminal_status_verified=true$/m);
-      assert.match(result.output, /^command_comment_id=5150571675$/m);
-      assert.match(result.output, /^completion_comment_id=5150578737$/m);
-      if (alreadyComplete) {
-        assert.equal(result.patchedBody, null);
-      } else {
-        assert.doesNotMatch(result.patchedBody ?? "", /clawsweeper-command-ack:/);
-        assert.match(result.patchedBody ?? "", /clawsweeper-command:5150571675:/);
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.output, /^terminal_status_verified=true$/m);
+        assert.match(result.output, /^command_comment_id=5150571675$/m);
+        assert.match(result.output, /^completion_comment_id=5150578737$/m);
+        assert.match(
+          result.output,
+          new RegExp(
+            `^completion_completed_at=2026-08-01T08:${alreadyComplete ? "13:59" : "14:07"}Z$`,
+            "m",
+          ),
+        );
+        if (alreadyComplete) {
+          assert.equal(result.patchedBody, null);
+        } else {
+          assert.doesNotMatch(result.patchedBody ?? "", /clawsweeper-command-ack:/);
+          assert.match(result.patchedBody ?? "", /clawsweeper-command:5150571675:/);
+        }
+        assert.match(result.patchedBody ?? comment.body, /- State: Complete\n- Detail: Done\./);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
       }
-      assert.match(result.patchedBody ?? comment.body, /- State: Complete\n- Detail: Done\./);
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
     }
   }
 });

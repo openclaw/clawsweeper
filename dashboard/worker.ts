@@ -695,7 +695,7 @@ export default {
       url.pathname === "/internal/exact-review/lifecycle/command-ack/observed" &&
       request.method === "POST"
     )
-      return authenticatedExactReviewQueueRequest(request, env, "/lifecycle/command-ack/observed");
+      return authenticatedLifecycleCommandAcknowledgement(request, env, ctx);
     if (url.pathname === "/internal/exact-review/review-telemetry" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/review-telemetry");
     if (url.pathname === "/internal/exact-review/review-run-telemetry" && request.method === "POST")
@@ -1158,13 +1158,23 @@ async function githubWebhook(request, env, ctx) {
 
   const completion = bayJourneyCompletionFromGithubWebhook({ event, payload, env });
   if (completion) {
-    await recordLifecycleCommandAcknowledgement(env, completion);
+    if (!(await recordLifecycleCommandAcknowledgement(env, completion))) {
+      return json(
+        { ok: true, accepted: false, reason: "unmatched lifecycle acknowledgement" },
+        202,
+      );
+    }
     await recordBayJourneyTelemetry(env, ctx, [], [completion]);
     return json({ ok: true, accepted: false, reason: "recorded Bay journey completion" }, 202);
   }
   const acknowledgement = lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env });
   if (acknowledgement) {
-    await recordLifecycleCommandAcknowledgement(env, acknowledgement);
+    if (!(await recordLifecycleCommandAcknowledgement(env, acknowledgement))) {
+      return json(
+        { ok: true, accepted: false, reason: "unmatched lifecycle acknowledgement" },
+        202,
+      );
+    }
     return json({ ok: true, accepted: false, reason: "recorded lifecycle acknowledgement" }, 202);
   }
 
@@ -1412,6 +1422,7 @@ function lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env 
     completion_kind: "final_command_status",
     completion_comment_id: Number(comment.id),
     status_marker: status?.[0] ?? null,
+    ...(legacyCommand ? { require_exact_status_comment: true } : {}),
   };
 }
 
@@ -1717,7 +1728,7 @@ function exactReviewQueueStub(env): DurableObjectStub | null {
 
 async function recordLifecycleCommandAcknowledgement(env, completion) {
   const queue = exactReviewQueueStub(env);
-  if (!queue) return;
+  if (!queue) return true;
   const observedAt = Date.parse(String(completion.completed_at || ""));
   const response = await queue.fetch(
     new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
@@ -1728,11 +1739,14 @@ async function recordLifecycleCommandAcknowledgement(env, completion) {
         status_marker: completion.status_marker,
         command_comment_id: completion.source_comment_id,
         completion_comment_id: completion.completion_comment_id,
+        ...(completion.require_exact_status_comment ? { require_exact_status_comment: true } : {}),
         observed_at: Number.isFinite(observedAt) ? observedAt : Date.now(),
       }),
     }),
   );
   if (!response.ok) throw new Error("lifecycle acknowledgement receipt unavailable");
+  const result = objectValue(await response.json());
+  return result.accepted !== false;
 }
 
 async function reserveExactReviewSourceAuthority(
@@ -2053,7 +2067,12 @@ async function authenticatedExactReviewEnqueue(request, env) {
   );
 }
 
-async function authenticatedExactReviewQueueRequest(request, env, path: string) {
+async function authenticatedExactReviewQueueRequest(
+  request,
+  env,
+  path: string,
+  onAuthenticatedResponse?: (body: string, response: Response) => Promise<void>,
+) {
   const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
   if (!secret) return json({ error: "webhook_not_configured" }, 503);
   const body = await request.text();
@@ -2061,7 +2080,7 @@ async function authenticatedExactReviewQueueRequest(request, env, path: string) 
   if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {
     return json({ error: "invalid_signature" }, 401);
   }
-  return exactReviewQueueRequest(
+  const response = await exactReviewQueueRequest(
     env,
     path,
     new Request(`https://clawsweeper-exact-review-queue${path}`, {
@@ -2069,6 +2088,56 @@ async function authenticatedExactReviewQueueRequest(request, env, path: string) 
       headers: { "content-type": "application/json" },
       body,
     }),
+  );
+  if (onAuthenticatedResponse) await onAuthenticatedResponse(body, response);
+  return response;
+}
+
+async function authenticatedLifecycleCommandAcknowledgement(request, env, ctx) {
+  return authenticatedExactReviewQueueRequest(
+    request,
+    env,
+    "/lifecycle/command-ack/observed",
+    async (body, response) => {
+      if (!env.STATUS_STORE || !response.ok) return;
+      const result = objectValue(
+        await response
+          .clone()
+          .json()
+          .catch(() => null),
+      );
+      const receipt = objectValue(parseJsonObject(body));
+      const statusMarker = String(receipt.status_marker || "");
+      const target = String(receipt.canonical_target_key || "").match(/^([^#]+)#(\d+)$/);
+      const admittedCommentId = Number(receipt.status_comment_id);
+      const completionCommentId = Number(receipt.completion_comment_id);
+      const completedAt = exactWebhookTimestamp(receipt.completed_at);
+      if (
+        result.accepted === true &&
+        target &&
+        Number.isSafeInteger(admittedCommentId) &&
+        admittedCommentId > 0 &&
+        admittedCommentId !== completionCommentId &&
+        completedAt &&
+        /<!--\s*clawsweeper-command-status:\d+:(review|re_review):/i.test(statusMarker)
+      ) {
+        await recordBayJourneyTelemetry(
+          env,
+          ctx,
+          [],
+          [
+            {
+              repository: target[1],
+              number: Number(target[2]),
+              source_comment_id: Number(receipt.command_comment_id),
+              completed_at: completedAt,
+              completion_kind: "final_command_status",
+              completion_comment_id: completionCommentId,
+            },
+          ],
+        );
+      }
+    },
   );
 }
 

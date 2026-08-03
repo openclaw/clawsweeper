@@ -1196,7 +1196,16 @@ test("exact event publication derives lifecycle receipt and final command acknow
     /\.\.\.\(statusMarker \? \{ status_marker: statusMarker \} : \{\}\)/,
   );
   assert.match(observedReceipt.run ?? "", /command_comment_id: commandCommentId/);
+  assert.match(
+    observedReceipt.run ?? "",
+    /\.\.\.\(statusCommentId === null \? \{\} : \{ status_comment_id: statusCommentId \}\)/,
+  );
   assert.match(observedReceipt.run ?? "", /completion_comment_id: completionCommentId/);
+  assert.match(observedReceipt.run ?? "", /completed_at: completedAt/);
+  assert.equal(
+    observedReceipt.env?.COMPLETION_COMPLETED_AT,
+    "${{ steps.update-final-command-status.outputs.completion_completed_at }}",
+  );
   assert.match(observedReceipt.run ?? "", /acknowledgement_state == "observed"/);
   assert.match(lockedSkip.if ?? "", /locked_conversation == 'true'/);
   assert.match(lockedSkip.if ?? "", /missing_status_comment == 'true'/);
@@ -4544,6 +4553,10 @@ test("comment commands keep the router-to-sweep dispatch contract", () => {
   assert.match(routerWorkflow, /--comment-updated-at "\$comment_updated_at"/);
   assert.match(routerWorkflow, /--comment-body-sha256 "\$comment_body_sha256"/);
   assert.match(routerWorkflow, /\.short_circuited == true/);
+  assert.match(
+    routerSource,
+    /if \(requiresCommandStatus\) \{\s*const retainedStatusComment = findExistingCommandStatusComment\(command\);\s*if \(retainedStatusComment\?\.id\) command\.status_comment_id = Number\(retainedStatusComment\.id\);\s*\}\s*let dispatchKey = dispatchReceiptKey\(command\);/,
+  );
   assert.match(routerSource, /event_type:\s*"clawsweeper_item"/);
   assert.match(routerSource, /adaptiveReviewBudgetForPullRequest\(command\.target\)/);
   assert.match(routerSource, /media_proof_timeout_ms: reviewBudget\.mediaProofTimeoutMs/);

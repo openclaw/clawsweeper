@@ -6107,6 +6107,526 @@ test("Worker converges legacy and non-review acknowledgement receipts without we
   }
 });
 
+test("Worker binds legacy webhooks while preserving marker-only command addresses", async () => {
+  for (const mismatch of ["comment", "marker", "marker-only", "id-only"]) {
+    const storage = new MemoryDurableStorage();
+    const queue = new ExactReviewQueue({ storage }, {});
+    const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+    const itemNumber =
+      mismatch === "comment"
+        ? 910
+        : mismatch === "marker"
+          ? 911
+          : mismatch === "marker-only"
+            ? 912
+            : 914;
+    const expectedMarker = `<!-- clawsweeper-command-status:${itemNumber}:re_review:expected -->`;
+    const admissionMarker = mismatch === "id-only" ? null : expectedMarker;
+    const receivedMarker =
+      mismatch === "marker"
+        ? `<!-- clawsweeper-command-status:${itemNumber}:re_review:other -->`
+        : expectedMarker;
+    const identity = {
+      canonicalTargetKey: `openclaw/openclaw#${itemNumber}`,
+      fenceKey: `openclaw/openclaw#${itemNumber}@exact`,
+      revision: 1,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `legacy-source-fence:${itemNumber}`,
+      sourceAction: "re_review",
+      commandOriginated: true,
+      statusMarker: admissionMarker,
+      statusCommentId: mismatch === "marker-only" ? null : 9101,
+      observedAt: 1_700_000_000_000,
+    });
+    lifecycle.recordCanonicalReceipt({
+      ...identity,
+      outcome: "accepted",
+      receiptId: `legacy-source-fence:${itemNumber}:canonical`,
+      observedAt: 1_700_000_000_001,
+    });
+    lifecycle.recordRouterReceipt({
+      ...identity,
+      outcome: "durable",
+      receiptId: `legacy-source-fence:${itemNumber}:router`,
+      observedAt: 1_700_000_000_002,
+    });
+    lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "review_completed_routed",
+      observedAt: 1_700_000_000_003,
+    });
+    lifecycle.authorizeCommandAcknowledgement({
+      ...identity,
+      statusMarker: admissionMarker,
+      statusCommentId: mismatch === "marker-only" ? null : 9101,
+      observedAt: 1_700_000_000_004,
+    });
+
+    const response = await worker.fetch(
+      signedGithubWebhookRequest({
+        event: "issue_comment",
+        secret: "legacy-source-fence-secret",
+        payload: {
+          action: "edited",
+          repository: {
+            full_name: "openclaw/openclaw",
+            private: false,
+            archived: false,
+            fork: false,
+            has_issues: true,
+          },
+          issue: { number: itemNumber },
+          comment: {
+            id: mismatch === "comment" || mismatch === "marker-only" ? 9102 : 9101,
+            body: [
+              `<!-- clawsweeper-command:456:2026-08-01T08:13:51Z:re_review:${mismatch === "marker" ? "other" : "expected"} -->`,
+              receivedMarker,
+              "<!-- clawsweeper-command-progress:start -->",
+              "- State: Complete",
+              "- Detail: Done.",
+              "<!-- clawsweeper-command-progress:end -->",
+            ].join("\n"),
+            created_at: "2026-07-30T00:00:00.000Z",
+            updated_at: "2026-07-30T00:01:00.000Z",
+            user: { login: "clawsweeper[bot]" },
+          },
+        },
+      }),
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: "legacy-source-fence-secret",
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+        STATUS_STORE: new MemoryKv(),
+      },
+    );
+
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      accepted: false,
+      reason:
+        mismatch === "marker-only" || mismatch === "id-only"
+          ? "recorded Bay journey completion"
+          : "unmatched lifecycle acknowledgement",
+    });
+    assert.equal(
+      lifecycleState(lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, 1)!),
+      mismatch === "marker-only" || mismatch === "id-only"
+        ? "completed"
+        : "acknowledgement_pending",
+    );
+  }
+});
+
+test("signed terminal receipts complete Bay journeys only after legacy status migration", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const statusStore = new MemoryKv();
+  const now = Date.now();
+  const canonicalTargetKey = "openclaw/openclaw#915";
+  const statusMarker = "<!-- clawsweeper-command-status:915:re_review:migrated -->";
+  const identity = {
+    canonicalTargetKey,
+    fenceKey: `${canonicalTargetKey}@exact`,
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "migrated-bay:915",
+    sourceAction: "re_review",
+    commandOriginated: true,
+    statusMarker,
+    statusCommentId: 9301,
+    observedAt: now,
+  });
+  lifecycle.recordCanonicalReceipt({
+    ...identity,
+    outcome: "accepted",
+    receiptId: "migrated-bay:canonical",
+    observedAt: now + 1,
+  });
+  lifecycle.recordRouterReceipt({
+    ...identity,
+    outcome: "durable",
+    receiptId: "migrated-bay:router",
+    observedAt: now + 2,
+  });
+  lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: now + 3,
+  });
+  lifecycle.authorizeCommandAcknowledgement({
+    ...identity,
+    statusMarker,
+    statusCommentId: 9301,
+    observedAt: now + 4,
+  });
+  await statusStore.put(
+    "openclaw-bay:journey-state:v1",
+    JSON.stringify(
+      mergeBayJourneyState(
+        null,
+        [
+          {
+            repository: "openclaw/openclaw",
+            number: 915,
+            source_comment_id: 555,
+            source_delivery_id: "migrated-bay-delivery",
+            triggered_at: new Date(now).toISOString(),
+          },
+        ],
+        [],
+        new Date(now).toISOString(),
+      ),
+    ),
+  );
+
+  const secret = "migrated-bay-secret";
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    STATUS_STORE: statusStore,
+  };
+  const sendReceipt = (admittedCommentId: number) => {
+    const body = JSON.stringify({
+      canonical_target_key: canonicalTargetKey,
+      status_marker: statusMarker,
+      status_comment_id: admittedCommentId,
+      command_comment_id: 555,
+      completion_comment_id: 9302,
+      completed_at: new Date(now + 5).toISOString(),
+      observed_at: now + 15,
+    });
+    return worker.fetch(
+      new Request(
+        "https://clawsweeper.openclaw.ai/internal/exact-review/lifecycle/command-ack/observed",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret)
+              .update(body)
+              .digest("hex")}`,
+          },
+          body,
+        },
+      ),
+      env,
+    );
+  };
+
+  assert.equal((await (await sendReceipt(9302)).json()).accepted, true);
+  const incomplete = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1"))!).journeys;
+  assert.equal(incomplete.length, 1);
+  assert.equal(incomplete[0].completed_at ?? null, null);
+
+  await statusStore.put(
+    "openclaw-bay:journey-state:v1",
+    JSON.stringify(
+      mergeBayJourneyState(
+        { schema_version: 1, journeys: incomplete },
+        [
+          {
+            repository: "openclaw/openclaw",
+            number: 915,
+            source_comment_id: 555,
+            source_delivery_id: "newer-edit",
+            triggered_at: new Date(now + 10).toISOString(),
+          },
+        ],
+        [],
+        new Date(now + 10).toISOString(),
+      ),
+    ),
+  );
+
+  const response = await sendReceipt(9301);
+
+  assert.equal((await response.json()).accepted, true);
+  const journeys = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1"))!).journeys;
+  const completed = journeys.find(
+    (journey) => journey.source_delivery_id === "migrated-bay-delivery",
+  );
+  const newer = journeys.find((journey) => journey.source_delivery_id === "newer-edit");
+  assert.equal(completed.completion_comment_id, 9302);
+  assert.equal(completed.completed_at, new Date(now + 5).toISOString());
+  assert.equal(newer.completed_at, null);
+  assert.equal(
+    lifecycleState(lifecycle.read(canonicalTargetKey, identity.fenceKey, 1)!),
+    "completed",
+  );
+});
+
+test("migrated modern acknowledgement receipts preserve the webhook completion identity", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const statusStore = new MemoryKv();
+  const now = Date.now();
+  const marker = "<!-- clawsweeper-command-status:916:re_review:migrated -->";
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#916",
+    fenceKey: "openclaw/openclaw#916@exact",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "modern-migration:916",
+    sourceAction: "re_review",
+    commandOriginated: true,
+    statusMarker: marker,
+    statusCommentId: 9401,
+    observedAt: now,
+  });
+  lifecycle.recordCanonicalReceipt({
+    ...identity,
+    outcome: "accepted",
+    receiptId: "modern-migration:canonical",
+    observedAt: now + 1,
+  });
+  lifecycle.recordRouterReceipt({
+    ...identity,
+    outcome: "durable",
+    receiptId: "modern-migration:router",
+    observedAt: now + 2,
+  });
+  lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: now + 3,
+  });
+  lifecycle.authorizeCommandAcknowledgement({
+    ...identity,
+    statusMarker: marker,
+    statusCommentId: 9401,
+    observedAt: now + 4,
+  });
+  await statusStore.put(
+    "openclaw-bay:journey-state:v1",
+    JSON.stringify(
+      mergeBayJourneyState(
+        null,
+        [
+          {
+            repository: "openclaw/openclaw",
+            number: 916,
+            source_comment_id: 556,
+            source_delivery_id: "modern-migration-delivery",
+            triggered_at: new Date(now).toISOString(),
+          },
+        ],
+        [],
+        new Date(now).toISOString(),
+      ),
+    ),
+  );
+
+  const secret = "modern-migration-secret";
+  const completedAt = new Date(now + 5).toISOString();
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    STATUS_STORE: statusStore,
+  };
+  const webhook = await worker.fetch(
+    signedGithubWebhookRequest({
+      event: "issue_comment",
+      secret,
+      payload: {
+        action: "edited",
+        repository: {
+          full_name: "openclaw/openclaw",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        issue: { number: 916 },
+        comment: {
+          id: 9402,
+          body: [
+            "<!-- clawsweeper-command-ack:556 -->",
+            marker,
+            "<!-- clawsweeper-command-progress:start -->",
+            "- State: Complete",
+            "- Detail: Done.",
+            "<!-- clawsweeper-command-progress:end -->",
+          ].join("\n"),
+          created_at: completedAt,
+          updated_at: completedAt,
+          user: { login: "clawsweeper[bot]" },
+        },
+      },
+    }),
+    env,
+  );
+  assert.equal((await webhook.json()).reason, "recorded Bay journey completion");
+
+  const body = JSON.stringify({
+    canonical_target_key: identity.canonicalTargetKey,
+    status_marker: marker,
+    status_comment_id: 9401,
+    command_comment_id: 556,
+    completion_comment_id: 9402,
+    completed_at: completedAt,
+    observed_at: now + 15,
+  });
+  const receipt = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/lifecycle/command-ack/observed",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret)
+            .update(body)
+            .digest("hex")}`,
+        },
+        body,
+      },
+    ),
+    env,
+  );
+
+  assert.equal((await receipt.json()).accepted, true);
+  const journeys = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1"))!).journeys;
+  assert.equal(journeys.length, 1);
+  assert.equal(journeys[0].source_delivery_id, "modern-migration-delivery");
+  assert.equal(journeys[0].completed_at, completedAt);
+});
+
+test("unsigned terminal receipts are rejected before their JSON body is parsed", async () => {
+  const originalJson = Request.prototype.json;
+  let bodyParses = 0;
+  Request.prototype.json = function (...args) {
+    bodyParses += 1;
+    return originalJson.apply(this, args);
+  };
+  try {
+    const response = await worker.fetch(
+      new Request(
+        "https://clawsweeper.openclaw.ai/internal/exact-review/lifecycle/command-ack/observed",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-clawsweeper-exact-review-signature": "sha256=invalid",
+          },
+          body: JSON.stringify({ values: Array.from({ length: 100 }, (_, index) => index) }),
+        },
+      ),
+      { CLAWSWEEPER_WEBHOOK_SECRET: "real-secret" },
+    );
+    assert.equal(response.status, 401);
+    assert.equal(bodyParses, 0);
+  } finally {
+    Request.prototype.json = originalJson;
+  }
+});
+
+test("modern shared status comments acknowledge only the matching command marker", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const canonicalTargetKey = "openclaw/openclaw#913";
+  for (const [head, runId] of [
+    ["old", "100"],
+    ["new", "200"],
+  ]) {
+    const identity = {
+      canonicalTargetKey,
+      fenceKey: `${canonicalTargetKey}@publish:${runId}:1`,
+      revision: 1,
+    };
+    const statusMarker = `<!-- clawsweeper-command-status:913:automerge:${head} -->`;
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `shared-status:${runId}`,
+      sourceAction: "automerge",
+      commandOriginated: true,
+      statusMarker,
+      statusCommentId: 9201,
+      observedAt: 1_700_000_000_000,
+    });
+    lifecycle.recordCanonicalReceipt({
+      ...identity,
+      outcome: "accepted",
+      receiptId: `shared-status:${runId}:canonical`,
+      observedAt: 1_700_000_000_001,
+    });
+    lifecycle.recordRouterReceipt({
+      ...identity,
+      outcome: "durable",
+      receiptId: `shared-status:${runId}:router`,
+      observedAt: 1_700_000_000_002,
+    });
+    lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "review_completed_routed",
+      observedAt: 1_700_000_000_003,
+    });
+    lifecycle.authorizeCommandAcknowledgement({
+      ...identity,
+      statusMarker,
+      statusCommentId: 9201,
+      observedAt: 1_700_000_000_004,
+    });
+  }
+
+  const response = await worker.fetch(
+    signedGithubWebhookRequest({
+      event: "issue_comment",
+      secret: "shared-status-secret",
+      payload: {
+        action: "edited",
+        repository: {
+          full_name: "openclaw/openclaw",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        issue: { number: 913 },
+        comment: {
+          id: 9201,
+          body: [
+            "<!-- clawsweeper-command-ack:456 -->",
+            "<!-- clawsweeper-command-status:913:automerge:new -->",
+            "<!-- clawsweeper-command-progress:start -->",
+            "- State: Complete",
+            "- Detail: Done.",
+            "<!-- clawsweeper-command-progress:end -->",
+          ].join("\n"),
+          created_at: "2026-07-30T00:00:00.000Z",
+          updated_at: "2026-07-30T00:01:00.000Z",
+          user: { login: "clawsweeper[bot]" },
+        },
+      },
+    }),
+    {
+      CLAWSWEEPER_WEBHOOK_SECRET: "shared-status-secret",
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      STATUS_STORE: new MemoryKv(),
+    },
+  );
+
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    accepted: false,
+    reason: "recorded lifecycle acknowledgement",
+  });
+  assert.equal(
+    lifecycleState(lifecycle.read(canonicalTargetKey, `${canonicalTargetKey}@publish:100:1`, 1)!),
+    "acknowledgement_pending",
+  );
+  assert.equal(
+    lifecycleState(lifecycle.read(canonicalTargetKey, `${canonicalTargetKey}@publish:200:1`, 1)!),
+    "completed",
+  );
+});
+
 test("Worker lifecycle keeps retryable publication work ineligible for final acknowledgement", async () => {
   const storage = new MemoryDurableStorage();
   const leased = leasedExactReviewPublicationItem(779, "7790");

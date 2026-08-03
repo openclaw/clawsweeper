@@ -3269,6 +3269,13 @@ function trustedAutomationReviewLeaseBlockReason(
 }
 
 function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
+  const requiresCommandStatus = ["re_review", "autofix", "automerge"].includes(
+    String(command.intent ?? ""),
+  );
+  if (requiresCommandStatus) {
+    const retainedStatusComment = findExistingCommandStatusComment(command);
+    if (retainedStatusComment?.id) command.status_comment_id = Number(retainedStatusComment.id);
+  }
   let dispatchKey = dispatchReceiptKey(command);
   const expectedTitle = `Review event item ${command.repo}#${command.issue_number} [${dispatchKey}]`;
   const claimed = claimedDispatchState({
@@ -3288,7 +3295,7 @@ function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
   const fallbackCodexTimeoutMs = reviewBudget
     ? reviewBudget.codexTimeoutMs + MAX_MEDIA_PREPROCESSING_TIMEOUT_MS
     : null;
-  const commandStatus = ["re_review", "autofix", "automerge"].includes(String(command.intent ?? ""))
+  const commandStatus = requiresCommandStatus
     ? {
         command_status_marker: commandStatusMarker(command),
         ...(command.status_comment_id

@@ -6845,6 +6845,7 @@ export class ExactReviewQueue {
           : "";
     const commandCommentId = Number(body.command_comment_id);
     const completionCommentId = Number(body.completion_comment_id);
+    const requireExactStatusComment = body.require_exact_status_comment;
     const observedAt = Number(body.observed_at);
     if (
       !canonicalTargetKey ||
@@ -6853,6 +6854,7 @@ export class ExactReviewQueue {
       commandCommentId < 1 ||
       !Number.isSafeInteger(completionCommentId) ||
       completionCommentId < 1 ||
+      (requireExactStatusComment !== undefined && typeof requireExactStatusComment !== "boolean") ||
       !Number.isSafeInteger(observedAt) ||
       observedAt < 1
     ) {
@@ -6864,6 +6866,7 @@ export class ExactReviewQueue {
         statusMarker,
         commandCommentId,
         completionCommentId,
+        ...(requireExactStatusComment ? { requireExactStatusComment: true } : {}),
         observedAt,
       });
       if (result.accepted && result.projection) {

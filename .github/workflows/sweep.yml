@@ -3252,6 +3252,7 @@ jobs:
           STATUS_COMMENT_ID: ${{ steps.finalization-context.outputs.status_comment_id }}
           COMMAND_COMMENT_ID: ${{ steps.update-final-command-status.outputs.command_comment_id }}
           COMPLETION_COMMENT_ID: ${{ steps.update-final-command-status.outputs.completion_comment_id }}
+          COMPLETION_COMPLETED_AT: ${{ steps.update-final-command-status.outputs.completion_completed_at }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
@@ -3261,17 +3262,21 @@ jobs:
             const statusCommentId = process.env.STATUS_COMMENT_ID === "" ? null : Number(process.env.STATUS_COMMENT_ID);
             const commandCommentId = Number(process.env.COMMAND_COMMENT_ID);
             const completionCommentId = Number(process.env.COMPLETION_COMMENT_ID);
+            const completedAt = process.env.COMPLETION_COMPLETED_AT || "";
             if (
               (!statusMarker && statusCommentId === null) ||
               (statusCommentId !== null && (!Number.isInteger(statusCommentId) || statusCommentId < 1)) ||
               !Number.isInteger(commandCommentId) || commandCommentId < 1 ||
-              !Number.isInteger(completionCommentId) || completionCommentId < 1
+              !Number.isInteger(completionCommentId) || completionCommentId < 1 ||
+              !completedAt || !Number.isFinite(Date.parse(completedAt))
             ) process.exit(1);
             process.stdout.write(JSON.stringify({
               canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
               ...(statusMarker ? { status_marker: statusMarker } : {}),
+              ...(statusCommentId === null ? {} : { status_comment_id: statusCommentId }),
               command_comment_id: commandCommentId,
               completion_comment_id: completionCommentId,
+              completed_at: completedAt,
               observed_at: Date.now(),
             }));
           ')"

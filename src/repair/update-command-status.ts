@@ -54,6 +54,7 @@ type TerminalStatusReceipt = {
 type CommandStatusUpdateResult = {
   outcome: CommandStatusUpdateOutcome;
   terminalStatusReceipt?: TerminalStatusReceipt;
+  terminalStatusCompletedAt?: string;
 };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -113,7 +114,11 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
       status: "unchanged",
       mutation: false,
     });
-    return { outcome: "unchanged", terminalStatusReceipt };
+    return {
+      outcome: "unchanged",
+      terminalStatusReceipt,
+      terminalStatusCompletedAt: verifiedTerminalStatusCompletedAt(comment),
+    };
   }
   const body = mergeCommandProgressSection(comment.body, options);
   if (body === comment.body) {
@@ -125,8 +130,9 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
     return { outcome: "unchanged" };
   }
   const payload = writePayload(repoRoot(), `command-status-progress-${comment.id}`, { body });
+  let mutationResponse: string;
   try {
-    runCommandLifecycleMutation(lifecycle, {
+    mutationResponse = runCommandLifecycleMutation(lifecycle, {
       kind: "status_comment_update",
       identity: {
         repository: options.repo,
@@ -156,7 +162,14 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
   const verifiedReceipt = verifiedTerminalStatusReceipt({ ...comment, body }, options);
   return {
     outcome: "completed",
-    ...(verifiedReceipt ? { terminalStatusReceipt: verifiedReceipt } : {}),
+    ...(verifiedReceipt
+      ? {
+          terminalStatusReceipt: verifiedReceipt,
+          terminalStatusCompletedAt: verifiedTerminalStatusCompletedAt(
+            JSON.parse(mutationResponse),
+          ),
+        }
+      : {}),
   };
 }
 
@@ -164,10 +177,12 @@ async function runCommandStatusUpdate(options: Options) {
   let commandError: unknown = null;
   let outcome: CommandStatusUpdateOutcome | null = null;
   let terminalStatusReceipt: TerminalStatusReceipt | undefined;
+  let terminalStatusCompletedAt: string | undefined;
   try {
     const result = await updateCommandStatus(options);
     outcome = result.outcome;
     terminalStatusReceipt = result.terminalStatusReceipt;
+    terminalStatusCompletedAt = result.terminalStatusCompletedAt;
   } catch (error) {
     commandError = error;
     recordCommandLifecycleFailure(commandStatusLifecycle(options), {
@@ -201,11 +216,20 @@ async function runCommandStatusUpdate(options: Options) {
         "terminal_status_verified=true",
         `command_comment_id=${terminalStatusReceipt.commandCommentId}`,
         `completion_comment_id=${terminalStatusReceipt.completionCommentId}`,
+        `completion_completed_at=${terminalStatusCompletedAt}`,
         "",
       ].join("\n"),
     );
   }
   if (commandError) throw commandError;
+}
+
+function verifiedTerminalStatusCompletedAt(comment: LooseRecord): string {
+  const completedAt = String(comment.updated_at ?? "").trim();
+  if (!completedAt || !Number.isFinite(Date.parse(completedAt))) {
+    throw new Error("verified terminal status comment has no valid update timestamp");
+  }
+  return completedAt;
 }
 
 export function terminalLockedConversationSkip(
@@ -266,6 +290,13 @@ async function findCommandStatusComment(
     }
     const match = selectCommandStatusComment(comments, options);
     if (match) {
+      if (
+        options.statusCommentId &&
+        Number(match.id) !== options.statusCommentId &&
+        (!exact || statusMarkerDiffersFromRequested(exact.body, options.marker))
+      ) {
+        options.statusCommentId = Number(match.id);
+      }
       pruneDuplicateCommandAckComments({ comments, keep: match, options, lifecycle });
       return match;
     }
@@ -474,7 +505,9 @@ export function verifiedTerminalStatusReceipt(
     const commandCommentId =
       commandCommentIds.length === 1
         ? commandCommentIds[0]!
-        : commandCommentIds.length === 0 && !hasCommandAckMarker(comment.body)
+        : commandCommentIds.length === 0 &&
+            !hasCommandAckMarker(comment.body) &&
+            (options.statusCommentId === null || completionCommentId === options.statusCommentId)
           ? legacyCommandCommentId(comment.body, options.marker)
           : null;
     return commandCommentId === null ? null : { commandCommentId, completionCommentId };

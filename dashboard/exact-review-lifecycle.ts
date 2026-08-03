@@ -684,6 +684,7 @@ export class ExactReviewLifecycleProjectionStore {
     statusMarker: string | null;
     commandCommentId: number;
     completionCommentId: number;
+    requireExactStatusComment?: boolean;
     observedAt: number;
   }) {
     if (
@@ -706,8 +707,17 @@ export class ExactReviewLifecycleProjectionStore {
         const projection = projectionFromRow(String(row.projection_json || ""));
         const attempted = projection.acknowledgement.attempts.some(
           (attempt) =>
-            attempt.statusCommentId === input.completionCommentId ||
-            (input.statusMarker !== null && attempt.statusMarker === input.statusMarker),
+            (attempt.statusCommentId === input.completionCommentId &&
+              (attempt.statusMarker === input.statusMarker ||
+                attempt.statusMarker === null ||
+                (!input.requireExactStatusComment && input.statusMarker === null))) ||
+            (input.requireExactStatusComment &&
+              attempt.statusCommentId === null &&
+              input.statusMarker !== null &&
+              attempt.statusMarker === input.statusMarker) ||
+            (!input.requireExactStatusComment &&
+              input.statusMarker !== null &&
+              attempt.statusMarker === input.statusMarker),
         );
         if (!attempted || !projection.acknowledgement.required) continue;
         const observed = {
