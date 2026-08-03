@@ -75,6 +75,7 @@ import {
   REVIEW_POLICY_VERSION,
 } from "./clawsweeper-policy.js";
 import { createRecordMetadata } from "./clawsweeper-record-metadata.js";
+import { createRegressionProvenanceVerifier } from "./clawsweeper-regression-provenance.js";
 import { createReportHelpers } from "./clawsweeper-report-helpers.js";
 import { createReportOrchestration } from "./clawsweeper-report-orchestration.js";
 import { createReportParser } from "./clawsweeper-report-parser.js";
@@ -789,6 +790,42 @@ const statusContext = createStatusContext({
 export const { fixedPullRequestFromCommitPullsForTest } = statusContext;
 const { attachFixedPullRequest, displayTitle, readSweepStatusSummary } = statusContext;
 
+const regressionProvenanceVerifier = createRegressionProvenanceVerifier({
+  fetchPull: (repo, number) =>
+    ghJson<unknown>([
+      "api",
+      `repos/${repo}/pulls/${number}`,
+      "-H",
+      "Accept: application/vnd.github+json",
+    ]),
+  runGit: (args, options) => run("git", args, options),
+});
+
+function verifyRegressionProvenance(
+  decision: import("./clawsweeper-types.js").Decision,
+  item: import("./clawsweeper-types.js").Item,
+  context: import("./clawsweeper-types.js").ItemContext,
+  checkoutDir: string,
+  git: import("./clawsweeper-types.js").GitInfo,
+): import("./clawsweeper-types.js").Decision {
+  const regressionProvenance = regressionProvenanceVerifier.verify({
+    candidate: decision.regressionProvenance,
+    item,
+    checkoutDir,
+    targetBranch: git.targetBranch,
+    reviewedCommitShas:
+      item.kind === "pull_request"
+        ? [git.mainSha, pullHeadShaFromContext(context) ?? undefined]
+        : [git.mainSha],
+  });
+  // Missing local history is incomplete proof. Keep a generic preliminary
+  // assessment, if any, but never hydrate history or name a predecessor.
+  return {
+    ...decision,
+    regressionProvenance,
+  };
+}
+
 function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
@@ -1191,6 +1228,7 @@ const { reviewCommand } = createReviewCommandWorkflow({
   },
   asRecord,
   attachFixedPullRequest,
+  verifyRegressionProvenance,
   ...contextHydration,
   buildLocalRangeReview,
   ...reviewRuntime,

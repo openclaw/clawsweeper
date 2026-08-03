@@ -27,6 +27,10 @@ import {
   REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS,
   REAL_BEHAVIOR_PROOF_SCHEMA_KEYS,
   REAL_BEHAVIOR_PROOF_STATUSES,
+  REGRESSION_ASSESSMENT_CONFIDENCES,
+  REGRESSION_ASSESSMENT_SCHEMA_KEYS,
+  REGRESSION_PROVENANCE_SCHEMA_KEYS,
+  REGRESSION_SUPPORTING_EVIDENCE,
   REPRODUCTION_STATUSES,
   REVIEW_FINDING_SCHEMA_KEYS,
   REVIEW_LABEL_VALUES,
@@ -63,6 +67,8 @@ import type {
   ReviewFinding,
   ReviewLabelName,
   ReviewMetric,
+  RegressionAssessment,
+  RegressionProvenanceCandidate,
   RootCauseClusterAssessment,
   RootCauseClusterMember,
   RootCauseNormalizationItem,
@@ -744,6 +750,48 @@ export function createDecisionParser({
     };
   }
 
+  function parseRegressionProvenanceCandidate(
+    value: unknown,
+    path: string,
+  ): RegressionProvenanceCandidate | null {
+    if (value === null) return null;
+    const record = requireRecord(value, path);
+    rejectUnexpectedKeys(record, REGRESSION_PROVENANCE_SCHEMA_KEYS, path);
+    return {
+      repo: requireString(record.repo, `${path}.repo`),
+      pullRequestNumber: requireInteger(record.pullRequestNumber, `${path}.pullRequestNumber`),
+      pullRequestUrl: requireString(record.pullRequestUrl, `${path}.pullRequestUrl`),
+      mergeCommitSha: requireString(record.mergeCommitSha, `${path}.mergeCommitSha`),
+      sourcePath: requireString(record.sourcePath, `${path}.sourcePath`),
+      sourceLine: requireInteger(record.sourceLine, `${path}.sourceLine`),
+    };
+  }
+
+  function parseRegressionAssessment(value: unknown, path: string): RegressionAssessment | null {
+    if (value === null) return null;
+    const record = requireRecord(value, path);
+    rejectUnexpectedKeys(record, REGRESSION_ASSESSMENT_SCHEMA_KEYS, path);
+    const confidence = requireEnum(
+      record.confidence,
+      REGRESSION_ASSESSMENT_CONFIDENCES,
+      `${path}.confidence`,
+    ) as RegressionAssessment["confidence"];
+    const supportingEvidence = requireEnumArray(
+      record.supportingEvidence,
+      REGRESSION_SUPPORTING_EVIDENCE,
+      `${path}.supportingEvidence`,
+    ) as RegressionAssessment["supportingEvidence"];
+    if (
+      supportingEvidence.length === 0 ||
+      supportingEvidence.length > 3 ||
+      new Set(supportingEvidence).size !== supportingEvidence.length ||
+      (confidence === "probable" && supportingEvidence.length < 2)
+    ) {
+      throw new Error(`${path} has insufficient or duplicate supporting evidence`);
+    }
+    return { confidence, supportingEvidence };
+  }
+
   function requireEnum<T extends string>(value: unknown, allowed: Set<T>, path: string): T {
     if (typeof value === "string" && allowed.has(value as T)) return value as T;
     throw new Error(`${path} has invalid value`);
@@ -880,6 +928,14 @@ export function createDecisionParser({
       fixedRelease: requireNullableString(record.fixedRelease, "decision.fixedRelease"),
       fixedSha: requireNullableString(record.fixedSha, "decision.fixedSha"),
       fixedAt: requireNullableString(record.fixedAt, "decision.fixedAt"),
+      regressionAssessment: parseRegressionAssessment(
+        record.regressionAssessment,
+        "decision.regressionAssessment",
+      ),
+      regressionProvenance: parseRegressionProvenanceCandidate(
+        record.regressionProvenance,
+        "decision.regressionProvenance",
+      ),
       closeComment: requireString(record.closeComment, "decision.closeComment"),
       workCandidate: requireEnum(record.workCandidate, WORK_CANDIDATES, "decision.workCandidate"),
       workConfidence: requireEnum(record.workConfidence, CONFIDENCES, "decision.workConfidence"),

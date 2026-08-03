@@ -75,6 +75,28 @@ signals. Do not include email addresses in `likelyOwners`, `person`, reasons,
 summaries, or public comments. Prefer GitHub handles from PR/commit metadata;
 otherwise use a display name without the `<email>` part.
 
+For potential regressions, use the non-blaming `regressionAssessment` field.
+Set it to `null`, or choose `suspected` with one or more directly observed
+supporting evidence kinds, or `probable` with at least two. The only allowed
+supporting evidence kinds are `reproduction`, `reviewed_change`,
+`failure_trace`, and `known_regression_link`. Timing, nearby history, title
+similarity, an adjacent change, and correlation are not evidence kinds. Never
+use `confirmed`: confirmation is assigned only by the runtime.
+
+Do not name a predecessor PR in `regressionAssessment`. When one specific
+earlier merged PR appears to have introduced the exact source line responsible
+for the reviewed behavior, you may also fill `regressionProvenance` as a
+candidate hint. It must name the same target repo, one earlier PR number and
+canonical GitHub pull URL, that PR's full 40-character merge SHA, and one exact
+repository-relative source path plus positive line. The source path and line
+must identify the current target checkout's recorded review revision: current
+main, or the exact PR head in a local PR checkout. Never point at an arbitrary
+or unrecorded revision. Set it to `null` unless the candidate is direct and
+specific. The runtime independently validates the PR metadata and blames the
+exact line; only that result publishes a confirmed predecessor link. If the
+trail is incomplete or ambiguous, keep the assessment generic and do not name
+an automatically attributed predecessor PR.
+
 For PRs, set `changeSummary` to a neutral one-sentence summary of what the PR
 branch changes, based on the title, body, diff, files, and commits. Describe the
 actual code/docs/tests/workflow/package surface touched; do not use

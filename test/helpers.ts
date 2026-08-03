@@ -177,6 +177,8 @@ export function closeDecision(overrides = {}) {
     fixedRelease: null,
     fixedSha: "abcdef1234567890",
     fixedAt: "2026-04-28T12:00:00Z",
+    regressionAssessment: null,
+    regressionProvenance: null,
     closeComment: "Closing this as implemented after Codex review.\n\n- Evidence.",
     workCandidate: "none",
     workConfidence: "low",

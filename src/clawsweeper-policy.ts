@@ -743,6 +743,8 @@ export const DECISION_SCHEMA_KEYS = new Set([
   "fixedRelease",
   "fixedSha",
   "fixedAt",
+  "regressionAssessment",
+  "regressionProvenance",
   "closeComment",
   "workCandidate",
   "workConfidence",
@@ -752,6 +754,22 @@ export const DECISION_SCHEMA_KEYS = new Set([
   "workClusterRefs",
   "workValidation",
   "workLikelyFiles",
+]);
+export const REGRESSION_PROVENANCE_SCHEMA_KEYS = new Set([
+  "repo",
+  "pullRequestNumber",
+  "pullRequestUrl",
+  "mergeCommitSha",
+  "sourcePath",
+  "sourceLine",
+]);
+export const REGRESSION_ASSESSMENT_SCHEMA_KEYS = new Set(["confidence", "supportingEvidence"]);
+export const REGRESSION_ASSESSMENT_CONFIDENCES = new Set(["suspected", "probable"]);
+export const REGRESSION_SUPPORTING_EVIDENCE = new Set([
+  "reproduction",
+  "reviewed_change",
+  "failure_trace",
+  "known_regression_link",
 ]);
 export const EVIDENCE_SCHEMA_KEYS = new Set(["label", "detail", "file", "line", "command", "sha"]);
 export const SECURITY_REVIEW_SCHEMA_KEYS = new Set(["status", "summary", "concerns"]);

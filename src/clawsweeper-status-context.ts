@@ -7,8 +7,14 @@ import type {
   FixedPullRequest,
   Item,
   ItemContext,
+  RegressionAssessment,
+  VerifiedRegressionProvenance,
   WorkflowStatusSummary,
 } from "./clawsweeper-types.js";
+import {
+  isRegressionAssessment,
+  isVerifiedRegressionProvenance,
+} from "./clawsweeper-regression-provenance.js";
 import { isGitHubNotFoundError } from "./github-retry.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 
@@ -538,6 +544,32 @@ ${profileStatusEnd(profile)}`;
     };
   }
 
+  function regressionProvenanceFromReport(markdown: string): VerifiedRegressionProvenance | null {
+    const rawNumber = frontMatterValue(markdown, "regression_provenance_pr_number");
+    const sourceLine = frontMatterValue(markdown, "regression_provenance_source_line");
+    const provenance = {
+      repo: frontMatterValue(markdown, "regression_provenance_repo"),
+      pullRequestNumber: rawNumber ? Number(rawNumber) : NaN,
+      pullRequestUrl: frontMatterValue(markdown, "regression_provenance_pr_url"),
+      mergeCommitSha: frontMatterValue(markdown, "regression_provenance_merge_sha"),
+      sourcePath: frontMatterValue(markdown, "regression_provenance_source_path"),
+      sourceLine: sourceLine ? Number(sourceLine) : NaN,
+      evidenceType: frontMatterValue(markdown, "regression_provenance_evidence_type"),
+      mergedAt: frontMatterValue(markdown, "regression_provenance_merged_at"),
+      reviewedCommitSha: frontMatterValue(markdown, "regression_provenance_reviewed_sha"),
+    };
+    return isVerifiedRegressionProvenance(provenance) ? provenance : null;
+  }
+
+  function regressionAssessmentFromReport(markdown: string): RegressionAssessment | null {
+    const rawEvidence = frontMatterValue(markdown, "regression_assessment_evidence");
+    const assessment = {
+      confidence: frontMatterValue(markdown, "regression_assessment_confidence"),
+      supportingEvidence: rawEvidence ? rawEvidence.split(",") : [],
+    };
+    return isRegressionAssessment(assessment) ? assessment : null;
+  }
+
   function nonUnknownFrontMatter(markdown: string, key: string): string | null {
     const value = frontMatterValue(markdown, key);
     return value && value !== "unknown" ? value : null;
@@ -551,6 +583,8 @@ ${profileStatusEnd(profile)}`;
     fixedInReportText,
     fixedInText,
     fixedPullRequestFromReport,
+    regressionAssessmentFromReport,
+    regressionProvenanceFromReport,
     formatReviewFreshnessTimestamp,
     formatStatusNumber,
     formatTimestamp,

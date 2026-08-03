@@ -42,6 +42,13 @@ export interface CreateReviewCommandWorkflowDependencies {
   activeReviewMutationRunner: MutationRunner | null;
   asRecord: (value: unknown) => Record<string, unknown>;
   attachFixedPullRequest: (decision: Decision, item: Item, context: ItemContext) => Decision;
+  verifyRegressionProvenance: (
+    decision: Decision,
+    item: Item,
+    context: ItemContext,
+    checkoutDir: string,
+    git: GitInfo,
+  ) => Decision;
   authorIssueCountInBulkFilerWindow: (author: string, windowStart: string) => number;
   buildLocalRangeReview: (
     targetDir: string,

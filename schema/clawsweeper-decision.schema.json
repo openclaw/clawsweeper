@@ -49,6 +49,8 @@
     "fixedRelease",
     "fixedSha",
     "fixedAt",
+    "regressionAssessment",
+    "regressionProvenance",
     "closeComment",
     "workCandidate",
     "workConfidence",
@@ -853,6 +855,96 @@
     "fixedAt": {
       "type": ["string", "null"],
       "description": "ISO-8601 commit or merge timestamp for the fix/proof SHA when known. Required for implemented_on_main and mostly_implemented_on_main when fixedRelease is null so maintainers know when it became fixed on main."
+    },
+    "regressionAssessment": {
+      "description": "A non-blaming preliminary regression assessment. Do not name a predecessor here; a PR link is published only through independently verified regressionProvenance.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["confidence", "supportingEvidence"],
+          "properties": {
+            "confidence": {
+              "type": "string",
+              "enum": ["suspected", "probable"]
+            },
+            "supportingEvidence": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 3,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "reproduction",
+                  "reviewed_change",
+                  "failure_trace",
+                  "known_regression_link"
+                ]
+              }
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "confidence": { "const": "probable" } }
+              },
+              "then": {
+                "properties": { "supportingEvidence": { "minItems": 2 } }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "regressionProvenance": {
+      "description": "An untrusted candidate predecessor link. The runtime publishes it only after exact GitHub PR metadata and local blame agree on the merge commit; use null unless one exact relevant source line and prior merged PR are known.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repo",
+            "pullRequestNumber",
+            "pullRequestUrl",
+            "mergeCommitSha",
+            "sourcePath",
+            "sourceLine"
+          ],
+          "properties": {
+            "repo": {
+              "type": "string",
+              "description": "Target owner/repository only."
+            },
+            "pullRequestNumber": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "pullRequestUrl": {
+              "type": "string",
+              "description": "Canonical https://github.com/<owner>/<repo>/pull/<number> URL."
+            },
+            "mergeCommitSha": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{40}$"
+            },
+            "sourcePath": {
+              "type": "string",
+              "description": "One exact repository-relative tracked source path; no absolute or traversal path."
+            },
+            "sourceLine": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      ]
     },
     "closeComment": {
       "type": "string"

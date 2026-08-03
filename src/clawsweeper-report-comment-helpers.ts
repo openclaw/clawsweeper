@@ -10,12 +10,20 @@ import type {
   MergeRiskOption,
   PublicBeforeMergeItem,
   PublicPriority,
+  RegressionAssessment,
   RealBehaviorProof,
   ReviewFinding,
   ReviewRuntime,
   RootCauseClusterAssessment,
+  VerifiedRegressionProvenance,
   SecurityReview,
 } from "./clawsweeper-types.js";
+import {
+  isRegressionAssessment,
+  isVerifiedRegressionProvenance,
+  regressionAssessmentPublicLine,
+  regressionProvenancePublicLine,
+} from "./clawsweeper-regression-provenance.js";
 import {
   appendReviewHistoryCycle,
   neutralizeReviewControlMarkers,
@@ -79,6 +87,8 @@ export function createReportCommentHelpers(
     evidence: Evidence[];
     likelyOwners?: LikelyOwner[];
     fixedPullRequest?: FixedPullRequest | null;
+    regressionAssessment?: RegressionAssessment | null;
+    regressionProvenance?: VerifiedRegressionProvenance | null;
     securityReview?: SecurityReview;
     rootCauseCluster?: RootCauseClusterAssessment;
     reviewLine: string;
@@ -97,6 +107,10 @@ export function createReportCommentHelpers(
         )}.`,
       );
     }
+    const regressionProvenanceLine =
+      regressionProvenancePublicLine(options.regressionProvenance) ??
+      regressionAssessmentPublicLine(options.regressionAssessment);
+    if (regressionProvenanceLine) lines.push("", regressionProvenanceLine);
     const rootCauseCluster = publicRootCauseClusterBlock(options.rootCauseCluster);
     if (rootCauseCluster) lines.push("", "**Root-cause cluster**", rootCauseCluster);
     const bestSolutionLine = sentence(options.bestSolution ?? "");
@@ -157,6 +171,8 @@ export function createReportCommentHelpers(
           evidence: reportEvidence(markdown),
           likelyOwners: reportLikelyOwners(markdown),
           fixedPullRequest: fixedPullRequestFromReport(markdown),
+          regressionAssessment: dependencies.regressionAssessmentFromReport(markdown),
+          regressionProvenance: dependencies.regressionProvenanceFromReport(markdown),
           securityReview: reportSecurityReview(markdown),
           rootCauseCluster: reportRootCauseCluster(markdown),
           reviewLine: closeReviewLineFromReport(markdown),
@@ -213,6 +229,12 @@ export function createReportCommentHelpers(
       evidence: decision.evidence,
       likelyOwners: decision.likelyOwners,
       fixedPullRequest: decision.fixedPullRequest ?? null,
+      regressionAssessment: isRegressionAssessment(decision.regressionAssessment)
+        ? decision.regressionAssessment
+        : null,
+      regressionProvenance: isVerifiedRegressionProvenance(decision.regressionProvenance)
+        ? decision.regressionProvenance
+        : null,
       securityReview: decision.securityReview,
       rootCauseCluster: decision.rootCauseCluster,
       reviewLine: closeReviewLineFromDecision(decision, git, runtime),

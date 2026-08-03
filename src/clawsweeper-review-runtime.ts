@@ -145,7 +145,7 @@ export function createReviewRuntime({
     } else if (latestRelease) {
       releaseStateComplete = false;
     }
-    return { mainSha, releaseStateComplete, latestRelease };
+    return { mainSha, targetBranch, releaseStateComplete, latestRelease };
   }
 
   function reviewTargetBranch(openclawDir: string): string {
@@ -690,6 +690,7 @@ ${extra}
       fixedSha: null,
       fixedAt: null,
       fixedPullRequest: null,
+      regressionProvenance: null,
       closeComment: "",
       workCandidate: "none",
       workConfidence: "low",

@@ -394,6 +394,66 @@ test("decision parser enforces required schema-shaped evidence", () => {
   assert.deepEqual(workCandidate.workClusterRefs, ["#123", "#456"]);
 });
 
+test("decision parser accepts only a complete regression-provenance candidate shape", () => {
+  const provenance = {
+    repo: "openclaw/clawsweeper",
+    pullRequestNumber: 936,
+    pullRequestUrl: "https://github.com/openclaw/clawsweeper/pull/936",
+    mergeCommitSha: "a".repeat(40),
+    sourcePath: "src/clawsweeper-review-runtime.ts",
+    sourceLine: 42,
+  };
+  assert.deepEqual(
+    parseDecision(closeDecision({ regressionProvenance: provenance })).regressionProvenance,
+    provenance,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({ regressionProvenance: { ...provenance, command: "git blame" } }),
+      ),
+    /decision\.regressionProvenance has unexpected keys/,
+  );
+});
+
+test("decision parser accepts non-blaming regression assessments only with normalized evidence", () => {
+  assert.deepEqual(
+    parseDecision(
+      closeDecision({
+        regressionAssessment: {
+          confidence: "probable",
+          supportingEvidence: ["reproduction", "reviewed_change"],
+        },
+      }),
+    ).regressionAssessment,
+    { confidence: "probable", supportingEvidence: ["reproduction", "reviewed_change"] },
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          regressionAssessment: {
+            confidence: "probable",
+            supportingEvidence: ["reproduction"],
+          },
+        }),
+      ),
+    /decision\.regressionAssessment has insufficient or duplicate supporting evidence/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          regressionAssessment: {
+            confidence: "confirmed",
+            supportingEvidence: ["reproduction", "reviewed_change"],
+          },
+        }),
+      ),
+    /decision\.regressionAssessment\.confidence has invalid value/,
+  );
+});
+
 test("decision parser keeps maintainer intent model-authored and owner-consistent", () => {
   const maintainerDecision = {
     required: true,

@@ -26,8 +26,10 @@ import type {
   PrRating,
   PrStatusLabelKind,
   PublicPriority,
+  RegressionAssessment,
   PullRequestLiveActivity,
   RealBehaviorProof,
+  VerifiedRegressionProvenance,
   ReviewFinding,
   RootCauseClusterAssessment,
   SecurityConcern,
@@ -67,6 +69,8 @@ export interface CreateReportOrchestrationDependencies {
   fixedInReportText: (markdown: string) => string;
   fixedInText: (decision: Decision) => string;
   fixedPullRequestFromReport: (markdown: string) => FixedPullRequest | null;
+  regressionAssessmentFromReport: (markdown: string) => RegressionAssessment | null;
+  regressionProvenanceFromReport: (markdown: string) => VerifiedRegressionProvenance | null;
   formatReviewFreshnessTimestamp: (iso: string | undefined) => string;
   formatTimestamp: (iso: string | undefined) => string;
   frontMatterBoolean: (markdown: string, key: string) => boolean;

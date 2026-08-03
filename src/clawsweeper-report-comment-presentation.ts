@@ -1,5 +1,9 @@
 import type { CloseReason, ItemKind, ReviewCommentRenderOptions } from "./clawsweeper-types.js";
 import {
+  regressionAssessmentPublicLine,
+  regressionProvenancePublicLine,
+} from "./clawsweeper-regression-provenance.js";
+import {
   maintainerDecisionFromReport,
   renderDecisionPacketPublicBlock,
 } from "./decision-packets.js";
@@ -71,6 +75,8 @@ export function createReportCommentPresentation(
     reportRootCauseCluster,
     reportSecurityReview,
     reportWorkCandidateReason,
+    regressionAssessmentFromReport,
+    regressionProvenanceFromReport,
     reviewAutomationMarkersFromReport,
     reviewFindingDetailedLine,
     reviewFindingSummaryLine,
@@ -107,6 +113,9 @@ export function createReportCommentPresentation(
     const mantisRecommendation = reportMantisRecommendation(markdown);
     const agentsPolicyStatus = reportAgentsPolicyStatus(markdown);
     const rootCauseCluster = reportRootCauseCluster(markdown);
+    const regressionProvenanceLine =
+      regressionProvenancePublicLine(regressionProvenanceFromReport(markdown)) ??
+      regressionAssessmentPublicLine(regressionAssessmentFromReport(markdown));
     const summary = reviewSectionValue(markdown, "summary");
     const changeSummary = reviewSectionValue(markdown, "changeSummary");
     const systemContext = neutralizeOwnedSectionSpoofing(
@@ -297,6 +306,9 @@ export function createReportCommentPresentation(
       });
       lines.push("# ClawSweeper review", "");
       appendHeadingSection(lines, "What this changes", changeSummaryLine);
+      if (regressionProvenanceLine) {
+        appendHeadingSection(lines, "Regression provenance", regressionProvenanceLine);
+      }
       appendHeadingSection(
         lines,
         "Merge readiness",
@@ -416,6 +428,9 @@ export function createReportCommentPresentation(
       lines.push("", collapsedDetailsBlock("<strong>Agent review details</strong>", agentDetails));
     } else {
       appendPublicSection(lines, "Summary", publicSummaryBody(summaryLine, reproductionAssessment));
+      if (regressionProvenanceLine) {
+        appendPublicSection(lines, "Regression provenance", regressionProvenanceLine);
+      }
       if (rootCauseClusterBlock) {
         appendPublicSection(lines, "Root-cause cluster", rootCauseClusterBlock);
       }

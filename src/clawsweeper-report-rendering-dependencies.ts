@@ -16,7 +16,9 @@ import type {
   OverallCorrectness,
   PrRating,
   PublicPriority,
+  RegressionAssessment,
   RealBehaviorProof,
+  VerifiedRegressionProvenance,
   ReviewCommentRenderOptions,
   ReviewFinding,
   ReviewMetric,
@@ -62,6 +64,8 @@ export interface CreateReportRenderingDependencies {
   fixedInReportText: (markdown: string) => string;
   fixedInText: (decision: Decision) => string;
   fixedPullRequestFromReport: (markdown: string) => FixedPullRequest | null;
+  regressionAssessmentFromReport: (markdown: string) => RegressionAssessment | null;
+  regressionProvenanceFromReport: (markdown: string) => VerifiedRegressionProvenance | null;
   formatReviewFreshnessTimestamp: (iso: string | undefined) => string;
   formattedMarkdownList: (
     values: readonly string[],

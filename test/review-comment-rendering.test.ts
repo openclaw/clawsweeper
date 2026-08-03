@@ -187,7 +187,10 @@ test("structural cache probes before hydration but acquires a lease before carry
   assert.match(gitInfoBlock, /"tagName,name,publishedAt,isLatest"/);
   assert.match(gitInfoBlock, /release\.isLatest === true/);
   assert.doesNotMatch(gitInfoBlock, /releases\[0\]/);
-  assert.match(gitInfoBlock, /return \{ mainSha, releaseStateComplete, latestRelease \}/);
+  assert.match(
+    gitInfoBlock,
+    /return \{ mainSha, targetBranch, releaseStateComplete, latestRelease \}/,
+  );
   assert.match(source, /coordination-held\.json/);
   assert.match(source, /coordinationHeldRetryAt = startComment\.retryAt/);
   assert.match(source, /review-cache-metrics\.json/);
@@ -891,6 +894,112 @@ test("high-confidence root-cause clusters appear in close comments", () => {
   assert.match(comment, /\*\*Root-cause cluster\*\*/);
   assert.match(comment, /Relationship: `duplicate`/);
   assert.match(comment, /Canonical: https:\/\/github\.com\/openclaw\/clawsweeper\/issues\/400/);
+});
+
+test("verified regression provenance renders the predecessor PR without local source details", () => {
+  const mergeSha = "a".repeat(40);
+  const closeComment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_provenance_repo: "openclaw/clawsweeper",
+      regression_provenance_pr_url: "https://github.com/openclaw/clawsweeper/pull/936",
+      regression_provenance_pr_number: "936",
+      regression_provenance_merge_sha: mergeSha,
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_evidence_type: "blame_to_merge_commit",
+      regression_provenance_merged_at: "2026-07-31T12:00:00Z",
+      regression_provenance_reviewed_sha: "b".repeat(40),
+    }),
+    "implemented_on_main",
+  );
+  assert.match(
+    closeComment,
+    /Verified regression provenance: \[#936\]\(https:\/\/github\.com\/openclaw\/clawsweeper\/pull\/936\)/,
+  );
+  assert.match(closeComment, /blame-to-merge-commit; `aaaaaaaaaaaa`/);
+  assert.doesNotMatch(closeComment, /src\/clawsweeper-review-runtime\.ts/);
+  assert.doesNotMatch(closeComment, new RegExp(mergeSha));
+
+  const keepOpenComment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "issue",
+      number: "946",
+      regression_provenance_repo: "openclaw/clawsweeper",
+      regression_provenance_pr_url: "https://github.com/openclaw/clawsweeper/pull/936",
+      regression_provenance_pr_number: "936",
+      regression_provenance_merge_sha: mergeSha,
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_evidence_type: "blame_to_merge_commit",
+      regression_provenance_merged_at: "2026-07-31T12:00:00Z",
+      regression_provenance_reviewed_sha: "b".repeat(40),
+    })}
+
+## Summary
+
+Keep open while the regression is fixed.
+`,
+    "none",
+  );
+  assert.match(keepOpenComment, /\*\*Regression provenance\*\*/);
+  assert.match(
+    keepOpenComment,
+    /\[#936\]\(https:\/\/github\.com\/openclaw\/clawsweeper\/pull\/936\)/,
+  );
+});
+
+test("unverified regression-provenance front matter cannot render a predecessor", () => {
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_provenance_repo: "openclaw/clawsweeper",
+      regression_provenance_pr_url: "https://github.com/openclaw/clawsweeper/pull/936",
+      regression_provenance_pr_number: "936",
+      regression_provenance_merge_sha: "a".repeat(40),
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_evidence_type: "model_claim",
+      regression_provenance_merged_at: "2026-07-31T12:00:00Z",
+      regression_provenance_reviewed_sha: "b".repeat(40),
+    }),
+    "implemented_on_main",
+  );
+
+  assert.doesNotMatch(comment, /Verified regression provenance/);
+  assert.doesNotMatch(comment, /pull\/936/);
+});
+
+test("probable regression assessments render evidence without attributing a predecessor", () => {
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_assessment_confidence: "probable",
+      regression_assessment_evidence: "reproduction,reviewed_change",
+      regression_provenance_pr_url: "https://github.com/openclaw/clawsweeper/pull/936",
+    }),
+    "implemented_on_main",
+  );
+
+  assert.match(
+    comment,
+    /Possible regression — probable \(reproduction; reviewed change\)\. No predecessor PR is attributed\./,
+  );
+  assert.doesNotMatch(comment, /pull\/936/);
+  assert.doesNotMatch(comment, /Verified regression provenance/);
+});
+
+test("suspected regression assessments retain their lower confidence", () => {
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_assessment_confidence: "suspected",
+      regression_assessment_evidence: "failure_trace",
+    }),
+    "implemented_on_main",
+  );
+
+  assert.match(
+    comment,
+    /Possible regression — suspected \(failure trace\)\. No predecessor PR is attributed\./,
+  );
+  assert.doesNotMatch(comment, /https:\/\/github\.com\/openclaw\/clawsweeper\/pull\//);
 });
 
 test("pull request close comments emit close-required automation markers", () => {

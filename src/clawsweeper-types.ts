@@ -320,6 +320,7 @@ export interface LatestRelease {
 
 export interface GitInfo {
   mainSha: string;
+  targetBranch?: string;
   releaseStateComplete: boolean;
   latestRelease: LatestRelease | null;
 }
@@ -425,6 +426,40 @@ export interface FixedPullRequest {
   source: string;
 }
 
+/**
+ * An untrusted, model-supplied pointer to one source line. It becomes public
+ * provenance only after the runtime independently checks it.
+ */
+export interface RegressionProvenanceCandidate {
+  repo: string;
+  pullRequestNumber: number;
+  pullRequestUrl: string;
+  mergeCommitSha: string;
+  sourcePath: string;
+  sourceLine: number;
+}
+
+export interface VerifiedRegressionProvenance extends RegressionProvenanceCandidate {
+  evidenceType: "blame_to_merge_commit";
+  mergedAt: string;
+  reviewedCommitSha: string;
+}
+
+/**
+ * A non-blaming, preliminary regression signal. It intentionally cannot name
+ * a predecessor; that requires VerifiedRegressionProvenance instead.
+ */
+export interface RegressionAssessment {
+  confidence: "suspected" | "probable";
+  supportingEvidence: RegressionSupportingEvidence[];
+}
+
+export type RegressionSupportingEvidence =
+  | "reproduction"
+  | "reviewed_change"
+  | "failure_trace"
+  | "known_regression_link";
+
 export interface MergeRiskOption {
   title: string;
   body: string;
@@ -507,6 +542,8 @@ export interface Decision {
   fixedSha?: string | null;
   fixedAt?: string | null;
   fixedPullRequest?: FixedPullRequest | null;
+  regressionAssessment?: RegressionAssessment | null;
+  regressionProvenance?: RegressionProvenanceCandidate | VerifiedRegressionProvenance | null;
   closeComment: string;
   workCandidate: WorkCandidateKind;
   workConfidence: Confidence;

@@ -45,6 +45,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     actionLedgerItemKey,
     asRecord,
     attachFixedPullRequest,
+    verifyRegressionProvenance,
     authorIssueCountInBulkFilerWindow,
     buildReviewPrompt,
     bulkFilerPolicyInvalidatesCachedReview,
@@ -1250,6 +1251,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           codexElapsedMs = Date.now() - codexStartedAt;
         }
         decision = attachFixedPullRequest(decision, item, context);
+        decision = verifyRegressionProvenance(decision, item, context, openclawDir, git);
         const runtime = {
           model: PUBLIC_CODEX_MODEL,
           reasoningEffort,
