@@ -286,8 +286,12 @@ export function createApplyCloseGuards(
               { allowApplyCloseActionUpgrade: counterpartAllowApplyCloseActionUpgrade },
             ),
             needsReviewCommentReferenceSync:
-              frontMatterValue(counterpartMarkdown, "review_comment_id") === "unknown" ||
-              frontMatterValue(counterpartMarkdown, "review_comment_url") === "unknown",
+              /^(?:none|unknown)?$/.test(
+                frontMatterValue(counterpartMarkdown, "review_comment_id") ?? "",
+              ) ||
+              /^(?:none|unknown)?$/.test(
+                frontMatterValue(counterpartMarkdown, "review_comment_url") ?? "",
+              ),
             forceReviewCommentBodySync: false,
           });
           const counterpartReviewCommentOnlyUpdate =

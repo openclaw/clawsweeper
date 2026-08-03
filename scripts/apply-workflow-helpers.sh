@@ -50,7 +50,7 @@ normalize_comment_sync_mode() {
   fi
   sync_comments_only=true
   if [ "${scheduled_comment_sync:-false}" = "true" ]; then
-    apply_kind="pull_request"
+    apply_kind="all"
     comment_sync_min_age_days=0
   fi
 }
@@ -80,6 +80,27 @@ trim_comment_sync_cycle_batch() {
   fi
 }
 
+comment_sync_uses_default_mutation_policy() {
+  [ "${apply_close_reasons:-${CLAWSWEEPER_AUTO_CLOSE_REASONS:-all}}" = "${CLAWSWEEPER_AUTO_CLOSE_REASONS:-all}" ] &&
+    [ "${stale_min_age_days:-60}" = "60" ] &&
+    [ "${close_delay_ms:-2000}" = "2000" ] &&
+    [ "${checkpoint_size:-40}" = "40" ] &&
+    [ "${limit:-40}" = "40" ]
+}
+
+comment_sync_uses_automatic_policy() {
+  [ "${sync_open_pr_batch:-false}" = "true" ] &&
+    comment_sync_matches_automatic_policy
+}
+
+comment_sync_matches_automatic_policy() {
+  [ "${apply_kind:-all}:${comment_sync_min_age_days:-0}" = "all:0" ] &&
+    [ "${sync_batch_size:-40}" = "40" ] &&
+    [ "${min_age_days:-0}" = "0" ] &&
+    [ -z "${min_age_minutes:-}" ] &&
+    comment_sync_uses_default_mutation_policy
+}
+
 prepare_comment_sync_batch() {
   comment_sync_pending_items=""
   comment_sync_cursor_advance_count=0
@@ -91,9 +112,27 @@ prepare_comment_sync_batch() {
   fi
   if [ -z "${item_numbers:-}" ] &&
     [ "${scheduled_comment_sync:-false}" != "true" ] &&
-    { [ "${apply_kind:-all}" != "pull_request" ] ||
-      [ "${comment_sync_min_age_days:-0}" != "0" ]; }; then
+    ! comment_sync_matches_automatic_policy; then
     cursor_path="results/comment-sync-cursors/${target_slug}-${apply_kind:-all}-age${comment_sync_min_age_days:-0}.json"
+    if ! comment_sync_uses_default_mutation_policy ||
+      [ "${sync_batch_size:-40}" != "40" ] ||
+      [ "${min_age_days:-0}" != "0" ] ||
+      [ -n "${min_age_minutes:-}" ]; then
+      local mutation_policy
+      mutation_policy="$(printf '%s\n' \
+        "${apply_close_reasons:-${CLAWSWEEPER_AUTO_CLOSE_REASONS:-all}}" \
+        "${stale_min_age_days:-60}" \
+        "${close_delay_ms:-2000}" \
+        "${checkpoint_size:-40}" \
+        "${limit:-40}" \
+        "${sync_batch_size:-40}" \
+        "${min_age_days:-0}" \
+        "${min_age_minutes:-}" | sha256sum | cut -c1-16)"
+      cursor_path="${cursor_path%.json}-policy-${mutation_policy}.json"
+    fi
+  fi
+  if [ -z "${cursor_path:-}" ] && [ -z "${item_numbers:-}" ]; then
+    cursor_path="results/comment-sync-cursors/${target_slug}.json"
   fi
   if [ -f "${cursor_path:-}" ]; then
     comment_sync_initial_cursor="$(jq -er '
@@ -185,18 +224,62 @@ complete_comment_sync_batch() {
   if [ -n "${item_numbers:-}" ]; then
     IFS=, read -r -a selected_items <<<"$item_numbers"
   fi
+  local canonical_target_slug="${target_slug:-}"
+  if [ -z "$canonical_target_slug" ]; then
+    canonical_target_slug="$(printf '%s' "$TARGET_REPO" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
+  fi
+  local selected_item
+  for selected_item in "${selected_items[@]}"; do
+    case ",$completed_csv," in
+      *",$selected_item,"*) continue ;;
+    esac
+    local canonical_items_dir="records/${canonical_target_slug}/items"
+    local canonical_closed_dir="records/${canonical_target_slug}/closed"
+    if [ ! -f "${canonical_items_dir}/${selected_item}.md" ] &&
+      [ ! -f "${canonical_items_dir}/${canonical_target_slug}-${selected_item}.md" ] &&
+      { [ -f "${canonical_closed_dir}/${selected_item}.md" ] ||
+        [ -f "${canonical_closed_dir}/${canonical_target_slug}-${selected_item}.md" ]; }; then
+      completed_csv="${completed_csv:+$completed_csv,}$selected_item"
+    fi
+  done
   local completed_count=0
   local cursor_count=0
   local safe_cursor=""
   local blocked_prefix=false
+  local initial_cursor="${comment_sync_initial_cursor:-0}"
   local unfinished_items=()
-  local selected_item
   for selected_item in "${selected_items[@]}"; do
     case ",$completed_csv," in
       *",$selected_item,"*)
         completed_count=$((completed_count + 1))
         if [ "$blocked_prefix" != "true" ]; then
-          safe_cursor="$selected_item"
+          if [ "$sync_open_pr_batch" = "true" ] && [ -n "${next_cursor:-}" ] &&
+            { [ "$selected_item" -gt "$next_cursor" ] ||
+              { [ "$selected_item" -le "$initial_cursor" ] &&
+                [ "$next_cursor" -ge "$initial_cursor" ]; }; }; then
+            continue
+          fi
+          local blocks_cursor_advance=false
+          local pending_item
+          for pending_item in "${selected_items[@]}"; do
+            case ",$completed_csv," in
+              *",$pending_item,"*) continue ;;
+            esac
+            if [ "$pending_item" -lt "$selected_item" ] &&
+              { { [ "$selected_item" -gt "$initial_cursor" ] &&
+                [ "$pending_item" -gt "$initial_cursor" ]; } ||
+                { [ "$selected_item" -le "$initial_cursor" ] &&
+                  [ "$pending_item" -le "$initial_cursor" ]; }; }; then
+              blocks_cursor_advance=true
+              break
+            fi
+          done
+          if [ "$blocks_cursor_advance" = "true" ]; then
+            continue
+          fi
+          if [ -z "$safe_cursor" ] || [ "$selected_item" -gt "$safe_cursor" ]; then
+            safe_cursor="$selected_item"
+          fi
           cursor_count=$((cursor_count + 1))
         fi
         ;;
@@ -222,15 +305,15 @@ complete_comment_sync_batch() {
       --cursor-path "$cursor_path" \
       --next-cursor "$next_cursor" \
       --target-repo "$TARGET_REPO"
-    if [ "$TARGET_REPO" != "openclaw/openclaw" ] ||
-      [ "${apply_kind:-pull_request}" != "pull_request" ] ||
-      [ "${comment_sync_min_age_days:-0}" != "0" ]; then
-      local initial_cursor="${comment_sync_initial_cursor:-0}"
+    if [ "${scheduled_comment_sync:-false}" != "true" ] &&
+      { [ "$TARGET_REPO" != "openclaw/openclaw" ] ||
+        ! comment_sync_uses_automatic_policy; }; then
       local cycle_start="${comment_sync_cycle_start:-0}"
       local cycle_wrapped="${comment_sync_cycle_wrapped:-false}"
       if [ "${#selected_items[@]}" -gt 0 ] &&
         [ "${selected_items[0]}" -le "$initial_cursor" ] &&
-        [ "$initial_cursor" -gt 0 ]; then
+        [ "$initial_cursor" -gt 0 ] &&
+        [ "$safe_cursor" -le "$initial_cursor" ]; then
         cycle_wrapped=true
       fi
       local lookahead_env
@@ -260,8 +343,11 @@ complete_comment_sync_batch() {
       if [ "$cycle_wrapped" = "true" ] && [ "$lookahead_count" -gt 0 ]; then
         local lookahead_items
         lookahead_items="$(awk -F= '$1 == "item_numbers" { print $2 }' "$lookahead_env")"
-        local first_lookahead_item="${lookahead_items%%,*}"
-        if [ "$first_lookahead_item" -gt "$cycle_start" ]; then
+        if ! jq -enr --arg selected "$lookahead_items" --argjson boundary "$cycle_start" '
+          $selected | split(",")
+          | map(tonumber? | select(. > 0 and . <= $boundary))
+          | length > 0
+        ' >/dev/null; then
           lookahead_count=0
         fi
       fi
@@ -508,6 +594,18 @@ publish_reconciled_records() {
   CLAWSWEEPER_CANONICAL_PUBLICATION_KIND=reconcile \
     CLAWSWEEPER_RECONCILE_DEFERRED_PATH=.artifacts/apply-reconcile-deferred.jsonl \
     publish_changes_with_strategy normal "$message" "${publish_paths[@]}" || return 1
+}
+
+prepare_apply_reconciliation_args() {
+  reconcile_args=(--target-repo "$TARGET_REPO" --skip-closed-at)
+  if [ -z "${item_numbers:-}" ]; then
+    return 0
+  fi
+  reconcile_args+=(--item-numbers "$item_numbers")
+  if [ "${sync_comments_only:-false}" = "true" ] &&
+    [ "${sync_open_pr_batch:-false}" = "true" ]; then
+    reconcile_args+=(--only-item-numbers)
+  fi
 }
 
 persist_reconciliation() {

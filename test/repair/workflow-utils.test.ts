@@ -2714,6 +2714,565 @@ test("workflow utilities select cursor-based PR comment sync batches", () => {
   );
 });
 
+test("durable all-item sync publishes guarded reviews without selecting terminal records", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
+  const now = Date.now();
+  const fresh = new Date(now - 60_000).toISOString();
+  const stale = new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString();
+  try {
+    writeCommentSyncRecord(root, 10, "issue", "kept_open");
+    writeCommentSyncRecord(root, 20, "pull_request", "kept_open", {
+      reviewCommentId: "9020",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/20#issuecomment-9020",
+      reviewCommentHash: "a".repeat(64),
+      reviewedAt: stale,
+      reviewCommentSyncedAt: fresh,
+    });
+    writeCommentSyncRecord(root, 30, "issue", "kept_open", {
+      reviewCommentId: "9030",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/issues/30#issuecomment-9030",
+      reviewCommentHash: "b".repeat(64),
+      reviewedAt: fresh,
+      reviewCommentSyncedAt: stale,
+    });
+    writeCommentSyncRecord(root, 40, "pull_request", "kept_open", {
+      reviewCommentId: "9040",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/40#issuecomment-9040",
+      reviewCommentHash: "c".repeat(64),
+      reviewedAt: stale,
+      reviewCommentSyncedAt: stale,
+    });
+    writeCommentSyncRecord(root, 50, "pull_request", "retry_stale_canonical_comment_sync", {
+      reviewCommentId: "9050",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/50#issuecomment-9050",
+      reviewCommentHash: "d".repeat(64),
+      reviewedAt: stale,
+      reviewCommentSyncedAt: fresh,
+    });
+    writeCommentSyncRecord(root, 60, "pull_request", "skipped_changed_since_review", {
+      decision: "close",
+      closeReason: "duplicate_or_superseded",
+      reviewCommentId: "9060",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/60#issuecomment-9060",
+      reviewCommentHash: "e".repeat(64),
+      reviewedAt: stale,
+      reviewCommentSyncedAt: fresh,
+    });
+    writeCommentSyncRecord(root, 70, "pull_request", "kept_open", {
+      reviewCommentId: "9070",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/70#issuecomment-9070",
+      reviewCommentHash: "none",
+      reviewedAt: stale,
+      reviewCommentSyncedAt: fresh,
+    });
+    writeCommentSyncRecord(root, 80, "issue", "skipped_protected_label");
+    writeCommentSyncRecord(root, 90, "pull_request", "skipped_maintainer_authored");
+    writeCommentSyncRecord(root, 100, "pull_request", "skipped_close_exempt_label");
+    writeCommentSyncRecord(root, 110, "issue", "skipped_invalid_decision");
+    writeCommentSyncRecord(root, 120, "pull_request", "skipped_comment_auth");
+    writeCommentSyncRecord(root, 130, "issue", "skipped_stale_review_comment_sync");
+    writeCommentSyncRecord(root, 140, "issue", "skipped_low_signal_live_guard");
+    writeCommentSyncRecord(root, 150, "pull_request", "kept_open", {
+      reviewCommentId: "9150",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/150#issuecomment-9150",
+      reviewCommentHash: "corrupt-comment-hash",
+      reviewedAt: stale,
+      reviewCommentSyncedAt: fresh,
+    });
+    writeCommentSyncRecord(root, 160, "issue", "kept_open", {
+      reviewCommentId: "9160",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/issues/160#issuecomment-9160",
+      reviewCommentHash: "f".repeat(64),
+      reviewedAt: new Date(now - 30_000).toISOString(),
+      reviewCommentSyncedAt: fresh,
+    });
+    writeCommentSyncRecord(root, 170, "pull_request", "kept_open", {
+      reviewCommentId: "9170",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/170#issuecomment-9170",
+      reviewCommentHash: "1".repeat(64),
+      lastFullReviewAt: new Date(now - 30_000).toISOString(),
+      reviewCommentSyncedAt: fresh,
+    });
+    writeCommentSyncRecord(root, 180, "pull_request", "kept_open", {
+      reviewCommentId: "9180",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/180#issuecomment-9180",
+      reviewCommentHash: "2".repeat(64),
+      lastFullReviewAt: stale,
+      reviewedAt: new Date(now - 30_000).toISOString(),
+      reviewCommentSyncedAt: fresh,
+    });
+    writeCommentSyncRecord(root, 190, "pull_request", "kept_open", {
+      reviewCommentId: "9190",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/190#issuecomment-9190",
+      reviewCommentHash: "3".repeat(64),
+      reviewedAt: stale,
+      reviewCommentSyncedAt: fresh,
+      pullHeadSha: "reviewed-head",
+      currentPullHeadSha: "new-head",
+    });
+    writeCommentSyncRecord(root, 200, "issue", "skipped_protected_label", {
+      reviewCommentId: "9200",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/issues/200#issuecomment-9200",
+      reviewCommentHash: "4".repeat(64),
+      reviewedAt: stale,
+      reviewCommentSyncedAt: fresh,
+    });
+    writeCommentSyncRecord(root, 210, "pull_request", "skipped_maintainer_authored", {
+      reviewCommentId: "9210",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/210#issuecomment-9210",
+      reviewCommentHash: "5".repeat(64),
+      reviewedAt: stale,
+      reviewCommentSyncedAt: fresh,
+    });
+
+    assert.deepEqual(
+      withCwd(root, () =>
+        commentSyncBatchOutput({
+          targetRepo: "openclaw/openclaw",
+          applyKind: "all",
+          batchSize: 20,
+          cursorPath,
+        }),
+      ),
+      {
+        item_numbers: "160,170,180,30,70,150,10,20,40,50,60,80,90,100,110,190",
+        count: "16",
+        cursor: "0",
+        next_cursor: "190",
+        wrapped: "false",
+      },
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refreshed and timestamp-less guarded reviews cross an existing automatic cursor", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
+  const now = Date.now();
+  const syncedAt = new Date(now - 60_000).toISOString();
+  try {
+    for (let number = 101; number <= 140; number += 1) {
+      writeCommentSyncRecord(root, number, "pull_request", "kept_open", {
+        reviewCommentId: `${9_000 + number}`,
+        reviewCommentUrl: `https://github.com/openclaw/openclaw/pull/${number}#issuecomment-${9_000 + number}`,
+        reviewCommentHash: "a".repeat(64),
+        reviewedAt: syncedAt,
+        reviewCommentSyncedAt: syncedAt,
+      });
+    }
+    for (const { number, action, reviewedAt, reviewCommentSyncedAt } of [
+      {
+        number: 5,
+        action: "skipped_protected_label",
+        reviewedAt: new Date(now - 10_000).toISOString(),
+        reviewCommentSyncedAt: syncedAt,
+      },
+      {
+        number: 6,
+        action: "skipped_maintainer_authored",
+        reviewedAt: new Date(now - 30_000).toISOString(),
+      },
+      {
+        number: 7,
+        action: "skipped_close_exempt_label",
+        reviewedAt: new Date(now - 20_000).toISOString(),
+        reviewCommentSyncedAt: "not-a-timestamp",
+      },
+    ]) {
+      writeCommentSyncRecord(root, number, "issue", action, {
+        reviewCommentId: `${9_000 + number}`,
+        reviewCommentUrl: `https://github.com/openclaw/openclaw/issues/${number}#issuecomment-${9_000 + number}`,
+        reviewCommentHash: "b".repeat(64),
+        reviewedAt,
+        reviewCommentSyncedAt,
+      });
+    }
+    writeCommentSyncCursor(cursorPath, 100, "openclaw/openclaw");
+
+    const result = withCwd(root, () =>
+      commentSyncBatchOutput({
+        targetRepo: "openclaw/openclaw",
+        applyKind: "all",
+        batchSize: 40,
+        cursorPath,
+      }),
+    );
+    const selected = result.item_numbers.split(",").map(Number);
+
+    assert.deepEqual(selected.slice(0, 3), [5, 7, 6]);
+    assert.equal(selected.length, 40);
+    assert.equal(result.next_cursor, "137");
+    assert.equal(result.wrapped, "false");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("post-sync guarded action changes return to the durable comment queue", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
+  try {
+    for (const [number, actionTaken, applyCheckedAt] of [
+      [10, "skipped_protected_label", "2026-08-02T00:00:00Z"],
+      [20, "skipped_maintainer_authored", "2026-08-02T00:00:00Z"],
+      [30, "skipped_close_exempt_label", "2026-08-02T00:00:00Z"],
+      [40, "skipped_protected_label", "2026-08-01T00:30:00Z"],
+    ] as const) {
+      writeCommentSyncRecord(root, number, "pull_request", actionTaken, {
+        reviewCommentId: String(9_000 + number),
+        reviewCommentUrl: `https://github.com/openclaw/openclaw/pull/${number}#issuecomment-${9_000 + number}`,
+        reviewCommentHash: "a".repeat(64),
+        reviewedAt: "2026-08-01T00:00:00Z",
+        reviewCommentSyncedAt: "2026-08-01T01:00:00Z",
+        applyCheckedAt,
+      });
+    }
+
+    const result = withCwd(root, () =>
+      commentSyncBatchOutput({
+        targetRepo: "openclaw/openclaw",
+        applyKind: "all",
+        batchSize: 40,
+        cursorPath,
+      }),
+    );
+
+    assert.equal(result.item_numbers, "10,20,30");
+    assert.equal(result.count, "3");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("invalid decisions never enqueue close reasons forbidden by their target repository", () => {
+  for (const { targetRepo, expected } of [
+    { targetRepo: "openclaw/openclaw", expected: "1,2,3" },
+    { targetRepo: "openclaw/clawhub", expected: "2,3" },
+    { targetRepo: "openclaw/clawsweeper", expected: "2,3" },
+    { targetRepo: "steipete/tool.v2_debug", expected: "3" },
+  ]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+    const targetSlug = targetRepo.replace(/[^a-z0-9_.-]+/g, "-");
+    const cursorPath = path.join(root, `results/comment-sync-cursors/${targetSlug}.json`);
+    try {
+      writeCommentSyncRecord(root, 1, "issue", "skipped_invalid_decision", {
+        targetRepo,
+        decision: "close",
+        closeReason: "duplicate_or_superseded",
+      });
+      writeCommentSyncRecord(root, 2, "issue", "skipped_invalid_decision", {
+        targetRepo,
+        decision: "close",
+        closeReason: "implemented_on_main",
+      });
+      writeCommentSyncRecord(root, 3, "issue", "skipped_invalid_decision", {
+        targetRepo,
+        decision: "keep_open",
+      });
+
+      const result = withCwd(root, () =>
+        commentSyncBatchOutput({ targetRepo, applyKind: "all", batchSize: 40, cursorPath }),
+      );
+      assert.equal(result.item_numbers, expected, targetRepo);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("unverified checkouts and timestamp-less comments never monopolize urgent sync", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
+  const syncedAt = new Date().toISOString();
+  try {
+    for (let number = 1; number <= 45; number += 1) {
+      writeCommentSyncRecord(root, number, "pull_request", "kept_open", {
+        reviewCommentId: `${9_000 + number}`,
+        reviewCommentUrl: `https://github.com/openclaw/openclaw/pull/${number}#issuecomment-${9_000 + number}`,
+        reviewCommentHash: "a".repeat(64),
+        reviewedAt: "2025-01-01T00:00:00Z",
+        reviewCommentSyncedAt: syncedAt,
+      });
+    }
+    for (let number = 1_001; number <= 1_040; number += 1) {
+      writeCommentSyncRecord(root, number, "issue", "kept_open", {
+        localCheckoutAccess: "unverified",
+        reviewedAt: syncedAt,
+      });
+    }
+    for (let number = 2_001; number <= 2_040; number += 1) {
+      writeCommentSyncRecord(root, number, "issue", "kept_open", {
+        reviewCommentId: `${9_000 + number}`,
+        reviewCommentUrl: `https://github.com/openclaw/openclaw/issues/${number}#issuecomment-${9_000 + number}`,
+        reviewCommentHash: "b".repeat(64),
+        reviewedAt: "2025-01-01T00:00:00Z",
+      });
+    }
+
+    const options = {
+      targetRepo: "openclaw/openclaw",
+      applyKind: "all",
+      batchSize: 40,
+      cursorPath,
+    };
+    const first = withCwd(root, () => commentSyncBatchOutput(options));
+    assert.equal(first.item_numbers, Array.from({ length: 40 }, (_, index) => index + 1).join(","));
+    assert.equal(first.next_cursor, "40");
+
+    writeCommentSyncCursor(cursorPath, Number(first.next_cursor), options.targetRepo);
+    const second = withCwd(root, () => commentSyncBatchOutput(options));
+    assert.equal(second.item_numbers.startsWith("41,42,43,44,45,"), true);
+    assert.equal(
+      second.item_numbers.split(",").some((number) => Number(number) > 2_000),
+      false,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("all-item sync prioritizes a newly reviewed record ahead of fresh PR maintenance", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
+  const fresh = new Date(Date.now() - 60_000).toISOString();
+  try {
+    for (let number = 1; number <= 45; number += 1) {
+      writeCommentSyncRecord(root, number, "pull_request", "kept_open", {
+        reviewCommentId: `${9000 + number}`,
+        reviewCommentUrl: `https://github.com/openclaw/openclaw/pull/${number}#issuecomment-${9000 + number}`,
+        reviewCommentHash: "a".repeat(64),
+        reviewedAt: fresh,
+        reviewCommentSyncedAt: fresh,
+      });
+    }
+    writeCommentSyncRecord(root, 9999, "issue", "kept_open");
+
+    const result = withCwd(root, () =>
+      commentSyncBatchOutput({
+        targetRepo: "openclaw/openclaw",
+        applyKind: "all",
+        batchSize: 40,
+        cursorPath,
+      }),
+    );
+    const selected = result.item_numbers.split(",").map(Number);
+
+    assert.equal(selected.length, 40);
+    assert.equal(selected[0], 9999);
+    assert.equal(selected.includes(40), false);
+    assert.equal(result.wrapped, "false");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("wrapped urgent comment-sync batches reserve one advancing cursor record", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
+  try {
+    for (let number = 1; number <= 41; number += 1) {
+      writeCommentSyncRecord(root, number, "issue", "kept_open", {
+        reviewedAt: new Date(Date.now() + number * 1_000).toISOString(),
+      });
+    }
+    writeCommentSyncCursor(cursorPath, 1_000, "openclaw/openclaw");
+    const options = {
+      targetRepo: "openclaw/openclaw",
+      applyKind: "all",
+      batchSize: 40,
+      cursorPath,
+    };
+
+    const first = withCwd(root, () => commentSyncBatchOutput(options));
+    assert.equal(first.count, "40");
+    assert.equal(first.item_numbers.split(",").includes("1"), true);
+    assert.equal(first.next_cursor, "1");
+    assert.equal(first.wrapped, "true");
+
+    writeCommentSyncCursor(cursorPath, Number(first.next_cursor), options.targetRepo);
+    const second = withCwd(root, () => commentSyncBatchOutput(options));
+    assert.equal(second.item_numbers.split(",").includes("2"), true);
+    assert.equal(second.next_cursor, "41");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("fresh proof retries cannot monopolize successive all-item cursor windows", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
+  const syncedAt = new Date().toISOString();
+  try {
+    for (let number = 1; number <= 45; number += 1) {
+      writeCommentSyncRecord(root, number, "pull_request", "skipped_pr_close_coverage_proof", {
+        reviewCommentId: `${9000 + number}`,
+        reviewCommentUrl: `https://github.com/openclaw/openclaw/pull/${number}#issuecomment-${9000 + number}`,
+        reviewCommentHash: "a".repeat(64),
+        reviewedAt: new Date(Date.now() - (46 - number) * 1000).toISOString(),
+        reviewCommentSyncedAt: syncedAt,
+      });
+    }
+    writeCommentSyncRecord(root, 999, "pull_request", "kept_open", {
+      reviewCommentId: "9999",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/999#issuecomment-9999",
+      reviewCommentHash: "b".repeat(64),
+      reviewedAt: syncedAt,
+      reviewCommentSyncedAt: syncedAt,
+    });
+    const options = {
+      targetRepo: "openclaw/openclaw",
+      applyKind: "all",
+      batchSize: 40,
+      cursorPath,
+    };
+    const first = withCwd(root, () => commentSyncBatchOutput(options));
+    writeCommentSyncCursor(cursorPath, Number(first.next_cursor), options.targetRepo);
+    const second = withCwd(root, () => commentSyncBatchOutput(options));
+
+    assert.equal(first.item_numbers.split(",").length, 40);
+    assert.equal(second.item_numbers, "41,42,43,44,45,999");
+    assert.equal(second.next_cursor, "999");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("synchronized stale-sync retries cannot pin the urgent cursor", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
+  const syncedAt = new Date().toISOString();
+  try {
+    for (const [number, action] of [
+      [10, "retry_stale_canonical_comment_sync"],
+      [20, "kept_open"],
+      [30, "kept_open"],
+    ] as const) {
+      writeCommentSyncRecord(root, number, "pull_request", action, {
+        reviewCommentId: `${9000 + number}`,
+        reviewCommentUrl: `https://github.com/openclaw/openclaw/pull/${number}#issuecomment-${9000 + number}`,
+        reviewCommentHash: "a".repeat(64),
+        reviewedAt:
+          number === 10 ? new Date(Date.now() + 1000).toISOString() : "2026-01-01T00:00:00.000Z",
+        reviewCommentSyncedAt: syncedAt,
+      });
+    }
+    const options = {
+      targetRepo: "openclaw/openclaw",
+      applyKind: "all",
+      batchSize: 1,
+      cursorPath,
+    };
+    for (const expectedNumber of [10, 20, 30]) {
+      const result = withCwd(root, () => commentSyncBatchOutput(options));
+      assert.equal(result.item_numbers, String(expectedNumber));
+      writeCommentSyncCursor(cursorPath, Number(result.next_cursor), options.targetRepo);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("manual all-item cursors still include recently synchronized issues", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const cursorDir = path.join(root, "results/comment-sync-cursors");
+  const syncedAt = new Date().toISOString();
+  try {
+    writeCommentSyncRecord(root, 5, "issue", "kept_open", {
+      reviewCommentId: "9005",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/issues/5#issuecomment-9005",
+      reviewCommentHash: "a".repeat(64),
+      reviewedAt: "2026-01-01T00:00:00.000Z",
+      reviewCommentSyncedAt: syncedAt,
+    });
+    const options = {
+      targetRepo: "openclaw/openclaw",
+      applyKind: "all",
+      batchSize: 40,
+    };
+    const automatic = withCwd(root, () =>
+      commentSyncBatchOutput({
+        ...options,
+        cursorPath: path.join(cursorDir, "openclaw-openclaw.json"),
+      }),
+    );
+    const manual = withCwd(root, () =>
+      commentSyncBatchOutput({
+        ...options,
+        cursorPath: path.join(cursorDir, "openclaw-openclaw-all-age0.json"),
+      }),
+    );
+
+    assert.equal(automatic.count, "0");
+    assert.equal(manual.item_numbers, "5");
+    assert.equal(manual.count, "1");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("comment synchronization preserves canonical dotted and underscored repository slugs", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const targetRepo = "steipete/tool.v2_debug";
+  const targetSlug = "steipete-tool.v2_debug";
+  const cursorPath = path.join(root, `results/comment-sync-cursors/${targetSlug}.json`);
+  const reportPath = path.join(root, `records/${targetSlug}/items/${targetSlug}-41.md`);
+  try {
+    write(
+      reportPath,
+      [
+        "---",
+        `repository: ${targetRepo}`,
+        "type: issue",
+        "review_status: complete",
+        "item_snapshot_hash: abc123",
+        "action_taken: kept_open",
+        "---",
+        "",
+      ].join("\n"),
+    );
+    const result = withCwd(root, () =>
+      commentSyncBatchOutput({ targetRepo, applyKind: "all", batchSize: 40, cursorPath }),
+    );
+
+    assert.equal(result.item_numbers, "41");
+    assert.equal(result.next_cursor, "41");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("fresh review priority crosses an existing maintenance cursor", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
+  try {
+    writeCommentSyncRecord(root, 5, "issue", "kept_open", {
+      reviewedAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    writeCommentSyncRecord(root, 30, "pull_request", "kept_open", {
+      reviewedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    writeCommentSyncCursor(cursorPath, 20, "openclaw/openclaw");
+
+    const result = withCwd(root, () =>
+      commentSyncBatchOutput({
+        targetRepo: "openclaw/openclaw",
+        applyKind: "all",
+        batchSize: 1,
+        cursorPath,
+      }),
+    );
+
+    assert.equal(result.item_numbers, "5");
+    assert.equal(result.count, "1");
+    assert.equal(result.next_cursor, "20");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function withCwd(cwd, callback) {
   const previous = process.cwd();
   process.chdir(cwd);
@@ -2757,11 +3316,14 @@ function writeProposedRecord(
 }
 
 function writeCommentSyncRecord(root, number, type, actionTaken, options = {}) {
+  const targetRepo = options.targetRepo ?? "openclaw/openclaw";
+  const targetSlug = targetRepo.toLowerCase().replace(/[^a-z0-9_.-]+/g, "-");
   const lines = [
     "---",
-    "repository: openclaw/openclaw",
+    `repository: ${targetRepo}`,
     `type: ${type}`,
     "review_status: complete",
+    `local_checkout_access: ${options.localCheckoutAccess ?? "verified"}`,
     "item_snapshot_hash: abc123",
     `action_taken: ${actionTaken}`,
   ];
@@ -2769,9 +3331,18 @@ function writeCommentSyncRecord(root, number, type, actionTaken, options = {}) {
   if (options.closeReason) lines.push(`close_reason: ${options.closeReason}`);
   if (options.reviewCommentId) lines.push(`review_comment_id: ${options.reviewCommentId}`);
   if (options.reviewCommentUrl) lines.push(`review_comment_url: ${options.reviewCommentUrl}`);
+  if (options.reviewCommentHash) lines.push(`review_comment_sha256: ${options.reviewCommentHash}`);
+  if (options.pullHeadSha) lines.push(`pull_head_sha: ${options.pullHeadSha}`);
+  if (options.currentPullHeadSha)
+    lines.push(`current_pull_head_sha: ${options.currentPullHeadSha}`);
+  if (options.lastFullReviewAt) lines.push(`last_full_review_at: ${options.lastFullReviewAt}`);
+  if (options.reviewedAt) lines.push(`reviewed_at: ${options.reviewedAt}`);
+  if (options.applyCheckedAt) lines.push(`apply_checked_at: ${options.applyCheckedAt}`);
+  if (options.reviewCommentSyncedAt)
+    lines.push(`review_comment_synced_at: ${options.reviewCommentSyncedAt}`);
   lines.push("---", "");
   write(
-    path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+    path.join(root, `records/${targetSlug}/items/${targetSlug}-${number}.md`),
     lines.join("\n"),
   );
 }

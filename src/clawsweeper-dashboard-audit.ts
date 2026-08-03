@@ -38,6 +38,7 @@ import type {
   WorkflowStatusSummary,
 } from "./clawsweeper-types.js";
 import { syncDecisionPacketRecord, type DecisionPacketSubjectState } from "./decision-packets.js";
+import { isGitHubNotFoundError } from "./github-retry.js";
 import { captureCanonicalRecordBaseline } from "./repair/canonical-record-baseline.js";
 import {
   REPOSITORY_PROFILES,
@@ -87,6 +88,7 @@ interface CreateDashboardAuditDependencies {
   formatTimestamp: (iso: string | undefined) => string;
   frontMatterStringArray: (markdown: string, key: string) => string[];
   frontMatterValue: (markdown: string, key: string) => string | undefined;
+  ghJson: <T>(args: string[]) => T;
   isCurrentForCadence: (options: {
     reviewedAt: string | undefined;
     reviewStatus: string | undefined;
@@ -190,6 +192,7 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     formatTimestamp,
     frontMatterStringArray,
     frontMatterValue,
+    ghJson,
     isCurrentForCadence,
     isFresh,
     isMaintainerAuthored,
@@ -337,6 +340,7 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     dryRun?: boolean;
     fetchClosedAt?: boolean;
     preserveItemNumbers?: readonly number[];
+    onlyItemNumbers?: boolean;
   }): ReconcileResult {
     const maxPages = options.maxPages ?? 250;
     const dryRun = options.dryRun ?? false;
@@ -393,10 +397,23 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     };
     ensureDir(options.itemsDir);
     ensureDir(options.closedDir);
-    const { numbers: openNumbers, pagesScanned } = fetchOpenItemNumbers(maxPages);
+    const scopedItemNumbers = options.onlyItemNumbers
+      ? new Set(options.preserveItemNumbers ?? [])
+      : null;
+    if (scopedItemNumbers?.size === 0) {
+      throw new Error("scoped reconciliation requires at least one item number");
+    }
+    const { numbers: openNumbers, pagesScanned } = scopedItemNumbers
+      ? { numbers: new Set<number>(), pagesScanned: 0 }
+      : fetchOpenItemNumbers(maxPages);
     for (const number of options.preserveItemNumbers ?? []) {
-      const { state } = fetchItem(number);
-      if (state === "open") openNumbers.add(number);
+      try {
+        const { state } = fetchItem(number);
+        if (state === "open") openNumbers.add(number);
+      } catch (error) {
+        if (!scopedItemNumbers || !isGitHubNotFoundError(error)) throw error;
+        ghJson<unknown>(["api", `repos/${targetRepo()}`]);
+      }
     }
     let movedToClosed = 0;
     let movedToItems = 0;
@@ -458,6 +475,7 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
 
     for (const file of markdownFiles(options.itemsDir)) {
       const number = numberForMarkdownFile(file);
+      if (scopedItemNumbers && !scopedItemNumbers.has(number)) continue;
       const sourcePath = join(options.itemsDir, file);
       const sourceMarkdown = readFileSync(sourcePath, "utf8");
       if (!isMarkdownForActiveRepo(sourceMarkdown, file)) continue;
@@ -494,6 +512,7 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
 
     for (const file of markdownFiles(options.closedDir)) {
       const number = numberForMarkdownFile(file);
+      if (scopedItemNumbers && !scopedItemNumbers.has(number)) continue;
       const sourcePath = join(options.closedDir, file);
       const sourceMarkdown = readFileSync(sourcePath, "utf8");
       if (!isMarkdownForActiveRepo(sourceMarkdown, file)) continue;
@@ -566,6 +585,7 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
       dryRun,
       fetchClosedAt,
       preserveItemNumbers,
+      onlyItemNumbers: boolArg(args.only_item_numbers),
     });
     console.log(JSON.stringify(result, null, 2));
   }

@@ -7,6 +7,179 @@ import test from "node:test";
 import { capturedCanonicalRecordBaselineKeys } from "../dist/repair/canonical-record-baseline.js";
 import { reportFrontMatter, tmpPrefix, withMockGh } from "./helpers.ts";
 
+test("scoped reconciliation never changes records outside its selected batch", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const recordsDir = join(root, "records", "openclaw-openclaw");
+  const itemsDir = join(recordsDir, "items");
+  const closedDir = join(recordsDir, "closed");
+  const plansDir = join(recordsDir, "plans");
+  const canonicalBaselineDir = join(root, "canonical-baseline");
+  for (const dir of [itemsDir, closedDir, plansDir]) {
+    mkdirSync(dir, { recursive: true });
+  }
+  const report = (number: number, currentState: "open" | "closed") =>
+    reportFrontMatter({ number, current_state: currentState });
+  writeFileSync(join(itemsDir, "1.md"), report(1, "open"));
+  writeFileSync(join(itemsDir, "2.md"), report(2, "open"));
+  writeFileSync(join(closedDir, "3.md"), report(3, "closed"));
+  const unrelatedPlan = "preserve unrelated closed sidecar\n";
+  writeFileSync(join(plansDir, "3.md"), unrelatedPlan);
+  const ghMock = `
+const args = process.argv.slice(2);
+if (args[0] === "api" && args[1]?.endsWith("/issues/2")) {
+  process.stdout.write(JSON.stringify({number:2,state:"closed",closed_at:"2026-08-02T00:00:00Z"}));
+} else {
+  process.stderr.write("unexpected gh args: " + JSON.stringify(args) + "\\n");
+  process.exit(1);
+}
+`;
+
+  try {
+    let stdout = "";
+    withMockGh(root, ghMock, () => {
+      stdout = execFileSync(
+        process.execPath,
+        [
+          "dist/clawsweeper.js",
+          "reconcile",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--closed-dir",
+          closedDir,
+          "--plans-dir",
+          plansDir,
+          "--canonical-record-baseline-dir",
+          canonicalBaselineDir,
+          "--skip-closed-at",
+          "--item-numbers",
+          "2",
+          "--only-item-numbers",
+        ],
+        { encoding: "utf8" },
+      );
+    });
+
+    const result = JSON.parse(stdout);
+    assert.equal(result.pagesScanned, 0);
+    assert.deepEqual(result.changedItemNumbers, [2]);
+    assert.deepEqual(result.changedRecordFiles, ["2.md"]);
+    assert.equal(existsSync(join(itemsDir, "1.md")), true);
+    assert.equal(existsSync(join(closedDir, "1.md")), false);
+    assert.equal(existsSync(join(itemsDir, "2.md")), false);
+    assert.equal(existsSync(join(closedDir, "2.md")), true);
+    assert.equal(readFileSync(join(plansDir, "3.md"), "utf8"), unrelatedPlan);
+    assert.deepEqual(
+      [...capturedCanonicalRecordBaselineKeys(canonicalBaselineDir)],
+      ["openclaw-openclaw/2"],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("scoped reconciliation archives a deleted item only after confirming repository access", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const itemsDir = join(root, "items");
+  const closedDir = join(root, "closed");
+  const plansDir = join(root, "plans");
+  for (const dir of [itemsDir, closedDir, plansDir]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(itemsDir, "41.md"), reportFrontMatter({ number: 41, current_state: "open" }));
+  const ghMock = `
+const args = process.argv.slice(2);
+if (args[0] === "api" && args[1] === "repos/openclaw/openclaw/issues/41") {
+  process.stderr.write("gh: Not Found (HTTP 404)\\n");
+  process.exit(1);
+}
+if (args[0] === "api" && args[1] === "repos/openclaw/openclaw") {
+  process.stdout.write(JSON.stringify({id:41}));
+  process.exit(0);
+}
+process.stderr.write("unexpected gh args: " + JSON.stringify(args) + "\\n");
+process.exit(1);
+`;
+
+  try {
+    let stdout = "";
+    withMockGh(root, ghMock, () => {
+      stdout = execFileSync(
+        process.execPath,
+        [
+          "dist/clawsweeper.js",
+          "reconcile",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--closed-dir",
+          closedDir,
+          "--plans-dir",
+          plansDir,
+          "--skip-closed-at",
+          "--item-numbers",
+          "41",
+          "--only-item-numbers",
+        ],
+        { encoding: "utf8" },
+      );
+    });
+
+    const result = JSON.parse(stdout);
+    assert.equal(result.pagesScanned, 0);
+    assert.equal(result.movedToClosed, 1);
+    assert.deepEqual(result.changedItemNumbers, [41]);
+    assert.equal(existsSync(join(itemsDir, "41.md")), false);
+    assert.equal(existsSync(join(closedDir, "41.md")), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("scoped reconciliation never archives an item when repository access is missing", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const itemsDir = join(root, "items");
+  const closedDir = join(root, "closed");
+  const plansDir = join(root, "plans");
+  for (const dir of [itemsDir, closedDir, plansDir]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(itemsDir, "41.md"), reportFrontMatter({ number: 41, current_state: "open" }));
+  const ghMock = `
+process.stderr.write("gh: Not Found (HTTP 404)\\n");
+process.exit(1);
+`;
+
+  try {
+    withMockGh(root, ghMock, () => {
+      assert.throws(() =>
+        execFileSync(
+          process.execPath,
+          [
+            "dist/clawsweeper.js",
+            "reconcile",
+            "--target-repo",
+            "openclaw/openclaw",
+            "--items-dir",
+            itemsDir,
+            "--closed-dir",
+            closedDir,
+            "--plans-dir",
+            plansDir,
+            "--skip-closed-at",
+            "--item-numbers",
+            "41",
+            "--only-item-numbers",
+          ],
+          { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+    });
+    assert.equal(existsSync(join(itemsDir, "41.md")), true);
+    assert.equal(existsSync(join(closedDir, "41.md")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("reconcile reports every changed record tuple and cleans already-closed sidecars", () => {
   const root = mkdtempSync(tmpPrefix);
   const recordsDir = join(root, "records", "openclaw-openclaw");

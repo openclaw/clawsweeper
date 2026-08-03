@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { join } from "node:path";
 import test from "node:test";
 
-import { guardedOpenApplyProofFields } from "../dist/clawsweeper.js";
+import { guardedOpenApplyProofFields, shouldSyncReviewComment } from "../dist/clawsweeper.js";
 import { capturedCanonicalRecordBaselineKeys } from "../dist/repair/canonical-record-baseline.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
 import {
@@ -841,6 +841,281 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  }
+});
+
+test("comment-only apply synchronizes guarded reviews without promoting their close actions", () => {
+  for (const guard of [
+    { action: "skipped_protected_label", labels: ["security"], association: "CONTRIBUTOR" },
+    { action: "skipped_maintainer_authored", labels: [], association: "MEMBER" },
+    {
+      action: "skipped_close_exempt_label",
+      labels: ["clawsweeper:human-review"],
+      association: "CONTRIBUTOR",
+    },
+    { action: "skipped_invalid_decision", labels: [], association: "CONTRIBUTOR" },
+  ]) {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "items");
+      const closedDir = join(root, "closed");
+      const plansDir = join(root, "plans");
+      const reportPath = join(root, "apply-report.json");
+      mkdirSync(itemsDir, { recursive: true });
+      mkdirSync(plansDir, { recursive: true });
+      writeFileSync(
+        join(itemsDir, "321.md"),
+        implementedCloseReport({
+          repository: "openclaw/openclaw",
+          action_taken: guard.action,
+          author_association: guard.association,
+          labels: JSON.stringify(guard.labels),
+          confidence: guard.action === "skipped_invalid_decision" ? "low" : "high",
+        }),
+        "utf8",
+      );
+
+      const ghMock = `
+const fs = require("node:fs");
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+const commentPath = ${JSON.stringify(join(root, "comment.json"))};
+if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method")) {
+    const payload = JSON.parse(fs.readFileSync(args[args.indexOf("--input") + 1], "utf8"));
+    const comment = {
+      id: 9321,
+      html_url: "https://github.com/openclaw/openclaw/issues/321#issuecomment-9321",
+      created_at: "2026-08-02T00:00:00Z",
+      updated_at: "2026-08-02T00:00:00Z",
+      user: { login: "clawsweeper[bot]" },
+      body: payload.body,
+    };
+    fs.writeFileSync(commentPath, JSON.stringify(comment));
+    console.log(JSON.stringify(comment));
+  } else {
+    console.log(JSON.stringify([fs.existsSync(commentPath)
+      ? [JSON.parse(fs.readFileSync(commentPath, "utf8"))]
+      : []]));
+  }
+} else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 321,
+    title: "Guarded issue",
+    html_url: "https://github.com/openclaw/openclaw/issues/321",
+    body: "",
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: ${JSON.stringify(guard.association)},
+    user: { login: "reporter" },
+    labels: ${JSON.stringify(guard.labels)},
+    comments: fs.existsSync(commentPath) ? 1 : 0,
+    pull_request: null
+  }));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else if (args[0] === "label" || (args[0] === "issue" && args[1] === "edit")) {
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+      withMockGh(root, ghMock, () => {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--sync-comments-only",
+            "--item-number",
+            "321",
+            "--processed-limit",
+            "1",
+            "--comment-sync-min-age-days",
+            "0",
+          ],
+        });
+      });
+
+      const [result] = JSON.parse(readText(reportPath));
+      assert.equal(result.number, 321);
+      assert.equal(result.action, "review_comment_synced");
+      assert.match(result.reason, /^(?:created|updated) durable Codex review comment$/);
+      assert.match(
+        readText(join(itemsDir, "321.md")),
+        new RegExp(`^action_taken: ${guard.action}$`, "m"),
+      );
+      assert.equal(existsSync(join(root, "comment.json")), true);
+      assert.doesNotMatch(
+        JSON.parse(readText(join(root, "comment.json"))).body,
+        /action_taken[=:] proposed_close/i,
+      );
+      assert.equal(existsSync(join(closedDir, "321.md")), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("matching durable comments repair stale, missing, and refreshed sync timestamps", () => {
+  const now = Date.parse("2026-08-02T12:00:00Z");
+  const base = {
+    syncCommentsOnly: true,
+    isCloseProposal: false,
+    commentSyncMinAgeDays: 7,
+    reviewCommentSyncedAt: "2026-08-01T12:00:00Z",
+    hasExistingReviewComment: true,
+    needsReviewCommentBodySync: false,
+    needsReviewCommentHashSync: false,
+    needsReviewCommentReferenceSync: false,
+    now,
+  };
+
+  assert.equal(shouldSyncReviewComment(base), false);
+  for (const metadata of [
+    { reviewCommentSyncedAt: undefined },
+    { reviewCommentSyncedAt: "not-a-timestamp" },
+    { reviewCommentSyncedAt: "2026-07-26T12:00:00Z" },
+    { reviewedAt: "2026-08-02T11:00:00Z" },
+    { lastFullReviewAt: "2026-08-02T11:00:00Z" },
+    { guardedReviewedAt: "2026-08-02T11:00:00Z" },
+  ]) {
+    assert.equal(shouldSyncReviewComment({ ...base, ...metadata }), true);
+  }
+});
+
+test("comment-only apply repairs timestamps and references without editing GitHub", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const reviewed = reportWithSyncedReviewComment(
+      implementedCloseReport({
+        repository: "openclaw/openclaw",
+        decision: "keep_open",
+        close_reason: "none",
+        action_taken: "kept_open",
+        reviewed_at: "2026-08-02T10:00:00Z",
+      }),
+      321,
+      "none",
+    );
+    const canonicalReport = reviewed.report.replaceAll(
+      "https://github.com/openclaw/clawsweeper/issues/321",
+      "https://github.com/openclaw/openclaw/issues/321",
+    );
+    const existing = {
+      id: 9_321,
+      html_url: "https://github.com/openclaw/openclaw/issues/321#issuecomment-9321",
+      created_at: "2026-08-01T01:00:00Z",
+      updated_at: "2026-08-01T01:00:00Z",
+      user: { login: "clawsweeper[bot]" },
+      body: reviewed.comment,
+    };
+    const ghMock = `
+const raw = process.argv.slice(2);
+const args = raw[0] === "--repo" ? raw.slice(2) : raw;
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+if (/\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method") || args.includes("-X")) {
+    console.error("unchanged durable review comment must not be edited");
+    process.exit(1);
+  }
+  console.log(JSON.stringify([[${JSON.stringify(existing)}]]));
+} else if (/\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify([[]]));
+} else if (/\\/issues\\/321$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 321,
+    title: "Render work plans",
+    html_url: "https://github.com/openclaw/openclaw/issues/321",
+    body: "",
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels: [],
+    comments: 1,
+    pull_request: null
+  }));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "label" || (args[0] === "issue" && args[1] === "edit")) {
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+
+    const freshSyncedAt = new Date().toISOString();
+    const currentReport = canonicalReport.replace(
+      /^review_comment_synced_at:.*$/m,
+      `review_comment_synced_at: ${freshSyncedAt}`,
+    );
+    for (const report of [
+      canonicalReport.replace(/^review_comment_synced_at:.*\n/m, ""),
+      currentReport.replace(/^review_comment_id:.*$/m, "review_comment_id: none"),
+      currentReport.replace(/^review_comment_id:.*\n/m, ""),
+      currentReport.replace(/^review_comment_url:.*$/m, "review_comment_url: none"),
+    ]) {
+      writeFileSync(join(itemsDir, "321.md"), report, "utf8");
+      withMockGh(root, ghMock, () => {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--sync-comments-only",
+            "--item-number",
+            "321",
+            "--comment-sync-min-age-days",
+            "7",
+          ],
+        });
+      });
+
+      assert.deepEqual(JSON.parse(readText(reportPath)), [
+        {
+          number: 321,
+          action: "review_comment_synced",
+          reason: "recorded existing durable comment metadata",
+        },
+      ]);
+      const repaired = readText(join(itemsDir, "321.md"));
+      assert.match(repaired, /^review_comment_synced_at: /m);
+      assert.match(repaired, /^review_comment_id: 9321$/m);
+      assert.match(
+        repaired,
+        /^review_comment_url: https:\/\/github\.com\/openclaw\/openclaw\/issues\/321#issuecomment-9321$/m,
+      );
+      assert.match(repaired, /^action_taken: kept_open$/m);
+      assert.equal(existsSync(join(closedDir, "321.md")), false);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

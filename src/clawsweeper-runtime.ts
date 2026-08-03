@@ -2407,6 +2407,7 @@ const dashboardAudit = createDashboardAudit({
   formatTimestamp,
   frontMatterStringArray,
   frontMatterValue,
+  ghJson,
   isCurrentForCadence,
   isFresh,
   isMaintainerAuthored,

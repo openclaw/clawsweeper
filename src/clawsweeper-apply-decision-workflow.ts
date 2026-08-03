@@ -930,8 +930,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         requiredMaintainerDecision,
         staleMinAgeDays,
       });
-
-
       if (syncCommentsOnly && state !== "open") {
         markApplyChecked("closed");
         results.push({
@@ -1032,7 +1030,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (recordRefreshedReviewStaleReason(earlyStaleReason)) break;
         continue;
       }
-      if (isUpgradedCloseCandidate) {
+      if (isUpgradedCloseCandidate && !syncCommentsOnly) {
         markdown = replaceFrontMatterValue(markdown, "action_taken", "proposed_close");
       }
       const promotion = promoteApplyPullRequest(dependencies, {
@@ -1473,7 +1471,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         }
       }
       let reviewCommentHash = reviewCommentBodyDigest(markedReviewComment);
-      const allowApplyCloseActionUpgrade = isUpgradedCloseCandidate;
+      const allowApplyCloseActionUpgrade = isUpgradedCloseCandidate && !syncCommentsOnly;
       let existingReviewCommentMatches = commentBodyMatches(
         existingReviewComment,
         markedReviewComment,
@@ -1488,18 +1486,24 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         { allowApplyCloseActionUpgrade },
       );
       let needsReviewCommentReferenceSync =
-        frontMatterValue(markdown, "review_comment_id") === "unknown" ||
-        frontMatterValue(markdown, "review_comment_url") === "unknown";
+        /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_id") ?? "") ||
+        /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_url") ?? "");
       let needsReviewCommentSync = shouldSyncReviewComment({
         syncCommentsOnly,
         isCloseProposal,
         commentSyncMinAgeDays,
         reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
+        reviewedAt: frontMatterValue(markdown, "reviewed_at"),
+        lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
+        guardedReviewedAt: isLiveRecheckGuardClose
+          ? frontMatterValue(markdown, "apply_checked_at")
+          : undefined,
         hasExistingReviewComment: Boolean(existingReviewComment),
         needsReviewCommentBodySync,
         needsReviewCommentHashSync,
         needsReviewCommentReferenceSync,
-        forceReviewCommentBodySync: clawSweeperLabelsChanged || Boolean(closeBlockedForCommentSync),
+        forceReviewCommentBodySync:
+          clawSweeperLabelsChanged || Boolean(closeBlockedForCommentSync) || isLiveRecheckGuardClose,
       });
       if (
         isCloseProposal &&
@@ -1567,13 +1571,15 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             needsReviewCommentHashSync =
               frontMatterValue(markdown, "review_comment_sha256") !== reviewCommentHash;
             needsReviewCommentReferenceSync =
-              frontMatterValue(markdown, "review_comment_id") === "unknown" ||
-              frontMatterValue(markdown, "review_comment_url") === "unknown";
+              /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_id") ?? "") ||
+              /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_url") ?? "");
             needsReviewCommentSync = shouldSyncReviewComment({
               syncCommentsOnly,
               isCloseProposal,
               commentSyncMinAgeDays,
               reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
+              reviewedAt: frontMatterValue(markdown, "reviewed_at"),
+              lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
               hasExistingReviewComment: Boolean(existingReviewComment),
               needsReviewCommentBodySync,
               needsReviewCommentHashSync,
@@ -1645,13 +1651,15 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           needsReviewCommentHashSync =
             frontMatterValue(markdown, "review_comment_sha256") !== reviewCommentHash;
           needsReviewCommentReferenceSync =
-            frontMatterValue(markdown, "review_comment_id") === "unknown" ||
-            frontMatterValue(markdown, "review_comment_url") === "unknown";
+            /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_id") ?? "") ||
+            /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_url") ?? "");
           needsReviewCommentSync = shouldSyncReviewComment({
             syncCommentsOnly,
             isCloseProposal,
             commentSyncMinAgeDays,
             reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
+            reviewedAt: frontMatterValue(markdown, "reviewed_at"),
+            lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
             hasExistingReviewComment: Boolean(existingReviewComment),
             needsReviewCommentBodySync,
             needsReviewCommentHashSync,
@@ -1819,11 +1827,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         } else {
           syncReasons.push("recorded existing durable comment metadata");
         }
+        markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
         markdown = updateReviewCommentMetadata(markdown, syncedComment, markedReviewComment);
         if (staleCanonicalCommentSyncPending) {
           markdown = completeStaleCanonicalCommentSyncReport(markdown);
         }
-        markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
         if (!dryRun) writeReportMarkdown(path, markdown);
         results.push({
           number,

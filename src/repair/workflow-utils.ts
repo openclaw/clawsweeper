@@ -15,6 +15,7 @@ import {
   isLiveRecheckCloseGuardAction,
   isSelectableApplyCloseAction,
 } from "../apply-close-actions.js";
+import { repositoryProfileFor } from "../repository-profiles.js";
 
 type ApplyAction = {
   action: string;
@@ -1895,20 +1896,73 @@ function closePromotionSignalTexts(markdown: string): string[] {
 }
 
 export function commentSyncBatchOutput(options: CommentSyncBatchOptions): Record<string, string> {
-  const candidates = commentSyncCandidates(options.targetRepo, options.applyKind);
+  const urgentCandidates = new Map<number, number>();
+  const targetSlug = commentSyncTargetSlug(options.targetRepo);
+  const automaticAllItemCursor =
+    options.applyKind === "all" && path.basename(options.cursorPath) === `${targetSlug}.json`;
+  const candidates = commentSyncCandidates(
+    options.targetRepo,
+    options.applyKind,
+    urgentCandidates,
+    automaticAllItemCursor,
+  );
   const cursor = readCommentSyncCursor(options.cursorPath);
-  const afterCursor = candidates.filter((number) => number > cursor).slice(0, options.batchSize);
-  const selected =
-    afterCursor.length > 0
+  const hasCandidatesAfterCursor = candidates.some((number) => number > cursor);
+  const urgentAfterCursor = candidates.filter(
+    (number) => number > cursor && urgentCandidates.has(number),
+  );
+  const reviewedUrgent = candidates.filter((number) => (urgentCandidates.get(number) ?? 0) > 0);
+  let urgent = (
+    reviewedUrgent.length > 0
+      ? reviewedUrgent
+      : urgentAfterCursor.length > 0
+        ? urgentAfterCursor
+        : candidates.filter((number) => urgentCandidates.has(number))
+  )
+    .sort(
+      (left, right) =>
+        (urgentCandidates.get(right) ?? 0) - (urgentCandidates.get(left) ?? 0) || left - right,
+    )
+    .slice(0, options.batchSize);
+  let urgentSet = new Set(urgent);
+  const blockedCursorCandidate = candidates.find(
+    (number) => !urgentSet.has(number) && (!hasCandidatesAfterCursor || number > cursor),
+  );
+  if (
+    options.batchSize > 1 &&
+    urgent.length === options.batchSize &&
+    blockedCursorCandidate !== undefined
+  ) {
+    urgent = urgent.slice(0, -1);
+    urgentSet = new Set(urgent);
+  }
+  const afterCursor = candidates
+    .filter((number) => number > cursor && !urgentSet.has(number))
+    .slice(0, options.batchSize - urgent.length);
+  const regular =
+    afterCursor.length > 0 || hasCandidatesAfterCursor
       ? afterCursor
-      : candidates.filter((number) => number > 0).slice(0, options.batchSize);
-  const nextCursor = selected.length > 0 ? selected[selected.length - 1] : cursor;
+      : candidates
+          .filter((number) => number > 0 && !urgentSet.has(number))
+          .slice(0, options.batchSize - urgent.length);
+  const selected = [...urgent, ...regular];
+  const highestUrgent = urgent.length > 0 ? Math.max(...urgent) : cursor;
+  const urgentCanAdvanceCursor =
+    urgent.length > 0 &&
+    (urgent.every((number) => number > cursor) || !hasCandidatesAfterCursor) &&
+    !candidates.some(
+      (number) =>
+        !urgentSet.has(number) &&
+        number < highestUrgent &&
+        (number > cursor || !hasCandidatesAfterCursor),
+    );
+  const nextCursor = regular.at(-1) ?? (urgentCanAdvanceCursor ? highestUrgent : cursor);
   return {
     item_numbers: selected.join(","),
     count: String(selected.length),
     cursor: String(cursor),
     next_cursor: String(nextCursor),
-    wrapped: String(candidates.length > 0 && afterCursor.length === 0),
+    wrapped: String(candidates.length > 0 && !hasCandidatesAfterCursor),
   };
 }
 
@@ -2173,11 +2227,13 @@ function commentSyncBatchOptions(): CommentSyncBatchOptions {
   };
 }
 
-function commentSyncCandidates(targetRepo: string, applyKind: string): number[] {
-  const targetSlug = targetRepo
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
+function commentSyncCandidates(
+  targetRepo: string,
+  applyKind: string,
+  urgentCandidates = new Map<number, number>(),
+  automaticAllItemCursor = false,
+): number[] {
+  const targetSlug = commentSyncTargetSlug(targetRepo);
   const itemsDir = path.join("records", targetSlug, "items");
   if (!fs.existsSync(itemsDir)) return [];
 
@@ -2192,6 +2248,25 @@ function commentSyncCandidates(targetRepo: string, applyKind: string): number[] 
       if (frontMatterValue(markdown, "review_status") !== "complete") return [];
       if (!frontMatterValue(markdown, "item_snapshot_hash")) return [];
       const actionTaken = frontMatterValue(markdown, "action_taken");
+      if (actionTaken === "skipped_invalid_decision") {
+        const decision = frontMatterValue(markdown, "decision");
+        const closeReason = frontMatterValue(markdown, "close_reason");
+        if (
+          decision === "close" &&
+          !repositoryProfileFor(targetRepo).applyCloseRules[
+            type === "pull_request" ? "pull_request" : "issue"
+          ]?.some((allowedReason) => allowedReason === closeReason)
+        ) {
+          return [];
+        }
+      }
+      const guardedReview =
+        actionTaken === "skipped_protected_label" ||
+        actionTaken === "skipped_maintainer_authored" ||
+        actionTaken === "skipped_close_exempt_label" ||
+        actionTaken === "skipped_invalid_decision";
+      const verifiedLocalCheckout =
+        frontMatterValue(markdown, "local_checkout_access") === "verified";
       const storedReviewCommentId = frontMatterValue(markdown, "review_comment_id");
       const storedReviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
       const hasStoredReviewComment =
@@ -2202,19 +2277,75 @@ function commentSyncCandidates(targetRepo: string, applyKind: string): number[] 
         frontMatterValue(markdown, "decision") === "close" &&
         frontMatterValue(markdown, "close_reason") === "duplicate_or_superseded" &&
         hasStoredReviewComment;
+      const reviewCommentHash = frontMatterValue(markdown, "review_comment_sha256");
+      const requiresDurableCommentRepair =
+        actionTaken === "retry_stale_canonical_comment_sync" ||
+        changedDuplicateClose ||
+        !reviewCommentHash ||
+        !/^[a-f\d]{64}$/i.test(reviewCommentHash);
+      const invalidReviewCommentHash =
+        !reviewCommentHash || !/^[a-f\d]{64}$/i.test(reviewCommentHash);
+      const syncedAt = Date.parse(frontMatterValue(markdown, "review_comment_synced_at") ?? "");
+      const reviewedAt = Math.max(
+        Date.parse(frontMatterValue(markdown, "last_full_review_at") || "") || 0,
+        Date.parse(frontMatterValue(markdown, "reviewed_at") || "") || 0,
+        guardedReview ? Date.parse(frontMatterValue(markdown, "apply_checked_at") || "") || 0 : 0,
+      );
+      const freshlyReviewedSinceSync = Number.isFinite(syncedAt) && reviewedAt > syncedAt;
+      if (
+        guardedReview &&
+        hasStoredReviewComment &&
+        !invalidReviewCommentHash &&
+        Number.isFinite(syncedAt) &&
+        !freshlyReviewedSinceSync
+      ) {
+        return [];
+      }
+      // PR head changes are discoverable only through the executor's live fetch.
+      if (
+        automaticAllItemCursor &&
+        type === "issue" &&
+        hasStoredReviewComment &&
+        !requiresDurableCommentRepair
+      ) {
+        if (
+          Number.isFinite(syncedAt) &&
+          (!Number.isFinite(reviewedAt) || reviewedAt <= syncedAt) &&
+          Date.now() - syncedAt < 7 * 24 * 60 * 60 * 1000
+        ) {
+          return [];
+        }
+      }
       if (
         actionTaken !== "kept_open" &&
         actionTaken !== "proposed_close" &&
         actionTaken !== "skipped_pr_close_coverage_proof" &&
         actionTaken !== "retry_pr_close_coverage_proof" &&
         actionTaken !== "retry_stale_canonical_comment_sync" &&
+        !guardedReview &&
         !changedDuplicateClose
       ) {
         return [];
       }
-      return [numberFor(name)];
+      const number = numberFor(name);
+      if (
+        automaticAllItemCursor &&
+        verifiedLocalCheckout &&
+        (!hasStoredReviewComment ||
+          invalidReviewCommentHash ||
+          (guardedReview && !Number.isFinite(syncedAt)) ||
+          ((actionTaken === "kept_open" || actionTaken === "proposed_close" || guardedReview) &&
+            freshlyReviewedSinceSync))
+      ) {
+        urgentCandidates.set(number, reviewedAt);
+      }
+      return [number];
     })
     .sort((left, right) => left - right);
+}
+
+function commentSyncTargetSlug(targetRepo: string): string {
+  return targetRepo.toLowerCase().replace(/[^a-z0-9_.-]+/g, "-");
 }
 
 function readCommentSyncCursor(cursorPath: string): number {
