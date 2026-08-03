@@ -78,9 +78,9 @@ crabbox run \
 
 ## Provenance and privacy
 
-- implementation source: `50955ad1a55f22b6a32e8f598c9f1d4d312a998e+public-indexable-governance-dirty`
+- implementation source: `6eebfcf6ddc5d44fca5fd71381df4432879c1046`
 - provider: Crabbox `local-container`
-- lease: `cbx_3754beb76e5c` (`violet-barnacle`)
+- lease: `cbx_f9f19afcd67b` (`coral-prawn`)
 - image: `mcr.microsoft.com/playwright:v1.60.0-noble`
 - fixture SHA-256:
   `B0180F79C465964AD39E6E45F730211294742E1206EA4CE1A4C39DEB61AFCB71`

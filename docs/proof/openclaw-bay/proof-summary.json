@@ -1,6 +1,6 @@
 {
   "proof": "OpenClaw Bay deterministic Playwright browser proof",
-  "source_sha": "50955ad1a55f22b6a32e8f598c9f1d4d312a998e+public-indexable-governance-dirty",
+  "source_sha": "6eebfcf6ddc5d44fca5fd71381df4432879c1046",
   "route": "/bay-demo",
   "data_classification": "fully synthetic and redacted; no live/private dashboard payloads",
   "fixture_sha256": "B0180F79C465964AD39E6E45F730211294742E1206EA4CE1A4C39DEB61AFCB71",
@@ -19,7 +19,7 @@
     }
   ],
   "derived_real_tide_snapshot_sha256": "078023220BCDBF72E4CF212011760751EB63A841CF98070A77E4777A5BD4386E",
-  "generated_at": "2026-08-03T20:11:25.379Z",
+  "generated_at": "2026-08-03T20:19:32.724Z",
   "assertions": [
     {
       "name": "real Bay route loaded",
@@ -260,7 +260,7 @@
     {
       "name": "crustacean claw animation advances",
       "status": "PASS",
-      "elapsed_animation_ms": 317
+      "elapsed_animation_ms": 300
     },
     {
       "name": "forward transition raises READY flag",
@@ -270,7 +270,7 @@
       "name": "master sweeper animation advances",
       "status": "PASS",
       "phase": "sweeping",
-      "elapsed_animation_ms": 300
+      "elapsed_animation_ms": 317
     },
     {
       "name": "forward transition lands in applying",
@@ -282,7 +282,7 @@
       "status": "PASS",
       "source_hole": 1,
       "target_hole": 1,
-      "target_hole_opacity": 0.541758,
+      "target_hole_opacity": 0.505683,
       "label": "openclaw/openclaw#97722 burrowing"
     },
     {
@@ -331,7 +331,7 @@
     {
       "name": "layered preview tide visibly animates",
       "status": "PASS",
-      "elapsed_animation_ms": 50,
+      "elapsed_animation_ms": 100,
       "tide_layers": 3
     },
     {
@@ -349,7 +349,7 @@
       "status": "PASS",
       "duration": "520ms",
       "animation_name": "none",
-      "elapsed_ms": 577
+      "elapsed_ms": 580
     },
     {
       "name": "tide previews do not poll status",
@@ -1317,6 +1317,12 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
+        "path": "/bay-assets/master-sweeper.webp",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
         "path": "/api/status",
         "search": ""
       },
@@ -1324,12 +1330,6 @@
         "status": 200,
         "host": "bay-proof.test:8787",
         "path": "/api/durable-lifecycle-bay",
-        "search": ""
-      },
-      {
-        "status": 200,
-        "host": "bay-proof.test:8787",
-        "path": "/bay-assets/master-sweeper.webp",
         "search": ""
       },
       {
@@ -1743,13 +1743,13 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/bay-assets/bay-background.webp",
+        "path": "/api/status",
         "search": ""
       },
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/api/status",
+        "path": "/bay-assets/bay-background.webp",
         "search": ""
       },
       {
@@ -1761,13 +1761,19 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
+        "path": "/bay-assets/crustaceans-atlas.webp",
+        "search": ""
+      },
+      {
+        "status": 200,
+        "host": "bay-proof.test:8787",
         "path": "/api/durable-lifecycle-bay",
         "search": ""
       },
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/bay-assets/crustaceans-atlas.webp",
+        "path": "/api/live-activity-bay",
         "search": ""
       },
       {
@@ -1775,12 +1781,6 @@
         "host": "bay-proof.test:8787",
         "path": "/api/health-history",
         "search": "?range=6h"
-      },
-      {
-        "status": 200,
-        "host": "bay-proof.test:8787",
-        "path": "/api/live-activity-bay",
-        "search": ""
       },
       {
         "status": 200,
