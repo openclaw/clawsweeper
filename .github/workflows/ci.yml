@@ -27,28 +27,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-        with:
-          sparse-checkout: |
-            .github
-            config
-            dashboard
-            docs
-            instructions
-            prompts
-            schema
-            scripts
-            src
-            test
-            .oxfmtrc.json
-            AGENTS.md
-            README.md
-            package.json
-            pnpm-lock.yaml
-            pnpm-workspace.yaml
-            tsconfig.dashboard.json
-            tsconfig.json
-            tsconfig.repair.json
-          sparse-checkout-cone-mode: false
 
       - name: Validate workflow semantics
         env:

@@ -37,18 +37,6 @@ jobs:
           - javascript-typescript
     steps:
       - uses: actions/checkout@v7
-        with:
-          sparse-checkout: |
-            .github
-            dashboard
-            scripts
-            src
-            package.json
-            pnpm-lock.yaml
-            tsconfig.dashboard.json
-            tsconfig.json
-            tsconfig.repair.json
-          sparse-checkout-cone-mode: false
 
       - uses: github/codeql-action/init@v4
         with:

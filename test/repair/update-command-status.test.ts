@@ -353,6 +353,60 @@ test("terminal receipt verification accepts the matching legacy command marker",
   }
 });
 
+test("terminal receipt verification binds synthetic autofix commands to their status comment", () => {
+  const marker =
+    "<!-- clawsweeper-command-status:117443:autofix:59382f10545ffc2955fc88e828be1c649d33f581 -->";
+  const syntheticMarker =
+    "<!-- clawsweeper-command:repair-loop-label-sweep:autofix:117443:autofix:59382f10545ffc2955fc88e828be1c649d33f581 -->";
+  const options = parseOptions([
+    "--repo",
+    "openclaw/openclaw",
+    "--item-number",
+    "117443",
+    "--marker",
+    marker,
+    "--state",
+    "Complete",
+    "--detail",
+    "The durable review result and its route handoff completed.",
+    "--verify-terminal-status-receipt",
+  ]);
+  const comment = {
+    id: 5151931725,
+    body: [
+      marker,
+      syntheticMarker,
+      "ClawSweeper autofix is enabled.",
+      "<!-- clawsweeper-command-progress:start -->",
+      "Re-review progress:",
+      "- State: Complete",
+      "- Detail: The durable review result and its route handoff completed.",
+      "<!-- clawsweeper-command-progress:end -->",
+    ].join("\n"),
+  };
+
+  assert.deepEqual(verifiedTerminalStatusReceipt(comment, options), {
+    commandCommentId: 5151931725,
+    completionCommentId: 5151931725,
+  });
+  for (const invalidMarker of [
+    syntheticMarker.replace(":117443:", ":117444:"),
+    syntheticMarker.replace(":autofix:117443:", ":automerge:117443:"),
+    syntheticMarker.replace(":117443:autofix:", ":117443:automerge:"),
+    syntheticMarker.replace("59382f10545ffc2955fc88e828be1c649d33f581", "mismatched"),
+    `${syntheticMarker}\n${syntheticMarker}`,
+    `${syntheticMarker}\n<!-- clawsweeper-command:untrusted-extra -->`,
+  ]) {
+    assert.equal(
+      verifiedTerminalStatusReceipt(
+        { ...comment, body: comment.body.replace(syntheticMarker, invalidMarker) },
+        options,
+      ),
+      null,
+    );
+  }
+});
+
 test("parseOptions enables the terminal locked-conversation skip only when requested", () => {
   const options = parseOptions([
     "--repo",
