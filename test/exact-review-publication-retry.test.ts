@@ -29,6 +29,21 @@ test("GitHub rate limiting retains its longer protective retry ceiling", () => {
   assert.ok(delay <= 72 * 60_000);
 });
 
+test("non-unknown permanent failures keep their original one-then-five-minute confirmation", () => {
+  for (const reasonCode of [
+    "invalid_artifact",
+    "missing_record_tuple",
+    "tuple_protocol_invalid",
+    "policy_invariant",
+  ]) {
+    const completion = { kind: "permanent_failure", reasonCode };
+    const firstDelay = exactReviewPublicationRetryDelayMs(itemKey, completion, 1);
+    const secondDelay = exactReviewPublicationRetryDelayMs(itemKey, completion, 2);
+    assert.ok(firstDelay >= 60_000 && firstDelay <= 72_000);
+    assert.ok(secondDelay >= 5 * 60_000 && secondDelay <= 6 * 60_000);
+  }
+});
+
 test("publication retry exhaustion preserves transient, permanent, and unknown budgets", () => {
   const now = 1_800_000_000_000;
   assert.equal(

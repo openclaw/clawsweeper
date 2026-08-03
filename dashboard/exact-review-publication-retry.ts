@@ -41,7 +41,13 @@ export function exactReviewPublicationRetryDelayMs(
 ): number {
   const maximum =
     completion.reasonCode === "github_rate_limit" ? RATE_LIMIT_RETRY_MAX_MS : NORMAL_RETRY_MAX_MS;
-  const delay = Math.min(maximum, 60_000 * 2 ** Math.min(Math.max(attempt - 1, 0), 6));
+  const baselineDelay =
+    completion.kind === "permanent_failure" && completion.reasonCode !== "unknown_failure"
+      ? attempt <= 1
+        ? 60_000
+        : NORMAL_RETRY_MAX_MS
+      : 60_000 * 2 ** Math.min(Math.max(attempt - 1, 0), 6);
+  const delay = Math.min(maximum, baselineDelay);
   const hash = [...`${itemKey}:${attempt}`].reduce(
     (current, character) => (current * 33 + character.charCodeAt(0)) >>> 0,
     5381,
