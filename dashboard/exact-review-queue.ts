@@ -6845,6 +6845,7 @@ export class ExactReviewQueue {
           : "";
     const commandCommentId = Number(body.command_comment_id);
     const completionCommentId = Number(body.completion_comment_id);
+    const statusCommentId = body.status_comment_id;
     const requireExactStatusComment = body.require_exact_status_comment;
     const observedAt = Number(body.observed_at);
     if (
@@ -6854,6 +6855,8 @@ export class ExactReviewQueue {
       commandCommentId < 1 ||
       !Number.isSafeInteger(completionCommentId) ||
       completionCommentId < 1 ||
+      (statusCommentId !== undefined &&
+        (!Number.isSafeInteger(statusCommentId) || Number(statusCommentId) < 1)) ||
       (requireExactStatusComment !== undefined && typeof requireExactStatusComment !== "boolean") ||
       !Number.isSafeInteger(observedAt) ||
       observedAt < 1
@@ -6866,6 +6869,7 @@ export class ExactReviewQueue {
         statusMarker,
         commandCommentId,
         completionCommentId,
+        ...(statusCommentId === undefined ? {} : { statusCommentId: Number(statusCommentId) }),
         ...(requireExactStatusComment ? { requireExactStatusComment: true } : {}),
         observedAt,
       });

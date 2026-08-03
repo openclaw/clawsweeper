@@ -684,6 +684,7 @@ export class ExactReviewLifecycleProjectionStore {
     statusMarker: string | null;
     commandCommentId: number;
     completionCommentId: number;
+    statusCommentId?: number;
     requireExactStatusComment?: boolean;
     observedAt: number;
   }) {
@@ -691,7 +692,8 @@ export class ExactReviewLifecycleProjectionStore {
       !validCanonicalTargetKey(input.canonicalTargetKey) ||
       (input.statusMarker !== null && !validText(input.statusMarker, 1, 300)) ||
       !positiveInteger(input.commandCommentId) ||
-      !positiveInteger(input.completionCommentId)
+      !positiveInteger(input.completionCommentId) ||
+      (input.statusCommentId !== undefined && !positiveInteger(input.statusCommentId))
     ) {
       throw new Error("invalid lifecycle acknowledgement receipt");
     }
@@ -707,17 +709,19 @@ export class ExactReviewLifecycleProjectionStore {
         const projection = projectionFromRow(String(row.projection_json || ""));
         const attempted = projection.acknowledgement.attempts.some(
           (attempt) =>
-            (attempt.statusCommentId === input.completionCommentId &&
+            (input.statusCommentId === undefined ||
+              attempt.statusCommentId === input.statusCommentId) &&
+            ((attempt.statusCommentId === input.completionCommentId &&
               (attempt.statusMarker === input.statusMarker ||
                 attempt.statusMarker === null ||
                 (!input.requireExactStatusComment && input.statusMarker === null))) ||
-            (input.requireExactStatusComment &&
-              attempt.statusCommentId === null &&
-              input.statusMarker !== null &&
-              attempt.statusMarker === input.statusMarker) ||
-            (!input.requireExactStatusComment &&
-              input.statusMarker !== null &&
-              attempt.statusMarker === input.statusMarker),
+              (input.requireExactStatusComment &&
+                attempt.statusCommentId === null &&
+                input.statusMarker !== null &&
+                attempt.statusMarker === input.statusMarker) ||
+              (!input.requireExactStatusComment &&
+                input.statusMarker !== null &&
+                attempt.statusMarker === input.statusMarker)),
         );
         if (!attempted || !projection.acknowledgement.required) continue;
         const observed = {

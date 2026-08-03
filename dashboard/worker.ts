@@ -2109,15 +2109,11 @@ async function authenticatedLifecycleCommandAcknowledgement(request, env, ctx) {
       const receipt = objectValue(parseJsonObject(body));
       const statusMarker = String(receipt.status_marker || "");
       const target = String(receipt.canonical_target_key || "").match(/^([^#]+)#(\d+)$/);
-      const admittedCommentId = Number(receipt.status_comment_id);
       const completionCommentId = Number(receipt.completion_comment_id);
       const completedAt = exactWebhookTimestamp(receipt.completed_at);
       if (
         result.accepted === true &&
         target &&
-        Number.isSafeInteger(admittedCommentId) &&
-        admittedCommentId > 0 &&
-        admittedCommentId !== completionCommentId &&
         completedAt &&
         /<!--\s*clawsweeper-command-status:\d+:(review|re_review):/i.test(statusMarker)
       ) {
@@ -4244,6 +4240,14 @@ export function mergeBayJourneyState(previous, triggers, completions, generatedA
     const completion = normalizeBayJourneyCompletion(value);
     if (!completion) continue;
     const current =
+      [...records.values()].find(
+        (record) =>
+          record.repository === completion.repository &&
+          record.number === completion.number &&
+          record.source_comment_id === completion.source_comment_id &&
+          record.completion_comment_id === completion.completion_comment_id &&
+          record.completed_at === completion.completed_at,
+      ) ||
       [...records.values()]
         .filter(
           (record) =>
@@ -4259,14 +4263,6 @@ export function mergeBayJourneyState(previous, triggers, completions, generatedA
             (Date.parse(String(right.triggered_at || "")) || 0) -
             (Date.parse(String(left.triggered_at || "")) || 0),
         )[0] ||
-      [...records.values()].find(
-        (record) =>
-          record.repository === completion.repository &&
-          record.number === completion.number &&
-          record.source_comment_id === completion.source_comment_id &&
-          record.completion_comment_id === completion.completion_comment_id &&
-          record.completed_at === completion.completed_at,
-      ) ||
       records.get(completion.id) ||
       {};
     const recordId = current.id || completion.id;

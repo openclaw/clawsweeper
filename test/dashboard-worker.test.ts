@@ -6218,7 +6218,7 @@ test("Worker binds legacy webhooks while preserving marker-only command addresse
   }
 });
 
-test("signed terminal receipts complete Bay journeys only after legacy status migration", async () => {
+test("signed terminal receipts bind legacy migration to its admitted status comment", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
@@ -6317,7 +6317,7 @@ test("signed terminal receipts complete Bay journeys only after legacy status mi
     );
   };
 
-  assert.equal((await (await sendReceipt(9302)).json()).accepted, true);
+  assert.equal((await (await sendReceipt(9302)).json()).accepted, false);
   const incomplete = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1"))!).journeys;
   assert.equal(incomplete.length, 1);
   assert.equal(incomplete[0].completed_at ?? null, null);
@@ -6357,6 +6357,222 @@ test("signed terminal receipts complete Bay journeys only after legacy status mi
     lifecycleState(lifecycle.read(canonicalTargetKey, identity.fenceKey, 1)!),
     "completed",
   );
+});
+
+test("signed migrated receipts cannot complete a newer same-marker lifecycle revision", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const now = Date.now();
+  const target = "openclaw/openclaw#917";
+  const marker = "<!-- clawsweeper-command-status:917:re_review:same-head -->";
+  for (const [revision, statusCommentId, name] of [
+    [1, 9301, "older"],
+    [2, 9401, "newer"],
+  ] as const) {
+    const identity = {
+      canonicalTargetKey: target,
+      fenceKey: `${target}@exact:${name}`,
+      revision,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `same-head:${name}`,
+      sourceAction: "re_review",
+      commandOriginated: true,
+      statusMarker: marker,
+      statusCommentId,
+      observedAt: now + revision,
+    });
+    lifecycle.recordCanonicalReceipt({
+      ...identity,
+      outcome: "accepted",
+      receiptId: `same-head:canonical:${name}`,
+      observedAt: now + 10 + revision,
+    });
+    lifecycle.recordRouterReceipt({
+      ...identity,
+      outcome: "durable",
+      receiptId: `same-head:router:${name}`,
+      observedAt: now + 20 + revision,
+    });
+    lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "review_completed_routed",
+      observedAt: now + 30 + revision,
+    });
+    lifecycle.authorizeCommandAcknowledgement({
+      ...identity,
+      statusMarker: marker,
+      statusCommentId,
+      observedAt: now + 40 + revision,
+    });
+  }
+
+  const secret = "same-head-revision-secret";
+  const payload = {
+    canonical_target_key: target,
+    status_marker: marker,
+    status_comment_id: 9301,
+    command_comment_id: 555,
+    completion_comment_id: 9302,
+    completed_at: new Date(now + 50).toISOString(),
+    observed_at: now + 51,
+  };
+  const body = JSON.stringify(payload);
+  const response = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/lifecycle/command-ack/observed",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret)
+            .update(body)
+            .digest("hex")}`,
+        },
+        body,
+      },
+    ),
+    {
+      CLAWSWEEPER_WEBHOOK_SECRET: secret,
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    },
+  );
+
+  assert.equal((await response.json()).accepted, true);
+  assert.equal(lifecycleState(lifecycle.read(target, `${target}@exact:older`, 1)!), "completed");
+  assert.equal(
+    lifecycleState(lifecycle.read(target, `${target}@exact:newer`, 2)!),
+    "acknowledgement_pending",
+  );
+
+  const malformed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...payload, status_comment_id: "9301" }),
+    }),
+  );
+  assert.equal(malformed.status, 400);
+});
+
+test("verified unchanged legacy receipts complete Bay journeys without a webhook", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const statusStore = new MemoryKv();
+  const now = Date.now();
+  const marker = "<!-- clawsweeper-command-status:918:re_review:unchanged -->";
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#918",
+    fenceKey: "openclaw/openclaw#918@exact",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "unchanged-legacy:918",
+    sourceAction: "re_review",
+    commandOriginated: true,
+    statusMarker: marker,
+    statusCommentId: 9501,
+    observedAt: now,
+  });
+  lifecycle.recordCanonicalReceipt({
+    ...identity,
+    outcome: "accepted",
+    receiptId: "unchanged-legacy:canonical",
+    observedAt: now + 1,
+  });
+  lifecycle.recordRouterReceipt({
+    ...identity,
+    outcome: "durable",
+    receiptId: "unchanged-legacy:router",
+    observedAt: now + 2,
+  });
+  lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: now + 3,
+  });
+  lifecycle.authorizeCommandAcknowledgement({
+    ...identity,
+    statusMarker: marker,
+    statusCommentId: 9501,
+    observedAt: now + 4,
+  });
+  await statusStore.put(
+    "openclaw-bay:journey-state:v1",
+    JSON.stringify(
+      mergeBayJourneyState(
+        null,
+        [
+          {
+            repository: "openclaw/openclaw",
+            number: 918,
+            source_comment_id: 558,
+            source_delivery_id: "older-legacy-delivery",
+            triggered_at: new Date(now - 10).toISOString(),
+          },
+          {
+            repository: "openclaw/openclaw",
+            number: 918,
+            source_comment_id: 558,
+            source_delivery_id: "unchanged-legacy-delivery",
+            triggered_at: new Date(now).toISOString(),
+          },
+        ],
+        [],
+        new Date(now).toISOString(),
+      ),
+    ),
+  );
+
+  const secret = "unchanged-legacy-secret";
+  const completedAt = new Date(now + 5).toISOString();
+  const body = JSON.stringify({
+    canonical_target_key: identity.canonicalTargetKey,
+    status_marker: marker,
+    status_comment_id: 9501,
+    command_comment_id: 558,
+    completion_comment_id: 9501,
+    completed_at: completedAt,
+    observed_at: now + 15,
+  });
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    STATUS_STORE: statusStore,
+  };
+  const sendReceipt = () =>
+    worker.fetch(
+      new Request(
+        "https://clawsweeper.openclaw.ai/internal/exact-review/lifecycle/command-ack/observed",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret)
+              .update(body)
+              .digest("hex")}`,
+          },
+          body,
+        },
+      ),
+      env,
+    );
+
+  assert.equal((await (await sendReceipt()).json()).accepted, true);
+  assert.equal((await (await sendReceipt()).json()).accepted, true);
+  const journeys = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1"))!).journeys;
+  const completed = journeys.find(
+    (journey) => journey.source_delivery_id === "unchanged-legacy-delivery",
+  );
+  const older = journeys.find((journey) => journey.source_delivery_id === "older-legacy-delivery");
+  assert.equal(journeys.length, 2);
+  assert.equal(completed.completion_comment_id, 9501);
+  assert.equal(completed.completed_at, completedAt);
+  assert.equal(older.completed_at, null);
 });
 
 test("migrated modern acknowledgement receipts preserve the webhook completion identity", async () => {
@@ -6409,6 +6625,13 @@ test("migrated modern acknowledgement receipts preserve the webhook completion i
       mergeBayJourneyState(
         null,
         [
+          {
+            repository: "openclaw/openclaw",
+            number: 916,
+            source_comment_id: 556,
+            source_delivery_id: "older-modern-delivery",
+            triggered_at: new Date(now - 10).toISOString(),
+          },
           {
             repository: "openclaw/openclaw",
             number: 916,
@@ -6492,9 +6715,13 @@ test("migrated modern acknowledgement receipts preserve the webhook completion i
 
   assert.equal((await receipt.json()).accepted, true);
   const journeys = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1"))!).journeys;
-  assert.equal(journeys.length, 1);
-  assert.equal(journeys[0].source_delivery_id, "modern-migration-delivery");
-  assert.equal(journeys[0].completed_at, completedAt);
+  const completed = journeys.find(
+    (journey) => journey.source_delivery_id === "modern-migration-delivery",
+  );
+  const older = journeys.find((journey) => journey.source_delivery_id === "older-modern-delivery");
+  assert.equal(journeys.length, 2);
+  assert.equal(completed.completed_at, completedAt);
+  assert.equal(older.completed_at, null);
 });
 
 test("unsigned terminal receipts are rejected before their JSON body is parsed", async () => {
