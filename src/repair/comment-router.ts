@@ -3307,10 +3307,6 @@ function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
   const requiresCommandStatus = ["re_review", "autofix", "automerge"].includes(
     String(command.intent ?? ""),
   );
-  if (requiresCommandStatus) {
-    const retainedStatusComment = findExistingCommandStatusComment(command);
-    if (retainedStatusComment?.id) command.status_comment_id = Number(retainedStatusComment.id);
-  }
   let dispatchKey = dispatchReceiptKey(command);
   const expectedTitle = `Review event item ${command.repo}#${command.issue_number} [${dispatchKey}]`;
   const claimed = claimedDispatchState({
@@ -3320,6 +3316,10 @@ function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
     expectedTitle,
   });
   if (claimed) return { ...claimed, workflow: reviewWorkflow, repo: reviewRepo };
+  if (requiresCommandStatus) {
+    const retainedStatusComment = findExistingCommandStatusComment(command);
+    if (retainedStatusComment?.id) command.status_comment_id = Number(retainedStatusComment.id);
+  }
   dispatchKey = dispatchReceiptKey(command);
   const reviewBudget =
     command.target?.kind === "pull_request"
@@ -4840,6 +4840,7 @@ function postComment(command: LooseRecord, body: string) {
         payloadPath,
       ],
     );
+    issueCommentsCache.delete(Number(command.issue_number));
     const precreatedId = Number(precreated?.id ?? 0) || 0;
     const existingId = Number(existing.id ?? 0) || 0;
     if (existingStatus && precreatedId > 0 && precreatedId !== existingId) {
@@ -4877,6 +4878,7 @@ function postComment(command: LooseRecord, body: string) {
       payloadPath,
     ],
   );
+  issueCommentsCache.delete(Number(command.issue_number));
   return { mode: "created", comment_id: null };
 }
 
@@ -5134,7 +5136,8 @@ function findExistingCommandStatusComment(command: LooseRecord) {
     : ["autofix"].includes(String(command.intent ?? ""))
       ? commandStatusMarkerPrefix(command)
       : null;
-  return ghPaged(`repos/${command.repo}/issues/${command.issue_number}/comments?per_page=100`)
+  return cachedIssueComments(command.issue_number)
+    .slice()
     .reverse()
     .find((comment: JsonValue) => {
       if (!isTrustedStatusComment(comment)) return false;

@@ -4570,7 +4570,7 @@ test("comment commands keep the router-to-sweep dispatch contract", () => {
   assert.match(routerWorkflow, /\.short_circuited == true/);
   assert.match(
     routerSource,
-    /if \(requiresCommandStatus\) \{\s*const retainedStatusComment = findExistingCommandStatusComment\(command\);\s*if \(retainedStatusComment\?\.id\) command\.status_comment_id = Number\(retainedStatusComment\.id\);\s*\}\s*let dispatchKey = dispatchReceiptKey\(command\);/,
+    /if \(claimed\) return \{ \.\.\.claimed, workflow: reviewWorkflow, repo: reviewRepo \};\s*if \(requiresCommandStatus\) \{\s*const retainedStatusComment = findExistingCommandStatusComment\(command\);\s*if \(retainedStatusComment\?\.id\) command\.status_comment_id = Number\(retainedStatusComment\.id\);\s*\}/,
   );
   assert.match(routerSource, /event_type:\s*"clawsweeper_item"/);
   assert.match(routerSource, /adaptiveReviewBudgetForPullRequest\(command\.target\)/);

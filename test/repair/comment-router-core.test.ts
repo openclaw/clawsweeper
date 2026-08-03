@@ -2267,6 +2267,31 @@ test("comment router durably claims dispatch commands and recovers exact workflo
   assert.match(claimFunction, /commandHasAction\(command,\s*"dispatch_assist"\)/);
   assert.match(source, /function claimedDispatchState/);
   assert.match(source, /function refreshDispatchClaim/);
+  const reviewDispatch = source.slice(
+    source.indexOf("function dispatchClawSweeperReview"),
+    source.indexOf("function dispatchCompletedReviewVerdict"),
+  );
+  assert.ok(
+    reviewDispatch.indexOf("claimedDispatchState({") <
+      reviewDispatch.indexOf("findExistingCommandStatusComment(command)"),
+    "existing durable dispatch claims must short-circuit before status-comment lookup",
+  );
+  const statusCommentLookup = source.slice(
+    source.indexOf("function findExistingCommandStatusComment"),
+    source.indexOf("function isTrustedStatusComment"),
+  );
+  assert.match(statusCommentLookup, /cachedIssueComments\(command\.issue_number\)/);
+  assert.doesNotMatch(statusCommentLookup, /ghPaged\(/);
+  const statusCommentWriter = source.slice(
+    source.indexOf("function postComment"),
+    source.indexOf("function findPrecreatedCommandStatusComment"),
+  );
+  assert.equal(
+    statusCommentWriter.match(/issueCommentsCache\.delete\(Number\(command\.issue_number\)\)/g)
+      ?.length,
+    3,
+    "both successful mutations and optional temporary-comment deletion invalidate stale history",
+  );
   assert.match(source, /writeLedger\(ledgerPath\(\), ledger\)/);
   assert.match(source, /function verifyDispatchExecutionRuns/);
   assert.match(source, /actions\/runs\/\$\{runId\}\/jobs\?per_page=100/);
