@@ -303,6 +303,13 @@ briefly explain why that measured fact matters before merge. Do not use vague
 labels or values, and do not restate full `risks`, `bestSolution`,
 `mergeRiskOptions`, or label rationale in `reviewMetrics`.
 
+For PRs that meaningfully grow the codebase, or when the target repository's
+contribution policy asks for it, emit a production-vs-test LOC delta metric:
+count production and test lines separately in `value` (for example `production
++12, tests +85`) and use `reason` to state whether the production growth has a
+stated justification. Put any unjustified-production-growth concern itself in
+`risks`, not here.
+
 Fill `labelJustifications` with one object for every selected ClawSweeper-managed
 label. Include the selected `triagePriority` unless it is `none`, every selected
 `impactLabels` entry, every selected `maturityLabels` entry, and every selected
