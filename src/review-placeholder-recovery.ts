@@ -10,7 +10,6 @@ export const DEFAULT_REVIEW_PLACEHOLDER_MAX_RECOVERIES = 5;
 export const DEFAULT_REVIEW_PLACEHOLDER_STUCK_HOURS = 12;
 export const REVIEW_PLACEHOLDER_STUCK_LABEL = "clawsweeper-recovery-stuck";
 export const DEFAULT_REVIEW_PLACEHOLDER_LOOKBACK_HOURS = 48;
-export const DEFAULT_REVIEW_PLACEHOLDER_BACKLOG_ALERT = 480;
 
 const SEARCH_PAGE_SIZE = 100;
 const SEARCH_MAX_PAGES = 2;
@@ -40,6 +39,7 @@ export type ReviewPlaceholderRecoverySummary = {
   cleaned: number;
   escalated: number;
   errors: number;
+  actionFailures: number;
   matched: number;
   remaining: number;
 };
@@ -50,14 +50,10 @@ export type ReviewPlaceholderRecoverySummary = {
 // Escalation labels are visibility, not resolution, so they never count.
 export function reviewPlaceholderRecoveryFailureReason(
   summary: ReviewPlaceholderRecoverySummary,
-  backlogAlert: number = DEFAULT_REVIEW_PLACEHOLDER_BACKLOG_ALERT,
 ): string | null {
   const resolved = summary.enqueued + summary.cleaned;
-  if (summary.orphaned > 0 && summary.errors > 0 && resolved === 0) {
+  if (summary.orphaned > 0 && summary.actionFailures > 0 && resolved === 0) {
     return "orphaned placeholders remain and every recovery action failed";
-  }
-  if (backlogAlert > 0 && summary.remaining >= backlogAlert) {
-    return `${summary.remaining} matching placeholders were left unexamined (backlog alert threshold ${backlogAlert})`;
   }
   return null;
 }
@@ -216,14 +212,25 @@ export async function runReviewPlaceholderRecovery(
   let cleaned = 0;
   let escalated = 0;
   let errors = 0;
+  let actionFailures = 0;
   let matched = 0;
 
   const summary = (): ReviewPlaceholderRecoverySummary => {
     const remaining = Math.max(0, matched - checked);
     console.log(
-      `review-placeholder recovery: checked=${checked} orphaned=${orphaned} enqueued=${enqueued} cleaned=${cleaned} escalated=${escalated} errors=${errors} matched=${matched} remaining=${remaining}`,
+      `review-placeholder recovery: checked=${checked} orphaned=${orphaned} enqueued=${enqueued} cleaned=${cleaned} escalated=${escalated} errors=${errors} action_failures=${actionFailures} matched=${matched} remaining=${remaining}`,
     );
-    return { checked, orphaned, enqueued, cleaned, escalated, errors, matched, remaining };
+    return {
+      checked,
+      orphaned,
+      enqueued,
+      cleaned,
+      escalated,
+      errors,
+      actionFailures,
+      matched,
+      remaining,
+    };
   };
   if (
     !token ||
@@ -465,6 +472,7 @@ export async function runReviewPlaceholderRecovery(
           }
         } catch (cleanupError) {
           errors += 1;
+          actionFailures += 1;
           console.warn(
             `#${number} closed-item placeholder cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
           );
@@ -510,6 +518,7 @@ export async function runReviewPlaceholderRecovery(
       );
     } catch (error) {
       errors += 1;
+      actionFailures += 1;
       console.warn(
         `#${candidate.number} review-placeholder recovery skipped: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -522,14 +531,7 @@ const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
 if (invokedPath && invokedPath === fileURLToPath(import.meta.url)) {
   try {
     const summary = await runReviewPlaceholderRecovery();
-    const failureReason = reviewPlaceholderRecoveryFailureReason(
-      summary,
-      boundedPositiveInteger(
-        process.env.REVIEW_PLACEHOLDER_BACKLOG_ALERT,
-        DEFAULT_REVIEW_PLACEHOLDER_BACKLOG_ALERT,
-        1_000_000,
-      ),
-    );
+    const failureReason = reviewPlaceholderRecoveryFailureReason(summary);
     if (failureReason) {
       console.error(`review-placeholder recovery failed: ${failureReason}`);
       process.exitCode = 1;

@@ -179,6 +179,7 @@ test("review placeholder runner fails open and sends a signed exact-review decis
     cleaned: 0,
     escalated: 0,
     errors: 1,
+    actionFailures: 0,
     matched: 4,
     remaining: 1,
   });
@@ -253,6 +254,7 @@ test("review placeholder runner fills the recovery cap with the oldest orphans f
     cleaned: 0,
     escalated: 0,
     errors: 0,
+    actionFailures: 0,
     matched: 4,
     remaining: 2,
   });
@@ -325,6 +327,7 @@ test("review placeholder runner escalates orphans stuck well beyond the minimum 
     cleaned: 0,
     escalated: 1,
     errors: 0,
+    actionFailures: 0,
     matched: 4,
     remaining: 2,
   });
@@ -379,6 +382,7 @@ test("stuck escalation without a target write token is a visible error, not a wr
     cleaned: 0,
     escalated: 0,
     errors: 1,
+    actionFailures: 0,
     matched: 2,
     remaining: 1,
   });
@@ -452,6 +456,7 @@ test("orphaned placeholders on closed items are deleted instead of re-enqueued",
     cleaned: 1,
     escalated: 0,
     errors: 0,
+    actionFailures: 0,
     matched: 1,
     remaining: 0,
   });
@@ -503,13 +508,18 @@ test("closed-item cleanup without a target write token is a visible error", asyn
     cleaned: 0,
     escalated: 0,
     errors: 1,
+    actionFailures: 1,
     matched: 1,
     remaining: 0,
   });
   assert.equal(deleteRequests, 0);
+  assert.equal(
+    reviewPlaceholderRecoveryFailureReason(summary),
+    "orphaned placeholders remain and every recovery action failed",
+  );
 });
 
-test("closed-item cleanup revalidates and skips a placeholder that became a real review", async () => {
+test("discovery errors do not fail a closed orphan that changed during revalidation", async () => {
   let deleteRequests = 0;
   const mockFetch = async (
     input: string | URL | Request,
@@ -519,7 +529,7 @@ test("closed-item cleanup revalidates and skips a placeholder that became a real
     if (url.pathname === "/search/issues") {
       const query = url.searchParams.get("q") ?? "";
       if (query.includes("is:closed")) return Response.json({ items: [{ number: 403 }] });
-      return Response.json({ items: [] });
+      return new Response("unavailable", { status: 503 });
     }
     if (url.pathname === "/repos/openclaw/openclaw/issues/403/comments") {
       return Response.json([
@@ -569,11 +579,13 @@ test("closed-item cleanup revalidates and skips a placeholder that became a real
     enqueued: 0,
     cleaned: 0,
     escalated: 0,
-    errors: 0,
+    errors: 1,
+    actionFailures: 0,
     matched: 1,
     remaining: 0,
   });
   assert.equal(deleteRequests, 0);
+  assert.equal(reviewPlaceholderRecoveryFailureReason(summary), null);
 });
 
 test("locked closed items are terminal skips, not retrying cleanup errors", async () => {
@@ -636,6 +648,7 @@ test("locked closed items are terminal skips, not retrying cleanup errors", asyn
     cleaned: 0,
     escalated: 0,
     errors: 0,
+    actionFailures: 0,
     matched: 1,
     remaining: 0,
   });
@@ -712,13 +725,14 @@ test("closed cleanup keeps its own check budget when open placeholders fill the 
     cleaned: 1,
     escalated: 0,
     errors: 0,
+    actionFailures: 0,
     matched: 2,
     remaining: 0,
   });
   assert.deepEqual(deletedComments, ["/repos/openclaw/openclaw/issues/comments/9502"]);
 });
 
-test("recovery failure reason fires on total action failure and on an undrainable backlog", () => {
+test("recovery failure reason fires only when every live-verified action fails", () => {
   assert.equal(
     reviewPlaceholderRecoveryFailureReason({
       checked: 5,
@@ -727,6 +741,7 @@ test("recovery failure reason fires on total action failure and on an undrainabl
       cleaned: 0,
       escalated: 0,
       errors: 2,
+      actionFailures: 2,
       matched: 5,
       remaining: 0,
     }),
@@ -740,6 +755,7 @@ test("recovery failure reason fires on total action failure and on an undrainabl
       cleaned: 0,
       escalated: 0,
       errors: 1,
+      actionFailures: 1,
       matched: 5,
       remaining: 0,
     }),
@@ -753,6 +769,7 @@ test("recovery failure reason fires on total action failure and on an undrainabl
       cleaned: 0,
       escalated: 0,
       errors: 1,
+      actionFailures: 0,
       matched: 5,
       remaining: 0,
     }),
@@ -766,28 +783,24 @@ test("recovery failure reason fires on total action failure and on an undrainabl
       cleaned: 0,
       escalated: 1,
       errors: 2,
+      actionFailures: 0,
       matched: 5,
       remaining: 0,
     }),
-    "orphaned placeholders remain and every recovery action failed",
+    null,
   );
-  const backlogged = {
-    checked: 40,
-    orphaned: 1,
-    enqueued: 1,
-    cleaned: 0,
-    escalated: 0,
-    errors: 0,
-    matched: 1_240,
-    remaining: 1_200,
-  };
   assert.equal(
-    reviewPlaceholderRecoveryFailureReason(backlogged),
-    "1200 matching placeholders were left unexamined (backlog alert threshold 480)",
-  );
-  assert.equal(reviewPlaceholderRecoveryFailureReason(backlogged, 1_201), null);
-  assert.equal(
-    reviewPlaceholderRecoveryFailureReason({ ...backlogged, matched: 60, remaining: 20 }),
+    reviewPlaceholderRecoveryFailureReason({
+      checked: 40,
+      orphaned: 1,
+      enqueued: 1,
+      cleaned: 0,
+      escalated: 0,
+      errors: 0,
+      actionFailures: 0,
+      matched: 1_240,
+      remaining: 1_200,
+    }),
     null,
   );
 });
@@ -866,6 +879,7 @@ test("discovery ranks the whole search page before it applies the check budget",
     cleaned: 0,
     escalated: 0,
     errors: 0,
+    actionFailures: 0,
     matched: 4,
     remaining: 2,
   });
@@ -934,13 +948,14 @@ test("an edited durable verdict no longer masks the marker-tagged placeholder", 
     cleaned: 0,
     escalated: 0,
     errors: 0,
+    actionFailures: 0,
     matched: 1,
     remaining: 0,
   });
   assert.deepEqual(enqueuedNumbers, [611]);
 });
 
-test("a backlog the sweep cannot examine is reported and fails the run", async (t) => {
+test("a large search count remains telemetry and does not fail the run", async (t) => {
   const logged: string[] = [];
   t.mock.method(console, "log", (...parts: unknown[]) => {
     logged.push(parts.join(" "));
@@ -995,6 +1010,7 @@ test("a backlog the sweep cannot examine is reported and fails the run", async (
     cleaned: 0,
     escalated: 0,
     errors: 0,
+    actionFailures: 0,
     matched: 900,
     remaining: 899,
   });
@@ -1002,10 +1018,7 @@ test("a backlog the sweep cannot examine is reported and fails the run", async (
     logged.some((line) => line.includes("matched=900 remaining=899")),
     "summary line reports the discovery backlog",
   );
-  assert.equal(
-    reviewPlaceholderRecoveryFailureReason(summary),
-    "899 matching placeholders were left unexamined (backlog alert threshold 480)",
-  );
+  assert.equal(reviewPlaceholderRecoveryFailureReason(summary), null);
 });
 
 test("placeholder refreshed recently by an active recovery is not orphaned", () => {

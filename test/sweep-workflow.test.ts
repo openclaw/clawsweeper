@@ -1560,6 +1560,7 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
     sweepJob,
     /REVIEW_PLACEHOLDER_MAX_CHECKS: \$\{\{ vars\.REVIEW_PLACEHOLDER_MAX_CHECKS \|\| '20' \}\}/,
   );
+  assert.doesNotMatch(sweepJob, /REVIEW_PLACEHOLDER_BACKLOG_ALERT/);
   assert.match(
     sweepJob,
     /REVIEW_PLACEHOLDER_MAX_RECOVERIES: \$\{\{ vars\.REVIEW_PLACEHOLDER_MAX_RECOVERIES \|\| '5' \}\}/,

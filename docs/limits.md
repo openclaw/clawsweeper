@@ -326,6 +326,10 @@ and hot intake `14`. Existing repair lanes keep their
   the maximum is 720 hours.
 - `REVIEW_PLACEHOLDER_MAX_RECOVERIES` overrides the number of orphaned review
   placeholders enqueued per recovery pass; the default is 5 and the maximum is 100.
+- Placeholder recovery logs GitHub Search `matched` and derived `remaining`
+  counts for backlog telemetry. Search counts can lag comment mutations, so
+  only failed cleanup or enqueue actions for live-verified orphans make the
+  scheduled run fail.
 - `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` overrides the 90,000 ms coalescing delay
   for fresh non-command exact-review events.
 - `EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS` overrides the 180,000 ms maximum
