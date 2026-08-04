@@ -260,16 +260,17 @@ test("loadFallbackOwners returns [] on a missing/unreadable config", () => {
 test("loadPersistedAnalyzerFingerprint reconstructs the production model-skip cache key", () => {
   const markdown = `---
 snapshot_hash: "snap"
+comment_context_hash: "comments"
 repo_head: "headsha"
 model_id: "internal"
-analyzer_version: "linear-analyzer/2"
+analyzer_version: "linear-analyzer/3"
 ---
 `;
   assert.equal(
     loadPersistedAnalyzerFingerprint("records/linear-par/items/PAR-42.md", {
       readFileSync: () => markdown,
     }),
-    "snapshot=snap;head=headsha;model=internal;analyzer=linear-analyzer/2",
+    "snapshot=snap;comments=comments;head=headsha;model=internal;analyzer=linear-analyzer/3",
   );
 });
 
@@ -658,4 +659,46 @@ test("analyzeItem: unchanged fingerprint short-circuits re-analysis (idempotency
   assert.equal(called, false);
   assert.equal(second.analyzed, false);
   assert.match(second.skipped, /fingerprint unchanged/);
+});
+
+test("analyzeItem: changed bounded comment context invalidates the cached analysis", async () => {
+  const firstHydrated = makeHydrated({
+    comments: [
+      {
+        id: "comment-1",
+        body: "Initial maintainer context",
+        createdAt: "2026-06-23T00:00:00Z",
+        authorId: "actor-1",
+        authorName: "Maintainer",
+      },
+    ],
+  });
+  const first = await analyzeItem(firstHydrated, { nowIso: NOW, analyze: true }, baseDeps());
+  let called = false;
+  const changedHydrated = makeHydrated({
+    comments: [
+      {
+        id: "comment-2",
+        body: "New maintainer resolution",
+        createdAt: "2026-06-24T00:00:00Z",
+        authorId: "actor-1",
+        authorName: "Maintainer",
+      },
+    ],
+  });
+  const second = await analyzeItem(
+    changedHydrated,
+    { nowIso: NOW, analyze: true },
+    baseDeps({
+      persistedFingerprint: first.fingerprint,
+      runModel: async () => {
+        called = true;
+        return makeModelDecision();
+      },
+    }),
+  );
+  assert.equal(called, true);
+  assert.equal(second.analyzed, true);
+  assert.notEqual(second.fingerprint, first.fingerprint);
+  assert.match(second.recordBody, /comment_context_hash:/);
 });

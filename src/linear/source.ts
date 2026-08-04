@@ -64,6 +64,23 @@ function num(value: unknown): number {
   return typeof value === "number" ? value : 0;
 }
 
+function nextPageCursor(
+  pageInfo: { hasNextPage: boolean; endCursor: string | null },
+  seen: Set<string>,
+  context: string,
+): string | null {
+  if (!pageInfo.hasNextPage) return null;
+  const cursor = pageInfo.endCursor;
+  if (typeof cursor !== "string" || cursor.trim() === "") {
+    throw new Error(`${context} returned hasNextPage without a usable endCursor`);
+  }
+  if (seen.has(cursor)) {
+    throw new Error(`${context} repeated endCursor "${cursor}"`);
+  }
+  seen.add(cursor);
+  return cursor;
+}
+
 // Shared cursor-based pagination loop. Calls `extract` on each page's data object
 // to get the connection, maps each node with `map`, and yields results.
 async function* paginate<TRaw, TOut>(
@@ -75,6 +92,7 @@ async function* paginate<TRaw, TOut>(
   pageSize: number,
 ): AsyncGenerator<TOut> {
   let after: string | undefined;
+  const seenCursors = new Set<string>();
 
   while (true) {
     const vars: Record<string, unknown> = { ...baseVars, first: pageSize };
@@ -87,8 +105,9 @@ async function* paginate<TRaw, TOut>(
       yield map(node);
     }
 
-    if (!connection.pageInfo.hasNextPage || connection.pageInfo.endCursor == null) break;
-    after = connection.pageInfo.endCursor;
+    const nextCursor = nextPageCursor(connection.pageInfo, seenCursors, "Linear pagination");
+    if (nextCursor === null) break;
+    after = nextCursor;
   }
 }
 
@@ -337,6 +356,7 @@ export class LinearItemSource {
     let hydrated: HydratedWorkspaceItem | null = null;
     let issueFingerprint: string | null = null;
     const comments: HydratedWorkspaceItem["comments"] = [];
+    const seenCommentCursors = new Set<string>();
 
     while (true) {
       const vars: Record<string, unknown> = {
@@ -366,8 +386,13 @@ export class LinearItemSource {
       }
 
       const pageInfo = commentPageInfo(issue["comments"]);
-      if (!pageInfo.hasNextPage || pageInfo.endCursor == null) break;
-      commentAfter = pageInfo.endCursor;
+      const nextCursor = nextPageCursor(
+        pageInfo,
+        seenCommentCursors,
+        `IssueByIdentifier ${identifier} comment pagination`,
+      );
+      if (nextCursor === null) break;
+      commentAfter = nextCursor;
     }
 
     return hydrated === null ? null : { ...hydrated, comments };

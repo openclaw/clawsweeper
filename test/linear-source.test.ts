@@ -80,6 +80,35 @@ test("iterateTeams / listTeams: multi-page pagination collects all nodes in orde
   assert.equal(calls[1]?.vars["first"], 50);
 });
 
+test("listTeams fails closed when pagination repeats a cursor", async () => {
+  const transport = makeQueuedTransport(
+    {
+      ListTeams: [
+        {
+          teams: {
+            nodes: [{ id: "t1", key: "T1", name: "Team One" }],
+            pageInfo: { hasNextPage: true, endCursor: "cursor-a" },
+          },
+        },
+        {
+          teams: {
+            nodes: [{ id: "t2", key: "T2", name: "Team Two" }],
+            pageInfo: { hasNextPage: true, endCursor: "cursor-b" },
+          },
+        },
+        {
+          teams: {
+            nodes: [{ id: "t3", key: "T3", name: "Team Three" }],
+            pageInfo: { hasNextPage: true, endCursor: "cursor-a" },
+          },
+        },
+      ],
+    },
+    [],
+  );
+  await assert.rejects(() => new LinearItemSource(transport).listTeams(50), /repeated endCursor/);
+});
+
 // ---------------------------------------------------------------------------
 // Projects pagination + mapping
 // ---------------------------------------------------------------------------
@@ -396,10 +425,10 @@ test("listWorkspaceItems: propagates updatedAfter and pageSize into issues query
 });
 
 // ---------------------------------------------------------------------------
-// Null endCursor halts pagination even if hasNextPage were true
+// Missing cursor fails closed when the API claims another page
 // ---------------------------------------------------------------------------
 
-test("null endCursor halts pagination even when hasNextPage is true", async () => {
+test("null endCursor fails closed when hasNextPage is true", async () => {
   const calls: RecordedCall[] = [];
   const transport = makeQueuedTransport(
     {
@@ -407,7 +436,7 @@ test("null endCursor halts pagination even when hasNextPage is true", async () =
         {
           teams: {
             nodes: [{ id: "t1", key: "T1", name: "Team One" }],
-            // hasNextPage true but endCursor null — should not loop
+            // Inconsistent pagination must not be accepted as a complete snapshot.
             pageInfo: { hasNextPage: true, endCursor: null },
           },
         },
@@ -417,11 +446,8 @@ test("null endCursor halts pagination even when hasNextPage is true", async () =
   );
 
   const source = new LinearItemSource(transport);
-  const teams = await source.listTeams();
-
-  // Only one page fetched, no infinite loop
+  await assert.rejects(() => source.listTeams(), /hasNextPage without a usable endCursor/);
   assert.equal(calls.length, 1);
-  assert.equal(teams.length, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -548,6 +574,51 @@ test("fetchIssueByIdentifier rejects analysis-context drift while paginating com
   await assert.rejects(
     () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1", 1),
     /changed while paginating comments/,
+  );
+});
+
+test("fetchIssueByIdentifier fails closed when comment pagination omits its cursor", async () => {
+  const node = hydratedIssueNode({
+    comments: {
+      nodes: [{ id: "comment-1", body: "first" }],
+      pageInfo: { hasNextPage: true, endCursor: null },
+    },
+  });
+  const transport = makeQueuedTransport(
+    {
+      IssueByIdentifier: [
+        { issues: { nodes: [node], pageInfo: { hasNextPage: false, endCursor: null } } },
+      ],
+    },
+    [],
+  );
+
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1", 1),
+    /comment pagination returned hasNextPage without a usable endCursor/,
+  );
+});
+
+test("fetchIssueByIdentifier fails closed on a comment cursor cycle", async () => {
+  const cursors = ["cursor-a", "cursor-b", "cursor-a"];
+  const pages = cursors.map((cursor, index) => ({
+    issues: {
+      nodes: [
+        hydratedIssueNode({
+          comments: {
+            nodes: [{ id: `comment-${index + 1}`, body: `page ${index + 1}` }],
+            pageInfo: { hasNextPage: true, endCursor: cursor },
+          },
+        }),
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  }));
+  const transport = makeQueuedTransport({ IssueByIdentifier: pages }, []);
+
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1", 1),
+    /comment pagination repeated endCursor "cursor-a"/,
   );
 });
 

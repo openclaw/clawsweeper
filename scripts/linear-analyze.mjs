@@ -24,6 +24,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -273,11 +274,20 @@ export function loadPersistedAnalyzerFingerprint(recordPath, deps = {}) {
     return undefined;
   }
   const snapshotHash = recordFrontMatterValue(markdown, "snapshot_hash")?.trim();
+  const commentContextHash = recordFrontMatterValue(markdown, "comment_context_hash")?.trim();
   const repoHEAD = recordFrontMatterValue(markdown, "repo_head")?.trim();
   const modelId = recordFrontMatterValue(markdown, "model_id")?.trim();
   const analyzerVersion = recordFrontMatterValue(markdown, "analyzer_version")?.trim();
-  if (!snapshotHash || !repoHEAD || !modelId || !analyzerVersion) return undefined;
-  return analyzerFingerprint({ snapshotHash, repoHEAD, modelId, analyzerVersion });
+  if (!snapshotHash || !commentContextHash || !repoHEAD || !modelId || !analyzerVersion) {
+    return undefined;
+  }
+  return analyzerFingerprint({
+    snapshotHash,
+    commentContextHash,
+    repoHEAD,
+    modelId,
+    analyzerVersion,
+  });
 }
 
 /** Collects the issue's repo-bearing URLs from its url, attachments, and description. Pure. */
@@ -425,6 +435,13 @@ function analysisPromptCommentContext(hydrated) {
     }),
     commentsOmitted: Math.max(0, comments.length - selected.length),
   };
+}
+
+/** Hashes exactly the bounded comment payload that can affect model analysis. */
+export function analysisCommentContextHash(hydrated) {
+  return createHash("sha256")
+    .update(JSON.stringify(analysisPromptCommentContext(hydrated)))
+    .digest("hex");
 }
 
 /**
@@ -632,8 +649,10 @@ export async function analyzeItem(hydrated, options, deps) {
 
   const repoHead = deps.repoHead;
   const modelId = deps.modelId ?? "internal";
+  const commentContextHash = analysisCommentContextHash(hydrated);
   const fingerprint = analyzerFingerprint({
     snapshotHash: record.snapshotHash,
+    commentContextHash,
     repoHEAD: repoHead,
     modelId,
     analyzerVersion: ANALYZER_VERSION,
@@ -712,6 +731,7 @@ export async function analyzeItem(hydrated, options, deps) {
       source_provider: record.sourceProvider,
       source_id: record.sourceId,
       snapshot_hash: record.snapshotHash,
+      comment_context_hash: commentContextHash,
       model_id: modelId,
       analyzer_version: ANALYZER_VERSION,
       repo_head: repoHead,
