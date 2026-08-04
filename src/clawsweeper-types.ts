@@ -443,7 +443,23 @@ export interface VerifiedRegressionProvenance extends RegressionProvenanceCandid
   evidenceType: "blame_to_merge_commit";
   mergedAt: string;
   reviewedCommitSha: string;
+  sourceCommitSha?: string;
+  sourceAuthor?: string;
 }
+
+export interface SuspectedRegressionProvenance {
+  evidenceType: "source_line" | "rewrite_equivalent";
+  sourceCommitSha: string;
+  sourceAuthor: string;
+  sourcePath: string;
+  sourceLine: number;
+  relatedPullRequestNumber: number | null;
+  relatedPullRequestUrl: string | null;
+  relatedRepo: string | null;
+}
+export type PublicRegressionProvenance =
+  | VerifiedRegressionProvenance
+  | SuspectedRegressionProvenance;
 
 /**
  * A non-blaming, preliminary regression signal. It intentionally cannot name
@@ -544,7 +560,11 @@ export interface Decision {
   fixedAt?: string | null;
   fixedPullRequest?: FixedPullRequest | null;
   regressionAssessment?: RegressionAssessment | null;
-  regressionProvenance?: RegressionProvenanceCandidate | VerifiedRegressionProvenance | null;
+  regressionProvenance?:
+    | RegressionProvenanceCandidate
+    | VerifiedRegressionProvenance
+    | SuspectedRegressionProvenance
+    | null;
   closeComment: string;
   workCandidate: WorkCandidateKind;
   workConfidence: Confidence;

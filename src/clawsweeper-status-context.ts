@@ -8,12 +8,12 @@ import type {
   Item,
   ItemContext,
   RegressionAssessment,
-  VerifiedRegressionProvenance,
+  PublicRegressionProvenance,
   WorkflowStatusSummary,
 } from "./clawsweeper-types.js";
 import {
   isRegressionAssessment,
-  isVerifiedRegressionProvenance,
+  isPublicRegressionProvenance,
 } from "./clawsweeper-regression-provenance.js";
 import { isGitHubNotFoundError } from "./github-retry.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
@@ -544,9 +544,15 @@ ${profileStatusEnd(profile)}`;
     };
   }
 
-  function regressionProvenanceFromReport(markdown: string): VerifiedRegressionProvenance | null {
+  function regressionProvenanceFromReport(markdown: string): PublicRegressionProvenance | null {
     const rawNumber = frontMatterValue(markdown, "regression_provenance_pr_number");
     const sourceLine = frontMatterValue(markdown, "regression_provenance_source_line");
+    const sourceCommitSha = nonUnknownFrontMatter(
+      markdown,
+      "regression_provenance_source_commit_sha",
+    );
+    const rawSourceAuthor = frontMatterValue(markdown, "regression_provenance_source_author");
+    const sourceAuthor = sourceCommitSha && rawSourceAuthor ? rawSourceAuthor : null;
     const provenance = {
       repo: frontMatterValue(markdown, "regression_provenance_repo"),
       pullRequestNumber: rawNumber ? Number(rawNumber) : NaN,
@@ -557,8 +563,17 @@ ${profileStatusEnd(profile)}`;
       evidenceType: frontMatterValue(markdown, "regression_provenance_evidence_type"),
       mergedAt: frontMatterValue(markdown, "regression_provenance_merged_at"),
       reviewedCommitSha: frontMatterValue(markdown, "regression_provenance_reviewed_sha"),
+      ...(sourceCommitSha ? { sourceCommitSha } : {}),
+      ...(sourceAuthor ? { sourceAuthor } : {}),
+      relatedPullRequestUrl:
+        nonUnknownFrontMatter(markdown, "regression_provenance_related_pr_url") ?? null,
+      relatedPullRequestNumber: (() => {
+        const raw = nonUnknownFrontMatter(markdown, "regression_provenance_related_pr_number");
+        return raw ? Number(raw) : null;
+      })(),
+      relatedRepo: nonUnknownFrontMatter(markdown, "regression_provenance_related_repo") ?? null,
     };
-    return isVerifiedRegressionProvenance(provenance) ? provenance : null;
+    return isPublicRegressionProvenance(provenance) ? provenance : null;
   }
 
   function regressionAssessmentFromReport(markdown: string): RegressionAssessment | null {

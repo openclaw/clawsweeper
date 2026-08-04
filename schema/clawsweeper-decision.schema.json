@@ -857,7 +857,7 @@
       "description": "ISO-8601 commit or merge timestamp for the fix/proof SHA when known. Required for implemented_on_main and mostly_implemented_on_main when fixedRelease is null so maintainers know when it became fixed on main."
     },
     "regressionAssessment": {
-      "description": "A non-blaming preliminary regression assessment. Do not name a predecessor here; a PR link is published only through independently verified regressionProvenance.",
+      "description": "A non-blaming preliminary regression assessment. Do not name a predecessor here; runtime verification may separately publish either verified canonical provenance or a cautiously labeled, non-causal rewrite-equivalent PR relationship.",
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["confidence", "supportingEvidence"],
@@ -878,7 +878,7 @@
       }
     },
     "regressionProvenance": {
-      "description": "An untrusted candidate predecessor link. The runtime publishes it only after exact GitHub PR metadata and local blame agree on the merge commit; use null unless one exact relevant source line and prior merged PR are known.",
+      "description": "An untrusted candidate predecessor link. Use null unless one exact relevant source line and prior merged PR are known. Runtime verification may publish verified provenance when blame matches the canonical merge commit, or cautiously label a related PR as non-causal only when canonical metadata plus an exact, location-and-context-preserving rewritten patch match; all other associations fail closed.",
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": [

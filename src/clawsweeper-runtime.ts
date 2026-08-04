@@ -806,6 +806,13 @@ const regressionProvenanceVerifier = createRegressionProvenanceVerifier({
       "-H",
       "Accept: application/vnd.github+json",
     ]),
+  fetchPullDiff: (repo, number) =>
+    run("gh", [
+      "api",
+      `repos/${repo}/pulls/${number}`,
+      "-H",
+      "Accept: application/vnd.github.v3.diff",
+    ]),
   runGit: (args, options) => run("git", args, options),
 });
 

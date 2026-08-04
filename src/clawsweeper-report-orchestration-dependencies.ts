@@ -29,7 +29,7 @@ import type {
   RegressionAssessment,
   PullRequestLiveActivity,
   RealBehaviorProof,
-  VerifiedRegressionProvenance,
+  PublicRegressionProvenance,
   ReviewFinding,
   RootCauseClusterAssessment,
   SecurityConcern,
@@ -70,7 +70,7 @@ export interface CreateReportOrchestrationDependencies {
   fixedInText: (decision: Decision) => string;
   fixedPullRequestFromReport: (markdown: string) => FixedPullRequest | null;
   regressionAssessmentFromReport: (markdown: string) => RegressionAssessment | null;
-  regressionProvenanceFromReport: (markdown: string) => VerifiedRegressionProvenance | null;
+  regressionProvenanceFromReport: (markdown: string) => PublicRegressionProvenance | null;
   formatReviewFreshnessTimestamp: (iso: string | undefined) => string;
   formatTimestamp: (iso: string | undefined) => string;
   frontMatterBoolean: (markdown: string, key: string) => boolean;

@@ -7,6 +7,8 @@ import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import { hasShinyProof, themedRatingName } from "./clawsweeper-rating.js";
 import {
   isRegressionAssessment,
+  isPublicRegressionProvenance,
+  isSuspectedRegressionProvenance,
   isVerifiedRegressionProvenance,
   regressionAssessmentPublicLine,
   regressionProvenancePublicLine,
@@ -455,16 +457,31 @@ export function createReportDocumentRendering(
     const labels = options.item.labels.length ? options.item.labels.join(", ") : "none";
     const reviewedAt = new Date().toISOString();
     const fixedPullRequest = options.decision.fixedPullRequest;
-    const regressionProvenance = isVerifiedRegressionProvenance(
-      options.decision.regressionProvenance,
-    )
+    const regressionProvenance = isPublicRegressionProvenance(options.decision.regressionProvenance)
       ? options.decision.regressionProvenance
       : null;
     const regressionAssessment = isRegressionAssessment(options.decision.regressionAssessment)
       ? options.decision.regressionAssessment
       : null;
-    const regressionProvenanceLine = regressionProvenancePublicLine(regressionProvenance);
-    const regressionAssessmentLine = regressionAssessmentPublicLine(regressionAssessment);
+    const regressionProvenanceLine = regressionProvenancePublicLine(
+      regressionProvenance,
+      regressionAssessment,
+    );
+    const regressionAssessmentLine = regressionAssessmentPublicLine(regressionAssessment, {
+      predecessorAttributed: regressionProvenance?.evidenceType === "rewrite_equivalent",
+    });
+    const verifiedRegressionProvenance = isVerifiedRegressionProvenance(regressionProvenance)
+      ? regressionProvenance
+      : null;
+    const suspectedRegressionProvenance = isSuspectedRegressionProvenance(regressionProvenance)
+      ? regressionProvenance
+      : null;
+    const regressionPublicLines = [
+      regressionProvenanceLine,
+      !verifiedRegressionProvenance ? regressionAssessmentLine : null,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join("\n\n");
     const evidence = options.decision.evidence.length
       ? options.decision.evidence
           .map((entry) => {
@@ -557,15 +574,20 @@ fixed_pr_confidence: ${fixedPullRequest?.confidence ?? "unknown"}
 fixed_pr_source: ${fixedPullRequest ? JSON.stringify(fixedPullRequest.source) : "unknown"}
 regression_assessment_confidence: ${regressionAssessment?.confidence ?? "unknown"}
 regression_assessment_evidence: ${regressionAssessment?.supportingEvidence.join(",") ?? "unknown"}
-regression_provenance_repo: ${regressionProvenance?.repo ?? "unknown"}
-regression_provenance_pr_url: ${regressionProvenance?.pullRequestUrl ?? "unknown"}
-regression_provenance_pr_number: ${regressionProvenance?.pullRequestNumber ?? "unknown"}
-regression_provenance_merge_sha: ${regressionProvenance?.mergeCommitSha ?? "unknown"}
+regression_provenance_repo: ${verifiedRegressionProvenance?.repo ?? "unknown"}
+regression_provenance_pr_url: ${verifiedRegressionProvenance?.pullRequestUrl ?? "unknown"}
+regression_provenance_pr_number: ${verifiedRegressionProvenance?.pullRequestNumber ?? "unknown"}
+regression_provenance_merge_sha: ${verifiedRegressionProvenance?.mergeCommitSha ?? "unknown"}
 regression_provenance_source_path: ${regressionProvenance?.sourcePath ?? "unknown"}
 regression_provenance_source_line: ${regressionProvenance?.sourceLine ?? "unknown"}
 regression_provenance_evidence_type: ${regressionProvenance?.evidenceType ?? "unknown"}
-regression_provenance_merged_at: ${regressionProvenance?.mergedAt ?? "unknown"}
-regression_provenance_reviewed_sha: ${regressionProvenance?.reviewedCommitSha ?? "unknown"}
+regression_provenance_merged_at: ${verifiedRegressionProvenance?.mergedAt ?? "unknown"}
+regression_provenance_reviewed_sha: ${regressionProvenance && "reviewedCommitSha" in regressionProvenance ? regressionProvenance.reviewedCommitSha : "unknown"}
+regression_provenance_source_commit_sha: ${regressionProvenance?.sourceCommitSha ?? "unknown"}
+regression_provenance_source_author: ${regressionProvenance?.sourceAuthor ?? "unknown"}
+regression_provenance_related_pr_url: ${suspectedRegressionProvenance?.relatedPullRequestUrl ?? "unknown"}
+regression_provenance_related_pr_number: ${suspectedRegressionProvenance?.relatedPullRequestNumber ?? "unknown"}
+regression_provenance_related_repo: ${suspectedRegressionProvenance?.relatedRepo ?? "unknown"}
 review_policy: ${options.reviewPolicy}
 review_model: ${options.runtime.model}
 review_reasoning_effort: ${options.runtime.reasoningEffort}
@@ -701,7 +723,7 @@ Latest release at review time: ${
 
 Fixed in: ${fixedInText(options.decision)}
 
-${regressionProvenanceLine ?? regressionAssessmentLine ?? "Regression provenance: not assessed."}
+${regressionPublicLines || "Regression provenance: not assessed."}
 
 ## Decision
 
