@@ -124,6 +124,7 @@ function mapLabels(raw: unknown): LinearLabel[] {
 function mapComments(raw: unknown): Array<{
   id: string;
   body: string;
+  createdAt: string;
   authorId: string | null;
   authorName: string | null;
 }> {
@@ -137,6 +138,7 @@ function mapComments(raw: unknown): Array<{
     return {
       id: str(cn["id"]),
       body: str(cn["body"]),
+      createdAt: str(cn["createdAt"]),
       authorId: str(actor["id"]) || null,
       authorName: str(actor["name"]) || null,
     };

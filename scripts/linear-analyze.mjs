@@ -394,6 +394,39 @@ export function creatorIdentity(hydrated) {
   return hydrated.creator?.name?.trim() || hydrated.creator?.id?.trim() || "linear";
 }
 
+const ANALYSIS_COMMENT_LIMIT = 20;
+const ANALYSIS_COMMENT_BODY_LIMIT = 4_000;
+
+/** Latest bounded Linear comment context, ordered explicitly from hydrated timestamps. */
+function analysisPromptCommentContext(hydrated) {
+  const comments = Array.isArray(hydrated.comments) ? hydrated.comments : [];
+  const ordered = comments
+    .map((comment, index) => ({ comment, index, timestamp: Date.parse(comment?.createdAt ?? "") }))
+    .sort((left, right) => {
+      const leftValid = Number.isFinite(left.timestamp);
+      const rightValid = Number.isFinite(right.timestamp);
+      if (leftValid && rightValid && left.timestamp !== right.timestamp) {
+        return right.timestamp - left.timestamp;
+      }
+      if (leftValid !== rightValid) return leftValid ? -1 : 1;
+      return left.index - right.index;
+    })
+    .map(({ comment }) => comment);
+  const selected = ordered.slice(0, ANALYSIS_COMMENT_LIMIT);
+  return {
+    comments: selected.map((comment) => {
+      const body = typeof comment?.body === "string" ? comment.body : "";
+      return {
+        id: typeof comment?.id === "string" ? comment.id : "",
+        author: comment?.authorName?.trim() || comment?.authorId?.trim() || "unknown Linear actor",
+        body: body.slice(0, ANALYSIS_COMMENT_BODY_LIMIT),
+        bodyTruncated: body.length > ANALYSIS_COMMENT_BODY_LIMIT,
+      };
+    }),
+    commentsOmitted: Math.max(0, comments.length - selected.length),
+  };
+}
+
 /**
  * Maps a hydrated Linear issue + resolved profile into the Linear-shaped Item/ItemContext/GitInfo
  * the harness consumes as plain data. The Item is read-only; runCodex with our own `prompt`
@@ -434,6 +467,7 @@ export function buildHarnessInputs(hydrated, profile, mainSha) {
  */
 export function buildAnalysisPrompt(hydrated, profile, mainSha) {
   const issue = hydrated.issue ?? {};
+  const commentContext = analysisPromptCommentContext(hydrated);
   const attachmentUrls = (hydrated.attachments ?? [])
     .map((attachment) => attachment?.url)
     .filter((url) => typeof url === "string" && url.trim() !== "");
@@ -455,6 +489,7 @@ export function buildAnalysisPrompt(hydrated, profile, mainSha) {
       creatorIsWorkspaceMaintainer: isMaintainerAuthored(hydrated),
       description: (hydrated.description ?? "(none)").trim(),
       attachments: attachmentUrls,
+      ...commentContext,
     }),
     "</untrusted_linear_issue_json>",
     "",

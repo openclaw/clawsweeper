@@ -158,10 +158,11 @@ export const ISSUE_BY_IDENTIFIER_QUERY = `
             endCursor
           }
         }
-        comments(first: $commentFirst, after: $commentAfter) {
+        comments(first: $commentFirst, after: $commentAfter, orderBy: createdAt) {
           nodes {
             id
             body
+            createdAt
             botActor {
               id
               name

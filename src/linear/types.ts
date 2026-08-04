@@ -81,6 +81,7 @@ export interface HydratedWorkspaceItem extends WorkspaceItem {
   comments: Array<{
     id: string;
     body: string;
+    createdAt: string;
     authorId: string | null;
     authorName: string | null;
   }>;

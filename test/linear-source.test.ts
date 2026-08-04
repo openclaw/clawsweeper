@@ -463,7 +463,7 @@ function hydratedIssueNode(overrides: Record<string, unknown> = {}) {
       pageInfo: { hasNextPage: false, endCursor: null },
     },
     comments: {
-      nodes: [{ id: "comment-1", body: "context" }],
+      nodes: [{ id: "comment-1", body: "context", createdAt: "2026-06-02T12:00:00Z" }],
       pageInfo: { hasNextPage: false, endCursor: null },
     },
     ...overrides,
@@ -500,11 +500,22 @@ test("fetchIssueByIdentifier queries and maps analysis context", async () => {
     { id: "att-1", url: "https://github.com/openclaw/openclaw/pull/2", title: "PR" },
   ]);
   assert.deepEqual(item.comments, [
-    { id: "comment-1", body: "context", authorId: null, authorName: null },
+    {
+      id: "comment-1",
+      body: "context",
+      createdAt: "2026-06-02T12:00:00Z",
+      authorId: null,
+      authorName: null,
+    },
   ]);
   assert.match(calls[0]?.query ?? "", /description/);
   assert.match(calls[0]?.query ?? "", /creator\s*\{/);
   assert.match(calls[0]?.query ?? "", /attachments\(first: 250\)/);
+  assert.match(
+    calls[0]?.query ?? "",
+    /comments\(first: \$commentFirst, after: \$commentAfter, orderBy: createdAt\)/,
+  );
+  assert.match(calls[0]?.query ?? "", /comments[\s\S]*createdAt/);
   assert.match(calls[0]?.query ?? "", /botActor\s*\{/);
   assert.match(calls[0]?.query ?? "", /user\s*\{/);
 });
