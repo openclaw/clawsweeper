@@ -151,6 +151,7 @@ First create and save a dry-run report for an exact issue, a list, a project, or
 a team:
 
 ```bash
+LINEAR_APP_ACTOR_ID=<linear-bot-actor-id> \
 pnpm linear:review-apply:dry-run -- \
   --team PAR \
   > .artifacts/linear-par-dry-run.json
@@ -177,6 +178,7 @@ separate reviewed runs. After applying comments, generate and review a fresh
 dry-run report, then apply only additive routing labels:
 
 ```bash
+LINEAR_APP_ACTOR_ID=<linear-bot-actor-id> \
 pnpm linear:review-apply:dry-run -- \
   --team PAR \
   > .artifacts/linear-par-label-dry-run.json
@@ -196,9 +198,10 @@ performing one mutation and invalidating the approval for the other.
 A changed issue, changed plan, missing approval, closed gate, ineligible item, or
 ambiguous scope is skipped rather than written.
 
-For a single comment, use `pnpm linear:comment:dry-run -- --identifier PAR-244`,
+For a single comment, use
+`LINEAR_APP_ACTOR_ID=<linear-bot-actor-id> pnpm linear:comment:dry-run -- --identifier PAR-244`,
 review and save that receipt, then pass it to `linear-comment-apply.mjs` with
-`--apply --dry-run-receipt <path>` and the same environment gate.
+`--apply --dry-run-receipt <path>` and the same actor ID and environment gate.
 
 ## Current Scheduling Seam
 

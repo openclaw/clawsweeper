@@ -232,6 +232,19 @@ test("summarizeItem: missing app actor id cannot advertise a live write", () => 
   assert.equal(s.wouldWrite, false);
 });
 
+test("summarizeItem: human-review protection is not actionable or writable", () => {
+  const result = fakeResult({
+    record: {
+      ...fakeResult().record,
+      labels: ["clawsweeper:human-review"],
+    },
+  });
+  const summary = summarizeItem(result, { reason: "dry-run" });
+  assert.equal(summary.actionable, false);
+  assert.equal(summary.authorized, true);
+  assert.equal(summary.wouldWrite, false);
+});
+
 test("readBackPlannedComment forwards the expected app actor id", async () => {
   const result = fakeResult({
     plan: {

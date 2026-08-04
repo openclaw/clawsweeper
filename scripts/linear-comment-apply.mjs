@@ -383,6 +383,7 @@ export async function buildItemPlan(source, options) {
     exclusionLabels: options.exclusionLabels ?? [],
     protectedLabels: options.protectedLabels ?? [],
   });
+  const policy = evaluateReviewPolicy(classification, record);
 
   const content = renderReviewContent(record, classification);
   const expectedAuthorId = String(
@@ -419,6 +420,7 @@ export async function buildItemPlan(source, options) {
   return {
     record,
     classification,
+    policy,
     plan,
     request,
     authorization,
@@ -483,6 +485,12 @@ export function resolveWriteDecision(result, mode) {
         `skipped: ${result.record.identifier} is not eligible for review ` +
         `(disposition "${result.classification.disposition}") — ClawSweeper does not comment ` +
         `on closed, protected, or excluded issues`,
+    };
+  }
+  if (result.policy?.ruleId === "protected-human-review") {
+    return {
+      write: false,
+      reason: `skipped: ${result.record.identifier} has clawsweeper:human-review — ClawSweeper does not comment on protected items`,
     };
   }
   if (result.expectedAuthorId === "") {
@@ -563,6 +571,7 @@ export function summarize(result, mode) {
     // Lets a dry-run state exactly what a live run would do.
     wouldWrite:
       result.classification.eligible &&
+      result.policy?.ruleId !== "protected-human-review" &&
       result.authorization.allowed &&
       typeof result.expectedAuthorId === "string" &&
       result.expectedAuthorId.trim() !== "" &&

@@ -536,7 +536,11 @@ export async function readBackPlannedComment(source, identifier, result) {
 }
 
 export function summarizeItem(result, decision) {
-  const actionable = result.classification.eligible && result.plan.action !== "noop";
+  const policy = evaluateReviewPolicy(result.classification, result.record);
+  const actionable =
+    result.classification.eligible &&
+    policy.ruleId !== "protected-human-review" &&
+    result.plan.action !== "noop";
   // A live write is only reachable when ClawSweeper can prove comment ownership. Without a
   // configured application actor id the apply path cannot distinguish its own marker comment
   // from a foreign one, so a run that advertises `wouldWrite` here would be promising a write
@@ -545,7 +549,6 @@ export function summarizeItem(result, decision) {
   const hasAppActor = String(result.expectedAuthorId ?? "").trim() !== "";
   // Project-agnostic review policy: the routing label + next step ClawSweeper PROPOSES for
   // this item. Read-only here (reporting); applying labels is the inert future path.
-  const policy = evaluateReviewPolicy(result.classification, result.record);
   return {
     identifier: result.record.identifier,
     disposition: result.classification.disposition,

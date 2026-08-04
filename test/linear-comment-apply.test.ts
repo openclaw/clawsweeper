@@ -618,6 +618,7 @@ function decisionResultStub(over: Record<string, unknown> = {}) {
       eligible: (over.eligible as boolean) ?? true,
       disposition: (over.disposition as string) ?? "review",
     },
+    policy: { ruleId: (over.ruleId as string) ?? "needs-maintainer-review" },
     authorization: { allowed: (over.allowed as boolean) ?? true, reasons: [] },
     plan: { action: (over.action as string) ?? "create" },
     expectedAuthorId: (over.expectedAuthorId as string) ?? "actor-1",
@@ -663,6 +664,14 @@ test("summarize never reports a live write without an expected app actor id", ()
   assert.equal(summary.wouldWrite, false);
 });
 
+test("summarize never advertises a comment write for human-review protection", () => {
+  const summary = summarize(decisionResultStub({ ruleId: "protected-human-review" }), {
+    live: false,
+    reason: "dry-run",
+  });
+  assert.equal(summary.wouldWrite, false);
+});
+
 test("resolveWriteDecision: live + eligible but noop does not write", () => {
   const d = resolveWriteDecision(decisionResultStub({ action: "noop" }), {
     live: true,
@@ -694,6 +703,20 @@ test("buildItemPlan marks a completed issue ineligible -> the write decision ref
   const d = resolveWriteDecision(result, { live: true, reason: "live" });
   assert.equal(d.write, false);
   assert.match(d.reason, /not eligible/);
+});
+
+test("buildItemPlan treats clawsweeper:human-review as a no-comment protection", async () => {
+  const node = hydratedIssueNode();
+  node.labels = { nodes: [{ id: "human", name: "clawsweeper:human-review" }] };
+  const { transport } = fakeTransport(node);
+  const result = await buildItemPlan(new LinearItemSource(transport), {
+    identifier: "PAR-244",
+    nowIso: "2026-06-22T00:00:00Z",
+    expectedAuthorId: "actor-1",
+  });
+  const decision = resolveWriteDecision(result, { live: true, reason: "live" });
+  assert.equal(decision.write, false);
+  assert.match(decision.reason, /human-review/);
 });
 
 // ---------------------------------------------------------------------------
