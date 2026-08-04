@@ -173,7 +173,10 @@ function hydratedIssueNode() {
     team: { id: "team-1", key: "PAR", name: "PartnerAI" },
     project: { id: "proj-1", name: "ClawSweeper", state: "started" },
     state: { id: "state-1", name: "Backlog", type: "backlog" },
-    labels: { nodes: [{ id: "lbl-1", name: "bug" }] },
+    labels: {
+      nodes: [{ id: "lbl-1", name: "bug" }],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
     attachments: {
       nodes: [] as Array<{ id: string; url: string; title: string }>,
       pageInfo: { hasNextPage: false, endCursor: null as string | null },
@@ -217,12 +220,18 @@ test("fetchIssueByIdentifier returns a hydrated workspace item with comments", a
 test("fetchIssueByIdentifier paginates issue comments so marker comments beyond page one are visible", async () => {
   const first = hydratedIssueNode();
   first.comments = {
-    nodes: [{ id: "c-old", body: "ordinary comment" }],
+    nodes: [{ id: "c-old", body: "ordinary comment", createdAt: "2026-06-21T12:00:00Z" }],
     pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
   };
   const second = hydratedIssueNode();
   second.comments = {
-    nodes: [{ id: "c-marker", body: "<!-- clawsweeper-review:issue-uuid-244 -->\n\nold" }],
+    nodes: [
+      {
+        id: "c-marker",
+        body: "<!-- clawsweeper-review:issue-uuid-244 -->\n\nold",
+        createdAt: "2026-06-21T12:01:00Z",
+      },
+    ],
     pageInfo: { hasNextPage: false, endCursor: null },
   };
   const calls: Array<{ vars: Record<string, unknown> }> = [];
@@ -249,13 +258,19 @@ test("fetchIssueByIdentifier paginates issue comments so marker comments beyond 
 test("fetchIssueByIdentifier fails closed when issue fields drift between comment pages", async () => {
   const first = hydratedIssueNode();
   first.comments = {
-    nodes: [{ id: "c-old", body: "ordinary comment" }],
+    nodes: [{ id: "c-old", body: "ordinary comment", createdAt: "2026-06-21T12:00:00Z" }],
     pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
   };
   const second = hydratedIssueNode();
   second.title = "Changed while comments were paginating";
   second.comments = {
-    nodes: [{ id: "c-marker", body: "<!-- clawsweeper-review:issue-uuid-244 -->\n\nold" }],
+    nodes: [
+      {
+        id: "c-marker",
+        body: "<!-- clawsweeper-review:issue-uuid-244 -->\n\nold",
+        createdAt: "2026-06-21T12:01:00Z",
+      },
+    ],
     pageInfo: { hasNextPage: false, endCursor: null },
   };
   const pages = [first, second];
@@ -447,6 +462,7 @@ test("buildItemPlan yields a noop when an up-to-date marker comment already exis
     {
       id: "existing-comment-1",
       body: probeResult.plan.body,
+      createdAt: "2026-06-21T12:00:00Z",
       botActor: { id: "clawsweeper-app", name: "ClawSweeper" },
     },
   ];
@@ -707,7 +723,10 @@ test("buildItemPlan marks a completed issue ineligible -> the write decision ref
 
 test("buildItemPlan treats clawsweeper:human-review as a no-comment protection", async () => {
   const node = hydratedIssueNode();
-  node.labels = { nodes: [{ id: "human", name: "clawsweeper:human-review" }] };
+  node.labels = {
+    nodes: [{ id: "human", name: "clawsweeper:human-review" }],
+    pageInfo: { hasNextPage: false, endCursor: null },
+  };
   const { transport } = fakeTransport(node);
   const result = await buildItemPlan(new LinearItemSource(transport), {
     identifier: "PAR-244",

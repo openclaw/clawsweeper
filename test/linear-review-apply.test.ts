@@ -333,6 +333,20 @@ test("reportExitCode returns zero for an error-free report", () => {
   assert.equal(reportExitCode({ counts: { errors: 0 } }), 0);
 });
 
+test("aggregate counts ambiguous and failed mutation outcomes as errors", () => {
+  const report = aggregate(
+    [
+      { identifier: "PAR-1", applyError: "read-back failed", writtenUnconfirmed: true },
+      { identifier: "PAR-2", labelApplyError: "label update failed" },
+      { identifier: "PAR-3", applyError: "comment create failed" },
+    ],
+    { kind: "identifiers", identifiers: ["PAR-1", "PAR-2", "PAR-3"] },
+    { live: true, reason: "apply" },
+  );
+  assert.equal(report.counts.errors, 3);
+  assert.equal(reportExitCode(report), 1);
+});
+
 test("fetchWorkspaceLabels fails closed when hasNextPage omits its cursor", async () => {
   const transport = async () => ({
     issueLabels: {

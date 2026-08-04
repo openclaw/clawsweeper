@@ -55,7 +55,7 @@ test("parseArgs collects --apply-labels (default false) and --dry-run clears it"
 // resolveLabelWriteMode — the gate stays closed without BOTH signals
 // ---------------------------------------------------------------------------
 
-test("resolveLabelWriteMode requires BOTH --apply-labels and OPENCLAW_NOTIFY_LINEAR=1", () => {
+test("resolveLabelWriteMode keeps live replace-all label mutation disabled", () => {
   assert.equal(resolveLabelWriteMode({ applyLabels: false }, {}).live, false);
   // flag without env → dry
   assert.equal(resolveLabelWriteMode({ applyLabels: true }, {}).live, false);
@@ -68,15 +68,10 @@ test("resolveLabelWriteMode requires BOTH --apply-labels and OPENCLAW_NOTIFY_LIN
     resolveLabelWriteMode({ applyLabels: false }, { OPENCLAW_NOTIFY_LINEAR: "1" }).live,
     false,
   );
-  // both → live
-  assert.equal(
-    resolveLabelWriteMode({ applyLabels: true }, { OPENCLAW_NOTIFY_LINEAR: "1" }).live,
-    true,
-  );
-  assert.equal(
-    resolveLabelWriteMode({ applyLabels: true }, { OPENCLAW_NOTIFY_LINEAR: "true" }).live,
-    true,
-  );
+  // Both opt-ins still cannot make a replace-all API atomic with concurrent label additions.
+  const enabled = resolveLabelWriteMode({ applyLabels: true }, { OPENCLAW_NOTIFY_LINEAR: "1" });
+  assert.equal(enabled.live, false);
+  assert.match(enabled.reason, /disabled.*replace-all.*concurrent/i);
 });
 
 // ---------------------------------------------------------------------------

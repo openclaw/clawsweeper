@@ -22,11 +22,12 @@ boundaries.
   plan and snapshot hashes from the current dry-run.
 - Existing marker comments are reused only when their stable Linear bot actor ID
   matches `LINEAR_APP_ACTOR_ID`; display names are never treated as ownership.
-- A live routing-label update additionally requires `--apply-labels` and its own
-  reviewed hashes.
+- `--apply-labels` produces a reviewed routing-label plan, but live label mutation
+  remains disabled because Linear's replace-all label update cannot atomically
+  preserve labels added concurrently.
 - Every live operation re-fetches the issue and blocks on snapshot drift.
-- Label writes use read-merge-write and preserve labels not owned by this
-  sidecar.
+- Label plans preserve labels not owned by this sidecar; no live label write is
+  attempted until an atomic additive or compare-and-swap boundary exists.
 - Review comments are marker-backed and updated in place rather than stacked.
 
 ## Prerequisites
@@ -143,9 +144,9 @@ Review and apply are separate authority lanes even where the current operator
 CLI shares planning helpers. Review owns model execution and record generation;
 it has no Linear write credential. Apply accepts an independently reviewed
 record/receipt, re-fetches Linear, and may synchronize only the one managed
-comment or one additive label operation authorized for that run. Repair and
-commit review remain separate ClawSweeper lanes and are not performed by these
-commands.
+comment authorized for that run. Routing-label changes remain reviewed plans;
+live label mutation is disabled. Repair and commit review remain separate
+ClawSweeper lanes and are not performed by these commands.
 
 First create and save a dry-run report for an exact issue, a list, a project, or
 a team:
@@ -173,9 +174,12 @@ OPENCLAW_NOTIFY_LINEAR=1 pnpm linear:review-apply -- \
   --json
 ```
 
-Because either mutation advances the Linear snapshot, comments and labels use
-separate reviewed runs. After applying comments, generate and review a fresh
-dry-run report, then apply only additive routing labels:
+Run only one live comment invocation at a time. Concurrent invocations are not
+yet protected by a durable action identity or compare-and-swap boundary and can
+create duplicate marker comments from the same approved snapshot.
+
+After applying comments, generate and review a fresh dry-run report before
+reviewing the proposed routing-label plan:
 
 ```bash
 LINEAR_APP_ACTOR_ID=<linear-bot-actor-id> \
@@ -183,17 +187,12 @@ pnpm linear:review-apply:dry-run -- \
   --team PAR \
   > .artifacts/linear-par-label-dry-run.json
 
-LINEAR_APP_ACTOR_ID=<linear-bot-actor-id> \
-OPENCLAW_NOTIFY_LINEAR=1 pnpm linear:review-apply -- \
-  --team PAR \
-  --apply-labels \
-  --approvals .artifacts/linear-par-label-dry-run.json \
-  --rate-ms 400 \
-  --json
 ```
 
-The CLI rejects simultaneous live `--apply` and `--apply-labels` modes to avoid
-performing one mutation and invalidating the approval for the other.
+`--apply-labels` remains dry-run even with `OPENCLAW_NOTIFY_LINEAR=1`. Linear's
+available `issueUpdate(labelIds: ...)` operation replaces the complete set and
+cannot atomically preserve a label added after the final pre-write read. Keep
+the reviewed label plan as operator evidence; do not treat it as applied.
 
 A changed issue, changed plan, missing approval, closed gate, ineligible item, or
 ambiguous scope is skipped rather than written.
@@ -287,9 +286,10 @@ only when all applicable phases have current receipts.
 
 ### 5. Labels and state
 
-- Comment and label changes require separate snapshot/review/apply cycles.
-- Label changes are additive, preserve unrelated/concurrent labels, and fail
-  closed when the label connection is truncated.
+- Comment writes and label plans require separate snapshot/review cycles.
+- Label plans preserve unrelated labels and fail closed when the label
+  connection is truncated. Live label apply remains disabled until an atomic
+  additive or compare-and-swap operation can preserve concurrent labels.
 - Review never changes Linear workflow state, priority, cycle, or project.
 - A close/state proposal is limited to implemented, unreproducible, duplicate,
   incoherent, or obviously stale items and remains blocked for maintainer-authored

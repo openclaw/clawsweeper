@@ -314,8 +314,9 @@ export function resolveLabelWriteMode(options, env = process.env) {
     };
   }
   return {
-    live: true,
-    reason: `live label mode enabled by --apply-labels + ${NOTIFY_ENV}; per-item approval still required`,
+    live: false,
+    reason:
+      "live label mutation disabled: Linear issueUpdate uses replace-all labels and cannot atomically preserve concurrent additions",
   };
 }
 
@@ -603,8 +604,10 @@ export function aggregate(items, resolution, mode) {
   let labelsApplied = 0;
   let errors = 0;
   for (const item of items) {
-    if (item.error) {
+    if (item.error || item.applyError || item.labelApplyError || item.writtenUnconfirmed) {
       errors += 1;
+    }
+    if (item.error) {
       continue;
     }
     byDisposition[item.disposition] = (byDisposition[item.disposition] ?? 0) + 1;
@@ -1023,9 +1026,9 @@ Review options:
 
 Apply options (live write — review-only unless ALL hold):
   --apply                    Opt in to LIVE comment writes (also needs ${NOTIFY_ENV}=1)
-  --apply-labels             Opt in to LIVE additive label writes (also needs ${NOTIFY_ENV}=1);
-                             applies the policy's ONE proposed routing label, additive only
-                             (never drops a label), creating a missing clawsweeper:* label
+  --apply-labels             Plans label changes but live label mutation remains disabled:
+                             Linear issueUpdate is replace-all and cannot atomically preserve
+                             labels added concurrently
   --approvals <path>         Per-item comment + label hashes from a reviewed dry-run (--json)
   --rate-ms <n>              Delay between live writes in ms (default: 0)
   --json                     Emit the JSON run report (feedable as --approvals)

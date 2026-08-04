@@ -176,7 +176,10 @@ test("listIssues WITHOUT updatedAfter: vars have teamId but no updatedAfter key"
                 team: { id: "team-abc" },
                 project: { id: "proj-1" },
                 state: { id: "state-started", name: "In Progress", type: "started" },
-                labels: { nodes: [{ id: "lbl-1", name: "bug" }] },
+                labels: {
+                  nodes: [{ id: "lbl-1", name: "bug" }],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
               },
             ],
             pageInfo: { hasNextPage: false, endCursor: null },
@@ -269,7 +272,7 @@ test("listIssues: maps null project → projectId null, null state → nulls, em
                 team: { id: "team-abc" },
                 project: null,
                 state: null,
-                labels: { nodes: [] },
+                labels: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
               },
             ],
             pageInfo: { hasNextPage: false, endCursor: null },
@@ -336,7 +339,7 @@ test("listWorkspaceItems: joins team, projects, issues; resolves project by id",
                 team: { id: "team-1" },
                 project: { id: "proj-a" },
                 state: { id: "state-todo", name: "Todo", type: "unstarted" },
-                labels: { nodes: [] },
+                labels: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
               },
               {
                 id: "issue-2",
@@ -349,7 +352,7 @@ test("listWorkspaceItems: joins team, projects, issues; resolves project by id",
                 team: { id: "team-1" },
                 project: null,
                 state: null,
-                labels: { nodes: [] },
+                labels: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
               },
             ],
             pageInfo: { hasNextPage: false, endCursor: null },
@@ -469,6 +472,16 @@ test("malformed connection (transport returns {}) throws error mentioning query 
   );
 });
 
+test("malformed pageInfo cannot silently terminate generic pagination", async () => {
+  const transport: LinearTransport = async () => ({
+    teams: { nodes: [{ id: "t1", key: "T1", name: "Team One" }], pageInfo: {} },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).listTeams(),
+    /Malformed connection from ListTeams: expected pageInfo/,
+  );
+});
+
 function hydratedIssueNode(overrides: Record<string, unknown> = {}) {
   return {
     id: "issue-1",
@@ -483,7 +496,10 @@ function hydratedIssueNode(overrides: Record<string, unknown> = {}) {
     team: { id: "team-1", key: "PAR", name: "Partner" },
     project: null,
     state: { id: "todo", name: "Todo", type: "unstarted" },
-    labels: { nodes: [{ id: "bug", name: "bug" }] },
+    labels: {
+      nodes: [{ id: "bug", name: "bug" }],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
     attachments: {
       nodes: [{ id: "att-1", url: "https://github.com/openclaw/openclaw/pull/2", title: "PR" }],
       pageInfo: { hasNextPage: false, endCursor: null },
@@ -550,14 +566,14 @@ test("fetchIssueByIdentifier rejects analysis-context drift while paginating com
   const calls: RecordedCall[] = [];
   const first = hydratedIssueNode({
     comments: {
-      nodes: [{ id: "comment-1", body: "first" }],
+      nodes: [{ id: "comment-1", body: "first", createdAt: "2026-06-02T12:00:00Z" }],
       pageInfo: { hasNextPage: true, endCursor: "next" },
     },
   });
   const second = hydratedIssueNode({
     description: "changed while comments paginated",
     comments: {
-      nodes: [{ id: "comment-2", body: "second" }],
+      nodes: [{ id: "comment-2", body: "second", createdAt: "2026-06-02T12:01:00Z" }],
       pageInfo: { hasNextPage: false, endCursor: null },
     },
   });
@@ -580,7 +596,7 @@ test("fetchIssueByIdentifier rejects analysis-context drift while paginating com
 test("fetchIssueByIdentifier fails closed when comment pagination omits its cursor", async () => {
   const node = hydratedIssueNode({
     comments: {
-      nodes: [{ id: "comment-1", body: "first" }],
+      nodes: [{ id: "comment-1", body: "first", createdAt: "2026-06-02T12:00:00Z" }],
       pageInfo: { hasNextPage: true, endCursor: null },
     },
   });
@@ -599,6 +615,22 @@ test("fetchIssueByIdentifier fails closed when comment pagination omits its curs
   );
 });
 
+test("fetchIssueByIdentifier rejects malformed comment pageInfo", async () => {
+  const node = hydratedIssueNode({
+    comments: {
+      nodes: [{ id: "comment-1", body: "first" }],
+      pageInfo: {},
+    },
+  });
+  const transport: LinearTransport = async () => ({
+    issues: { nodes: [node], pageInfo: { hasNextPage: false, endCursor: null } },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1", 1),
+    /Malformed connection from IssueByIdentifier.comments: expected pageInfo/,
+  );
+});
+
 test("fetchIssueByIdentifier fails closed on a comment cursor cycle", async () => {
   const cursors = ["cursor-a", "cursor-b", "cursor-a"];
   const pages = cursors.map((cursor, index) => ({
@@ -606,7 +638,13 @@ test("fetchIssueByIdentifier fails closed on a comment cursor cycle", async () =
       nodes: [
         hydratedIssueNode({
           comments: {
-            nodes: [{ id: `comment-${index + 1}`, body: `page ${index + 1}` }],
+            nodes: [
+              {
+                id: `comment-${index + 1}`,
+                body: `page ${index + 1}`,
+                createdAt: `2026-06-02T12:0${index}:00Z`,
+              },
+            ],
             pageInfo: { hasNextPage: true, endCursor: cursor },
           },
         }),
@@ -659,5 +697,85 @@ test("fetchIssueByIdentifier rejects a truncated label page", async () => {
   await assert.rejects(
     () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
     /more than 250 labels/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects malformed label pagination metadata", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [
+        hydratedIssueNode({
+          labels: {
+            nodes: [{ id: "bug", name: "bug" }],
+            pageInfo: {},
+          },
+        }),
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed connection from Issue labels: expected pageInfo/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects a malformed protected-label node", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [
+        hydratedIssueNode({
+          labels: {
+            nodes: [{ id: "human", name: 42 }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        }),
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed Issue labels node: expected non-empty string name/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects a malformed comment body", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [
+        hydratedIssueNode({
+          comments: {
+            nodes: [{ id: "comment-1", body: 42, createdAt: "2026-06-02T12:00:00Z" }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        }),
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed Issue comments node: expected string body/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects a malformed attachment URL", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [
+        hydratedIssueNode({
+          attachments: {
+            nodes: [{ id: "att-1", url: null, title: "PR" }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        }),
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed Issue attachments node: expected non-empty string url/,
   );
 });

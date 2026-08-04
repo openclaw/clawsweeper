@@ -36,20 +36,55 @@ export function parseLinearIdentifier(identifier: string): ParsedIdentifier {
 // Narrowing helpers — Linear GraphQL data is untyped `unknown` from the transport.
 
 function asConnection<T>(value: unknown, queryName: string): LinearConnection<T> {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("nodes" in value) ||
-    !("pageInfo" in value)
-  ) {
+  if (typeof value !== "object" || value === null) {
     throw new Error(`Malformed connection from ${queryName}: expected { nodes, pageInfo }`);
   }
-  return value as LinearConnection<T>;
+  const connection = value as Record<string, unknown>;
+  const pageInfo = connection["pageInfo"];
+  if (!Array.isArray(connection["nodes"]) || typeof pageInfo !== "object" || pageInfo === null) {
+    throw new Error(`Malformed connection from ${queryName}: expected { nodes, pageInfo }`);
+  }
+  const page = pageInfo as Record<string, unknown>;
+  if (
+    typeof page["hasNextPage"] !== "boolean" ||
+    (page["endCursor"] !== null && typeof page["endCursor"] !== "string")
+  ) {
+    throw new Error(
+      `Malformed connection from ${queryName}: expected pageInfo { hasNextPage, endCursor }`,
+    );
+  }
+  return {
+    nodes: connection["nodes"] as T[],
+    pageInfo: {
+      hasNextPage: page["hasNextPage"],
+      endCursor: page["endCursor"],
+    },
+  };
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null) return {};
   return value as Record<string, unknown>;
+}
+
+function requiredRecord(value: unknown, context: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`Malformed ${context}: expected an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requiredString(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+  nonEmpty = false,
+): string {
+  const value = record[key];
+  if (typeof value !== "string" || (nonEmpty && value.trim() === "")) {
+    throw new Error(`Malformed ${context}: expected ${nonEmpty ? "non-empty " : ""}string ${key}`);
+  }
+  return value;
 }
 
 function str(value: unknown): string {
@@ -127,16 +162,16 @@ function mapProject(raw: unknown, teamId: string): LinearProject {
 }
 
 function mapLabels(raw: unknown): LinearLabel[] {
-  const r = asRecord(raw);
-  const pageInfo = asRecord(r["pageInfo"]);
-  if (pageInfo["hasNextPage"] === true) {
+  const labels = asConnection<unknown>(raw, "Issue labels");
+  if (labels.pageInfo.hasNextPage) {
     throw new Error("issue has more than 250 labels; refusing to use a truncated label set");
   }
-  const nodes = r["nodes"];
-  if (!Array.isArray(nodes)) return [];
-  return nodes.map((n) => {
-    const ln = asRecord(n);
-    return { id: str(ln["id"]), name: str(ln["name"]) };
+  return labels.nodes.map((n) => {
+    const ln = requiredRecord(n, "Issue labels node");
+    return {
+      id: requiredString(ln, "id", "Issue labels node", true),
+      name: requiredString(ln, "name", "Issue labels node", true),
+    };
   });
 }
 
@@ -147,19 +182,20 @@ function mapComments(raw: unknown): Array<{
   authorId: string | null;
   authorName: string | null;
 }> {
-  const commentsConn = asRecord(raw);
-  const commentNodes = Array.isArray(commentsConn["nodes"]) ? commentsConn["nodes"] : [];
-  return commentNodes.map((n) => {
-    const cn = asRecord(n);
-    const botActor = asRecord(cn["botActor"]);
-    const user = asRecord(cn["user"]);
-    const actor = str(botActor["id"]) !== "" ? botActor : user;
+  const comments = asConnection<unknown>(raw, "IssueByIdentifier.comments");
+  return comments.nodes.map((n) => {
+    const cn = requiredRecord(n, "Issue comments node");
+    const botActor =
+      cn["botActor"] == null ? null : requiredRecord(cn["botActor"], "Issue comment botActor");
+    const user = cn["user"] == null ? null : requiredRecord(cn["user"], "Issue comment user");
+    const actor = botActor ?? user;
     return {
-      id: str(cn["id"]),
-      body: str(cn["body"]),
-      createdAt: str(cn["createdAt"]),
-      authorId: str(actor["id"]) || null,
-      authorName: str(actor["name"]) || null,
+      id: requiredString(cn, "id", "Issue comments node", true),
+      body: requiredString(cn, "body", "Issue comments node"),
+      createdAt: requiredString(cn, "createdAt", "Issue comments node", true),
+      authorId: actor === null ? null : requiredString(actor, "id", "Issue comment actor", true),
+      authorName:
+        actor === null ? null : requiredString(actor, "name", "Issue comment actor", true),
     };
   });
 }
@@ -172,11 +208,11 @@ function mapAttachments(raw: unknown): LinearAttachment[] {
     );
   }
   return attachments.nodes.map((node) => {
-    const attachment = asRecord(node);
+    const attachment = requiredRecord(node, "Issue attachments node");
     return {
-      id: str(attachment["id"]),
-      url: str(attachment["url"]),
-      title: str(attachment["title"]),
+      id: requiredString(attachment, "id", "Issue attachments node", true),
+      url: requiredString(attachment, "url", "Issue attachments node", true),
+      title: requiredString(attachment, "title", "Issue attachments node"),
     };
   });
 }
