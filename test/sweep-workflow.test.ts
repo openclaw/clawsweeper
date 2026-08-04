@@ -413,6 +413,7 @@ test("review workflow gives Codex a read-only inspection token", () => {
     /report_path="artifacts\/event\/\$\{\{ steps\.target\.outputs\.item_number \}\}\.md"/,
   );
   assert.match(exactReviewStep, /coordination-held\.json/);
+  assert.match(exactReviewStep, /echo "retry_kind=coordination" >> "\$GITHUB_OUTPUT"/);
   assert.match(exactReviewStep, /echo "retry_at=\$retry_at" >> "\$GITHUB_OUTPUT"/);
   assert.match(exactReviewStep, /Exact review produced no artifact for open item/);
   assert.match(reviewJob, /uses: \.\/clawsweeper\/\.github\/actions\/setup-codex/);
@@ -614,7 +615,12 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     /rate limit exceeded\|secondary rate limit\|HTTP 429/,
     "throttled reservations must defer as held instead of failing",
   );
-  assert.match(reserveLease.run ?? "", /\\"status\\":\\"held\\",\\"retryAt\\":\\"\$retry_at\\"/);
+  assert.match(
+    reserveLease.run ?? "",
+    /\\"status\\":\\"held\\",\\"retryAt\\":\\"\$retry_at\\",\\"retryKind\\":\\"throttle\\"/,
+  );
+  assert.match(reserveLease.run ?? "", /reservation\.retryKind === "throttle"/);
+  assert.match(reserveLease.run ?? "", /append\("retry_kind", retryKind\)/);
   assert.match(source, /Review exact item \{0\} rev \{1\} head \{2\}/);
   assert.equal(
     reserveLease.env?.EXACT_REVIEW_ITEM_KEY,
@@ -650,6 +656,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.match(liveItem.run ?? "", /Resolved invalid queued target branch/);
   assert.match(liveItem.run ?? "", /admission_retry=true/);
+  assert.match(liveItem.run ?? "", /echo "retry_kind=throttle"/);
   assert.match(
     liveItem.run ?? "",
     /rate limit exceeded\|secondary rate limit\|HTTP 429/,
@@ -764,6 +771,8 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     generationResult.env?.ADMISSION_RETRY,
     "${{ steps.live-item.outputs.admission_retry }}",
   );
+  assert.match(generationResult.env?.RETRY_KIND ?? "", /live-item\.outputs\.retry_kind/);
+  assert.match(generationResult.run ?? "", /ADMISSION_RETRY.*true.*-z.*RETRY_KIND/s);
   assert.match(generationResult.run ?? "", /ADMISSION_RETRY.*true[\s\S]*outcome=success/);
   assert.match(generationResult.run ?? "", /requeue_latest=true/);
   assert.equal(
@@ -806,6 +815,8 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(complete.env?.PRIMARY_OUTCOME ?? "", /exact-review-generation-result/);
   assert.match(complete.env?.REQUEUE_LATEST ?? "", /exact-review-generation-result/);
   assert.match(complete.env?.RETRY_AT ?? "", /live-item\.outputs\.retry_at/);
+  assert.match(complete.env?.RETRY_KIND ?? "", /live-item\.outputs\.retry_kind/);
+  assert.match(complete.run ?? "", /retry_kind: retryKind/);
   assert.match(complete.run ?? "", /requeue_latest: true/);
   assert.match(deferHeldReview.if ?? "", /reserve-exact-review-lease\.outputs\.status == 'held'/);
   assert.match(deferHeldReview.run ?? "", /retry deferred/);

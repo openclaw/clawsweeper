@@ -791,6 +791,7 @@ jobs:
               echo "::notice::GitHub throttled the live-item check for $TARGET_REPO#$ITEM_NUMBER; releasing the claim for retry at $retry_at without spending failure budget."
               {
                 echo "admission_retry=true"
+                echo "retry_kind=throttle"
                 echo "retry_at=$retry_at"
                 echo "proceed=false"
                 echo "terminal_noop=false"
@@ -1008,7 +1009,7 @@ jobs:
             if grep -Eqi 'rate limit exceeded|secondary rate limit|HTTP 429' "$reservation_error"; then
               retry_at="$(date -u -d "@$(( $(date -u +%s) + 1200 ))" +%Y-%m-%dT%H:%M:%SZ)"
               echo "::notice::GitHub throttled the exact-review reservation; deferring until $retry_at so the durable queue retries without spending failure budget."
-              reservation="{\"status\":\"held\",\"retryAt\":\"$retry_at\"}"
+              reservation="{\"status\":\"held\",\"retryAt\":\"$retry_at\",\"retryKind\":\"throttle\"}"
               break
             fi
             if ! grep -Eqi '(exact-review queue authority changed|review revision changed|could not (confirm|identify).+review lease).+retry required' "$reservation_error"; then
@@ -1043,7 +1044,10 @@ jobs:
           if (reservation.status === "held") {
             const retryAt = String(reservation.retryAt || "");
             if (!Number.isFinite(Date.parse(retryAt))) process.exit(1);
+            const retryKind =
+              reservation.retryKind === "throttle" ? "throttle" : "coordination";
             append("status", "held");
+            append("retry_kind", retryKind);
             append("retry_at", new Date(retryAt).toISOString());
             process.exit(0);
           }
@@ -1258,6 +1262,7 @@ jobs:
               if (!value || !Number.isFinite(timestamp)) process.exit(1);
               process.stdout.write(new Date(timestamp).toISOString());
             ' "$coordination_held_path")"
+            echo "retry_kind=coordination" >> "$GITHUB_OUTPUT"
             echo "retry_at=$retry_at" >> "$GITHUB_OUTPUT"
             echo "::notice::Review coordination is held until $retry_at."
           fi
@@ -1661,6 +1666,7 @@ jobs:
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && always() }}
         env:
           ADMISSION_RETRY: ${{ steps.live-item.outputs.admission_retry }}
+          RETRY_KIND: ${{ steps.live-item.outputs.retry_kind || steps.reserve-exact-review-lease.outputs.retry_kind || steps.review-exact-event-item.outputs.retry_kind }}
           TARGET_ENABLED: ${{ steps.target.outputs.target_enabled }}
           LIVE_OUTCOME: ${{ steps.live-item.outcome }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
@@ -1674,7 +1680,7 @@ jobs:
         run: |
           outcome=failure
           requeue_latest=false
-          if [ "$ADMISSION_RETRY" = "true" ]; then
+          if [ "$ADMISSION_RETRY" = "true" ] && [ -z "$RETRY_KIND" ]; then
             outcome=success
             requeue_latest=true
           elif [ "$TARGET_ENABLED" = "false" ]; then
@@ -1706,6 +1712,7 @@ jobs:
           QUEUE_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           REQUEUE_LATEST: ${{ steps.exact-review-generation-result.outputs.requeue_latest }}
+          RETRY_KIND: ${{ steps.live-item.outputs.retry_kind || steps.reserve-exact-review-lease.outputs.retry_kind || steps.review-exact-event-item.outputs.retry_kind }}
           RETRY_AT: ${{ steps.live-item.outputs.retry_at || steps.reserve-exact-review-lease.outputs.retry_at || steps.review-exact-event-item.outputs.retry_at }}
           DIRECT_PUBLICATION_ACCEPTED: ${{ steps.direct-exact-review-publication.outputs.accepted }}
           DIRECT_PUBLICATION_SUPERSEDED: ${{ steps.direct-exact-review-publication.outputs.superseded }}
@@ -1736,7 +1743,10 @@ jobs:
               ? primaryOutcome
               : "failure";
             const requeueLatest = process.env.REQUEUE_LATEST === "true";
+            const retryKind = String(process.env.RETRY_KIND || "").trim();
             const retryAt = String(process.env.RETRY_AT || "").trim();
+            if (retryKind && !["coordination", "throttle"].includes(retryKind)) process.exit(1);
+            if (retryKind && !retryAt) process.exit(1);
             const directPublicationCompleted =
               process.env.DIRECT_PUBLICATION_ACCEPTED === "true" &&
               process.env.DIRECT_LIFECYCLE_OUTCOME === "success";
@@ -1758,6 +1768,7 @@ jobs:
               run_attempt: runAttempt,
               outcome,
               ...(requeueLatest ? { requeue_latest: true } : {}),
+              ...(retryKind ? { retry_kind: retryKind } : {}),
               ...(directPublicationCompleted
                 ? directPublicationSuperseded
                   ? { completion_kind: "superseded", reason_code: "remote_newer_tuple" }
