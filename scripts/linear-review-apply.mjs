@@ -395,15 +395,33 @@ export async function resolveLabelIds(wantedNames, opts) {
 }
 
 /** Reads EVERY workspace label (id + name) via the paginated ISSUE_LABELS_QUERY. */
-async function fetchWorkspaceLabels(transport) {
+export async function fetchWorkspaceLabels(transport) {
   const all = [];
   let after = null;
+  const seenCursors = new Set();
   for (;;) {
     const data = await transport(ISSUE_LABELS_QUERY, after ? { after } : {});
     const page = data?.issueLabels;
+    if (
+      !page ||
+      !Array.isArray(page.nodes) ||
+      typeof page.pageInfo !== "object" ||
+      page.pageInfo === null ||
+      typeof page.pageInfo.hasNextPage !== "boolean"
+    ) {
+      throw new Error("workspace label pagination returned a malformed connection");
+    }
     for (const node of page?.nodes ?? []) all.push({ id: node.id, name: node.name });
     if (!page?.pageInfo?.hasNextPage) break;
-    after = page.pageInfo.endCursor;
+    const nextCursor = page.pageInfo.endCursor;
+    if (typeof nextCursor !== "string" || nextCursor.trim() === "") {
+      throw new Error("workspace label pagination returned hasNextPage without a usable endCursor");
+    }
+    if (seenCursors.has(nextCursor)) {
+      throw new Error(`workspace label pagination repeated endCursor "${nextCursor}"`);
+    }
+    seenCursors.add(nextCursor);
+    after = nextCursor;
   }
   return all;
 }

@@ -208,7 +208,7 @@ export function deriveCloseLeaning(input: CloseLeaningInput): CloseLeaning {
  */
 export interface AnalyzerFingerprintInput {
   snapshotHash: string; // record.snapshotHash (the live-Linear drift fingerprint)
-  commentContextHash: string; // bounded canonical comment context passed to the model
+  promptHash: string; // exact bounded prompt passed to the model
   repoHEAD: string; // the analyzed checkout's HEAD sha
   modelId: string; // resolved model id (e.g. "internal" → harness config.toml governs)
   analyzerVersion: string; // ANALYZER_VERSION
@@ -218,7 +218,7 @@ export interface AnalyzerFingerprintInput {
 export function analyzerFingerprint(input: AnalyzerFingerprintInput): string {
   return [
     `snapshot=${input.snapshotHash}`,
-    `comments=${input.commentContextHash}`,
+    `prompt=${input.promptHash}`,
     `head=${input.repoHEAD}`,
     `model=${input.modelId}`,
     `analyzer=${input.analyzerVersion}`,
@@ -346,7 +346,7 @@ export interface AnalyzerRecordFrontMatter {
   source_provider: string;
   source_id: string;
   snapshot_hash: string;
-  comment_context_hash: string;
+  analysis_prompt_hash: string;
   // Analyzer fingerprint.
   model_id: string;
   analyzer_version: string;
@@ -385,7 +385,7 @@ export function serializeAnalyzerRecord(
     "source_provider",
     "source_id",
     "snapshot_hash",
-    "comment_context_hash",
+    "analysis_prompt_hash",
     "model_id",
     "analyzer_version",
     "repo_head",

@@ -5,6 +5,7 @@ import {
   aggregate,
   assertCompatibleWriteModes,
   buildScopeSpec,
+  fetchWorkspaceLabels,
   loadApprovals,
   parseArgs,
   readBackPlannedComment,
@@ -330,4 +331,36 @@ test("aggregate tallies dispositions, intent, outcomes, and errors", () => {
 
 test("reportExitCode returns zero for an error-free report", () => {
   assert.equal(reportExitCode({ counts: { errors: 0 } }), 0);
+});
+
+test("fetchWorkspaceLabels fails closed when hasNextPage omits its cursor", async () => {
+  const transport = async () => ({
+    issueLabels: {
+      nodes: [{ id: "label-1", name: "Label One" }],
+      pageInfo: { hasNextPage: true, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => fetchWorkspaceLabels(transport),
+    /hasNextPage without a usable endCursor/,
+  );
+});
+
+test("fetchWorkspaceLabels fails closed on a cursor cycle", async () => {
+  const cursors = ["cursor-a", "cursor-b", "cursor-a"];
+  let index = 0;
+  const transport = async () => ({
+    issueLabels: {
+      nodes: [{ id: `label-${index}`, name: `Label ${index}` }],
+      pageInfo: { hasNextPage: true, endCursor: cursors[index++] },
+    },
+  });
+  await assert.rejects(() => fetchWorkspaceLabels(transport), /repeated endCursor "cursor-a"/);
+});
+
+test("fetchWorkspaceLabels rejects malformed pageInfo instead of accepting a partial list", async () => {
+  const transport = async () => ({
+    issueLabels: { nodes: [{ id: "label-1", name: "Label One" }], pageInfo: "bad" },
+  });
+  await assert.rejects(() => fetchWorkspaceLabels(transport), /malformed connection/);
 });

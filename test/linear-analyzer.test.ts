@@ -193,7 +193,7 @@ test("deriveCloseLeaning is exported from the barrel", () => {
 test("analyzerFingerprint is stable and changes with any input", () => {
   const base = {
     snapshotHash: "snap",
-    commentContextHash: "comments",
+    promptHash: "prompt",
     repoHEAD: "head",
     modelId: "internal",
     analyzerVersion: ANALYZER_VERSION,
@@ -202,7 +202,7 @@ test("analyzerFingerprint is stable and changes with any input", () => {
   assert.equal(analyzerFingerprint(base), fp);
   assert.notEqual(analyzerFingerprint({ ...base, repoHEAD: "head2" }), fp);
   assert.notEqual(analyzerFingerprint({ ...base, snapshotHash: "snap2" }), fp);
-  assert.notEqual(analyzerFingerprint({ ...base, commentContextHash: "comments2" }), fp);
+  assert.notEqual(analyzerFingerprint({ ...base, promptHash: "prompt2" }), fp);
   assert.notEqual(analyzerFingerprint({ ...base, modelId: "other" }), fp);
 });
 
@@ -286,7 +286,7 @@ test("serializeAnalyzerRecord writes flattened scalar front matter then the body
       source_provider: "linear",
       source_id: "uuid-1",
       snapshot_hash: "snap",
-      comment_context_hash: "comments",
+      analysis_prompt_hash: "prompt",
       model_id: "internal",
       analyzer_version: ANALYZER_VERSION,
       repo_head: "headsha",
@@ -322,7 +322,7 @@ test("serializeAnalyzerRecord escapes embedded quotes", () => {
       source_provider: "linear",
       source_id: "uuid-9",
       snapshot_hash: "s",
-      comment_context_hash: "comments",
+      analysis_prompt_hash: "prompt",
       model_id: "internal",
       analyzer_version: ANALYZER_VERSION,
       repo_head: "h",
