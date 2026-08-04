@@ -3,6 +3,10 @@ import test from "node:test";
 
 import { REPOSITORY_PROFILES, repositoryProfileFor } from "../dist/repository-profiles.js";
 
+test("personal namespace repositories are not configured targets", () => {
+  assert.throws(() => repositoryProfileFor("ostehost/symphony-daemon"), /Unsupported target repo/);
+});
+
 test("OpenClaw allows unsponsored feature closes for issues only", () => {
   const profile = repositoryProfileFor("openclaw/openclaw");
   assert.equal(profile.applyCloseRules.issue?.includes("unsponsored_feature_request"), true);
