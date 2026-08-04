@@ -19381,7 +19381,52 @@ test("failed shard recovery replaces an expired recovery lease", async () => {
   assert.equal(replacement.leaseId, undefined);
 });
 
-test("exact-review queue defers a coordination-held failure until the lease expires", async () => {
+for (const retryKind of ["coordination", "throttle"] as const) {
+  test(`exact-review queue defers ${retryKind} without spending review attempts`, async () => {
+    const storage = new MemoryDurableStorage();
+    const retryAt = Date.now() + 45 * 60_000;
+    const item = leasedExactReviewQueueItem(711, "7110");
+    item.attempts = 3;
+    item.reviewFailureAttempts = 2;
+    await storage.put("exact-review-queue", {
+      deliveries: {},
+      items: {
+        "openclaw/openclaw#711": item,
+      },
+    });
+    const queue = new ExactReviewQueue({ storage }, {});
+
+    const response = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: "lease-711",
+          item_key: "openclaw/openclaw#711",
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: "7110",
+          run_attempt: 1,
+          outcome: "failure",
+          retry_kind: retryKind,
+          retry_at: new Date(retryAt).toISOString(),
+        }),
+      }),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, requeued: true });
+    const state = (await storage.get("exact-review-queue")) as {
+      items: Record<string, Record<string, unknown>>;
+    };
+    const deferred = state.items["openclaw/openclaw#711"];
+    assert.ok(Number(deferred.nextAttemptAt) >= retryAt);
+    assert.equal(deferred.attempts, 3);
+    assert.equal(deferred.reviewFailureAttempts, 2);
+    assert.equal(deferred.backoffReason, `${retryKind}_retry`);
+  });
+}
+
+test("exact-review queue spends review attempts for an untyped retry deadline", async () => {
   const storage = new MemoryDurableStorage();
   const retryAt = Date.now() + 45 * 60_000;
   await storage.put("exact-review-queue", {
@@ -19409,18 +19454,19 @@ test("exact-review queue defers a coordination-held failure until the lease expi
   );
 
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { ok: true, requeued: true });
   const state = (await storage.get("exact-review-queue")) as {
     items: Record<string, Record<string, unknown>>;
   };
-  assert.ok(Number(state.items["openclaw/openclaw#711"].nextAttemptAt) >= retryAt);
   assert.equal(state.items["openclaw/openclaw#711"].attempts, 1);
+  assert.equal(state.items["openclaw/openclaw#711"].reviewFailureAttempts, 1);
 });
 
 test("exact-review queue does not carry an old coordination deadline to a newer revision", async () => {
   const storage = new MemoryDurableStorage();
   const retryAt = Date.now() + 45 * 60_000;
   const item = leasedExactReviewQueueItem(712, "7120");
+  item.attempts = 3;
+  item.reviewFailureAttempts = 2;
   item.revision = Number(item.leaseRevision) + 1;
   await storage.put("exact-review-queue", {
     deliveries: {},
@@ -19439,6 +19485,7 @@ test("exact-review queue does not carry an old coordination deadline to a newer 
         run_id: "7120",
         run_attempt: 1,
         outcome: "failure",
+        retry_kind: "coordination",
         retry_at: new Date(retryAt).toISOString(),
       }),
     }),
@@ -19449,11 +19496,35 @@ test("exact-review queue does not carry an old coordination deadline to a newer 
     items: Record<string, Record<string, unknown>>;
   };
   assert.ok(Number(state.items["openclaw/openclaw#712"].nextAttemptAt) < retryAt);
+  assert.equal(state.items["openclaw/openclaw#712"].attempts, 0);
+  assert.equal(state.items["openclaw/openclaw#712"].reviewFailureAttempts, 0);
 });
 
-test("exact-review queue rejects invalid coordination retry deadlines", async () => {
+test("exact-review queue rejects invalid retry deferral contracts", async () => {
   const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
-  for (const retryAt of ["not-a-timestamp", new Date(Date.now() + 3 * 60 * 60_000).toISOString()]) {
+  for (const [payload, error] of [
+    [
+      { retry_kind: "capacity", retry_at: new Date(Date.now() + 60_000).toISOString() },
+      "invalid_retry_kind",
+    ],
+    [{ retry_kind: "coordination" }, "retry_kind_without_retry_at"],
+    [
+      {
+        outcome: "success",
+        retry_kind: "coordination",
+        retry_at: new Date(Date.now() + 60_000).toISOString(),
+      },
+      "retry_kind_without_failure",
+    ],
+    [{ retry_kind: "coordination", retry_at: "not-a-timestamp" }, "invalid_retry_at"],
+    [
+      {
+        retry_kind: "throttle",
+        retry_at: new Date(Date.now() + 3 * 60 * 60_000).toISOString(),
+      },
+      "invalid_retry_at",
+    ],
+  ] as const) {
     const response = await queue.fetch(
       new Request("https://clawsweeper-exact-review-queue/complete", {
         method: "POST",
@@ -19465,13 +19536,43 @@ test("exact-review queue rejects invalid coordination retry deadlines", async ()
           run_id: "7120",
           run_attempt: 1,
           outcome: "failure",
-          retry_at: retryAt,
+          ...payload,
         }),
       }),
     );
     assert.equal(response.status, 400);
-    assert.deepEqual(await response.json(), { error: "invalid_retry_at" });
+    assert.deepEqual(await response.json(), { error });
   }
+});
+
+test("exact-review queue rejects regular-review retry kinds for publication work", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(712, "7120");
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [item.key]: item },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        retry_kind: "throttle",
+        retry_at: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "retry_kind_outside_regular_review" });
 });
 
 test("exact-review queue requeues a verified source drift exactly once without failure backoff", async () => {

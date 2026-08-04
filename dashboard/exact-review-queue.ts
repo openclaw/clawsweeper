@@ -147,6 +147,8 @@ type ExactReviewBackoffReason =
   | "dispatch_debounce"
   | "dispatcher_backoff"
   | "admission_retry"
+  | "coordination_retry"
+  | "throttle_retry"
   | "review_retry"
   | "publication_retry";
 type ExactReviewParkedReason =
@@ -212,6 +214,7 @@ export type ExactReviewQueueItem = {
   terminalFinalization?: ExactReviewTerminalFinalization;
 };
 export type ExactReviewCompletionOutcome = "success" | "failure" | "cancelled";
+type ExactReviewRetryKind = "coordination" | "throttle";
 type ExactReviewPublicationFailureKind = "github_rate_limit" | "github_transient";
 type ExactReviewDispatchFailureClass =
   | "permanent_rejection"
@@ -1702,6 +1705,17 @@ export class ExactReviewQueue {
       if (body.retry_at !== undefined && requestedRetryAt === null) {
         return json({ error: "invalid_retry_at" }, 400);
       }
+      const retryKind =
+        body.retry_kind === undefined ? undefined : exactReviewRetryKind(body.retry_kind);
+      if (body.retry_kind !== undefined && !retryKind) {
+        return json({ error: "invalid_retry_kind" }, 400);
+      }
+      if (retryKind && outcome !== "failure") {
+        return json({ error: "retry_kind_without_failure" }, 400);
+      }
+      if (retryKind && requestedRetryAt === null) {
+        return json({ error: "retry_kind_without_retry_at" }, 400);
+      }
       const state = this.readStateSync();
       const item = tupleCompletion ? state.items[itemKey] : exactReviewItemForLease(state, leaseId);
       if (
@@ -1752,6 +1766,9 @@ export class ExactReviewQueue {
       }
       if (failureKind && !publicationItem) {
         return json({ error: "failure_kind_outside_publication" }, 400);
+      }
+      if (retryKind && publicationItem) {
+        return json({ error: "retry_kind_outside_regular_review" }, 400);
       }
       const leasedDirectLifecycle = item.leaseDecision?.publication?.directLifecycle;
       const directLifecycleLeasePublication =
@@ -1854,6 +1871,7 @@ export class ExactReviewQueue {
                 outcome,
                 requestedRetryAt ?? undefined,
                 requeueLatest,
+                retryKind,
               ),
               retried: outcome !== "success",
               refreshed: false,
@@ -10717,22 +10735,35 @@ function finishExactReviewQueueItem(
   outcome: ExactReviewCompletionOutcome,
   requestedRetryAt = 0,
   requeueLatest = false,
+  retryKind?: ExactReviewRetryKind,
 ) {
   const retryingFailure = outcome !== "success";
   const hasNewerRevision = item.revision > Number(item.leaseRevision || 0);
+  const typedDeferral = retryKind !== undefined && !hasNewerRevision && !requeueLatest;
   // A regular queue item may back off and retry after a failed lease. Failed
   // sweep shards already consumed their one recovery attempt before reaching
   // the queue, so only a newer source revision may supersede that recovery.
   const oneShotRecovery =
     item.leaseDecision?.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION;
-  const requeued = (!oneShotRecovery && retryingFailure) || hasNewerRevision || requeueLatest;
+  const requeued =
+    typedDeferral || (!oneShotRecovery && retryingFailure) || hasNewerRevision || requeueLatest;
   if (!requeued) {
     delete state.items[item.key];
     return { requeued: false, parked: false };
   }
   clearExactReviewLease(item);
   item.state = "pending";
-  if (retryingFailure && !hasNewerRevision && !requeueLatest) {
+  if (typedDeferral) {
+    const dispatcherAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
+    item.nextAttemptAt = Math.max(dispatcherAttemptAt, requestedRetryAt);
+    item.backoffReason =
+      dispatcherAttemptAt >= item.nextAttemptAt
+        ? "dispatcher_backoff"
+        : retryKind === "coordination"
+          ? "coordination_retry"
+          : "throttle_retry";
+    item.parkedReason = undefined;
+  } else if (retryingFailure && !hasNewerRevision && !requeueLatest) {
     item.attempts += 1;
     if (!exactReviewQueueIsPublication(item)) {
       const failureAttempts = Number(item.reviewFailureAttempts || 0) + 1;
@@ -10771,6 +10802,11 @@ function exactReviewCompletionRetryAt(value, now: number): number | null {
   if (!Number.isFinite(retryAt)) return null;
   if (retryAt > now + EXACT_REVIEW_COMPLETION_RETRY_MAX_MS) return null;
   return Math.max(now, retryAt);
+}
+
+function exactReviewRetryKind(value): ExactReviewRetryKind | null {
+  const normalized = String(value || "");
+  return normalized === "coordination" || normalized === "throttle" ? normalized : null;
 }
 
 function clearExactReviewLease(item: ExactReviewQueueItem) {
