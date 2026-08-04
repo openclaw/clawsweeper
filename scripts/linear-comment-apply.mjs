@@ -180,6 +180,17 @@ function validateHash(hash, label) {
   }
 }
 
+function authorIdFromReceipt(receipt) {
+  const nested = receipt?.receipt;
+  const value =
+    typeof receipt?.expectedAuthorId === "string"
+      ? receipt.expectedAuthorId
+      : typeof nested === "object" && nested !== null && typeof nested.expectedAuthorId === "string"
+        ? nested.expectedAuthorId
+        : "";
+  return value.trim();
+}
+
 function canonicalIdentifier(identifier) {
   const parsed = parseLinearIdentifier(identifier);
   return `${parsed.teamKey}-${parsed.number}`;
@@ -213,6 +224,7 @@ export function resolveApproval(options, deps = {}) {
     }
     const approvedPlanHash = hashFromReceipt(receipt, "planHash");
     const approvedSnapshotHash = hashFromReceipt(receipt, "snapshotHash");
+    const approvedAuthorId = authorIdFromReceipt(receipt);
     const nowIso = typeof receipt.nowIso === "string" ? receipt.nowIso.trim() : "";
     if (approvedPlanHash === "" || approvedSnapshotHash === "") {
       throw new Error("--dry-run-receipt must include planHash and snapshotHash");
@@ -222,6 +234,7 @@ export function resolveApproval(options, deps = {}) {
     return {
       approvedPlanHash,
       approvedSnapshotHash,
+      ...(approvedAuthorId !== "" ? { approvedAuthorId } : {}),
       ...(nowIso !== "" ? { nowIso } : {}),
       source: "dry-run-receipt",
     };
@@ -386,9 +399,20 @@ export async function buildItemPlan(source, options) {
   const policy = evaluateReviewPolicy(classification, record);
 
   const content = renderReviewContent(record, classification);
-  const expectedAuthorId = String(
+  const configuredAuthorId = String(
     options.expectedAuthorId ?? process.env.LINEAR_APP_ACTOR_ID ?? "",
   ).trim();
+  const approvedAuthorId = String(options.approval?.approvedAuthorId ?? "").trim();
+  if (
+    configuredAuthorId !== "" &&
+    approvedAuthorId !== "" &&
+    configuredAuthorId !== approvedAuthorId
+  ) {
+    throw new Error(
+      `configured Linear application actor ${configuredAuthorId} does not match reviewed actor ${approvedAuthorId}`,
+    );
+  }
+  const expectedAuthorId = approvedAuthorId || configuredAuthorId;
   const plan = planReviewCommentUpsert({
     issueId: record.id,
     key: record.key,
@@ -415,7 +439,10 @@ export async function buildItemPlan(source, options) {
     approvedPlanHash: approval?.approvedPlanHash ?? "",
   };
   const authorization = authorizeMutation(authorizationRequest, gates, drift);
-  const receipt = buildMutationReceipt(authorizationRequest, gates, drift);
+  const receipt = {
+    ...buildMutationReceipt(authorizationRequest, gates, drift),
+    expectedAuthorId,
+  };
 
   return {
     record,
@@ -430,6 +457,31 @@ export async function buildItemPlan(source, options) {
     nowIso,
     expectedAuthorId,
   };
+}
+
+export const LINEAR_APPLICATION_INFO_QUERY = `
+  query ClawSweeperLinearApplicationInfo {
+    applicationInfo { id name }
+  }
+`;
+
+export async function assertLinearApplicationActor(transport, expectedAuthorId) {
+  const expected = String(expectedAuthorId ?? "").trim();
+  if (expected === "") {
+    throw new Error("reviewed Linear application actor id is required before mutation");
+  }
+  const data = await transport(LINEAR_APPLICATION_INFO_QUERY, {});
+  const actorId =
+    typeof data?.applicationInfo?.id === "string" ? data.applicationInfo.id.trim() : "";
+  if (actorId === "") {
+    throw new Error("authenticated Linear application actor could not be verified");
+  }
+  if (actorId !== expected) {
+    throw new Error(
+      `authenticated Linear application actor ${actorId} does not match reviewed actor ${expected}`,
+    );
+  }
+  return { id: actorId, name: String(data.applicationInfo.name ?? "") };
 }
 
 /** Applies the authorized plan with a freshly minted Bearer token. Never logs the token. */
@@ -457,6 +509,8 @@ export async function applyPlan(plan, appCreds, deps = {}) {
       ...(deps.fetchImpl ? { fetchImpl } : {}),
     });
   }
+
+  await assertLinearApplicationActor(transport, plan.expectedAuthorId);
 
   if (plan.action === "create") {
     return transport(COMMENT_CREATE_MUTATION, { issueId: plan.issueId, body: plan.body });
@@ -578,6 +632,7 @@ export function summarize(result, mode) {
       result.plan.action !== "noop",
     planHash: result.plan.planHash,
     snapshotHash: result.record.snapshotHash,
+    expectedAuthorId: result.expectedAuthorId,
     receipt: result.receipt, // secret-free MutationReceipt (audit trail)
     approvalSource: result.approval?.source ?? null,
     nowIso: result.nowIso,

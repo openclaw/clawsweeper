@@ -237,6 +237,7 @@ export function loadApprovals(raw) {
     if (id === null) continue;
     const planHash = pickHash(entry, "planHash", "receipt");
     const snapshotHash = pickHash(entry, "snapshotHash", "receipt");
+    const approvedAuthorId = pickValue(entry, "expectedAuthorId", "receipt");
     const labelPlanHash = pickHash(entry, "labelPlanHash", "labelReceipt", "planHash");
     const labelSnapshotHash = pickHash(entry, "labelSnapshotHash", "labelReceipt", "snapshotHash");
     const commentApproved = planHash !== "" && snapshotHash !== "";
@@ -253,7 +254,11 @@ export function loadApprovals(raw) {
     const nowIso = typeof entry.nowIso === "string" ? entry.nowIso.trim() : "";
     map.set(id, {
       ...(commentApproved
-        ? { approvedPlanHash: planHash, approvedSnapshotHash: snapshotHash }
+        ? {
+            approvedPlanHash: planHash,
+            approvedSnapshotHash: snapshotHash,
+            ...(approvedAuthorId !== "" ? { approvedAuthorId } : {}),
+          }
         : {}),
       ...(labelApproved
         ? {
@@ -275,6 +280,17 @@ function pickHash(entry, key, receiptKey, nestedKey = key) {
   if (typeof receipt === "object" && receipt !== null) {
     const value = receipt[nestedKey];
     if (typeof value === "string" && value.trim() !== "") return value.trim().toLowerCase();
+  }
+  return "";
+}
+
+function pickValue(entry, key, receiptKey) {
+  const direct = entry[key];
+  if (typeof direct === "string" && direct.trim() !== "") return direct.trim();
+  const receipt = entry[receiptKey];
+  if (typeof receipt === "object" && receipt !== null) {
+    const value = receipt[key];
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
   }
   return "";
 }
@@ -582,6 +598,7 @@ export function summarizeItem(result, decision) {
     writeDecision: decision.reason,
     planHash: result.plan.planHash,
     snapshotHash: result.record.snapshotHash,
+    expectedAuthorId: result.expectedAuthorId,
     nowIso: result.nowIso,
     receipt: result.receipt,
   };

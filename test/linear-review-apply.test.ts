@@ -123,6 +123,7 @@ test("loadApprovals builds a map from a reviewed dry-run report", () => {
         identifier: "PAR-1",
         planHash: HASH_A,
         snapshotHash: HASH_B,
+        expectedAuthorId: "clawsweeper-app",
         labelReceipt: { planHash: HASH_B, snapshotHash: HASH_A },
         nowIso: "2026-06-24T00:00:00Z",
       },
@@ -134,6 +135,7 @@ test("loadApprovals builds a map from a reviewed dry-run report", () => {
   assert.deepEqual(map.get("PAR-1"), {
     approvedPlanHash: HASH_A,
     approvedSnapshotHash: HASH_B,
+    approvedAuthorId: "clawsweeper-app",
     approvedLabelPlanHash: HASH_B,
     approvedLabelSnapshotHash: HASH_A,
     nowIso: "2026-06-24T00:00:00Z",

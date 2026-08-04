@@ -824,6 +824,7 @@ export async function analyzeItem(hydrated, options, deps) {
     shaVerification,
     planAction: plan.action,
     planHash: plan.planHash,
+    expectedAuthorId: plan.expectedAuthorId,
     snapshotHash: record.snapshotHash,
     request,
     recordPath,

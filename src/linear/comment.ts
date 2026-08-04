@@ -23,8 +23,8 @@
  *   MutationRequest; the authority layer decides whether the plan may be applied.
  *   Producing a plan never implies applying it.
  *
- * planHash fingerprints the write, not the reasons:
- *   The hash covers { action, issueId, targetCommentId, body } only. Reasons and
+ * planHash fingerprints the write authority, not the reasons:
+ *   The hash covers { action, issueId, targetCommentId, body, expectedAuthorId }. Reasons and
  *   staleDuplicateIds are excluded so a re-plan that yields the same write produces
  *   the same hash and the operator-approved hash remains valid across re-plans that
  *   produce identical output.
@@ -54,7 +54,8 @@ export interface ReviewCommentPlan {
   body: string; // the full comment body that would be written (marker + content)
   targetCommentId: string | null; // id of the comment to update, null for create
   staleDuplicateIds: string[]; // ids of extra marker-matching comments to clean up
-  planHash: string; // sha256 over { action, issueId, targetCommentId, body }
+  expectedAuthorId: string; // reviewed stable application actor id; empty keeps apply closed
+  planHash: string; // sha256 over write fields plus expectedAuthorId
   reasons: string[]; // ordered, non-empty, human-readable action rationale
 }
 
@@ -108,8 +109,9 @@ function planHashFor(
   issueId: string,
   targetCommentId: string | null,
   body: string,
+  expectedAuthorId: string,
 ): string {
-  const canonical = { action, issueId, targetCommentId, body };
+  const canonical = { action, issueId, targetCommentId, body, expectedAuthorId };
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
@@ -124,7 +126,7 @@ function planHashFor(
  *      staleDuplicateIds = rest.
  *      keep.body === body → action "noop" (already up to date).
  *      keep.body !== body → action "update".
- *   5. planHash covers { action, issueId, targetCommentId, body } only.
+ *   5. planHash also binds the stable expected application actor.
  *   6. reasons is a non-empty ordered list of human-readable lines.
  */
 export function planReviewCommentUpsert(input: ReviewCommentUpsertInput): ReviewCommentPlan {
@@ -175,7 +177,7 @@ export function planReviewCommentUpsert(input: ReviewCommentUpsertInput): Review
     }
   }
 
-  const planHash = planHashFor(action, issueId, targetCommentId, body);
+  const planHash = planHashFor(action, issueId, targetCommentId, body, expectedAuthorId);
   return {
     action,
     issueId,
@@ -184,6 +186,7 @@ export function planReviewCommentUpsert(input: ReviewCommentUpsertInput): Review
     body,
     targetCommentId,
     staleDuplicateIds,
+    expectedAuthorId,
     planHash,
     reasons,
   };

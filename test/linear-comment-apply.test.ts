@@ -387,6 +387,30 @@ test("buildItemPlan rejects an approval when the approved snapshot hash is stale
   assert.match(result.authorization.reasons.join("\n"), /snapshot drift/);
 });
 
+test("buildItemPlan rejects configured actor drift from a reviewed receipt", async () => {
+  const source = new LinearItemSource(fakeTransport(hydratedIssueNode()).transport);
+  const probe = await buildItemPlan(source, {
+    identifier: "PAR-244",
+    nowIso: "2026-06-22T00:00:00Z",
+    expectedAuthorId: "clawsweeper-app",
+  });
+
+  await assert.rejects(
+    buildItemPlan(source, {
+      identifier: "PAR-244",
+      nowIso: probe.nowIso,
+      expectedAuthorId: "different-app",
+      approval: {
+        approvedPlanHash: probe.plan.planHash,
+        approvedSnapshotHash: probe.record.snapshotHash,
+        approvedAuthorId: "clawsweeper-app",
+        source: "dry-run-receipt",
+      },
+    }),
+    /configured Linear application actor different-app does not match reviewed actor clawsweeper-app/,
+  );
+});
+
 test("revalidateCommentWrite blocks a live write when the issue drifts after planning", async () => {
   const node = hydratedIssueNode();
   const source = new LinearItemSource(fakeTransport(node).transport);
@@ -517,6 +541,14 @@ test("applyPlan mints a Bearer token and runs commentCreate with the planned bod
       query: string;
       variables: Record<string, unknown>;
     };
+    if (parsed.query.includes("applicationInfo")) {
+      return new Response(
+        JSON.stringify({
+          data: { applicationInfo: { id: "clawsweeper-app", name: "ClawSweeper" } },
+        }),
+        { status: 200 },
+      );
+    }
     seen.mutation = parsed.query;
     seen.vars = parsed.variables;
     return new Response(JSON.stringify({ data: { commentCreate: { success: true } } }), {
@@ -524,7 +556,13 @@ test("applyPlan mints a Bearer token and runs commentCreate with the planned bod
     });
   };
 
-  const plan = { action: "create", issueId: "issue-uuid-244", targetCommentId: null, body: "BODY" };
+  const plan = {
+    action: "create",
+    issueId: "issue-uuid-244",
+    targetCommentId: null,
+    body: "BODY",
+    expectedAuthorId: "clawsweeper-app",
+  };
   const out = await applyPlan(
     plan,
     { clientId: "cid", clientSecret: "csec" },
@@ -539,6 +577,31 @@ test("applyPlan mints a Bearer token and runs commentCreate with the planned bod
   assert.match(seen.mutation ?? "", /commentCreate/);
   assert.deepEqual(seen.vars, { issueId: "issue-uuid-244", body: "BODY" });
   assert.deepEqual(out, { commentCreate: { success: true } });
+});
+
+test("applyPlan verifies the minted application actor before mutation", async () => {
+  const queries: string[] = [];
+  const transport = async (query: string): Promise<unknown> => {
+    queries.push(query);
+    return { applicationInfo: { id: "different-app", name: "Different App" } };
+  };
+
+  await assert.rejects(
+    applyPlan(
+      {
+        action: "create",
+        issueId: "issue-uuid-244",
+        targetCommentId: null,
+        body: "BODY",
+        expectedAuthorId: "clawsweeper-app",
+      },
+      { clientId: "cid", clientSecret: "csec" },
+      { transport },
+    ),
+    /authenticated Linear application actor different-app does not match reviewed actor clawsweeper-app/,
+  );
+  assert.equal(queries.length, 1);
+  assert.match(queries[0], /applicationInfo/);
 });
 
 test("applyPlan does nothing (and mints no token) for a noop plan", async () => {
@@ -590,6 +653,7 @@ test("resolveApproval loads approved plan and snapshot hashes from a saved dry-r
           identifier: "PAR-244",
           planHash,
           snapshotHash,
+          expectedAuthorId: "clawsweeper-app",
           nowIso,
           authorized: false,
         }),
@@ -598,6 +662,7 @@ test("resolveApproval loads approved plan and snapshot hashes from a saved dry-r
   assert.deepEqual(approval, {
     approvedPlanHash: planHash,
     approvedSnapshotHash: snapshotHash,
+    approvedAuthorId: "clawsweeper-app",
     nowIso,
     source: "dry-run-receipt",
   });

@@ -22,6 +22,9 @@ boundaries.
   plan and snapshot hashes from the current dry-run.
 - Existing marker comments are reused only when their stable Linear bot actor ID
   matches `LINEAR_APP_ACTOR_ID`; display names are never treated as ownership.
+- The expected actor ID is part of the reviewed comment plan hash and receipt. A
+  live lane queries `applicationInfo.id` with the minted app token and rejects an
+  identity mismatch before issuing any comment mutation.
 - `--apply-labels` produces a reviewed routing-label plan, but live label mutation
   remains disabled because Linear's replace-all label update cannot atomically
   preserve labels added concurrently.

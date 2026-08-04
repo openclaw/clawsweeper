@@ -247,6 +247,14 @@ test("planHash is sensitive to body content: different content → different has
   assert.notEqual(plan1.planHash, plan2.planHash);
 });
 
+test("planHash is sensitive to the expected application actor", () => {
+  const actorOne = planReviewCommentUpsert(makeInput({ expectedAuthorId: "actor-1" }));
+  const actorTwo = planReviewCommentUpsert(makeInput({ expectedAuthorId: "actor-2" }));
+  assert.equal(actorOne.expectedAuthorId, "actor-1");
+  assert.equal(actorTwo.expectedAuthorId, "actor-2");
+  assert.notEqual(actorOne.planHash, actorTwo.planHash);
+});
+
 test("planHash is sensitive to action/targetCommentId: create vs update → different hash", () => {
   const planCreate = planReviewCommentUpsert(makeInput());
   const staleBody = renderReviewCommentBody(ISSUE_A, "old");
