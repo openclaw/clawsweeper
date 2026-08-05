@@ -2,6 +2,10 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTION_EVENT_REASON_CODES, ACTION_EVENT_STATUSES } from "./action-ledger.js";
 import type { Args } from "./clawsweeper-args.js";
+import {
+  isBulkFilerExemptRepositoryPermission as isVerifiedMaintainerRepositoryPermission,
+  isMaintainerAuthorAssociation,
+} from "./clawsweeper-item-policy.js";
 import { mediaProofRuntimeHints, prepareMediaProofArtifacts } from "./clawsweeper-media-proof.js";
 import type {
   AcquiredReviewStartLease,
@@ -38,6 +42,29 @@ import {
 import { reviewContentCacheHit } from "./scheduler-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
+
+export function restoreVerifiedMaintainerPullRequestAuthorAssociation(
+  item: Pick<Item, "kind" | "author" | "authorAssociation" | "labels">,
+  repositoryPermission: (author: string) => string | null,
+): boolean {
+  if (
+    item.kind !== "pull_request" ||
+    !item.author.trim() ||
+    isMaintainerAuthorAssociation(item.authorAssociation) ||
+    !item.labels.some((label) => label.trim().toLowerCase() === "maintainer")
+  ) {
+    return false;
+  }
+  let permission: string | null;
+  try {
+    permission = repositoryPermission(item.author);
+  } catch {
+    return false;
+  }
+  if (!isVerifiedMaintainerRepositoryPermission(permission)) return false;
+  item.authorAssociation = "MEMBER";
+  return true;
+}
 
 export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWorkflowDependencies) {
   const {
@@ -238,6 +265,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const leaseAcquisitionFailureDetails: string[] = [];
       // oxfmt-ignore
       for (const item of candidates) {
+        const restoredMaintainerAssociation =
+          !localOnly &&
+          restoreVerifiedMaintainerPullRequestAuthorAssociation(item, (author) =>
+            bulkFilerRepositoryPermission(author, bulkFilerRepositoryPermissionCache),
+          );
         activeReviewItem = item;
         let reviewItemFailed = false;
         const previousReviewMutationRunner = dependencies.activeReviewMutationRunner;
@@ -301,9 +333,16 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           )
             ? null
             : existingPriorReview;
-        if (bulkFilerPolicyInvalidatesCachedReview(priorReview?.markdown ?? null, bulkFilerExemptionApplied)) {
-          // A prior full review was made under a now-inapplicable bulk-filer policy.
-          // Re-run it instead of refreshing its cached suppression fields.
+        if (
+          (restoredMaintainerAssociation &&
+            priorReview !== null &&
+            !isMaintainerAuthorAssociation(
+              frontMatterValue(priorReview.markdown, "author_association"),
+            )) ||
+          bulkFilerPolicyInvalidatesCachedReview(priorReview?.markdown ?? null, bulkFilerExemptionApplied)
+        ) {
+          // Ownership and bulk-filer policy changes require a fresh decision;
+          // carrying stale front matter would preserve the wrong safeguards.
           priorReview = null;
         }
         const expectedPreviousReviewDigest = priorReview
