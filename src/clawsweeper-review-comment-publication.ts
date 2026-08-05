@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
@@ -140,10 +141,11 @@ export function createReviewCommentPublication(
   }
 
   function writeCommentPayload(number: number, body: string): string {
-    const commentFile = join(ROOT, ".artifacts", `comment-${number}.md`);
+    const commentPath = join(ROOT, ".artifacts", `comment-${number}-${randomUUID()}`);
+    const commentFile = `${commentPath}.md`;
     ensureDir(dirname(commentFile));
     writeFileSync(commentFile, body, "utf8");
-    const commentPayloadFile = join(ROOT, ".artifacts", `comment-${number}.json`);
+    const commentPayloadFile = `${commentPath}.json`;
     writeFileSync(commentPayloadFile, JSON.stringify({ body }), "utf8");
     return commentPayloadFile;
   }

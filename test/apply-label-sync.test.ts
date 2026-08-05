@@ -9,6 +9,7 @@ import {
   itemSourceRevisionSha256ForTest,
   renderReviewStartStatusComment,
 } from "../dist/clawsweeper.js";
+import { createReviewCommentPublication } from "../dist/clawsweeper-review-comment-publication.js";
 
 import {
   implementedCloseReport,
@@ -23,6 +24,29 @@ import {
   withMockGh,
   workPlanCandidateReport,
 } from "./helpers.ts";
+
+test("same-item comment payloads never overwrite an earlier pending mutation", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const publication = createReviewCommentPublication({
+      root,
+      ensureDir: (directory: string) => mkdirSync(directory, { recursive: true }),
+    } as Parameters<typeof createReviewCommentPublication>[0]);
+
+    const firstBody = "ClawSweeper applied the proposed close for this PR.";
+    const secondBody = "A concurrent worker published a different durable review.";
+    const firstPayload = publication.writeCommentPayload(321, firstBody);
+    const secondPayload = publication.writeCommentPayload(321, secondBody);
+
+    assert.notEqual(firstPayload, secondPayload);
+    assert.deepEqual(JSON.parse(readFileSync(firstPayload, "utf8")), { body: firstBody });
+    assert.deepEqual(JSON.parse(readFileSync(secondPayload, "utf8")), { body: secondBody });
+    assert.equal(readFileSync(firstPayload.replace(/\.json$/, ".md"), "utf8"), firstBody);
+    assert.equal(readFileSync(secondPayload.replace(/\.json$/, ".md"), "utf8"), secondBody);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("partial label-sync authentication failures preserve labels already applied", () => {
   const root = mkdtempSync(tmpPrefix);
