@@ -207,6 +207,97 @@ Full review comments:
   assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
 });
 
+test("production-owner HTTP fault-boundary proof unblocks shared channel reliability PRs", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "112370",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(["channel: telegram", "clawsweeper:automerge"]),
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+    pull_files: JSON.stringify([
+      "src/channels/draft-stream-loop.ts",
+      "src/channels/draft-stream-loop.test.ts",
+    ]),
+    pull_files_truncated: false,
+  })}
+
+## Summary
+
+Keep this shared channel reliability PR open for automerge.
+
+## What This Changes
+
+Preserves the newest message when an older delivery receives an HTTP 429.
+
+## Best Possible Solution
+
+Merge after the production-owner transport-boundary proof and required checks pass.
+
+${realBehaviorProofReportSection({
+  status: "sufficient",
+  evidenceKind: "terminal",
+  needsContributorAction: false,
+  summary:
+    "The real production owner and grammY HTTP client sent requests to a fault-injecting local HTTP server; the recorded 429 older → 200 newest trace confirms the after-fix ordering.",
+})}
+
+## Telegram Visible Proof
+
+Status: not_needed
+
+Summary: Shared retry and ordering work does not change visible Telegram chat behavior.
+
+## Mantis Recommendation
+
+Status: not_recommended
+
+Scenario: none
+
+Reason: The production HTTP transport boundary already proves this internal reliability change.
+
+Maintainer comment:
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.97
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+  const markers = reviewAutomationMarkersFromReport(report);
+
+  assert.doesNotMatch(comment, /needs real behavior proof before merge/i);
+  assert.doesNotMatch(comment, /Mantis proof suggestion/);
+  assert.match(markers, /clawsweeper-verdict:pass/);
+  assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/);
+
+  const mockOnlyReport = report
+    .replace("Status: sufficient", "Status: mock_only")
+    .replace("Evidence kind: terminal", "Evidence kind: none")
+    .replace("Needs contributor action: false", "Needs contributor action: true")
+    .replace(
+      "The real production owner and grammY HTTP client sent requests to a fault-injecting local HTTP server; the recorded 429 older → 200 newest trace confirms the after-fix ordering.",
+      "Isolated unit tests stub the transport client and never execute the production HTTP boundary.",
+    );
+  const mockOnlyComment = renderReviewCommentFromReport(mockOnlyReport, "none");
+  const mockOnlyMarkers = reviewAutomationMarkersFromReport(mockOnlyReport);
+
+  assert.match(mockOnlyComment, /needs real behavior proof before merge/i);
+  assert.match(mockOnlyMarkers, /clawsweeper-verdict:needs-human/);
+  assert.doesNotMatch(mockOnlyMarkers, /clawsweeper-verdict:pass/);
+});
+
 test("screenshot-only browser runtime proof blocks pass markers", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",

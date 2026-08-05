@@ -13,7 +13,7 @@ const DEFAULT_IGNORED_CHECKS = [
   "notify",
   "Stale",
 ];
-const TRANSIENT_CANCELLED_CHECKS = new Set(["real behavior proof"]);
+const TRANSIENT_CANCELLED_CHECKS = new Set(["real behavior proof", "pr context and evidence"]);
 const LEDGER_COMMAND_STATUSES = new Set(["claimed", "executed", "skipped", "waiting"]);
 const LEDGER_COMMAND_STRING_FIELDS = [
   "idempotency_key",

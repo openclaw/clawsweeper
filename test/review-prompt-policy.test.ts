@@ -81,6 +81,9 @@ test("review prompts treat target AGENTS as optional review policy", () => {
       prompt,
       /do not conflict with this prompt or higher-priority\s+system\/developer\s+instructions/,
     );
+    assert.match(prompt, /read every applicable ancestor `AGENTS\.md`\s+for each changed path/);
+    assert.match(prompt, /Nested instructions apply only within their own subtree/);
+    assert.match(prompt, /do not import policy from sibling or consumer directories/);
     assert.match(prompt, /existing repository\s+profiles and owner\/default fallback behavior/);
     assert.match(prompt, /Use target `AGENTS\.md` policy as review input/);
   }
@@ -204,6 +207,67 @@ test("review prompt requires real behavior proof for PR reviews", () => {
     /Unit tests, mocks, snapshots, lint, typechecks, and CI are supplemental only/,
   );
   assert.match(prompt, /do not request ClawSweeper repair markers/);
+});
+
+test("review prompt accepts real production transport-boundary proof for reliability fixes", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
+
+  assert.match(prompt, /actual production owner and real transport client/);
+  assert.match(prompt, /exercising an injected fault/);
+  assert.match(prompt, /recorded request\/response trace/);
+  assert.match(prompt, /`status: "sufficient"`\s+and `needsContributorAction: false`/);
+  assert.match(prompt, /do not require unrelated live-channel\s+access or a full application/);
+  assert.match(prompt, /expressly authorized production-path harnesses/);
+  assert.match(prompt, /Mocked transport clients and\s+isolated unit tests remain `mock_only`/);
+  assert.match(prompt, /preserve existing browser-runtime, CSP,\s+auth, and security safeguards/);
+  assert.match(
+    schema.properties.realBehaviorProof.description,
+    /actual production owner and real transport client exercising an injected fault/,
+  );
+  assert.match(
+    schema.properties.realBehaviorProof.description,
+    /authorized production-path harnesses/,
+  );
+  assert.match(schema.properties.realBehaviorProof.description, /mocked transport clients/);
+  assert.match(schema.properties.agentsPolicyStatus.description, /applicable ancestor-scoped/);
+  assert.match(schema.properties.telegramVisibleProof.description, /Internal retry/);
+  assert.match(
+    schema.properties.mantisRecommendation.description,
+    /Do not recommend it for internal reliability/,
+  );
+});
+
+test("generated shared-channel review prompt preserves scoped policy and real fault evidence", () => {
+  const proof =
+    "The real production owner and grammY HTTP client produced a recorded 429 older → 200 newest trace against a local HTTP server.";
+  const runtimePrompt = reviewPromptForTest(
+    item({
+      kind: "pull_request",
+      number: 112370,
+      title: "fix: preserve newest shared channel draft across Telegram flood waits",
+      labels: ["channel: telegram"],
+      url: "https://github.com/openclaw/openclaw/pull/112370",
+    }),
+    {
+      issue: { number: 112370, body: proof },
+      comments: [{ author: "contributor", body: proof }],
+      timeline: [],
+      pullFiles: [
+        { filename: "src/channels/draft-stream-loop.ts" },
+        { filename: "src/channels/draft-stream-loop.test.ts" },
+      ],
+    },
+    { mainSha: "abc123", latestRelease: null },
+  );
+
+  assert.match(runtimePrompt, /"filename": "src\/channels\/draft-stream-loop\.ts"/);
+  assert.match(runtimePrompt, /grammY HTTP client produced a recorded 429 older → 200 newest/);
+  assert.match(runtimePrompt, /do not import policy from sibling or consumer directories/);
+  assert.doesNotMatch(runtimePrompt, /extensions\/telegram\/AGENTS\.md/);
+  assert.match(runtimePrompt, /actual production owner and real transport client/);
+  assert.match(runtimePrompt, /`telegramVisibleProof\.status: "not_needed"`/);
+  assert.match(runtimePrompt, /`mantisRecommendation\.status: "not_recommended"`/);
 });
 
 test("media proof preparation extracts browser-unplayable ffmpeg-decodeable video proof", () => {
@@ -466,6 +530,11 @@ test("review prompt classifies Telegram visible proof candidates", () => {
   assert.match(prompt, /telegramVisibleProof/);
   assert.match(prompt, /telegram-crabbox-e2e-proof/);
   assert.match(prompt, /message formatting/);
+  assert.match(prompt, /retry\/network reliability only/);
+  assert.match(prompt, /shared retry\/ordering work/);
+  assert.match(prompt, /A label, title, consumer, or example does not make internal/);
+  assert.match(prompt, /`telegramVisibleProof\.status: "not_needed"`/);
+  assert.match(prompt, /`mantisRecommendation\.status: "not_recommended"`/);
   assert.match(prompt, /mantis: telegram-visible-proof/);
   assert.match(prompt, /mantisRecommendation/);
   assert.match(prompt, /@openclaw-mantis/);

@@ -557,7 +557,7 @@
     "agentsPolicyStatus": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Structured status for the target repository AGENTS.md review policy check. Report whether AGENTS.md was found, read fully, and applied to this review without duplicating policy text.",
+      "description": "Structured status for the target repository root and applicable ancestor-scoped AGENTS.md review policy. Nested instructions apply only within their own subtree, never to sibling or consumer directories. Report whether applicable policy was found, read fully, and applied without duplicating policy text.",
       "required": ["found", "readFully", "applied", "status", "summary"],
       "properties": {
         "found": {
@@ -698,7 +698,7 @@
     "realBehaviorProof": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Dedicated PR proof assessment. For external PRs, after-fix evidence from a real setup is required unless the PR only changes files under docs/; tests, mocks, snapshots, lint, typechecks, and CI are supplemental only.",
+      "description": "Dedicated PR proof assessment. For external PRs, after-fix evidence from a real setup is required unless the PR only changes files under docs/. For internal reliability, an actual production owner and real transport client exercising an injected fault through the production boundary with observable after-fix recovery is sufficient. Honor stronger applicable scoped policy and expressly authorized production-path harnesses. Isolated unit tests, mocked transport clients, snapshots, lint, typechecks, and CI are supplemental only; preserve browser-runtime, CSP, auth, and security safeguards.",
       "required": ["status", "summary", "evidenceKind", "needsContributorAction"],
       "properties": {
         "status": {
@@ -774,7 +774,7 @@
     "telegramVisibleProof": {
       "type": "object",
       "additionalProperties": false,
-      "description": "For Telegram PRs, classify whether the change is user-visible and easy to demonstrate with the telegram-crabbox-e2e-proof skill.",
+      "description": "For Telegram PRs, classify whether the change is user-visible and easy to demonstrate with the telegram-crabbox-e2e-proof skill. Internal retry, ordering, or transport reliability without changed visible chat behavior is not_needed.",
       "required": ["status", "summary"],
       "properties": {
         "status": {
@@ -790,7 +790,7 @@
     "mantisRecommendation": {
       "type": "object",
       "additionalProperties": false,
-      "description": "For PRs, recommend a copy-paste maintainer comment for OpenClaw Mantis only when Telegram, Discord, or web UI chat proof would materially help review. Mantis is proof-only: it may reproduce or inspect those surfaces and return redacted screenshots, transcripts, logs, or interaction results. Do not ask Mantis to edit code, fix CI, update branches, push commits, repair PRs, change labels or comments, close items, or perform other GitHub mutations; those belong to ClawSweeper's deterministic repair, apply, and automerge lanes. Do not claim Mantis has run and do not dispatch any workflow.",
+      "description": "For PRs, recommend a copy-paste maintainer comment for OpenClaw Mantis only when Telegram, Discord, or web UI chat proof would materially help review. Do not recommend it for internal reliability without changed visible chat behavior. Mantis is proof-only: it may reproduce or inspect those surfaces and return redacted screenshots, transcripts, logs, or interaction results. Do not ask Mantis to edit code, fix CI, update branches, push commits, repair PRs, change labels or comments, close items, or perform other GitHub mutations; those belong to ClawSweeper's deterministic repair, apply, and automerge lanes. Do not claim Mantis has run and do not dispatch any workflow.",
       "required": ["status", "scenario", "reason", "maintainerComment"],
       "properties": {
         "status": {
