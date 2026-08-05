@@ -1667,6 +1667,9 @@ jobs:
         env:
           ADMISSION_RETRY: ${{ steps.live-item.outputs.admission_retry }}
           RETRY_KIND: ${{ steps.live-item.outputs.retry_kind || steps.reserve-exact-review-lease.outputs.retry_kind || steps.review-exact-event-item.outputs.retry_kind }}
+          RETRY_AT: ${{ steps.live-item.outputs.retry_at || steps.reserve-exact-review-lease.outputs.retry_at || steps.review-exact-event-item.outputs.retry_at }}
+          DIRECT_PUBLICATION_FAILURE_KIND: ${{ steps.prepare-direct-exact-review-publication.outputs.failure_kind }}
+          DIRECT_PUBLICATION_RETRY_AT: ${{ steps.prepare-direct-exact-review-publication.outputs.retry_at }}
           TARGET_ENABLED: ${{ steps.target.outputs.target_enabled }}
           LIVE_OUTCOME: ${{ steps.live-item.outcome }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
@@ -1680,7 +1683,14 @@ jobs:
         run: |
           outcome=failure
           requeue_latest=false
-          if [ "$ADMISSION_RETRY" = "true" ] && [ -z "$RETRY_KIND" ]; then
+          retry_kind="$RETRY_KIND"
+          retry_at="$RETRY_AT"
+          if [ "$DIRECT_PUBLICATION_FAILURE_KIND" = "github_rate_limit" ] && [ "$PUBLICATION_QUEUE_OUTCOME" != "success" ]; then
+            test -n "$DIRECT_PUBLICATION_RETRY_AT"
+            retry_kind=throttle
+            retry_at="$DIRECT_PUBLICATION_RETRY_AT"
+          fi
+          if [ "$ADMISSION_RETRY" = "true" ] && [ -z "$retry_kind" ]; then
             outcome=success
             requeue_latest=true
           elif [ "$TARGET_ENABLED" = "false" ]; then
@@ -1698,6 +1708,8 @@ jobs:
           echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
           echo "requeue_latest=$requeue_latest" >> "$GITHUB_OUTPUT"
           echo "direct_lifecycle_requeue=$DIRECT_LIFECYCLE_REQUEUE" >> "$GITHUB_OUTPUT"
+          echo "retry_kind=$retry_kind" >> "$GITHUB_OUTPUT"
+          echo "retry_at=$retry_at" >> "$GITHUB_OUTPUT"
 
       - name: Complete exact-review queue lease
         id: complete-exact-review-queue
@@ -1712,8 +1724,8 @@ jobs:
           QUEUE_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           REQUEUE_LATEST: ${{ steps.exact-review-generation-result.outputs.requeue_latest }}
-          RETRY_KIND: ${{ steps.live-item.outputs.retry_kind || steps.reserve-exact-review-lease.outputs.retry_kind || steps.review-exact-event-item.outputs.retry_kind }}
-          RETRY_AT: ${{ steps.live-item.outputs.retry_at || steps.reserve-exact-review-lease.outputs.retry_at || steps.review-exact-event-item.outputs.retry_at }}
+          RETRY_KIND: ${{ steps.exact-review-generation-result.outputs.retry_kind }}
+          RETRY_AT: ${{ steps.exact-review-generation-result.outputs.retry_at }}
           DIRECT_PUBLICATION_ACCEPTED: ${{ steps.direct-exact-review-publication.outputs.accepted }}
           DIRECT_PUBLICATION_SUPERSEDED: ${{ steps.direct-exact-review-publication.outputs.superseded }}
           DIRECT_LIFECYCLE_OUTCOME: ${{ steps.finalize-direct-exact-review-lifecycle.outcome }}
@@ -1843,6 +1855,7 @@ jobs:
               ) ||
               (
                 steps.exact-review-generation-result.outputs.outcome != 'success' &&
+                steps.exact-review-generation-result.outputs.retry_kind == '' &&
                 steps.reserve-exact-review-lease.outputs.status != 'held' &&
                 steps.reserve-exact-review-lease.outputs.status != 'superseded'
               )
