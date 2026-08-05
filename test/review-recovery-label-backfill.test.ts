@@ -388,6 +388,45 @@ test("failed infrastructure reviews never clear issue or exact-head pull-request
   assert.equal(summary.retained, 2);
 });
 
+test("a newer failed canonical review blocks recovery until a later successful review", async () => {
+  const sha = "d".repeat(40);
+  const failedReview = (number: number, at: string, pull = false): TestComment => {
+    const comment = completedReview(number, {
+      at,
+      ...(pull ? { reviewedAt: at, sha } : {}),
+    });
+    comment.body = comment.body.replace(
+      "ClawSweeper review: keep open.",
+      "ClawSweeper review: did not complete due to Codex infrastructure failure.",
+    );
+    return comment;
+  };
+  const successReview = (number: number, at: string, pull = false) =>
+    completedReview(number, { at, ...(pull ? { reviewedAt: at, sha } : {}) });
+  const older = "2026-08-05T08:00:00.000Z";
+  const newer = "2026-08-05T10:00:00.000Z";
+  const fixture = githubFixture({
+    numbers: [223, 224, 225, 226],
+    pullHeads: new Map([
+      [225, sha],
+      [226, sha],
+    ]),
+    comments: new Map([
+      [223, [successReview(223, older), failedReview(223, newer)]],
+      [224, [successReview(224, newer), failedReview(224, older)]],
+      [225, [failedReview(225, newer, true), successReview(225, older, true)]],
+      [226, [failedReview(226, older, true), successReview(226, newer, true)]],
+    ]),
+  });
+
+  const summary = await runBackfill(fixture);
+
+  assert.deepEqual(fixture.deletions, [224, 226]);
+  assert.equal(summary.cleared, 2);
+  assert.equal(summary.retained, 2);
+  assert.equal(summary.errors, 0);
+});
+
 test("legacy created-only timestamps and human-only placeholders remain conservative", async () => {
   const legacyReview = completedReview(231, { at: "2026-08-05T10:00:00.000Z" });
   const oldPlaceholder = startedPlaceholder(231, "2026-08-05T09:00:00.000Z");

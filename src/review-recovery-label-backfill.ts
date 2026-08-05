@@ -60,6 +60,7 @@ function completedReviewSupersedesPlaceholder(
 ): boolean {
   let completedAt = Number.NEGATIVE_INFINITY;
   let startedAt = Number.NEGATIVE_INFINITY;
+  let failedAt = Number.NEGATIVE_INFINITY;
   for (const comment of comments) {
     if (!isBotComment(comment) || typeof comment.body !== "string") continue;
     const markers = trailingHtmlComments(comment.body);
@@ -74,17 +75,27 @@ function completedReviewSupersedesPlaceholder(
       if (!Number.isFinite(activity)) return false;
       startedAt = Math.max(startedAt, activity);
     }
-    if (
-      started ||
-      markers.some((marker) => markerForItem(marker, "review-status:stale")) ||
+    const canonical = markers.some(
+      (marker) =>
+        /^<!--\s*clawsweeper-review\s+item=\d+(?:\s+[^>]*)?\s*-->$/i.test(marker) &&
+        markerAttribute(marker, "item") === String(number),
+    );
+    const failed =
       /^ClawSweeper review:\s*did not complete due to Codex infrastructure failure\./i.test(
         comment.body.trimStart(),
-      ) ||
-      !markers.some(
-        (marker) =>
-          /^<!--\s*clawsweeper-review\s+item=\d+(?:\s+[^>]*)?\s*-->$/i.test(marker) &&
-          markerAttribute(marker, "item") === String(number),
-      )
+      );
+    if (failed && canonical) {
+      const version = markers.findLast((marker) => markerForItem(marker, "review-version"));
+      const reviewedAt = version ? Date.parse(markerAttribute(version, "reviewed_at") ?? "") : NaN;
+      const activity = Number.isFinite(reviewedAt) ? reviewedAt : commentActivity(comment);
+      if (!Number.isFinite(activity)) return false;
+      failedAt = Math.max(failedAt, activity);
+    }
+    if (
+      started ||
+      failed ||
+      markers.some((marker) => markerForItem(marker, "review-status:stale")) ||
+      !canonical
     ) {
       continue;
     }
@@ -102,7 +113,7 @@ function completedReviewSupersedesPlaceholder(
     const activity = Number.isFinite(reviewedAt) ? reviewedAt : commentActivity(comment);
     if (Number.isFinite(activity)) completedAt = Math.max(completedAt, activity);
   }
-  return Number.isFinite(completedAt) && completedAt >= startedAt;
+  return Number.isFinite(completedAt) && completedAt >= startedAt && completedAt > failedAt;
 }
 
 export async function runReviewRecoveryLabelBackfill(
