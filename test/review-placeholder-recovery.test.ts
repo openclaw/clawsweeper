@@ -14,13 +14,73 @@ import {
 test("scheduled placeholder recovery also performs bounded recovery-label reconciliation", () => {
   const source = readFileSync("src/review-placeholder-recovery.ts", "utf8");
   const cli = source.slice(source.indexOf("if (invokedPath && invokedPath ==="));
-  const recovery = cli.indexOf("await runReviewPlaceholderRecovery()");
-  const backfill = cli.indexOf("await runReviewRecoveryLabelBackfill()");
+  const runner = source.slice(source.indexOf("export async function runReviewPlaceholderRecovery"));
 
-  assert.ok(recovery >= 0);
-  assert.ok(backfill > recovery);
-  assert.match(cli.slice(recovery, backfill), /if \(process\.env\.TARGET_WRITE_TOKEN\)/);
-  assert.match(cli.slice(backfill), /review-recovery label reconciliation skipped:/);
+  assert.match(cli, /runReviewPlaceholderRecovery\(\{ reconcileRecoveryLabels: true \}\)/);
+  assert.match(runner, /if \(options\.reconcileRecoveryLabels && targetWriteToken\)/);
+  assert.match(runner, /runReviewRecoveryLabelBackfill\(\{/);
+  assert.match(runner, /github,[\s\S]*fetchComments: fetchReviewComments/);
+  assert.match(runner, /review-recovery label reconciliation skipped:/);
+});
+
+test("the scheduled reconciler reuses recovery transport to clear an exact-head completed PR", async () => {
+  const head = "da73f50fbca83cc89f3e8f33f61e27963351403b";
+  let deletions = 0;
+  const fetchImpl = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    if (url.pathname === "/search/issues") {
+      const query = url.searchParams.get("q") ?? "";
+      return Response.json(
+        query.includes("label:")
+          ? { total_count: 1, items: [{ number: 112370, pull_request: {} }] }
+          : { total_count: 0, items: [] },
+      );
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/issues/112370/comments") {
+      return Response.json([
+        {
+          body: [
+            "ClawSweeper review: keep open.",
+            `<!-- clawsweeper-review-version item=112370 reviewed_at=2026-08-05T08:07:22.093Z sha=${head} v=1 -->`,
+            "<!-- clawsweeper-review item=112370 -->",
+          ].join("\n\n"),
+          created_at: "2026-08-05T08:07:22.093Z",
+          user: { login: "clawsweeper[bot]", type: "Bot" },
+        },
+      ]);
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/pulls/112370") {
+      return Response.json({ head: { sha: head } });
+    }
+    if (
+      url.pathname === "/repos/openclaw/openclaw/issues/112370/labels/clawsweeper-recovery-stuck"
+    ) {
+      assert.equal(init?.method, "DELETE");
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer target-token");
+      deletions += 1;
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected request: ${init?.method ?? "GET"} ${url.pathname}`);
+  };
+
+  await runReviewPlaceholderRecovery({
+    env: {
+      GH_TOKEN: "read-token",
+      TARGET_WRITE_TOKEN: "target-token",
+      CLAWSWEEPER_WEBHOOK_SECRET: "webhook-secret",
+      GITHUB_API_URL: "https://api.github.test",
+      QUEUE_URL: "https://queue.test",
+      TARGET_REPO: "openclaw/openclaw",
+    },
+    fetchImpl: fetchImpl as typeof fetch,
+    now: new Date("2026-08-05T12:00:00.000Z"),
+    reconcileRecoveryLabels: true,
+  });
+
+  assert.equal(deletions, 1);
 });
 
 const now = new Date("2026-07-17T12:00:00.000Z");

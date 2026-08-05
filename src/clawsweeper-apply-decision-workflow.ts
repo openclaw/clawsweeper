@@ -1907,31 +1907,21 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
               });
               if (complete && item.labels.includes(REVIEW_RECOVERY_STUCK_LABEL)) {
                 try {
-                  if (
-                    clearResolvedReviewRecoveryLabel({
-                      number,
-                      labels: item.labels,
-                      complete,
-                      removeLabel: removeIssueLabel,
-                      onMutation: recordMutation,
-                    })
-                  ) {
-                    markdown = replaceFrontMatterValue(
-                      markdown,
-                      "labels",
-                      JSON.stringify(item.labels),
-                    );
-                    markdown = replaceFrontMatterValue(
-                      markdown,
-                      "labels_synced_at",
-                      new Date().toISOString(),
-                    );
-                    rememberSelfMutationUpdatedAt();
-                    syncReasons.push("cleared resolved review recovery label");
-                    console.error(
-                      `[apply] cleared resolved review recovery label for #${number}`,
-                    );
-                  }
+                  clearResolvedReviewRecoveryLabel({
+                    number,
+                    labels: item.labels,
+                    complete,
+                    removeLabel: removeIssueLabel,
+                    onMutation: recordMutation,
+                  });
+                  markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+                  markdown = replaceFrontMatterValue(
+                    markdown,
+                    "labels_synced_at",
+                    new Date().toISOString(),
+                  );
+                  rememberSelfMutationUpdatedAt();
+                  syncReasons.push("cleared resolved review recovery label");
                 } catch (error) {
                   if (error instanceof GitHubRuntimeBudgetError) throw error;
                   console.error(

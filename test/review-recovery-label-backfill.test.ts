@@ -6,6 +6,7 @@ import {
   REVIEW_RECOVERY_STUCK_LABEL,
   runReviewRecoveryLabelBackfill,
 } from "../dist/review-recovery-label-backfill.js";
+import { isClawSweeperBotComment } from "../dist/review-placeholder-recovery.js";
 
 const now = new Date("2026-08-05T12:00:00.000Z");
 const trustedBot = { login: "clawsweeper[bot]", type: "Bot" };
@@ -128,6 +129,48 @@ function githubFixture(options: {
   return { fetchImpl: fetchImpl as typeof fetch, deletions, commentPages, searchPages };
 }
 
+async function runBackfill(
+  fixture: ReturnType<typeof githubFixture>,
+  options: { now?: Date; maximumChecks?: number; maximumRecoveries?: number } = {},
+) {
+  const github = async <T>(path: string): Promise<T> => {
+    const response = await fixture.fetchImpl(`${env.GITHUB_API_URL}${path}`, {
+      headers: { authorization: `Bearer ${env.GH_TOKEN}` },
+    });
+    if (!response.ok) throw new Error(`GET ${path} returned ${response.status}`);
+    return (await response.json()) as T;
+  };
+  return runReviewRecoveryLabelBackfill({
+    repository: env.TARGET_REPO,
+    now: options.now ?? now,
+    maximumChecks: options.maximumChecks ?? 20,
+    maximumRecoveries: options.maximumRecoveries ?? 5,
+    github,
+    fetchComments: async (number) => {
+      const comments: TestComment[] = [];
+      for (let page = 1; page <= 3; page += 1) {
+        const values = await github<TestComment[]>(
+          `/repos/${env.TARGET_REPO}/issues/${number}/comments?sort=created&direction=desc&per_page=100&page=${page}`,
+        );
+        comments.push(...values);
+        if (values.length < 100) return { comments, complete: true };
+      }
+      return { comments, complete: false };
+    },
+    removeLabel: async (number) => {
+      const path = `/repos/${env.TARGET_REPO}/issues/${number}/labels/${REVIEW_RECOVERY_STUCK_LABEL}`;
+      const response = await fixture.fetchImpl(`${env.GITHUB_API_URL}${path}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${env.TARGET_WRITE_TOKEN}` },
+      });
+      if (response.status === 404) return "missing";
+      if (!response.ok) throw new Error(`DELETE ${path} returned ${response.status}`);
+      return "removed";
+    },
+    isBotComment: isClawSweeperBotComment,
+  });
+}
+
 test("completed publication clears its recovery label and preserves other labels", () => {
   const labels = ["priority: high", REVIEW_RECOVERY_STUCK_LABEL, "maturity: ready"];
   const calls: { number: number; label: string; onMutation?: () => void }[] = [];
@@ -211,11 +254,7 @@ test("recovery-label backfill clears only trusted, canonical completed reviews",
     ]),
   });
 
-  const summary = await runReviewRecoveryLabelBackfill({
-    env,
-    fetchImpl: fixture.fetchImpl,
-    now,
-  });
+  const summary = await runBackfill(fixture);
 
   assert.deepEqual(fixture.deletions, [101, 107]);
   assert.deepEqual(summary, {
@@ -260,11 +299,7 @@ test("a newer started lease overrides old review publication and unrelated comme
     ]),
   });
 
-  const summary = await runReviewRecoveryLabelBackfill({
-    env,
-    fetchImpl: fixture.fetchImpl,
-    now,
-  });
+  const summary = await runBackfill(fixture);
 
   assert.deepEqual(fixture.deletions, [202]);
   assert.equal(summary.cleared, 1);
@@ -315,17 +350,67 @@ test("pull-request cleanup requires a completed durable review of its exact live
     ]),
   });
 
-  const summary = await runReviewRecoveryLabelBackfill({
-    env,
-    fetchImpl: fixture.fetchImpl,
-    now,
-  });
+  const summary = await runBackfill(fixture);
 
   assert.deepEqual(fixture.deletions, [211]);
   assert.equal(summary.checked, 4);
   assert.equal(summary.cleared, 1);
   assert.equal(summary.retained, 3);
   assert.equal(summary.errors, 0);
+});
+
+test("failed infrastructure reviews never clear issue or exact-head pull-request escalation", async () => {
+  const sha = "c".repeat(40);
+  const failedIssue = completedReview(221);
+  const failedPull = completedReview(222, {
+    reviewedAt: "2026-08-05T10:00:00.000Z",
+    sha,
+  });
+  for (const comment of [failedIssue, failedPull]) {
+    comment.body = comment.body.replace(
+      "ClawSweeper review: keep open.",
+      "ClawSweeper review: did not complete due to Codex infrastructure failure.",
+    );
+  }
+  const fixture = githubFixture({
+    numbers: [221, 222],
+    pullHeads: new Map([[222, sha]]),
+    comments: new Map([
+      [221, [failedIssue]],
+      [222, [failedPull]],
+    ]),
+  });
+
+  const summary = await runBackfill(fixture);
+
+  assert.deepEqual(fixture.deletions, []);
+  assert.equal(summary.cleared, 0);
+  assert.equal(summary.retained, 2);
+});
+
+test("legacy created-only timestamps and human-only placeholders remain conservative", async () => {
+  const legacyReview = completedReview(231, { at: "2026-08-05T10:00:00.000Z" });
+  const oldPlaceholder = startedPlaceholder(231, "2026-08-05T09:00:00.000Z");
+  delete legacyReview.updated_at;
+  delete oldPlaceholder.updated_at;
+  const humanOnlyPlaceholder: TestComment = {
+    body: "ClawSweeper status: review started.\n\nLegacy placeholder without machine marker.",
+    created_at: "2026-08-05T11:00:00.000Z",
+    user: trustedBot,
+  };
+  const fixture = githubFixture({
+    numbers: [231, 232],
+    comments: new Map([
+      [231, [legacyReview, oldPlaceholder]],
+      [232, [completedReview(232), humanOnlyPlaceholder]],
+    ]),
+  });
+
+  const summary = await runBackfill(fixture);
+
+  assert.deepEqual(fixture.deletions, [231]);
+  assert.equal(summary.cleared, 1);
+  assert.equal(summary.retained, 1);
 });
 
 test("backfill treats a missing label as an idempotent result without claiming removal", async () => {
@@ -335,11 +420,7 @@ test("backfill treats a missing label as an idempotent result without claiming r
     deleteStatus: 404,
   });
 
-  const summary = await runReviewRecoveryLabelBackfill({
-    env,
-    fetchImpl: fixture.fetchImpl,
-    now,
-  });
+  const summary = await runBackfill(fixture);
 
   assert.deepEqual(fixture.deletions, [301]);
   assert.equal(summary.alreadyCleared, 1);
@@ -356,11 +437,7 @@ test("backfill reports forbidden label removal without claiming cleanup", async 
     deleteStatus: 403,
   });
 
-  const summary = await runReviewRecoveryLabelBackfill({
-    env,
-    fetchImpl: fixture.fetchImpl,
-    now,
-  });
+  const summary = await runBackfill(fixture);
 
   assert.deepEqual(fixture.deletions, [302]);
   assert.equal(summary.cleared, 0);
@@ -377,15 +454,7 @@ test("backfill enforces the existing recovery limits and reports its remaining b
     totalCount: 753,
   });
 
-  const summary = await runReviewRecoveryLabelBackfill({
-    env: {
-      ...env,
-      REVIEW_PLACEHOLDER_MAX_CHECKS: "4",
-      REVIEW_PLACEHOLDER_MAX_RECOVERIES: "2",
-    },
-    fetchImpl: fixture.fetchImpl,
-    now,
-  });
+  const summary = await runBackfill(fixture, { maximumChecks: 4, maximumRecoveries: 2 });
 
   assert.deepEqual(fixture.deletions, [400, 401]);
   assert.equal(summary.checked, 2);
@@ -420,11 +489,7 @@ test("backfill rotates beyond genuinely stuck oldest items without a persisted c
     ]),
   });
 
-  const summary = await runReviewRecoveryLabelBackfill({
-    env,
-    fetchImpl: fixture.fetchImpl,
-    now: rotatedNow,
-  });
+  const summary = await runBackfill(fixture, { now: rotatedNow });
 
   assert.deepEqual(fixture.searchPages, [1, 2]);
   assert.deepEqual(fixture.deletions, [resolved]);
@@ -446,11 +511,7 @@ test("backfill finds canonical review ownership on a bounded later comments page
     comments: new Map([[500, [...noise, completedReview(500)]]]),
   });
 
-  const summary = await runReviewRecoveryLabelBackfill({
-    env,
-    fetchImpl: fixture.fetchImpl,
-    now,
-  });
+  const summary = await runBackfill(fixture);
 
   assert.deepEqual(fixture.commentPages, [
     { number: 500, page: 1 },
@@ -460,19 +521,30 @@ test("backfill finds canonical review ownership on a bounded later comments page
   assert.equal(summary.cleared, 1);
 });
 
-test("backfill refuses to use the read token for target-repository writes", async () => {
-  let requests = 0;
-  await assert.rejects(
-    () =>
-      runReviewRecoveryLabelBackfill({
-        env: { ...env, TARGET_WRITE_TOKEN: "" },
-        fetchImpl: (async () => {
-          requests += 1;
-          return Response.json({});
-        }) as typeof fetch,
-        now,
-      }),
-    /missing read token, target write token, or valid target repository/,
+test("backfill refuses cleanup when bounded comment pagination is incomplete", async () => {
+  const canonical = completedReview(510);
+  const noise = Array.from({ length: 299 }, (_, index) =>
+    completedReview(510, { user: { login: `other-${index}[bot]`, type: "Bot" } }),
   );
-  assert.equal(requests, 0);
+  const fixture = githubFixture({
+    numbers: [510],
+    comments: new Map([[510, [canonical, ...noise]]]),
+  });
+
+  const summary = await runBackfill(fixture);
+
+  assert.equal(fixture.commentPages.length, 3);
+  assert.deepEqual(fixture.deletions, []);
+  assert.equal(summary.cleared, 0);
+  assert.equal(summary.retained, 1);
+});
+
+test("backfill never invokes label removal without trusted canonical completion", async () => {
+  const fixture = githubFixture({
+    numbers: [501],
+    comments: new Map([[501, [startedPlaceholder(501, "2026-08-05T09:00:00.000Z")]]]),
+  });
+  const summary = await runBackfill(fixture);
+  assert.deepEqual(fixture.deletions, []);
+  assert.equal(summary.retained, 1);
 });
