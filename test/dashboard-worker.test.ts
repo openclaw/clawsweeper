@@ -165,6 +165,7 @@ test("live activity fails closed for stale, mixed, unavailable, and over-bound s
 
 test("production doubles exact review claims and canonical publication batches", () => {
   const wrangler = fs.readFileSync("dashboard/wrangler.toml", "utf8");
+  assert.match(wrangler, /CLAWSWEEPER_ENABLE_CLAWHUB = "1"/);
   assert.match(wrangler, /EXACT_REVIEW_QUEUE_MAX_CONCURRENT = "128"/);
   assert.match(wrangler, /EXACT_REVIEW_TARGET_MAX_CONCURRENT = "120"/);
   assert.match(wrangler, /EXACT_REVIEW_ACTIONS_BUDGET = "194"/);
