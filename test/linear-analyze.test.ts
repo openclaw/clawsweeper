@@ -14,6 +14,9 @@ import {
   isMaintainerAuthored,
   loadPersistedAnalyzerFingerprint,
   loadFallbackOwners,
+  LINEAR_ANALYSIS_PERMISSION_CONFIG,
+  LINEAR_ANALYSIS_PERMISSION_PROFILE,
+  linearAnalysisCodexArgs,
   linearAnalysisEnv,
   makeGitShaVerifier,
   parseArgs,
@@ -218,6 +221,28 @@ test("linearAnalysisEnv strips Linear credentials before launching Codex", () =>
     if (previousRunner === undefined) delete process.env.CLAWSWEEPER_RUNNER;
     else process.env.CLAWSWEEPER_RUNNER = previousRunner;
   }
+});
+
+test("linear analysis Codex args deny host reads and non-workspace tools", () => {
+  const args = linearAnalysisCodexArgs({
+    openclawDir: "/repo",
+    outputPath: "/operator/result.json",
+  });
+  assert.ok(args.includes("--strict-config"));
+  assert.ok(args.includes("--ignore-user-config"));
+  assert.ok(args.includes("--ignore-rules"));
+  assert.ok(args.includes("--ephemeral"));
+  assert.equal(args.includes("--sandbox"), false);
+  assert.ok(
+    args.includes(`default_permissions=${JSON.stringify(LINEAR_ANALYSIS_PERMISSION_PROFILE)}`),
+  );
+  assert.ok(args.includes(LINEAR_ANALYSIS_PERMISSION_CONFIG));
+  assert.ok(args.includes('web_search="disabled"'));
+  assert.ok(args.includes("mcp_servers={}"));
+  assert.match(LINEAR_ANALYSIS_PERMISSION_CONFIG, /":root"="deny"/);
+  assert.match(LINEAR_ANALYSIS_PERMISSION_CONFIG, /":minimal"="read"/);
+  assert.match(LINEAR_ANALYSIS_PERMISSION_CONFIG, /":workspace_roots"=\{"\."="read"\}/);
+  assert.match(LINEAR_ANALYSIS_PERMISSION_CONFIG, /network=\{enabled=false\}/);
 });
 
 test("makeGitShaVerifier accepts only commits reachable from the analyzed main", () => {
@@ -599,6 +624,28 @@ test("analyzeItem: ineligible (closed) item is skipped before repo inference", a
   assert.equal(summary.analyzed, false);
   assert.match(summary.skipped, /ineligible/);
 });
+
+for (const label of ["clawsweeper:human-review", "clawsweeper:linked-pr-open"]) {
+  test(`analyzeItem: ${label} skips model analysis before close leaning`, async () => {
+    const hydrated = makeHydrated();
+    hydrated.issue.labels.push({ id: `protected-${label}`, name: label });
+    let called = false;
+    const deps = baseDeps({
+      hydrated,
+      repoInferenceItem: repoInferenceItemFor(hydrated),
+      runModel: async () => {
+        called = true;
+        return makeModelDecision();
+      },
+    });
+    const summary = await analyzeItem(hydrated, { nowIso: NOW, analyze: true }, deps);
+    assert.equal(called, false);
+    assert.equal(summary.analyzed, false);
+    assert.match(summary.skipped, /policy protected/);
+    assert.equal(summary.closeLeaning, undefined);
+    assert.equal(summary.recordBody, undefined);
+  });
+}
 
 test("analyzeItem: ambiguous repo is skipped, never analyzed", async () => {
   const h = makeHydrated();

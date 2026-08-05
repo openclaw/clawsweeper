@@ -67,6 +67,9 @@ const DEFAULT_STALE_DAYS = 60;
 const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_TIMEOUT_MS = 600_000;
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+export const LINEAR_ANALYSIS_PERMISSION_PROFILE = "linear-analysis";
+export const LINEAR_ANALYSIS_PERMISSION_CONFIG =
+  'permissions.linear-analysis={filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="read"}},network={enabled=false}}';
 const ANALYSIS_ENV_ALLOWLIST = [
   "PATH",
   "HOME",
@@ -101,6 +104,42 @@ export function linearAnalysisEnv() {
   }
   env.CLAWSWEEPER_RUNNER = "codex";
   return env;
+}
+
+/**
+ * Builds the Codex CLI boundary for untrusted Linear issue content. The parent process keeps
+ * access to CODEX_HOME solely so Codex can authenticate; model-generated commands receive a
+ * permission profile that cannot read outside the target checkout and minimal runtime paths.
+ */
+export function linearAnalysisCodexArgs(options) {
+  return [
+    "--strict-config",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--ephemeral",
+    "-c",
+    codexLoginConfig(),
+    "-c",
+    'approval_policy="never"',
+    "-c",
+    `default_permissions=${JSON.stringify(LINEAR_ANALYSIS_PERMISSION_PROFILE)}`,
+    "-c",
+    LINEAR_ANALYSIS_PERMISSION_CONFIG,
+    "-c",
+    'shell_environment_policy={inherit="core",ignore_default_excludes=false}',
+    "-c",
+    'web_search="disabled"',
+    "-c",
+    "mcp_servers={}",
+    "-C",
+    options.openclawDir,
+    "--output-schema",
+    join(ROOT, "schema", "clawsweeper-decision.schema.json"),
+    "--output-last-message",
+    options.outputPath,
+    "--json",
+    "-",
+  ];
 }
 
 /**
@@ -145,22 +184,10 @@ function runCodex(options) {
     cwd: options.openclawDir,
     env: linearAnalysisEnv(),
     timeoutMs: options.timeoutMs,
-    codexExtraArgs: [
-      "-c",
-      codexLoginConfig(),
-      "-c",
-      'approval_policy="never"',
-      "-C",
-      options.openclawDir,
-      "--output-schema",
-      join(ROOT, "schema", "clawsweeper-decision.schema.json"),
-      "--output-last-message",
+    codexExtraArgs: linearAnalysisCodexArgs({
+      openclawDir: options.openclawDir,
       outputPath,
-      "--json",
-      "--sandbox",
-      options.sandboxMode,
-      "-",
-    ],
+    }),
   });
 
   if (result.error || result.status !== 0 || !existsSync(outputPath)) {
@@ -695,12 +722,20 @@ export async function analyzeItem(hydrated, options, deps) {
   const nowIso = options.nowIso || new Date().toISOString();
   const record = mapWorkspaceItem(hydrated);
   const classification = classifyAnalysisItem(hydrated, { ...options, nowIso });
+  const policy = evaluateReviewPolicy(classification, record);
 
   const base = { identifier: record.identifier, disposition: classification.disposition };
 
   // Eligible-only: never analyze closed / protected / excluded / not-ready items.
   if (!classification.eligible) {
     return { ...base, analyzed: false, skipped: `ineligible (${classification.disposition})` };
+  }
+  if (policy.kind === "protected") {
+    return {
+      ...base,
+      analyzed: false,
+      skipped: `policy protected (${policy.ruleId}) — no model analysis`,
+    };
   }
 
   // Repo inference — SKIP on ambiguous; never guess, never DEFAULT_TARGET_REPO.
@@ -783,7 +818,6 @@ export async function analyzeItem(hydrated, options, deps) {
 
   // Persist the local proposal. action_taken is always "reviewed" —
   // analysis NEVER mutates issue state; only the comment gate may ever open downstream.
-  const policy = evaluateReviewPolicy(classification, record);
   const recordBody = serializeAnalyzerRecord(
     {
       decision: analyzerDecision.decision,
@@ -892,7 +926,16 @@ async function main() {
           );
     let runModelDeps = {};
     const preflightClassification = classifyAnalysisItem(hydrated, options);
-    if (inference.repo !== null && options.analyze && preflightClassification.eligible) {
+    const preflightPolicy = evaluateReviewPolicy(
+      preflightClassification,
+      mapWorkspaceItem(hydrated),
+    );
+    if (
+      inference.repo !== null &&
+      options.analyze &&
+      preflightClassification.eligible &&
+      preflightPolicy.kind !== "protected"
+    ) {
       const profile = repositoryProfileFor(inference.repo);
       const checkoutDir = join(options.checkoutsDir, profile.checkoutDir);
       const { head: repoHead } = assertAnalysisCheckout(checkoutDir, profile.targetRepo);
@@ -910,7 +953,6 @@ async function main() {
             model: "internal",
             openclawDir: checkoutDir,
             reasoningEffort: options.reasoningEffort,
-            sandboxMode: "read-only",
             serviceTier: "",
             timeoutMs: options.timeoutMs,
             workDir: join(ROOT, ".artifacts", "linear-analyze"),

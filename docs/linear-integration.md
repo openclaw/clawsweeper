@@ -14,8 +14,9 @@ boundaries.
 
 - All commands are dry-run or read-only by default.
 - Snapshot and triage commands have no mutation path.
-- Codex analysis uses a read-only sandbox and receives no GitHub or Linear write
-  credential.
+- Codex analysis uses a workspace-read-only permission profile that denies host
+  filesystem reads outside minimal runtime paths, disables command networking,
+  web search, and MCP servers, and receives no GitHub or Linear write credential.
 - The sidecar never closes a Linear issue or changes its workflow state or
   priority.
 - Comment creation and updates are planning-only. `--apply` plus
@@ -120,7 +121,9 @@ pnpm linear:analyze -- --identifier PAR-244 --analyze --json
 Analysis fails closed unless that checkout is clean, on `main`, and exactly at
 the live canonical remote's `main` tip. Close-leaning advice additionally
 requires at least one cited commit reachable from that revision. The Codex
-subprocess receives neither Linear read tokens nor Linear OAuth credentials.
+subprocess receives neither Linear read tokens nor Linear OAuth credentials,
+and its generated commands cannot read the operator's home or Codex credential
+store. Policy-protected items are skipped before model execution.
 
 Repository inference fails closed when links and labels do not identify exactly
 one supported repository. Model output is validated with ClawSweeper's current
@@ -269,8 +272,9 @@ only when all applicable phases have current receipts.
 - Reject explicit/inferred conflicts and unsupported repositories.
 - Verify the checkout remote matches the target repository, the branch is
   `main`, the worktree is clean, and local HEAD equals live canonical `main`.
-- Run the model without Linear, GitHub-write, or model-provider credentials in
-  its subprocess environment.
+- Run model-generated commands without Linear, GitHub-write, or model-provider
+  credentials and restrict their reads to the reviewed workspace plus minimal
+  runtime paths.
 - Validate output with ClawSweeper's decision schema and re-verify every cited
   SHA as reachable from the reviewed head.
 - Maintainer-authored items must remain open regardless of model confidence.
