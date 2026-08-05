@@ -242,6 +242,7 @@ async function worker(itemPath, root, workspace) {
     cwd: root,
     env: {
       ...process.env,
+      CLAWSWEEPER_GH_RETRY_ATTEMPTS: "2",
       CLAWSWEEPER_CODE_ROOT: workspace,
       EXACT_REVIEW_WORK_ROOT: root,
       TARGET_REPO: targetRepo,

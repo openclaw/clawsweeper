@@ -101,7 +101,11 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
     }
   }
 
-  function ghWithRetry(args: string[], attempts = 12, options: GitHubRetryOptions = {}): string {
+  function ghWithRetry(
+    args: string[],
+    attempts = configuredGitHubRetryAttempts(),
+    options: GitHubRetryOptions = {},
+  ): string {
     let lastError: unknown;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
@@ -178,7 +182,7 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
     prepareRequest?: ((args: string[], attempt: number) => () => string) | undefined;
     sleepBeforeRetry?: ((waitMs: number) => void) | undefined;
   }): string {
-    return ghWithRetry(options.args, options.attempts ?? 12, {
+    return ghWithRetry(options.args, options.attempts ?? configuredGitHubRetryAttempts(), {
       request: (args, attempt) => {
         let operation: () => string;
         if (options.prepareRequest) {
@@ -419,4 +423,11 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
       throttleHeartbeatContext = value;
     },
   };
+}
+
+function configuredGitHubRetryAttempts(): number {
+  const configured = process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS;
+  if (configured === undefined || configured.trim() === "") return 12;
+  const attempts = Number(configured);
+  return Number.isFinite(attempts) ? Math.max(1, Math.floor(attempts)) : 12;
 }

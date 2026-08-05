@@ -46,7 +46,7 @@ jobs:
       EXACT_REVIEW_BATCH_MANIFEST: .artifacts/exact-review-batch/manifest.json
       # Scan the full queue window so owner filtering can still fill the 32-item lease cap.
       EXACT_REVIEW_BATCH_MAX_ITEMS: "50"
-      EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY: "4"
+      EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY: "1"
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
     steps:

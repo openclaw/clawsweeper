@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import YAML from "yaml";
 
+import { createGitHubExecution } from "../../dist/clawsweeper-github-execution.js";
+
 const path = ".github/workflows/exact-review-batch-publish.yml";
 const source = readFileSync(path, "utf8");
 const cliSource = readFileSync("src/repair/exact-review-batch-cli.ts", "utf8");
@@ -37,10 +39,61 @@ test("batch publisher is event-driven and queue-bounded instead of workflow-seri
     "dispatched_at",
   ]);
   assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_MAX_ITEMS, "50");
-  assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY, "4");
+  assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY, "1");
   assert.equal(workflow.jobs.publish!.env.CLAWSWEEPER_APP_CLIENT_ID, "Iv23liOECG0slfuhz093");
   assert.equal(workflow.concurrency, undefined);
   assert.deepEqual(workflow.permissions, { actions: "write", contents: "read" });
+});
+
+test("batch publication bounds shared GitHub retries without dropping failed artifacts", () => {
+  assert.match(
+    prepareSource,
+    /publish-event-result\.js"\)\],[\s\S]*?\.\.\.process\.env,\s*CLAWSWEEPER_GH_RETRY_ATTEMPTS: "2"/,
+  );
+  assert.match(
+    prepareSource,
+    /if \(result\.code !== 0 && !existsSync\(outcomePath\)\) \{\s*writeFailure\(outcomePath, "retryable_failure", "unknown_failure"\)/,
+  );
+  assert.match(cliSource, /const failure = failureCompletion\(current, outcome\)/);
+  assert.match(cliSource, /completions\.push\(failure\)/);
+});
+
+test("GitHub retry defaults stay unchanged while publisher attempts are bounded", () => {
+  const previous = process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS;
+  try {
+    delete process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS;
+    const defaultExecution = githubRetryExecution(2);
+    assert.equal(defaultExecution.execution.ghWithRetry(["api", "repos/test/item"]), "ok");
+    assert.equal(defaultExecution.calls(), 3);
+
+    process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS = "2";
+    const boundedExecution = githubRetryExecution(3);
+    assert.throws(
+      () => boundedExecution.execution.ghWithRetry(["api", "repos/test/item"]),
+      /API rate limit exceeded/,
+    );
+    assert.equal(boundedExecution.calls(), 2);
+    assert.deepEqual(boundedExecution.waits, [30_000]);
+
+    const mutationExecution = githubRetryExecution(3);
+    assert.throws(
+      () =>
+        mutationExecution.execution.ghObservedMutationCommand({
+          args: ["api", "repos/test/item"],
+          identity: "batch-publication",
+        }),
+      /API rate limit exceeded/,
+    );
+    assert.equal(mutationExecution.calls(), 2);
+    assert.deepEqual(mutationExecution.waits, [30_000]);
+
+    const explicitExecution = githubRetryExecution(2);
+    assert.equal(explicitExecution.execution.ghWithRetry(["api", "repos/test/item"], 3), "ok");
+    assert.equal(explicitExecution.calls(), 3);
+  } finally {
+    if (previous === undefined) delete process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS;
+    else process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS = previous;
+  }
 });
 
 test("batch workflow signs queue ownership, isolates item failures, and commits once", () => {
@@ -301,3 +354,38 @@ test("batch commit publishes every prepared tuple to canonical Worker state", ()
   assert.doesNotMatch(cliSource, /commitPreparedStateBatch/);
   assert.doesNotMatch(cliSource, /state-publication-batch/);
 });
+
+function githubRetryExecution(failures: number) {
+  let calls = 0;
+  const waits: number[] = [];
+  class TestGitHubRuntimeBudgetError extends Error {}
+  const request = () => {
+    calls += 1;
+    if (calls <= failures) {
+      throw new Error("API rate limit exceeded for installation ID 122230863 (HTTP 403)");
+    }
+    return "ok";
+  };
+  const execution = createGitHubExecution({
+    ROOT: process.cwd(),
+    run: request,
+    gitHubRuntime: {
+      GitHubRuntimeBudgetError: TestGitHubRuntimeBudgetError,
+      ensureGitHubRetryFits: () => undefined,
+      ensureGitHubRuntimeAvailable: () => undefined,
+      gh: request,
+      ghOnce: request,
+      ghWithPreparedTimeout: request,
+      githubCommandTimeoutMs: () => undefined,
+      githubRuntimeBudgetError: () => new TestGitHubRuntimeBudgetError(),
+      sleepBeforeGitHubRetry: (waitMs: number) => waits.push(waitMs),
+    },
+    sweepStatus: {
+      sweepStatusRelativePath: () => "status.json",
+      writeSweepStatus: () => undefined,
+    },
+    labelAlreadyExistsError: () => false,
+  } as unknown as Parameters<typeof createGitHubExecution>[0]);
+
+  return { execution, calls: () => calls, waits };
+}
