@@ -20,6 +20,7 @@ import {
   linearAnalysisEnv,
   makeGitShaVerifier,
   parseArgs,
+  resolveLinearAnalysisModel,
   resolveAnalysisRepo,
   repoInferenceItemFor,
   serializeUntrustedIssueData,
@@ -225,6 +226,7 @@ test("linearAnalysisEnv strips Linear credentials before launching Codex", () =>
 
 test("linear analysis Codex args deny host reads and non-workspace tools", () => {
   const args = linearAnalysisCodexArgs({
+    model: "configured-model",
     openclawDir: "/repo",
     outputPath: "/operator/result.json",
   });
@@ -232,6 +234,10 @@ test("linear analysis Codex args deny host reads and non-workspace tools", () =>
   assert.ok(args.includes("--ignore-user-config"));
   assert.ok(args.includes("--ignore-rules"));
   assert.ok(args.includes("--ephemeral"));
+  assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), [
+    "--model",
+    "configured-model",
+  ]);
   assert.equal(args.includes("--sandbox"), false);
   assert.ok(
     args.includes(`default_permissions=${JSON.stringify(LINEAR_ANALYSIS_PERMISSION_PROFILE)}`),
@@ -243,6 +249,36 @@ test("linear analysis Codex args deny host reads and non-workspace tools", () =>
   assert.match(LINEAR_ANALYSIS_PERMISSION_CONFIG, /":minimal"="read"/);
   assert.match(LINEAR_ANALYSIS_PERMISSION_CONFIG, /":workspace_roots"=\{"\."="read"\}/);
   assert.match(LINEAR_ANALYSIS_PERMISSION_CONFIG, /network=\{enabled=false\}/);
+});
+
+test("resolveLinearAnalysisModel preserves the trusted model across ignored user config", () => {
+  assert.equal(
+    resolveLinearAnalysisModel({
+      env: { CLAWSWEEPER_INTERNAL_MODEL: " private-model " },
+      readFileSync: () => {
+        throw new Error("environment model should win");
+      },
+    }),
+    "private-model",
+  );
+  assert.equal(
+    resolveLinearAnalysisModel({
+      env: { CODEX_HOME: "/codex" },
+      readFileSync: (path: string) => {
+        assert.equal(path, "/codex/config.toml");
+        return 'model = "configured-model"\n[projects."/repo"]\nmodel = "ignored-nested"\n';
+      },
+    }),
+    "configured-model",
+  );
+  assert.throws(
+    () =>
+      resolveLinearAnalysisModel({
+        env: { CODEX_HOME: "/codex" },
+        readFileSync: () => '[projects."/repo"]\nmodel = "nested-only"\n',
+      }),
+    /requires CLAWSWEEPER_INTERNAL_MODEL or a root model/,
+  );
 });
 
 test("makeGitShaVerifier accepts only commits reachable from the analyzed main", () => {

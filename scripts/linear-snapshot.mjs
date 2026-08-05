@@ -25,7 +25,8 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createLinearTransport, LinearItemSource } from "../dist/linear/index.js";
@@ -36,6 +37,13 @@ export const DEFAULT_KEYCHAIN_ACCOUNT = "partnerai-config";
 
 /** Snapshot schema tag, mirroring the `*_v1` convention of the sibling skills. */
 export const SNAPSHOT_SCHEMA = "linear_workspace_snapshot_v1";
+
+export function writeSnapshotFile(path, serialized, deps = {}) {
+  const mkdir = deps.mkdirSync ?? mkdirSync;
+  const write = deps.writeFileSync ?? writeFileSync;
+  mkdir(dirname(path), { recursive: true });
+  write(path, serialized + "\n", "utf8");
+}
 
 export function parseArgs(argv) {
   const options = {
@@ -255,7 +263,7 @@ async function main() {
 
   const serialized = JSON.stringify(snapshot, null, 2);
   if (options.out) {
-    writeFileSync(options.out, serialized + "\n");
+    writeSnapshotFile(options.out, serialized);
     console.error(
       `wrote ${snapshot.source.itemCount} item(s) from team(s) [${snapshot.source.teamsScanned.join(", ")}] to ${options.out}`,
     );

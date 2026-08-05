@@ -8,8 +8,8 @@
  *   fetchIssueByIdentifier (read)  ->  inferTargetRepo or explicit configured --repo
  *     (SKIP if ambiguous/conflicting; never guess/default)
  *     -> repositoryProfileFor().checkoutDir/promptNote/apply_close_rules
- *     -> [--analyze only] runCodex (sandbox:'read-only', model:'internal' so harness config
- *        governs; the MODEL runs read-only git blame/log/show, emits evidence{file,line,command,sha})
+ *     -> [--analyze only] runCodex (trusted model resolved before user config is ignored;
+ *        the MODEL runs read-only git blame/log/show, emits evidence{file,line,command,sha})
  *     -> parseDecision (harness) -> HOST re-verifies cited shas (git rev-parse/cat-file)
  *     -> deriveCloseLeaning (code-derived, advisory; forced false on any unverifiable sha)
  *     -> renderReviewContent(record, classification, {decision, closeLeaning})  [analyzer sections]
@@ -26,6 +26,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -117,6 +118,8 @@ export function linearAnalysisCodexArgs(options) {
     "--ignore-user-config",
     "--ignore-rules",
     "--ephemeral",
+    "--model",
+    options.model,
     "-c",
     codexLoginConfig(),
     "-c",
@@ -140,6 +143,43 @@ export function linearAnalysisCodexArgs(options) {
     "--json",
     "-",
   ];
+}
+
+/**
+ * Resolve the private model alias before `--ignore-user-config` removes the trusted operator
+ * configuration. Public records continue to use the stable `internal` alias.
+ */
+export function resolveLinearAnalysisModel(options = {}) {
+  const requestedModel = String(options.requestedModel ?? "internal").trim();
+  if (requestedModel && requestedModel !== "internal") return requestedModel;
+
+  const env = options.env ?? process.env;
+  const environmentModel = env.CLAWSWEEPER_INTERNAL_MODEL?.trim();
+  if (environmentModel) return environmentModel;
+
+  const codexHome = env.CODEX_HOME?.trim() || join(homedir(), ".codex");
+  const read = options.readFileSync ?? readFileSync;
+  let config;
+  try {
+    config = read(join(codexHome, "config.toml"), "utf8");
+  } catch {
+    throw new Error(
+      "Linear analysis requires CLAWSWEEPER_INTERNAL_MODEL or a root model in CODEX_HOME/config.toml",
+    );
+  }
+  const rootConfig = String(config).split(/^\s*\[/m, 1)[0];
+  const match = rootConfig.match(/^\s*model\s*=\s*("(?:\\.|[^"\\])*")\s*(?:#.*)?$/m);
+  if (match?.[1]) {
+    try {
+      const model = String(JSON.parse(match[1])).trim();
+      if (model) return model;
+    } catch {
+      // Fall through to the same token-free configuration error below.
+    }
+  }
+  throw new Error(
+    "Linear analysis requires CLAWSWEEPER_INTERNAL_MODEL or a root model in CODEX_HOME/config.toml",
+  );
 }
 
 /**
@@ -185,6 +225,7 @@ function runCodex(options) {
     env: linearAnalysisEnv(),
     timeoutMs: options.timeoutMs,
     codexExtraArgs: linearAnalysisCodexArgs({
+      model: options.model,
       openclawDir: options.openclawDir,
       outputPath,
     }),
@@ -939,6 +980,7 @@ async function main() {
       const profile = repositoryProfileFor(inference.repo);
       const checkoutDir = join(options.checkoutsDir, profile.checkoutDir);
       const { head: repoHead } = assertAnalysisCheckout(checkoutDir, profile.targetRepo);
+      const model = resolveLinearAnalysisModel();
       runModelDeps = {
         repoHead,
         verifySha: makeGitShaVerifier(checkoutDir, repoHead),
@@ -950,7 +992,7 @@ async function main() {
             outputKey: hydrated.issue.identifier,
             context,
             git,
-            model: "internal",
+            model,
             openclawDir: checkoutDir,
             reasoningEffort: options.reasoningEffort,
             serviceTier: "",

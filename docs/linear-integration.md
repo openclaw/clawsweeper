@@ -14,8 +14,9 @@ boundaries.
 
 - All commands are dry-run or read-only by default.
 - Snapshot and triage commands have no mutation path.
-- Codex analysis uses a workspace-read-only permission profile that denies host
-  filesystem reads outside minimal runtime paths, disables command networking,
+- Codex analysis resolves the trusted operator model before ignoring user
+  configuration, then uses a workspace-read-only permission profile that denies
+  host filesystem reads outside minimal runtime paths, disables command networking,
   web search, and MCP servers, and receives no GitHub or Linear write credential.
 - The sidecar never closes a Linear issue or changes its workflow state or
   priority.

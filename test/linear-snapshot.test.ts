@@ -10,6 +10,7 @@ import {
   parseArgs,
   resolveToken,
   SNAPSHOT_SCHEMA,
+  writeSnapshotFile,
 } from "../scripts/linear-snapshot.mjs";
 import type { LinearIssue, LinearProject, LinearTeam } from "../dist/linear/types.js";
 
@@ -115,6 +116,18 @@ test("parseArgs rejects unknown args, missing values, and non-positive page size
   assert.throws(() => parseArgs(["--team"]), /--team requires a value/);
   assert.throws(() => parseArgs(["--page-size", "0"]), /--page-size must be a positive integer/);
   assert.throws(() => parseArgs(["--page-size", "x"]), /--page-size must be a positive integer/);
+});
+
+test("writeSnapshotFile creates the documented output parent before writing", () => {
+  const calls: unknown[][] = [];
+  writeSnapshotFile(".artifacts/linear-snapshot.json", '{"ok":true}', {
+    mkdirSync: (...args: unknown[]) => calls.push(["mkdir", ...args]),
+    writeFileSync: (...args: unknown[]) => calls.push(["write", ...args]),
+  });
+  assert.deepEqual(calls, [
+    ["mkdir", ".artifacts", { recursive: true }],
+    ["write", ".artifacts/linear-snapshot.json", '{"ok":true}\n', "utf8"],
+  ]);
 });
 
 // ---------------------------------------------------------------------------
