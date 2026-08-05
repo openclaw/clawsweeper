@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { stripAnsi } from "./comment-router-utils.js";
 import { ghCliEnv } from "./process-env.js";
 import { repoRoot } from "./paths.js";
-import { ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
+import { GitHubRateLimitError, ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
 import { parseGhJsonWithRetry, parseGhJsonWithRetryAsync } from "../github-json.js";
 import { resolveCommand } from "../command.js";
 
@@ -143,6 +143,7 @@ export function ghPagedLimitWithRetry<T = JsonValue>(
     } catch (error) {
       lastError = error;
       const retryKind = ghRetryKind(error);
+      if (retryKind === "throttle") throw new GitHubRateLimitError(error);
       if (attempt >= attempts || retryKind === "none") throw error;
       sleepMs(ghRetryWaitMs(retryKind, attempt - 1));
     }
@@ -174,6 +175,7 @@ export function ghTextWithRetry(ghArgs: string[], options: GhRetryOptions | numb
     } catch (error) {
       lastError = error;
       const retryKind = ghRetryKind(error);
+      if (retryKind === "throttle") throw new GitHubRateLimitError(error);
       if (attempt >= attempts || retryKind === "none") throw error;
       sleepMs(ghRetryWaitMs(retryKind, attempt - 1));
     }
@@ -194,6 +196,7 @@ export async function ghTextWithRetryAsync(
     } catch (error) {
       lastError = error;
       const retryKind = ghRetryKind(error);
+      if (retryKind === "throttle") throw new GitHubRateLimitError(error);
       if (attempt >= attempts || retryKind === "none") throw error;
       await sleepAsync(ghRetryWaitMs(retryKind, attempt - 1));
     }

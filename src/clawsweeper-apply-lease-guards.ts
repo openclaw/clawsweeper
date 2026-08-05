@@ -1,6 +1,7 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import { trimMiddle } from "./clawsweeper-text.js";
 import type { AcquiredReviewStartLease, Item } from "./clawsweeper-types.js";
+import { GitHubRateLimitError } from "./github-retry.js";
 import { freshExactHeadReviewStartLease } from "./repair/comment-router-core.js";
 
 type ActiveApplyMutationLease = { itemNumber: number; lease: AcquiredReviewStartLease } | null;
@@ -148,7 +149,8 @@ export function createApplyLeaseGuards({
         comments: refreshed.comments,
       };
     } catch (error) {
-      if (error instanceof GitHubRuntimeBudgetError) throw error;
+      if (error instanceof GitHubRuntimeBudgetError || error instanceof GitHubRateLimitError)
+        throw error;
       const detail = trimMiddle(
         (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " "),
         180,
@@ -202,7 +204,8 @@ export function createApplyLeaseGuards({
         refreshed.reviewComment,
       );
     } catch (error) {
-      if (error instanceof GitHubRuntimeBudgetError) throw error;
+      if (error instanceof GitHubRuntimeBudgetError || error instanceof GitHubRateLimitError)
+        throw error;
       const detail = trimMiddle(
         (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " "),
         180,

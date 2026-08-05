@@ -1,29 +1,27 @@
 import { spawnSync } from "node:child_process";
 import { resolveCommand } from "./command.js";
 import { parseGhJson, parseGhJsonLinesWithRetry, parseGhJsonWithRetry } from "./github-json.js";
-import { ghRetryKind, ghRetryWaitMs, summarizeGhArgs } from "./github-retry.js";
+import {
+  GitHubRateLimitError,
+  ghRetryKind,
+  ghRetryWaitMs,
+  summarizeGhArgs,
+} from "./github-retry.js";
 import type {
   GitHubDispatchOutcome,
   GitHubRetryOptions,
   MutationRunner,
 } from "./clawsweeper-types.js";
 import type { createGitHubRuntime } from "./clawsweeper-github-runtime.js";
-import type { createSweepStatus } from "./clawsweeper-sweep-status.js";
 
 interface CreateGitHubExecutionDependencies {
   ROOT: string;
-  run: (
-    command: string,
-    args: string[],
-    options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number | undefined },
-  ) => string;
   gitHubRuntime: ReturnType<typeof createGitHubRuntime>;
-  sweepStatus: ReturnType<typeof createSweepStatus>;
   labelAlreadyExistsError: (error: unknown) => boolean;
 }
 
 export function createGitHubExecution(dependencies: CreateGitHubExecutionDependencies) {
-  const { ROOT, run, gitHubRuntime, sweepStatus, labelAlreadyExistsError } = dependencies;
+  const { ROOT, gitHubRuntime, labelAlreadyExistsError } = dependencies;
   const {
     GitHubRuntimeBudgetError,
     ensureGitHubRetryFits,
@@ -35,72 +33,6 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
     githubRuntimeBudgetError,
     sleepBeforeGitHubRetry,
   } = gitHubRuntime;
-  const { sweepStatusRelativePath, writeSweepStatus } = sweepStatus;
-
-  let lastThrottleHeartbeatAt = 0;
-
-  let throttleHeartbeatContext: (() => string) | null = null;
-
-  function maybePublishThrottleHeartbeat(options: {
-    args: string[];
-    attempt: number;
-    attempts: number;
-    waitMs: number;
-  }): void {
-    if (process.env.CLAWSWEEPER_PUBLISH_THROTTLE_STATUS !== "true") return;
-    const minWaitMs = Number(process.env.CLAWSWEEPER_THROTTLE_STATUS_MIN_WAIT_MS ?? 60_000);
-    if (options.waitMs < minWaitMs) return;
-    const minIntervalMs = Number(
-      process.env.CLAWSWEEPER_THROTTLE_STATUS_MIN_INTERVAL_MS ?? 120_000,
-    );
-    const now = Date.now();
-    if (now - lastThrottleHeartbeatAt < minIntervalMs) return;
-    lastThrottleHeartbeatAt = now;
-
-    try {
-      const context = throttleHeartbeatContext?.();
-      const checkpoint = process.env.CLAWSWEEPER_APPLY_CHECKPOINT;
-      const checkpointText = checkpoint ? `Checkpoint ${checkpoint}. ` : "";
-      const detail = [
-        `${checkpointText}GitHub throttled while applying close decisions.`,
-        context,
-        `Last throttled command: \`${summarizeGhArgs(options.args)}\`.`,
-        `Retry ${options.attempt + 1}/${Math.max(1, options.attempts - 1)} in ${Math.round(options.waitMs / 1000)}s.`,
-      ]
-        .filter(Boolean)
-        .join(" ");
-      const statusOptions: {
-        state: string;
-        detail: string;
-        runUrl?: string;
-      } = {
-        state: "Apply throttled",
-        detail,
-      };
-      if (process.env.CLAWSWEEPER_RUN_URL) {
-        statusOptions.runUrl = process.env.CLAWSWEEPER_RUN_URL;
-      }
-      writeSweepStatus(statusOptions);
-      run("git", ["add", sweepStatusRelativePath()]);
-      const diff = spawnSync("git", ["diff", "--cached", "--quiet"], { cwd: ROOT });
-      if (diff.status === 0) return;
-      run("git", ["commit", "-m", "chore: update sweep apply throttle status"]);
-      try {
-        run("git", ["push"], { timeoutMs: githubCommandTimeoutMs() });
-      } catch (error) {
-        if (error instanceof GitHubRuntimeBudgetError) throw error;
-        console.error(
-          `Best-effort throttle status push failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    } catch (error) {
-      if (error instanceof GitHubRuntimeBudgetError) throw error;
-      console.error(
-        `Best-effort throttle status update failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-
   function ghWithRetry(
     args: string[],
     attempts = configuredGitHubRetryAttempts(),
@@ -113,19 +45,15 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError) throw error;
         lastError = error;
-        ensureGitHubRuntimeAvailable("after GitHub operation");
         const retryKind = ghRetryKind(error);
+        if (retryKind === "throttle") throw new GitHubRateLimitError(error);
+        ensureGitHubRuntimeAvailable("after GitHub operation");
         if (retryKind === "none" || attempt === attempts - 1) throw error;
         const waitMs = ghRetryWaitMs(retryKind, attempt);
         ensureGitHubRetryFits(waitMs);
-        const retryLabel =
-          retryKind === "throttle" ? "GitHub throttled" : "Transient GitHub API failure";
         console.error(
-          `${retryLabel}; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
+          `Transient GitHub API failure; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
         );
-        if (retryKind === "throttle") {
-          maybePublishThrottleHeartbeat({ args, attempt, attempts, waitMs });
-        }
         if (options.sleepBeforeRetry) options.sleepBeforeRetry(waitMs);
         else sleepBeforeGitHubRetry(waitMs);
       }
@@ -208,7 +136,7 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
   }
 
   function observedGitHubMutationAttemptsForTest(
-    outcomes: readonly ("not_started" | "transient" | "accepted" | "already_exists")[],
+    outcomes: readonly ("not_started" | "transient" | "throttle" | "accepted" | "already_exists")[],
   ): Array<{
     identity: string;
     idempotencyIdentity: string;
@@ -258,6 +186,7 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
           return () => {
             if (outcome === "accepted") return "ok";
             if (outcome === "already_exists") throw new Error("label already exists");
+            if (outcome === "throttle") throw new Error("HTTP 403: API rate limit exceeded");
             throw new Error("HTTP 502: transient upstream failure");
           };
         },
@@ -415,12 +344,6 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
     },
     set activeReviewMutationRunner(value: MutationRunner | null) {
       activeReviewMutationRunner = value;
-    },
-    get throttleHeartbeatContext() {
-      return throttleHeartbeatContext;
-    },
-    set throttleHeartbeatContext(value: (() => string) | null) {
-      throttleHeartbeatContext = value;
     },
   };
 }

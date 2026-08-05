@@ -1596,7 +1596,7 @@ jobs:
           exit 1
 
       - name: Release unsuccessful workflow-owned review lease
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status != 'held' && steps.direct-exact-review-publication.outputs.accepted != 'true' && steps.queue-exact-review-publication.outcome != 'success' }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status != 'held' && steps.prepare-direct-exact-review-publication.outputs.failure_kind != 'github_rate_limit' && steps.prepare-direct-exact-review-publication.outputs.failure_kind != 'github_transient' && steps.direct-exact-review-publication.outputs.accepted != 'true' && steps.queue-exact-review-publication.outcome != 'success' }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -1625,7 +1625,7 @@ jobs:
           done <<< "$reaction_ids"
 
       - name: Mark unsuccessful re-review
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.has_command_context == 'true' && steps.setup-pnpm.outcome == 'success' && steps.direct-exact-review-publication.outputs.accepted != 'true' && steps.queue-exact-review-publication.outcome != 'success' && steps.target-write-token.outputs.token != '' }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.has_command_context == 'true' && steps.setup-pnpm.outcome == 'success' && steps.prepare-direct-exact-review-publication.outputs.failure_kind != 'github_rate_limit' && steps.prepare-direct-exact-review-publication.outputs.failure_kind != 'github_transient' && steps.direct-exact-review-publication.outputs.accepted != 'true' && steps.queue-exact-review-publication.outcome != 'success' && steps.target-write-token.outputs.token != '' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -2713,7 +2713,7 @@ jobs:
           done <<< "$reaction_ids"
 
       - name: Release superseded or unsuccessful publisher-owned review lease
-        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.publication-context.outputs.live_proceeded == 'true' && (steps.publish-event-result.outputs.completion_kind == 'superseded' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.requeue_latest == 'true' && steps.queue-source-drift-review.outcome != 'success')) }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.publication-context.outputs.live_proceeded == 'true' && steps.publish-event-result.outputs.failure_kind != 'github_rate_limit' && steps.publish-event-result.outputs.failure_kind != 'github_transient' && (steps.publish-event-result.outputs.completion_kind == 'superseded' || steps.publish-event-result.outcome != 'success' || (steps.publish-event-result.outputs.requeue_latest == 'true' && steps.queue-source-drift-review.outcome != 'success')) }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
@@ -2735,28 +2735,6 @@ jobs:
             gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/reactions/$reaction_id" --method DELETE
           done <<< "$reaction_ids"
 
-      - name: Probe GitHub pressure after publication failure
-        id: publication-pressure
-        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && failure() }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          test -n "$GH_TOKEN"
-          pressure_error="$(mktemp)"
-          if rate_limit="$(gh api rate_limit 2>"$pressure_error")"; then
-            if jq -e '(.resources.core.limit // 0) > 0 and ((.resources.core.remaining // 0) <= 100 or (.resources.core.remaining * 20) <= .resources.core.limit)' <<< "$rate_limit" >/dev/null; then
-              echo "failure_kind=github_rate_limit" >> "$GITHUB_OUTPUT"
-            fi
-          elif grep -Eqi 'HTTP 429|secondary rate limit|API rate limit|rate limit (exceeded|reached)' "$pressure_error"; then
-            echo "failure_kind=github_rate_limit" >> "$GITHUB_OUTPUT"
-          elif grep -Eqi 'HTTP 5[0-9]{2}|status( code)? 5[0-9]{2}|Bad Gateway|Service Unavailable|Gateway Timeout' "$pressure_error"; then
-            echo "failure_kind=github_transient" >> "$GITHUB_OUTPUT"
-          fi
-          cat "$pressure_error" >&2
-          rm -f "$pressure_error"
-
       - name: Export exact review publication result
         id: exact-review-publication-result
         if: ${{ steps.publication-context.outputs.claimed == 'true' && always() }}
@@ -2772,7 +2750,7 @@ jobs:
           LEGACY_TUPLELESS: ${{ steps.legacy-exact-artifact.outputs.legacy_tupleless }}
           SOURCE_DRIFT_OUTCOME: ${{ steps.queue-source-drift-review.outcome }}
           DEFERRED_ROUTE_OUTCOME: ${{ steps.queue-deferred-verdict-router.outcome }}
-          FAILURE_KIND: ${{ steps.publish-event-result.outputs.failure_kind || steps.publication-pressure.outputs.failure_kind }}
+          FAILURE_KIND: ${{ steps.publish-event-result.outputs.failure_kind }}
           DOWNLOAD_OUTCOME: ${{ steps.download-exact-review-bundle.outcome }}
           VALIDATE_OUTCOME: ${{ steps.validate-exact-review-bundle.outcome }}
           PUBLISH_COMPLETION_KIND: ${{ steps.publish-event-result.outputs.completion_kind }}
@@ -2861,6 +2839,7 @@ jobs:
           elif [ "$outcome" != "success" ] && { [ "$FAILURE_KIND" = "github_rate_limit" ] || [ "$FAILURE_KIND" = "github_transient" ]; }; then
             completion_kind=retryable_failure
             reason_code="$FAILURE_KIND"
+            retry_at="$PUBLISH_RETRY_AT"
           elif [ "$outcome" != "success" ] && [ "$DOWNLOAD_OUTCOME" = "failure" ]; then
             completion_kind=retryable_failure
             reason_code=artifact_unavailable
@@ -5837,10 +5816,6 @@ jobs:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS: ${{ steps.target-write-token.outputs.minted-at-ms }}
-          CLAWSWEEPER_PUBLISH_THROTTLE_STATUS: "true"
-          CLAWSWEEPER_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          CLAWSWEEPER_THROTTLE_STATUS_MIN_WAIT_MS: "60000"
-          CLAWSWEEPER_THROTTLE_STATUS_MIN_INTERVAL_MS: "120000"
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |

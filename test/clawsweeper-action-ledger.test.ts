@@ -23,6 +23,8 @@ import {
   untrustedCodexEnvForTest,
 } from "../dist/clawsweeper.js";
 import { actionIdempotencyKey } from "../dist/action-ledger.js";
+import { createApplyLeaseGuards } from "../dist/clawsweeper-apply-lease-guards.js";
+import { GitHubRateLimitError } from "../dist/github-retry.js";
 import { readText } from "./helpers.ts";
 
 test("primary command success survives best-effort action ledger flush failure", async (t) => {
@@ -610,6 +612,13 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
       outcome: "rejected",
     },
   ]);
+  assert.deepEqual(observedGitHubMutationAttemptsForTest(["throttle", "accepted"]), [
+    {
+      identity: "test_mutation:request_attempt:1",
+      idempotencyIdentity: "test_mutation",
+      outcome: "unknown",
+    },
+  ]);
   assert.deepEqual(observedGitHubMutationAttemptsForTest(["not_started"]), []);
   assert.deepEqual(heldReviewStartStatusCommentResultForTest("2026-07-12T12:00:00Z", false), {
     status: "held",
@@ -649,6 +658,62 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
     /return \{\s*status: "posted",\s*lease: \{ \.\.\.acquired, comment: winner\.comment \},\s*didMutate: true,?\s*\}/,
   );
   assert.deepEqual(applyPhaseSequenceForTest(6), [2, 3, 4, 5, 6, 7]);
+});
+
+test("GitHub throttles abort apply lease checks and preserve durable lease ownership", () => {
+  const rateLimit = new GitHubRateLimitError(new Error("HTTP 403: API rate limit exceeded"));
+  let requests = 0;
+  const lease = { owner: "review-owner", commentId: 7, headSha: "abc123" };
+  const guards = createApplyLeaseGuards({
+    asRecord: (value: unknown) => value,
+    canonicalBoundStaleReviewReason: () => null,
+    closeDelayMs: 0,
+    currentReviewActivityBlock: () => null,
+    dryRun: false,
+    frontMatterValue: () => undefined,
+    getActiveApplyMutationLease: () => ({ itemNumber: 42, lease }),
+    ghJson: () => {
+      requests += 1;
+      throw rateLimit;
+    },
+    GitHubRuntimeBudgetError: class extends Error {},
+    initialReviewHeadSha: "abc123",
+    issueReviewCommentState: () => ({ comments: [], leaseComments: [] }),
+    item: { kind: "pull_request" },
+    liveIssueSourceRevision: () => "abc123",
+    markdownBeforeApplyDecisionMutations: "",
+    number: 42,
+    PATCHABLE_REVIEW_COMMENT_AUTHORS: new Set(["clawsweeper[bot]"]),
+    postReviewStartStatusComment: () => ({ status: "posted", lease }),
+    reportReviewRevision: null,
+    requiresApplyMutationLease: true,
+    reviewLeaseRevisionFromReport: () => null,
+    setActiveApplyMutationLease: () => undefined,
+    shouldPreserveReviewStartLease: () => false,
+    targetRepo: () => "openclaw/openclaw",
+  } as unknown as Parameters<typeof createApplyLeaseGuards>[0]);
+
+  assert.throws(
+    () => guards.refreshReviewStartLeaseState(),
+    (error) => error === rateLimit,
+  );
+  assert.throws(
+    () => guards.currentApplyMutationLeaseBlockReason(),
+    (error) => error === rateLimit,
+  );
+  assert.equal(requests, 2);
+
+  const applySource = readText("src/clawsweeper-apply-decision-workflow.ts");
+  const releaseStart = applySource.indexOf("const releaseActiveApplyMutationLease =");
+  const releaseEnd = applySource.indexOf("runtimeBudget.onFailure", releaseStart);
+  assert.match(
+    applySource.slice(releaseStart, releaseEnd),
+    /catch \(error\) \{\s*if \(error instanceof GitHubRateLimitError\) throw error;/,
+  );
+  assert.match(
+    applySource,
+    /if \(error instanceof GitHubRateLimitError\) \{[\s\S]*?activeApplyMutationLease = null;[\s\S]*?throw error;\s*\} finally \{\s*releaseActiveApplyMutationLease\(\);/,
+  );
 });
 
 test("runtime yields bind the active item and terminal Codex failures preserve retryability", () => {

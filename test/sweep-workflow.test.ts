@@ -833,6 +833,14 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(failGeneration.if ?? "", /complete-exact-review-queue\.outcome != 'success'/);
   assert.match(releaseGeneration.if ?? "", /reserve-exact-review-lease\.outputs\.status != 'held'/);
   assert.match(releaseGeneration.run ?? "", /content == "eyes"/);
+  for (const cleanup of [releaseGeneration, step(reviewer, "Mark unsuccessful re-review")]) {
+    for (const kind of ["github_rate_limit", "github_transient"]) {
+      assert.match(
+        cleanup.if ?? "",
+        new RegExp(`prepare-direct-exact-review-publication\\.outputs\\.failure_kind != '${kind}'`),
+      );
+    }
+  }
   assert.ok(reviewer.steps.indexOf(upload) < reviewer.steps.indexOf(complete));
 
   assert.equal(publisher.needs, undefined);
@@ -962,7 +970,12 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   const publishResult = step(publisher, "Export exact review publication result");
   const publishComplete = step(publisher, "Complete durable exact review publication");
   const activeLeaseWaiting = step(publisher, "Mark active lease retry waiting");
-  const publicationPressure = step(publisher, "Probe GitHub pressure after publication failure");
+  assert.equal(
+    publisher.steps.some(
+      (candidate) => candidate.name === "Probe GitHub pressure after publication failure",
+    ),
+    false,
+  );
   const releaseTerminal = step(publisher, "Release terminal review leases");
   const releaseUnsuccessful = step(
     publisher,
@@ -974,10 +987,16 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(releaseUnsuccessful.run ?? "", /content == "eyes"/);
   assert.match(releaseUnsuccessful.if ?? "", /completion_kind == 'superseded'/);
   assert.doesNotMatch(releaseUnsuccessful.if ?? "", /completion_kind == 'deferred'/);
+  for (const kind of ["github_rate_limit", "github_transient"]) {
+    assert.match(
+      releaseUnsuccessful.if ?? "",
+      new RegExp(`publish-event-result\\.outputs\\.failure_kind != '${kind}'`),
+    );
+  }
   assert.match(publishResult.env?.PRIOR_JOB_STATUS ?? "", /job\.status/);
   assert.match(publishResult.env?.LEGACY_TUPLELESS ?? "", /legacy-exact-artifact/);
   assert.match(publishResult.env?.FAILURE_KIND ?? "", /publish-event-result/);
-  assert.match(publishResult.env?.FAILURE_KIND ?? "", /publication-pressure/);
+  assert.doesNotMatch(publishResult.env?.FAILURE_KIND ?? "", /publication-pressure/);
   assert.match(publishResult.env?.DOWNLOAD_OUTCOME ?? "", /download-exact-review-bundle/);
   assert.match(publishResult.env?.VALIDATE_OUTCOME ?? "", /validate-exact-review-bundle/);
   assert.match(publishResult.env?.PUBLISH_COMPLETION_KIND ?? "", /publish-event-result/);
@@ -986,12 +1005,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(publishResult.env?.DIRECT_RECOVERY_DIRECT_REQUEUE ?? "", /replay-direct-lifecycle/);
   assert.match(publishResult.run ?? "", /DIRECT_RECOVERY_OUTCOME/);
   assert.match(publishResult.run ?? "", /direct_requeue=/);
-  assert.match(publicationPressure.if ?? "", /failure\(\)/);
-  assert.match(publicationPressure.run ?? "", /gh api rate_limit/);
-  assert.match(publicationPressure.run ?? "", /failure_kind=github_rate_limit/);
-  assert.match(publicationPressure.run ?? "", /failure_kind=github_transient/);
-  assert.match(publicationPressure.run ?? "", /HTTP 429/);
-  assert.doesNotMatch(publicationPressure.run ?? "", /HTTP \(403\|429\)/);
   assert.match(publishResult.run ?? "", /REQUEUE_LATEST.*SOURCE_DRIFT_OUTCOME/);
   assert.match(publishResult.run ?? "", /LEGACY_TUPLELESS.*SOURCE_DRIFT_OUTCOME/);
   assert.match(publishResult.run ?? "", /completion_kind=superseded/);
@@ -1002,6 +1015,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(publishResult.run ?? "", /reason_code=review_lease_active/);
   assert.match(publishResult.run ?? "", /reason_code=review_lease_active[\s\S]*?outcome=success/);
   assert.match(publishResult.run ?? "", /retry_at="\$PUBLISH_RETRY_AT"/);
+  assert.match(
+    publishResult.run ?? "",
+    /reason_code="\$FAILURE_KIND"\s+retry_at="\$PUBLISH_RETRY_AT"/,
+  );
   assert.match(
     publishResult.run ?? "",
     /completion_kind" != "superseded".*completion_kind" != "deferred".*completion_kind" != "refresh_required".*completion_kind" != "retryable_failure"/,
@@ -1067,11 +1084,13 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(publisherSource, /\/internal\/exact-review\/publication-batch-results/);
   assert.doesNotMatch(publisherSource, /\bstagePaths\b|\bpushSingleRecordTupleCommit\b/);
   assert.doesNotMatch(publisherSource, /GitCommandTimeoutError|publishRoot|hardResetToRemoteMain/);
-  assert.match(publisherSource, /const completionKind = "permanent_failure"/);
-  assert.match(
-    publisherSource,
-    /writePublicationCompletionOutputs\(completionKind, reasonCode, fingerprint\);/,
-  );
+  assert.match(publisherSource, /const retryableFailure =/);
+  assert.match(publisherSource, /error instanceof GitHubRateLimitError/);
+  assert.match(publisherSource, /error\.retryAt : undefined/);
+  assert.match(publisherSource, /failure_kind=\$\{reasonCode\}/);
+  assert.match(publisherSource, /publication\.status === 429/);
+  assert.match(publisherSource, /\? "state_contention"\s*: "policy_invariant"/);
+  assert.doesNotMatch(publisherSource, /attempt <= 20|Event publish attempt/);
   assert.doesNotMatch(publisherSource, /retryableFailure \? "github_transient" : undefined/);
   const directPublisherSource = readText("src/repair/exact-review-direct-publication.ts");
   assert.match(directPublisherSource, /invalid_direct_source_action/);

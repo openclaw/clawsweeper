@@ -1,5 +1,29 @@
 export type GhRetryKind = "none" | "throttle" | "transient";
 
+export class GitHubRateLimitError extends Error {
+  readonly retryAt: string;
+
+  constructor(cause: unknown, now = Date.now()) {
+    const message = ghErrorText(cause);
+    // gh normally omits response headers; defer safely without probing GitHub,
+    // but preserve any reset hints already present in the observed error.
+    const retryAfter = message.match(/\bretry-after\s*[:=]\s*(\d+)\b/i)?.[1];
+    const reset = message.match(/\bx-ratelimit-reset\s*[:=]\s*(\d+)\b/i)?.[1];
+    const propagated = message.match(/\brate limited until\s+(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/i)?.[1];
+    const retryAt = new Date(
+      Math.max(
+        now + 60_000,
+        retryAfter ? now + Number(retryAfter) * 1_000 : 0,
+        reset ? Number(reset) * 1_000 : 0,
+        propagated ? Date.parse(propagated) || 0 : 0,
+      ),
+    ).toISOString();
+    super(`GitHub API rate limited until ${retryAt}: ${message}`, { cause });
+    this.name = "GitHubRateLimitError";
+    this.retryAt = retryAt;
+  }
+}
+
 const GH_THROTTLE_PATTERNS = [
   /was submitted too quickly/i,
   /secondary rate/i,
