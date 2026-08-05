@@ -1,0 +1,495 @@
+import type { LinearTransport } from "./client.js";
+import { ISSUE_BY_IDENTIFIER_QUERY, ISSUES_QUERY, PROJECTS_QUERY, TEAMS_QUERY } from "./queries.js";
+import { assertLinearWorkflowStateType } from "./record.js";
+import type {
+  LinearAttachment,
+  HydratedWorkspaceItem,
+  LinearConnection,
+  LinearIssue,
+  LinearLabel,
+  LinearProject,
+  LinearTeam,
+  ListIssuesOptions,
+  WorkspaceItem,
+  WorkspaceSweepOptions,
+} from "./types.js";
+
+const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/;
+
+/** Parsed pieces of a Linear human identifier such as "PAR-244". */
+export interface ParsedIdentifier {
+  teamKey: string;
+  number: number;
+}
+
+/**
+ * Parses a Linear human identifier "TEAM-123" into its team key and issue number.
+ * Throws a clear error for anything that is not a `<KEY>-<number>` shape.
+ */
+export function parseLinearIdentifier(identifier: string): ParsedIdentifier {
+  const match = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(identifier.trim());
+  if (match === null || match[1] === undefined || match[2] === undefined) {
+    throw new Error(
+      `invalid Linear identifier "${identifier}" — expected a "<TEAM>-<number>" form like "PAR-244"`,
+    );
+  }
+  return { teamKey: match[1].toUpperCase(), number: Number(match[2]) };
+}
+
+// Narrowing helpers — Linear GraphQL data is untyped `unknown` from the transport.
+
+function asConnection<T>(value: unknown, queryName: string): LinearConnection<T> {
+  if (typeof value !== "object" || value === null) {
+    throw new Error(`Malformed connection from ${queryName}: expected { nodes, pageInfo }`);
+  }
+  const connection = value as Record<string, unknown>;
+  const pageInfo = connection["pageInfo"];
+  if (!Array.isArray(connection["nodes"]) || typeof pageInfo !== "object" || pageInfo === null) {
+    throw new Error(`Malformed connection from ${queryName}: expected { nodes, pageInfo }`);
+  }
+  const page = pageInfo as Record<string, unknown>;
+  if (
+    typeof page["hasNextPage"] !== "boolean" ||
+    (page["endCursor"] !== null && typeof page["endCursor"] !== "string")
+  ) {
+    throw new Error(
+      `Malformed connection from ${queryName}: expected pageInfo { hasNextPage, endCursor }`,
+    );
+  }
+  return {
+    nodes: connection["nodes"] as T[],
+    pageInfo: {
+      hasNextPage: page["hasNextPage"],
+      endCursor: page["endCursor"],
+    },
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null) return {};
+  return value as Record<string, unknown>;
+}
+
+function requiredRecord(value: unknown, context: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`Malformed ${context}: expected an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requiredString(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+  nonEmpty = false,
+): string {
+  const value = record[key];
+  if (typeof value !== "string" || (nonEmpty && value.trim() === "")) {
+    throw new Error(`Malformed ${context}: expected ${nonEmpty ? "non-empty " : ""}string ${key}`);
+  }
+  return value;
+}
+
+function requiredNumber(record: Record<string, unknown>, key: string, context: string): number {
+  const value = record[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Malformed ${context}: expected finite number ${key}`);
+  }
+  return value;
+}
+
+function requiredLinearPriority(record: Record<string, unknown>): number {
+  const priority = requiredNumber(record, "priority", "Linear issue");
+  if (!Number.isInteger(priority) || priority < 0 || priority > 4) {
+    throw new Error("Malformed Linear issue: priority must be an integer from 0 through 4");
+  }
+  return priority;
+}
+
+function requiredIsoTimestamp(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): string {
+  const value = requiredString(record, key, context, true);
+  const match = ISO_TIMESTAMP_PATTERN.exec(value);
+  if (match == null || !Number.isFinite(Date.parse(value))) {
+    throw new Error(`Malformed ${context}: ${key} must be an ISO timestamp`);
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > (daysInMonth[month - 1] ?? 0) ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    throw new Error(`Malformed ${context}: ${key} must be an ISO timestamp`);
+  }
+  return value;
+}
+
+function requiredBoolean(record: Record<string, unknown>, key: string, context: string): boolean {
+  const value = record[key];
+  if (typeof value !== "boolean") {
+    throw new Error(`Malformed ${context}: expected boolean ${key}`);
+  }
+  return value;
+}
+
+function str(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function strOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function nextPageCursor(
+  pageInfo: { hasNextPage: boolean; endCursor: string | null },
+  seen: Set<string>,
+  context: string,
+): string | null {
+  if (!pageInfo.hasNextPage) return null;
+  const cursor = pageInfo.endCursor;
+  if (typeof cursor !== "string" || cursor.trim() === "") {
+    throw new Error(`${context} returned hasNextPage without a usable endCursor`);
+  }
+  if (seen.has(cursor)) {
+    throw new Error(`${context} repeated endCursor "${cursor}"`);
+  }
+  seen.add(cursor);
+  return cursor;
+}
+
+// Shared cursor-based pagination loop. Calls `extract` on each page's data object
+// to get the connection, maps each node with `map`, and yields results.
+async function* paginate<TRaw, TOut>(
+  transport: LinearTransport,
+  query: string,
+  baseVars: Record<string, unknown>,
+  extract: (data: unknown) => LinearConnection<TRaw>,
+  map: (raw: TRaw) => TOut,
+  pageSize: number,
+): AsyncGenerator<TOut> {
+  let after: string | undefined;
+  const seenCursors = new Set<string>();
+
+  while (true) {
+    const vars: Record<string, unknown> = { ...baseVars, first: pageSize };
+    if (after != null) vars["after"] = after;
+
+    const data = await transport(query, vars);
+    const connection = extract(data);
+
+    for (const node of connection.nodes) {
+      yield map(node);
+    }
+
+    const nextCursor = nextPageCursor(connection.pageInfo, seenCursors, "Linear pagination");
+    if (nextCursor === null) break;
+    after = nextCursor;
+  }
+}
+
+function mapTeam(raw: unknown): LinearTeam {
+  const r = requiredRecord(raw, "Linear team");
+  return {
+    id: requiredString(r, "id", "Linear team", true),
+    key: requiredString(r, "key", "Linear team", true),
+    name: requiredString(r, "name", "Linear team", true),
+  };
+}
+
+function mapProject(raw: unknown, teamId: string): LinearProject {
+  const r = requiredRecord(raw, "Linear project");
+  return {
+    id: requiredString(r, "id", "Linear project", true),
+    name: requiredString(r, "name", "Linear project", true),
+    teamId,
+    state: strOrNull(r["state"]),
+  };
+}
+
+function mapLabels(raw: unknown): LinearLabel[] {
+  const labels = asConnection<unknown>(raw, "Issue labels");
+  if (labels.pageInfo.hasNextPage) {
+    throw new Error("issue has more than 250 labels; refusing to use a truncated label set");
+  }
+  return labels.nodes.map((n) => {
+    const ln = requiredRecord(n, "Issue labels node");
+    return {
+      id: requiredString(ln, "id", "Issue labels node", true),
+      name: requiredString(ln, "name", "Issue labels node", true),
+    };
+  });
+}
+
+function mapComments(raw: unknown): Array<{
+  id: string;
+  body: string;
+  createdAt: string;
+  authorId: string | null;
+  authorName: string | null;
+}> {
+  const comments = asConnection<unknown>(raw, "IssueByIdentifier.comments");
+  return comments.nodes.map((n) => {
+    const cn = requiredRecord(n, "Issue comments node");
+    const botActor =
+      cn["botActor"] == null ? null : requiredRecord(cn["botActor"], "Issue comment botActor");
+    const user = cn["user"] == null ? null : requiredRecord(cn["user"], "Issue comment user");
+    const actor = botActor ?? user;
+    return {
+      id: requiredString(cn, "id", "Issue comments node", true),
+      body: requiredString(cn, "body", "Issue comments node"),
+      createdAt: requiredString(cn, "createdAt", "Issue comments node", true),
+      authorId: actor === null ? null : requiredString(actor, "id", "Issue comment actor", true),
+      authorName:
+        actor === null ? null : requiredString(actor, "name", "Issue comment actor", true),
+    };
+  });
+}
+
+function mapAttachments(raw: unknown): LinearAttachment[] {
+  const attachments = asConnection<unknown>(raw, "IssueByIdentifier.attachments");
+  if (attachments.pageInfo.hasNextPage) {
+    throw new Error(
+      "IssueByIdentifier returned more than 250 attachments — refusing to analyze incomplete context",
+    );
+  }
+  return attachments.nodes.map((node) => {
+    const attachment = requiredRecord(node, "Issue attachments node");
+    return {
+      id: requiredString(attachment, "id", "Issue attachments node", true),
+      url: requiredString(attachment, "url", "Issue attachments node", true),
+      title: requiredString(attachment, "title", "Issue attachments node"),
+    };
+  });
+}
+
+function commentPageInfo(raw: unknown): { hasNextPage: boolean; endCursor: string | null } {
+  return asConnection<unknown>(raw, "IssueByIdentifier.comments").pageInfo;
+}
+
+function hydratedIssueFingerprint(item: HydratedWorkspaceItem): string {
+  return JSON.stringify({
+    team: item.team,
+    project: item.project,
+    issue: item.issue,
+    description: item.description,
+    attachments: item.attachments,
+    creator: item.creator,
+  });
+}
+
+function mapIssue(raw: unknown): LinearIssue {
+  const r = requiredRecord(raw, "Linear issue");
+  const team = requiredRecord(r["team"], "Linear issue team");
+  const project =
+    r["project"] != null ? requiredRecord(r["project"], "Linear issue project") : null;
+  const state = requiredRecord(r["state"], "Linear issue state");
+  return {
+    id: requiredString(r, "id", "Linear issue", true),
+    identifier: requiredString(r, "identifier", "Linear issue", true),
+    title: requiredString(r, "title", "Linear issue", true),
+    url: requiredString(r, "url", "Linear issue", true),
+    createdAt: requiredIsoTimestamp(r, "createdAt", "Linear issue"),
+    updatedAt: requiredIsoTimestamp(r, "updatedAt", "Linear issue"),
+    priority: requiredLinearPriority(r),
+    teamId: requiredString(team, "id", "Linear issue team", true),
+    projectId: project != null ? requiredString(project, "id", "Linear issue project", true) : null,
+    stateId: requiredString(state, "id", "Linear issue state", true),
+    stateName: requiredString(state, "name", "Linear issue state", true),
+    stateType: assertLinearWorkflowStateType(
+      requiredString(state, "type", "Linear issue state", true),
+    ),
+    labels: mapLabels(r["labels"]),
+  };
+}
+
+// Maps the hydrated issue node from ISSUE_BY_IDENTIFIER_QUERY into a WorkspaceItem plus
+// its current comments. Unlike mapIssue, this node carries full team and project fields.
+function mapHydratedItem(raw: unknown): HydratedWorkspaceItem {
+  const r = asRecord(raw);
+  const issue = mapIssue(raw);
+
+  const teamRaw = requiredRecord(r["team"], "Linear issue team");
+  const team: LinearTeam = {
+    id: requiredString(teamRaw, "id", "Linear issue team", true),
+    key: requiredString(teamRaw, "key", "Linear issue team", true),
+    name: requiredString(teamRaw, "name", "Linear issue team", true),
+  };
+
+  const project = r["project"] != null ? mapProject(r["project"], team.id) : null;
+
+  const comments = mapComments(r["comments"]);
+  const creatorRaw = requiredRecord(r["creator"], "Linear issue creator");
+  const creator = {
+    id: requiredString(creatorRaw, "id", "Linear issue creator", true),
+    name: requiredString(creatorRaw, "name", "Linear issue creator", true),
+    admin: requiredBoolean(creatorRaw, "admin", "Linear issue creator"),
+    owner: requiredBoolean(creatorRaw, "owner", "Linear issue creator"),
+  };
+
+  return {
+    team,
+    project,
+    issue,
+    comments,
+    description: str(r["description"]),
+    attachments: mapAttachments(r["attachments"]),
+    creator,
+  };
+}
+
+export class LinearItemSource {
+  constructor(private transport: LinearTransport) {}
+
+  async *iterateTeams(pageSize = 250): AsyncGenerator<LinearTeam> {
+    yield* paginate(
+      this.transport,
+      TEAMS_QUERY,
+      {},
+      (data) => asConnection<unknown>(asRecord(data)["teams"], "ListTeams"),
+      mapTeam,
+      pageSize,
+    );
+  }
+
+  async *iterateProjects(teamId: string, pageSize = 250): AsyncGenerator<LinearProject> {
+    yield* paginate(
+      this.transport,
+      PROJECTS_QUERY,
+      { teamId },
+      (data) => {
+        const team = asRecord(asRecord(data)["team"]);
+        return asConnection<unknown>(team["projects"], "ListProjects");
+      },
+      (raw) => mapProject(raw, teamId),
+      pageSize,
+    );
+  }
+
+  async *iterateIssues(options: ListIssuesOptions): AsyncGenerator<LinearIssue> {
+    const { teamId, updatedAfter, pageSize = 250 } = options;
+    // Build the updatedAt filter only when a date is provided.
+    const vars: Record<string, unknown> = { teamId };
+    if (updatedAfter != null) {
+      vars["updatedAfter"] = { gt: updatedAfter };
+    }
+    yield* paginate(
+      this.transport,
+      ISSUES_QUERY,
+      vars,
+      (data) => asConnection<unknown>(asRecord(data)["issues"], "ListIssues"),
+      mapIssue,
+      pageSize,
+    );
+  }
+
+  async listTeams(pageSize?: number): Promise<LinearTeam[]> {
+    const results: LinearTeam[] = [];
+    for await (const team of this.iterateTeams(pageSize)) results.push(team);
+    return results;
+  }
+
+  async listProjects(teamId: string, pageSize?: number): Promise<LinearProject[]> {
+    const results: LinearProject[] = [];
+    for await (const project of this.iterateProjects(teamId, pageSize)) results.push(project);
+    return results;
+  }
+
+  async listIssues(options: ListIssuesOptions): Promise<LinearIssue[]> {
+    const results: LinearIssue[] = [];
+    for await (const issue of this.iterateIssues(options)) results.push(issue);
+    return results;
+  }
+
+  async *iterateWorkspaceItems(options?: WorkspaceSweepOptions): AsyncGenerator<WorkspaceItem> {
+    const { updatedAfter, pageSize } = options ?? {};
+    for await (const team of this.iterateTeams(pageSize)) {
+      const projects = await this.listProjects(team.id, pageSize);
+      const projectMap = new Map<string, LinearProject>(projects.map((p) => [p.id, p]));
+      // Build issue options, omitting optional keys when undefined (exactOptionalPropertyTypes).
+      const issueOpts: ListIssuesOptions = { teamId: team.id };
+      if (updatedAfter !== undefined) issueOpts.updatedAfter = updatedAfter;
+      if (pageSize !== undefined) issueOpts.pageSize = pageSize;
+      for await (const issue of this.iterateIssues(issueOpts)) {
+        const project = issue.projectId != null ? (projectMap.get(issue.projectId) ?? null) : null;
+        yield { team, project, issue };
+      }
+    }
+  }
+
+  async listWorkspaceItems(options?: WorkspaceSweepOptions): Promise<WorkspaceItem[]> {
+    const results: WorkspaceItem[] = [];
+    for await (const item of this.iterateWorkspaceItems(options)) results.push(item);
+    return results;
+  }
+
+  /**
+   * Fetches exactly one issue by its human identifier (e.g. "PAR-244"), hydrated with the
+   * issue's current comments in the same read pass. Returns null when no issue matches.
+   * Used by the single-item comment-apply path so plan + drift are computed against one
+   * consistent read (no comment/snapshot drift).
+   */
+  async fetchIssueByIdentifier(
+    identifier: string,
+    commentPageSize = 100,
+  ): Promise<HydratedWorkspaceItem | null> {
+    const { teamKey, number } = parseLinearIdentifier(identifier);
+    let commentAfter: string | undefined;
+    let hydrated: HydratedWorkspaceItem | null = null;
+    let issueFingerprint: string | null = null;
+    const comments: HydratedWorkspaceItem["comments"] = [];
+    const seenCommentCursors = new Set<string>();
+
+    while (true) {
+      const vars: Record<string, unknown> = {
+        teamKey,
+        number,
+        first: 1,
+        commentFirst: commentPageSize,
+      };
+      if (commentAfter != null) vars["commentAfter"] = commentAfter;
+
+      const data = await this.transport(ISSUE_BY_IDENTIFIER_QUERY, vars);
+      const connection = asConnection<unknown>(asRecord(data)["issues"], "IssueByIdentifier");
+      const [node] = connection.nodes;
+      if (node === undefined) return null;
+
+      const pageHydrated = mapHydratedItem(node);
+      const issue = requiredRecord(node, "Linear issue");
+      comments.push(...mapComments(issue["comments"]));
+      const pageIssueFingerprint = hydratedIssueFingerprint(pageHydrated);
+      if (hydrated === null) {
+        hydrated = pageHydrated;
+        issueFingerprint = pageIssueFingerprint;
+      } else if (pageIssueFingerprint !== issueFingerprint) {
+        throw new Error(
+          `IssueByIdentifier ${identifier} changed while paginating comments — retry from a fresh snapshot`,
+        );
+      }
+
+      const pageInfo = commentPageInfo(issue["comments"]);
+      const nextCursor = nextPageCursor(
+        pageInfo,
+        seenCommentCursors,
+        `IssueByIdentifier ${identifier} comment pagination`,
+      );
+      if (nextCursor === null) break;
+      commentAfter = nextCursor;
+    }
+
+    return hydrated === null ? null : { ...hydrated, comments };
+  }
+}

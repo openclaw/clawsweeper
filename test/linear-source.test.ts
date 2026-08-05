@@ -1,0 +1,887 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { LinearItemSource } from "../dist/linear/source.js";
+import type { LinearTransport } from "../dist/linear/client.js";
+
+// ---------------------------------------------------------------------------
+// Fake transport helpers
+// ---------------------------------------------------------------------------
+
+interface RecordedCall {
+  query: string;
+  vars: Record<string, unknown>;
+}
+
+/** Returns a transport that plays back queued page responses keyed by query substring. */
+function makeQueuedTransport(
+  queues: Record<string, unknown[]>,
+  calls: RecordedCall[],
+): LinearTransport {
+  const indices: Record<string, number> = {};
+  return async (query: string, vars: Record<string, unknown>) => {
+    calls.push({ query, vars });
+    for (const key of Object.keys(queues)) {
+      if (query.includes(key)) {
+        const idx = indices[key] ?? 0;
+        const pages = queues[key];
+        if (idx >= pages.length) {
+          throw new Error(`No more pages queued for ${key} (called ${idx + 1} times)`);
+        }
+        indices[key] = idx + 1;
+        return pages[idx];
+      }
+    }
+    throw new Error(`No queue registered for query: ${query.slice(0, 60)}`);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Teams pagination
+// ---------------------------------------------------------------------------
+
+test("iterateTeams / listTeams: multi-page pagination collects all nodes in order", async () => {
+  const calls: RecordedCall[] = [];
+  const transport = makeQueuedTransport(
+    {
+      ListTeams: [
+        {
+          teams: {
+            nodes: [{ id: "t1", key: "T1", name: "Team One" }],
+            pageInfo: { hasNextPage: true, endCursor: "c1" },
+          },
+        },
+        {
+          teams: {
+            nodes: [{ id: "t2", key: "T2", name: "Team Two" }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      ],
+    },
+    calls,
+  );
+
+  const source = new LinearItemSource(transport);
+  const teams = await source.listTeams(50);
+
+  assert.equal(teams.length, 2);
+  assert.equal(teams[0]?.id, "t1");
+  assert.equal(teams[0]?.key, "T1");
+  assert.equal(teams[0]?.name, "Team One");
+  assert.equal(teams[1]?.id, "t2");
+  assert.equal(teams[1]?.name, "Team Two");
+
+  // First call: no `after`; second call: after = "c1"
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0]?.vars["first"], 50);
+  assert.equal("after" in (calls[0]?.vars ?? {}), false);
+  assert.equal(calls[1]?.vars["after"], "c1");
+  assert.equal(calls[1]?.vars["first"], 50);
+});
+
+test("listTeams fails closed when pagination repeats a cursor", async () => {
+  const transport = makeQueuedTransport(
+    {
+      ListTeams: [
+        {
+          teams: {
+            nodes: [{ id: "t1", key: "T1", name: "Team One" }],
+            pageInfo: { hasNextPage: true, endCursor: "cursor-a" },
+          },
+        },
+        {
+          teams: {
+            nodes: [{ id: "t2", key: "T2", name: "Team Two" }],
+            pageInfo: { hasNextPage: true, endCursor: "cursor-b" },
+          },
+        },
+        {
+          teams: {
+            nodes: [{ id: "t3", key: "T3", name: "Team Three" }],
+            pageInfo: { hasNextPage: true, endCursor: "cursor-a" },
+          },
+        },
+      ],
+    },
+    [],
+  );
+  await assert.rejects(() => new LinearItemSource(transport).listTeams(50), /repeated endCursor/);
+});
+
+// ---------------------------------------------------------------------------
+// Projects pagination + mapping
+// ---------------------------------------------------------------------------
+
+test("listProjects: paginates under team.projects, sets teamId, maps state", async () => {
+  const calls: RecordedCall[] = [];
+  const transport = makeQueuedTransport(
+    {
+      ListProjects: [
+        {
+          team: {
+            projects: {
+              nodes: [
+                { id: "p1", name: "Project Alpha", state: "started" },
+                { id: "p2", name: "Project Beta", state: null },
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        },
+      ],
+    },
+    calls,
+  );
+
+  const source = new LinearItemSource(transport);
+  const projects = await source.listProjects("team-abc", 100);
+
+  assert.equal(projects.length, 2);
+
+  const p1 = projects[0];
+  assert.equal(p1?.id, "p1");
+  assert.equal(p1?.name, "Project Alpha");
+  assert.equal(p1?.teamId, "team-abc");
+  assert.equal(p1?.state, "started");
+
+  const p2 = projects[1];
+  assert.equal(p2?.teamId, "team-abc");
+  assert.equal(p2?.state, null);
+
+  assert.equal(calls[0]?.vars["teamId"], "team-abc");
+  assert.match(calls[0]?.query ?? "", /query ListProjects\(\$teamId: String!/);
+});
+
+// ---------------------------------------------------------------------------
+// Issues WITHOUT updatedAfter
+// ---------------------------------------------------------------------------
+
+test("listIssues WITHOUT updatedAfter: vars have teamId but no updatedAfter key", async () => {
+  const calls: RecordedCall[] = [];
+  const transport = makeQueuedTransport(
+    {
+      ListIssues: [
+        {
+          issues: {
+            nodes: [
+              {
+                id: "i1",
+                identifier: "ENG-1",
+                title: "Fix bug",
+                url: "https://linear.app/issue/ENG-1",
+                createdAt: "2024-01-01T00:00:00Z",
+                updatedAt: "2024-01-02T00:00:00Z",
+                priority: 2,
+                team: { id: "team-abc" },
+                project: { id: "proj-1" },
+                state: { id: "state-started", name: "In Progress", type: "started" },
+                labels: {
+                  nodes: [{ id: "lbl-1", name: "bug" }],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            ],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      ],
+    },
+    calls,
+  );
+
+  const source = new LinearItemSource(transport);
+  const issues = await source.listIssues({ teamId: "team-abc" });
+
+  assert.equal(issues.length, 1);
+
+  const issue = issues[0];
+  assert.ok(issue !== undefined);
+  assert.equal(issue.id, "i1");
+  assert.equal(issue.identifier, "ENG-1");
+  assert.equal(issue.title, "Fix bug");
+  assert.equal(issue.url, "https://linear.app/issue/ENG-1");
+  assert.equal(issue.createdAt, "2024-01-01T00:00:00Z");
+  assert.equal(issue.updatedAt, "2024-01-02T00:00:00Z");
+  assert.equal(issue.priority, 2);
+  assert.equal(issue.teamId, "team-abc");
+  assert.equal(issue.projectId, "proj-1");
+  assert.equal(issue.stateId, "state-started");
+  assert.equal(issue.stateName, "In Progress");
+  assert.equal(issue.stateType, "started");
+  assert.deepEqual(issue.labels, [{ id: "lbl-1", name: "bug" }]);
+
+  // updatedAfter must be absent from vars entirely
+  const vars = calls[0]?.vars ?? {};
+  assert.equal(vars["teamId"], "team-abc");
+  assert.equal("updatedAfter" in vars, false);
+  assert.match(
+    calls[0]?.query ?? "",
+    /query ListIssues\(\$teamId: ID!, \$updatedAfter: DateComparator/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Issues WITH updatedAfter
+// ---------------------------------------------------------------------------
+
+test("listIssues WITH updatedAfter: transport receives updatedAfter: { gt: iso }", async () => {
+  const calls: RecordedCall[] = [];
+  const transport = makeQueuedTransport(
+    {
+      ListIssues: [
+        {
+          issues: {
+            nodes: [],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      ],
+    },
+    calls,
+  );
+
+  const source = new LinearItemSource(transport);
+  await source.listIssues({ teamId: "team-xyz", updatedAfter: "2024-06-01T00:00:00Z" });
+
+  const vars = calls[0]?.vars ?? {};
+  assert.equal(vars["teamId"], "team-xyz");
+  assert.deepEqual(vars["updatedAfter"], { gt: "2024-06-01T00:00:00Z" });
+});
+
+// ---------------------------------------------------------------------------
+// Issue field mapping edge cases: null project, valid state, empty labels
+// ---------------------------------------------------------------------------
+
+test("listIssues: maps null project → projectId null and preserves a valid state", async () => {
+  const calls: RecordedCall[] = [];
+  const transport = makeQueuedTransport(
+    {
+      ListIssues: [
+        {
+          issues: {
+            nodes: [
+              {
+                id: "i2",
+                identifier: "ENG-2",
+                title: "No project",
+                url: "https://linear.app/issue/ENG-2",
+                createdAt: "2024-02-01T00:00:00Z",
+                updatedAt: "2024-02-02T00:00:00Z",
+                priority: 0,
+                team: { id: "team-abc" },
+                project: null,
+                state: { id: "state-backlog", name: "Backlog", type: "backlog" },
+                labels: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+              },
+            ],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      ],
+    },
+    calls,
+  );
+
+  const source = new LinearItemSource(transport);
+  const issues = await source.listIssues({ teamId: "team-abc" });
+
+  const issue = issues[0];
+  assert.ok(issue !== undefined);
+  assert.equal(issue.projectId, null);
+  assert.equal(issue.stateId, "state-backlog");
+  assert.equal(issue.stateName, "Backlog");
+  assert.equal(issue.stateType, "backlog");
+  assert.deepEqual(issue.labels, []);
+});
+
+// ---------------------------------------------------------------------------
+// iterateWorkspaceItems / listWorkspaceItems
+// ---------------------------------------------------------------------------
+
+test("listWorkspaceItems: joins team, projects, issues; resolves project by id", async () => {
+  const calls: RecordedCall[] = [];
+  const transport = makeQueuedTransport(
+    {
+      ListTeams: [
+        {
+          teams: {
+            nodes: [{ id: "team-1", key: "T1", name: "Team One" }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      ],
+      ListProjects: [
+        {
+          team: {
+            projects: {
+              nodes: [
+                { id: "proj-a", name: "Alpha", state: "started" },
+                { id: "proj-b", name: "Beta", state: null },
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        },
+      ],
+      ListIssues: [
+        {
+          issues: {
+            nodes: [
+              {
+                id: "issue-1",
+                identifier: "T1-1",
+                title: "First",
+                url: "https://linear.app/T1-1",
+                createdAt: "2024-01-01T00:00:00Z",
+                updatedAt: "2024-01-02T00:00:00Z",
+                priority: 1,
+                team: { id: "team-1" },
+                project: { id: "proj-a" },
+                state: { id: "state-todo", name: "Todo", type: "unstarted" },
+                labels: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+              },
+              {
+                id: "issue-2",
+                identifier: "T1-2",
+                title: "No project",
+                url: "https://linear.app/T1-2",
+                createdAt: "2024-01-03T00:00:00Z",
+                updatedAt: "2024-01-04T00:00:00Z",
+                priority: 3,
+                team: { id: "team-1" },
+                project: null,
+                state: { id: "state-backlog", name: "Backlog", type: "backlog" },
+                labels: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+              },
+            ],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      ],
+    },
+    calls,
+  );
+
+  const source = new LinearItemSource(transport);
+  const items = await source.listWorkspaceItems();
+
+  assert.equal(items.length, 2);
+
+  const item1 = items[0];
+  assert.ok(item1 !== undefined);
+  assert.deepEqual(item1.team, { id: "team-1", key: "T1", name: "Team One" });
+  assert.ok(item1.project !== null);
+  assert.equal(item1.project.id, "proj-a");
+  assert.equal(item1.project.teamId, "team-1");
+  assert.equal(item1.issue.id, "issue-1");
+
+  const item2 = items[1];
+  assert.ok(item2 !== undefined);
+  assert.deepEqual(item2.team, { id: "team-1", key: "T1", name: "Team One" });
+  assert.equal(item2.project, null);
+  assert.equal(item2.issue.id, "issue-2");
+});
+
+test("listWorkspaceItems: propagates updatedAfter and pageSize into issues query", async () => {
+  const calls: RecordedCall[] = [];
+  const transport = makeQueuedTransport(
+    {
+      ListTeams: [
+        {
+          teams: {
+            nodes: [{ id: "team-1", key: "T1", name: "Team One" }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      ],
+      ListProjects: [
+        {
+          team: {
+            projects: {
+              nodes: [],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        },
+      ],
+      ListIssues: [
+        {
+          issues: {
+            nodes: [],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      ],
+    },
+    calls,
+  );
+
+  const source = new LinearItemSource(transport);
+  await source.listWorkspaceItems({ updatedAfter: "2024-05-01T00:00:00Z", pageSize: 25 });
+
+  const issueCall = calls.find((c) => c.query.includes("ListIssues"));
+  assert.ok(issueCall !== undefined);
+  assert.equal(issueCall.vars["teamId"], "team-1");
+  assert.deepEqual(issueCall.vars["updatedAfter"], { gt: "2024-05-01T00:00:00Z" });
+  assert.equal(issueCall.vars["first"], 25);
+});
+
+// ---------------------------------------------------------------------------
+// Missing cursor fails closed when the API claims another page
+// ---------------------------------------------------------------------------
+
+test("null endCursor fails closed when hasNextPage is true", async () => {
+  const calls: RecordedCall[] = [];
+  const transport = makeQueuedTransport(
+    {
+      ListTeams: [
+        {
+          teams: {
+            nodes: [{ id: "t1", key: "T1", name: "Team One" }],
+            // Inconsistent pagination must not be accepted as a complete snapshot.
+            pageInfo: { hasNextPage: true, endCursor: null },
+          },
+        },
+      ],
+    },
+    calls,
+  );
+
+  const source = new LinearItemSource(transport);
+  await assert.rejects(() => source.listTeams(), /hasNextPage without a usable endCursor/);
+  assert.equal(calls.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Malformed connection throws a clear error
+// ---------------------------------------------------------------------------
+
+test("malformed connection (transport returns {}) throws error mentioning query name", async () => {
+  const transport: LinearTransport = async () => ({});
+  const source = new LinearItemSource(transport);
+
+  await assert.rejects(
+    () => source.listTeams(),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /ListTeams/);
+      assert.match(err.message, /connection/i);
+      return true;
+    },
+  );
+});
+
+test("malformed pageInfo cannot silently terminate generic pagination", async () => {
+  const transport: LinearTransport = async () => ({
+    teams: { nodes: [{ id: "t1", key: "T1", name: "Team One" }], pageInfo: {} },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).listTeams(),
+    /Malformed connection from ListTeams: expected pageInfo/,
+  );
+});
+
+function hydratedIssueNode(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "issue-1",
+    identifier: "PAR-1",
+    title: "Hydrated issue",
+    description: "See https://github.com/openclaw/openclaw/issues/1",
+    url: "https://linear.app/issue/PAR-1",
+    createdAt: "2026-06-01T00:00:00Z",
+    updatedAt: "2026-06-02T00:00:00Z",
+    priority: 2,
+    creator: { id: "user-1", name: "Maintainer", admin: true, owner: false },
+    team: { id: "team-1", key: "PAR", name: "Partner" },
+    project: null,
+    state: { id: "todo", name: "Todo", type: "unstarted" },
+    labels: {
+      nodes: [{ id: "bug", name: "bug" }],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+    attachments: {
+      nodes: [{ id: "att-1", url: "https://github.com/openclaw/openclaw/pull/2", title: "PR" }],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+    comments: {
+      nodes: [{ id: "comment-1", body: "context", createdAt: "2026-06-02T12:00:00Z" }],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+    ...overrides,
+  };
+}
+
+test("fetchIssueByIdentifier queries and maps analysis context", async () => {
+  const calls: RecordedCall[] = [];
+  const transport = makeQueuedTransport(
+    {
+      IssueByIdentifier: [
+        {
+          issues: {
+            nodes: [hydratedIssueNode()],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      ],
+    },
+    calls,
+  );
+  const source = new LinearItemSource(transport);
+  const item = await source.fetchIssueByIdentifier("PAR-1");
+
+  assert.ok(item !== null);
+  assert.equal(item.description, "See https://github.com/openclaw/openclaw/issues/1");
+  assert.deepEqual(item.creator, {
+    id: "user-1",
+    name: "Maintainer",
+    admin: true,
+    owner: false,
+  });
+  assert.deepEqual(item.attachments, [
+    { id: "att-1", url: "https://github.com/openclaw/openclaw/pull/2", title: "PR" },
+  ]);
+  assert.deepEqual(item.comments, [
+    {
+      id: "comment-1",
+      body: "context",
+      createdAt: "2026-06-02T12:00:00Z",
+      authorId: null,
+      authorName: null,
+    },
+  ]);
+  assert.match(calls[0]?.query ?? "", /description/);
+  assert.match(calls[0]?.query ?? "", /creator\s*\{/);
+  assert.match(calls[0]?.query ?? "", /attachments\(first: 250\)/);
+  assert.match(
+    calls[0]?.query ?? "",
+    /comments\(first: \$commentFirst, after: \$commentAfter, orderBy: createdAt\)/,
+  );
+  assert.match(calls[0]?.query ?? "", /comments[\s\S]*createdAt/);
+  assert.match(calls[0]?.query ?? "", /botActor\s*\{/);
+  assert.match(calls[0]?.query ?? "", /user\s*\{/);
+});
+
+test("fetchIssueByIdentifier rejects analysis-context drift while paginating comments", async () => {
+  const calls: RecordedCall[] = [];
+  const first = hydratedIssueNode({
+    comments: {
+      nodes: [{ id: "comment-1", body: "first", createdAt: "2026-06-02T12:00:00Z" }],
+      pageInfo: { hasNextPage: true, endCursor: "next" },
+    },
+  });
+  const second = hydratedIssueNode({
+    description: "changed while comments paginated",
+    comments: {
+      nodes: [{ id: "comment-2", body: "second", createdAt: "2026-06-02T12:01:00Z" }],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  const transport = makeQueuedTransport(
+    {
+      IssueByIdentifier: [
+        { issues: { nodes: [first], pageInfo: { hasNextPage: false, endCursor: null } } },
+        { issues: { nodes: [second], pageInfo: { hasNextPage: false, endCursor: null } } },
+      ],
+    },
+    calls,
+  );
+
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1", 1),
+    /changed while paginating comments/,
+  );
+});
+
+test("fetchIssueByIdentifier fails closed when comment pagination omits its cursor", async () => {
+  const node = hydratedIssueNode({
+    comments: {
+      nodes: [{ id: "comment-1", body: "first", createdAt: "2026-06-02T12:00:00Z" }],
+      pageInfo: { hasNextPage: true, endCursor: null },
+    },
+  });
+  const transport = makeQueuedTransport(
+    {
+      IssueByIdentifier: [
+        { issues: { nodes: [node], pageInfo: { hasNextPage: false, endCursor: null } } },
+      ],
+    },
+    [],
+  );
+
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1", 1),
+    /comment pagination returned hasNextPage without a usable endCursor/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects malformed comment pageInfo", async () => {
+  const node = hydratedIssueNode({
+    comments: {
+      nodes: [{ id: "comment-1", body: "first" }],
+      pageInfo: {},
+    },
+  });
+  const transport: LinearTransport = async () => ({
+    issues: { nodes: [node], pageInfo: { hasNextPage: false, endCursor: null } },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1", 1),
+    /Malformed connection from IssueByIdentifier.comments: expected pageInfo/,
+  );
+});
+
+test("fetchIssueByIdentifier fails closed on a comment cursor cycle", async () => {
+  const cursors = ["cursor-a", "cursor-b", "cursor-a"];
+  const pages = cursors.map((cursor, index) => ({
+    issues: {
+      nodes: [
+        hydratedIssueNode({
+          comments: {
+            nodes: [
+              {
+                id: `comment-${index + 1}`,
+                body: `page ${index + 1}`,
+                createdAt: `2026-06-02T12:0${index}:00Z`,
+              },
+            ],
+            pageInfo: { hasNextPage: true, endCursor: cursor },
+          },
+        }),
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  }));
+  const transport = makeQueuedTransport({ IssueByIdentifier: pages }, []);
+
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1", 1),
+    /comment pagination repeated endCursor "cursor-a"/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects a truncated attachment page", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [
+        hydratedIssueNode({
+          attachments: {
+            nodes: [],
+            pageInfo: { hasNextPage: true, endCursor: "more" },
+          },
+        }),
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /more than 250 attachments/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects a truncated label page", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [
+        hydratedIssueNode({
+          labels: {
+            nodes: [{ id: "bug", name: "bug" }],
+            pageInfo: { hasNextPage: true, endCursor: "more" },
+          },
+        }),
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /more than 250 labels/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects malformed label pagination metadata", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [
+        hydratedIssueNode({
+          labels: {
+            nodes: [{ id: "bug", name: "bug" }],
+            pageInfo: {},
+          },
+        }),
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed connection from Issue labels: expected pageInfo/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects a malformed protected-label node", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [
+        hydratedIssueNode({
+          labels: {
+            nodes: [{ id: "human", name: 42 }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        }),
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed Issue labels node: expected non-empty string name/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects a malformed comment body", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [
+        hydratedIssueNode({
+          comments: {
+            nodes: [{ id: "comment-1", body: 42, createdAt: "2026-06-02T12:00:00Z" }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        }),
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed Issue comments node: expected string body/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects a malformed attachment URL", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [
+        hydratedIssueNode({
+          attachments: {
+            nodes: [{ id: "att-1", url: null, title: "PR" }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        }),
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed Issue attachments node: expected non-empty string url/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects a malformed top-level issue node", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: { nodes: [null], pageInfo: { hasNextPage: false, endCursor: null } },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed Linear issue: expected an object/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects a malformed issue team", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [hydratedIssueNode({ team: null })],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed Linear issue team: expected an object/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects a missing issue state", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [hydratedIssueNode({ state: null })],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed Linear issue state: expected an object/,
+  );
+});
+
+for (const malformedIssueCase of [
+  { name: "issue id", patch: { id: "" }, error: /expected non-empty string id/ },
+  { name: "identifier", patch: { identifier: "" }, error: /expected non-empty string identifier/ },
+  { name: "title", patch: { title: "" }, error: /expected non-empty string title/ },
+  { name: "URL", patch: { url: "" }, error: /expected non-empty string url/ },
+  { name: "createdAt", patch: { createdAt: null }, error: /expected non-empty string createdAt/ },
+  { name: "updatedAt", patch: { updatedAt: null }, error: /expected non-empty string updatedAt/ },
+  {
+    name: "invalid createdAt",
+    patch: { createdAt: "not-a-date" },
+    error: /createdAt must be an ISO timestamp/,
+  },
+  {
+    name: "invalid updatedAt",
+    patch: { updatedAt: "2026-02-30T00:00:00Z" },
+    error: /updatedAt must be an ISO timestamp/,
+  },
+  { name: "priority", patch: { priority: null }, error: /expected finite number priority/ },
+  {
+    name: "out-of-range priority",
+    patch: { priority: 9 },
+    error: /priority must be an integer from 0 through 4/,
+  },
+  {
+    name: "fractional priority",
+    patch: { priority: 1.5 },
+    error: /priority must be an integer from 0 through 4/,
+  },
+  {
+    name: "team key",
+    patch: { team: { id: "team-1", key: "", name: "Partner" } },
+    error: /expected non-empty string key/,
+  },
+  {
+    name: "state type",
+    patch: { state: { id: "state-1", name: "Backlog", type: "" } },
+    error: /expected non-empty string type/,
+  },
+  {
+    name: "unknown state type",
+    patch: { state: { id: "state-1", name: "Archived", type: "archived" } },
+    error: /unsupported Linear workflow state type archived/,
+  },
+  {
+    name: "creator admin flag",
+    patch: {
+      creator: { id: "creator-1", name: "Maintainer", admin: "false", owner: false },
+    },
+    error: /expected boolean admin/,
+  },
+  {
+    name: "missing creator identity",
+    patch: { creator: null },
+    error: /Malformed Linear issue creator: expected an object/,
+  },
+]) {
+  test(`fetchIssueByIdentifier rejects malformed decision-bearing ${malformedIssueCase.name}`, async () => {
+    const transport: LinearTransport = async () => ({
+      issues: {
+        nodes: [hydratedIssueNode(malformedIssueCase.patch)],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      },
+    });
+    await assert.rejects(
+      () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+      malformedIssueCase.error,
+    );
+  });
+}
