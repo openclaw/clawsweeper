@@ -2898,7 +2898,10 @@ test("codex subprocess env strips GitHub and App credentials", () => {
   try {
     process.env.GH_TOKEN = "gh";
     process.env.GITHUB_TOKEN = "github";
+    process.env.REPO_TOKEN = "workflow-repository";
     process.env.COMMIT_SWEEPER_TARGET_GH_TOKEN = "target";
+    process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN = "workflow-public";
+    process.env.CLAWSWEEPER_TARGET_GH_TOKEN = "target-app";
     process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN = "codex-target";
     process.env.CLAWSWEEPER_APP_ID = "123";
     process.env.CLAWSWEEPER_APP_PRIVATE_KEY = "private";
@@ -2913,7 +2916,10 @@ test("codex subprocess env strips GitHub and App credentials", () => {
 
     assert.equal(env.GH_TOKEN, undefined);
     assert.equal(env.GITHUB_TOKEN, undefined);
+    assert.equal(env.REPO_TOKEN, undefined);
     assert.equal(env.COMMIT_SWEEPER_TARGET_GH_TOKEN, undefined);
+    assert.equal(env.CLAWSWEEPER_PUBLIC_GH_TOKEN, undefined);
+    assert.equal(env.CLAWSWEEPER_TARGET_GH_TOKEN, undefined);
     assert.equal(env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN, undefined);
     assert.equal(env.CLAWSWEEPER_APP_ID, undefined);
     assert.equal(env.CLAWSWEEPER_APP_PRIVATE_KEY, undefined);
@@ -2952,14 +2958,18 @@ test("codex subprocess env can expose an explicit read-only GitHub token", () =>
   try {
     process.env.GH_TOKEN = "ambient";
     process.env.GITHUB_TOKEN = "github";
+    process.env.REPO_TOKEN = "workflow-repository";
     process.env.COMMIT_SWEEPER_TARGET_GH_TOKEN = "hidden";
+    process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN = "workflow-public";
     process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN = "hidden-codex";
 
     const env = codexEnv({ ghToken: "target-read" });
 
     assert.equal(env.GH_TOKEN, "target-read");
     assert.equal(env.GITHUB_TOKEN, undefined);
+    assert.equal(env.REPO_TOKEN, undefined);
     assert.equal(env.COMMIT_SWEEPER_TARGET_GH_TOKEN, undefined);
+    assert.equal(env.CLAWSWEEPER_PUBLIC_GH_TOKEN, undefined);
     assert.equal(env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN, undefined);
     assert.equal(env.GIT_OPTIONAL_LOCKS, "0");
   } finally {

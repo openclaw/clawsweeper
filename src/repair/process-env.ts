@@ -36,6 +36,7 @@ export function codexSubprocessEnv(): NodeJS.ProcessEnv {
   }
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
+  delete env.REPO_TOKEN;
   delete env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN;
   delete env.CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN;
   delete env.CLAWSWEEPER_CRABFLEET_RUNNER_PTY_URL;

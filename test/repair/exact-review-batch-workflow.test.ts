@@ -5,6 +5,7 @@ import test from "node:test";
 import YAML from "yaml";
 
 import { createGitHubExecution } from "../../dist/clawsweeper-github-execution.js";
+import { createGitHubRuntime } from "../../dist/clawsweeper-github-runtime.js";
 
 const path = ".github/workflows/exact-review-batch-publish.yml";
 const source = readFileSync(path, "utf8");
@@ -93,6 +94,128 @@ test("GitHub retry defaults stay unchanged while publisher attempts are bounded"
   } finally {
     if (previous === undefined) delete process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS;
     else process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS = previous;
+  }
+});
+
+test("exact publication spends workflow credentials only on public target REST reads", () => {
+  const fixtureEnv = {
+    EXACT_EVENT_PUBLICATION: "true",
+    GH_TOKEN: "target-app-token",
+    REPO_TOKEN: "workflow-repository-token",
+    GH_BIN: process.execPath,
+    GH_BIN_ARGS: JSON.stringify([
+      "--eval",
+      "process.stdout.write(JSON.stringify({ token: process.env.GH_TOKEN, args: process.argv.slice(1) }))",
+      "--",
+    ]),
+  };
+  const previous = Object.fromEntries(
+    [...Object.keys(fixtureEnv), "GH_HOST"].map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, fixtureEnv);
+  delete process.env.GH_HOST;
+
+  let currentTarget = "openclaw/openclaw";
+  const requests: Array<{ args: string[]; token: string | undefined; timeoutMs?: number }> = [];
+  const run = (
+    _command: string,
+    args: string[],
+    options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
+  ) => {
+    const request = {
+      args,
+      token: options?.env?.GH_TOKEN ?? process.env.GH_TOKEN,
+      ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    };
+    requests.push(request);
+    return JSON.stringify(request);
+  };
+  const runtime = createGitHubRuntime({
+    ROOT: process.cwd(),
+    run,
+    targetRepo: () => currentTarget,
+  });
+  const observed = (args: string[], timeoutMs: number | undefined = 5_000) =>
+    JSON.parse(runtime.ghWithPreparedTimeout(args, timeoutMs)) as {
+      token: string;
+      args: string[];
+      timeoutMs?: number;
+    };
+
+  try {
+    for (const args of [
+      ["api", "repos/openclaw/openclaw/issues/123"],
+      ["api", "repos/openclaw/openclaw/issues/123/comments?per_page=100", "--paginate", "--slurp"],
+      ["api", "repos/openclaw/openclaw/pulls/123/reviews?per_page=100", "--paginate", "--slurp"],
+      ["api", "repos/openclaw/openclaw/pulls/123", "--jq", ".requested_reviewers"],
+    ]) {
+      assert.equal(observed(args).token, "workflow-repository-token", args.join(" "));
+    }
+
+    const publicArgs = ["api", "repos/openclaw/openclaw/issues/comments/123"];
+    assert.equal(observed(publicArgs, 1234).timeoutMs, 1234);
+    assert.equal(JSON.parse(runtime.gh(publicArgs)).token, "workflow-repository-token");
+    assert.equal(JSON.parse(runtime.ghOnce(publicArgs, 10_000)).token, "workflow-repository-token");
+
+    const privateRequests = [
+      ["api", "user"],
+      ["api", "repos/openclaw/openclaw/collaborators/person/permission"],
+      ["api", "repos/openclaw/private/issues/123"],
+      ["api", "repos/openclaw/clawsweeper/issues/123"],
+      ["api", "repos/openclaw/openclaw/issues/../../clawsweeper/issues/123"],
+      ["api", "repos/openclaw/openclaw/issues/%2e%2e/clawsweeper"],
+      ["api", "repos/openclaw/openclaw/issues/123", "--method", "PATCH"],
+      ["api", "repos/openclaw/openclaw/issues/123", "--method=DELETE"],
+      ["api", "repos/openclaw/openclaw/issues/123", "-f", "body=mutated"],
+      ["api", "repos/openclaw/openclaw/issues/123", "--input", "payload.json"],
+      ["api", "repos/openclaw/openclaw/issues/123", "--hostname", "example.invalid"],
+      ["pr", "view", "123"],
+    ];
+    for (const args of privateRequests) {
+      assert.equal(observed(args).token, "target-app-token", args.join(" "));
+    }
+    assert.equal(JSON.parse(runtime.ghOnce(privateRequests[6]!, 10_000)).token, "target-app-token");
+
+    const execution = createGitHubExecution({
+      ROOT: process.cwd(),
+      run,
+      gitHubRuntime: runtime,
+      sweepStatus: {
+        sweepStatusRelativePath: () => "status.json",
+        writeSweepStatus: () => undefined,
+      },
+      labelAlreadyExistsError: () => false,
+    } as unknown as Parameters<typeof createGitHubExecution>[0]);
+    assert.equal(
+      JSON.parse(
+        execution.ghObservedMutationCommand({
+          args: ["api", "repos/openclaw/openclaw/issues/123", "--method", "PATCH"],
+          identity: "exact-publication-target-mutation",
+        }),
+      ).token,
+      "target-app-token",
+    );
+
+    process.env.EXACT_EVENT_PUBLICATION = "false";
+    assert.equal(observed(publicArgs).token, "target-app-token");
+    process.env.EXACT_EVENT_PUBLICATION = "true";
+
+    currentTarget = "openclaw/private";
+    assert.equal(observed(publicArgs).token, "target-app-token");
+    currentTarget = "openclaw/openclaw";
+
+    process.env.GH_HOST = "enterprise.example.invalid";
+    assert.equal(observed(publicArgs).token, "target-app-token");
+    delete process.env.GH_HOST;
+
+    delete process.env.REPO_TOKEN;
+    assert.equal(observed(publicArgs).token, "target-app-token");
+    assert.ok(requests.length > privateRequests.length);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 

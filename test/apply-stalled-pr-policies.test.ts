@@ -114,6 +114,8 @@ function stalledPrApplyGhMock(
     forcePushAt?: string;
     forcePushCommitId?: string;
     maintainerComment?: boolean;
+    viewerDependentMaintainerComment?: boolean;
+    tokenLogPath?: string;
     proofRequestedAt?: string;
     mergeable?: boolean | null;
     mergeableState?: string | null;
@@ -150,7 +152,11 @@ function stalledPrApplyGhMock(
       html_url: "https://github.com/openclaw/openclaw/pull/321#issuecomment-9901",
       created_at: "2026-05-11T00:00:00Z",
       updated_at: "2026-05-11T00:00:00Z",
-      author_association: "MEMBER",
+      author_association: ${
+        options.viewerDependentMaintainerComment
+          ? 'process.env.GH_TOKEN === "target-app-token" ? "MEMBER" : "CONTRIBUTOR"'
+          : '"MEMBER"'
+      },
       user: { login: "maintainer" },
       body: "Taking a look at this branch."
     }`
@@ -159,6 +165,11 @@ function stalledPrApplyGhMock(
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 const path = args[1] || "";
+${
+  options.tokenLogPath
+    ? `require("node:fs").appendFileSync(${JSON.stringify(options.tokenLogPath)}, JSON.stringify({ path, token: process.env.GH_TOKEN, method: args.includes("--method") ? args[args.indexOf("--method") + 1] : null }) + "\\n");`
+    : ""
+}
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
@@ -475,6 +486,74 @@ test("stalled-unproven apply keeps a PR open when a maintainer commented", () =>
     },
   ]);
   assert.equal(result.closedExists, false);
+});
+
+test("public publication reads cannot hide maintainer identity from destructive close guards", () => {
+  const fixtureEnv = {
+    EXACT_EVENT_PUBLICATION: "true",
+    GH_TOKEN: "target-app-token",
+    REPO_TOKEN: "workflow-public-token",
+  };
+  const previous = Object.fromEntries(
+    [...Object.keys(fixtureEnv), "GH_HOST"].map((key) => [key, process.env[key]]),
+  );
+  const logRoot = mkdtempSync(tmpPrefix);
+  const tokenLogPath = join(logRoot, "github-token-calls.jsonl");
+  Object.assign(process.env, fixtureEnv);
+  delete process.env.GH_HOST;
+
+  try {
+    const result = runStalledPrApply({
+      report: stalledUnprovenCloseReport(),
+      closeReason: "stalled_unproven_pr",
+      ghOptions: {
+        maintainerComment: true,
+        viewerDependentMaintainerComment: true,
+        tokenLogPath,
+      },
+    });
+    assert.deepEqual(result.entries, [
+      {
+        number: 321,
+        action: "kept_open",
+        reason: "maintainer issue comment blocks inactivity auto-close",
+      },
+    ]);
+    assert.equal(result.closedExists, false);
+
+    const calls = readFileSync(tokenLogPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { path: string; token: string; method: string | null });
+    assert.ok(
+      calls.some((call) => call.token === "workflow-public-token" && call.method === null),
+      "ordinary publication reads did not use the workflow token",
+    );
+    assert.ok(
+      calls.some(
+        (call) =>
+          /\/issues\/321\/comments(?:\?|$)/.test(call.path) &&
+          call.token === "target-app-token" &&
+          call.method === "GET",
+      ),
+      "destructive engagement guards did not preserve the App-authoritative maintainer identity",
+    );
+    assert.ok(
+      calls.some(
+        (call) =>
+          call.path.endsWith("/issues/321") &&
+          call.token === "target-app-token" &&
+          call.method === "GET",
+      ),
+      "destructive engagement guards did not preserve App-authoritative issue metadata",
+    );
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(logRoot, { recursive: true, force: true });
+  }
 });
 
 test("apply dry-run closes an abandoned PR with failing checks", () => {

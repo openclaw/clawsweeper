@@ -35,6 +35,7 @@ import { createDashboardAudit } from "./clawsweeper-dashboard-audit.js";
 import { createGitHubContext } from "./clawsweeper-github-context.js";
 import { createGitHubExecution } from "./clawsweeper-github-execution.js";
 import { createGitHubRuntime } from "./clawsweeper-github-runtime.js";
+import { exactPublicationPublicReadToken } from "./github-public-read.js";
 import { createItemContext } from "./clawsweeper-item-context.js";
 import {
   applyBlockingProtectedLabels,
@@ -511,8 +512,11 @@ const applyGuards = createApplyGuards({
   authorPrBudget: () => authorPrBudget(),
   authorPrBudgetAgeSkipReason,
   authorPrBudgetCloseEnabled: () => authorPrBudgetCloseEnabled(),
-  ghJson,
-  ghPaged,
+  ghJson: <T>(args: string[]): T =>
+    ghJson<T>(
+      exactPublicationPublicReadToken(args, targetRepo()) ? [...args, "--method", "GET"] : args,
+    ),
+  ghPaged: <T>(path: string): T[] => ghPaged<T>(path, { requireApp: true }),
   isMaintainerAuthorAssociation,
   isMaintainerAuthored,
   isOlderThanDays,

@@ -1,4 +1,5 @@
 import { parseGhJson } from "./github-json.js";
+import { exactPublicationPublicReadToken } from "./github-public-read.js";
 import {
   MAX_REVIEWED_PR_ACTIVITY,
   REVIEWED_PR_ACTIVITY_THREADS_QUERY,
@@ -41,8 +42,12 @@ export function createGitHubContext({
     return serialized ? `${base}?${serialized}` : base;
   }
 
-  function ghPaged<T>(path: string): T[] {
-    const pages = ghJson<unknown[]>(["api", githubPaginatedPath(path), "--paginate", "--slurp"]);
+  function ghPaged<T>(path: string, options: { requireApp?: boolean } = {}): T[] {
+    const args = ["api", githubPaginatedPath(path), "--paginate", "--slurp"];
+    if (options.requireApp && exactPublicationPublicReadToken(args, targetRepo())) {
+      args.push("--method", "GET");
+    }
+    const pages = ghJson<unknown[]>(args);
     if (!Array.isArray(pages)) return [];
     return pages.flatMap((page) => (Array.isArray(page) ? (page as T[]) : []));
   }

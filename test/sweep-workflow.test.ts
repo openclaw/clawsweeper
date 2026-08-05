@@ -601,6 +601,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     step(reviewer, "Review exact event item").env?.GH_TOKEN,
     "${{ steps.target-read-token.outputs.token }}",
   );
+  assert.equal(step(reviewer, "Review exact event item").env?.REPO_TOKEN, undefined);
   assert.match(step(reviewer, "Review exact event item").run ?? "", /--skip-start-comment/);
   const reserveLease = step(reviewer, "Reserve exact review lease");
   assert.equal(reserveLease.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
@@ -718,6 +719,8 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.equal(upload.uses, "actions/upload-artifact@v7");
   assert.match(prepareDirect.run ?? "", /repair:publish-event-result/);
+  assert.equal(prepareDirect.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
+  assert.equal(prepareDirect.env?.REPO_TOKEN, "${{ github.token }}");
   assert.equal(
     prepareDirect.env?.EXACT_REVIEW_BATCH_MUTATION_OUTPUT,
     ".artifacts/direct-publication-outcome.json",

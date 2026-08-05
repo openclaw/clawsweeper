@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import type { GitHubRuntimeBudget } from "./clawsweeper-types.js";
 import { codexEnv } from "./codex-env.js";
 import { resolveCommand } from "./command.js";
+import { exactPublicationPublicReadToken } from "./github-public-read.js";
 
 interface CreateGitHubRuntimeDependencies {
   ROOT: string;
@@ -98,8 +99,12 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
   }
 
   function ghWithPreparedTimeout(args: string[], timeoutMs: number | undefined): string {
-    if (args[0] === "api") return run("gh", args, { timeoutMs });
-    return run("gh", ["--repo", targetRepo(), ...args], { timeoutMs });
+    const resolvedArgs = args[0] === "api" ? args : ["--repo", targetRepo(), ...args];
+    const publicReadToken = exactPublicationPublicReadToken(resolvedArgs, targetRepo());
+    return run("gh", resolvedArgs, {
+      timeoutMs,
+      ...(publicReadToken ? { env: { GH_TOKEN: publicReadToken } } : {}),
+    });
   }
 
   function gh(args: string[]): string {
@@ -108,7 +113,12 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
 
   function ghOnce(args: string[], timeoutMs: number): string {
     const resolvedArgs = args[0] === "api" ? args : ["--repo", targetRepo(), ...args];
-    const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+    const publicReadToken = exactPublicationPublicReadToken(resolvedArgs, targetRepo());
+    const env = {
+      ...process.env,
+      GIT_OPTIONAL_LOCKS: "0",
+      ...(publicReadToken ? { GH_TOKEN: publicReadToken } : {}),
+    };
     const command = resolveCommand("gh", resolvedArgs, env);
     const commandTimeoutMs = githubCommandTimeoutMs(timeoutMs) ?? timeoutMs;
     const runtimeLimitedTimeout = commandTimeoutMs < timeoutMs;

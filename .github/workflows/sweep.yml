@@ -1347,6 +1347,7 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          REPO_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
           MIN_AGE_MINUTES: "0"

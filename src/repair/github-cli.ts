@@ -6,6 +6,7 @@ import { ghCliEnv } from "./process-env.js";
 import { repoRoot } from "./paths.js";
 import { ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
 import { parseGhJsonWithRetry, parseGhJsonWithRetryAsync } from "../github-json.js";
+import { isPublicOpenClawReadOnlyRequest } from "../github-public-read.js";
 import { resolveCommand } from "../command.js";
 
 const execFileAsync = promisify(execFile);
@@ -264,33 +265,6 @@ function ghCommandEnv(ghArgs: readonly string[], options: GhRunOptions): NodeJS.
     return env;
   }
   return ghEnv({ ...overrides, GH_TOKEN: publicToken });
-}
-
-function isPublicOpenClawReadOnlyRequest(ghArgs: readonly string[]): boolean {
-  if (ghArgs[0] !== "api") return false;
-  const endpoint = ghArgs[1] ?? "";
-  const endpointPath = endpoint.split("?", 1)[0] ?? "";
-  if (!/^repos\/openclaw\/openclaw\/(?:issues|pulls)(?:\/|$)/.test(endpointPath)) {
-    return false;
-  }
-  if (
-    endpointPath.includes("\\") ||
-    endpointPath.split("/").some((segment) => segment === "." || segment === "..") ||
-    /%(?:2e|2f|5c)/i.test(endpointPath)
-  ) {
-    return false;
-  }
-
-  for (let index = 2; index < ghArgs.length; index += 1) {
-    const flag = ghArgs[index];
-    if (flag === "--paginate" || flag === "--slurp") continue;
-    if ((flag === "--jq" || flag === "-q") && index + 1 < ghArgs.length) {
-      index += 1;
-      continue;
-    }
-    return false;
-  }
-  return true;
 }
 
 export function ghErrorText(error: unknown): string {
