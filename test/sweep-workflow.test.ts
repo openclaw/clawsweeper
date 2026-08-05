@@ -649,6 +649,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     liveItem.env?.CLAIM_DECISION,
     "${{ steps.claim-exact-review-queue.outputs.decision }}",
   );
+  assert.equal(
+    liveItem.env?.GH_TOKEN,
+    "${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-read-token.outputs.token }}",
+  );
   assert.match(liveItem.run ?? "", /grep -Eq '\^\[0-9\]\+\$'/);
   assert.match(
     liveItem.run ?? "",

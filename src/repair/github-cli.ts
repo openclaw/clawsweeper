@@ -151,7 +151,7 @@ export function ghPagedLimitWithRetry<T = JsonValue>(
 }
 
 export function ghText(ghArgs: string[], options: GhRunOptions = {}): string {
-  const env = ghEnv(options.env);
+  const env = ghCommandEnv(ghArgs, options);
   const command = ghCommand(ghArgs, env);
   const text = execFileSync(command.command, command.args, {
     cwd: options.cwd ?? repoRoot(),
@@ -203,7 +203,7 @@ export async function ghTextWithRetryAsync(
 
 export async function ghTextAsync(ghArgs: string[], options: GhRunOptions = {}): Promise<string> {
   if (options.input !== undefined) return ghText(ghArgs, options);
-  const env = ghEnv(options.env);
+  const env = ghCommandEnv(ghArgs, options);
   const command = ghCommand(ghArgs, env);
   const { stdout } = await execFileAsync(command.command, command.args, {
     cwd: options.cwd ?? repoRoot(),
@@ -247,6 +247,50 @@ export function ghSpawn(ghArgs: string[], options: GhRunOptions = {}) {
 
 export function ghEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return ghCliEnv(overrides);
+}
+
+function ghCommandEnv(ghArgs: readonly string[], options: GhRunOptions): NodeJS.ProcessEnv {
+  const overrides = options.env ?? {};
+  const env = ghEnv(overrides);
+  const publicToken = process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN?.trim();
+  if (
+    !publicToken ||
+    options.input !== undefined ||
+    Object.hasOwn(overrides, "GH_TOKEN") ||
+    Object.hasOwn(overrides, "GITHUB_TOKEN") ||
+    (env.GH_HOST && env.GH_HOST.toLowerCase() !== "github.com") ||
+    !isPublicOpenClawReadOnlyRequest(ghArgs)
+  ) {
+    return env;
+  }
+  return ghEnv({ ...overrides, GH_TOKEN: publicToken });
+}
+
+function isPublicOpenClawReadOnlyRequest(ghArgs: readonly string[]): boolean {
+  if (ghArgs[0] !== "api") return false;
+  const endpoint = ghArgs[1] ?? "";
+  const endpointPath = endpoint.split("?", 1)[0] ?? "";
+  if (!/^repos\/openclaw\/openclaw\/(?:issues|pulls)(?:\/|$)/.test(endpointPath)) {
+    return false;
+  }
+  if (
+    endpointPath.includes("\\") ||
+    endpointPath.split("/").some((segment) => segment === "." || segment === "..") ||
+    /%(?:2e|2f|5c)/i.test(endpointPath)
+  ) {
+    return false;
+  }
+
+  for (let index = 2; index < ghArgs.length; index += 1) {
+    const flag = ghArgs[index];
+    if (flag === "--paginate" || flag === "--slurp") continue;
+    if ((flag === "--jq" || flag === "-q") && index + 1 < ghArgs.length) {
+      index += 1;
+      continue;
+    }
+    return false;
+  }
+  return true;
 }
 
 export function ghErrorText(error: unknown): string {

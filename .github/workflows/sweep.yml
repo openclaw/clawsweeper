@@ -723,7 +723,7 @@ jobs:
         id: live-item
         env:
           CLAIM_DECISION: ${{ steps.claim-exact-review-queue.outputs.decision }}
-          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
+          GH_TOKEN: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-read-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
           CLAIM_TARGET_BRANCH: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).targetBranch }}

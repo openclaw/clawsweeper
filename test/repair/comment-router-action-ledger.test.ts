@@ -54,6 +54,25 @@ test("comment router wraps every GitHub mutation at the request boundary", () =>
   }
 });
 
+test("comment router isolates public target reads from its GitHub App mutation identity", () => {
+  const source = readText("src/repair/github-cli.ts");
+  const workflow = readText(".github/workflows/repair-comment-router.yml");
+
+  assert.equal(
+    workflow.match(/CLAWSWEEPER_PUBLIC_GH_TOKEN: \$\{\{ github\.token \}\}/g)?.length,
+    2,
+  );
+  assert.equal(
+    workflow.match(/GH_TOKEN: \$\{\{ steps\.app_token\.outputs\.token \}\}/g)?.length,
+    2,
+  );
+  assert.match(source, /process\.env\.CLAWSWEEPER_PUBLIC_GH_TOKEN\?\.trim\(\)/);
+  assert.match(source, /Object\.hasOwn\(overrides, "GH_TOKEN"\)/);
+  assert.match(source, /Object\.hasOwn\(overrides, "GITHUB_TOKEN"\)/);
+  assert.match(source, /function isPublicOpenClawReadOnlyRequest/);
+  assert.match(source, /repos\\\/openclaw\\\/openclaw\\\/\(\?:issues\|pulls\)/);
+});
+
 test("exact comment convergence classifies a missing comment as no mutation", () => {
   const source = readText("src/repair/comment-router.ts");
   const fastPath = source.slice(source.indexOf("function convergeExactCommentVersionFastPathAck"));
