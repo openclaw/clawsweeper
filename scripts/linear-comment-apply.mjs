@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * Single-item Linear review-comment apply runner (dry-run by default).
+ * Single-item Linear review-comment planning runner.
  *
- * This is the WRITE half of the ClawSweeper Linear review flow, scoped to ONE issue by
+ * This is the proposal half of the ClawSweeper Linear review flow, scoped to ONE issue by
  * its human identifier (e.g. "PAR-244"). It runs the real review pipeline end-to-end and
  * reuses the existing planner + authority gate — it never reimplements comment body or
  * marker logic:
@@ -11,27 +11,20 @@
  *   fetchIssueByIdentifier (read)  -> mapWorkspaceItem -> classifyRecord
  *     -> renderReviewCommentBody/planReviewCommentUpsert (comment.ts)
  *     -> reviewCommentMutationRequest -> authorizeMutation (authority.ts)
- *     -> [--apply only, existing marker only] mint OAuth Bearer token -> commentUpdate
+ *     -> secret-free planning receipt (comment mutations remain disabled)
  *
- * Two auth identities, kept strictly separate:
+ * Auth identities remain modeled separately for reviewed ownership receipts:
  *   READ  — personal API key (raw header), from LINEAR_API_KEY/LINEAR_TOKEN or the macOS
  *           Keychain item "openclaw-linear-api-key". Used to fetch the issue + comments.
- *   WRITE — the dedicated "ClawSweeper" OAuth app. Client-credentials tokens already
- *           represent the app actor. Its client_id/secret live in the Keychain
- *           ("openclaw-linear-clawsweeper-client-id"
- *           / "openclaw-linear-clawsweeper-secret"). A short-lived Bearer access token is
- *           minted at apply time and used only to update an existing actor-owned comment.
+ *   ACTOR — the stable application actor ID expected to own a managed comment. It remains
+ *           bound into plans and approvals, but no OAuth credential is read or token minted.
  *
- * Gating — review-only by default, impossible to write without an explicit opt-in:
+ * Gating — proposal-only for every invocation:
  *   - Default mode is DRY-RUN: prints the planned comment body and whether it would create
  *     or update, and writes NOTHING. No OAuth token is minted in dry-run.
- *   - New comment creation is planning-only until durable cross-process action settlement
- *     exists. A live update requires BOTH: the explicit --apply flag AND the environment opt-in
- *     OPENCLAW_NOTIFY_LINEAR=1. Either alone keeps the run dry. (Belt and suspenders so a
- *     stray flag in a cron command can never post.)
- *   - Even with both, the write only proceeds if authorizeMutation() returns allowed=true
- *     with the comment gate explicitly opened and independently supplied matching
- *     snapshot/plan fingerprints (--dry-run-receipt or direct approved hash flags).
+ *   - Comment creation and updates are planning-only until durable cross-process action
+ *     settlement exists. Even --apply + OPENCLAW_NOTIFY_LINEAR=1 cannot execute them.
+ *   - Authorization receipts remain useful reviewed evidence for a future settled lane.
  *
  * Secret hygiene: no token, client id, or client secret is ever logged.
  */
@@ -44,12 +37,10 @@ import {
   authorizeMutation,
   buildMutationReceipt,
   classifyRecord,
-  COMMENT_UPDATE_MUTATION,
   createLinearTransport,
   evaluateReviewPolicy,
   LinearItemSource,
   mapWorkspaceItem,
-  mintLinearAppToken,
   parseLinearIdentifier,
   planReviewCommentUpsert,
   renderAnalyzerSections,
@@ -61,12 +52,12 @@ const DEFAULT_STALE_DAYS = 60;
 
 // Read-key Keychain coordinates (personal API key, raw header) — mirrors linear-snapshot.mjs.
 export const READ_KEYCHAIN_SERVICE = "openclaw-linear-api-key";
-// OAuth app (ClawSweeper) client_credentials Keychain coordinates (Bearer write path).
+// Reserved OAuth app coordinates for a future durably settled write path.
 export const APP_CLIENT_ID_SERVICE = "openclaw-linear-clawsweeper-client-id";
 export const APP_CLIENT_SECRET_SERVICE = "openclaw-linear-clawsweeper-secret";
 export const DEFAULT_KEYCHAIN_ACCOUNT = "partnerai-config";
 
-// Environment opt-in required (alongside --apply) before any live write.
+// Apply-intent opt-in retained for planning receipts; comment writes remain disabled.
 export const NOTIFY_ENV = "OPENCLAW_NOTIFY_LINEAR";
 
 export function parseArgs(argv) {
@@ -357,8 +348,8 @@ export function renderReviewContent(record, classification, review = null) {
 }
 
 /**
- * Decides whether a live write is permitted. A write needs BOTH the explicit --apply flag
- * AND the OPENCLAW_NOTIFY_LINEAR=1 environment opt-in. Returns { live, reason }.
+ * Records whether the operator supplied both historical apply-intent gates. This does not
+ * authorize a comment mutation; resolveWriteDecision rejects every non-noop comment action.
  */
 export function resolveWriteMode(options, env = process.env) {
   if (!options.apply) {
@@ -371,7 +362,7 @@ export function resolveWriteMode(options, env = process.env) {
       reason: `--apply given but ${NOTIFY_ENV} is not set to 1 — staying dry-run`,
     };
   }
-  return { live: true, reason: "live write authorized by --apply + " + NOTIFY_ENV };
+  return { live: true, reason: "apply intent supplied by --apply + " + NOTIFY_ENV };
 }
 
 /**
@@ -483,9 +474,8 @@ export async function assertLinearApplicationActor(transport, expectedAuthorId) 
   return { id: actorId, name: String(data.applicationInfo.name ?? "") };
 }
 
-/** Applies the authorized plan with a freshly minted Bearer token. Never logs the token. */
-export async function applyPlan(plan, appCreds, deps = {}) {
-  // Nothing to write — never mint a write token for a noop.
+/** Rejects executable comment plans while preserving the planning contract. */
+export async function applyPlan(plan, _appCreds, _deps = {}) {
   if (plan.action === "noop") {
     return { noop: true };
   }
@@ -494,40 +484,21 @@ export async function applyPlan(plan, appCreds, deps = {}) {
       "live Linear comment creation is disabled until durable cross-process settlement exists",
     );
   }
-  const fetchImpl = deps.fetchImpl ?? fetch;
-  // Reuse a caller-supplied transport when present (bulk runs mint ONE Bearer token and
-  // share it across items); only mint when we must build our own transport.
-  let transport = deps.transport;
-  if (transport === undefined) {
-    const minted = await mintLinearAppToken({
-      clientId: appCreds.clientId,
-      clientSecret: appCreds.clientSecret,
-      scope: "read,write",
-      ...(deps.mintEndpoint ? { endpoint: deps.mintEndpoint } : {}),
-      fetchImpl,
-    });
-    transport = createLinearTransport({
-      token: minted.accessToken,
-      auth: "bearer",
-      ...(deps.graphqlEndpoint ? { endpoint: deps.graphqlEndpoint } : {}),
-      ...(deps.fetchImpl ? { fetchImpl } : {}),
-    });
-  }
-
-  await assertLinearApplicationActor(transport, plan.expectedAuthorId);
-
   if (plan.action === "update") {
-    return transport(COMMENT_UPDATE_MUTATION, { id: plan.targetCommentId, body: plan.body });
+    throw new Error(
+      "live Linear comment updates are disabled until durable cross-process settlement exists",
+    );
   }
   throw new Error(`unsupported live Linear comment action: ${String(plan.action)}`);
 }
 
 /**
- * Composes the full live-write decision. An existing managed comment is updated only when ALL hold:
- *   - mode is live (--apply + OPENCLAW_NOTIFY_LINEAR=1),
+ * Composes the apply decision. Comment creation and updates always remain planning-only.
+ * Before that terminal boundary, the result still records whether:
+ *   - apply intent was supplied (--apply + OPENCLAW_NOTIFY_LINEAR=1),
  *   - the item is ELIGIBLE for review (disposition "review"/"stale-candidate") — ClawSweeper
  *     never comments on closed, protected, or excluded issues; there is nothing to review,
- *   - the mutation is authorized (gate open + matching fingerprints),
+ *   - the proposal is authorized (gate open + matching fingerprints),
  *   - the plan actually changes something (action !== "noop").
  * Returns { write, reason }; reason explains any skip for the summary/receipt. Pure.
  */
@@ -560,17 +531,22 @@ export function resolveWriteDecision(result, mode) {
       reason: "live comment creation is disabled until durable cross-process settlement exists",
     };
   }
+  if (result.plan.action === "update") {
+    return {
+      write: false,
+      reason: "live comment updates are disabled until durable cross-process settlement exists",
+    };
+  }
   if (result.plan.action === "noop") {
     return { write: false, reason: "noop: the durable comment already matches — nothing to write" };
   }
-  return { write: true, reason: `live write authorized for ${result.record.identifier}` };
+  return {
+    write: false,
+    reason: `unsupported comment action ${String(result.plan.action)} — no comment mutation is executable`,
+  };
 }
 
-/**
- * Re-fetches and reauthorizes a comment immediately before a live mutation.
- * The reviewed plan/snapshot hashes remain the authority; any target or plan
- * drift converts the write into a terminal skip instead of using stale input.
- */
+/** Recomputes a reviewed proposal and confirms the planning-only boundary still blocks it. */
 export async function revalidateCommentWrite(source, itemOptions, mode) {
   const result = await buildItemPlan(source, itemOptions);
   const decision = resolveWriteDecision(result, mode);
@@ -628,15 +604,8 @@ export function summarize(result, mode) {
     staleDuplicateIds: result.plan.staleDuplicateIds,
     authorized: result.authorization.allowed,
     authorizationReasons: result.authorization.reasons,
-    // Mode-independent: would a LIVE run actually update an existing managed comment?
-    // Lets a dry-run state exactly what a live run would do.
-    wouldWrite:
-      result.classification.eligible &&
-      result.policy?.ruleId !== "protected-human-review" &&
-      result.authorization.allowed &&
-      typeof result.expectedAuthorId === "string" &&
-      result.expectedAuthorId.trim() !== "" &&
-      result.plan.action === "update",
+    // Comment creation and updates are planning-only until durable shared settlement exists.
+    wouldWrite: false,
     planHash: result.plan.planHash,
     snapshotHash: result.record.snapshotHash,
     expectedAuthorId: result.expectedAuthorId,
@@ -736,71 +705,16 @@ async function main() {
     return;
   }
 
-  let decision = resolveWriteDecision(result, mode);
-  if (decision.write) {
-    try {
-      ({ result, decision } = await revalidateCommentWrite(source, { ...options, approval }, mode));
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-      return;
-    }
-  }
-
+  const decision = resolveWriteDecision(result, mode);
   const summary = summarize(result, mode);
   summary.writeDecision = decision.reason;
-
-  if (decision.write) {
-    try {
-      const appCreds = resolveAppCredentials({ account: options.keychainAccount });
-      const applyResult = await applyPlan(result.plan, appCreds);
-      summary.applyAttempted = true;
-      summary.applied = false;
-      summary.applyResult = applyResult;
-      // PAR-215 read-back: re-fetch and confirm the durable marker comment landed.
-      try {
-        summary.readback = await readBackComment(
-          source,
-          options.identifier,
-          result.plan,
-          result.expectedAuthorId,
-        );
-        assertReadBackConfirmed(summary.readback);
-        summary.applied = true;
-      } catch (error) {
-        summary.readback = {
-          confirmed: false,
-          error: error instanceof Error ? error.message : String(error),
-        };
-        console.error(summary.readback.error);
-        process.exitCode = 1;
-      }
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-      return;
-    }
-  } else {
-    summary.applied = false;
-    // Surface why a LIVE run skipped (ineligible / denied / noop); the dry-run reason is in writeDecision.
-    if (mode.live) summary.applyBlocked = decision.reason;
-    if (
-      mode.live &&
-      result.classification.eligible &&
-      result.plan.action !== "noop" &&
-      !result.authorization.allowed
-    ) {
-      process.exitCode = 1;
-    }
-  }
+  summary.applied = false;
+  if (mode.live) summary.applyBlocked = decision.reason;
 
   if (options.json) {
     console.log(JSON.stringify(summary, null, 2));
   } else {
     console.log(printHuman(summary));
-    if (summary.applied && summary.readback?.confirmed === true) {
-      console.log("\nApplied: managed comment updated as ClawSweeper and read-back confirmed.");
-    }
   }
 }
 
@@ -828,15 +742,14 @@ function requireHashValue(argv, index, flag) {
 function usage() {
   return `Usage: node scripts/linear-comment-apply.mjs --identifier <KEY> [options]
 
-Single-item Linear review-comment apply runner. Fetches ONE issue by identifier,
+Single-item Linear review-comment planning runner. Fetches ONE issue by identifier,
 runs the real review pipeline (map -> classify -> plan -> authorize), and prints
-the planned comment by default. Live mode can update an existing actor-owned marker
-comment; new comment creation remains disabled until durable cross-process settlement
-exists. Live update requires both --apply and ${NOTIFY_ENV}=1.
+the planned comment. Comment creation and updates remain disabled until durable
+cross-process settlement exists. --apply records operator intent but cannot write.
 
 Options:
   --identifier <KEY>         Linear issue identifier, e.g. PAR-244 (required)
-  --apply                    Opt in to a LIVE write (also needs ${NOTIFY_ENV}=1)
+  --apply                    Exercise apply-intent checks without enabling a comment write
   --dry-run                  Force dry-run (default behaviour)
   --json                     Emit a JSON summary instead of human-readable text
   --now <iso>                ISO 8601 timestamp to use as "now" (default: current time)
@@ -852,15 +765,14 @@ Options:
   --help, -h                 Show this help message
 
 Auth: READ uses the personal key (LINEAR_API_KEY/LINEAR_TOKEN or Keychain service
-"${READ_KEYCHAIN_SERVICE}", raw header). WRITE mints a Bearer token from the
-ClawSweeper OAuth app credentials in the Keychain (services
-"${APP_CLIENT_ID_SERVICE}" / "${APP_CLIENT_SECRET_SERVICE}").
+"${READ_KEYCHAIN_SERVICE}", raw header). Comment plans do not read the reserved OAuth
+app credentials or mint a Bearer token.
 
 Examples:
   # Dry-run (default): print the planned comment for PAR-244, write nothing
   node scripts/linear-comment-apply.mjs --identifier PAR-244 --json
 
-  # Live update of an existing managed comment — both gates required
+  # Apply-intent probe — reports the comment mutation disabled and writes nothing
   ${NOTIFY_ENV}=1 node scripts/linear-comment-apply.mjs --identifier PAR-244 --apply \
     --dry-run-receipt ./par-244-clawsweeper-dry-run.json`;
 }

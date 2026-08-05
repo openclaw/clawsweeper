@@ -219,11 +219,11 @@ test("summarizeItem carries re-feedable fingerprints and separates actionable/au
   assert.equal(s.nowIso, "2026-06-24T00:00:00Z");
 });
 
-test("summarizeItem advertises only an authorized update of an existing managed comment", () => {
+test("summarizeItem keeps an authorized existing-comment update planning-only", () => {
   const result = fakeResult({ plan: { action: "update", planHash: HASH_A } });
   const s = summarizeItem(result, { reason: "live write authorized" });
   assert.equal(s.actionable, true);
-  assert.equal(s.wouldWrite, true);
+  assert.equal(s.wouldWrite, false);
 });
 
 test("summarizeItem: actionable but not authorized (plain dry-run) → wouldWrite=false", () => {

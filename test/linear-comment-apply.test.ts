@@ -11,6 +11,7 @@ import {
 } from "../dist/linear/index.js";
 import {
   applyPlan,
+  assertLinearApplicationActor,
   buildItemPlan,
   assertReadBackConfirmed,
   readBackComment,
@@ -523,63 +524,34 @@ test("renderReviewContent is deterministic for the same record + classification"
 });
 
 // ---------------------------------------------------------------------------
-// applyPlan — mints a Bearer token and runs the create/update mutation (fakes)
+// applyPlan — comment plans remain proposal-only
 // ---------------------------------------------------------------------------
 
-test("applyPlan mints a Bearer token and runs commentUpdate with the planned body", async () => {
-  const seen: { authHeader?: string; mutation?: string; vars?: Record<string, unknown> } = {};
-  const fakeFetch = async (url: string, init?: RequestInit): Promise<Response> => {
-    if (url.includes("/oauth/token")) {
-      return new Response(
-        JSON.stringify({ access_token: "minted-xyz", expires_in: 100, token_type: "Bearer" }),
-        { status: 200 },
-      );
-    }
-    const headers = (init?.headers ?? {}) as Record<string, string>;
-    seen.authHeader = headers["Authorization"];
-    const parsed = JSON.parse(init?.body as string) as {
-      query: string;
-      variables: Record<string, unknown>;
-    };
-    if (parsed.query.includes("applicationInfo")) {
-      return new Response(
-        JSON.stringify({
-          data: { applicationInfo: { id: "clawsweeper-app", name: "ClawSweeper" } },
-        }),
-        { status: 200 },
-      );
-    }
-    seen.mutation = parsed.query;
-    seen.vars = parsed.variables;
-    return new Response(JSON.stringify({ data: { commentUpdate: { success: true } } }), {
-      status: 200,
-    });
-  };
-
-  const plan = {
-    action: "update",
-    issueId: "issue-uuid-244",
-    targetCommentId: "comment-1",
-    body: "BODY",
-    expectedAuthorId: "clawsweeper-app",
-  };
-  const out = await applyPlan(
-    plan,
-    { clientId: "cid", clientSecret: "csec" },
-    {
-      fetchImpl: fakeFetch as typeof fetch,
-      mintEndpoint: "https://fake.linear.app/oauth/token",
-      graphqlEndpoint: "https://fake.linear.app/graphql",
-    },
+test("applyPlan rejects an update before token minting", async () => {
+  let mintCalls = 0;
+  await assert.rejects(
+    applyPlan(
+      {
+        action: "update",
+        issueId: "issue-uuid-244",
+        targetCommentId: "comment-1",
+        body: "BODY",
+        expectedAuthorId: "clawsweeper-app",
+      },
+      { clientId: "cid", clientSecret: "csec" },
+      {
+        fetchImpl: async () => {
+          mintCalls += 1;
+          return new Response("{}", { status: 200 });
+        },
+      },
+    ),
+    /live Linear comment updates are disabled until durable cross-process settlement exists/,
   );
-
-  assert.equal(seen.authHeader, "Bearer minted-xyz");
-  assert.match(seen.mutation ?? "", /commentUpdate/);
-  assert.deepEqual(seen.vars, { id: "comment-1", body: "BODY" });
-  assert.deepEqual(out, { commentUpdate: { success: true } });
+  assert.equal(mintCalls, 0);
 });
 
-test("two identical approved updates converge on one existing comment and retain exact read-back", async () => {
+test("two identical approved updates remain planning-only and perform zero mutations", async () => {
   const plan = {
     action: "update",
     issueId: "issue-uuid-244",
@@ -588,60 +560,26 @@ test("two identical approved updates converge on one existing comment and retain
     body: "<!-- clawsweeper:linear-review:issue-uuid-244 -->\n\nDETERMINISTIC BODY",
     expectedAuthorId: "clawsweeper-app",
   };
-  const writes: Array<{ id: unknown; body: unknown }> = [];
-  let storedBody = "OLD BODY";
-  const transport = async (query: string, variables: Record<string, unknown> = {}) => {
-    if (query.includes("applicationInfo")) {
-      return { applicationInfo: { id: "clawsweeper-app", name: "ClawSweeper" } };
-    }
-    assert.doesNotMatch(query, /commentCreate/);
-    assert.match(query, /commentUpdate/);
-    writes.push({ id: variables["id"], body: variables["body"] });
-    await Promise.resolve();
-    storedBody = String(variables["body"]);
-    return { commentUpdate: { success: true } };
+  let transportCalls = 0;
+  const transport = async () => {
+    transportCalls += 1;
+    return {};
   };
 
-  await Promise.all([
+  const results = await Promise.allSettled([
     applyPlan(plan, { clientId: "cid", clientSecret: "csec" }, { transport }),
     applyPlan({ ...plan }, { clientId: "cid", clientSecret: "csec" }, { transport }),
   ]);
 
-  assert.equal(writes.length, 2);
   assert.deepEqual(
-    writes,
-    Array.from({ length: 2 }, () => ({ id: "comment-1", body: plan.body })),
+    results.map((result) => result.status),
+    ["rejected", "rejected"],
   );
-  assert.equal(storedBody, plan.body);
-
-  const confirmed = await readBackComment(
-    {
-      fetchIssueByIdentifier: async () => ({
-        comments: [{ id: "comment-1", body: storedBody, authorId: "clawsweeper-app" }],
-      }),
-    },
-    "PAR-244",
-    plan,
-    "clawsweeper-app",
-  );
-  assertReadBackConfirmed(confirmed);
-
-  for (const comment of [
-    { id: "comment-1", body: `${storedBody} DRIFT`, authorId: "clawsweeper-app" },
-    { id: "comment-1", body: storedBody, authorId: "foreign-app" },
-  ]) {
-    const failed = await readBackComment(
-      { fetchIssueByIdentifier: async () => ({ comments: [comment] }) },
-      "PAR-244",
-      plan,
-      "clawsweeper-app",
-    );
-    assert.throws(() => assertReadBackConfirmed(failed), /read-back failed/);
-  }
+  assert.equal(transportCalls, 0);
 });
 
 test("applyPlan rejects live comment creation before minting or mutation", async () => {
-  let touched = false;
+  let mintCalls = 0;
   await assert.rejects(
     applyPlan(
       {
@@ -654,17 +592,39 @@ test("applyPlan rejects live comment creation before minting or mutation", async
       { clientId: "cid", clientSecret: "csec" },
       {
         fetchImpl: async () => {
-          touched = true;
+          mintCalls += 1;
           return new Response("{}", { status: 200 });
         },
       },
     ),
     /live Linear comment creation is disabled until durable cross-process settlement exists/,
   );
-  assert.equal(touched, false);
+  assert.equal(mintCalls, 0);
+
+  let transportCalls = 0;
+  await assert.rejects(
+    applyPlan(
+      {
+        action: "create",
+        issueId: "issue-uuid-244",
+        targetCommentId: null,
+        body: "BODY",
+        expectedAuthorId: "clawsweeper-app",
+      },
+      { clientId: "cid", clientSecret: "csec" },
+      {
+        transport: async () => {
+          transportCalls += 1;
+          return {};
+        },
+      },
+    ),
+    /live Linear comment creation is disabled until durable cross-process settlement exists/,
+  );
+  assert.equal(transportCalls, 0);
 });
 
-test("applyPlan verifies the minted application actor before mutation", async () => {
+test("assertLinearApplicationActor rejects authenticated actor drift", async () => {
   const queries: string[] = [];
   const transport = async (query: string): Promise<unknown> => {
     queries.push(query);
@@ -672,17 +632,7 @@ test("applyPlan verifies the minted application actor before mutation", async ()
   };
 
   await assert.rejects(
-    applyPlan(
-      {
-        action: "update",
-        issueId: "issue-uuid-244",
-        targetCommentId: "comment-1",
-        body: "BODY",
-        expectedAuthorId: "clawsweeper-app",
-      },
-      { clientId: "cid", clientSecret: "csec" },
-      { transport },
-    ),
+    assertLinearApplicationActor(transport, "clawsweeper-app"),
     /authenticated Linear application actor different-app does not match reviewed actor clawsweeper-app/,
   );
   assert.equal(queries.length, 1);
@@ -816,16 +766,25 @@ test("resolveWriteDecision: live comment creation stays disabled without durable
   assert.match(d.reason, /comment creation is disabled/);
 });
 
-test("resolveWriteDecision: live update of an existing managed comment remains available", () => {
+test("resolveWriteDecision: live update of an existing managed comment stays planning-only", () => {
   const d = resolveWriteDecision(decisionResultStub({ action: "update" }), {
     live: true,
     reason: "live",
   });
-  assert.equal(d.write, true);
+  assert.equal(d.write, false);
+  assert.match(d.reason, /comment updates are disabled/);
 });
 
 test("summarize never advertises a live comment create", () => {
   const summary = summarize(decisionResultStub({ action: "create" }), {
+    live: false,
+    reason: "dry-run",
+  });
+  assert.equal(summary.wouldWrite, false);
+});
+
+test("summarize never advertises a live comment update", () => {
+  const summary = summarize(decisionResultStub({ action: "update" }), {
     live: false,
     reason: "dry-run",
   });

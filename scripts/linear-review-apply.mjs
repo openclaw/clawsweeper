@@ -10,12 +10,12 @@
  *
  *   resolveScope (read-only)  ->  for each identifier:
  *     buildItemPlan (fetch -> map -> classify -> plan -> authorize)   [from linear-comment-apply]
- *       -> resolveWriteDecision -> [--apply only] applyPlan -> readBackComment
+ *       -> resolveWriteDecision -> summary
  *
  * It is the natural vehicle for a "closeout sweep": point it at a project (or a Command
  * Central ledger) and it plans ClawSweeper's standard review comment on each still-open,
- * eligible issue, updates an existing managed comment when authorized, and SKIPS the ones
- * already Done / protected / excluded. New comment creation remains disabled. It never closes an
+ * eligible issue and SKIPS the ones already Done / protected / excluded. Comment creation and
+ * updates remain planning-only. It never closes an
  * issue — closing remains the evidence-gated `close` capability in authority.ts, fired only
  * by a separate, explicitly-opted-in path. This runner only ever opens the comment gate.
  *
@@ -24,13 +24,8 @@
  *     output doubles as the operator-approval artifact (it carries independent comment and
  *     label plan/snapshot hashes plus nowIso per item) that can be fed straight back via
  *     --approvals for a live apply.
- *   - A live write requires BOTH --apply AND OPENCLAW_NOTIFY_LINEAR=1, AND per-item
- *     authorization: each item is only written if its approved planHash/snapshotHash
- *     (from --approvals) still match the live snapshot (drift gate) and the issue is
- *     eligible and the plan is not a noop. Un-approved or drifted items stay dry — one
- *     stale issue can never be force-written.
- *   - The Bearer write token is minted ONCE for the whole batch and shared (lazy: only if
- *     at least one item will actually be written).
+ *   - Comment approvals remain reviewable plan artifacts, but no comment action is executable
+ *     until durable shared settlement exists.
  *
  * Secret hygiene: no token, client id, or client secret is ever logged.
  */
@@ -61,13 +56,10 @@ import {
 } from "../dist/linear/index.js";
 
 import {
-  applyPlan,
-  assertReadBackConfirmed,
   buildItemPlan,
   DEFAULT_KEYCHAIN_ACCOUNT,
   NOTIFY_ENV,
   readBackComment,
-  revalidateCommentWrite,
   resolveAppCredentials,
   resolveReadToken,
   resolveWriteDecision,
@@ -553,9 +545,7 @@ export async function applyLabelChange(record, change, transport, deps = {}) {
  *     noop, so there is a real comment to post. This is the closeout picture a dry-run shows.
  *   - `authorized` — the approval handshake: the plan/snapshot fingerprints matched an
  *     operator approval (from --approvals). Empty in a plain dry-run.
- *   - `wouldWrite` — a LIVE run actually writes iff an existing managed comment update is
- *     actionable and authorized. New comment creation remains planning-only until durable
- *     cross-process settlement exists.
+ *   - `wouldWrite` — always false while comment creation and updates are planning-only.
  */
 /**
  * Bulk read-back for a planned comment. The expected application actor id is part of the
@@ -579,12 +569,6 @@ export function summarizeItem(result, decision) {
     result.classification.eligible &&
     policy.ruleId !== "protected-human-review" &&
     result.plan.action !== "noop";
-  // A live write is only reachable when ClawSweeper can prove comment ownership. Without a
-  // configured application actor id the apply path cannot distinguish its own marker comment
-  // from a foreign one, so a run that advertises `wouldWrite` here would be promising a write
-  // the apply lane must refuse. Report it as not-writable rather than letting the dry-run
-  // preview disagree with live behavior.
-  const hasAppActor = String(result.expectedAuthorId ?? "").trim() !== "";
   // Project-agnostic review policy: the routing label + next step ClawSweeper PROPOSES for
   // this item. Read-only here (reporting); applying labels is the inert future path.
   return {
@@ -594,8 +578,7 @@ export function summarizeItem(result, decision) {
     action: result.plan.action,
     actionable,
     authorized: result.authorization.allowed,
-    wouldWrite:
-      actionable && result.authorization.allowed && hasAppActor && result.plan.action === "update",
+    wouldWrite: false,
     routingLabel: policy.routingLabel,
     proposedLabels: policy.proposedLabels,
     suggestedNextStep: policy.suggestedNextStep,
@@ -923,8 +906,8 @@ async function main() {
     }
   });
 
-  // Phase 2: live writes, SERIALIZED + rate-limited, sharing ONE minted Bearer token across
-  // both the comment write and the label write (mint lazily, only when something will write).
+  // Phase 2: comment plans remain read-only. The dormant label path keeps lazy credential
+  // resolution so a disabled label plan cannot read credentials or mint a token.
   let writeTransport = null;
   let appCreds = null;
   const ensureWriteTransport = async () => {
@@ -942,38 +925,7 @@ async function main() {
       continue;
     }
     const summary = entry.summary;
-    let didWrite = false;
-
-    if (entry.decision.write) {
-      didWrite = true;
-      try {
-        const revalidated = await revalidateCommentWrite(
-          source,
-          itemOptionsFor(entry.identifier, options, approvals.get(entry.identifier)),
-          mode,
-        );
-        entry.result = revalidated.result;
-        entry.decision = revalidated.decision;
-        Object.assign(summary, summarizeItem(entry.result, entry.decision));
-        await ensureWriteTransport();
-        summary.applyResult = await applyPlan(entry.result.plan, appCreds, {
-          transport: writeTransport,
-        });
-        summary.readback = await readBackPlannedComment(source, entry.identifier, entry.result);
-        assertReadBackConfirmed(summary.readback);
-        summary.applied = true;
-      } catch (error) {
-        summary.applied = false;
-        summary.applyError = error instanceof Error ? error.message : String(error);
-        // Honesty: if the comment mutation itself succeeded but read-back failed, a comment
-        // WAS posted — applied=false must not read as "nothing was written". Flag it so the
-        // report distinguishes a failed write from an unconfirmed-but-landed one.
-        summary.writtenUnconfirmed = summary.applyResult !== undefined && !summary.applyResult.noop;
-        process.exitCode = 1;
-      }
-    } else {
-      summary.applied = false;
-    }
+    summary.applied = false;
 
     // Label write — independent of the comment write, same triple gate (--apply-labels +
     // OPENCLAW_NOTIFY_LINEAR=1 + authority allowed) + eligible + not a noop. Additive only.
@@ -984,7 +936,7 @@ async function main() {
     });
     if (summary.labelApplyError) process.exitCode = 1;
 
-    if (didWrite || summary.labelAction === "create" || summary.labelAction === "add") {
+    if (summary.labelAction === "create" || summary.labelAction === "add") {
       if (options.rateMs > 0) await sleep(options.rateMs);
     }
     items.push(summary);
@@ -1026,7 +978,7 @@ function usage() {
 
 Runs ClawSweeper's review pipeline over a SCOPE of Linear issues. Dry-run by default
 (plans + reports, writes nothing). The same per-item pipeline as the single-item path —
-this only generalizes WHICH issues. It posts the standard review comment; it never closes.
+this only generalizes WHICH issues. It plans the standard review comment; it never closes.
 
 Scope (provide exactly one):
   --identifier <KEY>         A Linear identifier, e.g. PAR-244 (repeatable)
@@ -1045,13 +997,13 @@ Review options:
   --limit <n>                Cap to the first n resolved issues
   --concurrency <n>          Parallel READS while planning (default: ${DEFAULT_CONCURRENCY})
 
-Apply options (live write — review-only unless ALL hold):
-  --apply                    Opt in to LIVE comment writes (also needs ${NOTIFY_ENV}=1)
+Apply options (proposal-only):
+  --apply                    Exercise apply-intent checks; comment writes remain disabled
   --apply-labels             Plans label changes but live label mutation remains disabled:
                              Linear issueUpdate is replace-all and cannot atomically preserve
                              labels added concurrently
   --approvals <path>         Per-item comment + label hashes from a reviewed dry-run (--json)
-  --rate-ms <n>              Delay between live writes in ms (default: 0)
+  --rate-ms <n>              Delay reserved for future settled writes (default: 0)
   --json                     Emit the JSON run report (feedable as --approvals)
   --keychain-account <a>     Keychain account for credentials (default: ${DEFAULT_KEYCHAIN_ACCOUNT})
   --help, -h                 Show this help
@@ -1063,7 +1015,7 @@ Examples:
   # Review the Command Central ledger's tracked items (the .order list):
   node scripts/linear-review-apply.mjs --from-file research/cc-work-ledger.json --json
 
-  # Live apply over a reviewed-and-approved dry-run (both gates required):
+  # Apply-intent probe over a reviewed dry-run; reports wouldWrite=false:
   ${NOTIFY_ENV}=1 node scripts/linear-review-apply.mjs --team PAR --apply \\
     --approvals ./par-dry-run.json --rate-ms 400`;
 }

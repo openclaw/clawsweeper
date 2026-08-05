@@ -18,24 +18,25 @@ boundaries.
   credential.
 - The sidecar never closes a Linear issue or changes its workflow state or
   priority.
-- A live update of an existing managed comment requires `--apply`,
-  `OPENCLAW_NOTIFY_LINEAR=1`, and reviewed plan and snapshot hashes from the
-  current dry-run. Live comment creation is disabled until a shared durable
-  action identity and cross-process settlement boundary exists.
+- Comment creation and updates are planning-only. `--apply` plus
+  `OPENCLAW_NOTIFY_LINEAR=1` records apply intent but still reports
+  `wouldWrite: false` and stops before OAuth credential access, token minting,
+  or mutation.
 - Existing marker comments are reused only when their stable Linear bot actor ID
   matches `LINEAR_APP_ACTOR_ID`; display names are never treated as ownership.
-- The expected actor ID is part of the reviewed comment plan hash and receipt. A
-  live lane queries `applicationInfo.id` with the minted app token and rejects an
-  identity mismatch before issuing any comment mutation.
+- The expected actor ID remains part of the reviewed comment plan hash and
+  receipt so ownership evidence is preserved for a future settled lane. The
+  current operator entrypoints do not mint an app token or issue a comment
+  mutation.
 - `--apply-labels` produces a reviewed routing-label plan, but live label mutation
   remains disabled because Linear's replace-all label update cannot atomically
   preserve labels added concurrently.
-- Every live operation re-fetches the issue and blocks on snapshot drift.
+- Every proposal is bound to its issue snapshot and reviewed plan hash.
 - Label plans preserve labels not owned by this sidecar; no live label write is
   attempted until an atomic additive or compare-and-swap boundary exists.
-- Review comments are marker-backed. Existing actor-owned comments can be
-  updated in place; a missing marker comment produces a planning-only `create`
-  action and never a live write.
+- Review comments are marker-backed. Existing actor-owned comments produce an
+  `update` plan and missing comments produce a `create` plan; neither action is
+  executable.
 
 ## Prerequisites
 
@@ -55,10 +56,9 @@ Read access is resolved in this order:
 3. macOS Keychain generic password, service `openclaw-linear-api-key`, account
    `partnerai-config`
 
-Live comment or label writes mint a short-lived OAuth token from the macOS
-Keychain services `openclaw-linear-clawsweeper-client-id` and
-`openclaw-linear-clawsweeper-secret`. Do not pass those credentials on the
-command line.
+The OAuth Keychain coordinates remain reserved for a future durably settled
+write lane. Current comment and label plans do not resolve those credentials or
+mint a write token. Do not pass credentials on the command line.
 
 ## Read-Only Workflow
 
@@ -145,13 +145,13 @@ The local file is a review artifact, not yet proof of publication to the
 canonical Worker store. Canonical publication and read-back are separate apply
 work that must be added before unattended operation is claimed.
 
-## Separate Review and Apply Lanes
+## Separate Review and Proposal Lanes
 
-Review and apply are separate authority lanes even where the current operator
-CLI shares planning helpers. Review owns model execution and record generation;
-it has no Linear write credential. Apply accepts an independently reviewed
-record/receipt, re-fetches Linear, and may synchronize only the one managed
-comment authorized for that run. Routing-label changes remain reviewed plans;
+Review and proposal validation are separate authority lanes even where the
+current operator CLI shares planning helpers. Review owns model execution and
+record generation; it has no Linear write credential. Apply-intent mode accepts
+an independently reviewed record/receipt and recomputes the proposal, but it
+cannot synchronize a comment. Routing-label changes also remain reviewed plans;
 live label mutation is disabled. Repair and commit review remain separate
 ClawSweeper lanes and are not performed by these commands.
 
@@ -169,7 +169,7 @@ Review the proposed comment and label changes plus every `planHash` and
 `snapshotHash`. The report can then serve as the approvals file for exactly that
 reviewed state.
 
-Apply only updates to existing marker-backed review comments:
+An apply-intent probe validates the reviewed receipt but still writes nothing:
 
 ```bash
 LINEAR_APP_ACTOR_ID=<linear-bot-actor-id> \
@@ -181,18 +181,17 @@ OPENCLAW_NOTIFY_LINEAR=1 pnpm linear:review-apply -- \
   --json
 ```
 
-New marker comments are never created by the live lane. Two operators can plan
-the same `create` action, but `wouldWrite` remains false and both apply paths
-stop before token minting or mutation. A shared durable business-idempotency
-claim plus attempted/succeeded/failed/unknown settlement is required before
-creation can be enabled across machines.
+New marker comments and updates to existing managed comments are never executed
+by the operator entrypoints. Any number of operators may independently produce
+`create` or `update` plans, but every summary reports `wouldWrite: false` and
+every apply path stops before OAuth credential access, token minting, or
+mutation. A shared durable business-action identity and atomic claim/CAS or
+canonical ledger, plus attempted/succeeded/failed/unknown settlement,
+exact-attempt receipts, and unknown-outcome reconciliation are required before
+either action can be enabled across machines.
 
-Continue to run only one live update invocation at a time. Updates target one
-existing actor-owned comment ID and are read back exactly, but the sidecar does
-not claim durable crash settlement for concurrent operators.
-
-After applying comments, generate and review a fresh dry-run report before
-reviewing the proposed routing-label plan:
+Generate and review a fresh dry-run report before reviewing the proposed
+routing-label plan:
 
 ```bash
 LINEAR_APP_ACTOR_ID=<linear-bot-actor-id> \
@@ -212,10 +211,11 @@ ambiguous scope is skipped rather than written.
 
 For a single existing managed comment, use
 `LINEAR_APP_ACTOR_ID=<linear-bot-actor-id> pnpm linear:comment:dry-run -- --identifier PAR-244`,
-review and save that receipt, then pass it to `linear-comment-apply.mjs` with
-`--apply --dry-run-receipt <path>` and the same actor ID and environment gate.
-If the receipt proposes `create`, apply reports it as disabled and performs no
-write.
+review and save that receipt, then optionally pass it to
+`linear-comment-apply.mjs` with `--apply --dry-run-receipt <path>` and the same
+actor ID and environment gate to exercise receipt validation. Whether the
+receipt proposes `create` or `update`, apply reports it as disabled and performs
+no write.
 
 ## Current Scheduling Seam
 
