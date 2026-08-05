@@ -4,7 +4,7 @@ LABEL org.opencontainers.image.title="ClawSweeper automerge E2E base"
 LABEL org.opencontainers.image.source="https://github.com/openclaw/clawsweeper"
 
 RUN apt-get update \
-  && apt-get install --yes --no-install-recommends ca-certificates git python3 \
+  && apt-get install --yes --no-install-recommends ca-certificates gh git python3 \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable
