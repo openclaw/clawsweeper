@@ -437,12 +437,31 @@ export function createReportParser({
       ? (evidenceKindValue as RealBehaviorProofEvidenceKind)
       : undefined;
     if (!status || !evidenceKind || !summary) return defaultRealBehaviorProof(markdown);
-    return normalizeRealBehaviorProof({
+    const proof = normalizeRealBehaviorProof({
       status,
       summary,
       evidenceKind,
       needsContributorAction: /^true$/i.test(needsContributorActionValue ?? ""),
     });
+    if (
+      frontMatterValue(markdown, "type") !== "pull_request" ||
+      isExternalPullRequestReport(markdown) ||
+      (!proof.needsContributorAction &&
+        proof.status !== "missing" &&
+        proof.status !== "mock_only" &&
+        proof.status !== "insufficient")
+    ) {
+      return proof;
+    }
+    if (proof.status === "sufficient") {
+      return { ...proof, needsContributorAction: false };
+    }
+    return {
+      status: "not_applicable",
+      summary: "Real behavior proof is not required for maintainer- or bot-authored pull requests.",
+      evidenceKind: "not_applicable",
+      needsContributorAction: false,
+    };
   }
 
   function reportTelegramVisibleProof(markdown: string): TelegramVisibleProof {
@@ -461,6 +480,7 @@ export function createReportParser({
 
   function reportPrRating(markdown: string): PrRating {
     const section = reviewSectionValue(markdown, "prRating");
+    const proof = reportRealBehaviorProof(markdown);
     const proofTierValue =
       sectionLineValue(section, "Proof tier") ?? frontMatterValue(markdown, "pr_rating_proof");
     const patchTierValue =
@@ -473,7 +493,13 @@ export function createReportParser({
       PR_RATING_TIERS.has(proofTierValue as PrRatingTier) &&
       PR_RATING_TIERS.has(patchTierValue as PrRatingTier) &&
       PR_RATING_TIERS.has(overallTierValue as PrRatingTier) &&
-      summary
+      summary &&
+      !(
+        frontMatterValue(markdown, "type") === "pull_request" &&
+        !isExternalPullRequestReport(markdown) &&
+        proof.status === "not_applicable" &&
+        (proofTierValue === "D" || proofTierValue === "F")
+      )
     ) {
       return normalizePrRating({
         proofTier: proofTierValue as PrRatingTier,
@@ -483,7 +509,6 @@ export function createReportParser({
         nextSteps,
       });
     }
-    const proof = reportRealBehaviorProof(markdown);
     return derivedPrRating({
       isPullRequest: frontMatterValue(markdown, "type") === "pull_request",
       proof,
