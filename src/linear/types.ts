@@ -26,7 +26,6 @@ export interface LinearCreator {
   id: string;
   name: string;
   admin: boolean;
-  owner: boolean;
 }
 
 export interface LinearIssue {

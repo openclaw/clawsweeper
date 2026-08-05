@@ -532,7 +532,7 @@ test("buildHarnessInputs maps a Linear issue into a read-only Item with the nume
 
 test("hydrated creator identity reaches the harness and maintainer guard", () => {
   const hydrated = makeHydrated({
-    creator: { id: "user-1", name: "Peter", admin: true, owner: false },
+    creator: { id: "user-1", name: "Peter", admin: true },
   });
   const profile = repositoryProfileFor("openclaw/clawhub");
   const { item } = buildHarnessInputs(hydrated, profile, "mainsha");
@@ -556,7 +556,7 @@ test("buildAnalysisPrompt instructs read-only git + schema-bound output", () => 
           authorName: "Maintainer",
         },
       ],
-      creator: { id: "user-1", name: "Peter", admin: false, owner: false },
+      creator: { id: "user-1", name: "Peter", admin: false },
     }),
     profile,
     "mainsha",
@@ -752,9 +752,9 @@ test("analyzeItem: --analyze runs the model, derives closeLeaning, plans a comme
   assert.ok(summary.recordBody.includes('source_id: "uuid-1"'));
 });
 
-test("analyzeItem: workspace admin or owner authorship disables close leaning", async () => {
+test("analyzeItem: workspace admin authorship disables close leaning", async () => {
   const hydrated = makeHydrated({
-    creator: { id: "user-1", name: "Maintainer", admin: false, owner: true },
+    creator: { id: "user-1", name: "Maintainer", admin: true },
   });
   const summary = await analyzeItem(
     hydrated,

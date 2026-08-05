@@ -120,7 +120,6 @@ export const ISSUE_BY_IDENTIFIER_QUERY = `
           id
           name
           admin
-          owner
         }
         team {
           id

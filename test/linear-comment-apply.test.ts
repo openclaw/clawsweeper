@@ -170,7 +170,7 @@ function hydratedIssueNode() {
     createdAt: "2026-06-01T00:00:00Z",
     updatedAt: "2026-06-20T00:00:00Z",
     priority: 2,
-    creator: { id: "user-1", name: "Reporter", admin: false, owner: false },
+    creator: { id: "user-1", name: "Reporter", admin: false },
     team: { id: "team-1", key: "PAR", name: "PartnerAI" },
     project: { id: "proj-1", name: "ClawSweeper", state: "started" },
     state: { id: "state-1", name: "Backlog", type: "backlog" },

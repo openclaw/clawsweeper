@@ -492,7 +492,7 @@ function hydratedIssueNode(overrides: Record<string, unknown> = {}) {
     createdAt: "2026-06-01T00:00:00Z",
     updatedAt: "2026-06-02T00:00:00Z",
     priority: 2,
-    creator: { id: "user-1", name: "Maintainer", admin: true, owner: false },
+    creator: { id: "user-1", name: "Maintainer", admin: true },
     team: { id: "team-1", key: "PAR", name: "Partner" },
     project: null,
     state: { id: "todo", name: "Todo", type: "unstarted" },
@@ -536,7 +536,6 @@ test("fetchIssueByIdentifier queries and maps analysis context", async () => {
     id: "user-1",
     name: "Maintainer",
     admin: true,
-    owner: false,
   });
   assert.deepEqual(item.attachments, [
     { id: "att-1", url: "https://github.com/openclaw/openclaw/pull/2", title: "PR" },
@@ -552,6 +551,7 @@ test("fetchIssueByIdentifier queries and maps analysis context", async () => {
   ]);
   assert.match(calls[0]?.query ?? "", /description/);
   assert.match(calls[0]?.query ?? "", /creator\s*\{/);
+  assert.doesNotMatch(calls[0]?.query ?? "", /creator\s*\{[^}]*\bowner\b/s);
   assert.match(calls[0]?.query ?? "", /attachments\(first: 250\)/);
   assert.match(
     calls[0]?.query ?? "",
@@ -862,7 +862,7 @@ for (const malformedIssueCase of [
   {
     name: "creator admin flag",
     patch: {
-      creator: { id: "creator-1", name: "Maintainer", admin: "false", owner: false },
+      creator: { id: "creator-1", name: "Maintainer", admin: "false" },
     },
     error: /expected boolean admin/,
   },

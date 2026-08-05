@@ -490,7 +490,7 @@ export function analysisRecordPath(profile, identifier) {
 
 /** Workspace admins and owners are treated as maintainer-authored. */
 export function isMaintainerAuthored(hydrated) {
-  return hydrated.creator?.admin === true || hydrated.creator?.owner === true;
+  return hydrated.creator?.admin === true;
 }
 
 /** Stable, non-PII author identity for prompts and audit records. */

@@ -337,7 +337,6 @@ function mapHydratedItem(raw: unknown): HydratedWorkspaceItem {
     id: requiredString(creatorRaw, "id", "Linear issue creator", true),
     name: requiredString(creatorRaw, "name", "Linear issue creator", true),
     admin: requiredBoolean(creatorRaw, "admin", "Linear issue creator"),
-    owner: requiredBoolean(creatorRaw, "owner", "Linear issue creator"),
   };
 
   return {
