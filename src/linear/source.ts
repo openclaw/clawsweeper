@@ -1,5 +1,6 @@
 import type { LinearTransport } from "./client.js";
 import { ISSUE_BY_IDENTIFIER_QUERY, ISSUES_QUERY, PROJECTS_QUERY, TEAMS_QUERY } from "./queries.js";
+import { assertLinearWorkflowStateType } from "./record.js";
 import type {
   LinearAttachment,
   HydratedWorkspaceItem,
@@ -12,6 +13,8 @@ import type {
   WorkspaceItem,
   WorkspaceSweepOptions,
 } from "./types.js";
+
+const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/;
 
 /** Parsed pieces of a Linear human identifier such as "PAR-244". */
 export interface ParsedIdentifier {
@@ -87,16 +90,68 @@ function requiredString(
   return value;
 }
 
+function requiredNumber(record: Record<string, unknown>, key: string, context: string): number {
+  const value = record[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Malformed ${context}: expected finite number ${key}`);
+  }
+  return value;
+}
+
+function requiredLinearPriority(record: Record<string, unknown>): number {
+  const priority = requiredNumber(record, "priority", "Linear issue");
+  if (!Number.isInteger(priority) || priority < 0 || priority > 4) {
+    throw new Error("Malformed Linear issue: priority must be an integer from 0 through 4");
+  }
+  return priority;
+}
+
+function requiredIsoTimestamp(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): string {
+  const value = requiredString(record, key, context, true);
+  const match = ISO_TIMESTAMP_PATTERN.exec(value);
+  if (match == null || !Number.isFinite(Date.parse(value))) {
+    throw new Error(`Malformed ${context}: ${key} must be an ISO timestamp`);
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > (daysInMonth[month - 1] ?? 0) ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    throw new Error(`Malformed ${context}: ${key} must be an ISO timestamp`);
+  }
+  return value;
+}
+
+function requiredBoolean(record: Record<string, unknown>, key: string, context: string): boolean {
+  const value = record[key];
+  if (typeof value !== "boolean") {
+    throw new Error(`Malformed ${context}: expected boolean ${key}`);
+  }
+  return value;
+}
+
 function str(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
 function strOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;
-}
-
-function num(value: unknown): number {
-  return typeof value === "number" ? value : 0;
 }
 
 function nextPageCursor(
@@ -147,15 +202,19 @@ async function* paginate<TRaw, TOut>(
 }
 
 function mapTeam(raw: unknown): LinearTeam {
-  const r = asRecord(raw);
-  return { id: str(r["id"]), key: str(r["key"]), name: str(r["name"]) };
+  const r = requiredRecord(raw, "Linear team");
+  return {
+    id: requiredString(r, "id", "Linear team", true),
+    key: requiredString(r, "key", "Linear team", true),
+    name: requiredString(r, "name", "Linear team", true),
+  };
 }
 
 function mapProject(raw: unknown, teamId: string): LinearProject {
-  const r = asRecord(raw);
+  const r = requiredRecord(raw, "Linear project");
   return {
-    id: str(r["id"]),
-    name: str(r["name"]),
+    id: requiredString(r, "id", "Linear project", true),
+    name: requiredString(r, "name", "Linear project", true),
     teamId,
     state: strOrNull(r["state"]),
   };
@@ -233,23 +292,26 @@ function hydratedIssueFingerprint(item: HydratedWorkspaceItem): string {
 }
 
 function mapIssue(raw: unknown): LinearIssue {
-  const r = asRecord(raw);
-  const team = asRecord(r["team"]);
-  const project = r["project"] != null ? asRecord(r["project"]) : null;
-  const state = r["state"] != null ? asRecord(r["state"]) : null;
+  const r = requiredRecord(raw, "Linear issue");
+  const team = requiredRecord(r["team"], "Linear issue team");
+  const project =
+    r["project"] != null ? requiredRecord(r["project"], "Linear issue project") : null;
+  const state = requiredRecord(r["state"], "Linear issue state");
   return {
-    id: str(r["id"]),
-    identifier: str(r["identifier"]),
-    title: str(r["title"]),
-    url: str(r["url"]),
-    createdAt: str(r["createdAt"]),
-    updatedAt: str(r["updatedAt"]),
-    priority: num(r["priority"]),
-    teamId: str(team["id"]),
-    projectId: project != null ? strOrNull(project["id"]) : null,
-    stateId: state != null ? strOrNull(state["id"]) : null,
-    stateName: state != null ? strOrNull(state["name"]) : null,
-    stateType: state != null ? strOrNull(state["type"]) : null,
+    id: requiredString(r, "id", "Linear issue", true),
+    identifier: requiredString(r, "identifier", "Linear issue", true),
+    title: requiredString(r, "title", "Linear issue", true),
+    url: requiredString(r, "url", "Linear issue", true),
+    createdAt: requiredIsoTimestamp(r, "createdAt", "Linear issue"),
+    updatedAt: requiredIsoTimestamp(r, "updatedAt", "Linear issue"),
+    priority: requiredLinearPriority(r),
+    teamId: requiredString(team, "id", "Linear issue team", true),
+    projectId: project != null ? requiredString(project, "id", "Linear issue project", true) : null,
+    stateId: requiredString(state, "id", "Linear issue state", true),
+    stateName: requiredString(state, "name", "Linear issue state", true),
+    stateType: assertLinearWorkflowStateType(
+      requiredString(state, "type", "Linear issue state", true),
+    ),
     labels: mapLabels(r["labels"]),
   };
 }
@@ -260,26 +322,23 @@ function mapHydratedItem(raw: unknown): HydratedWorkspaceItem {
   const r = asRecord(raw);
   const issue = mapIssue(raw);
 
-  const teamRaw = asRecord(r["team"]);
+  const teamRaw = requiredRecord(r["team"], "Linear issue team");
   const team: LinearTeam = {
-    id: str(teamRaw["id"]),
-    key: str(teamRaw["key"]),
-    name: str(teamRaw["name"]),
+    id: requiredString(teamRaw, "id", "Linear issue team", true),
+    key: requiredString(teamRaw, "key", "Linear issue team", true),
+    name: requiredString(teamRaw, "name", "Linear issue team", true),
   };
 
   const project = r["project"] != null ? mapProject(r["project"], team.id) : null;
 
   const comments = mapComments(r["comments"]);
-  const creatorRaw = r["creator"] != null ? asRecord(r["creator"]) : null;
-  const creator =
-    creatorRaw === null
-      ? null
-      : {
-          id: str(creatorRaw["id"]),
-          name: str(creatorRaw["name"]),
-          admin: creatorRaw["admin"] === true,
-          owner: creatorRaw["owner"] === true,
-        };
+  const creatorRaw = requiredRecord(r["creator"], "Linear issue creator");
+  const creator = {
+    id: requiredString(creatorRaw, "id", "Linear issue creator", true),
+    name: requiredString(creatorRaw, "name", "Linear issue creator", true),
+    admin: requiredBoolean(creatorRaw, "admin", "Linear issue creator"),
+    owner: requiredBoolean(creatorRaw, "owner", "Linear issue creator"),
+  };
 
   return {
     team,
@@ -408,9 +467,9 @@ export class LinearItemSource {
       const [node] = connection.nodes;
       if (node === undefined) return null;
 
-      const issue = asRecord(node);
-      comments.push(...mapComments(issue["comments"]));
       const pageHydrated = mapHydratedItem(node);
+      const issue = requiredRecord(node, "Linear issue");
+      comments.push(...mapComments(issue["comments"]));
       const pageIssueFingerprint = hydratedIssueFingerprint(pageHydrated);
       if (hydrated === null) {
         hydrated = pageHydrated;

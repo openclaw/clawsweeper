@@ -126,6 +126,10 @@ test("mapLinearState: 'canceled' → 'closed'", () => {
   assert.equal(mapLinearState("canceled"), "closed");
 });
 
+test("mapLinearState: 'duplicate' → 'closed'", () => {
+  assert.equal(mapLinearState("duplicate"), "closed");
+});
+
 test("mapLinearState: 'started' → 'open'", () => {
   assert.equal(mapLinearState("started"), "open");
 });
@@ -138,8 +142,16 @@ test("mapLinearState: 'backlog' → 'open'", () => {
   assert.equal(mapLinearState("backlog"), "open");
 });
 
-test("mapLinearState: null → 'open'", () => {
-  assert.equal(mapLinearState(null), "open");
+test("mapLinearState: 'triage' → 'open'", () => {
+  assert.equal(mapLinearState("triage"), "open");
+});
+
+test("mapLinearState rejects null or unknown workflow state types", () => {
+  assert.throws(() => mapLinearState(null), /unsupported Linear workflow state type/);
+  assert.throws(
+    () => mapLinearState("archived"),
+    /unsupported Linear workflow state type archived/,
+  );
 });
 
 // ---------------------------------------------------------------------------

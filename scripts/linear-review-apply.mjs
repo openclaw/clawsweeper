@@ -13,8 +13,9 @@
  *       -> resolveWriteDecision -> [--apply only] applyPlan -> readBackComment
  *
  * It is the natural vehicle for a "closeout sweep": point it at a project (or a Command
- * Central ledger) and it posts ClawSweeper's standard review comment on each still-open,
- * eligible issue and SKIPS the ones already Done / protected / excluded. It never closes an
+ * Central ledger) and it plans ClawSweeper's standard review comment on each still-open,
+ * eligible issue, updates an existing managed comment when authorized, and SKIPS the ones
+ * already Done / protected / excluded. New comment creation remains disabled. It never closes an
  * issue — closing remains the evidence-gated `close` capability in authority.ts, fired only
  * by a separate, explicitly-opted-in path. This runner only ever opens the comment gate.
  *
@@ -552,7 +553,9 @@ export async function applyLabelChange(record, change, transport, deps = {}) {
  *     noop, so there is a real comment to post. This is the closeout picture a dry-run shows.
  *   - `authorized` — the approval handshake: the plan/snapshot fingerprints matched an
  *     operator approval (from --approvals). Empty in a plain dry-run.
- *   - `wouldWrite` — a LIVE run actually writes iff actionable AND authorized.
+ *   - `wouldWrite` — a LIVE run actually writes iff an existing managed comment update is
+ *     actionable and authorized. New comment creation remains planning-only until durable
+ *     cross-process settlement exists.
  */
 /**
  * Bulk read-back for a planned comment. The expected application actor id is part of the
@@ -591,7 +594,8 @@ export function summarizeItem(result, decision) {
     action: result.plan.action,
     actionable,
     authorized: result.authorization.allowed,
-    wouldWrite: actionable && result.authorization.allowed && hasAppActor,
+    wouldWrite:
+      actionable && result.authorization.allowed && hasAppActor && result.plan.action === "update",
     routingLabel: policy.routingLabel,
     proposedLabels: policy.proposedLabels,
     suggestedNextStep: policy.suggestedNextStep,

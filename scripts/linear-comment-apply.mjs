@@ -11,7 +11,7 @@
  *   fetchIssueByIdentifier (read)  -> mapWorkspaceItem -> classifyRecord
  *     -> renderReviewCommentBody/planReviewCommentUpsert (comment.ts)
  *     -> reviewCommentMutationRequest -> authorizeMutation (authority.ts)
- *     -> [--apply only] mint OAuth Bearer token -> commentCreate/commentUpdate
+ *     -> [--apply only, existing marker only] mint OAuth Bearer token -> commentUpdate
  *
  * Two auth identities, kept strictly separate:
  *   READ  — personal API key (raw header), from LINEAR_API_KEY/LINEAR_TOKEN or the macOS
@@ -20,13 +20,13 @@
  *           represent the app actor. Its client_id/secret live in the Keychain
  *           ("openclaw-linear-clawsweeper-client-id"
  *           / "openclaw-linear-clawsweeper-secret"). A short-lived Bearer access token is
- *           minted at apply time and used only for the comment mutation. Comments are
- *           authored as the app user "ClawSweeper".
+ *           minted at apply time and used only to update an existing actor-owned comment.
  *
  * Gating — review-only by default, impossible to write without an explicit opt-in:
  *   - Default mode is DRY-RUN: prints the planned comment body and whether it would create
  *     or update, and writes NOTHING. No OAuth token is minted in dry-run.
- *   - A live write requires BOTH: the explicit --apply flag AND the environment opt-in
+ *   - New comment creation is planning-only until durable cross-process action settlement
+ *     exists. A live update requires BOTH: the explicit --apply flag AND the environment opt-in
  *     OPENCLAW_NOTIFY_LINEAR=1. Either alone keeps the run dry. (Belt and suspenders so a
  *     stray flag in a cron command can never post.)
  *   - Even with both, the write only proceeds if authorizeMutation() returns allowed=true
@@ -44,7 +44,6 @@ import {
   authorizeMutation,
   buildMutationReceipt,
   classifyRecord,
-  COMMENT_CREATE_MUTATION,
   COMMENT_UPDATE_MUTATION,
   createLinearTransport,
   evaluateReviewPolicy,
@@ -490,6 +489,11 @@ export async function applyPlan(plan, appCreds, deps = {}) {
   if (plan.action === "noop") {
     return { noop: true };
   }
+  if (plan.action === "create") {
+    throw new Error(
+      "live Linear comment creation is disabled until durable cross-process settlement exists",
+    );
+  }
   const fetchImpl = deps.fetchImpl ?? fetch;
   // Reuse a caller-supplied transport when present (bulk runs mint ONE Bearer token and
   // share it across items); only mint when we must build our own transport.
@@ -512,17 +516,14 @@ export async function applyPlan(plan, appCreds, deps = {}) {
 
   await assertLinearApplicationActor(transport, plan.expectedAuthorId);
 
-  if (plan.action === "create") {
-    return transport(COMMENT_CREATE_MUTATION, { issueId: plan.issueId, body: plan.body });
-  }
   if (plan.action === "update") {
     return transport(COMMENT_UPDATE_MUTATION, { id: plan.targetCommentId, body: plan.body });
   }
-  return { noop: true };
+  throw new Error(`unsupported live Linear comment action: ${String(plan.action)}`);
 }
 
 /**
- * Composes the full live-write decision. A comment is posted only when ALL hold:
+ * Composes the full live-write decision. An existing managed comment is updated only when ALL hold:
  *   - mode is live (--apply + OPENCLAW_NOTIFY_LINEAR=1),
  *   - the item is ELIGIBLE for review (disposition "review"/"stale-candidate") — ClawSweeper
  *     never comments on closed, protected, or excluded issues; there is nothing to review,
@@ -552,6 +553,12 @@ export function resolveWriteDecision(result, mode) {
   }
   if (!result.authorization.allowed) {
     return { write: false, reason: "authorization denied — see authorizationReasons" };
+  }
+  if (result.plan.action === "create") {
+    return {
+      write: false,
+      reason: "live comment creation is disabled until durable cross-process settlement exists",
+    };
   }
   if (result.plan.action === "noop") {
     return { write: false, reason: "noop: the durable comment already matches — nothing to write" };
@@ -621,7 +628,7 @@ export function summarize(result, mode) {
     staleDuplicateIds: result.plan.staleDuplicateIds,
     authorized: result.authorization.allowed,
     authorizationReasons: result.authorization.reasons,
-    // Mode-independent: would a LIVE run actually write? (eligible + authorized + not noop)
+    // Mode-independent: would a LIVE run actually update an existing managed comment?
     // Lets a dry-run state exactly what a live run would do.
     wouldWrite:
       result.classification.eligible &&
@@ -629,7 +636,7 @@ export function summarize(result, mode) {
       result.authorization.allowed &&
       typeof result.expectedAuthorId === "string" &&
       result.expectedAuthorId.trim() !== "" &&
-      result.plan.action !== "noop",
+      result.plan.action === "update",
     planHash: result.plan.planHash,
     snapshotHash: result.record.snapshotHash,
     expectedAuthorId: result.expectedAuthorId,
@@ -792,7 +799,7 @@ async function main() {
   } else {
     console.log(printHuman(summary));
     if (summary.applied && summary.readback?.confirmed === true) {
-      console.log("\nApplied: comment posted as ClawSweeper and read-back confirmed.");
+      console.log("\nApplied: managed comment updated as ClawSweeper and read-back confirmed.");
     }
   }
 }
@@ -822,9 +829,10 @@ function usage() {
   return `Usage: node scripts/linear-comment-apply.mjs --identifier <KEY> [options]
 
 Single-item Linear review-comment apply runner. Fetches ONE issue by identifier,
-runs the real review pipeline (map -> classify -> plan -> authorize) and either
-prints the planned comment (dry-run, default) or posts it as the ClawSweeper OAuth
-app (live, requires both --apply and ${NOTIFY_ENV}=1).
+runs the real review pipeline (map -> classify -> plan -> authorize), and prints
+the planned comment by default. Live mode can update an existing actor-owned marker
+comment; new comment creation remains disabled until durable cross-process settlement
+exists. Live update requires both --apply and ${NOTIFY_ENV}=1.
 
 Options:
   --identifier <KEY>         Linear issue identifier, e.g. PAR-244 (required)
@@ -852,7 +860,7 @@ Examples:
   # Dry-run (default): print the planned comment for PAR-244, write nothing
   node scripts/linear-comment-apply.mjs --identifier PAR-244 --json
 
-  # Live write (posts the comment as ClawSweeper) — both gates required
+  # Live update of an existing managed comment — both gates required
   ${NOTIFY_ENV}=1 node scripts/linear-comment-apply.mjs --identifier PAR-244 --apply \
     --dry-run-receipt ./par-244-clawsweeper-dry-run.json`;
 }

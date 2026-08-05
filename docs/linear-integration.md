@@ -18,8 +18,10 @@ boundaries.
   credential.
 - The sidecar never closes a Linear issue or changes its workflow state or
   priority.
-- A live comment requires `--apply`, `OPENCLAW_NOTIFY_LINEAR=1`, and reviewed
-  plan and snapshot hashes from the current dry-run.
+- A live update of an existing managed comment requires `--apply`,
+  `OPENCLAW_NOTIFY_LINEAR=1`, and reviewed plan and snapshot hashes from the
+  current dry-run. Live comment creation is disabled until a shared durable
+  action identity and cross-process settlement boundary exists.
 - Existing marker comments are reused only when their stable Linear bot actor ID
   matches `LINEAR_APP_ACTOR_ID`; display names are never treated as ownership.
 - The expected actor ID is part of the reviewed comment plan hash and receipt. A
@@ -31,7 +33,9 @@ boundaries.
 - Every live operation re-fetches the issue and blocks on snapshot drift.
 - Label plans preserve labels not owned by this sidecar; no live label write is
   attempted until an atomic additive or compare-and-swap boundary exists.
-- Review comments are marker-backed and updated in place rather than stacked.
+- Review comments are marker-backed. Existing actor-owned comments can be
+  updated in place; a missing marker comment produces a planning-only `create`
+  action and never a live write.
 
 ## Prerequisites
 
@@ -165,7 +169,7 @@ Review the proposed comment and label changes plus every `planHash` and
 `snapshotHash`. The report can then serve as the approvals file for exactly that
 reviewed state.
 
-Apply only marker-backed review comments:
+Apply only updates to existing marker-backed review comments:
 
 ```bash
 LINEAR_APP_ACTOR_ID=<linear-bot-actor-id> \
@@ -177,9 +181,15 @@ OPENCLAW_NOTIFY_LINEAR=1 pnpm linear:review-apply -- \
   --json
 ```
 
-Run only one live comment invocation at a time. Concurrent invocations are not
-yet protected by a durable action identity or compare-and-swap boundary and can
-create duplicate marker comments from the same approved snapshot.
+New marker comments are never created by the live lane. Two operators can plan
+the same `create` action, but `wouldWrite` remains false and both apply paths
+stop before token minting or mutation. A shared durable business-idempotency
+claim plus attempted/succeeded/failed/unknown settlement is required before
+creation can be enabled across machines.
+
+Continue to run only one live update invocation at a time. Updates target one
+existing actor-owned comment ID and are read back exactly, but the sidecar does
+not claim durable crash settlement for concurrent operators.
 
 After applying comments, generate and review a fresh dry-run report before
 reviewing the proposed routing-label plan:
@@ -200,10 +210,12 @@ the reviewed label plan as operator evidence; do not treat it as applied.
 A changed issue, changed plan, missing approval, closed gate, ineligible item, or
 ambiguous scope is skipped rather than written.
 
-For a single comment, use
+For a single existing managed comment, use
 `LINEAR_APP_ACTOR_ID=<linear-bot-actor-id> pnpm linear:comment:dry-run -- --identifier PAR-244`,
 review and save that receipt, then pass it to `linear-comment-apply.mjs` with
 `--apply --dry-run-receipt <path>` and the same actor ID and environment gate.
+If the receipt proposes `create`, apply reports it as disabled and performs no
+write.
 
 ## Current Scheduling Seam
 

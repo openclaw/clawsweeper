@@ -115,13 +115,29 @@ export function mapLinearPriority(priority: number): TriagePriority {
   }
 }
 
-/**
- * Maps a Linear state type to TrackerItemState.
- * "completed" or "canceled" → "closed"; everything else (including null) → "open".
- */
+// Linear exposes WorkflowState.type as a String rather than a GraphQL enum. Keep an explicit
+// allowlist so a newly introduced category stops the lane instead of silently becoming open.
+const OPEN_LINEAR_WORKFLOW_STATE_TYPES = new Set(["triage", "backlog", "unstarted", "started"]);
+const CLOSED_LINEAR_WORKFLOW_STATE_TYPES = new Set(["completed", "canceled", "duplicate"]);
+
+/** Rejects missing or unknown Linear workflow-state types at every record boundary. */
+export function assertLinearWorkflowStateType(stateType: string | null): string {
+  if (
+    stateType === null ||
+    (!OPEN_LINEAR_WORKFLOW_STATE_TYPES.has(stateType) &&
+      !CLOSED_LINEAR_WORKFLOW_STATE_TYPES.has(stateType))
+  ) {
+    throw new Error(
+      `unsupported Linear workflow state type${stateType === null ? "" : ` ${stateType}`}`,
+    );
+  }
+  return stateType;
+}
+
+/** Maps a validated Linear workflow-state type to TrackerItemState. */
 export function mapLinearState(stateType: string | null): TrackerItemState {
-  if (stateType === "completed" || stateType === "canceled") return "closed";
-  return "open";
+  const validated = assertLinearWorkflowStateType(stateType);
+  return CLOSED_LINEAR_WORKFLOW_STATE_TYPES.has(validated) ? "closed" : "open";
 }
 
 // Category precedence order — first substring match wins.

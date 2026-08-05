@@ -250,10 +250,10 @@ test("listIssues WITH updatedAfter: transport receives updatedAfter: { gt: iso }
 });
 
 // ---------------------------------------------------------------------------
-// Issue field mapping edge cases: null project, null state, empty labels
+// Issue field mapping edge cases: null project, valid state, empty labels
 // ---------------------------------------------------------------------------
 
-test("listIssues: maps null project → projectId null, null state → nulls, empty labels", async () => {
+test("listIssues: maps null project → projectId null and preserves a valid state", async () => {
   const calls: RecordedCall[] = [];
   const transport = makeQueuedTransport(
     {
@@ -271,7 +271,7 @@ test("listIssues: maps null project → projectId null, null state → nulls, em
                 priority: 0,
                 team: { id: "team-abc" },
                 project: null,
-                state: null,
+                state: { id: "state-backlog", name: "Backlog", type: "backlog" },
                 labels: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
               },
             ],
@@ -289,9 +289,9 @@ test("listIssues: maps null project → projectId null, null state → nulls, em
   const issue = issues[0];
   assert.ok(issue !== undefined);
   assert.equal(issue.projectId, null);
-  assert.equal(issue.stateId, null);
-  assert.equal(issue.stateName, null);
-  assert.equal(issue.stateType, null);
+  assert.equal(issue.stateId, "state-backlog");
+  assert.equal(issue.stateName, "Backlog");
+  assert.equal(issue.stateType, "backlog");
   assert.deepEqual(issue.labels, []);
 });
 
@@ -351,7 +351,7 @@ test("listWorkspaceItems: joins team, projects, issues; resolves project by id",
                 priority: 3,
                 team: { id: "team-1" },
                 project: null,
-                state: null,
+                state: { id: "state-backlog", name: "Backlog", type: "backlog" },
                 labels: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
               },
             ],
@@ -779,3 +779,109 @@ test("fetchIssueByIdentifier rejects a malformed attachment URL", async () => {
     /Malformed Issue attachments node: expected non-empty string url/,
   );
 });
+
+test("fetchIssueByIdentifier rejects a malformed top-level issue node", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: { nodes: [null], pageInfo: { hasNextPage: false, endCursor: null } },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed Linear issue: expected an object/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects a malformed issue team", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [hydratedIssueNode({ team: null })],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed Linear issue team: expected an object/,
+  );
+});
+
+test("fetchIssueByIdentifier rejects a missing issue state", async () => {
+  const transport: LinearTransport = async () => ({
+    issues: {
+      nodes: [hydratedIssueNode({ state: null })],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  await assert.rejects(
+    () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+    /Malformed Linear issue state: expected an object/,
+  );
+});
+
+for (const malformedIssueCase of [
+  { name: "issue id", patch: { id: "" }, error: /expected non-empty string id/ },
+  { name: "identifier", patch: { identifier: "" }, error: /expected non-empty string identifier/ },
+  { name: "title", patch: { title: "" }, error: /expected non-empty string title/ },
+  { name: "URL", patch: { url: "" }, error: /expected non-empty string url/ },
+  { name: "createdAt", patch: { createdAt: null }, error: /expected non-empty string createdAt/ },
+  { name: "updatedAt", patch: { updatedAt: null }, error: /expected non-empty string updatedAt/ },
+  {
+    name: "invalid createdAt",
+    patch: { createdAt: "not-a-date" },
+    error: /createdAt must be an ISO timestamp/,
+  },
+  {
+    name: "invalid updatedAt",
+    patch: { updatedAt: "2026-02-30T00:00:00Z" },
+    error: /updatedAt must be an ISO timestamp/,
+  },
+  { name: "priority", patch: { priority: null }, error: /expected finite number priority/ },
+  {
+    name: "out-of-range priority",
+    patch: { priority: 9 },
+    error: /priority must be an integer from 0 through 4/,
+  },
+  {
+    name: "fractional priority",
+    patch: { priority: 1.5 },
+    error: /priority must be an integer from 0 through 4/,
+  },
+  {
+    name: "team key",
+    patch: { team: { id: "team-1", key: "", name: "Partner" } },
+    error: /expected non-empty string key/,
+  },
+  {
+    name: "state type",
+    patch: { state: { id: "state-1", name: "Backlog", type: "" } },
+    error: /expected non-empty string type/,
+  },
+  {
+    name: "unknown state type",
+    patch: { state: { id: "state-1", name: "Archived", type: "archived" } },
+    error: /unsupported Linear workflow state type archived/,
+  },
+  {
+    name: "creator admin flag",
+    patch: {
+      creator: { id: "creator-1", name: "Maintainer", admin: "false", owner: false },
+    },
+    error: /expected boolean admin/,
+  },
+  {
+    name: "missing creator identity",
+    patch: { creator: null },
+    error: /Malformed Linear issue creator: expected an object/,
+  },
+]) {
+  test(`fetchIssueByIdentifier rejects malformed decision-bearing ${malformedIssueCase.name}`, async () => {
+    const transport: LinearTransport = async () => ({
+      issues: {
+        nodes: [hydratedIssueNode(malformedIssueCase.patch)],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      },
+    });
+    await assert.rejects(
+      () => new LinearItemSource(transport).fetchIssueByIdentifier("PAR-1"),
+      malformedIssueCase.error,
+    );
+  });
+}

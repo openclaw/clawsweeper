@@ -213,10 +213,17 @@ test("summarizeItem carries re-feedable fingerprints and separates actionable/au
   assert.equal(s.identifier, "PAR-1");
   assert.equal(s.actionable, true); // eligible + not noop (intrinsic)
   assert.equal(s.authorized, true); // approval gate passed
-  assert.equal(s.wouldWrite, true); // actionable AND authorized
+  assert.equal(s.wouldWrite, false); // create is planning-only until durable settlement exists
   assert.equal(s.planHash, HASH_A);
   assert.equal(s.snapshotHash, HASH_B);
   assert.equal(s.nowIso, "2026-06-24T00:00:00Z");
+});
+
+test("summarizeItem advertises only an authorized update of an existing managed comment", () => {
+  const result = fakeResult({ plan: { action: "update", planHash: HASH_A } });
+  const s = summarizeItem(result, { reason: "live write authorized" });
+  assert.equal(s.actionable, true);
+  assert.equal(s.wouldWrite, true);
 });
 
 test("summarizeItem: actionable but not authorized (plain dry-run) → wouldWrite=false", () => {
