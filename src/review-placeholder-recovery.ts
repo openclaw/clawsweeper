@@ -2,13 +2,17 @@
 import { createHmac } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  REVIEW_RECOVERY_STUCK_LABEL,
+  runReviewRecoveryLabelBackfill,
+} from "./review-recovery-label-backfill.js";
 
 export const REVIEW_PLACEHOLDER_MARKER = "ClawSweeper status: review started.";
 export const DEFAULT_REVIEW_PLACEHOLDER_MAX_CHECKS = 20;
 export const DEFAULT_REVIEW_PLACEHOLDER_MIN_AGE_HOURS = 2;
 export const DEFAULT_REVIEW_PLACEHOLDER_MAX_RECOVERIES = 5;
 export const DEFAULT_REVIEW_PLACEHOLDER_STUCK_HOURS = 12;
-export const REVIEW_PLACEHOLDER_STUCK_LABEL = "clawsweeper-recovery-stuck";
+export const REVIEW_PLACEHOLDER_STUCK_LABEL = REVIEW_RECOVERY_STUCK_LABEL;
 export const DEFAULT_REVIEW_PLACEHOLDER_LOOKBACK_HOURS = 48;
 
 const SEARCH_PAGE_SIZE = 100;
@@ -531,6 +535,20 @@ const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
 if (invokedPath && invokedPath === fileURLToPath(import.meta.url)) {
   try {
     const summary = await runReviewPlaceholderRecovery();
+    if (process.env.TARGET_WRITE_TOKEN) {
+      try {
+        const backfill = await runReviewRecoveryLabelBackfill();
+        console.log(
+          `review-recovery label reconciliation: checked=${backfill.checked} cleared=${backfill.cleared} already_cleared=${backfill.alreadyCleared} retained=${backfill.retained} errors=${backfill.errors} matched=${backfill.matched} remaining=${backfill.remaining}`,
+        );
+      } catch (error) {
+        console.warn(
+          `review-recovery label reconciliation skipped: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
     const failureReason = reviewPlaceholderRecoveryFailureReason(summary);
     if (failureReason) {
       console.error(`review-placeholder recovery failed: ${failureReason}`);

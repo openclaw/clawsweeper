@@ -2554,7 +2554,7 @@ Full review comments:
   }
 });
 
-test("apply-decisions refreshes recent PR comments after label sync adds justifications", () => {
+test("apply-decisions clears a recovery escalation only after publishing a completed PR review", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -2581,7 +2581,7 @@ test("apply-decisions refreshes recent PR comments after label sync adds justifi
         local_checkout_access: "verified",
         author: "contributor",
         author_association: "CONTRIBUTOR",
-        labels: JSON.stringify([]),
+        labels: JSON.stringify(["clawsweeper-recovery-stuck"]),
         item_snapshot_hash: "snapshot-a",
         item_updated_at: "2026-05-19T20:00:00Z",
         pull_head_sha: "abc123def456",
@@ -2632,7 +2632,7 @@ if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
     active_lock_reason: null,
     author_association: "CONTRIBUTOR",
     user: { login: "contributor" },
-    labels: [],
+    labels: ["clawsweeper-recovery-stuck"],
     pull_request: {}
   }));
 } else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/74479\\/timeline(?:\\?|$)/.test(args[2] || "")) {
@@ -2706,12 +2706,24 @@ if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
     assert.match(patchedBody, /`proof: sufficient`/);
     assert.match(patchedBody, /`proof: 📸 screenshot`/);
     assert.match(patchedBody, /`rating: 🦞 diamond lobster`/);
-    assert.match(readFileSync(itemPath, "utf8"), /^labels_synced_at: /m);
+    const publicationIndex = calls.findIndex((args) => args[0] === "patched-review-body");
+    const recoveryCleanupIndex = calls.findIndex(
+      (args) =>
+        args[0] === "issue" &&
+        args[1] === "edit" &&
+        args.includes("--remove-label") &&
+        args.includes("clawsweeper-recovery-stuck"),
+    );
+    assert.ok(publicationIndex >= 0);
+    assert.ok(recoveryCleanupIndex > publicationIndex);
+    const updatedReport = readFileSync(itemPath, "utf8");
+    assert.match(updatedReport, /^labels_synced_at: /m);
+    assert.doesNotMatch(updatedReport, /clawsweeper-recovery-stuck/);
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number: 74479,
         action: "review_comment_synced",
-        reason: "updated durable Codex review comment",
+        reason: "updated durable Codex review comment; cleared resolved review recovery label",
       },
     ]);
   } finally {

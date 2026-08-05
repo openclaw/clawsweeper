@@ -68,6 +68,10 @@ import {
 } from "./github-retry.js";
 import { type PrCloseCoverageProofRuntime } from "./pr-close-coverage-proof.js";
 import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
+import {
+  clearResolvedReviewRecoveryLabel,
+  REVIEW_RECOVERY_STUCK_LABEL,
+} from "./review-recovery-label-backfill.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
 import { stableJson } from "./stable-json.js";
 
@@ -106,6 +110,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     frontMatterStringArray,
     frontMatterValue,
     ghJson,
+    GitHubRuntimeBudgetError,
     guardedOpenApplyProofFields,
     hasVerifiedLocalCheckoutAccess,
     isApplyCloseCandidateReport,
@@ -134,6 +139,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     recordApplyActionLedgerItemResults,
     recordApplyMutationBoundary,
     removeCurrentCursorTraceItem,
+    removeIssueLabel,
     renderReviewCommentFromReport,
     replaceFrontMatterValue,
     repoFromArgs,
@@ -1899,6 +1905,42 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 comments: latestLeaseState.comments,
                 keepCommentIds: placeholderKeepCommentIds,
               });
+              if (complete && item.labels.includes(REVIEW_RECOVERY_STUCK_LABEL)) {
+                try {
+                  if (
+                    clearResolvedReviewRecoveryLabel({
+                      number,
+                      labels: item.labels,
+                      complete,
+                      removeLabel: removeIssueLabel,
+                      onMutation: recordMutation,
+                    })
+                  ) {
+                    markdown = replaceFrontMatterValue(
+                      markdown,
+                      "labels",
+                      JSON.stringify(item.labels),
+                    );
+                    markdown = replaceFrontMatterValue(
+                      markdown,
+                      "labels_synced_at",
+                      new Date().toISOString(),
+                    );
+                    rememberSelfMutationUpdatedAt();
+                    syncReasons.push("cleared resolved review recovery label");
+                    console.error(
+                      `[apply] cleared resolved review recovery label for #${number}`,
+                    );
+                  }
+                } catch (error) {
+                  if (error instanceof GitHubRuntimeBudgetError) throw error;
+                  console.error(
+                    `[apply] could not clear resolved review recovery label for #${number}: ${
+                      error instanceof Error ? error.message : String(error)
+                    }`,
+                  );
+                }
+              }
             } catch (error) {
               const commentAuthError = isGitHubRequiresAuthenticationError(error);
               if (!commentAuthError && !isLockedConversationCommentError(error)) throw error;

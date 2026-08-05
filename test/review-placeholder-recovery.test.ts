@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -9,6 +10,18 @@ import {
   runReviewPlaceholderRecovery,
   selectReviewPlaceholderComment,
 } from "../dist/review-placeholder-recovery.js";
+
+test("scheduled placeholder recovery also performs bounded recovery-label reconciliation", () => {
+  const source = readFileSync("src/review-placeholder-recovery.ts", "utf8");
+  const cli = source.slice(source.indexOf("if (invokedPath && invokedPath ==="));
+  const recovery = cli.indexOf("await runReviewPlaceholderRecovery()");
+  const backfill = cli.indexOf("await runReviewRecoveryLabelBackfill()");
+
+  assert.ok(recovery >= 0);
+  assert.ok(backfill > recovery);
+  assert.match(cli.slice(recovery, backfill), /if \(process\.env\.TARGET_WRITE_TOKEN\)/);
+  assert.match(cli.slice(backfill), /review-recovery label reconciliation skipped:/);
+});
 
 const now = new Date("2026-07-17T12:00:00.000Z");
 const bot = { login: "clawsweeper[bot]", type: "Bot" };

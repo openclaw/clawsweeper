@@ -341,6 +341,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
     hasNonAutomationActivity: boolean;
   }) => boolean;
   removeCurrentCursorTraceItem: (examinedItemNumbers: number[], currentNumber: number) => void;
+  removeIssueLabel: (number: number, label: string, onMutation?: () => void) => void;
   renderReviewCommentFromReport: (
     markdown: string,
     reason: CloseReason,

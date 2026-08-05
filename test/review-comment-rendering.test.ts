@@ -1485,6 +1485,22 @@ test("publishing the durable review comment sweeps superseded placeholders", () 
   assert.match(applyWindow, /cleanupSupersededReviewPlaceholderComments\(\{/);
 });
 
+test("completed durable publication clears a recovery escalation only after the review exists", () => {
+  const source = readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8");
+  const publication = source.indexOf("syncedComment = upsertReviewComment(");
+  const recoveryCleanup = source.indexOf("clearResolvedReviewRecoveryLabel({", publication);
+  const nextCatch = source.indexOf("} catch (error)", recoveryCleanup);
+
+  assert.ok(publication >= 0);
+  assert.ok(recoveryCleanup > publication);
+  assert.match(
+    source.slice(publication, recoveryCleanup),
+    /if \(complete && item\.labels\.includes\(REVIEW_RECOVERY_STUCK_LABEL\)\)/,
+  );
+  assert.match(source.slice(recoveryCleanup, nextCatch), /removeLabel:\s*removeIssueLabel/);
+  assert.match(source.slice(recoveryCleanup, nextCatch), /"labels_synced_at"/);
+});
+
 test("placeholder sweep retries on every apply pass independent of comment body sync", () => {
   const source = readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8");
   const earlyLeaseStart = source.indexOf("const earlyLeaseState = refreshReviewStartLeaseState();");
