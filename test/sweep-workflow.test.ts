@@ -1705,7 +1705,7 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
     /group: exact-review-reconcile-\$\{\{ github\.event_name == 'workflow_run' && format\('\{0\}-\{1\}', github\.event\.workflow_run\.id, github\.event\.workflow_run\.run_attempt\) \|\| 'sweep' \}\}/,
   );
   assert.match(workflow, /cancel-in-progress: false/);
-  assert.match(eventJob, /if: \$\{\{ github\.event_name == 'workflow_run' \}\}/);
+  assert.match(eventJob, /if: >-\s+\$\{\{\s+github\.event_name == 'workflow_run' &&/);
   assert.match(eventJob, /permissions:\s+actions: read\s+contents: read/);
   assert.match(eventJob, /github\.event\.workflow_run\.event == 'repository_dispatch'/);
   assert.match(

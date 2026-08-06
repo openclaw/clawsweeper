@@ -38,7 +38,7 @@ jobs:
           cutoff="$(date -u -d "${STALE_HOURS} hours ago" '+%Y-%m-%dT%H:%M:%SZ')"
           stale_lines="$(gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/runs" \
             -f status=queued -f "created=<${cutoff}" -F per_page=100 \
-            --jq '.workflow_runs[] | "\(.id)\t\(.created_at)\t\(.display_title)"')"
+            --jq '.workflow_runs[] | [.id, .created_at, .display_title] | @tsv')"
           if [ -z "$stale_lines" ]; then
             echo "no queued runs created before ${cutoff}"
             exit 0

@@ -21103,6 +21103,17 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   );
   context.renderExecutionAlert({
     ...healthyOperational,
+    queued_runs: 2,
+    queued_over_threshold: 2,
+    approval_gated_runs: 1,
+    oldest_approval_gated_minutes: 7 * 24 * 60,
+  });
+  assert.match(
+    elementFor("execution-alert").innerHTML,
+    /1 awaiting deployment approval \(oldest 168h\)/,
+  );
+  context.renderExecutionAlert({
+    ...healthyOperational,
     running_runs: 1,
     running_over_threshold: 1,
   });
