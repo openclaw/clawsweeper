@@ -176,6 +176,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Completed ClawSweeper support runs (apply, comment sync, audit, fan-out) no longer spawn a reconcile-observer runner each — at current sweep cadence roughly 600 wasted runner slots per day that competed with exact-review claims — and a new hourly janitor cancels runs stuck in `queued` for over 24 hours before they decay into uncancellable zombies.
+- Deployment runs waiting for human approval no longer count as runner-queue congestion in operational health: a forgotten approval gate had pinned `oldest_queued_minutes` at eight-plus days and held work-execution status away from healthy; approval-gated runs now report separately (count and oldest age) in the API and the execution alert.
 - Terminal command acknowledgements whose status comment was deleted (or never existed) now complete as a durable `missing_status_comment` skip instead of requeueing the finalization driver forever every ~20 minutes.
 - Apply and comment-sync publications now recover from canonical record tuple 409 conflicts instead of crashing mid-checkpoint: an equivalent concurrent write is absorbed, an unrelated-section race is rebased onto CURRENT with a single deterministic retry, and a same-section race skips just that item while the rest of the run continues.
 - Prevented weekly coverage from endlessly refreshing tracked records while never-reviewed live items remained invisible behind a full candidate batch; normal fanout now refreshes and consumes the signed live inventory, skips empty repositories, and prioritizes repositories with untracked work.
