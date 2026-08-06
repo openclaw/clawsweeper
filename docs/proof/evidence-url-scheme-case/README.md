@@ -54,10 +54,44 @@ pattern does not begin discarding valid GitHub references.
 
 ## Artifact and command
 
+Supported-environment run (Node 24, Crabbox `local-container`):
+
+```bash
+crabbox run \
+  --provider local-container \
+  --local-container-image node:24 \
+  --no-hydrate \
+  --timing-json \
+  --artifact-glob '.artifacts/evidence-url-scheme-proof/**' \
+  --script docs/proof/evidence-url-scheme-case/run-proof.sh
+```
+
+`run-proof.sh` installs the pinned pnpm into a user-writable prefix (the lease
+runs as the unprivileged `crabbox` user, so `corepack enable` cannot symlink into
+`/usr/local/bin`), builds the repair lane, runs `run-proof.mjs`, and then runs the
+focused suite.
+
+Host-only quick check:
+
 ```bash
 pnpm run build:repair
 node docs/proof/evidence-url-scheme-case/run-proof.mjs   # exit 0 = PASS
 ```
+
+## Provenance
+
+- provider: Crabbox `local-container` (Docker/OrbStack)
+- crabbox: `0.15.0`
+- image: `node:24` @ `sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584`
+- container node: `v24.19.0` (satisfies `engines.node >= 24`)
+- lease: `cbx_9546d1539ae1` (`brisk-krill`)
+- run: `run_f0123d90f1c3`
+- artifact: `.crabbox/runs/run_f0123d90f1c3/run_f0123d90f1c3-artifacts.tgz`
+- result: exit `0`; sanitizer REDACTED both schemes, validator REJECTED both;
+  focused suite `14/14`
+- privacy: the fixture uses the reserved documentation name `attacker.example`.
+  The proof makes no network calls, contacts no GitHub API, and performs no
+  queue, GitHub, or production mutation. No credential is present in the lease.
 
 Focused tests:
 
