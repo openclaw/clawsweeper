@@ -53,6 +53,45 @@ test("sanitizeEvidenceText keeps github.com URLs but replaces sibling external U
   assert.doesNotMatch(cleaned, /raw\.githubusercontent\.com/);
 });
 
+test("sanitizeEvidenceText replaces external URLs regardless of scheme case", () => {
+  // GitHub autolinks schemes case-insensitively, so an uppercase scheme is still
+  // a live external link once the evidence is published.
+  for (const scheme of ["HTTPS", "Https", "hTTpS", "HTTP", "Http", "hTtP"]) {
+    const cleaned = sanitizeEvidenceText(`deploy preview: ${scheme}://vercel.com/openclaw/abc`);
+    assert.equal(cleaned, "deploy preview: <external link>", `scheme ${scheme} was not redacted`);
+  }
+});
+
+test("sanitizeEvidenceText keeps github.com URLs with an uppercase scheme", () => {
+  // The host is what decides; case-insensitive matching must not start dropping
+  // legitimate github.com links.
+  assert.equal(
+    sanitizeEvidenceText("see HTTPS://github.com/openclaw/openclaw/pull/1 for context"),
+    "see HTTPS://github.com/openclaw/openclaw/pull/1 for context",
+  );
+  assert.equal(
+    sanitizeEvidenceText("see HTTPS://GitHub.com/openclaw/openclaw/pull/1"),
+    "see HTTPS://GitHub.com/openclaw/openclaw/pull/1",
+  );
+});
+
+test("sanitizeResultEvidence redacts uppercase-scheme URLs on every evidence field", () => {
+  const result = {
+    actions: [{ evidence: ["proof: HTTPS://attacker.example/exfil?data=secret"] }],
+    needs_human: ["HTTP://attacker.example/ping"],
+    merge_preflight: [
+      {
+        security_evidence: ["HtTpS://attacker.example/scan"],
+        comments_evidence: ["Https://attacker.example/thread"],
+        bot_comments_evidence: ["HTTP://attacker.example/ack"],
+        codex_review: { evidence: ["HTTPS://attacker.example/review"] },
+      },
+    ],
+  };
+  sanitizeResultEvidence(result);
+  assert.doesNotMatch(JSON.stringify(result), /attacker\.example/);
+});
+
 test("sanitizeEvidenceText is idempotent", () => {
   const once = sanitizeEvidenceText(
     "see https://github.com/x/y and https://vercel.com/z for details",
@@ -128,12 +167,16 @@ test("sanitizeResultEvidence handles null/undefined safely", () => {
 });
 
 test("sanitized evidence does not trigger evidenceHasExternalUrl regex", () => {
-  // Mirror the regex used in review-results.ts evidenceHasExternalUrl.
-  const URL_PATTERN = /https?:\/\/[^\s)\]"']+/g;
+  // Mirror the regex used in review-results.ts evidenceHasExternalUrl, including
+  // its flags. If these drift apart the sanitizer can emit output the validator
+  // then rejects (or, as before the `i` flag, both can miss the same URL).
+  const URL_PATTERN = /https?:\/\/[^\s)\]"']+/gi;
   const cleaned = sanitizeEvidenceList([
     "Source PR: https://github.com/o/r/pull/2353",
     "Failing check: vercel:failure (https://vercel.com/o/preview/abc)",
     "see https://gist.github.com/foo for snippet",
+    "Preview: HTTPS://vercel.com/o/preview/upper",
+    "Snippet: HtTpS://gist.github.com/upper",
   ]);
   for (const line of cleaned) {
     const urls = line.match(URL_PATTERN) ?? [];
