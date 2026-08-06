@@ -253,7 +253,8 @@ function parseClawSweeperReport(filePath: string) {
 }
 
 function frontMatterValue(markdown: string, key: string) {
-  const match = markdown.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
+  const frontMatter = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1] ?? "";
+  const match = frontMatter.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
   return match?.[1]?.trim().replace(/^"|"$/g, "") ?? "";
 }
 

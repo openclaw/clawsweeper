@@ -1852,13 +1852,13 @@ function hasLowSignalPullRequestPromotionSignal(markdown: string): boolean {
   const ratingSection = sectionValue(markdown, "PR Rating");
   const proofSection = sectionValue(markdown, "Real Behavior Proof");
   const overallTier =
-    sectionLineValue(ratingSection, "Overall tier") ||
-    frontMatterValue(markdown, "pr_rating_overall");
+    frontMatterValue(markdown, "pr_rating_overall") ||
+    sectionLineValue(ratingSection, "Overall tier");
   const proofTier =
-    sectionLineValue(ratingSection, "Proof tier") || frontMatterValue(markdown, "pr_rating_proof");
+    frontMatterValue(markdown, "pr_rating_proof") || sectionLineValue(ratingSection, "Proof tier");
   const proofStatus =
-    sectionLineValue(proofSection, "Status") ||
-    frontMatterValue(markdown, "real_behavior_proof_status");
+    frontMatterValue(markdown, "real_behavior_proof_status") ||
+    sectionLineValue(proofSection, "Status");
   return (
     overallTier === "F" &&
     (proofTier === "F" || ["missing", "mock_only", "insufficient"].includes(proofStatus))
@@ -1869,11 +1869,11 @@ function hasAuthorPrBudgetPromotionSignal(markdown: string): boolean {
   const ratingSection = sectionValue(markdown, "PR Rating");
   const proofSection = sectionValue(markdown, "Real Behavior Proof");
   const overallTier =
-    sectionLineValue(ratingSection, "Overall tier") ||
-    frontMatterValue(markdown, "pr_rating_overall");
+    frontMatterValue(markdown, "pr_rating_overall") ||
+    sectionLineValue(ratingSection, "Overall tier");
   const proofStatus =
-    sectionLineValue(proofSection, "Status") ||
-    frontMatterValue(markdown, "real_behavior_proof_status");
+    frontMatterValue(markdown, "real_behavior_proof_status") ||
+    sectionLineValue(proofSection, "Status");
   if (["S", "A", "B"].includes(overallTier) && ["sufficient", "override"].includes(proofStatus)) {
     return false;
   }
@@ -1881,6 +1881,16 @@ function hasAuthorPrBudgetPromotionSignal(markdown: string): boolean {
     ["D", "F"].includes(overallTier) ||
     ["missing", "mock_only", "insufficient"].includes(proofStatus)
   );
+}
+
+export function pullRequestClosePromotionSignalsForTest(markdown: string): {
+  authorBudget: boolean;
+  lowSignal: boolean;
+} {
+  return {
+    authorBudget: hasAuthorPrBudgetPromotionSignal(markdown),
+    lowSignal: hasLowSignalPullRequestPromotionSignal(markdown),
+  };
 }
 
 function closePromotionSignalTexts(markdown: string): string[] {
@@ -2538,8 +2548,9 @@ function checkpointNumber(name: string): number {
 }
 
 function frontMatterValue(markdown: string, key: string): string {
+  const frontMatter = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1] ?? "";
   return (
-    markdown
+    frontMatter
       .match(new RegExp(`^${key}:\\s*(.+)$`, "m"))?.[1]
       ?.trim()
       .replace(/^"|"$/g, "") ?? ""

@@ -40,6 +40,10 @@ checkpoint, and status-only commits are intentionally omitted.
 - Doubled exact-review admission to 128 global and 120 per target with a separate 194-slot Actions budget that preserves verdict publication at full review load, doubled scheduled fleet review fanout and canonical publication batch preparation, prioritized six-day oldest-review coverage before hot-item churn, exposed a six-hour fleet coverage summary, and raised automatic apply to 40 closes with proportional scan/runtime budgets without changing close eligibility.
 - Completed the Cloudflare-canonical state migration: records publish only to the Durable Object, action ledgers and assets publish only to R2, canonical-only workflows no longer check out `clawsweeper-state`, the former materializer only compacts the legacy append window, and the remaining `jobs`/`results`/`notifications`/apply-report Git writers use the Durable Object coordinator without Git lease refs or rebuild recovery.
 
+### Fixed
+
+- Prevented model-authored report prose and body-shaped front matter from spoofing proof or rating sections, keeping unproven external pull requests in human review instead of routing them into automated repair. (#951)
+
 ### Added
 
 - Status dashboard facelift: an at-a-glance subsystem health strip in the hero (review handoff, work execution, incidents, apply lane, coverage) and a new Fleet Review Coverage section backed by a public `/api/review-coverage` endpoint that summarizes trailing-7-day review coverage per fleet (coverage %, stale/failed/pending counts) from canonical Durable Object item records.

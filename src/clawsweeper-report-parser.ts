@@ -424,10 +424,16 @@ export function createReportParser({
       }
       return defaultProof;
     }
-    const statusValue = sectionLineValue(section, "Status");
-    const evidenceKindValue = sectionLineValue(section, "Evidence kind");
+    const statusValue =
+      frontMatterValue(markdown, "real_behavior_proof_status") ??
+      sectionLineValue(section, "Status");
+    const evidenceKindValue =
+      frontMatterValue(markdown, "real_behavior_proof_evidence_kind") ??
+      sectionLineValue(section, "Evidence kind");
     const summary = sectionLineValue(section, "Summary");
-    const needsContributorActionValue = sectionLineValue(section, "Needs contributor action");
+    const needsContributorActionValue =
+      frontMatterValue(markdown, "real_behavior_proof_needs_contributor_action") ??
+      sectionLineValue(section, "Needs contributor action");
     const status = REAL_BEHAVIOR_PROOF_STATUSES.has(statusValue as RealBehaviorProofStatus)
       ? (statusValue as RealBehaviorProofStatus)
       : undefined;
@@ -482,11 +488,11 @@ export function createReportParser({
     const section = reviewSectionValue(markdown, "prRating");
     const proof = reportRealBehaviorProof(markdown);
     const proofTierValue =
-      sectionLineValue(section, "Proof tier") ?? frontMatterValue(markdown, "pr_rating_proof");
+      frontMatterValue(markdown, "pr_rating_proof") ?? sectionLineValue(section, "Proof tier");
     const patchTierValue =
-      sectionLineValue(section, "Patch tier") ?? frontMatterValue(markdown, "pr_rating_patch");
+      frontMatterValue(markdown, "pr_rating_patch") ?? sectionLineValue(section, "Patch tier");
     const overallTierValue =
-      sectionLineValue(section, "Overall tier") ?? frontMatterValue(markdown, "pr_rating_overall");
+      frontMatterValue(markdown, "pr_rating_overall") ?? sectionLineValue(section, "Overall tier");
     const summary = sectionLineValue(section, "Summary");
     const nextSteps = sectionList(section, "Next rank-up steps").slice(0, 3);
     if (

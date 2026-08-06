@@ -62,8 +62,12 @@ export function createRecordMetadata({
   markdownFiles,
   numberForMarkdownFile,
 }: RecordMetadataDependencies) {
+  function leadingFrontMatter(markdown: string): string | undefined {
+    return markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
+  }
+
   function frontMatterValue(markdown: string, key: string): string | undefined {
-    const match = markdown.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
+    const match = leadingFrontMatter(markdown)?.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
     const value = match?.[1]?.trim();
     return value?.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
   }
