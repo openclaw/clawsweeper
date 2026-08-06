@@ -222,6 +222,10 @@ export interface CreateApplyDecisionWorkflowDependencies {
       locked?: boolean;
     },
   ) => IssueAdvisoryLabelState;
+  issueRecentHumanCommentBlockReasonFromComments: (
+    comments: readonly unknown[],
+    days: number,
+  ) => string | null;
   issueRecentHumanCommentBlockReasonSafe: (number: number, days: number) => string | null;
   issueReviewComment: (
     number: number,
@@ -405,6 +409,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
       | "closeComment",
   ) => string;
   reviewStartLeaseOwner: (comment: Record<string, unknown> | undefined) => string | null;
+  refreshRelatedItemsContext: (item: Item, context: ItemContext) => unknown[];
   ROOT: string;
   runtimeBudgetExceeded: (startedAtMs: number, maxRuntimeMs: number, nowMs: number) => boolean;
   sameAuthorCounterpartApplyReason: (

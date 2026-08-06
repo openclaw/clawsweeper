@@ -73,13 +73,13 @@ export function createApplyCandidateGuards(
     prCloseCoverageProofStartedAtMs: null,
   };
 
-  const currentStaleVersionBugBlockReason = (): string | null => {
+  const candidateStaleVersionBugBlockReason = (): string | null => {
     if (cachedStaleVersionBugBlockReason === undefined) {
       cachedStaleVersionBugBlockReason = staleVersionBugApplyBlockReasonSafe(number, item);
     }
     return cachedStaleVersionBugBlockReason;
   };
-  const currentObsoleteFixPrBlockReason = (): string | null => {
+  const candidateObsoleteFixPrBlockReason = (): string | null => {
     if (cachedObsoleteFixPrBlockReason === undefined) {
       cachedObsoleteFixPrBlockReason = obsoleteFixPrApplyBlockReasonSafe(number, item);
     }
@@ -187,11 +187,11 @@ export function createApplyCandidateGuards(
   };
 
   return {
+    candidateObsoleteFixPrBlockReason,
+    candidateStaleVersionBugBlockReason,
     coverageProofState,
     currentAuthorPrBudgetApplyGate,
-    currentObsoleteFixPrBlockReason,
     currentPrCloseCoverageProofGateBlock,
-    currentStaleVersionBugBlockReason,
     resetCoverageProof: () => {
       coverageProofState.cachedPrCloseCoverageProofGateResult = undefined;
     },

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
-import { STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS } from "./clawsweeper-policy.js";
+import { evaluateApplyCloseReasonPolicy } from "./clawsweeper-apply-close-policies.js";
 import type {
   ActionTaken,
   ApplyKind,
@@ -179,7 +179,6 @@ export function createApplyCloseGuards(
   }: ApplyCloseGuardContext,
 ) {
   const {
-    abandonedPrApplyBlockReasonSafe,
     applyBlockingProtectedLabels,
     closeReasonApplyAgeSkipReason,
     closeReasonEnabled,
@@ -195,10 +194,10 @@ export function createApplyCloseGuards(
     isApplyCloseCandidateReport,
     isMaintainerAuthorAssociation,
     isRetryableCloseSkipReport,
-    issueRecentHumanCommentBlockReasonSafe,
-    issueReviewComment,
+    issueReviewCommentState,
     isVerifiedFixedCloseReason,
     itemSnapshotHash,
+    lockedConversationApplyReason,
     markdownRepository,
     markedReviewCommentBody,
     normalizeAuthorAssociation,
@@ -212,13 +211,8 @@ export function createApplyCloseGuards(
     reviewSectionValue,
     sameAuthorCounterpartApplyReason,
     shouldSyncReviewComment,
-    stalledUnprovenPrApplyBlockReasonSafe,
-    unconfirmedProductDirectionApplyBlockReasonSafe,
-    unsponsoredFeatureApplyBlockReasonSafe,
     validateCloseDecision,
   } = dependencies;
-
-  const sameAuthorPairStartCloseable = new Map<string, boolean>();
 
   const currentCloseGatesPassed = (): boolean => {
     const { closeReason, markdown, needsReviewCommentSync, storedUpdatedAt } = currentCloseState();
@@ -263,45 +257,21 @@ export function createApplyCloseGuards(
     ) {
       return false;
     }
+    const policyOptions = {
+      closeReason,
+      currentAuthorPrBudgetApplyGate,
+      currentObsoleteFixPrBlockReason,
+      currentStaleVersionBugBlockReason,
+      item,
+      markdown,
+      number,
+      storedUpdatedAt,
+    };
     if (
-      closeReason === "unconfirmed_product_direction" &&
-      unconfirmedProductDirectionApplyBlockReasonSafe(
-        number,
-        item,
-        storedUpdatedAt,
-        frontMatterValue(markdown, "reviewed_at"),
+      (["before-canonical", "after-canonical"] as const).some(
+        (phase) => evaluateApplyCloseReasonPolicy(dependencies, { ...policyOptions, phase }).block,
       )
     ) {
-      return false;
-    }
-    if (
-      closeReason === "unsponsored_feature_request" &&
-      unsponsoredFeatureApplyBlockReasonSafe(number, item)
-    ) {
-      return false;
-    }
-    if (closeReason === "stale_version_bug" && currentStaleVersionBugBlockReason()) {
-      return false;
-    }
-    if (closeReason === "obsolete_fix_pr" && currentObsoleteFixPrBlockReason()) {
-      return false;
-    }
-    if (closeReason === "author_pr_budget_exceeded" && !currentAuthorPrBudgetApplyGate().allowed) {
-      return false;
-    }
-    if (
-      closeReason === "stale_insufficient_info" &&
-      issueRecentHumanCommentBlockReasonSafe(number, STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS)
-    ) {
-      return false;
-    }
-    if (
-      closeReason === "stalled_unproven_pr" &&
-      stalledUnprovenPrApplyBlockReasonSafe(number, item)
-    ) {
-      return false;
-    }
-    if (closeReason === "abandoned_pr" && abandonedPrApplyBlockReasonSafe(number, item)) {
       return false;
     }
     if (currentPrCloseCoverageProofGateBlock()) return false;
@@ -313,10 +283,6 @@ export function createApplyCloseGuards(
     counterpartKind: ItemKind,
   ): boolean => {
     const { closedCount, processedCount } = currentCloseState();
-    const cacheKey = `${counterpartNumber}:${counterpartKind}`;
-    const cached = sameAuthorPairStartCloseable.get(cacheKey);
-    if (cached !== undefined) return cached;
-
     let result = false;
     if (
       item.kind === "pull_request" &&
@@ -328,6 +294,9 @@ export function createApplyCloseGuards(
     ) {
       const counterpartEntry = openFileEntryByNumber.get(counterpartNumber);
       if (counterpartEntry) {
+        const queueCounterpartEntry = () =>
+          fileEntries.some((entry) => entry.number === counterpartNumber) ||
+          fileEntries.push(counterpartEntry) > 0;
         const counterpartMarkdown = readFileSync(counterpartEntry.path, "utf8");
         const counterpartMaintainerDecisionBlocked =
           maintainerDecisionBlocksClose(counterpartMarkdown);
@@ -344,6 +313,8 @@ export function createApplyCloseGuards(
           hasVerifiedLocalCheckoutAccess(counterpartMarkdown)
         ) {
           const { item: counterpartItem, state: counterpartState } = fetchItem(counterpartNumber);
+          if (counterpartState !== "open")
+            return counterpartState === "closed" && queueCounterpartEntry();
           const counterpartReviewedAuthorAssociation = normalizeAuthorAssociation(
             frontMatterValue(counterpartMarkdown, "author_association"),
           );
@@ -356,10 +327,11 @@ export function createApplyCloseGuards(
             counterpartMarkdown,
             counterpartReason,
           );
-          const counterpartReviewComment = issueReviewComment(counterpartNumber, [
+          const counterpartReviewState = issueReviewCommentState(counterpartNumber, [
             counterpartReviewCommentBody,
             reviewSectionValue(counterpartMarkdown, "closeComment"),
           ]);
+          const counterpartReviewComment = counterpartReviewState.reviewComment;
           const counterpartMarkedReviewComment = markedReviewCommentBody(
             counterpartNumber,
             counterpartReviewCommentBody,
@@ -425,8 +397,32 @@ export function createApplyCloseGuards(
               canClosePairCounterpartInThisRun(relatedNumber) ||
               (relatedNumber === number && relatedKind === item.kind),
           );
+          const policyOptions = {
+            closeReason: counterpartReason,
+            comments: counterpartReviewState.comments,
+            currentAuthorPrBudgetApplyGate: () =>
+              dependencies.authorPrBudgetApplyGateSafe(
+                counterpartNumber,
+                counterpartItem,
+                counterpartMarkdown,
+              ),
+            currentObsoleteFixPrBlockReason: () =>
+              dependencies.obsoleteFixPrApplyBlockReasonSafe(counterpartNumber, counterpartItem),
+            currentStaleVersionBugBlockReason: () =>
+              dependencies.staleVersionBugApplyBlockReasonSafe(counterpartNumber, counterpartItem),
+            item: counterpartItem,
+            markdown: counterpartMarkdown,
+            number: counterpartNumber,
+            storedUpdatedAt: counterpartStoredUpdatedAt,
+          };
+          const counterpartReasonPolicyPassed = (
+            ["before-canonical", "after-canonical"] as const
+          ).every(
+            (phase) =>
+              !evaluateApplyCloseReasonPolicy(dependencies, { ...policyOptions, phase }).block,
+          );
           result =
-            counterpartState === "open" &&
+            lockedConversationApplyReason(counterpartItem) === null &&
             counterpartItem.kind === counterpartKind &&
             applyBlockingProtectedLabels(counterpartItem.labels, counterpartReason).length === 0 &&
             (isVerifiedFixedCloseReason(counterpartReason) ||
@@ -452,16 +448,14 @@ export function createApplyCloseGuards(
               minAgeDescription,
               staleMinAgeDays,
             }) === null &&
+            counterpartReasonPolicyPassed &&
             counterpartOpenClosingPullRequestReason === null &&
             counterpartSameAuthorReason === null;
-          if (result && !fileEntries.some((entry) => entry.number === counterpartNumber)) {
-            fileEntries.push(counterpartEntry);
-          }
+          if (result) queueCounterpartEntry();
         }
       }
     }
 
-    sameAuthorPairStartCloseable.set(cacheKey, result);
     return result;
   };
 

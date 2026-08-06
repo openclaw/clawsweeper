@@ -176,6 +176,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Prevented same-author pair closes from starting when the counterpart fails its reason-specific live policy, refreshed stale-version and obsolete-fix guards again at the final close boundary, and made new and existing pre-close decision notes status-neutral while those final guards run.
 - Terminal command acknowledgements whose status comment was deleted (or never existed) now complete as a durable `missing_status_comment` skip instead of requeueing the finalization driver forever every ~20 minutes.
 - Apply and comment-sync publications now recover from canonical record tuple 409 conflicts instead of crashing mid-checkpoint: an equivalent concurrent write is absorbed, an unrelated-section race is rebased onto CURRENT with a single deterministic retry, and a same-section race skips just that item while the rest of the run continues.
 - Prevented weekly coverage from endlessly refreshing tracked records while never-reviewed live items remained invisible behind a full candidate batch; normal fanout now refreshes and consumes the signed live inventory, skips empty repositories, and prioritizes repositories with untracked work.

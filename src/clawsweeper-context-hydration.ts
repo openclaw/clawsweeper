@@ -840,13 +840,14 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
 
     const issue = asRecord(record.issue);
     const pullRequest = asRecord(record.pullRequest);
-    const isPullRequest = Object.keys(pullRequest).length > 0;
-    const state = isPullRequest ? pullRequest.state : issue.state;
+    const pullRequestLoaded = Object.keys(pullRequest).length > 0;
+    const isPullRequest = pullRequestLoaded || Boolean(record.pullRequestError);
+    const counterpart = pullRequestLoaded ? pullRequest : issue;
     return {
       number: typeof issue.number === "number" ? issue.number : null,
       kind: isPullRequest ? "pull_request" : "issue",
-      author: normalizeAuthorLogin(isPullRequest ? pullRequest.author : issue.author),
-      state: typeof state === "string" ? state.toLowerCase() : "",
+      author: normalizeAuthorLogin(counterpart.author),
+      state: typeof counterpart.state === "string" ? counterpart.state.toLowerCase() : "",
       title: typeof issue.title === "string" ? issue.title : "",
     };
   }
@@ -867,11 +868,15 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     const itemAuthor = normalizeAuthorLogin(item.author);
     if (!itemAuthor) return null;
     for (const relatedItem of relatedItems) {
+      const refreshFailed = Boolean(asRecord(relatedItem).error);
       const related = relatedCounterpartInfo(relatedItem);
       if (related.number === null || related.number === item.number) continue;
       if (!related.kind || related.kind === item.kind) continue;
-      if (related.state !== "open") continue;
+      if (related.state !== "open" && !refreshFailed) continue;
       if (related.author !== itemAuthor) continue;
+      if (refreshFailed) {
+        return `could not revalidate paired ${itemKindLabel(related.kind)} #${related.number}${related.title ? ` (${related.title})` : ""} by the same author before closing this ${itemKindLabel(item.kind)}`;
+      }
       if (canPairClose?.(related.number, related.kind)) continue;
       return `open ${itemKindLabel(related.kind)} #${related.number}${related.title ? ` (${related.title})` : ""} by the same author is paired with this ${itemKindLabel(item.kind)}`;
     }

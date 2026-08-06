@@ -792,7 +792,8 @@ export function createRelatedContext({
         const mentionedIn = Array.isArray(record.mentionedIn)
           ? record.mentionedIn.filter((entry): entry is string => typeof entry === "string")
           : [];
-        return compactRelatedItem(number, mentionedIn);
+        const refreshed = asRecord(compactRelatedItem(number, mentionedIn));
+        return refreshed.error ? { ...record, ...refreshed } : refreshed;
       })
       .filter((entry) => entry !== null);
     appendUniqueRelatedItems(related, seen, refreshedExplicit);

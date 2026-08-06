@@ -246,9 +246,9 @@ export function createReviewCommentPublication(
   }): string {
     const coverageProofLine = closeAppliedCoverageProofLine(options.markdown);
     return [
-      "ClawSweeper applied the proposed close for this PR.",
+      "ClawSweeper recorded the close decision for this PR.",
       "",
-      "- Action: closed this PR.",
+      "- Execution: a close command runs only if the final live guards pass.",
       `- Close reason: ${closeReasonText(options.closeReason)}.`,
       `- Evidence: ${closeAppliedEvidenceLink(options.markdown, options.itemUrl)}.`,
       coverageProofLine,
@@ -278,24 +278,30 @@ export function createReviewCommentPublication(
     dryRun: boolean;
   }): string {
     const marker = closeAppliedCommentMarker(options.number);
-    if (issueCommentWithMarker(options.number, marker)) {
+    const existing = issueCommentWithMarker(options.number, marker);
+    const existingId = commentId(existing);
+    const patchExisting = existingId !== null && canPatchReviewComment(existing);
+    const body = renderCloseAppliedComment(options);
+    if (existing && (!patchExisting || existing.body === body)) {
       return "matching ClawSweeper close-applied comment already exists";
     }
-    const body = renderCloseAppliedComment(options);
-    if (options.dryRun) return "dry-run: would post close-applied comment";
+    if (options.dryRun)
+      return `dry-run: would ${patchExisting ? "update" : "post"} close-applied comment`;
     const payload = writeCommentPayload(options.number, body);
     ghObservedMutationCommand({
       identity: `close_applied_comment:${options.number}:${sha256(body)}`,
       args: [
         "api",
-        `repos/${targetRepo()}/issues/${options.number}/comments`,
+        patchExisting
+          ? `repos/${targetRepo()}/issues/comments/${existingId}`
+          : `repos/${targetRepo()}/issues/${options.number}/comments`,
         "--method",
-        "POST",
+        patchExisting ? "PATCH" : "POST",
         "--input",
         payload,
       ],
     });
-    return "posted close-applied comment";
+    return patchExisting ? "updated close-applied comment" : "posted close-applied comment";
   }
 
   return {

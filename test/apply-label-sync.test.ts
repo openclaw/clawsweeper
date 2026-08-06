@@ -3167,7 +3167,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   }
 });
 
-test("apply-decisions posts an explicit close-time note before closing PR proposals", () => {
+test("apply-decisions updates an explicit close-time note before closing PR proposals", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -3221,10 +3221,11 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       updated_at: "2026-05-01T01:00:00Z",
       user: { login: "clawsweeper[bot]" },
       body: comment
-    }]]));
+    }, { id: 9322, user: { login: "clawsweeper[bot]" }, body: "ClawSweeper applied the proposed close for this PR.\\n\\n- Action: closed this PR.\\n\\n<!-- clawsweeper-close-applied item=321 -->" }]]));
   }
-} else if (args[0] === "api" && /\\/issues\\/comments\\/9321$/.test(path)) {
-  console.log(JSON.stringify({ id: 9321, html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9321" }));
+} else if (args[0] === "api" && /\\/issues\\/comments\\/(9321|9322)$/.test(path)) {
+  if (path.endsWith("/9322")) appendFileSync(postedBodiesPath, JSON.stringify(JSON.parse(readFileSync(args[args.indexOf("--input") + 1], "utf8")).body) + "\\n");
+  console.log(JSON.stringify({ id: Number(path.match(/\\d+$/)[0]), html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9322" }));
 } else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
@@ -3284,23 +3285,23 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as string[]);
-    const postIndex = calls.findIndex(
+    const mutationIndex = calls.findIndex(
       (args) =>
         args[0] === "api" &&
-        (args[1] ?? "").endsWith("/issues/321/comments") &&
-        args.includes("POST"),
+        (args[1] ?? "").endsWith("/issues/comments/9322") &&
+        args.includes("PATCH"),
     );
     const closeIndex = calls.findIndex(
       (args) => args[0] === "pr" && args[1] === "close" && args[2] === "321",
     );
-    assert.ok(postIndex >= 0);
-    assert.ok(closeIndex > postIndex);
+    assert.ok(mutationIndex >= 0);
+    assert.ok(closeIndex > mutationIndex);
     const postedBodies = readFileSync(postedBodiesPath, "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as string);
     assert.equal(postedBodies.length, 1);
-    assert.match(postedBodies[0], /ClawSweeper applied the proposed close for this PR/);
+    assert.match(postedBodies[0], /recorded the close decision/);
     assert.match(postedBodies[0], /Close reason: already implemented on main/);
     assert.match(postedBodies[0], /durable ClawSweeper review/);
     assert.match(postedBodies[0], /clawsweeper-close-applied item=321/);
@@ -3314,7 +3315,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       {
         number: 321,
         action: "closed",
-        reason: "already implemented on main; posted close-applied comment",
+        reason: "already implemented on main; updated close-applied comment",
       },
     ]);
   } finally {

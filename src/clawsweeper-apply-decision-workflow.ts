@@ -968,11 +968,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         startedAtMs,
       });
       const {
+        candidateObsoleteFixPrBlockReason,
+        candidateStaleVersionBugBlockReason,
         coverageProofState,
         currentAuthorPrBudgetApplyGate,
-        currentObsoleteFixPrBlockReason,
         currentPrCloseCoverageProofGateBlock,
-        currentStaleVersionBugBlockReason,
       } = candidateGuards;
       const recordRuntimeBudgetYield = (reason: string): void => {
         if (clawSweeperLabelsChanged && !dryRun) {
@@ -1002,9 +1002,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           processedCount,
           storedUpdatedAt,
         }),
-        currentObsoleteFixPrBlockReason,
+        currentObsoleteFixPrBlockReason: candidateObsoleteFixPrBlockReason,
         currentPrCloseCoverageProofGateBlock,
-        currentStaleVersionBugBlockReason,
+        currentStaleVersionBugBlockReason: candidateStaleVersionBugBlockReason,
         fileEntries,
         isRetryableSkippedClose,
         item,
@@ -1147,9 +1147,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           applyCloseReasons,
           applyKind,
           closeReason,
+          comments: earlyLeaseState.comments,
           currentAuthorPrBudgetApplyGate,
-          currentObsoleteFixPrBlockReason,
-          currentStaleVersionBugBlockReason,
+          currentObsoleteFixPrBlockReason: candidateObsoleteFixPrBlockReason,
+          currentStaleVersionBugBlockReason: candidateStaleVersionBugBlockReason,
           isCloseProposal,
           item,
           markdown,
@@ -1713,14 +1714,16 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           }
         }
       }
-      if (isCloseProposal) {
-        const sameAuthorCounterpartReason = sameAuthorCounterpartApplyReason(
+      const currentSameAuthorPairBlockReason = (): string | null =>
+        sameAuthorCounterpartApplyReason(
           item,
-          currentItemContext().relatedItems ?? [],
+          dependencies.refreshRelatedItemsContext(item, currentItemContext()),
           (counterpartNumber, counterpartKind) =>
             canClosePairCounterpartInThisRun(counterpartNumber) ||
             canStartSameAuthorPairCloseInThisRun(counterpartNumber, counterpartKind),
         );
+      if (isCloseProposal) {
+        const sameAuthorCounterpartReason = currentSameAuthorPairBlockReason();
         if (sameAuthorCounterpartReason) {
           if (markApplySkipped("skipped_same_author_pair", sameAuthorCounterpartReason, true))
             break;
@@ -2030,9 +2033,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         closedDir,
         currentApplyMutationLeaseBlockReason,
         currentAuthorPrBudgetApplyGate,
-        currentObsoleteFixPrBlockReason,
         currentPrCloseCoverageProofGateBlock,
-        currentStaleVersionBugBlockReason,
+        currentSameAuthorPairBlockReason,
         dryRun,
         emitEventApplyProof,
         examinedItemNumbers,

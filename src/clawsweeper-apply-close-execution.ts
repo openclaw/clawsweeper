@@ -35,12 +35,14 @@ type ApplyCloseExecutionDependencies = Pick<
   | "issueRecentHumanCommentBlockReasonSafe"
   | "lowSignalUnmergeablePrApplyBlockReasonSafe"
   | "normalizeLabelName"
+  | "obsoleteFixPrApplyBlockReasonSafe"
   | "removeCurrentCursorTraceItem"
   | "replaceFrontMatterValue"
   | "replaceSectionValue"
   | "reportDecision"
   | "sha256"
   | "sleepMs"
+  | "staleVersionBugApplyBlockReasonSafe"
   | "stalledUnprovenPrApplyBlockReasonSafe"
   | "unsponsoredFeatureApplyBlockReasonSafe"
   | "validateCloseDecision"
@@ -63,9 +65,8 @@ interface ApplyCloseExecutionOptions {
   closedDir: string;
   currentApplyMutationLeaseBlockReason: () => string | null;
   currentAuthorPrBudgetApplyGate: () => AuthorPrBudgetApplyGate;
-  currentObsoleteFixPrBlockReason: () => string | null;
   currentPrCloseCoverageProofGateBlock: () => PrCloseCoverageProofGateBlock | null;
-  currentStaleVersionBugBlockReason: () => string | null;
+  currentSameAuthorPairBlockReason: () => string | null;
   dryRun: boolean;
   examinedItemNumbers: number[];
   getMarkdown: () => string;
@@ -114,12 +115,14 @@ export function executeApplyClose(
     issueRecentHumanCommentBlockReasonSafe,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
     normalizeLabelName,
+    obsoleteFixPrApplyBlockReasonSafe,
     removeCurrentCursorTraceItem,
     replaceFrontMatterValue,
     replaceSectionValue,
     reportDecision,
     sha256,
     sleepMs,
+    staleVersionBugApplyBlockReasonSafe,
     stalledUnprovenPrApplyBlockReasonSafe,
     unsponsoredFeatureApplyBlockReasonSafe,
     validateCloseDecision,
@@ -134,9 +137,8 @@ export function executeApplyClose(
     closedDir,
     currentApplyMutationLeaseBlockReason,
     currentAuthorPrBudgetApplyGate,
-    currentObsoleteFixPrBlockReason,
     currentPrCloseCoverageProofGateBlock,
-    currentStaleVersionBugBlockReason,
+    currentSameAuthorPairBlockReason,
     dryRun,
     emitEventApplyProof,
     examinedItemNumbers,
@@ -254,19 +256,26 @@ export function executeApplyClose(
       const gate = currentAuthorPrBudgetApplyGate();
       return gate.allowed ? null : gate.reason;
     },
-    stale_version_bug: currentStaleVersionBugBlockReason,
-    obsolete_fix_pr: currentObsoleteFixPrBlockReason,
+    stale_version_bug: () => staleVersionBugApplyBlockReasonSafe(number, item),
+    obsolete_fix_pr: () => obsoleteFixPrApplyBlockReasonSafe(number, item),
     stale_insufficient_info: () =>
       issueRecentHumanCommentBlockReasonSafe(number, STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS),
   } satisfies Partial<Record<CloseReason, () => string | null>>;
-  const inactivityCloseBlockReason =
-    closeReason in inactivityPolicy
-      ? inactivityPolicy[closeReason as keyof typeof inactivityPolicy]()
-      : null;
-  if (inactivityCloseBlockReason) return skip("kept_open", inactivityCloseBlockReason);
+  const currentClosePolicyBlock = (): ApplyCloseFlow | null => {
+    const inactivityReason =
+      closeReason in inactivityPolicy
+        ? inactivityPolicy[closeReason as keyof typeof inactivityPolicy]()
+        : null;
+    if (inactivityReason) return skip("kept_open", inactivityReason);
+    const pairReason = currentSameAuthorPairBlockReason();
+    return pairReason ? skip("skipped_same_author_pair", pairReason, true) : null;
+  };
 
   const closeMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
   if (closeMutationLeaseBlockReason) return skipLease(closeMutationLeaseBlockReason);
+  // Pair state is outside the current item's lease; re-read it before any close announcement.
+  const preCommentPolicyBlock = currentClosePolicyBlock();
+  if (preCommentPolicyBlock) return preCommentPolicyBlock;
   logProgress(`closing #${number}`);
   const closeAppliedCommentReason =
     item.kind === "pull_request"
@@ -297,6 +306,8 @@ export function executeApplyClose(
 
   const preCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
   if (preCloseMutationLeaseBlockReason) return skipLease(preCloseMutationLeaseBlockReason);
+  const preClosePolicyBlock = currentClosePolicyBlock();
+  if (preClosePolicyBlock) return preClosePolicyBlock;
   ensureRuntimeDelayFits(closeDelayMs, "before close");
   if (closeReason === "unsponsored_feature_request") {
     const needsIdeaArchiveLabel = !item.labels.map(normalizeLabelName).includes(IDEA_ARCHIVE_LABEL);

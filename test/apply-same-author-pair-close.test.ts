@@ -503,7 +503,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   }
 });
 
-test("apply-decisions keeps same-author PR blocked when counterpart drifted", () => {
+function assertSameAuthorPairTerminalRefresh(mode: "reopens" | "fails") {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -548,6 +548,8 @@ const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 const path = args[1] || "";
 const issueNumber = (path.match(/\\/issues\\/(\\d+)/) || [])[1];
+const fs = require("node:fs");
+const refreshFails = ${JSON.stringify(mode === "fails")};
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "api" && /\\/issues\\/(320|321)\\/comments(?:\\?|$)/.test(path)) {
@@ -563,6 +565,9 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?
 } else if (args[0] === "api" && /\\/issues\\/(320|321)\\/timeline(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/320$/.test(path)) {
+  const counterpartRefreshed = fs.existsSync(${JSON.stringify(join(root, "counterpart-refreshed"))});
+  if (counterpartRefreshed && refreshFails) process.exit(1);
+  if (!counterpartRefreshed) fs.writeFileSync(${JSON.stringify(join(root, "counterpart-refreshed"))}, "");
   console.log(JSON.stringify({
     number: 320,
     title: "Paired issue",
@@ -570,8 +575,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?
     body: "See #321.",
     created_at: "2026-05-01T00:00:00Z",
     updated_at: "2026-05-02T00:00:00Z",
-    closed_at: null,
-    state: "open",
+    closed_at: counterpartRefreshed ? null : "2026-05-01T12:00:00Z",
+    state: counterpartRefreshed ? "open" : "closed",
     locked: false,
     active_lock_reason: null,
     author_association: "CONTRIBUTOR",
@@ -646,7 +651,10 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?
       {
         number: 321,
         action: "skipped_same_author_pair",
-        reason: "open issue #320 (Paired issue) by the same author is paired with this PR",
+        reason:
+          mode === "fails"
+            ? "could not revalidate paired issue #320 (Paired issue) by the same author before closing this PR"
+            : "open issue #320 (Paired issue) by the same author is paired with this PR",
         guardedOpenStateVerified: true,
         terminalPolicyNoopVerified: true,
       },
@@ -654,7 +662,11 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}
+for (const mode of ["reopens", "fails"] as const) {
+  test(`apply-decisions keeps same-author PR blocked when counterpart ${mode}`, () =>
+    assertSameAuthorPairTerminalRefresh(mode));
+}
 
 test("apply-decisions keeps same-author PR blocked when counterpart needs a maintainer decision", () => {
   const root = mkdtempSync(tmpPrefix);

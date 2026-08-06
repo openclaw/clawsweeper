@@ -1222,12 +1222,7 @@ test("same-author open issue and PR pairs block one-sided apply closes", () => {
           state: "open",
           author: "alice",
         },
-        pullRequest: {
-          number: 43,
-          title: "Fix the same bug",
-          state: "open",
-          author: "alice",
-        },
+        pullRequestError: "transient pull request lookup failure",
       },
     ]),
     "open PR #43 (Fix the same bug) by the same author is paired with this issue",
