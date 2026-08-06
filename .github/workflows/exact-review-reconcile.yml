@@ -30,13 +30,11 @@ jobs:
     # slots per day competing with review claims. Keep this prefix list in
     # sync with the observer.
     if: >-
-      ${{
-        github.event_name == 'workflow_run' &&
-        !startsWith(github.event.workflow_run.display_title, 'Apply ') &&
-        !startsWith(github.event.workflow_run.display_title, 'Sync ') &&
-        !startsWith(github.event.workflow_run.display_title, 'Audit ') &&
-        !startsWith(github.event.workflow_run.display_title, 'Fan out ')
-      }}
+      ${{ github.event_name == 'workflow_run' &&
+      !startsWith(github.event.workflow_run.display_title, 'Apply ') &&
+      !startsWith(github.event.workflow_run.display_title, 'Sync ') &&
+      !startsWith(github.event.workflow_run.display_title, 'Audit ') &&
+      !startsWith(github.event.workflow_run.display_title, 'Fan out ') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

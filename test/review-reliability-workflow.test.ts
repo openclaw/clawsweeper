@@ -12,7 +12,16 @@ test("review reliability telemetry shares the terminal reconciler workflow", () 
     types: ["completed"],
   });
   assert.deepEqual(workflow.permissions, {});
-  assert.equal(workflow.jobs.reconcile.if, "${{ github.event_name == 'workflow_run' }}");
+  // The job-level gate mirrors the classifyReviewRun skip prefixes in
+  // scripts/review-run-observer.mjs so support runs never spawn a runner.
+  assert.equal(
+    workflow.jobs.reconcile.if,
+    "${{ github.event_name == 'workflow_run' && " +
+      "!startsWith(github.event.workflow_run.display_title, 'Apply ') && " +
+      "!startsWith(github.event.workflow_run.display_title, 'Sync ') && " +
+      "!startsWith(github.event.workflow_run.display_title, 'Audit ') && " +
+      "!startsWith(github.event.workflow_run.display_title, 'Fan out ') }}",
+  );
   assert.deepEqual(workflow.jobs.reconcile.permissions, { actions: "read", contents: "read" });
   const checkout = workflow.jobs.reconcile.steps.find((candidate: Record<string, unknown>) =>
     String(candidate.uses || "").startsWith("actions/checkout@"),
