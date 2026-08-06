@@ -4,7 +4,10 @@ import test from "node:test";
 import {
   appendFloorBackfillCandidates,
   hotIntakeRecencyMs,
+  nextReviewDueAtMs,
   reviewPriority,
+  reviewedAtMs,
+  schedulerBucket,
   selectDueCandidates,
   shouldReviewItem,
 } from "../dist/scheduler-policy.js";
@@ -977,5 +980,54 @@ test("duplicates across separate buckets do not stall the weighted drain", () =>
   assert.deepEqual(
     selectedNumbers(due, 6, now).sort((a, b) => a - b),
     [1, 2, 3, 4],
+  );
+});
+
+test("pagination duplicates do not strand candidates the real planner produces", () => {
+  // The three cases above build candidates by hand. This one derives them the way
+  // dueCandidate() does, so it pins the shape the production planner actually
+  // emits: a PR created two days ago with a prior report is coverage-tracked,
+  // due at the 1-day cadence, and NOT weekly-coverage-due at 6 days - so the
+  // weighted drain, not the coverage preselect lane, owns selection.
+  //
+  // Reachability differs per bucket because a stall needs a whole weighted pass
+  // to consume only duplicates. hot_pull_request has weight 2, so it takes four
+  // page entries for one PR. weekly_issue is unreachable: there, "due" and
+  // "weekly-coverage-due" share the same 6-day threshold, and that lane takes
+  // candidates in a plain loop.
+  const now = Date.parse("2026-06-10T00:00:00Z");
+  const reviewedAt = now - 2 * 24 * 60 * 60 * 1000;
+  const review = {
+    reviewStatus: "complete",
+    reviewedAt: new Date(reviewedAt).toISOString(),
+  };
+  const pull = (number) =>
+    item({
+      number,
+      kind: "pull_request",
+      createdAt: new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString(),
+      updatedAt: new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+  const derived = (number) => {
+    const target = pull(number);
+    assert.equal(schedulerBucket(target, review, now), "hot_pull_request");
+    assert.equal(shouldReviewItem(target, review, now), true, "must be due");
+    return {
+      item: target,
+      review,
+      coverageTracked: true,
+      priority: reviewPriority(target, review, now),
+      reviewedAt: reviewedAtMs(review) ?? 0,
+      nextDueAt: nextReviewDueAtMs(target, review, now),
+      bucket: schedulerBucket(target, review, now),
+    };
+  };
+
+  // #1 listed on four pages: hot_pull_request weight 2, so one full pass
+  // consumes nothing but duplicates.
+  const due = [derived(1), derived(1), derived(1), derived(1), derived(2), derived(3)];
+  assert.deepEqual(
+    selectDueCandidates(due, 10, undefined, now).map((candidate) => candidate.item.number),
+    [1, 2, 3],
   );
 });
