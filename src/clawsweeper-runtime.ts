@@ -317,9 +317,7 @@ const { GitHubRuntimeBudgetError, sleepMs, untrustedCodexEnv } = gitHubRuntime;
 
 const githubExecution = createGitHubExecution({
   ROOT,
-  run,
   gitHubRuntime,
-  sweepStatus,
   labelAlreadyExistsError: (error) => labelAlreadyExistsError(error),
 });
 export const { classifyGitHubDispatchResultForTest, observedGitHubMutationAttemptsForTest } =
@@ -1315,12 +1313,6 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   sha256,
   stringOrUndefined,
   targetRepo,
-  get throttleHeartbeatContext() {
-    return githubExecution.throttleHeartbeatContext;
-  },
-  set throttleHeartbeatContext(value: (() => string) | null) {
-    githubExecution.throttleHeartbeatContext = value;
-  },
   timestampMs,
   validateCloseDecision,
 });

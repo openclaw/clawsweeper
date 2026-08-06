@@ -25,13 +25,20 @@ test("comment router records receipts after durable command boundaries", () => {
 test("comment router wraps every GitHub mutation at the request boundary", () => {
   const source = readText("src/repair/comment-router.ts");
 
-  assert.equal(source.match(/\bghText\(/g)?.length, 2);
+  assert.doesNotMatch(source, /\bghText\(/);
   assert.equal(source.match(/\bghSpawn\(/g)?.length, 1);
   assert.doesNotMatch(source, /\bghBestEffort\b/);
   assert.doesNotMatch(source, /ghTextWithRetry as ghText/);
   assert.match(source, /function runGitHubTextMutation[\s\S]*runCommandMutationWithRetry/);
+  assert.match(source, /ghTextWithRetry\(ghArgs, \{ \.\.\.runOptions, attempts: 1 \}\)/);
+  assert.match(source, /ghTextWithRetry\(ghArgs, \{ \.\.\.options, attempts: 1 \}\)/);
+  assert.match(source, /return ghRetryKind\(error\) === "transient"/);
   assert.match(source, /function runGitHubBestEffortMutation[\s\S]*runGitHubTextMutationOnce/);
   assert.match(source, /function runGitHubSpawnMutation[\s\S]*runCommandMutation/);
+  assert.match(
+    source,
+    /const result = ghSpawn\(ghArgs, options\);\s*if \(result\.status !== 0 && ghRetryKind\(result\) === "throttle"\) \{\s*throw new GitHubRateLimitError\(result\);/,
+  );
   for (const kind of [
     "label_create",
     "label_add",
@@ -52,6 +59,38 @@ test("comment router wraps every GitHub mutation at the request boundary", () =>
   ]) {
     assert.match(source, new RegExp(`"${kind}"`), kind);
   }
+});
+
+test("router stops autoclose and reaction fan-out after the first GitHub throttle", () => {
+  const source = readText("src/repair/comment-router.ts");
+  for (const [name, expectedGuards] of [
+    ["claimedDispatchState", 2],
+    ["runGitHubBestEffortMutation", 1],
+    ["executeAutoclose", 1],
+    ["discoverAutocloseTargets", 1],
+    ["fetchCollaboratorPermission", 1],
+    ["fetchCollaboratorPermissionAsync", 1],
+    ["convergePrecreatedCommandAckComments", 1],
+    ["exactCommentVersionStillCurrent", 1],
+    ["convergeExactCommentVersionFastPathAck", 1],
+    ["reactToComment", 1],
+    ["removeOwnCommentReaction", 2],
+  ] as const) {
+    const start = source.indexOf(`function ${name}(`);
+    assert.ok(start >= 0, name);
+    const remainder = source.slice(start + 1);
+    const end = remainder.search(/\n(?:async )?function /);
+    const body = end < 0 ? remainder : remainder.slice(0, end);
+    assert.equal(
+      body.match(/if \(error instanceof GitHubRateLimitError\) throw error;/g)?.length,
+      expectedGuards,
+      name,
+    );
+  }
+  assert.match(
+    source,
+    /quotaExhausted = error instanceof GitHubRateLimitError;[\s\S]*?finally \{[\s\S]*?if \(!quotaExhausted\) clearTerminalMaintainerCommandReaction\(command\);/,
+  );
 });
 
 test("comment router isolates public target reads from its GitHub App mutation identity", () => {

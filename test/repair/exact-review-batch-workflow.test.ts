@@ -59,7 +59,7 @@ test("batch publication bounds shared GitHub retries without dropping failed art
   assert.match(cliSource, /completions\.push\(failure\)/);
 });
 
-test("GitHub retry defaults stay unchanged while publisher attempts are bounded", () => {
+test("transient retries stay bounded while GitHub throttles defer immediately", () => {
   const previous = process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS;
   try {
     delete process.env.CLAWSWEEPER_GH_RETRY_ATTEMPTS;
@@ -71,22 +71,32 @@ test("GitHub retry defaults stay unchanged while publisher attempts are bounded"
     const boundedExecution = githubRetryExecution(3);
     assert.throws(
       () => boundedExecution.execution.ghWithRetry(["api", "repos/test/item"]),
-      /API rate limit exceeded/,
+      /HTTP 502/,
     );
     assert.equal(boundedExecution.calls(), 2);
-    assert.deepEqual(boundedExecution.waits, [30_000]);
+    assert.deepEqual(boundedExecution.waits, [2_000]);
 
-    const mutationExecution = githubRetryExecution(3);
-    assert.throws(
-      () =>
-        mutationExecution.execution.ghObservedMutationCommand({
-          args: ["api", "repos/test/item"],
-          identity: "batch-publication",
-        }),
-      /API rate limit exceeded/,
-    );
-    assert.equal(mutationExecution.calls(), 2);
-    assert.deepEqual(mutationExecution.waits, [30_000]);
+    for (const kind of ["throttle-403", "throttle-429"] as const) {
+      const throttledExecution = githubRetryExecution(3, kind);
+      assert.throws(
+        () => throttledExecution.execution.ghWithRetry(["api", "repos/test/item"]),
+        /API rate limit exceeded|HTTP 429/,
+      );
+      assert.equal(throttledExecution.calls(), 1);
+      assert.deepEqual(throttledExecution.waits, []);
+
+      const mutationExecution = githubRetryExecution(3, kind);
+      assert.throws(
+        () =>
+          mutationExecution.execution.ghObservedMutationCommand({
+            args: ["api", "repos/test/item"],
+            identity: "batch-publication",
+          }),
+        /API rate limit exceeded|HTTP 429/,
+      );
+      assert.equal(mutationExecution.calls(), 1);
+      assert.deepEqual(mutationExecution.waits, []);
+    }
 
     const explicitExecution = githubRetryExecution(2);
     assert.equal(explicitExecution.execution.ghWithRetry(["api", "repos/test/item"], 3), "ok");
@@ -478,14 +488,23 @@ test("batch commit publishes every prepared tuple to canonical Worker state", ()
   assert.doesNotMatch(cliSource, /state-publication-batch/);
 });
 
-function githubRetryExecution(failures: number) {
+function githubRetryExecution(
+  failures: number,
+  kind: "transient" | "throttle-403" | "throttle-429" = "transient",
+) {
   let calls = 0;
   const waits: number[] = [];
   class TestGitHubRuntimeBudgetError extends Error {}
   const request = () => {
     calls += 1;
     if (calls <= failures) {
-      throw new Error("API rate limit exceeded for installation ID 122230863 (HTTP 403)");
+      throw new Error(
+        kind === "throttle-403"
+          ? "API rate limit exceeded for installation ID 122230863 (HTTP 403)"
+          : kind === "throttle-429"
+            ? "HTTP 429: Too Many Requests"
+            : "HTTP 502: transient upstream failure",
+      );
     }
     return "ok";
   };

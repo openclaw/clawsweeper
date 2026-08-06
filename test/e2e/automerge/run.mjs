@@ -10,6 +10,7 @@ import {
   createCiRegressionFixture,
   createTargetFixture,
 } from "./target-fixtures.mjs";
+import { runGitHubQuotaFault } from "./github-quota-fault.mjs";
 import { repairCommentRouterGroup, WorkflowScheduler } from "./workflow-scheduler.mjs";
 
 const helperRoot = path.dirname(fileURLToPath(import.meta.url));
@@ -18,6 +19,7 @@ export const AUTOMERGE_E2E_SCENARIOS = [
   "completed-verdict-resume",
   "completed-verdict-source-drift",
   "dependency-setup-mutation",
+  "github-api-quota-fail-fast",
   "happy-path",
   "pending-checks",
   "planning-head-drift",
@@ -67,6 +69,9 @@ export function runAutomergeE2E({
 
   try {
     const runtimeRoot = createCandidateRuntime(root, candidateRoot);
+    if (scenario === "github-api-quota-fail-fast") {
+      return runGitHubQuotaFault({ runtimeRoot, artifacts, fixture });
+    }
     if (scenario === "resume-intent-persistence") {
       assertDeferredVerdictHandoffIsolation(candidateRoot);
     }

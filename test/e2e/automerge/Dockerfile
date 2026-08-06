@@ -10,6 +10,6 @@ COPY . .
 # Docker COPY preserves restrictive source directory modes but assigns root
 # ownership. Keep the image runnable by the host UID selected by the wrapper.
 RUN chmod -R a+rX /workspace
-RUN pnpm run build:repair
+RUN pnpm run build:node
 
 CMD ["node", "scripts/e2e/automerge.mjs", "--scenario", "all"]

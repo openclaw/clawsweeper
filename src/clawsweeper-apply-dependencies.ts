@@ -589,7 +589,6 @@ export interface CreateApplyDecisionWorkflowDependencies {
     dryRun?: boolean;
   }) => boolean;
   targetRepo: () => string;
-  throttleHeartbeatContext: (() => string) | null;
   timeoutWithinRuntimeBudget: (
     startedAtMs: number,
     maxRuntimeMs: number,

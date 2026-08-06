@@ -41,6 +41,7 @@ import {
   timeoutWithinRuntimeBudget,
 } from "../dist/clawsweeper.js";
 import { parseArgs as parseClawsweeperArgs } from "../dist/clawsweeper-args.js";
+import { GitHubRateLimitError } from "../dist/github-retry.js";
 import { AUTOMATION_LIMITS } from "../dist/limits.js";
 import {
   auditRecord,
@@ -3304,6 +3305,26 @@ test("GitHub not found errors are recognizable non-retryable lookup misses", () 
   );
   assert.equal(isGitHubNotFoundError(error), true);
   assert.equal(shouldRetryGh(error), false);
+});
+
+test("GitHub rate-limit deferrals preserve available reset hints and safe defaults", () => {
+  const now = Date.parse("2026-08-05T10:00:00.000Z");
+  const retryAfter = new GitHubRateLimitError(
+    new Error("HTTP 429: secondary rate limit\nRetry-After: 120"),
+    now,
+  );
+  assert.equal(retryAfter.retryAt, "2026-08-05T10:02:00.000Z");
+
+  const reset = new GitHubRateLimitError(
+    new Error(`HTTP 403: API rate limit exceeded\nx-ratelimit-reset: ${now / 1_000 + 300}`),
+    now,
+  );
+  assert.equal(reset.retryAt, "2026-08-05T10:05:00.000Z");
+  assert.equal(new GitHubRateLimitError(reset, now + 1_000).retryAt, reset.retryAt);
+  assert.equal(
+    new GitHubRateLimitError(new Error("HTTP 429: rate limit reached"), now).retryAt,
+    "2026-08-05T10:01:00.000Z",
+  );
 });
 
 test("closing pull request references preserve fork repository identity", () => {

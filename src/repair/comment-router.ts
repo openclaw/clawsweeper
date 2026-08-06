@@ -135,10 +135,10 @@ import {
   ghPagedWithRetry as ghPaged,
   ghPagedWithRetryAsync as ghPagedAsync,
   ghSpawn,
-  ghText,
+  ghTextWithRetry,
   type GhRetryOptions,
 } from "./github-cli.js";
-import { ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
+import { GitHubRateLimitError, ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
 import {
@@ -652,6 +652,7 @@ function claimedDispatchState({
       if (pageRuns.length < 100) break;
     }
   } catch (error) {
+    if (error instanceof GitHubRateLimitError) throw error;
     return {
       status: "claimed",
       dispatch_key: dispatchReceiptKey(command),
@@ -668,6 +669,7 @@ function claimedDispatchState({
       expectedTitle,
     });
   } catch (error) {
+    if (error instanceof GitHubRateLimitError) throw error;
     return {
       status: "claimed",
       dispatch_key: dispatchReceiptKey(command),
@@ -2549,7 +2551,7 @@ function runGitHubTextMutation(
   return runCommandMutationWithRetry(command, {
     kind,
     identity,
-    operation: () => ghText(ghArgs, runOptions),
+    operation: () => ghTextWithRetry(ghArgs, { ...runOptions, attempts: 1 }),
     attempts,
     shouldRetry: (error) => {
       try {
@@ -2557,9 +2559,9 @@ function runGitHubTextMutation(
       } catch {
         // The receipt already conservatively classified a failing predicate as unknown.
       }
-      return ghRetryKind(error) !== "none";
+      return ghRetryKind(error) === "transient";
     },
-    beforeRetry: (error, attempt) => sleepMs(ghRetryWaitMs(ghRetryKind(error), attempt - 1)),
+    beforeRetry: (_error, attempt) => sleepMs(ghRetryWaitMs("transient", attempt - 1)),
     ...(knownNoMutation ? { knownNoMutation } : {}),
   });
 }
@@ -2569,13 +2571,13 @@ function runGitHubTextMutationOnce(
   kind: string,
   identity: unknown,
   ghArgs: string[],
-  options: Parameters<typeof ghText>[1] = {},
+  options: GhRetryOptions = {},
   knownNoMutation?: (error: unknown) => boolean,
 ) {
   return runCommandMutation(command, {
     kind,
     identity,
-    operation: () => ghText(ghArgs, options),
+    operation: () => ghTextWithRetry(ghArgs, { ...options, attempts: 1 }),
     ...(knownNoMutation ? { knownNoMutation } : {}),
   });
 }
@@ -2590,7 +2592,13 @@ function runGitHubSpawnMutation(
   return runCommandMutation(command, {
     kind,
     identity,
-    operation: () => ghSpawn(ghArgs, options),
+    operation: () => {
+      const result = ghSpawn(ghArgs, options);
+      if (result.status !== 0 && ghRetryKind(result) === "throttle") {
+        throw new GitHubRateLimitError(result);
+      }
+      return result;
+    },
     outcome: (result) => (result.status === 0 && !result.error ? "accepted" : "unknown"),
   });
 }
@@ -2605,7 +2613,8 @@ function runGitHubBestEffortMutation(
   try {
     runGitHubTextMutationOnce(command, kind, identity, ghArgs, {}, knownNoMutation);
     return true;
-  } catch {
+  } catch (error) {
+    if (error instanceof GitHubRateLimitError) throw error;
     return false;
   }
 }
@@ -2825,10 +2834,15 @@ function acknowledgeTerminalNoopMaintainerCommand(command: LooseRecord) {
   const targetedProcessedComment =
     itemNumbers.size > 0 && reason === "comment version already processed in ledger";
   if (!targetedProcessedComment && !/already enabled for this PR/i.test(reason)) return;
+  let quotaExhausted = false;
   try {
     reactToComment(command, "eyes");
+  } catch (error) {
+    quotaExhausted = error instanceof GitHubRateLimitError;
+    throw error;
   } finally {
-    clearTerminalMaintainerCommandReaction(command);
+    // A throttled reaction must not spend another privileged request on cleanup.
+    if (!quotaExhausted) clearTerminalMaintainerCommandReaction(command);
   }
 }
 
@@ -3757,6 +3771,7 @@ function executeAutoclose(command: LooseRecord) {
       closeIssueOrPullRequest(command, liveTarget.number, liveTarget.kind);
       results.push({ ...liveTarget, status: "closed", closed_at: new Date().toISOString() });
     } catch (error) {
+      if (error instanceof GitHubRateLimitError) throw error;
       results.push({
         ...liveTarget,
         status: "blocked",
@@ -3784,7 +3799,8 @@ function discoverAutocloseTargets({ command, issue, pull }: LooseRecord): JsonVa
       const target = issueTargetFromIssue(candidate);
       if (target.state !== "open") continue;
       targets.push(target);
-    } catch {
+    } catch (error) {
+      if (error instanceof GitHubRateLimitError) throw error;
       // Broken or private references should not block the explicit target close.
     }
   }
@@ -4745,7 +4761,8 @@ function fetchCollaboratorPermission(login: JsonValue) {
       `repos/${targetRepo}/collaborators/${encodeURIComponent(login)}/permission`,
     ]);
     permission = result?.permission ? String(result.permission).toLowerCase() : null;
-  } catch {
+  } catch (error) {
+    if (error instanceof GitHubRateLimitError) throw error;
     permission = null;
   }
   collaboratorPermissionCache.set(key, permission);
@@ -4762,7 +4779,8 @@ async function fetchCollaboratorPermissionAsync(login: JsonValue) {
       `repos/${targetRepo}/collaborators/${encodeURIComponent(login)}/permission`,
     ]);
     permission = result?.permission ? String(result.permission).toLowerCase() : null;
-  } catch {
+  } catch (error) {
+    if (error instanceof GitHubRateLimitError) throw error;
     permission = null;
   }
   collaboratorPermissionCache.set(key, permission);
@@ -4902,6 +4920,7 @@ function convergePrecreatedCommandAckComments(command: LooseRecord) {
   try {
     return convergePrecreatedCommandAckCommentsInner(command);
   } catch (error) {
+    if (error instanceof GitHubRateLimitError) throw error;
     console.warn(
       `[comment-router] warning: fast ack convergence failed for ${command.repo}#${command.issue_number}: ${compactText(ghErrorText(error), 160)}`,
     );
@@ -4913,6 +4932,7 @@ function exactCommentVersionStillCurrent(command: LooseRecord) {
   try {
     return exactCommentVersionMatchesLive(command, fetchIssueComment(command.comment_id));
   } catch (error) {
+    if (error instanceof GitHubRateLimitError) throw error;
     console.warn(
       `[comment-router] warning: exact comment cleanup verification failed for ${command.repo}#${command.issue_number}: ${compactText(ghErrorText(error), 160)}`,
     );
@@ -4955,6 +4975,7 @@ function convergeExactCommentVersionFastPathAck(command: LooseRecord, commentId:
     issueCommentsCache.delete(Number(command.issue_number));
     return "updated";
   } catch (error) {
+    if (error instanceof GitHubRateLimitError) throw error;
     if (githubNotFoundNoMutation(error)) return "already_converged";
     console.warn(
       `[comment-router] warning: exact comment acknowledgement convergence failed for ${command.repo}#${command.issue_number}: ${compactText(ghErrorText(error), 160)}`,
@@ -5184,6 +5205,7 @@ function reactToComment(command: LooseRecord, content: string) {
       githubAlreadyExistsNoMutation,
     );
   } catch (error) {
+    if (error instanceof GitHubRateLimitError) throw error;
     const message = stripAnsi(error?.message ?? error);
     if (/already exists/i.test(message) || /\b422\b/.test(message)) return;
     console.warn(
@@ -5210,6 +5232,7 @@ function removeOwnCommentReaction(command: LooseRecord, content: string) {
     );
     if (Array.isArray(fetched)) reactions = fetched;
   } catch (error) {
+    if (error instanceof GitHubRateLimitError) throw error;
     const message = compactText(ghErrorText(error), 220);
     console.warn(
       `warning: failed to list ${content} reactions for comment ${command.comment_id}: ${message}`,
@@ -5244,6 +5267,7 @@ function removeOwnCommentReaction(command: LooseRecord, content: string) {
       );
       removed = true;
     } catch (error) {
+      if (error instanceof GitHubRateLimitError) throw error;
       const message = compactText(ghErrorText(error), 220);
       if (/\b404\b|not found/i.test(message)) continue;
       deleteFailed = true;

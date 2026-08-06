@@ -62,6 +62,7 @@ import {
   type MaintainerDecision,
 } from "./decision-packets.js";
 import {
+  GitHubRateLimitError,
   isGitHubNotFoundError,
   isGitHubRequiresAuthenticationError,
   isLockedConversationCommentError,
@@ -239,8 +240,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     const examinedItemNumbers: number[] = [];
     let closedCount = 0;
     let processedCount = 0;
-    dependencies.throttleHeartbeatContext = () =>
-      `Progress: ${closedCount}/${limit} fresh closes, ${processedCount}/${processedLimit} processed records in this apply chunk.`;
     const logProgress = (message: string): void => {
       const counts = results.reduce<Record<string, number>>((accumulator, result) => {
         accumulator[result.action] = (accumulator[result.action] ?? 0) + 1;
@@ -400,6 +399,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           throwOnError: true,
         });
       } catch (error) {
+        if (error instanceof GitHubRateLimitError) throw error;
         console.error(
           `[apply] could not delete owned review lease comment ${active.lease.commentId}: ${mutationErrorMessage(error)}`,
         );
@@ -1923,7 +1923,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                   rememberSelfMutationUpdatedAt();
                   syncReasons.push("cleared resolved review recovery label");
                 } catch (error) {
-                  if (error instanceof GitHubRuntimeBudgetError) throw error;
+                  if (error instanceof GitHubRuntimeBudgetError || error instanceof GitHubRateLimitError)
+                    throw error;
                   console.error(
                     `[apply] could not clear resolved review recovery label for #${number}: ${
                       error instanceof Error ? error.message : String(error)
@@ -2077,6 +2078,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           continue;
         }
         applyItemFailed = true;
+        if (error instanceof GitHubRateLimitError) {
+          // Keep the durable lease until expiry; releasing it would spend the exhausted quota.
+          activeApplyMutationLease = null;
+        }
         throw error;
       } finally {
         releaseActiveApplyMutationLease();

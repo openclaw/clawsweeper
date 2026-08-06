@@ -24,6 +24,7 @@ import {
 } from "./event-apply-proof.js";
 import { isJsonObject } from "./json-types.js";
 import { RecordTupleError } from "./record-tuple.js";
+import { GitHubRateLimitError, ghRetryKind } from "../github-retry.js";
 import {
   postDirectPublicationResult,
   prepareDirectPublicationPayload,
@@ -83,6 +84,7 @@ class PublicationResultError extends Error {
       | "missing_record_tuple"
       | "tuple_protocol_invalid"
       | "policy_invariant"
+      | "state_contention"
       | "unknown_failure",
     message: string,
   ) {
@@ -94,13 +96,21 @@ const options = eventOptionsFromEnv();
 try {
   await publishEventResult(options);
 } catch (error) {
-  const completionKind = "permanent_failure";
+  const retryableFailure =
+    error instanceof GitHubRateLimitError ||
+    ghRetryKind(error) === "transient" ||
+    (error instanceof PublicationResultError && error.reasonCode === "state_contention");
+  const completionKind = retryableFailure ? "retryable_failure" : "permanent_failure";
   const reasonCode =
-    error instanceof PublicationResultError
-      ? error.reasonCode
-      : error instanceof RecordTupleError
-        ? "tuple_protocol_invalid"
-        : "unknown_failure";
+    error instanceof GitHubRateLimitError
+      ? "github_rate_limit"
+      : ghRetryKind(error) === "transient"
+        ? "github_transient"
+        : error instanceof PublicationResultError
+          ? error.reasonCode
+          : error instanceof RecordTupleError
+            ? "tuple_protocol_invalid"
+            : "unknown_failure";
   const fingerprint = errorFingerprint(error);
   if (options.batchMutationOutput) {
     writeBatchMutationResult(options.batchMutationOutput, {
@@ -109,7 +119,12 @@ try {
       errorFingerprint: fingerprint,
     });
   }
-  writePublicationCompletionOutputs(completionKind, reasonCode, fingerprint);
+  writePublicationCompletionOutputs(
+    completionKind,
+    reasonCode,
+    fingerprint,
+    error instanceof GitHubRateLimitError ? error.retryAt : undefined,
+  );
   throw error;
 }
 
@@ -279,28 +294,6 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     summary();
     return;
   }
-  for (let attempt = 1; attempt <= 20; attempt += 1) {
-    const published = await publishSnapshot({
-      paths: recordPaths,
-      options,
-      summary,
-      guardedOpenAction,
-      requeueLatestExpected,
-      routableSyncExpected,
-      deferredCloseCoverageExpected,
-      terminalClosedExpected: closedCount > 0,
-      terminalMissingExpected: missingCount > 0,
-    });
-    if (published) {
-      writeEventDispositionOutputs(published);
-      return;
-    }
-    const delaySeconds = attempt * 3 + Math.floor(Math.random() * 11);
-    console.log(
-      `Event publish attempt ${attempt} failed; retrying from origin/main in ${delaySeconds}s`,
-    );
-    await sleep(delaySeconds * 1000);
-  }
   const published = await publishSnapshot({
     paths: recordPaths,
     options,
@@ -312,11 +305,6 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     terminalClosedExpected: closedCount > 0,
     terminalMissingExpected: missingCount > 0,
   });
-  if (!published) {
-    throw new Error(
-      `Failed to publish event result for ${options.targetRepo}#${options.itemNumber}`,
-    );
-  }
   writeEventDispositionOutputs(published);
 }
 
@@ -489,7 +477,7 @@ async function publishSnapshot({
   deferredCloseCoverageExpected: boolean;
   terminalClosedExpected: boolean;
   terminalMissingExpected: boolean;
-}): Promise<PublishedEventSnapshot | null> {
+}): Promise<PublishedEventSnapshot> {
   const complete = (
     candidateApplied: boolean,
     supersededReason?: "remote_newer_tuple" | "remote_closed",
@@ -618,24 +606,20 @@ async function publishSnapshot({
       }),
     });
     if (publication.kind === "fallback") {
-      throw new Error(`Canonical exact-event publication failed: ${publication.reason}`);
+      throw new PublicationResultError(
+        publication.status === undefined || publication.status === 429 || publication.status >= 500
+          ? "state_contention"
+          : "policy_invariant",
+        `Canonical exact-event publication failed: ${publication.reason}`,
+      );
     }
     if (publication.response.superseded === true) {
       return complete(false, "remote_newer_tuple");
     }
     return complete(true);
   } catch (error) {
-    if (
-      error instanceof RecordTupleError ||
-      error instanceof GuardedOpenPublishRaceError ||
-      error instanceof RoutableSyncPublishRaceError ||
-      error instanceof SourceDriftPublishRaceError ||
-      error instanceof TerminalClosedPublishRaceError ||
-      error instanceof TerminalMissingPublishRaceError
-    )
-      throw error;
     console.error(error instanceof Error ? error.message : String(error));
-    return null;
+    throw error;
   }
 }
 
@@ -776,6 +760,7 @@ function writePublicationCompletionOutputs(
     | "remote_newer_tuple"
     | "remote_closed"
     | "close_coverage_deferred"
+    | "github_rate_limit"
     | "github_transient"
     | "state_contention"
     | "review_lease_active"
@@ -793,6 +778,9 @@ function writePublicationCompletionOutputs(
     [
       `completion_kind=${completionKind}`,
       `reason_code=${reasonCode}`,
+      ...(reasonCode === "github_rate_limit" || reasonCode === "github_transient"
+        ? [`failure_kind=${reasonCode}`]
+        : []),
       ...(fingerprint ? [`error_fingerprint=${fingerprint}`] : []),
       ...(retryAt ? [`retry_at=${retryAt}`] : []),
       "",
@@ -826,14 +814,19 @@ function runClawsweeper(options: EventOptions, args: readonly string[]): void {
   const cli = join(options.codeRoot, "dist/clawsweeper.js");
   const child = spawnSync(process.execPath, [cli, ...args], {
     cwd: options.workRoot,
-    stdio: "inherit",
+    encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
+    stdio: ["inherit", "inherit", "pipe"],
     env: process.env,
   });
+  const stderr = child.stderr ?? "";
+  if (stderr) process.stderr.write(stderr);
+  if (child.error) throw Object.assign(child.error, { stderr });
   if (child.status !== 0) {
-    throw new Error(`${process.execPath} ${cli} ${args.join(" ")} exited ${child.status}`);
+    const error = Object.assign(
+      new Error(`${process.execPath} ${cli} ${args.join(" ")} exited ${child.status}`),
+      { stderr },
+    );
+    throw ghRetryKind(error) === "throttle" ? new GitHubRateLimitError(error) : error;
   }
-}
-
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
