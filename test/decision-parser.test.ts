@@ -947,6 +947,15 @@ test("decision report prose neutralization is idempotent", () => {
   assert.deepEqual(twice, once);
 });
 
+test("decision report prose normalizes Unicode line separators before neutralizing headings", () => {
+  for (const separator of ["\u2028", "\u2029"]) {
+    const parsed = parseDecision(
+      closeDecision({ summary: `Summary prose.${separator}## Real Behavior Proof` }),
+    );
+    assert.equal(parsed.summary, "Summary prose.\n\\## Real Behavior Proof");
+  }
+});
+
 test("decision parser rejects multiline structural report fields", () => {
   const newline = "safe\n## Security Review";
   const base = closeDecision();
@@ -1026,6 +1035,12 @@ test("decision parser rejects multiline structural report fields", () => {
       () => parseDecision(closeDecision(overrides)),
       /must be a single-line string/,
       name,
+    );
+  }
+  for (const separator of ["\r", "\n", "\u2028", "\u2029"]) {
+    assert.throws(
+      () => parseDecision(closeDecision({ fixedRelease: `v1${separator}pr_rating_overall: A` })),
+      /must be a single-line string/,
     );
   }
 });

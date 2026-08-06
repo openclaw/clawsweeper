@@ -391,6 +391,19 @@ test("failed review retry eligibility treats model access failures as terminal",
   );
 });
 
+test("failed review retry eligibility rejects ambiguous terminal-failure metadata", () => {
+  const markdown = failedReviewReport().replace(
+    "review_status: failed",
+    [
+      "review_status: failed",
+      "review_terminal_failure: false",
+      "review_terminal_failure: false",
+    ].join("\n"),
+  );
+
+  assert.equal(isInfrastructureFailedReviewForTest(markdown), false);
+});
+
 test("failed review retry ignores terminal-looking text outside dedicated evidence", () => {
   const markdown = failedReviewReport().replace(
     "## Summary",

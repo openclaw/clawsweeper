@@ -119,7 +119,7 @@ export function createDecisionParser({
 
   function requireSingleLineString(value: unknown, path: string): string {
     const text = requireString(value, path);
-    if (/[\r\n]/.test(text)) throw new Error(`${path} must be a single-line string`);
+    if (/[\r\n\u2028\u2029]/.test(text)) throw new Error(`${path} must be a single-line string`);
     return text;
   }
 

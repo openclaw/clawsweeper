@@ -360,7 +360,9 @@ export function createRecordMetadata({
   }
 
   function reviewReportCanPromoteToClose(markdown: string): boolean {
-    return !frontMatterBoolean(markdown, "review_cache_hit");
+    const cacheHit = frontMatterField(markdown, "review_cache_hit");
+    if (cacheHit.status === "absent") return true;
+    return cacheHit.status === "value" && /^false$/i.test(cacheHit.value);
   }
 
   function reviewReportCanPromoteToCloseForTest(markdown: string): boolean {
@@ -602,7 +604,14 @@ export function createRecordMetadata({
 
   function isInfrastructureFailedReview(markdown: string): boolean {
     const detail = failedReviewFailureDetail(markdown);
-    if (frontMatterBoolean(markdown, "review_terminal_failure")) return false;
+    const terminalFailure = frontMatterField(markdown, "review_terminal_failure");
+    if (terminalFailure.status === "ambiguous") return false;
+    if (
+      terminalFailure.status === "value" &&
+      (!/^(?:true|false)$/i.test(terminalFailure.value) || /^true$/i.test(terminalFailure.value))
+    ) {
+      return false;
+    }
     return (
       isRetryableCodexTransportError(detail) ||
       /\b(?:ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|transport failure|codex transport|Codex worker timed out|Codex review failed: timeout|timed out after|shard timeout|workflow timeout|cancelledByParent)\b/i.test(

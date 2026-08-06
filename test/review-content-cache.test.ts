@@ -554,6 +554,16 @@ test("verdict without a decision is never cached", () => {
 
 test("cache-carried reports cannot be promoted to close", () => {
   assert.equal(reviewReportCanPromoteToCloseForTest("---\nreview_cache_hit: true\n---\n"), false);
+  assert.equal(
+    reviewReportCanPromoteToCloseForTest(
+      "---\nreview_cache_hit: false\nreview_cache_hit: false\n---\n",
+    ),
+    false,
+  );
+  assert.equal(
+    reviewReportCanPromoteToCloseForTest("---\nreview_cache_hit: invalid\n---\n"),
+    false,
+  );
 });
 
 test("fresh and legacy reports retain existing close promotion behavior", () => {
