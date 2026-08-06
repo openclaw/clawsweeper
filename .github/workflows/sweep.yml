@@ -5800,6 +5800,7 @@ jobs:
           validate_coverage_proof_tree ".artifacts/apply-proof/pr-close-coverage-proof" 8 262144 2097152
 
       - name: Reconcile before apply preselect
+        if: ${{ !(github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *') && !(github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_sync_comments_only == 'true' || github.event.inputs.apply_item_numbers == '__cursor__')) }}
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -5809,17 +5810,6 @@ jobs:
           set -euo pipefail
           source scripts/apply-workflow-helpers.sh
           item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
-          if [ "${{ github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *' && 'true' || 'false' }}" = "true" ]; then
-            echo "Deferring reconciliation until the bounded comment-sync cursor is selected."
-            exit 0
-          fi
-          if [ "$item_numbers" = "__cursor__" ]; then
-            if [ "${{ github.event.inputs.apply_sync_comments_only || 'false' }}" = "true" ]; then
-              echo "Deferring reconciliation until the bounded comment-sync cursor is selected."
-              exit 0
-            fi
-            item_numbers=""
-          fi
           prepare_apply_reconciliation_args
           persist_reconciliation "${reconcile_args[@]}"
 

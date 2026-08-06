@@ -2077,14 +2077,18 @@ test("apply workflow isolates proof Codex and keeps mutation free of Git recover
   assert.match(applyJob, /queue: max/);
 });
 
-test("comment-only proof preparation never scans the full target repository", () => {
+test("comment-only apply preparation never scans the full target repository", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
     jobs: Record<string, { steps: Array<{ name?: string; if?: string; run?: string }> }>;
   };
   const steps = workflow.jobs["apply-proof"]!.steps;
   const reconcile = steps.find((step) => step.name === "Reconcile read-only proof inputs");
+  const applyReconcile = workflow.jobs["apply-existing"]!.steps.find(
+    (step) => step.name === "Reconcile before apply preselect",
+  );
   const select = steps.find((step) => step.name === "Select bounded coverage proof work");
   assert.ok(reconcile?.if, "proof reconciliation must explicitly exclude comment-only runs");
+  assert.equal(applyReconcile?.if, reconcile.if, "apply preselect must use the same skip gate");
   assert.ok(select?.run, "proof selection must recognize scheduled comment-only maintenance");
 
   const expression = reconcile.if.replace(/^\$\{\{\s*|\s*\}\}$/g, "");
@@ -2112,6 +2116,38 @@ test("comment-only proof preparation never scans the full target repository", ()
   assert.match(select.run, /github\.event\.schedule \|\| ''/);
   assert.match(select.run, /6,21,36,51 \* \* \* \*/);
   assert.match(select.run, /sync_comments_only="true"/);
+});
+
+test("comment-only apply reconciliation scopes only selected items", () => {
+  const reconcileArgs = (itemNumbers: string, syncCommentsOnly: boolean) =>
+    execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          "source scripts/apply-workflow-helpers.sh",
+          'TARGET_REPO="openclaw/openclaw"',
+          `item_numbers="${itemNumbers}"`,
+          `sync_comments_only=${syncCommentsOnly}`,
+          "sync_open_pr_batch=false",
+          "prepare_apply_reconciliation_args",
+          'printf "%s\\n" "${reconcile_args[@]}"',
+        ].join("\n"),
+      ],
+      { encoding: "utf8" },
+    )
+      .trimEnd()
+      .split("\n");
+  const baseArgs = ["--target-repo", "openclaw/openclaw", "--skip-closed-at"];
+
+  assert.deepEqual(reconcileArgs("119890", true), [
+    ...baseArgs,
+    "--item-numbers",
+    "119890",
+    "--only-item-numbers",
+  ]);
+  assert.deepEqual(reconcileArgs("119890", false), [...baseArgs, "--item-numbers", "119890"]);
+  assert.deepEqual(reconcileArgs("", true), baseArgs);
 });
 
 test("apply workflow scopes cursor reconciliation and publishes close reconciliation before idle", () => {
@@ -4942,12 +4978,14 @@ test("sweep workflow coalesces durable issue and PR comment sync batches", () =>
   assert.doesNotMatch(backgroundSync, /-f apply_item_numbers="\$item_numbers"/);
   assert.match(
     cursorPreselect,
-    /if \[ "\$item_numbers" = "__cursor__" \]; then\s+if \[ "\$\{\{ github\.event\.inputs\.apply_sync_comments_only \|\| 'false' \}\}" = "true" \]; then\s+echo "Deferring reconciliation until the bounded comment-sync cursor is selected\."\s+exit 0/,
+    /if: \$\{\{ .*github\.event\.inputs\.apply_sync_comments_only == 'true' \|\| github\.event\.inputs\.apply_item_numbers == '__cursor__'.*\}\}/,
   );
-  assert.match(
-    cursorPreselect,
-    /if \[ "\$\{\{ github\.event_name == 'schedule' && github\.event\.schedule == '6,21,36,51 \* \* \* \*' && 'true' \|\| 'false' \}\}" = "true" \]; then\s+echo "Deferring reconciliation until the bounded comment-sync cursor is selected\."\s+exit 0/,
-    "scheduled comment maintenance must never scan or reconcile the entire repository before selecting its batch",
+  assert.doesNotMatch(cursorPreselect, /Deferring reconciliation/);
+  assert.ok(
+    cursorExecution.indexOf(
+      `sync_comments_only="\${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}"`,
+    ) < cursorExecution.indexOf("prepare_apply_reconciliation_args"),
+    "comment-only mode must be known before execution reconciliation is prepared",
   );
   assert.ok(
     cursorExecution.indexOf('echo "Selected cursor-based comment sync batch: $item_numbers"') <
@@ -4957,8 +4995,8 @@ test("sweep workflow coalesces durable issue and PR comment sync batches", () =>
   assert.match(cursorExecution, /prepare_apply_reconciliation_args/);
   assert.match(
     readText("scripts/apply-workflow-helpers.sh"),
-    /if \[ "\$\{sync_comments_only:-false\}" = "true" \] &&\s+\[ "\$\{sync_open_pr_batch:-false\}" = "true" \]; then\s+reconcile_args\+=\(--only-item-numbers\)/,
-    "cursor reconciliation must not archive or rewrite unrelated durable records",
+    /if \[ "\$\{sync_comments_only:-false\}" = "true" \]; then\s+reconcile_args\+=\(--only-item-numbers\)/,
+    "comment-only reconciliation must not archive or rewrite unrelated durable records",
   );
 });
 
