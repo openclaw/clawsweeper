@@ -18,6 +18,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Increased the AWS Crabbox root volume from 160 GB to 400 GB so trusted checks can provision with the repository's current dependency and build footprint.
 - GitHub-throttled terminal status updates no longer fail the finalization run; the requeue step already re-arms the acknowledgement for after the rate window.
 
 
