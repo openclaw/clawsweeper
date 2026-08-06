@@ -902,3 +902,80 @@ test("CSW-088 suppresses only the immediate same-head and same-body hot-intake r
     false,
   );
 });
+
+test("duplicate due candidates do not strand the rest of the batch", () => {
+  // GitHub's paginated issue listing is sorted by `updated`, so an item touched
+  // mid-pagination can be returned on two pages. selectDueCandidates already
+  // dedupes by repo#number; the weighted drain must not read that skip as
+  // "buckets are empty" and abandon the candidates queued behind it.
+  const now = Date.parse("2026-06-10T00:00:00Z");
+  const reviewedAt = now - 24 * 60 * 60 * 1000; // reviewed yesterday: not weekly-coverage-due
+  const weekly = (number) => ({
+    item: item({ number, kind: "issue", createdAt: "2020-01-01T00:00:00Z" }),
+    review: { reviewStatus: "complete", reviewedAt: new Date(reviewedAt).toISOString() },
+    priority: 6,
+    reviewedAt,
+    nextDueAt: 0,
+    bucket: "weekly_issue", // weight 1: a single duplicate fills one pass
+    coverageTracked: true,
+  });
+
+  // Control: no duplicates.
+  assert.deepEqual(selectedNumbers([weekly(1), weekly(2), weekly(3)], 4, now), [1, 2, 3]);
+
+  // One duplicate of #1 must not cost us #2 and #3.
+  assert.deepEqual(
+    selectedNumbers([weekly(1), weekly(1), weekly(2), weekly(3)], 4, now),
+    [1, 2, 3],
+  );
+
+  // Duplicates are still deduped, and capacity is still respected.
+  assert.deepEqual(selectedNumbers([weekly(1), weekly(1)], 4, now), [1]);
+  assert.deepEqual(selectedNumbers([weekly(1), weekly(1), weekly(2), weekly(3)], 2, now), [1, 2]);
+});
+
+test("a run of duplicates larger than the bucket weight still drains", () => {
+  // hot_issue has weight 4, so eight copies of #1 span two full passes with no
+  // new selection in the second one.
+  const now = Date.parse("2026-06-10T00:00:00Z");
+  const reviewedAt = now - 24 * 60 * 60 * 1000;
+  const hot = (number) => ({
+    item: item({ number, kind: "issue", createdAt: "2020-01-01T00:00:00Z" }),
+    review: { reviewStatus: "complete", reviewedAt: new Date(reviewedAt).toISOString() },
+    priority: 0,
+    reviewedAt,
+    nextDueAt: 0,
+    bucket: "hot_issue",
+    coverageTracked: true,
+  });
+  const due = [...Array.from({ length: 8 }, () => hot(1)), hot(2), hot(3)];
+
+  assert.deepEqual(selectedNumbers(due, 5, now), [1, 2, 3]);
+});
+
+test("duplicates across separate buckets do not stall the weighted drain", () => {
+  const now = Date.parse("2026-06-10T00:00:00Z");
+  const reviewedAt = now - 24 * 60 * 60 * 1000;
+  const candidate = (number, bucket, kind) => ({
+    item: item({ number, kind, createdAt: "2020-01-01T00:00:00Z" }),
+    review: { reviewStatus: "complete", reviewedAt: new Date(reviewedAt).toISOString() },
+    priority: 6,
+    reviewedAt,
+    nextDueAt: 0,
+    bucket,
+    coverageTracked: true,
+  });
+  const due = [
+    candidate(1, "weekly_issue", "issue"),
+    candidate(1, "weekly_issue", "issue"),
+    candidate(2, "daily_pull_request", "pull_request"),
+    candidate(2, "daily_pull_request", "pull_request"),
+    candidate(3, "weekly_issue", "issue"),
+    candidate(4, "daily_pull_request", "pull_request"),
+  ];
+
+  assert.deepEqual(
+    selectedNumbers(due, 6, now).sort((a, b) => a - b),
+    [1, 2, 3, 4],
+  );
+});
