@@ -9807,7 +9807,8 @@ function renderExecutionAlert(current) {
   if (queued) parts.push(fmt.format(queued) + " workflow" + (queued === 1 ? "" : "s") + " waiting for a runner over 30m");
   if (running) parts.push(fmt.format(running) + " execution" + (running === 1 ? "" : "s") + " over 150m");
   if (incomplete) parts.push("work execution telemetry is incomplete");
-  const details = "Total GitHub queued " + fmt.format(Number(current?.queued_runs) || 0) + " · oldest queued " + formatAgeMinutes(current?.oldest_queued_minutes) + " · oldest running " + formatAgeMinutes(current?.oldest_running_minutes);
+  const approvalGated = Number(current?.approval_gated_runs) || 0;
+  const details = "Total GitHub queued " + fmt.format(Number(current?.queued_runs) || 0) + " · oldest queued " + formatAgeMinutes(current?.oldest_queued_minutes) + " · oldest running " + formatAgeMinutes(current?.oldest_running_minutes) + (approvalGated ? " · " + fmt.format(approvalGated) + " awaiting deployment approval (oldest " + formatAgeMinutes(current?.oldest_approval_gated_minutes) + ")" : "");
   target.innerHTML = '<details class="execution-alert"><summary><span class="execution-alert-title"><strong>⚠ Work execution needs attention</strong><span>' + esc(parts.join(" · ")) + '</span></span><span class="execution-alert-toggle">Details ▾</span></summary><div class="execution-alert-body">' + esc(details) + '</div></details>';
 }
 
