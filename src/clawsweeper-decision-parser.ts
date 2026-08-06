@@ -117,6 +117,17 @@ export function createDecisionParser({
     throw new Error(`${path} must be a string or null`);
   }
 
+  function requireSingleLineString(value: unknown, path: string): string {
+    const text = requireString(value, path);
+    if (/[\r\n]/.test(text)) throw new Error(`${path} must be a single-line string`);
+    return text;
+  }
+
+  function requireNullableSingleLineString(value: unknown, path: string): string | null {
+    if (value === null) return null;
+    return requireSingleLineString(value, path);
+  }
+
   function requireNullableInteger(value: unknown, path: string): number | null {
     if (value === null) return value;
     if (typeof value === "number" && Number.isInteger(value)) return value;
@@ -161,6 +172,11 @@ export function createDecisionParser({
 
   function requireReportTextArray(value: unknown, path: string): string[] {
     return requireStringArray(value, path).map(neutralizeOwnedSectionSpoofing);
+  }
+
+  function requireSingleLineStringArray(value: unknown, path: string): string[] {
+    if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
+    return value.map((entry, index) => requireSingleLineString(entry, `${path}[${index}]`));
   }
 
   function requireEnumArray<T extends string>(value: unknown, allowed: Set<T>, path: string): T[] {
@@ -361,10 +377,10 @@ export function createDecisionParser({
     return {
       label: requireReportText(record.label, `${path}.label`),
       detail: requireReportText(record.detail, `${path}.detail`),
-      file: requireNullableString(record.file, `${path}.file`),
+      file: requireNullableSingleLineString(record.file, `${path}.file`),
       line: requireNullableInteger(record.line, `${path}.line`),
-      command: requireNullableString(record.command, `${path}.command`),
-      sha: requireNullableString(record.sha, `${path}.sha`),
+      command: requireNullableSingleLineString(record.command, `${path}.command`),
+      sha: requireNullableSingleLineString(record.sha, `${path}.sha`),
     };
   }
 
@@ -375,8 +391,8 @@ export function createDecisionParser({
       person: requireReportText(record.person, `${path}.person`),
       role: requireReportText(record.role, `${path}.role`),
       reason: requireReportText(record.reason, `${path}.reason`),
-      commits: requireStringArray(record.commits, `${path}.commits`),
-      files: requireStringArray(record.files, `${path}.files`),
+      commits: requireSingleLineStringArray(record.commits, `${path}.commits`),
+      files: requireSingleLineStringArray(record.files, `${path}.files`),
       confidence: requireEnum(record.confidence, CONFIDENCES, `${path}.confidence`),
     };
   }
@@ -393,7 +409,7 @@ export function createDecisionParser({
       body: requireReportText(record.body, `${path}.body`),
       priority: requirePriority(record.priority, `${path}.priority`),
       confidenceScore: requireConfidenceScore(record.confidenceScore, `${path}.confidenceScore`),
-      file: requireString(record.file, `${path}.file`),
+      file: requireSingleLineString(record.file, `${path}.file`),
       lineStart,
       lineEnd,
     };
@@ -496,7 +512,7 @@ export function createDecisionParser({
       body: requireReportText(record.body, `${path}.body`),
       severity: requireEnum(record.severity, SECURITY_CONCERN_SEVERITIES, `${path}.severity`),
       confidenceScore: requireConfidenceScore(record.confidenceScore, `${path}.confidenceScore`),
-      file: requireNullableString(record.file, `${path}.file`),
+      file: requireNullableSingleLineString(record.file, `${path}.file`),
       line,
     };
   }
@@ -766,11 +782,11 @@ export function createDecisionParser({
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, REGRESSION_PROVENANCE_SCHEMA_KEYS, path);
     return {
-      repo: requireString(record.repo, `${path}.repo`),
+      repo: requireSingleLineString(record.repo, `${path}.repo`),
       pullRequestNumber: requireInteger(record.pullRequestNumber, `${path}.pullRequestNumber`),
-      pullRequestUrl: requireString(record.pullRequestUrl, `${path}.pullRequestUrl`),
-      mergeCommitSha: requireString(record.mergeCommitSha, `${path}.mergeCommitSha`),
-      sourcePath: requireString(record.sourcePath, `${path}.sourcePath`),
+      pullRequestUrl: requireSingleLineString(record.pullRequestUrl, `${path}.pullRequestUrl`),
+      mergeCommitSha: requireSingleLineString(record.mergeCommitSha, `${path}.mergeCommitSha`),
+      sourcePath: requireSingleLineString(record.sourcePath, `${path}.sourcePath`),
       sourceLine: requireInteger(record.sourceLine, `${path}.sourceLine`),
     };
   }
@@ -952,9 +968,9 @@ export function createDecisionParser({
         record.overallConfidenceScore,
         "decision.overallConfidenceScore",
       ),
-      fixedRelease: requireNullableString(record.fixedRelease, "decision.fixedRelease"),
-      fixedSha: requireNullableString(record.fixedSha, "decision.fixedSha"),
-      fixedAt: requireNullableString(record.fixedAt, "decision.fixedAt"),
+      fixedRelease: requireNullableSingleLineString(record.fixedRelease, "decision.fixedRelease"),
+      fixedSha: requireNullableSingleLineString(record.fixedSha, "decision.fixedSha"),
+      fixedAt: requireNullableSingleLineString(record.fixedAt, "decision.fixedAt"),
       regressionAssessment: parseRegressionAssessment(
         record.regressionAssessment,
         "decision.regressionAssessment",
@@ -969,9 +985,18 @@ export function createDecisionParser({
       workPriority: requireEnum(record.workPriority, CONFIDENCES, "decision.workPriority"),
       workReason: requireReportText(record.workReason, "decision.workReason"),
       workPrompt: requireReportText(record.workPrompt, "decision.workPrompt"),
-      workClusterRefs: requireStringArray(record.workClusterRefs, "decision.workClusterRefs"),
-      workValidation: requireStringArray(record.workValidation, "decision.workValidation"),
-      workLikelyFiles: requireStringArray(record.workLikelyFiles, "decision.workLikelyFiles"),
+      workClusterRefs: requireSingleLineStringArray(
+        record.workClusterRefs,
+        "decision.workClusterRefs",
+      ),
+      workValidation: requireSingleLineStringArray(
+        record.workValidation,
+        "decision.workValidation",
+      ),
+      workLikelyFiles: requireSingleLineStringArray(
+        record.workLikelyFiles,
+        "decision.workLikelyFiles",
+      ),
     };
     validateMergeRiskOptions(decision);
     validateMaintainerDecisionOwner(decision);

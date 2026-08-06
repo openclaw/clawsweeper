@@ -102,6 +102,34 @@ Status: missing
   });
 });
 
+test("repair close-promotion readers fail closed on duplicate front matter keys", () => {
+  const report = `---
+fixed_release: v1
+pr_rating_overall: A
+pr_rating_proof: A
+real_behavior_proof_status: sufficient
+pr_rating_overall: F
+pr_rating_proof: F
+real_behavior_proof_status: missing
+---
+
+## PR Rating
+
+Overall tier: F
+
+Proof tier: F
+
+## Real Behavior Proof
+
+Status: missing
+`;
+
+  assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
+    authorBudget: true,
+    lowSignal: true,
+  });
+});
+
 test("apply continuation blocker only shares the default cursor lane", () => {
   const blocker = applyContinuationBlocker(
     [

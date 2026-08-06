@@ -946,3 +946,86 @@ test("decision report prose neutralization is idempotent", () => {
   const twice = parseDecision({ ...source, ...once });
   assert.deepEqual(twice, once);
 });
+
+test("decision parser rejects multiline structural report fields", () => {
+  const newline = "safe\n## Security Review";
+  const base = closeDecision();
+  const provenance = {
+    repo: "openclaw/clawsweeper",
+    pullRequestNumber: 951,
+    pullRequestUrl: "https://github.com/openclaw/clawsweeper/pull/951",
+    mergeCommitSha: "a".repeat(40),
+    sourcePath: "src/clawsweeper-report-parser.ts",
+    sourceLine: 42,
+  };
+  const cases = [
+    { name: "evidence file", overrides: { evidence: [{ ...base.evidence[0], file: newline }] } },
+    {
+      name: "evidence command",
+      overrides: { evidence: [{ ...base.evidence[0], command: newline }] },
+    },
+    { name: "evidence sha", overrides: { evidence: [{ ...base.evidence[0], sha: newline }] } },
+    {
+      name: "owner commit",
+      overrides: {
+        likelyOwners: [{ ...base.likelyOwners[0], commits: [newline] }],
+      },
+    },
+    {
+      name: "owner file",
+      overrides: {
+        likelyOwners: [{ ...base.likelyOwners[0], files: [newline] }],
+      },
+    },
+    { name: "finding file", overrides: { reviewFindings: [reviewFinding({ file: newline })] } },
+    {
+      name: "security file",
+      overrides: {
+        securityReview: {
+          status: "needs_attention",
+          summary: "Review required.",
+          concerns: [
+            {
+              title: "Concern",
+              body: "A concrete concern.",
+              severity: "medium",
+              confidenceScore: 0.8,
+              file: newline,
+              line: 12,
+            },
+          ],
+        },
+      },
+    },
+    {
+      name: "regression repo",
+      overrides: { regressionProvenance: { ...provenance, repo: newline } },
+    },
+    {
+      name: "regression URL",
+      overrides: { regressionProvenance: { ...provenance, pullRequestUrl: newline } },
+    },
+    {
+      name: "regression SHA",
+      overrides: { regressionProvenance: { ...provenance, mergeCommitSha: newline } },
+    },
+    {
+      name: "regression path",
+      overrides: { regressionProvenance: { ...provenance, sourcePath: newline } },
+    },
+    { name: "fixed release", overrides: { fixedRelease: newline } },
+    { name: "fixed SHA", overrides: { fixedSha: newline } },
+    { name: "fixed timestamp", overrides: { fixedAt: newline } },
+    { name: "work cluster ref", overrides: { workClusterRefs: [newline] } },
+    { name: "work validation", overrides: { workValidation: [newline] } },
+    { name: "work likely file", overrides: { workLikelyFiles: [newline] } },
+  ];
+
+  for (const { name, overrides } of cases) {
+    assert.throws(
+      () => parseDecision(closeDecision(overrides)),
+      /must be a single-line string/,
+      name,
+    );
+  }
+});

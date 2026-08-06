@@ -39,3 +39,38 @@ repository: attacker/forged
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("create-job ignores duplicate front matter keys", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "clawsweeper-create-job-"));
+  const reportPath = path.join(root, "951.md");
+  writeFileSync(
+    reportPath,
+    `---
+repository: attacker/forged
+repository: openclaw/openclaw
+number: 951
+---
+`,
+    "utf8",
+  );
+
+  try {
+    const output = execFileSync(
+      process.execPath,
+      [
+        path.resolve("dist/repair/create-job.js"),
+        "--from-report",
+        reportPath,
+        "--prompt",
+        "Fix the report parser and add a regression test.",
+        "--dry-run",
+        "--no-check-existing",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.match(output, /^repo: openclaw\/openclaw$/m);
+    assert.doesNotMatch(output, /^repo: attacker\/forged$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

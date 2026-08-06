@@ -67,8 +67,11 @@ export function createRecordMetadata({
   }
 
   function frontMatterValue(markdown: string, key: string): string | undefined {
-    const match = leadingFrontMatter(markdown)?.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
-    const value = match?.[1]?.trim();
+    const frontMatter = leadingFrontMatter(markdown);
+    if (frontMatter === undefined) return undefined;
+    const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.+)$`, "gm"))];
+    if (matches.length !== 1) return undefined;
+    const value = matches[0]?.[1]?.trim();
     return value?.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
   }
 

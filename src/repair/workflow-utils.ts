@@ -2549,12 +2549,9 @@ function checkpointNumber(name: string): number {
 
 function frontMatterValue(markdown: string, key: string): string {
   const frontMatter = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1] ?? "";
-  return (
-    frontMatter
-      .match(new RegExp(`^${key}:\\s*(.+)$`, "m"))?.[1]
-      ?.trim()
-      .replace(/^"|"$/g, "") ?? ""
-  );
+  const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.+)$`, "gm"))];
+  if (matches.length !== 1) return "";
+  return matches[0]?.[1]?.trim().replace(/^"|"$/g, "") ?? "";
 }
 
 function jsonArrayFrontMatter(markdown: string, key: string): JsonValue[] {
