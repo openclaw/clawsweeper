@@ -589,7 +589,10 @@ function buildItemMap(plan: LooseRecord, repo: string) {
 function evidenceHasExternalUrl(evidence: JsonValue) {
   return evidence.some((item: JsonValue) => {
     const text = typeof item === "string" ? item : JSON.stringify(item);
-    const urls = text.match(/https?:\/\/[^\s)\]"']+/g) ?? [];
+    // Keep this pattern and its flags identical to URL_PATTERN in url-safety.ts
+    // so sanitized evidence never trips this validator. The `i` flag matters:
+    // an uppercase scheme is still a live autolink on GitHub.
+    const urls = text.match(/https?:\/\/[^\s)\]"']+/gi) ?? [];
     return urls.some(isExternalUrl);
   });
 }

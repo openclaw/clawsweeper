@@ -1,10 +1,13 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 
-// IMPORTANT: keep this character class identical to the one used by
-// evidenceHasExternalUrl in review-results.ts. If the validator ever
-// expands the terminator set, expand it here first so this sanitizer
-// never produces output that the validator then rejects.
-const URL_PATTERN = /https?:\/\/[^\s)\]"']+/g;
+// IMPORTANT: keep this pattern identical to the one used by
+// evidenceHasExternalUrl in review-results.ts, including its flags. If the
+// validator ever expands the terminator set, expand it here first so this
+// sanitizer never produces output that the validator then rejects.
+// The `i` flag is required: GitHub autolinks schemes case-insensitively, so a
+// case-sensitive pattern would leave `HTTPS://host/path` as a live external
+// link in the published comment.
+const URL_PATTERN = /https?:\/\/[^\s)\]"']+/gi;
 const ALLOWED_HOSTS = new Set(["github.com"]);
 const PLACEHOLDER = "<external link>";
 
