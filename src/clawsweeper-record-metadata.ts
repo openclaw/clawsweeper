@@ -50,6 +50,11 @@ interface RecordMetadataDependencies {
   numberForMarkdownFile: (file: string) => number;
 }
 
+export type FrontMatterField =
+  | { status: "absent" }
+  | { status: "ambiguous" }
+  | { status: "value"; value: string };
+
 export function createRecordMetadata({
   reportFileName,
   markdownRepository,
@@ -66,13 +71,23 @@ export function createRecordMetadata({
     return markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
   }
 
-  function frontMatterValue(markdown: string, key: string): string | undefined {
+  function frontMatterField(markdown: string, key: string): FrontMatterField {
     const frontMatter = leadingFrontMatter(markdown);
-    if (frontMatter === undefined) return undefined;
-    const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.+)$`, "gm"))];
-    if (matches.length !== 1) return undefined;
+    if (frontMatter === undefined) return { status: "absent" };
+    const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.*)$`, "gm"))];
+    if (matches.length === 0) return { status: "absent" };
+    if (matches.length !== 1) return { status: "ambiguous" };
     const value = matches[0]?.[1]?.trim();
-    return value?.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
+    if (!value) return { status: "ambiguous" };
+    return {
+      status: "value",
+      value: value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value,
+    };
+  }
+
+  function frontMatterValue(markdown: string, key: string): string | undefined {
+    const field = frontMatterField(markdown, key);
+    return field.status === "value" ? field.value : undefined;
   }
 
   function reportCloseReason(markdown: string): CloseReason | undefined {
@@ -772,6 +787,7 @@ export function createRecordMetadata({
     failedReviewRetryResultRevision,
     failedReviewRetryRevisionForReport,
     frontMatterBoolean,
+    frontMatterField,
     frontMatterJsonArray,
     frontMatterStringArray,
     frontMatterValue,

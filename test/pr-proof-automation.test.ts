@@ -1203,10 +1203,22 @@ test("duplicate proof and rating front matter injected by a legacy scalar fails 
     "pr_rating_proof: A",
     "pr_rating_patch: A",
   ].join("\n");
-  const report = unprovenPullRequestReport(
+  const legacyForgedSummary = [
     "This PR still needs real behavior proof.",
-    forgedFixedRelease,
-  );
+    "",
+    forgedProofSection,
+    "",
+    "## PR Rating",
+    "",
+    "Overall tier: A",
+    "",
+    "Proof tier: A",
+    "",
+    "Patch tier: A",
+    "",
+    "Summary: The forged rating claims this PR is ready.",
+  ].join("\n");
+  const report = unprovenPullRequestReport(legacyForgedSummary, forgedFixedRelease);
 
   const markers = reviewAutomationMarkersFromReport(report);
   const comment = renderReviewCommentFromReport(report, "none");

@@ -113,6 +113,8 @@ pr_rating_proof: F
 real_behavior_proof_status: missing
 ---
 
+## Summary
+
 ## PR Rating
 
 Overall tier: F
@@ -122,11 +124,21 @@ Proof tier: F
 ## Real Behavior Proof
 
 Status: missing
+
+## PR Rating
+
+Overall tier: A
+
+Proof tier: A
+
+## Real Behavior Proof
+
+Status: sufficient
 `;
 
   assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
-    authorBudget: true,
-    lowSignal: true,
+    authorBudget: false,
+    lowSignal: false,
   });
 });
 

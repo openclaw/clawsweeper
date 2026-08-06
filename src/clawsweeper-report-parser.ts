@@ -62,12 +62,14 @@ import type {
   TriagePriority,
   VisionFitStatus,
 } from "./clawsweeper-types.js";
+import type { FrontMatterField } from "./clawsweeper-record-metadata.js";
 
 interface ReportParsingDependencies {
   agentsPolicyStatusLine: (status: AgentsPolicyStatus | undefined) => string;
   defaultRootCauseCluster: () => RootCauseClusterAssessment;
   evidenceEntry: (options: Partial<Evidence> & Pick<Evidence, "label" | "detail">) => Evidence;
   frontMatterJsonArray: (markdown: string, key: string) => unknown[];
+  frontMatterField: (markdown: string, key: string) => FrontMatterField;
   frontMatterStringArray: (markdown: string, key: string) => string[];
   frontMatterValue: (markdown: string, key: string) => string | undefined;
   isDocsOnlyPullRequestReport: (markdown: string) => boolean;
@@ -111,6 +113,7 @@ export function createReportParser({
   defaultRootCauseCluster,
   evidenceEntry,
   frontMatterJsonArray,
+  frontMatterField,
   frontMatterStringArray,
   frontMatterValue,
   isDocsOnlyPullRequestReport,
@@ -411,6 +414,40 @@ export function createReportParser({
     if (defaultProof.status === "override" || isDocsOnlyPullRequestReport(markdown)) {
       return defaultProof;
     }
+    const statusField = frontMatterField(markdown, "real_behavior_proof_status");
+    const evidenceKindField = frontMatterField(markdown, "real_behavior_proof_evidence_kind");
+    const needsContributorActionField = frontMatterField(
+      markdown,
+      "real_behavior_proof_needs_contributor_action",
+    );
+    const ratingFields = [
+      frontMatterField(markdown, "pr_rating_overall"),
+      frontMatterField(markdown, "pr_rating_proof"),
+      frontMatterField(markdown, "pr_rating_patch"),
+    ];
+    const malformedMetadata =
+      [statusField, evidenceKindField, needsContributorActionField, ...ratingFields].some(
+        (field) => field.status === "ambiguous",
+      ) ||
+      (statusField.status === "value" &&
+        !REAL_BEHAVIOR_PROOF_STATUSES.has(statusField.value as RealBehaviorProofStatus)) ||
+      (evidenceKindField.status === "value" &&
+        !REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS.has(
+          evidenceKindField.value as RealBehaviorProofEvidenceKind,
+        )) ||
+      (needsContributorActionField.status === "value" &&
+        !/^(?:true|false)$/i.test(needsContributorActionField.value)) ||
+      ratingFields.some(
+        (field) => field.status === "value" && !PR_RATING_TIERS.has(field.value as PrRatingTier),
+      );
+    if (malformedMetadata) {
+      return {
+        status: "missing",
+        summary: "The report has ambiguous or malformed proof metadata and requires human review.",
+        evidenceKind: "none",
+        needsContributorAction: true,
+      };
+    }
     const section = reviewSectionValue(markdown, "realBehaviorProof");
     if (!section.trim()) {
       if (isExternalPullRequestReport(markdown)) {
@@ -425,15 +462,16 @@ export function createReportParser({
       return defaultProof;
     }
     const statusValue =
-      frontMatterValue(markdown, "real_behavior_proof_status") ??
-      sectionLineValue(section, "Status");
+      statusField.status === "value" ? statusField.value : sectionLineValue(section, "Status");
     const evidenceKindValue =
-      frontMatterValue(markdown, "real_behavior_proof_evidence_kind") ??
-      sectionLineValue(section, "Evidence kind");
+      evidenceKindField.status === "value"
+        ? evidenceKindField.value
+        : sectionLineValue(section, "Evidence kind");
     const summary = sectionLineValue(section, "Summary");
     const needsContributorActionValue =
-      frontMatterValue(markdown, "real_behavior_proof_needs_contributor_action") ??
-      sectionLineValue(section, "Needs contributor action");
+      needsContributorActionField.status === "value"
+        ? needsContributorActionField.value
+        : sectionLineValue(section, "Needs contributor action");
     const status = REAL_BEHAVIOR_PROOF_STATUSES.has(statusValue as RealBehaviorProofStatus)
       ? (statusValue as RealBehaviorProofStatus)
       : undefined;
@@ -487,12 +525,37 @@ export function createReportParser({
   function reportPrRating(markdown: string): PrRating {
     const section = reviewSectionValue(markdown, "prRating");
     const proof = reportRealBehaviorProof(markdown);
+    const proofTierField = frontMatterField(markdown, "pr_rating_proof");
+    const patchTierField = frontMatterField(markdown, "pr_rating_patch");
+    const overallTierField = frontMatterField(markdown, "pr_rating_overall");
+    if (
+      [proofTierField, patchTierField, overallTierField].some(
+        (field) =>
+          field.status === "ambiguous" ||
+          (field.status === "value" && !PR_RATING_TIERS.has(field.value as PrRatingTier)),
+      )
+    ) {
+      return derivedPrRating({
+        isPullRequest: frontMatterValue(markdown, "type") === "pull_request",
+        proof,
+        findings: reportReviewFindings(markdown),
+        securityReview: reportSecurityReview(markdown),
+        overallCorrectness: reportOverallCorrectness(markdown),
+        overallConfidenceScore: reportOverallConfidenceScore(markdown),
+      });
+    }
     const proofTierValue =
-      frontMatterValue(markdown, "pr_rating_proof") ?? sectionLineValue(section, "Proof tier");
+      proofTierField.status === "value"
+        ? proofTierField.value
+        : sectionLineValue(section, "Proof tier");
     const patchTierValue =
-      frontMatterValue(markdown, "pr_rating_patch") ?? sectionLineValue(section, "Patch tier");
+      patchTierField.status === "value"
+        ? patchTierField.value
+        : sectionLineValue(section, "Patch tier");
     const overallTierValue =
-      frontMatterValue(markdown, "pr_rating_overall") ?? sectionLineValue(section, "Overall tier");
+      overallTierField.status === "value"
+        ? overallTierField.value
+        : sectionLineValue(section, "Overall tier");
     const summary = sectionLineValue(section, "Summary");
     const nextSteps = sectionList(section, "Next rank-up steps").slice(0, 3);
     if (
