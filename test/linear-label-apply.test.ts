@@ -464,7 +464,7 @@ function hydratedItem(labels = [], updatedAt = "2026-06-24T00:00:00Z") {
   };
 }
 
-test("applyLabelStep refetches before a live replace-all write and preserves refreshed labels", async () => {
+test("applyLabelStep never requests a transport or refetches for an apply-intent label plan", async () => {
   const initial = hydratedItem([]);
   const refreshed = hydratedItem([{ id: "late-id", name: "team:late" }]);
   const liveRecord = mapWorkspaceItem(refreshed);
@@ -516,14 +516,14 @@ test("applyLabelStep refetches before a live replace-all write and preserves ref
     approval,
   });
 
-  assert.equal(fetches, 4);
+  assert.equal(fetches, 0);
   assert.equal(summary.labelApplyError, undefined);
   const setCall = calls.find((call) => call.query.includes("issueUpdate"));
-  assert.ok(setCall);
-  assert.ok(setCall.vars.labelIds.includes("late-id"));
+  assert.equal(setCall, undefined);
+  assert.equal(summary.labelWouldWrite, false);
 });
 
-test("applyLabelStep blocks a live write when the refreshed issue drifted", async () => {
+test("applyLabelStep keeps an authorized label proposal planning-only", async () => {
   const initial = hydratedItem([]);
   const initialRecord = mapWorkspaceItem(initial);
   const initialClassification = classifyRecord(initialRecord, {
@@ -570,6 +570,7 @@ test("applyLabelStep blocks a live write when the refreshed issue drifted", asyn
   );
 
   assert.equal(transportRequested, false);
-  assert.equal(summary.labelAuthorized, false);
-  assert.match(summary.labelWriteSkipped, /not authorized/);
+  assert.equal(summary.labelAuthorized, true);
+  assert.equal(summary.labelWouldWrite, false);
+  assert.match(summary.labelWriteSkipped, /live/);
 });

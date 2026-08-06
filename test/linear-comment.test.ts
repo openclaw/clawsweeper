@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  COMMENT_CREATE_MUTATION,
-  COMMENT_UPDATE_MUTATION,
   findReviewComments,
   hasReviewMarker,
   planReviewCommentUpsert,
@@ -319,14 +317,6 @@ test("AUTHORITY INTEGRATION: mismatched approvedPlanHash is denied with plan-has
 // ---------------------------------------------------------------------------
 // Constants — GraphQL mutation strings
 // ---------------------------------------------------------------------------
-
-test("COMMENT_CREATE_MUTATION contains commentCreate", () => {
-  assert.ok(COMMENT_CREATE_MUTATION.includes("commentCreate"));
-});
-
-test("COMMENT_UPDATE_MUTATION contains commentUpdate", () => {
-  assert.ok(COMMENT_UPDATE_MUTATION.includes("commentUpdate"));
-});
 
 // ---------------------------------------------------------------------------
 // Barrel wiring

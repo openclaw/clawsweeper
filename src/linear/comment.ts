@@ -209,10 +209,8 @@ export function reviewCommentMutationRequest(
   };
 }
 
-// GraphQL mutation strings applied by a deterministic short-lived-token script, never here.
-
-/** Creates a new comment on a Linear issue. Applied downstream, not in this module. */
+// These strings remain deterministic planning primitives. The production Linear transport
+// rejects every GraphQL mutation before network access.
 export const COMMENT_CREATE_MUTATION = `mutation CreateComment($issueId: String!, $body: String!) { commentCreate(input: { issueId: $issueId, body: $body }) { success comment { id body } } }`;
 
-/** Updates the body of an existing Linear comment. Applied downstream, not in this module. */
 export const COMMENT_UPDATE_MUTATION = `mutation UpdateComment($id: String!, $body: String!) { commentUpdate(id: $id, input: { body: $body }) { success comment { id body } } }`;

@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createLinearTransport, mintLinearAppToken } from "../dist/linear/client.js";
+import { createLinearTransport } from "../dist/linear/client.js";
 import { LinearItemSource, parseLinearIdentifier } from "../dist/linear/source.js";
-// Barrel-wiring checks: the new write-path symbols must be re-exported from the barrel.
 import {
   createLinearTransport as createLinearTransportFromIndex,
-  mintLinearAppToken as mintLinearAppTokenFromIndex,
   parseLinearIdentifier as parseLinearIdentifierFromIndex,
 } from "../dist/linear/index.js";
 import {
@@ -18,7 +16,6 @@ import {
   revalidateCommentWrite,
   renderReviewContent,
   resolveApproval,
-  resolveAppCredentials,
   resolveReadToken,
   summarize,
   resolveWriteDecision,
@@ -26,7 +23,7 @@ import {
 } from "../scripts/linear-comment-apply.mjs";
 
 // ---------------------------------------------------------------------------
-// Bearer-mode header construction (the seam in client.ts) — fake fetch, no network
+// Read-only transport boundary — fake fetch, no network
 // ---------------------------------------------------------------------------
 
 // Captures the Authorization header sent on the first request, then returns ok data.
@@ -38,7 +35,7 @@ function captureAuthFetch(captured: { header?: string }) {
   };
 }
 
-test("createLinearTransport defaults to the RAW token header (read path unchanged)", async () => {
+test("createLinearTransport sends the raw personal API key", async () => {
   const captured: { header?: string } = {};
   const transport = createLinearTransport({
     token: "personal-key",
@@ -49,96 +46,21 @@ test("createLinearTransport defaults to the RAW token header (read path unchange
   assert.equal(captured.header, "personal-key");
 });
 
-test("createLinearTransport auth:'raw' explicitly sends the raw token", async () => {
-  const captured: { header?: string } = {};
+test("createLinearTransport rejects mutations before network access", async () => {
+  let fetchCalls = 0;
   const transport = createLinearTransport({
     token: "personal-key",
-    auth: "raw",
     endpoint: "https://fake.linear.app/graphql",
-    fetchImpl: captureAuthFetch(captured) as typeof fetch,
+    fetchImpl: (async () => {
+      fetchCalls += 1;
+      return new Response(JSON.stringify({ data: { ok: true } }), { status: 200 });
+    }) as typeof fetch,
   });
-  await transport("query { ok }", {});
-  assert.equal(captured.header, "personal-key");
-});
-
-test("createLinearTransport auth:'bearer' sends 'Bearer <token>'", async () => {
-  const captured: { header?: string } = {};
-  const transport = createLinearTransport({
-    token: "oauth-access-token",
-    auth: "bearer",
-    endpoint: "https://fake.linear.app/graphql",
-    fetchImpl: captureAuthFetch(captured) as typeof fetch,
-  });
-  await transport("mutation { commentCreate { success } }", {});
-  assert.equal(captured.header, "Bearer oauth-access-token");
-});
-
-// ---------------------------------------------------------------------------
-// mintLinearAppToken — urlencoded client_credentials POST, never leaks secrets
-// ---------------------------------------------------------------------------
-
-test("mintLinearAppToken POSTs urlencoded client_credentials and returns the access token", async () => {
-  let captured: { url?: string; contentType?: string; body?: string } = {};
-  const fakeFetch = async (url: string, init?: RequestInit): Promise<Response> => {
-    captured = {
-      url,
-      contentType: ((init?.headers ?? {}) as Record<string, string>)["Content-Type"],
-      body: init?.body as string,
-    };
-    return new Response(
-      JSON.stringify({ access_token: "minted-abc", expires_in: 2591999, token_type: "Bearer" }),
-      { status: 200 },
-    );
-  };
-
-  const result = await mintLinearAppToken({
-    clientId: "cid",
-    clientSecret: "csecret",
-    endpoint: "https://fake.linear.app/oauth/token",
-    fetchImpl: fakeFetch as typeof fetch,
-  });
-
-  assert.equal(result.accessToken, "minted-abc");
-  assert.equal(result.expiresInSec, 2591999);
-  assert.equal(result.tokenType, "Bearer");
-  assert.equal(captured.url, "https://fake.linear.app/oauth/token");
-  assert.equal(captured.contentType, "application/x-www-form-urlencoded");
-  const params = new URLSearchParams(captured.body);
-  assert.equal(params.get("grant_type"), "client_credentials");
-  assert.equal(params.get("client_id"), "cid");
-  assert.equal(params.get("client_secret"), "csecret");
-  assert.equal(params.get("scope"), "read,write");
-  // Linear client-credentials tokens already represent the app actor. `actor=app` is an
-  // authorization-URL parameter for the interactive code flow, not a token-mint parameter.
-  assert.equal(params.has("actor"), false);
-});
-
-test("mintLinearAppToken throws a token-free error on HTTP failure", async () => {
-  const fakeFetch = async (): Promise<Response> =>
-    new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 });
   await assert.rejects(
-    () =>
-      mintLinearAppToken({
-        clientId: "cid",
-        clientSecret: "supersecret",
-        fetchImpl: fakeFetch as typeof fetch,
-      }),
-    (err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      assert.match(message, /HTTP 401/);
-      assert.match(message, /invalid_client/);
-      // The secret must never appear in the error.
-      assert.ok(!message.includes("supersecret"));
-      return true;
-    },
+    () => transport("mutation { commentCreate { success } }", {}),
+    /read-only.*mutations are disabled/i,
   );
-});
-
-test("mintLinearAppToken requires both clientId and clientSecret", async () => {
-  await assert.rejects(
-    () => mintLinearAppToken({ clientId: "", clientSecret: "x" }),
-    /requires both clientId and clientSecret/,
-  );
+  assert.equal(fetchCalls, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -648,7 +570,7 @@ test("applyPlan does nothing (and mints no token) for a noop plan", async () => 
   const out = await applyPlan(
     { action: "noop", issueId: "x", targetCommentId: "c1", body: "B" },
     { clientId: "cid", clientSecret: "csec" },
-    { fetchImpl: fakeFetch as typeof fetch, mintEndpoint: "https://fake/oauth/token" },
+    { fetchImpl: fakeFetch as typeof fetch },
   );
   assert.deepEqual(out, { noop: true });
   // A noop must NOT mint a write token or hit the network at all.
@@ -667,13 +589,6 @@ test("resolveReadToken prefers env and never calls the keychain when env is set"
     },
   });
   assert.equal(token, "env-key");
-});
-
-test("resolveAppCredentials reads client id + secret from the injected keychain", () => {
-  const creds = resolveAppCredentials({
-    runKeychain: (service: string) => (service.includes("client-id") ? "the-id" : "the-secret"),
-  });
-  assert.deepEqual(creds, { clientId: "the-id", clientSecret: "the-secret" });
 });
 
 test("resolveApproval loads approved plan and snapshot hashes from a saved dry-run receipt", () => {
@@ -953,8 +868,7 @@ test("readBackComment confirms a CREATE by matching body even if a stale duplica
 // Barrel wiring
 // ---------------------------------------------------------------------------
 
-test("write-path symbols are re-exported from the barrel", () => {
+test("read-path symbols are re-exported from the barrel", () => {
   assert.equal(typeof createLinearTransportFromIndex, "function");
-  assert.equal(typeof mintLinearAppTokenFromIndex, "function");
   assert.equal(typeof parseLinearIdentifierFromIndex, "function");
 });

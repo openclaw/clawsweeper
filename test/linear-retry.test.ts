@@ -266,7 +266,7 @@ test("createLinearTransport: retries Node fetch failures with transient cause co
   assert.deepEqual(sleepDelays, [2_000]);
 });
 
-test("createLinearTransport never retries a mutation after a transient network failure", async () => {
+test("createLinearTransport rejects mutations before the transport can attempt them", async () => {
   let callCount = 0;
   const transport = createLinearTransport({
     token: "fake-token",
@@ -279,8 +279,11 @@ test("createLinearTransport never retries a mutation after a transient network f
     maxRetries: 3,
   });
 
-  await assert.rejects(() => transport("mutation { commentCreate { success } }", {}));
-  assert.equal(callCount, 1);
+  await assert.rejects(
+    () => transport("mutation { commentCreate { success } }", {}),
+    /read-only.*mutations are disabled/i,
+  );
+  assert.equal(callCount, 0);
 });
 
 test("createLinearTransport: non-retryable error (validation) throws without retry", async () => {

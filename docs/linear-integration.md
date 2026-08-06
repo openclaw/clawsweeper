@@ -22,8 +22,9 @@ boundaries.
   priority.
 - Comment creation and updates are planning-only. `--apply` plus
   `OPENCLAW_NOTIFY_LINEAR=1` records apply intent but still reports
-  `wouldWrite: false` and stops before OAuth credential access, token minting,
-  or mutation.
+  `wouldWrite: false`. The sidecar contains no OAuth credential resolver or
+  token-minting implementation, and its Linear transport rejects GraphQL mutations
+  before network access.
 - Existing marker comments are reused only when their stable Linear bot actor ID
   matches `LINEAR_APP_ACTOR_ID`; display names are never treated as ownership.
 - The expected actor ID remains part of the reviewed comment plan hash and
@@ -58,9 +59,9 @@ Read access is resolved in this order:
 3. macOS Keychain generic password, service `openclaw-linear-api-key`, account
    `partnerai-config`
 
-The OAuth Keychain coordinates remain reserved for a future durably settled
-write lane. Current comment and label plans do not resolve those credentials or
-mint a write token. Do not pass credentials on the command line.
+No OAuth write credentials are configured or resolved by this sidecar. A future
+durably settled write lane must introduce and review its own isolated credential
+and transport boundary. Do not pass credentials on the command line.
 
 ## Read-Only Workflow
 
@@ -188,8 +189,9 @@ OPENCLAW_NOTIFY_LINEAR=1 pnpm linear:review-apply -- \
 New marker comments and updates to existing managed comments are never executed
 by the operator entrypoints. Any number of operators may independently produce
 `create` or `update` plans, but every summary reports `wouldWrite: false` and
-every apply path stops before OAuth credential access, token minting, or
-mutation. A shared durable business-action identity and atomic claim/CAS or
+no OAuth credential resolver or token mint exists in the sidecar. The shipped
+transport independently rejects mutation documents before network access. A
+shared durable business-action identity and atomic claim/CAS or
 canonical ledger, plus attempted/succeeded/failed/unknown settlement,
 exact-attempt receipts, and unknown-outcome reconciliation are required before
 either action can be enabled across machines.
@@ -243,10 +245,9 @@ the receiver must authenticate the delivery, acknowledge quickly, deduplicate,
 and enqueue the same review lane used by scheduled/on-demand work. A webhook may
 never call apply directly.
 
-Client-credentials OAuth tokens represent the application actor. Linear's
-`actor=app` parameter applies to the interactive authorization-URL flow, not the
-client-credentials token request. Personal API-key reads remain suitable for
-operator inspection but cannot establish managed-comment ownership.
+Personal API-key reads remain suitable for operator inspection but cannot
+establish managed-comment ownership. Any future application-actor authentication
+belongs to a separately reviewed settlement lane, not this proposal-only sidecar.
 
 ## Future-Phase End-to-End Acceptance Requirements
 

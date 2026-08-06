@@ -17,11 +17,11 @@
  *   READ  — personal API key (raw header), from LINEAR_API_KEY/LINEAR_TOKEN or the macOS
  *           Keychain item "openclaw-linear-api-key". Used to fetch the issue + comments.
  *   ACTOR — the stable application actor ID expected to own a managed comment. It remains
- *           bound into plans and approvals, but no OAuth credential is read or token minted.
+ *           bound into plans and approvals, but the sidecar has no write credential path.
  *
  * Gating — proposal-only for every invocation:
  *   - Default mode is DRY-RUN: prints the planned comment body and whether it would create
- *     or update, and writes NOTHING. No OAuth token is minted in dry-run.
+ *     or update, and writes NOTHING.
  *   - Comment creation and updates are planning-only until durable cross-process action
  *     settlement exists. Even --apply + OPENCLAW_NOTIFY_LINEAR=1 cannot execute them.
  *   - Authorization receipts remain useful reviewed evidence for a future settled lane.
@@ -52,9 +52,6 @@ const DEFAULT_STALE_DAYS = 60;
 
 // Read-key Keychain coordinates (personal API key, raw header) — mirrors linear-snapshot.mjs.
 export const READ_KEYCHAIN_SERVICE = "openclaw-linear-api-key";
-// Reserved OAuth app coordinates for a future durably settled write path.
-export const APP_CLIENT_ID_SERVICE = "openclaw-linear-clawsweeper-client-id";
-export const APP_CLIENT_SECRET_SERVICE = "openclaw-linear-clawsweeper-secret";
 export const DEFAULT_KEYCHAIN_ACCOUNT = "partnerai-config";
 
 // Apply-intent opt-in retained for planning receipts; comment writes remain disabled.
@@ -274,22 +271,6 @@ export function resolveReadToken(options = {}) {
     `No Linear read token found. Set LINEAR_API_KEY or LINEAR_TOKEN, or store a generic ` +
       `password in the macOS Keychain (service "${READ_KEYCHAIN_SERVICE}", account "${account}").`,
   );
-}
-
-/** Resolves the ClawSweeper OAuth app client_id/secret from the Keychain. Never logged. */
-export function resolveAppCredentials(options = {}) {
-  const account = options.account ?? DEFAULT_KEYCHAIN_ACCOUNT;
-  const runKeychain = options.runKeychain ?? defaultKeychainLookup;
-
-  const clientId = runKeychain(APP_CLIENT_ID_SERVICE, account).trim();
-  const clientSecret = runKeychain(APP_CLIENT_SECRET_SERVICE, account).trim();
-  if (clientId === "" || clientSecret === "") {
-    throw new Error(
-      `ClawSweeper OAuth app credentials not found in the macOS Keychain ` +
-        `(services "${APP_CLIENT_ID_SERVICE}" / "${APP_CLIENT_SECRET_SERVICE}", account "${account}").`,
-    );
-  }
-  return { clientId, clientSecret };
 }
 
 /**
@@ -765,8 +746,8 @@ Options:
   --help, -h                 Show this help message
 
 Auth: READ uses the personal key (LINEAR_API_KEY/LINEAR_TOKEN or Keychain service
-"${READ_KEYCHAIN_SERVICE}", raw header). Comment plans do not read the reserved OAuth
-app credentials or mint a Bearer token.
+"${READ_KEYCHAIN_SERVICE}", raw header). The sidecar contains no OAuth token-minting or
+GraphQL mutation transport.
 
 Examples:
   # Dry-run (default): print the planned comment for PAR-244, write nothing

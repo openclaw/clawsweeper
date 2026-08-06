@@ -28,13 +28,6 @@ export function resolveLinearToken(options?: ResolveTokenOptions): string {
 
 export interface LinearTransportOptions {
   token?: string;
-  /**
-   * Authorization header style. "raw" (the default) sends the token verbatim — the
-   * personal-API-key read path Linear expects. "bearer" sends `Bearer <token>`, the
-   * form required for OAuth client_credentials access tokens (the write/comment path).
-   * Defaulting to "raw" keeps the existing read path byte-for-byte unchanged.
-   */
-  auth?: "raw" | "bearer";
   endpoint?: string;
   fetchImpl?: typeof fetch;
   maxRetries?: number;
@@ -43,7 +36,6 @@ export interface LinearTransportOptions {
 }
 
 const LINEAR_ENDPOINT = "https://api.linear.app/graphql";
-const LINEAR_OAUTH_TOKEN_ENDPOINT = "https://api.linear.app/oauth/token";
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -103,9 +95,6 @@ export function createLinearTransport(options?: LinearTransportOptions): LinearT
   const resolveOpts: ResolveTokenOptions = {};
   if (options?.token !== undefined) resolveOpts.token = options.token;
   const token = resolveLinearToken(resolveOpts);
-  // Compute the Authorization header value once; reused on every retry attempt.
-  // Bearer for OAuth access tokens, raw token for the personal-key read path (default).
-  const authHeader = options?.auth === "bearer" ? `Bearer ${token}` : token;
   const endpoint = options?.endpoint ?? LINEAR_ENDPOINT;
   const fetchImpl = options?.fetchImpl ?? fetch;
   const maxRetries = options?.maxRetries ?? 5;
@@ -116,8 +105,10 @@ export function createLinearTransport(options?: LinearTransportOptions): LinearT
     query: string,
     variables: Record<string, unknown>,
   ): Promise<unknown> {
+    if (/^\s*mutation\b/i.test(query)) {
+      throw new Error("Linear transport is read-only; GraphQL mutations are disabled");
+    }
     let attempt = 0;
-    const isMutation = /^\s*mutation\b/i.test(query);
 
     while (true) {
       let response: Response;
@@ -125,7 +116,7 @@ export function createLinearTransport(options?: LinearTransportOptions): LinearT
         response = await fetchImpl(endpoint, {
           method: "POST",
           headers: {
-            Authorization: authHeader,
+            Authorization: token,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ query, variables }),
@@ -133,7 +124,7 @@ export function createLinearTransport(options?: LinearTransportOptions): LinearT
       } catch (networkError) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         const linearErr = new LinearRequestError(networkErrorMessage(err));
-        if (!isMutation && attempt < maxRetries && shouldRetryLinear(linearErr)) {
+        if (attempt < maxRetries && shouldRetryLinear(linearErr)) {
           const kind = linearRetryKind(linearErr);
           await sleep(linearRetryWaitMs(kind, attempt, undefined, now()));
           attempt++;
@@ -164,7 +155,7 @@ export function createLinearTransport(options?: LinearTransportOptions): LinearT
         const code = extractErrorCode(errors) ?? topLevelCode;
         const resetAtMs = parseResetHeader(response.headers);
         const err = new LinearRequestError(message, makeErrOpts(response.status, code, resetAtMs));
-        if (!isMutation && attempt < maxRetries && shouldRetryLinear(err)) {
+        if (attempt < maxRetries && shouldRetryLinear(err)) {
           const kind = linearRetryKind(err);
           await sleep(linearRetryWaitMs(kind, attempt, resetAtMs, now()));
           attempt++;
@@ -181,7 +172,7 @@ export function createLinearTransport(options?: LinearTransportOptions): LinearT
         const code = extractErrorCode(errors);
         const resetAtMs = parseResetHeader(response.headers);
         const err = new LinearRequestError(message, makeErrOpts(response.status, code, resetAtMs));
-        if (!isMutation && attempt < maxRetries && shouldRetryLinear(err)) {
+        if (attempt < maxRetries && shouldRetryLinear(err)) {
           const kind = linearRetryKind(err);
           await sleep(linearRetryWaitMs(kind, attempt, resetAtMs, now()));
           attempt++;
@@ -193,79 +184,4 @@ export function createLinearTransport(options?: LinearTransportOptions): LinearT
       return body["data"];
     }
   };
-}
-
-/** Options for minting an OAuth client_credentials access token. */
-export interface MintAppTokenOptions {
-  clientId: string;
-  clientSecret: string;
-  scope?: string; // default "read,write"
-  endpoint?: string; // default https://api.linear.app/oauth/token
-  fetchImpl?: typeof fetch;
-}
-
-/** The result of a successful mint. Carries no secret — only the access token + lifetime. */
-export interface MintedAppToken {
-  accessToken: string;
-  expiresInSec: number;
-  tokenType: string; // typically "Bearer"
-}
-
-/**
- * Mints a Linear OAuth access token via the client_credentials grant (actor=app).
- *
- * This is a one-shot urlencoded POST to the OAuth token endpoint — NOT a GraphQL call,
- * so it deliberately does not route through createLinearTransport. The returned access
- * token is used with `createLinearTransport({ token, auth: "bearer" })` for writes.
- *
- * Secret hygiene: clientId, clientSecret, and the minted accessToken are NEVER logged,
- * stringified into errors, or otherwise surfaced. Error messages carry only the HTTP
- * status / OAuth error code, never the credentials or token.
- */
-export async function mintLinearAppToken(options: MintAppTokenOptions): Promise<MintedAppToken> {
-  const { clientId, clientSecret } = options;
-  if (!clientId || !clientSecret) {
-    throw new Error("mintLinearAppToken requires both clientId and clientSecret");
-  }
-  const endpoint = options.endpoint ?? LINEAR_OAUTH_TOKEN_ENDPOINT;
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const scope = options.scope ?? "read,write";
-
-  const body = new URLSearchParams({
-    grant_type: "client_credentials",
-    client_id: clientId,
-    client_secret: clientSecret,
-    scope,
-  }).toString();
-
-  const response = await fetchImpl(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
-
-  let parsed: Record<string, unknown> = {};
-  try {
-    parsed = (await response.json()) as Record<string, unknown>;
-  } catch {
-    // best effort; keep empty so the error below stays token-free
-  }
-
-  if (!response.ok) {
-    const code = typeof parsed["error"] === "string" ? String(parsed["error"]) : undefined;
-    const detail = code ? `: ${code}` : "";
-    throw new LinearRequestError(
-      `Linear OAuth token mint failed (HTTP ${response.status})${detail}`,
-      makeErrOpts(response.status, code, undefined),
-    );
-  }
-
-  const accessToken = parsed["access_token"];
-  if (typeof accessToken !== "string" || accessToken.length === 0) {
-    throw new Error("Linear OAuth token mint returned no access_token");
-  }
-  const expiresInSec = typeof parsed["expires_in"] === "number" ? parsed["expires_in"] : 0;
-  const tokenType = typeof parsed["token_type"] === "string" ? parsed["token_type"] : "Bearer";
-
-  return { accessToken, expiresInSec, tokenType };
 }

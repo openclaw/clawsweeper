@@ -31,14 +31,8 @@ export {
   TEAMS_QUERY,
 } from "./queries.js";
 
-export { createLinearTransport, mintLinearAppToken, resolveLinearToken } from "./client.js";
-export type {
-  LinearTransport,
-  LinearTransportOptions,
-  MintAppTokenOptions,
-  MintedAppToken,
-  ResolveTokenOptions,
-} from "./client.js";
+export { createLinearTransport, resolveLinearToken } from "./client.js";
+export type { LinearTransport, LinearTransportOptions, ResolveTokenOptions } from "./client.js";
 
 export { LinearItemSource, parseLinearIdentifier } from "./source.js";
 export type { ParsedIdentifier } from "./source.js";

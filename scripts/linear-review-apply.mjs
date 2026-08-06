@@ -27,7 +27,7 @@
  *   - Comment approvals remain reviewable plan artifacts, but no comment action is executable
  *     until durable shared settlement exists.
  *
- * Secret hygiene: no token, client id, or client secret is ever logged.
+ * The sidecar has no OAuth token-minting or GraphQL mutation transport.
  */
 
 import { createHash } from "node:crypto";
@@ -37,7 +37,6 @@ import { fileURLToPath } from "node:url";
 import {
   authorizeMutation,
   buildMutationReceipt,
-  classifyRecord,
   chooseScope,
   createLinearTransport,
   evaluateReviewPolicy,
@@ -47,9 +46,7 @@ import {
   ISSUE_LABELS_QUERY,
   ISSUE_SET_LABELS_MUTATION,
   LinearItemSource,
-  mapWorkspaceItem,
   matchIdentifier,
-  mintLinearAppToken,
   nextReviewLabels,
   resolveGates,
   resolveScope,
@@ -60,7 +57,6 @@ import {
   DEFAULT_KEYCHAIN_ACCOUNT,
   NOTIFY_ENV,
   readBackComment,
-  resolveAppCredentials,
   resolveReadToken,
   resolveWriteDecision,
   resolveWriteMode,
@@ -288,23 +284,6 @@ function pickValue(entry, key, receiptKey) {
   return "";
 }
 
-/** Mints ONE short-lived Bearer transport for the whole batch. Token is never logged. */
-async function mintWriteTransport(appCreds, deps = {}) {
-  const minted = await mintLinearAppToken({
-    clientId: appCreds.clientId,
-    clientSecret: appCreds.clientSecret,
-    scope: "read,write",
-    ...(deps.mintEndpoint ? { endpoint: deps.mintEndpoint } : {}),
-    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
-  });
-  return createLinearTransport({
-    token: minted.accessToken,
-    auth: "bearer",
-    ...(deps.graphqlEndpoint ? { endpoint: deps.graphqlEndpoint } : {}),
-    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
-  });
-}
-
 /**
  * Whether a LIVE label write is permitted. A label write needs BOTH the explicit
  * --apply-labels flag AND the OPENCLAW_NOTIFY_LINEAR=1 environment opt-in (the same env opt-in
@@ -376,19 +355,14 @@ export function planLabelChange(record, decision) {
 }
 
 /**
- * Resolves wanted label NAMES to label ids, creating any that do not exist. Deterministic
- * given its inputs + a stub createLabel. Lookup order per name (case-insensitive):
- *   1. issueLabelsOnIssue — ids already attached to the issue (no extra read)
- *   2. workspaceLabels    — every workspace label (paginated read result)
- *   3. createLabel(name)  — mint a missing label (live only) and record it as created
- * Returns { ids, createdNames }. The caller passes the PROPOSED set so ids cover existing ∪
- * additions. Never logs secrets; createLabel is the only side-effecting input.
+ * Resolves planned label names to ids for deterministic settlement tests. The production
+ * sidecar does not supply a mutation-capable transport or call this helper.
  */
 export async function resolveLabelIds(wantedNames, opts) {
   const onIssue = opts.issueLabelsOnIssue ?? [];
   const workspace = opts.workspaceLabels ?? [];
   const findIn = (list, name) =>
-    list.find((l) => (l.name ?? "").toLowerCase() === name.toLowerCase());
+    list.find((label) => (label.name ?? "").toLowerCase() === name.toLowerCase());
   const ids = [];
   const createdNames = [];
   for (const name of wantedNames) {
@@ -404,7 +378,7 @@ export async function resolveLabelIds(wantedNames, opts) {
   return { ids, createdNames };
 }
 
-/** Reads EVERY workspace label (id + name) via the paginated ISSUE_LABELS_QUERY. */
+/** Read-only workspace-label pagination helper retained for settlement tests. */
 export async function fetchWorkspaceLabels(transport) {
   const all = [];
   let after = null;
@@ -421,8 +395,8 @@ export async function fetchWorkspaceLabels(transport) {
     ) {
       throw new Error("workspace label pagination returned a malformed connection");
     }
-    for (const node of page?.nodes ?? []) all.push({ id: node.id, name: node.name });
-    if (!page?.pageInfo?.hasNextPage) break;
+    for (const node of page.nodes) all.push({ id: node.id, name: node.name });
+    if (!page.pageInfo.hasNextPage) break;
     const nextCursor = page.pageInfo.endCursor;
     if (typeof nextCursor !== "string" || nextCursor.trim() === "") {
       throw new Error("workspace label pagination returned hasNextPage without a usable endCursor");
@@ -477,12 +451,8 @@ export function authorizeLabelChange(record, change, approval = null) {
 }
 
 /**
- * Performs the gated live label write for one item. Resolves the PROPOSED set to ids
- * (creating any missing label via the shared Bearer transport), then writes the union via
- * ISSUE_SET_LABELS_MUTATION. Returns { labelAction, labelsApplied, labelsCreated }. The
- * caller has already confirmed the gate is open, the change is not a noop, and authorization
- * allowed. `issueLabelsOnIssue` is the issue's current { id, name } labels (from the hydrated
- * read). Reuses the ONE minted Bearer transport — never mints its own.
+ * Settlement helper exercised only with an explicitly injected transport. Production CLIs
+ * never call it, and createLinearTransport rejects its mutation documents before fetch.
  */
 export async function applyLabelChange(record, change, transport, deps = {}) {
   const assertNoLabelDrift = async () => {
@@ -674,10 +644,6 @@ async function mapPool(inputs, limit, worker) {
   return results;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function itemOptionsFor(identifier, options, approval) {
   return {
     identifier,
@@ -752,39 +718,13 @@ function printHuman(report) {
 }
 
 /**
- * Plans (and, when fully gated, applies) the additive label change for one item. Always
- * records the plan on the summary (labelAction/labelChange/labelAuthorized) so a dry-run
- * shows exactly what a live run would do. A live label write requires ALL of:
- *   - labelMode.live    (--apply-labels + OPENCLAW_NOTIFY_LINEAR=1)
- *   - eligible          (never label closed / protected / excluded items)
- *   - not a noop        (there is at least one additive label)
- *   - authorization     (authority.authorizeMutation allowed — additive union, no drop)
- * Additive only; never drops a label; protected action labels are denylist-asserted upstream.
+ * Records the additive label proposal for one item. The sidecar deliberately has no label
+ * mutation transport, so this function cannot turn an authorized proposal into a write.
  */
-export async function applyLabelStep(entry, summary, labelMode, ensureWriteTransport, deps = {}) {
+export async function applyLabelStep(entry, summary, labelMode, _ensureWriteTransport, deps = {}) {
   try {
-    let hydrated = entry.result.hydrated;
-    let record = entry.result.record;
-    let classification = entry.result.classification;
-
-    // A replace-all labelIds mutation must be planned from an immediate live read. This
-    // preserves unrelated labels added after the batch planning phase and makes snapshot or
-    // plan drift deny the write against the separately reviewed label approval.
-    if (labelMode.live) {
-      hydrated = await deps.source.fetchIssueByIdentifier(entry.identifier);
-      if (hydrated === null) {
-        throw new Error(`no Linear issue found for identifier "${entry.identifier}"`);
-      }
-      record = mapWorkspaceItem(hydrated);
-      classification = classifyRecord(record, {
-        nowIso: entry.result.nowIso,
-        staleDays: deps.options.staleDays,
-        requiredLabels: deps.options.requiredLabels,
-        exclusionLabels: deps.options.exclusionLabels,
-        protectedLabels: deps.options.protectedLabels,
-      });
-    }
-
+    const record = entry.result.record;
+    const classification = entry.result.classification;
     const decision = evaluateReviewPolicy(classification, record);
     const change = planLabelChange(record, decision);
     const { authorization, receipt } = authorizeLabelChange(record, change, deps.approval ?? null);
@@ -800,37 +740,13 @@ export async function applyLabelStep(entry, summary, labelMode, ensureWriteTrans
     summary.labelSnapshotHash = receipt.snapshotHash;
     summary.labelReceipt = receipt;
 
-    const eligible = classification.eligible;
-    const wouldWriteLabels = eligible && !change.noop && authorization.allowed;
-    summary.labelWouldWrite = wouldWriteLabels;
-
-    if (change.noop) {
-      summary.labelAction = "noop";
-      summary.labelsApplied = [];
-      summary.labelsCreated = [];
-      return;
-    }
-    if (!labelMode.live || !wouldWriteLabels) {
-      // Dry-run, ineligible, or unauthorized — record the plan, write nothing.
-      summary.labelAction = "noop";
-      summary.labelsApplied = [];
-      summary.labelsCreated = [];
-      summary.labelWriteSkipped = !labelMode.live
-        ? labelMode.reason
-        : !eligible
-          ? "skipped: item not eligible for review"
-          : "skipped: label-add not authorized";
-      return;
-    }
-
-    const transport = await ensureWriteTransport();
-    const result = await applyLabelChange(record, change, transport, {
-      issueLabelsOnIssue: hydrated.issue.labels ?? [],
-      readBackIssue: () => deps.source.fetchIssueByIdentifier(entry.identifier),
-    });
-    summary.labelAction = result.labelAction;
-    summary.labelsApplied = result.labelsApplied;
-    summary.labelsCreated = result.labelsCreated;
+    summary.labelWouldWrite = false;
+    summary.labelAction = "noop";
+    summary.labelsApplied = [];
+    summary.labelsCreated = [];
+    summary.labelWriteSkipped = change.noop
+      ? "noop: the reviewed label set already matches"
+      : labelMode.reason;
   } catch (error) {
     summary.labelAction = "noop";
     summary.labelsApplied = [];
@@ -906,18 +822,6 @@ async function main() {
     }
   });
 
-  // Phase 2: comment plans remain read-only. The dormant label path keeps lazy credential
-  // resolution so a disabled label plan cannot read credentials or mint a token.
-  let writeTransport = null;
-  let appCreds = null;
-  const ensureWriteTransport = async () => {
-    if (writeTransport === null) {
-      appCreds = resolveAppCredentials({ account: options.keychainAccount });
-      writeTransport = await mintWriteTransport(appCreds);
-    }
-    return writeTransport;
-  };
-
   const items = [];
   for (const entry of planned) {
     if (entry.error) {
@@ -927,18 +831,12 @@ async function main() {
     const summary = entry.summary;
     summary.applied = false;
 
-    // Label write — independent of the comment write, same triple gate (--apply-labels +
-    // OPENCLAW_NOTIFY_LINEAR=1 + authority allowed) + eligible + not a noop. Additive only.
-    await applyLabelStep(entry, summary, labelMode, ensureWriteTransport, {
-      source,
-      options,
+    // Label plans remain proposal-only; the sidecar contains no mutation transport.
+    await applyLabelStep(entry, summary, labelMode, null, {
       approval: approvals.get(entry.identifier) ?? null,
     });
     if (summary.labelApplyError) process.exitCode = 1;
 
-    if (summary.labelAction === "create" || summary.labelAction === "add") {
-      if (options.rateMs > 0) await sleep(options.rateMs);
-    }
     items.push(summary);
   }
 
