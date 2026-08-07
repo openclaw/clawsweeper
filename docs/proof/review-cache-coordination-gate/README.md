@@ -277,20 +277,18 @@ regardless of what `main` did. No new constant is introduced.
 
 ## Controlled environment run (Crabbox `local-container`)
 
-The runs above executed on the author's host. This one repeats the focused
-validation inside a Docker-backed Crabbox lease at the current head, which is
-the controlled envelope `AGENTS.md` asks for on code-bearing changes.
+`AGENTS.md` asks for a controlled envelope on code-bearing changes: provider,
+image, lease, artifact, current head, and limits. This section holds the method
+and the commands. **The capture itself lives in the pull request body, not here**,
+because committing it would advance the head past the head it names — the
+envelope would then always identify an older commit than the one under review,
+which is exactly what happened on the first attempt. `AGENTS.md` asks for the
+proof to be kept current in the PR body, and a body edit does not move the head.
 
-| Field | Value |
-| --- | --- |
-| Provider | `local-container` (Docker) |
-| Runtime | Docker 29.4.2, context `default` |
-| Image | `ubuntu:26.04` @ `sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03` |
-| Lease | `cbx_6e190a5c1faa` (slug `cache-gate-proof`, container `492644ca26eb`, type `ubuntu_26.04`) |
-| Head | `d8d7c31dbd248c569c0e32368b65e2a9beb58893` |
-| Node | v24.19.0, pnpm 11.10.0 |
-| Artifact | `cbx_6e190a5c1faa-artifacts.tgz`, 8882 bytes, sha256 `65f220b7afa0d4fd4980703b1d2e0f4ff3abf851d9b4b5c1225d6f550ae796e8` |
-| Captured | 2026-08-07T05:53:12Z |
+The environment is a Docker-backed `local-container` lease: `.crabbox.yaml`
+targets `provider: aws`, and these runs override it with
+`--provider local-container`, the Linux path the provider documentation
+describes. No broker login, coordinator, or organization capacity is involved.
 
 Commands, from a clean lease:
 
@@ -306,24 +304,11 @@ crabbox run     --provider local-container --id cache-gate-proof --no-hydrate \
    node docs/proof/review-cache-coordination-gate/run-proof.mjs'
 ```
 
-Result inside the lease:
-
-```text
-head=d8d7c31dbd248c569c0e32368b65e2a9beb58893
-node=v24.19.0
-os=Ubuntu 26.04 LTS
-tests exit=0
-ℹ tests 271
-ℹ pass 271
-ℹ fail 0
-
-build                     post-fix
-coordinationEnabled       true
-structural probe          {"hit":true,"reason":"hit"}
-```
-
-The collected artifact holds `env.txt`, `tests.txt`, and `harness.txt` from that
-run.
+The run installs Node 24 and `jq`, `zip`, `unzip`, `gh` first, then builds and
+runs the focused suites and the harness inside the lease, and collects
+`env.txt`, `tests.txt`, and `harness.txt`. The captured `env.txt` records the
+head, the `dist/` build time, and `grep -c target_changed dist/…` so a reader
+can tell the lease built the tree rather than receiving a prebuilt one.
 
 ### Limits of this envelope
 
