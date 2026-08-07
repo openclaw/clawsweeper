@@ -544,6 +544,37 @@ test("automation timestamp collisions still require an identical structural rece
   );
 });
 
+test("a pull request survives target-branch movement but not its own base sync", () => {
+  // `baseRefOid` is pinned at pull-request synchronisation, not tracked to the
+  // base branch: openclaw/openclaw#118777 still reported base `d2c8fd2e` on
+  // 2026-08-07 after ~450 commits had landed on main since 2026-08-03, and four
+  // open pull requests updated within the same hour reported four different
+  // base oids. So an advancing default branch does not move a PR's base, and the
+  // source revision that hashes it stays stable.
+  const priorRecord = record(pullSnapshot());
+  assert.deepEqual(
+    decision({
+      priorRecord,
+      currentRecord: record(pullSnapshot({ targetHeadSha: "d".repeat(40) })),
+    }),
+    { hit: true, reason: "hit" },
+  );
+
+  // What must still invalidate is the PR actually being synchronised onto a new
+  // base, which changes the base oid and therefore the source revision.
+  const synced = pullSnapshot();
+  assert.equal(
+    decision({
+      priorRecord,
+      currentRecord: record({
+        ...synced,
+        pull: { ...synced.pull!, baseSha: "e".repeat(40) },
+      }),
+    }).reason,
+    "source_changed",
+  );
+});
+
 test("an advanced target head alone does not force hydration", () => {
   // The default branch advances for reasons unrelated to this item. Comparing it
   // across reviews means a repository whose main moves faster than the review
