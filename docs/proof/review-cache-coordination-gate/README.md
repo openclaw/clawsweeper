@@ -144,7 +144,7 @@ claim and the receipt-persistence path are exercised rather than inferred.
 
 - Target: <https://github.com/masatohoshino/clawsweeper-cache-proof> issue 1, a
   repository the proof author owns. Nothing was run against a production target.
-- Runner: the branch at `4692e40a`, built and executed from a copy of that tree.
+- Runner: the branch at `51276d4a`, built and executed from a copy of that tree.
   The only difference from the branch is one added entry in
   `config/target-repositories.json` `generic_fallbacks`, so the proof author's
   own account is onboarded the same way `openclaw/*` and `steipete/*` already
