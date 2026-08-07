@@ -452,17 +452,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               item.kind === "pull_request"
                 ? structuralRecord?.pullHeadSha
                 : priorReview?.itemSourceRevision;
-            // Validate the reservation before the decision, not after it. The
-            // workflow posts that comment before invoking this command, so its
-            // timestamp is the item's newest activity; the decision cannot tell
-            // owned activity from reporter activity without it. Validating first
-            // also means the claim below reuses this result instead of probing
-            // GitHub twice.
-            const suppliedLeaseClaim =
-              suppliedReviewLease && leaseRevision
-                ? claimSuppliedReviewLease(item.number, leaseRevision)
-                : null;
-            const structuralDecision = reviewStructuralCacheDecision({
+            const structuralDecisionInput = {
               review: priorReview,
               priorRecord: priorReview?.structuralRecord ?? null,
               currentRecord: structuralRecord,
@@ -471,14 +461,34 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               explicitDispatch,
               maintainerRequest,
               coordinationEnabled: reviewCoordinationEnabled,
-              ...(suppliedLeaseClaim?.status === "claimed"
-                ? {
-                    ownedReservationUpdatedAt: reviewStartLeaseCommentUpdatedAt(
-                      suppliedLeaseClaim.lease.comment,
-                    ),
-                  }
-                : {}),
-            });
+            };
+            let suppliedLeaseClaim: ReturnType<typeof claimSuppliedReviewLease> | null = null;
+            let structuralDecision = reviewStructuralCacheDecision(structuralDecisionInput);
+            if (
+              structuralDecision.reason === "activity_changed" &&
+              suppliedReviewLease &&
+              leaseRevision
+            ) {
+              // The workflow posts its reservation before invoking this command,
+              // so on the reserved-lease lane that comment is the item's newest
+              // activity and the decision cannot tell it from reporter activity.
+              // Validate the reservation and re-decide with it as the owned
+              // boundary. Doing this only when activity is the sole blocker keeps
+              // the extra probe off every other miss path, and the claim below
+              // reuses the result rather than probing GitHub twice.
+              suppliedLeaseClaim = claimSuppliedReviewLease(item.number, leaseRevision);
+              if (suppliedLeaseClaim.status === "claimed") {
+                const ownedReservationUpdatedAt = reviewStartLeaseCommentUpdatedAt(
+                  suppliedLeaseClaim.lease.comment,
+                );
+                if (ownedReservationUpdatedAt) {
+                  structuralDecision = reviewStructuralCacheDecision({
+                    ...structuralDecisionInput,
+                    ownedReservationUpdatedAt,
+                  });
+                }
+              }
+            }
             structuralCacheReasons.set(
               structuralDecision.reason,
               (structuralCacheReasons.get(structuralDecision.reason) ?? 0) + 1,
@@ -491,7 +501,14 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                   // keeps the single-lease invariant that `--skip-start-comment`
                   // exists to protect, so the cache stays reachable on the
                   // exact-event lane instead of being disabled by it.
-                  const claim = suppliedLeaseClaim ?? ({ status: "stale" } as const);
+                  // Reuse the validation from the activity re-decision when it
+                  // ran; otherwise this is the first time the reservation needs
+                  // to be elected.
+                  const claim =
+                    suppliedLeaseClaim ??
+                    (leaseRevision
+                      ? claimSuppliedReviewLease(item.number, leaseRevision)
+                      : ({ status: "stale" } as const));
                   console.error(
                     `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=${claim.status === "claimed" ? "reserved" : claim.status === "held" ? "held" : "stale-reservation"} #${item.number}`,
                   );
