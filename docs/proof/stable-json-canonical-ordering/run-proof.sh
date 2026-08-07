@@ -46,7 +46,8 @@ pnpm install --frozen-lockfile >"$ARTIFACT_DIR/install.log" 2>&1 \
 pnpm run build >"$ARTIFACT_DIR/build.log" 2>&1 \
   || { echo "FAIL: pnpm run build"; tail -30 "$ARTIFACT_DIR/build.log"; exit 1; }
 test -f dist/stable-json.js || { echo "FAIL: build did not produce dist/stable-json.js"; exit 1; }
-echo "post-fix comparator: $(grep -c localeCompare dist/stable-json.js) localeCompare references (expect 0)"
+# Count real calls, not the word where the module doc explains why it is not used.
+echo "post-fix comparator: $(grep -c '\.localeCompare(' dist/stable-json.js || true) localeCompare CALLS (expect 0)"
 echo
 
 echo "== compile pre-fix stable-json from $BASE_REF =="
@@ -54,7 +55,7 @@ PREFIX_DIR="$(mktemp -d)"
 git show "$BASE_REF:src/stable-json.ts" > "$PREFIX_DIR/stable-json.ts"
 ./node_modules/.bin/tsc "$PREFIX_DIR/stable-json.ts" --ignoreConfig \
   --target es2022 --module esnext --moduleResolution bundler --outDir "$PREFIX_DIR/out"
-echo "pre-fix comparator: $(grep -c localeCompare "$PREFIX_DIR/out/stable-json.js") localeCompare references (expect 1)"
+echo "pre-fix comparator: $(grep -c '\.localeCompare(' "$PREFIX_DIR/out/stable-json.js" || true) localeCompare CALLS (expect 1)"
 echo
 
 echo "== proof =="

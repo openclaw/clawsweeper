@@ -65,6 +65,15 @@ for (const [name, invisible] of [
 /* -- Claim 2: byte-defined ordering --------------------------------------- */
 
 console.log("\n== Claim 2: key order is byte-defined, not locale-defined ==\n");
+// Array-index-like keys are NOT byte-ordered: Object.fromEntries rebuilds the
+// object and the engine re-applies ascending-numeric order for them. That is
+// specified and locale independent, so the form stays canonical. Pinned here so
+// the caveat is visible rather than a surprise.
+check(
+  "array-index keys keep engine ascending-numeric order (documented caveat)",
+  stableJson({ "10": "ten", "2": "two", z: 1 }) === '{"2":"two","10":"ten","z":1}',
+  stableJson({ "10": "ten", "2": "two", z: 1 }),
+);
 check(
   'uppercase sorts before lowercase ("B" 0x42 < "a" 0x61)',
   stableJson({ a: 1, B: 2 }) === '{"B":2,"a":1}',
@@ -112,6 +121,13 @@ const PERSISTED_SHAPES = {
     checkRunsTruncated: false, statuses: [{ context: "c", state: "success", description: "d" }], statusesTruncated: false,
   },
   "action-ledger invocation id": { command: "plan", args: { batch_size: 10, items_dir: "x" } },
+  "reviewPolicyHash (runtime.ts:397)": {
+    version: 12, freshDays: 30, model: "model-excluded-2026-07",
+    reasoningEffort: "high", sandboxMode: "read-only", serviceTier: "default",
+  },
+  "assist artifact (assist.ts:596)": {
+    repo: "o/r", number: 1, kind: "issue", requestedAt: "2026-01-01T00:00:00Z", targetRepo: "o/r",
+  },
 };
 
 const preFixPath = process.argv[2];

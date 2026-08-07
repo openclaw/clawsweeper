@@ -17,6 +17,14 @@
  *
  * `stableJsonCodeUnit` / `sortStableCodeUnit` are retained as explicit aliases;
  * they are equivalent to the unsuffixed pair.
+ *
+ * One caveat: array-index-like keys ("0", "2", "10") are not emitted in code-unit
+ * order. `Object.fromEntries` rebuilds the object and the engine re-applies its
+ * own ascending-numeric ordering for those keys, which this comparator cannot
+ * override. That ordering is specified by ECMAScript and is locale independent,
+ * so the output stays canonical - it simply is not purely byte-ordered. Callers
+ * needing byte order for numeric keys should serialize them directly, as
+ * `actionLedgerJson` does.
  */
 
 export function stableJson(value: unknown): string {

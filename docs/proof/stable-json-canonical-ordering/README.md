@@ -32,15 +32,21 @@ never exposed to this defect and are untouched by the fix.
 2. **Byte order** — `{a, B}` serializes with `B` first (0x42 < 0x61), and the
    `cs-CZ`-sensitive trio `changedFiles` / `checksDigest` / `commitCount` keeps
    byte order. Czech collates `ch` after `h`, which reorders exactly those keys.
-3. **No churn** — seven persisted digest shapes, copied from the call sites that
-   import the locale-ordered `stableJson`, serialize byte-identically to a
+3. **No churn** — nine persisted digest shapes, copied from every call site that
+   imports the locale-ordered `stableJson`, serialize byte-identically to a
    **pre-fix build compiled from the base commit**. The pre-fix module is compiled
    inside the lease from `git show <base>:src/stable-json.ts`; if it is not
    supplied the proof reports SKIPPED and fails rather than passing silently.
 
+Claim 2 also pins a documented caveat: array-index-like keys (`"2"`, `"10"`) are
+**not** byte-ordered. `Object.fromEntries` rebuilds the object and the engine
+re-applies its ascending-numeric order for those keys, which the comparator cannot
+override. That ordering is ECMAScript-specified and locale independent, so the form
+stays canonical — it simply is not purely byte-ordered.
+
 ## Expected observation
 
-15 checks, all PASS, exit 0. Pre-fix, claims 1 and 2 both fail:
+18 checks, all PASS, exit 0. Pre-fix, claims 1 and 2 both fail:
 
 ```
 insertion-order independence: VIOLATED
@@ -70,10 +76,10 @@ pnpm run build
 node docs/proof/stable-json-canonical-ordering/run-proof.mjs /path/to/pre-fix/stable-json.js
 ```
 
-Focused tests:
+Focused tests (the ledger test pins the shared-JSON ordering contract, so run both):
 
 ```bash
-node --test test/stable-json.test.ts
+node --test test/stable-json.test.ts test/action-ledger.test.ts
 ```
 
 ## Provenance
@@ -82,11 +88,11 @@ node --test test/stable-json.test.ts
 - crabbox: `0.15.0`
 - image: `node:24` @ `sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584`
 - container node: `v24.19.0` (satisfies `engines.node >= 24`)
-- lease: `cbx_260b82c60c03` (`brisk-lobster`)
-- run: `run_3a13e83c0068`
-- artifact: `.crabbox/runs/run_3a13e83c0068/run_3a13e83c0068-artifacts.tgz`
+- lease: `cbx_9800bb5dbeab` (`jade-barnacle`)
+- run: `run_b276f842aa3d`
+- artifact: `.crabbox/runs/run_b276f842aa3d/run_b276f842aa3d-artifacts.tgz`
   (`proof-output.txt`, `focused-tests.txt`, `install.log`, `build.log`)
-- result: exit `0`; 15/15 proof checks PASS; focused suite `6/6`
+- result: exit `0`; 18/18 proof checks PASS; focused suite `6/6`
 - privacy: synthetic fixtures only. The proof makes no network call, contacts no
   GitHub API, and performs no queue, GitHub, or production mutation.
 
@@ -109,10 +115,25 @@ covers only digests that outlive a run.
 Covers key ordering only. It does not change what goes *into* any digest, the
 allowed value types, or `JSON.stringify` semantics.
 
-Claim 3 is evidence over seven representative shapes taken from the call sites,
-not an exhaustive enumeration of every object ever passed to `stableJson`. A
-shape whose sibling keys differ only by case or by a `ch`-style collation
-boundary could still churn; none was found among the real call sites.
+Claim 3 covers nine shapes — one per call site that imports the locale-ordered
+`stableJson` — but it is **evidence, not an exhaustive proof**. The payloads are
+built from live GitHub data, so a field set that never appears in these fixtures
+cannot be ruled out by them.
+
+The residual risk is precisely characterizable: churn requires two **sibling keys
+in the same object** that the two comparators order differently. That happens when
+they differ only by case (`Accept` vs `accept` — code units put uppercase first,
+collation treats case as a tertiary difference) or straddle a locale-specific
+digraph boundary (Czech `ch`). None of the real digest payloads mixes cased
+siblings; they use consistent `camelCase` or `snake_case`.
+
+An attempt to make this exhaustive by scraping every object-literal key from the
+consuming modules and checking all 827,541 key pairs was **rejected as unsound**:
+that universe includes keys never passed to `stableJson` (HTTP headers such as
+`Accept` and `Authorization`, dashboard SQL columns), so its 15,246 "disagreements"
+are false positives that say nothing about actual digest payloads. Narrowing the
+universe correctly needs AST-level extraction of the payload literals, which is not
+justified for a P2 determinism fix.
 
 **Deliberately out of scope:** `src/clawsweeper-source-revision.ts:73` sorts
 comments by `` `${id}:${updated_at}`.localeCompare(...) ``. That has the same root
