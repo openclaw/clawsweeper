@@ -5789,6 +5789,10 @@ test("every action-ledger publication authenticates the expected producer job", 
   assert.equal(commands.length, 7);
   assert.ok(commands.every((command) => command.includes("--expected-producer-job")));
   assert.match(workflow, /--expected-producer-job review/);
+  assert.match(
+    workflow,
+    /--expected-producer-job review \\\n\s+--expected-producer-max-run-attempt "\$GITHUB_RUN_ATTEMPT"/,
+  );
   assert.match(workflow, /--expected-producer-job apply-proof/);
 });
 

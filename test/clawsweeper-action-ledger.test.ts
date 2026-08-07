@@ -102,6 +102,34 @@ test("action event import rejects an invalid expected producer run ID", async ()
   );
 });
 
+test("action event import rejects an invalid maximum producer run attempt", async () => {
+  await assert.rejects(
+    main([
+      "publish-action-events",
+      "--expected-producer-job",
+      "review",
+      "--expected-producer-max-run-attempt",
+      "0",
+    ]),
+    /expected-producer-max-run-attempt must be a positive integer/,
+  );
+});
+
+test("action event import keeps exact and maximum producer attempts mutually exclusive", async () => {
+  await assert.rejects(
+    main([
+      "publish-action-events",
+      "--expected-producer-job",
+      "review",
+      "--expected-producer-run-attempt",
+      "1",
+      "--expected-producer-max-run-attempt",
+      "2",
+    ]),
+    /expected-producer-run-attempt and --expected-producer-max-run-attempt are mutually exclusive/,
+  );
+});
+
 test("action event import rejects an invalid expected producer SHA", async () => {
   await assert.rejects(
     main([

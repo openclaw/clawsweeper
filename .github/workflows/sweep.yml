@@ -4467,7 +4467,8 @@ jobs:
           pnpm run --silent publish-action-events -- \
             --source-root .clawsweeper-repair/action-ledger-download \
             --state-root . \
-            --expected-producer-job review |
+            --expected-producer-job review \
+            --expected-producer-max-run-attempt "$GITHUB_RUN_ATTEMPT" |
             jq -r '.paths[]?' >> .artifacts/action-ledger-paths.txt
           pnpm run --silent publish-action-events -- \
             --source-root "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT" \

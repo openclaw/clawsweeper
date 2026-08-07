@@ -34,12 +34,26 @@ export function createActionCommands(dependencies: CreateActionCommandsDependenc
       throw new UserFacingCommandError("--expected-producer-job is required");
     }
     const expectedProducerRunAttempt = optionalNumberArg(args.expected_producer_run_attempt);
+    const expectedProducerMaxRunAttempt = optionalNumberArg(args.expected_producer_max_run_attempt);
+    if (expectedProducerRunAttempt !== undefined && expectedProducerMaxRunAttempt !== undefined) {
+      throw new UserFacingCommandError(
+        "--expected-producer-run-attempt and --expected-producer-max-run-attempt are mutually exclusive",
+      );
+    }
     if (
       expectedProducerRunAttempt !== undefined &&
       (!Number.isInteger(expectedProducerRunAttempt) || expectedProducerRunAttempt < 1)
     ) {
       throw new UserFacingCommandError(
         "--expected-producer-run-attempt must be a positive integer",
+      );
+    }
+    if (
+      expectedProducerMaxRunAttempt !== undefined &&
+      (!Number.isInteger(expectedProducerMaxRunAttempt) || expectedProducerMaxRunAttempt < 1)
+    ) {
+      throw new UserFacingCommandError(
+        "--expected-producer-max-run-attempt must be a positive integer",
       );
     }
     const expectedProducerRunId = stringArg(args.expected_producer_run_id, "");
@@ -53,6 +67,10 @@ export function createActionCommands(dependencies: CreateActionCommandsDependenc
       throw new UserFacingCommandError("--expected-producer-sha must be a lowercase commit SHA");
     }
     const currentProducer = workflowActionProducer("action_event_publisher");
+    const expectedRunAttempt =
+      expectedProducerMaxRunAttempt === undefined
+        ? { runAttempt: expectedProducerRunAttempt ?? currentProducer.runAttempt }
+        : { maxRunAttempt: expectedProducerMaxRunAttempt };
     const result = importActionEventShards(sourceRoot, stateRoot, {
       expectedProducer: {
         repository: currentProducer.repository,
@@ -60,7 +78,7 @@ export function createActionCommands(dependencies: CreateActionCommandsDependenc
         workflow: currentProducer.workflow,
         job: expectedProducerJob,
         runId: expectedProducerRunId || currentProducer.runId,
-        runAttempt: expectedProducerRunAttempt ?? currentProducer.runAttempt,
+        ...expectedRunAttempt,
       },
     });
     console.log(JSON.stringify(result, null, 2));
