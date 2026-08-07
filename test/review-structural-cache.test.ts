@@ -544,10 +544,28 @@ test("automation timestamp collisions still require an identical structural rece
   );
 });
 
-test("changed target head forces issue hydration", () => {
+test("an advanced target head alone does not force hydration", () => {
+  // The default branch advances for reasons unrelated to this item. Comparing it
+  // across reviews means a repository whose main moves faster than the review
+  // cadence can never reuse a verdict. Staleness is bounded by the review-age
+  // ceiling instead, which the probe enforces separately.
   const priorRecord = record();
   const currentRecord = record(issueSnapshot({ targetHeadSha: "d".repeat(40) }));
-  assert.equal(decision({ priorRecord, currentRecord }).reason, "target_changed");
+  assert.deepEqual(decision({ priorRecord, currentRecord }), { hit: true, reason: "hit" });
+
+  // The ceiling is what keeps a reused verdict from living forever.
+  assert.equal(
+    reviewStructuralCacheProbeDecision({
+      review: review({ lastFullReviewAt: new Date(NOW - 14 * DAY_MS).toISOString() }),
+      reviewPolicy: "policy-1",
+      reviewModel: "gpt-5.6",
+      explicitDispatch: false,
+      maintainerRequest: false,
+      coordinationEnabled: true,
+      now: NOW,
+    }).reason,
+    "stale_review",
+  );
 });
 
 test("relation-sensitive records always force full hydration", () => {

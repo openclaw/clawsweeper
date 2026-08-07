@@ -1289,9 +1289,15 @@ export function reviewStructuralCacheDecision(
   if (current.relationSensitive) {
     return { hit: false, reason: "relation_context_present" };
   }
-  if (prior.targetHeadSha !== current.targetHeadSha) {
-    return { hit: false, reason: "target_changed" };
-  }
+  // The target branch head is deliberately not compared across reviews. It
+  // advances for reasons that have nothing to do with this item, so on a
+  // repository whose default branch moves faster than the review cadence it can
+  // never match and the cache reuses nothing. Periodic re-review is bounded
+  // instead by REVIEW_STRUCTURAL_CACHE_MAX_AGE_DAYS, which the probe already
+  // enforces: a recorded verdict is reused for at most that long before a full
+  // review runs regardless of what main did. The record still carries
+  // targetHeadSha so a single run can verify main held still across its own
+  // pre- and post-hydration probes.
   if (prior.pullHeadSha !== current.pullHeadSha) {
     return { hit: false, reason: "pull_head_changed" };
   }

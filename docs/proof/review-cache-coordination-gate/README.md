@@ -1,20 +1,28 @@
-# Proof: the exact-event lane could not reach its own structural receipt
+# Proof: scheduled reviews never reused a cached verdict
 
 ## Claim
 
-`.github/workflows/sweep.yml` reserves the durable review lease in its own
-write-token step, so it must invoke the review command with
-`--skip-start-comment`. That flag also decided `coordinationEnabled`, which
-`reviewStructuralCacheProbeDecision` consults before anything else. Scheduled
-deliveries therefore returned `coordination_disabled`, skipped the probe, and
-re-ran full hydration plus Codex on unchanged items — and because the probe
-never ran, `preHydrationStructuralRecord` stayed `null` and the seeding branch
-could never persist a receipt for the next review either.
+A scheduled delivery of an unchanged item re-ran full hydration and Codex every
+pass. Three conditions on the same cache-eligibility path each blocked reuse, and
+all three had to go for the outcome to change:
+
+1. **`coordination_disabled`** — `sweep.yml` reserves the review lease in its own
+   write-token step, so it must pass `--skip-start-comment`; that flag also
+   decided `coordinationEnabled`, which the probe consults before anything else.
+   The probe never ran, so `preHydrationStructuralRecord` stayed `null` and the
+   seeding branch could never persist a receipt for the next review either.
+2. **`activity_changed`** — the reservation the workflow posts is itself the
+   item's newest activity, landing after the sync markers the prior review
+   recorded, so ClawSweeper's own write read as reporter activity.
+3. **`target_changed`** — the decision compared the target repository's default
+   branch head across reviews. That head advances for reasons unrelated to the
+   item, so where it moves faster than the review cadence the key can never match.
 
 ## Level
 
-Module-level proof against the built `dist/` output, using production argument
-values. It is not a live end-to-end trace; see Limits.
+Module-level captures against the built `dist/` output using production argument
+values, plus end-to-end runs of the shipped `review` command against a live
+GitHub item. Not a trace against a production target; see Limits.
 
 ## Exercised surface
 
@@ -117,13 +125,12 @@ hydrated and re-reviewed in full.
   limit. The end-to-end section below closes part of this gap on a repository the
   proof author owns.
 - The end-to-end section below reaches a structural cache hit with no hydration
-  and no Codex call. Separately, this change does not by
-  itself produce cache hits on `openclaw/openclaw`, because `reviewStructuralCacheDecision`
-  separately compares the target repository's `main` head between reviews
-  (`src/review-structural-cache.ts:1280`), and that head advances roughly every
-  13 minutes there (100 commits in 21h11m, measured 2026-08-07). Whether an
-  unrelated `main` commit should invalidate a pull request's verdict is a design
-  question, filed separately.
+  and no Codex call, including after the target branch advanced. The runs use one
+  repository the proof author owns; behaviour on a production target is inferred
+  from the shipped code being identical, not observed. `openclaw/openclaw` is the
+  case that motivates this: its default branch advanced 100 times in the 21h11m
+  ending 2026-08-07, roughly once every 13 minutes, against a daily review
+  cadence.
 - No production review jobs were dispatched, no model capacity was consumed, and
   no contributor notifications were generated while validating this change.
 
@@ -225,6 +232,36 @@ review_structural_cache_hit: true
 `hydrations=0` is the point: the run neither hydrated GitHub context nor called
 Codex. It took 8 seconds end to end, against 70-150 seconds for the full reviews
 in runs 1-3.
+
+### An unrelated commit on the target branch no longer forces a full review
+
+The runs above kept the target repository's `main` still. Advancing it by one
+commit that has nothing to do with the item — a comment appended to `README.md`,
+where the item is about `src/slug.js` — was enough to lose the hit before this
+change:
+
+```text
+structural_cache_reasons: { "target_changed": 1 }
+cache_hits=0  hydrations=1                      (103 s, full hydration + Codex)
+```
+
+Same item, same reserved-lease flow, same advanced `main`, after the change:
+
+```text
+[review] shard=0/1 structural-cache-start-comment=reserved #1
+[review] shard=0/1 cache-hit structural-unchanged skip-hydration-model #1 (1/1)
+[review] shard=0/1 complete reviewed=1 cache_hits=1 structural_cache_checks=1
+  structural_cache_hits=1 ... content_cache_hits=0 hydrations=0
+```
+
+```json
+"structural_cache_reasons": { "hit": 1 }
+```
+
+8 seconds instead of 103, with no Codex call. Staleness is still bounded: the
+probe rejects any recorded verdict older than
+`REVIEW_STRUCTURAL_CACHE_MAX_AGE_DAYS`, so a full review still runs periodically
+regardless of what `main` did. No new constant is introduced.
 
 ### What this run did not establish
 
