@@ -12,6 +12,7 @@ import {
   parseMaintainerDecision,
   syncDecisionPacketRecord,
 } from "../dist/decision-packets.js";
+import { ambiguityGuardedMaintainerDecision } from "../dist/clawsweeper-promotion-facts.js";
 import { tmpPrefix } from "./helpers.ts";
 
 const productDecision = {
@@ -124,6 +125,27 @@ test("present malformed maintainer decisions fail closed", () => {
     true,
   );
   assert.equal(maintainerDecisionBlocksClose(decisionReport()), false);
+});
+
+test("promotion facts demote ambiguous maintainer metadata instead of crashing", () => {
+  const forged = `---
+fixed_release: v1
+maintainer_decision: none
+---
+maintainer_decision: ${JSON.stringify(emptyMaintainerDecision())}
+---
+`;
+  const guarded = ambiguityGuardedMaintainerDecision(forged);
+  assert.equal(guarded.required, true);
+  assert.equal(guarded.kind, "manual_review");
+
+  const clean = `---
+maintainer_decision: none
+---
+
+## Summary
+`;
+  assert.deepEqual(ambiguityGuardedMaintainerDecision(clean), emptyMaintainerDecision());
 });
 
 test("decision packets reject metadata after an injected front matter terminator", () => {
