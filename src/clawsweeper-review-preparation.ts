@@ -22,6 +22,17 @@ const AUTOMATIC_REVIEW_SOURCE_ACTIONS = new Set([
   "scheduled_normal_backfill",
 ]);
 
+// Review caches may only reuse a verdict while the run holds the durable review
+// start lease. `--skip-start-comment` means this command must not create a lease
+// itself; it does not mean the run is uncoordinated, because the exact-event
+// workflow reserves one in its write-token step and supplies it here.
+export function isReviewCoordinationEnabled(
+  skipStartComment: boolean,
+  suppliedReviewLease: unknown,
+): boolean {
+  return !skipStartComment || Boolean(suppliedReviewLease);
+}
+
 export function isExplicitReviewDispatch(args: Args, hasExplicitItemSelection: boolean): boolean {
   const sourceAction = stringArg(args.review_source_action, "").trim();
   const plannedAutomaticReview =
@@ -204,6 +215,7 @@ export function prepareReviewCommand(
     readonlyOpenclaw,
     skipStartComment,
     suppliedReviewLease,
+    reviewCoordinationEnabled: isReviewCoordinationEnabled(skipStartComment, suppliedReviewLease),
     forcedLoginMethod,
     loadReviewGitInfo,
     git,

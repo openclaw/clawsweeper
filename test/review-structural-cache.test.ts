@@ -19,6 +19,12 @@ import {
   type ReviewStructuralRecord,
   type ReviewStructuralSnapshot,
 } from "../dist/review-structural-cache.js";
+import { parseArgs } from "../dist/clawsweeper-args.js";
+import { suppliedReviewStartLeaseFromArgs } from "../dist/clawsweeper-review-lease.js";
+import {
+  isExplicitReviewDispatch,
+  isReviewCoordinationEnabled,
+} from "../dist/clawsweeper-review-preparation.js";
 
 const NOW = Date.parse("2026-07-12T12:00:00Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -615,6 +621,55 @@ test("changed review policy or model forces hydration", () => {
 test("explicit dispatch and maintainer requests always hydrate", () => {
   assert.equal(decision({ explicitDispatch: true }).reason, "explicit_dispatch");
   assert.equal(decision({ maintainerRequest: true }).reason, "maintainer_request");
+});
+
+test("the exact-event lane's own invocation reaches the structural receipt", () => {
+  // `.github/workflows/sweep.yml` reserves the review lease in its write-token
+  // step, then invokes the review command with `--skip-start-comment` and the
+  // reserved lease on the same line as `--review-source-action`. Compose those
+  // two preparation decisions exactly as the command does, so the production
+  // shape of a scheduled queue delivery is pinned end to end.
+  const args = parseArgs([
+    "--item-number",
+    "119986",
+    "--skip-start-comment",
+    "--review-lease-owner",
+    "github-run-31131564193-1",
+    "--review-lease-comment-id",
+    "5201730501",
+    "--review-source-action",
+    "scheduled_normal_backfill",
+  ]);
+  const suppliedReviewLease = suppliedReviewStartLeaseFromArgs(args);
+  assert.ok(suppliedReviewLease, "the workflow's lease arguments must parse");
+
+  assert.deepEqual(
+    reviewStructuralCacheProbeDecision({
+      review: review(),
+      reviewPolicy: "policy-1",
+      reviewModel: "gpt-5.6",
+      explicitDispatch: isExplicitReviewDispatch(args, true),
+      maintainerRequest: false,
+      coordinationEnabled: isReviewCoordinationEnabled(true, suppliedReviewLease),
+      now: NOW,
+    }),
+    { hit: true, reason: "hit" },
+  );
+
+  // A scheduled delivery without a reserved lease has nothing coordinating it,
+  // so it must still hydrate.
+  assert.equal(
+    reviewStructuralCacheProbeDecision({
+      review: review(),
+      reviewPolicy: "policy-1",
+      reviewModel: "gpt-5.6",
+      explicitDispatch: isExplicitReviewDispatch(args, true),
+      maintainerRequest: false,
+      coordinationEnabled: isReviewCoordinationEnabled(true, null),
+      now: NOW,
+    }).reason,
+    "coordination_disabled",
+  );
 });
 
 test("disabled coordination and missing lease revisions force hydration", () => {
