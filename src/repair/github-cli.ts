@@ -21,6 +21,13 @@ export type GhRetryOptions = GhRunOptions & {
   attempts?: number;
 };
 
+type PublicReadFallback = {
+  appToken: string;
+  options: GhRunOptions;
+};
+
+const claimedPublicReadFallbackTokens = new Set<string>();
+
 export function ghJson<T = JsonValue>(ghArgs: string[], options: GhRunOptions = {}): T {
   return JSON.parse(ghText(ghArgs, options) || "null") as T;
 }
@@ -170,7 +177,7 @@ export function ghTextWithRetry(ghArgs: string[], options: GhRetryOptions | numb
   const resolved = resolveRetryOptions(options);
   const attempts = Math.max(1, resolved.attempts ?? 6);
   let activeOptions: GhRunOptions = resolved;
-  let publicReadFallback = publicReadFallbackOptions(ghArgs, resolved);
+  const publicReadFallback = publicReadFallbackOptions(ghArgs, resolved);
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
@@ -178,9 +185,9 @@ export function ghTextWithRetry(ghArgs: string[], options: GhRetryOptions | numb
     } catch (error) {
       lastError = error;
       const retryKind = ghRetryKind(error);
-      if (retryKind === "throttle" && publicReadFallback) {
-        const fallback = publicReadFallback;
-        publicReadFallback = null;
+      const fallback =
+        retryKind === "throttle" ? claimPublicReadFallback(publicReadFallback) : null;
+      if (retryKind === "throttle" && fallback) {
         activeOptions = fallback;
         try {
           return ghText(ghArgs, fallback);
@@ -210,7 +217,7 @@ export async function ghTextWithRetryAsync(
   const resolved = resolveRetryOptions(options);
   const attempts = Math.max(1, resolved.attempts ?? 6);
   let activeOptions: GhRunOptions = resolved;
-  let publicReadFallback = publicReadFallbackOptions(ghArgs, resolved);
+  const publicReadFallback = publicReadFallbackOptions(ghArgs, resolved);
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
@@ -218,9 +225,9 @@ export async function ghTextWithRetryAsync(
     } catch (error) {
       lastError = error;
       const retryKind = ghRetryKind(error);
-      if (retryKind === "throttle" && publicReadFallback) {
-        const fallback = publicReadFallback;
-        publicReadFallback = null;
+      const fallback =
+        retryKind === "throttle" ? claimPublicReadFallback(publicReadFallback) : null;
+      if (retryKind === "throttle" && fallback) {
         activeOptions = fallback;
         try {
           return await ghTextAsync(ghArgs, fallback);
@@ -322,14 +329,23 @@ function publicReadToken(
 function publicReadFallbackOptions(
   ghArgs: readonly string[],
   options: GhRunOptions,
-): GhRunOptions | null {
+): PublicReadFallback | null {
   const overrides = options.env ?? {};
   const publicToken = publicReadToken(ghArgs, options);
   const appToken = process.env.GH_TOKEN?.trim();
   if (!publicToken || !appToken || publicToken === appToken) {
     return null;
   }
-  return { ...options, env: { ...overrides, GH_TOKEN: appToken } };
+  return {
+    appToken,
+    options: { ...options, env: { ...overrides, GH_TOKEN: appToken } },
+  };
+}
+
+function claimPublicReadFallback(fallback: PublicReadFallback | null): GhRunOptions | null {
+  if (!fallback || claimedPublicReadFallbackTokens.has(fallback.appToken)) return null;
+  claimedPublicReadFallbackTokens.add(fallback.appToken);
+  return fallback.options;
 }
 
 export function ghErrorText(error: unknown): string {

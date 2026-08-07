@@ -139,7 +139,7 @@ test("public read throttles fall back once to the target App token", async () =>
     GH_BIN_ARGS: JSON.stringify([
       "--eval",
       [
-        'if (process.env.GH_TOKEN === "public-read-token") {',
+        'if (process.env.GH_TOKEN?.startsWith("public-read-token")) {',
         '  process.stderr.write("gh: API rate limit exceeded for installation (HTTP 403)\\n");',
         "  process.exit(1);",
         "}",
@@ -158,7 +158,24 @@ test("public read throttles fall back once to the target App token", async () =>
   try {
     const args = ["api", "repos/openclaw/openclaw/issues/123"];
     assert.equal(ghJsonWithRetry<{ token: string }>(args).token, "app-mutation-token");
-    assert.equal((await ghJsonWithRetryAsync<{ token: string }>(args)).token, "app-mutation-token");
+    assert.throws(() => ghJsonWithRetry(args), { name: "GitHubRateLimitError" });
+
+    process.env.GH_TOKEN = "app-mutation-token-async";
+    process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN = "public-read-token-async";
+    assert.equal(
+      (await ghJsonWithRetryAsync<{ token: string }>(args)).token,
+      "app-mutation-token-async",
+    );
+
+    process.env.GH_TOKEN = "app-mutation-token";
+    process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN = "public-read-token";
+    assert.equal(
+      ghJsonWithRetry<{ token: string }>(
+        ["api", "--method", "POST", "repos/openclaw/openclaw/issues/123/labels"],
+        { input: "{}" },
+      ).token,
+      "app-mutation-token",
+    );
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];
