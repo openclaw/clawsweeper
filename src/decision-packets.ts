@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, relative } from "node:path";
+import { basename, dirname, relative } from "node:path";
 
 export type MaintainerDecisionKind =
   | "none"
@@ -302,9 +302,13 @@ export function syncDecisionPacketRecord(
     ...(options.subjectState ? { subjectState: options.subjectState } : {}),
   });
   const frontmatter = readFrontMatter(options.markdown);
-  const number = frontmatter.ambiguous ? null : numberValue(frontmatter.values.number);
+  const reportNumber = reportNumberFromPath(options.reportPath);
+  const metadataNumber = frontmatter.ambiguous ? null : numberValue(frontmatter.values.number);
+  const number = reportNumber ?? metadataNumber;
   const packetPath = number === null ? undefined : `${options.packetsDir}/${number}.json`;
-  if (!packet || !packetPath) {
+  const packetMatchesReport =
+    packet !== null && (reportNumber === null || packet.subject.number === reportNumber);
+  if (!packetMatchesReport || !packetPath) {
     if (packetPath && existsSync(packetPath)) unlinkSync(packetPath);
     return {
       markdown: replacePacketFrontmatter(options.markdown, "none", "none"),
@@ -476,6 +480,11 @@ function unquote(value: string): string {
 
 function repoRelativePath(repoRoot: string, path: string): string {
   return relative(repoRoot, path).replace(/\\/g, "/");
+}
+
+function reportNumberFromPath(reportPath: string): number | null {
+  const match = basename(reportPath).match(/(?:^|-)([1-9]\d*)\.md$/);
+  return numberValue(match?.[1]);
 }
 
 function escapeRegExp(value: string): string {

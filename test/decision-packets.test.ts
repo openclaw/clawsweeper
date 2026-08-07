@@ -148,6 +148,9 @@ maintainer_decision: ${JSON.stringify(emptyMaintainerDecision())}
   const root = mkdtempSync(tmpPrefix);
   try {
     const packetsDir = join(root, "records", "openclaw-clawsweeper", "decision-packets");
+    mkdirSync(packetsDir, { recursive: true });
+    writeFileSync(join(packetsDir, "7.json"), "attacker-selected packet must not be deleted\n");
+    writeFileSync(join(packetsDir, "321.json"), "stale canonical packet\n");
     const result = syncDecisionPacketRecord({
       markdown: report,
       reportPath: join(root, "records", "openclaw-clawsweeper", "items", "321.md"),
@@ -155,7 +158,8 @@ maintainer_decision: ${JSON.stringify(emptyMaintainerDecision())}
       repoRoot: root,
     });
     assert.equal(result.packet, null);
-    assert.equal(existsSync(join(packetsDir, "7.json")), false);
+    assert.equal(result.packetPath, join(packetsDir, "321.json"));
+    assert.equal(existsSync(join(packetsDir, "7.json")), true);
     assert.equal(existsSync(join(packetsDir, "321.json")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
