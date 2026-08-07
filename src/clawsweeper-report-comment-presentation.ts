@@ -485,7 +485,12 @@ export function createReportCommentPresentation(
     options: ReviewCommentRenderOptions = {},
   ): string {
     const decision = frontMatterValue(markdown, "decision");
-    const requiresMaintainerDecision = maintainerDecisionFromReport(markdown)?.required === true;
+    let requiresMaintainerDecision = true;
+    try {
+      requiresMaintainerDecision = maintainerDecisionFromReport(markdown)?.required === true;
+    } catch {
+      // Malformed or ambiguous decision metadata must keep the report on the human-review path.
+    }
     const body =
       decision === "close" &&
       reason !== "none" &&

@@ -160,7 +160,13 @@ export function emptyMaintainerDecision(): MaintainerDecision {
 }
 
 export function maintainerDecisionFromReport(markdown: string): MaintainerDecision | null {
-  const raw = frontMatter(markdown).maintainer_decision;
+  return maintainerDecisionFromFrontMatter(frontMatter(markdown));
+}
+
+function maintainerDecisionFromFrontMatter(
+  frontmatter: Record<string, string>,
+): MaintainerDecision | null {
+  const raw = frontmatter.maintainer_decision;
   if (!raw || raw === "none" || raw === "unknown") return null;
   let parsed: unknown;
   try {
@@ -183,8 +189,10 @@ export function buildDecisionPacketFromReport(
   markdown: string,
   options: DecisionPacketBuildOptions = {},
 ): DecisionPacket | null {
-  const frontmatter = frontMatter(markdown);
-  const decision = maintainerDecisionFromReport(markdown);
+  const parsedFrontmatter = readFrontMatter(markdown);
+  if (parsedFrontmatter.ambiguous) return null;
+  const frontmatter = parsedFrontmatter.values;
+  const decision = maintainerDecisionFromFrontMatter(frontmatter);
   const repo = frontmatter.repository;
   const kind = frontmatter.type;
   const number = numberValue(frontmatter.number);
@@ -293,7 +301,8 @@ export function syncDecisionPacketRecord(
     ...(options.reportUrl ? { reportUrl: options.reportUrl } : {}),
     ...(options.subjectState ? { subjectState: options.subjectState } : {}),
   });
-  const number = numberValue(frontMatter(options.markdown).number);
+  const frontmatter = readFrontMatter(options.markdown);
+  const number = frontmatter.ambiguous ? null : numberValue(frontmatter.values.number);
   const packetPath = number === null ? undefined : `${options.packetsDir}/${number}.json`;
   if (!packet || !packetPath) {
     if (packetPath && existsSync(packetPath)) unlinkSync(packetPath);
@@ -372,14 +381,28 @@ function enumValue<T extends string>(value: unknown, values: ReadonlySet<T>, pat
 }
 
 function frontMatter(markdown: string): Record<string, string> {
-  const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  const parsed = readFrontMatter(markdown);
+  if (parsed.ambiguous) throw new Error("report front matter is ambiguous");
+  return parsed.values;
+}
+
+function readFrontMatter(markdown: string): {
+  values: Record<string, string>;
+  ambiguous: boolean;
+} {
+  const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   const values: Record<string, string> = {};
   for (const line of (match?.[1] ?? "").split(/\r?\n/)) {
     const separator = line.indexOf(":");
     if (separator <= 0) continue;
     values[line.slice(0, separator).trim()] = unquote(line.slice(separator + 1).trim());
   }
-  return values;
+  if (!match) return { values, ambiguous: false };
+  const remainder = markdown.slice(match[0].length);
+  const ambiguous = Object.keys(values).some((key) =>
+    new RegExp(`^${escapeRegExp(key)}:`, "m").test(remainder),
+  );
+  return { values, ambiguous };
 }
 
 function replacePacketFrontmatter(markdown: string, path: string, sha256: string): string {

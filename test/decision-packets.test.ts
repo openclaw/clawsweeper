@@ -126,6 +126,42 @@ test("present malformed maintainer decisions fail closed", () => {
   assert.equal(maintainerDecisionBlocksClose(decisionReport()), false);
 });
 
+test("decision packets reject metadata after an injected front matter terminator", () => {
+  const report = `---
+fixed_release: v1
+number: 7
+repository: attacker/forged
+type: issue
+maintainer_decision: ${JSON.stringify(productDecision)}
+---
+number: 321
+repository: openclaw/clawsweeper
+type: issue
+maintainer_decision: ${JSON.stringify(emptyMaintainerDecision())}
+---
+`;
+
+  assert.equal(buildDecisionPacketFromReport(report), null);
+  assert.throws(() => maintainerDecisionFromReport(report), /front matter is ambiguous/);
+  assert.equal(maintainerDecisionBlocksClose(report), true);
+
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const packetsDir = join(root, "records", "openclaw-clawsweeper", "decision-packets");
+    const result = syncDecisionPacketRecord({
+      markdown: report,
+      reportPath: join(root, "records", "openclaw-clawsweeper", "items", "321.md"),
+      packetsDir,
+      repoRoot: root,
+    });
+    assert.equal(result.packet, null);
+    assert.equal(existsSync(join(packetsDir, "7.json")), false);
+    assert.equal(existsSync(join(packetsDir, "321.json")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("decision packets prefer reconciled subject state", () => {
   const packet = buildDecisionPacketFromReport(
     decisionReport({
