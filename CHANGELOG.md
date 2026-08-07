@@ -41,6 +41,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Legacy reports with canonical proof or rating keys outside the apparent leading front-matter block now fail closed, with a read-only workflow to inventory affected canonical records. (#1049)
 - Prevented model-authored report prose and body-shaped front matter from spoofing proof or rating sections, keeping unproven external pull requests in human review instead of routing them into automated repair. (#951)
 
 ### Added

@@ -2597,7 +2597,11 @@ type FrontMatterField =
   | { status: "value"; value: string };
 
 function frontMatterField(markdown: string, key: string): FrontMatterField {
-  const frontMatter = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1] ?? "";
+  const frontMatterMatch = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!frontMatterMatch) return { status: "absent" };
+  const frontMatter = frontMatterMatch[1] ?? "";
+  const remainder = markdown.slice(frontMatterMatch[0].length);
+  if (new RegExp(`^${key}:`, "m").test(remainder)) return { status: "ambiguous" };
   const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.*)$`, "gm"))];
   if (matches.length === 0) return { status: "absent" };
   if (matches.length !== 1) return { status: "ambiguous" };

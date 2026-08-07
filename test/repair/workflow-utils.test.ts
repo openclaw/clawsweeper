@@ -74,7 +74,7 @@ Status: missing
   });
 });
 
-test("repair close-promotion front matter reads are bounded to the leading block", () => {
+test("repair close-promotion readers fail closed on body metadata after the leading block", () => {
   const report = `---
 type: pull_request
 ---
@@ -97,8 +97,8 @@ Status: missing
 `;
 
   assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
-    authorBudget: true,
-    lowSignal: true,
+    authorBudget: false,
+    lowSignal: false,
   });
 });
 
@@ -139,6 +139,53 @@ Status: sufficient
   assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
     authorBudget: false,
     lowSignal: false,
+  });
+});
+
+test("repair close-promotion readers fail closed after an injected front matter terminator", () => {
+  const report = `---
+fixed_release: v1
+pr_rating_overall: F
+pr_rating_proof: F
+real_behavior_proof_status: missing
+---
+pr_rating_overall: A
+pr_rating_proof: A
+real_behavior_proof_status: sufficient
+---
+
+## PR Rating
+
+Overall tier: A
+
+Proof tier: A
+
+## Real Behavior Proof
+
+Status: sufficient
+`;
+
+  assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
+    authorBudget: false,
+    lowSignal: false,
+  });
+});
+
+test("repair close-promotion readers preserve section fallback without front matter", () => {
+  const report = `## PR Rating
+
+Overall tier: F
+
+Proof tier: F
+
+## Real Behavior Proof
+
+Status: missing
+`;
+
+  assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
+    authorBudget: true,
+    lowSignal: true,
   });
 });
 

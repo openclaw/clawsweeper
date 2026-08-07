@@ -1,0 +1,56 @@
+name: Audit report metadata spoofing
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_slugs:
+        description: "Optional comma-separated canonical repository slugs (empty discovers all)"
+        required: false
+        type: string
+        default: ""
+      max_records:
+        description: "Maximum canonical item records to inspect"
+        required: true
+        type: string
+        default: "10000"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLAWSWEEPER_RECORDS_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Audit canonical item report metadata
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          CONFIGURED_REPO_SLUGS: ${{ inputs.repo_slugs || vars.CLAWSWEEPER_RECORDS_REPO_SLUGS || '' }}
+          MAX_RECORDS: ${{ inputs.max_records }}
+        run: |
+          args=(
+            --max-records "$MAX_RECORDS"
+            --output .artifacts/report-metadata-audit.json
+          )
+          if [[ -n "$CONFIGURED_REPO_SLUGS" ]]; then
+            args+=(--repo-slugs "$CONFIGURED_REPO_SLUGS")
+          fi
+          node scripts/audit-report-metadata-spoofing.mjs "${args[@]}"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: report-metadata-audit
+          path: .artifacts/report-metadata-audit.json
+          if-no-files-found: error
+          retention-days: 14
