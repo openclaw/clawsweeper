@@ -110,13 +110,15 @@ hydrated and re-reviewed in full.
 
 ## Limits
 
-- No live claimed-delivery trace through the GitHub receipt-cache boundary: that
-  needs the organization's App installation token, which only repository
-  operators can exercise. #1036 disclosed the same limit. The production
-  observation above narrows the pre-fix reason by elimination from public state;
-  it does not read the probe's returned reason directly.
-- This restores the probe and the seeding path. It does not by itself produce
-  cache hits on `openclaw/openclaw`, because `reviewStructuralCacheDecision`
+- The pre-fix production observation narrows the reason by elimination from
+  public state; it does not read the probe's returned reason directly. Reading it
+  directly on a production target would need the organization's App installation
+  token, which only repository operators can exercise. #1036 disclosed the same
+  limit. The end-to-end section below closes part of this gap on a repository the
+  proof author owns.
+- The end-to-end section below reaches the reserved-lease claim and receipt
+  persistence, but not a structural cache hit. Separately, this change does not by
+  itself produce cache hits on `openclaw/openclaw`, because `reviewStructuralCacheDecision`
   separately compares the target repository's `main` head between reviews
   (`src/review-structural-cache.ts:1280`), and that head advances roughly every
   13 minutes there (100 commits in 21h11m, measured 2026-08-07). Whether an
@@ -124,3 +126,85 @@ hydrated and re-reviewed in full.
   question, filed separately.
 - No production review jobs were dispatched, no model capacity was consumed, and
   no contributor notifications were generated while validating this change.
+
+## End-to-end run against a live GitHub item
+
+The module-level captures above stop at the probe decision. This section drives
+the shipped `review` command itself, against a real issue, so the reserved-lease
+claim and the receipt-persistence path are exercised rather than inferred.
+
+### Setup
+
+- Target: <https://github.com/masatohoshino/clawsweeper-cache-proof> issue 1, a
+  repository the proof author owns. Nothing was run against a production target.
+- Runner: the branch at `4b1c8c8f`, built and executed from a copy of that tree.
+  The only difference from the branch is one added entry in
+  `config/target-repositories.json` `generic_fallbacks`, so the proof author's
+  own account is onboarded the same way `openclaw/*` and `steipete/*` already
+  are. **No source file differs**, and that entry is not part of this PR.
+- `CLAWSWEEPER_COMMENT_AUTHOR_LOGIN` names the proof author, which is the
+  supported way to extend `PATCHABLE_REVIEW_COMMENT_AUTHORS`
+  (`src/clawsweeper-review-comment-state.ts`).
+- Leases were created by `pnpm run reserve-review-lease`, the same command
+  `.github/workflows/sweep.yml` uses. No marker was hand-written.
+- Every review ran with `--review-source-action scheduled_normal_backfill`,
+  `--skip-start-comment`, and the reserved lease, matching the workflow.
+
+### Runs
+
+| Run | Prior state | Result |
+| --- | --- | --- |
+| 1 | no prior review | full hydration; report written with an unseeded receipt |
+| 2 | prior review present, receipt unseeded | full hydration; **receipt seeded** |
+| 3 | receipt seeded, no durable review comment | **reserved lease claimed**; revalidation stopped at `previous_review_changed` |
+| 4 | durable review comment published | model skipped by the content stage; structural stopped at `activity_changed` |
+
+### The reserved-lease claim runs
+
+Run 3, the line emitted only by the claim branch this PR adds:
+
+```text
+[review] shard=0/1 structural-cache-start-comment=reserved #1
+```
+
+Reaching that line requires the probe to pass coordination and the structural
+decision to hit, and the claim itself to elect the reserved lease as winner
+through the same freshness checks the hydrated path uses. On `main` this item
+would have stopped at `coordination_disabled` before any of it.
+
+### The receipt is persisted
+
+Run 1 and run 2 differ only in whether a prior completed review existed:
+
+```text
+run 1 report:  review_structural_target_head_sha: unknown
+run 2 report:  review_structural_target_head_sha: b575dc7ad47e96e62288ab26eb84d5c5b5b22adf
+```
+
+Run 2's metrics record the seeding path validating its own anchor:
+
+```json
+"structural_cache_revalidation_reasons": { "hydrated_anchor_match": 1, "verdict_input_match": 1 }
+```
+
+This is the production symptom — reports published with
+`review_structural_target_head_sha: unknown` — reproduced locally and then
+cleared.
+
+### What this run did not establish
+
+- **The structural cache still did not hit.** Run 4 missed with
+  `"structural_cache_reasons": { "activity_changed": 1 }`. The lease comment that
+  `reserve-review-lease` posts moves the item's `updated_at` past the owned-sync
+  markers recorded in the prior report (`review_comment_synced_at`,
+  `labels_synced_at`), so `activityCoveredByReview` cannot attribute it. That is
+  the next gate below the one this PR removes, not a failure of this change, and
+  whether it also fires in production is not established here.
+- **Run 4's cache hit is not attributable to this PR.** It was a content-stage
+  hit (`cache-hit content-unchanged skip-model`, `content_cache_hits=1`), and the
+  content stage takes its coordination from `Boolean(acquiredReviewLease)`, which
+  the pre-existing post-hydration claim already satisfies on `main`. It is
+  reported here because it happened, not as evidence for this change.
+- The durable review comment in run 4 was published with
+  `apply-decisions --sync-comments-only --skip-dashboard`, the documented local
+  apply repro, rather than by the production publication lane.
