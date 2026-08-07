@@ -116,8 +116,8 @@ hydrated and re-reviewed in full.
   token, which only repository operators can exercise. #1036 disclosed the same
   limit. The end-to-end section below closes part of this gap on a repository the
   proof author owns.
-- The end-to-end section below reaches the reserved-lease claim and receipt
-  persistence, but not a structural cache hit. Separately, this change does not by
+- The end-to-end section below reaches a structural cache hit with no hydration
+  and no Codex call. Separately, this change does not by
   itself produce cache hits on `openclaw/openclaw`, because `reviewStructuralCacheDecision`
   separately compares the target repository's `main` head between reviews
   (`src/review-structural-cache.ts:1280`), and that head advances roughly every
@@ -157,7 +157,8 @@ claim and the receipt-persistence path are exercised rather than inferred.
 | 1 | no prior review | full hydration; report written with an unseeded receipt |
 | 2 | prior review present, receipt unseeded | full hydration; **receipt seeded** |
 | 3 | receipt seeded, no durable review comment | **reserved lease claimed**; revalidation stopped at `previous_review_changed` |
-| 4 | durable review comment published | model skipped by the content stage; structural stopped at `activity_changed` |
+| 4 | durable review comment published | structural stopped at `activity_changed`; model skipped by the content stage |
+| 5 | same state, with the reservation recognised | **structural cache hit; no hydration, no Codex** |
 
 ### The reserved-lease claim runs
 
@@ -191,20 +192,48 @@ This is the production symptom — reports published with
 `review_structural_target_head_sha: unknown` — reproduced locally and then
 cleared.
 
+### The structural cache hits, with no hydration and no Codex
+
+Run 4 stopped one gate later, at
+`"structural_cache_reasons": { "activity_changed": 1 }`: the reservation comment
+`reserve-review-lease` posts is itself the item's newest activity, and it lands
+after the sync markers the prior review recorded, so `activityCoveredByReview`
+could not attribute it. Recognising the already-validated reservation — and only
+that reservation — closes it. Run 5, same item, same reserved lease, same
+recorded verdict:
+
+```text
+[review] shard=0/1 structural-cache-start-comment=reserved #1
+[review] shard=0/1 cache-hit structural-unchanged skip-hydration-model #1 (1/1)
+[review] shard=0/1 complete reviewed=1 cache_hits=1 structural_cache_checks=1
+  structural_cache_hits=1 structural_cache_revalidations=1 ... content_cache_hits=0
+  hydrations=0
+```
+
+```json
+"structural_cache_reasons": { "hit": 1 },
+"structural_cache_revalidation_reasons": { "hit": 1 }
+```
+
+The carried report records the reuse:
+
+```text
+review_cache_hit: true
+review_structural_cache_hit: true
+```
+
+`hydrations=0` is the point: the run neither hydrated GitHub context nor called
+Codex. It took 8 seconds end to end, against 70-150 seconds for the full reviews
+in runs 1-3.
+
 ### What this run did not establish
 
-- **The structural cache still did not hit.** Run 4 missed with
-  `"structural_cache_reasons": { "activity_changed": 1 }`. The lease comment that
-  `reserve-review-lease` posts moves the item's `updated_at` past the owned-sync
-  markers recorded in the prior report (`review_comment_synced_at`,
-  `labels_synced_at`), so `activityCoveredByReview` cannot attribute it. That is
-  the next gate below the one this PR removes, not a failure of this change, and
-  whether it also fires in production is not established here.
-- **Run 4's cache hit is not attributable to this PR.** It was a content-stage
-  hit (`cache-hit content-unchanged skip-model`, `content_cache_hits=1`), and the
-  content stage takes its coordination from `Boolean(acquiredReviewLease)`, which
-  the pre-existing post-hydration claim already satisfies on `main`. It is
-  reported here because it happened, not as evidence for this change.
-- The durable review comment in run 4 was published with
+- Run 4's content-stage hit (`cache-hit content-unchanged skip-model`) is **not**
+  attributable to this PR. The content stage takes its coordination from
+  `Boolean(acquiredReviewLease)`, which the pre-existing post-hydration claim
+  already satisfies on `main`. It is recorded because it happened.
+- The durable review comment runs 4 and 5 needed was published with
   `apply-decisions --sync-comments-only --skip-dashboard`, the documented local
   apply repro, rather than by the production publication lane.
+- The runs use one repository the proof author owns. Behaviour on a production
+  target is inferred from the shipped code being identical, not observed.

@@ -623,6 +623,44 @@ test("explicit dispatch and maintainer requests always hydrate", () => {
   assert.equal(decision({ maintainerRequest: true }).reason, "maintainer_request");
 });
 
+test("a validated reservation covers its own activity but nothing after it", () => {
+  // The workflow posts the reservation before invoking the review command, so on
+  // the reserved-lease lane the item's newest activity is always that comment.
+  const RESERVED_AT = "2026-07-10T10:05:00Z";
+  const priorRecord = record();
+  const base = {
+    review: review(),
+    priorRecord,
+    currentRecord: record(issueSnapshot({ activityUpdatedAt: RESERVED_AT })),
+    reviewPolicy: "policy-1",
+    reviewModel: "gpt-5.6",
+    explicitDispatch: false,
+    maintainerRequest: false,
+    coordinationEnabled: true,
+    now: NOW,
+  };
+
+  // Without it, the reservation the workflow just posted reads as reporter
+  // activity and the cache can never be reached on that lane.
+  assert.equal(reviewStructuralCacheDecision(base).reason, "activity_changed");
+
+  assert.deepEqual(
+    reviewStructuralCacheDecision({ ...base, ownedReservationUpdatedAt: RESERVED_AT }),
+    { hit: true, reason: "hit" },
+  );
+
+  // The window extends to the reservation, not past it: activity after it still
+  // forces hydration, so the safeguard is preserved.
+  assert.equal(
+    reviewStructuralCacheDecision({
+      ...base,
+      currentRecord: record(issueSnapshot({ activityUpdatedAt: "2026-07-10T10:06:00Z" })),
+      ownedReservationUpdatedAt: RESERVED_AT,
+    }).reason,
+    "activity_changed",
+  );
+});
+
 test("the exact-event lane's own invocation reaches the structural receipt", () => {
   // `.github/workflows/sweep.yml` reserves the review lease in its write-token
   // step, then invokes the review command with `--skip-start-comment` and the

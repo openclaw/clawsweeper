@@ -43,6 +43,19 @@ import { reviewContentCacheHit } from "./scheduler-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
 
+// The reservation comment is the item's newest activity on the reserved-lease
+// lane. `updated_at` is used rather than `created_at` so an edited reservation
+// still bounds the window at its own latest write, never beyond it.
+export function reviewStartLeaseCommentUpdatedAt(
+  comment: Record<string, unknown> | undefined,
+): string | undefined {
+  for (const key of ["updated_at", "created_at"]) {
+    const value = comment?.[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
+}
+
 export function restoreVerifiedMaintainerPullRequestAuthorAssociation(
   item: Pick<Item, "kind" | "author" | "authorAssociation" | "labels">,
   repositoryPermission: (author: string) => string | null,
@@ -435,6 +448,20 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             }
             preHydrationStructuralRecord = structuralRecord;
             if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
+            const leaseRevision =
+              item.kind === "pull_request"
+                ? structuralRecord?.pullHeadSha
+                : priorReview?.itemSourceRevision;
+            // Validate the reservation before the decision, not after it. The
+            // workflow posts that comment before invoking this command, so its
+            // timestamp is the item's newest activity; the decision cannot tell
+            // owned activity from reporter activity without it. Validating first
+            // also means the claim below reuses this result instead of probing
+            // GitHub twice.
+            const suppliedLeaseClaim =
+              suppliedReviewLease && leaseRevision
+                ? claimSuppliedReviewLease(item.number, leaseRevision)
+                : null;
             const structuralDecision = reviewStructuralCacheDecision({
               review: priorReview,
               priorRecord: priorReview?.structuralRecord ?? null,
@@ -444,6 +471,13 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               explicitDispatch,
               maintainerRequest,
               coordinationEnabled: reviewCoordinationEnabled,
+              ...(suppliedLeaseClaim?.status === "claimed"
+                ? {
+                    ownedReservationUpdatedAt: reviewStartLeaseCommentUpdatedAt(
+                      suppliedLeaseClaim.lease.comment,
+                    ),
+                  }
+                : {}),
             });
             structuralCacheReasons.set(
               structuralDecision.reason,
@@ -452,18 +486,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             if (structuralDecision.hit) {
               const initialStructuralRecord = structuralRecord;
               try {
-                const leaseRevision =
-                  item.kind === "pull_request"
-                    ? structuralRecord?.pullHeadSha
-                    : priorReview?.itemSourceRevision;
                 if (suppliedReviewLease) {
                   // A reserved lease already coordinates this run. Claiming it
                   // keeps the single-lease invariant that `--skip-start-comment`
                   // exists to protect, so the cache stays reachable on the
                   // exact-event lane instead of being disabled by it.
-                  const claim = leaseRevision
-                    ? claimSuppliedReviewLease(item.number, leaseRevision)
-                    : ({ status: "stale" } as const);
+                  const claim = suppliedLeaseClaim ?? ({ status: "stale" } as const);
                   console.error(
                     `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=${claim.status === "claimed" ? "reserved" : claim.status === "held" ? "held" : "stale-reservation"} #${item.number}`,
                   );
