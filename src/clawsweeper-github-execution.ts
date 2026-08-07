@@ -24,6 +24,7 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
   const { ROOT, gitHubRuntime, labelAlreadyExistsError } = dependencies;
   const {
     GitHubRuntimeBudgetError,
+    claimPublicReadFallback,
     ensureGitHubRetryFits,
     ensureGitHubRuntimeAvailable,
     gh,
@@ -38,14 +39,45 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
     attempts = configuredGitHubRetryAttempts(),
     options: GitHubRetryOptions = {},
   ): string {
+    let activeEnv: NodeJS.ProcessEnv | undefined;
     let lastError: unknown;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
-        return options.request?.(args, attempt) ?? gh(args);
+        return (
+          options.request?.(args, attempt) ??
+          (activeEnv ? ghWithPreparedTimeout(args, githubCommandTimeoutMs(), activeEnv) : gh(args))
+        );
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError) throw error;
         lastError = error;
         const retryKind = ghRetryKind(error);
+        const fallback =
+          retryKind === "throttle" && !options.request ? claimPublicReadFallback(args) : null;
+        if (retryKind === "throttle" && fallback) {
+          activeEnv = fallback;
+          try {
+            return ghWithPreparedTimeout(args, githubCommandTimeoutMs(), fallback);
+          } catch (fallbackError) {
+            if (fallbackError instanceof GitHubRuntimeBudgetError) throw fallbackError;
+            lastError = fallbackError;
+            const fallbackRetryKind = ghRetryKind(fallbackError);
+            if (fallbackRetryKind === "throttle") {
+              throw new GitHubRateLimitError(fallbackError);
+            }
+            ensureGitHubRuntimeAvailable("after GitHub operation");
+            if (fallbackRetryKind === "none" || attempt === attempts - 1) {
+              throw fallbackError;
+            }
+            const waitMs = ghRetryWaitMs(fallbackRetryKind, attempt);
+            ensureGitHubRetryFits(waitMs);
+            console.error(
+              `Transient GitHub API failure; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
+            );
+            if (options.sleepBeforeRetry) options.sleepBeforeRetry(waitMs);
+            else sleepBeforeGitHubRetry(waitMs);
+            continue;
+          }
+        }
         if (retryKind === "throttle") throw new GitHubRateLimitError(error);
         ensureGitHubRuntimeAvailable("after GitHub operation");
         if (retryKind === "none" || attempt === attempts - 1) throw error;

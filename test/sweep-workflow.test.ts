@@ -406,8 +406,9 @@ test("review workflow gives Codex a read-only inspection token", () => {
   assert.match(workflow, /CLAWSWEEPER_PROOF_INSPECTION_TOKEN/);
   assert.match(
     exactReviewStep,
-    /CLAWSWEEPER_PROOF_INSPECTION_TOKEN: \$\{\{ steps\.target-read-token\.outputs\.token \|\| github\.token \}\}/,
+    /CLAWSWEEPER_PROOF_INSPECTION_TOKEN: \$\{\{ steps\.target-read-token\.outputs\.token \}\}/,
   );
+  assert.doesNotMatch(workflow, /CLAWSWEEPER_PROOF_INSPECTION_TOKEN:.*github\.token/);
   assert.match(
     exactReviewStep,
     /report_path="artifacts\/event\/\$\{\{ steps\.target\.outputs\.item_number \}\}\.md"/,
@@ -449,7 +450,7 @@ test("review execution tokens can read check runs and commit statuses", () => {
   }
   assert.match(
     eventReviewJob,
-    /Review exact event item[\s\S]*GH_TOKEN: \$\{\{ steps\.target-read-token\.outputs\.token \}\}/,
+    /Review exact event item[\s\S]*GH_TOKEN: \$\{\{ steps\.target\.outputs\.target_repo == 'openclaw\/openclaw' && github\.token \|\| steps\.target-read-token\.outputs\.token \}\}/,
   );
 });
 
@@ -599,6 +600,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.equal(
     step(reviewer, "Review exact event item").env?.GH_TOKEN,
+    "${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-read-token.outputs.token }}",
+  );
+  assert.equal(
+    step(reviewer, "Review exact event item").env?.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
     "${{ steps.target-read-token.outputs.token }}",
   );
   assert.equal(step(reviewer, "Review exact event item").env?.REPO_TOKEN, undefined);
@@ -4625,6 +4630,7 @@ test("sweep target tokens fall back when an org app installation is missing", ()
     "Create target write token",
     "Create target review token",
     "Create target Codex inspection token",
+    "Create target proof inspection token",
   ]) {
     const blocks = stepBlocks(name);
     assert.ok(blocks.length > 0, `missing workflow step: ${name}`);
@@ -4638,8 +4644,9 @@ test("sweep target tokens fall back when an org app installation is missing", ()
   );
   assert.match(
     workflow,
-    /CLAWSWEEPER_PROOF_INSPECTION_TOKEN: \$\{\{ steps\.codex-inspection-token\.outputs\.token \|\| github\.token \}\}/,
+    /CLAWSWEEPER_PROOF_INSPECTION_TOKEN: \$\{\{ steps\.codex-inspection-token\.outputs\.token \}\}/,
   );
+  assert.doesNotMatch(workflow, /CLAWSWEEPER_PROOF_INSPECTION_TOKEN:.*\|\| github\.token/);
   assert.ok(
     workflow.includes(
       "if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.hot_intake != 'true'",
@@ -4656,6 +4663,95 @@ test("sweep target tokens fall back when an org app installation is missing", ()
     ),
   );
   assert.doesNotMatch(workflow, new RegExp("OPENCLAW_" + "GH_TOKEN"));
+});
+
+test("public OpenClaw reads use workflow tokens without moving mutation identity", () => {
+  type Step = {
+    name?: string;
+    id?: string;
+    env?: Record<string, string>;
+    run?: string;
+    with?: Record<string, string>;
+  };
+  type Workflow = { jobs: Record<string, { steps: Step[] }> };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as Workflow;
+  const find = (job: string, name: string) => {
+    const selected = workflow.jobs[job]?.steps.find(
+      (candidate) => candidate.name === name || candidate.id === name,
+    );
+    assert.ok(selected, `${job}: ${name}`);
+    return selected;
+  };
+
+  const exactReview = find("event-review-apply", "Review exact event item");
+  assert.equal(
+    exactReview.env?.GH_TOKEN,
+    "${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-read-token.outputs.token }}",
+  );
+  assert.equal(
+    find("event-review-publish", "Confirm terminal item remains closed").env?.GH_TOKEN,
+    "${{ steps.publication-context.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-write-token.outputs.token }}",
+  );
+  assert.equal(
+    find("apply-existing", "Reconcile before apply preselect").env?.GH_TOKEN,
+    "${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-write-token.outputs.token }}",
+  );
+
+  const auditSelection = find("audit-dashboard", "Select target read token");
+  assert.equal(auditSelection.env?.PRIMARY_TOKEN, "${{ github.token }}");
+  assert.equal(
+    auditSelection.env?.APP_FALLBACK_TOKEN,
+    "${{ steps.target-read-token.outputs.token }}",
+  );
+  assert.match(auditSelection.run ?? "", /Using workflow token for public audit reads/);
+  assert.match(auditSelection.run ?? "", /Using ClawSweeper App token fallback for audit reads/);
+
+  for (const [job, name, expression] of [
+    [
+      "event-review-apply",
+      "Deliver GitHub effects and prepare direct state mutation",
+      "${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}",
+    ],
+    [
+      "event-review-publish",
+      "Publish event result and apply safe close",
+      "${{ steps.publication-context.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}",
+    ],
+    [
+      "publish",
+      "Sync selected review comments",
+      "${{ needs.plan.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}",
+    ],
+    [
+      "apply-existing",
+      "Apply unchanged proposed decisions with checkpoints",
+      "${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}",
+    ],
+  ] as const) {
+    const selected = find(job, name);
+    assert.equal(selected.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
+    assert.equal(selected.env?.CLAWSWEEPER_PUBLIC_GH_TOKEN, expression);
+  }
+
+  const reviewShard = find("review", "Review shard");
+  const applyProof = find("apply-proof", "Generate bound close coverage proofs");
+  assert.equal(
+    exactReview.env?.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
+    "${{ steps.target-read-token.outputs.token }}",
+  );
+  assert.equal(
+    reviewShard.env?.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
+    "${{ steps.codex-inspection-token.outputs.token }}",
+  );
+  assert.equal(
+    applyProof.env?.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
+    "${{ steps.proof-inspection-token.outputs.token }}",
+  );
+  assert.equal(applyProof.env?.GH_TOKEN, "${{ github.token }}");
+  const proofInspectionToken = find("apply-proof", "Create target proof inspection token");
+  assert.equal(proofInspectionToken.with?.["permission-contents"], "read");
+  assert.equal(proofInspectionToken.with?.["permission-issues"], "read");
+  assert.equal(proofInspectionToken.with?.["permission-pull-requests"], "read");
 });
 
 test("sweep target review token can post pull request review leases", () => {

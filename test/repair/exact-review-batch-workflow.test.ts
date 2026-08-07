@@ -107,11 +107,12 @@ test("transient retries stay bounded while GitHub throttles defer immediately", 
   }
 });
 
-test("exact publication spends workflow credentials only on public target REST reads", () => {
+test("sweep runtime routes only public target REST reads onto the public token", () => {
   const fixtureEnv = {
     EXACT_EVENT_PUBLICATION: "true",
     GH_TOKEN: "target-app-token",
     REPO_TOKEN: "workflow-repository-token",
+    CLAWSWEEPER_PUBLIC_GH_TOKEN: "public-read-token",
     GH_BIN: process.execPath,
     GH_BIN_ARGS: JSON.stringify([
       "--eval",
@@ -145,8 +146,12 @@ test("exact publication spends workflow credentials only on public target REST r
     run,
     targetRepo: () => currentTarget,
   });
-  const observed = (args: string[], timeoutMs: number | undefined = 5_000) =>
-    JSON.parse(runtime.ghWithPreparedTimeout(args, timeoutMs)) as {
+  const observed = (
+    args: string[],
+    timeoutMs: number | undefined = 5_000,
+    env: NodeJS.ProcessEnv = {},
+  ) =>
+    JSON.parse(runtime.ghWithPreparedTimeout(args, timeoutMs, env)) as {
       token: string;
       args: string[];
       timeoutMs?: number;
@@ -159,13 +164,13 @@ test("exact publication spends workflow credentials only on public target REST r
       ["api", "repos/openclaw/openclaw/pulls/123/reviews?per_page=100", "--paginate", "--slurp"],
       ["api", "repos/openclaw/openclaw/pulls/123", "--jq", ".requested_reviewers"],
     ]) {
-      assert.equal(observed(args).token, "workflow-repository-token", args.join(" "));
+      assert.equal(observed(args).token, "public-read-token", args.join(" "));
     }
 
     const publicArgs = ["api", "repos/openclaw/openclaw/issues/comments/123"];
     assert.equal(observed(publicArgs, 1234).timeoutMs, 1234);
-    assert.equal(JSON.parse(runtime.gh(publicArgs)).token, "workflow-repository-token");
-    assert.equal(JSON.parse(runtime.ghOnce(publicArgs, 10_000)).token, "workflow-repository-token");
+    assert.equal(JSON.parse(runtime.gh(publicArgs)).token, "public-read-token");
+    assert.equal(JSON.parse(runtime.ghOnce(publicArgs, 10_000)).token, "public-read-token");
 
     const privateRequests = [
       ["api", "user"],
@@ -185,6 +190,14 @@ test("exact publication spends workflow credentials only on public target REST r
       assert.equal(observed(args).token, "target-app-token", args.join(" "));
     }
     assert.equal(JSON.parse(runtime.ghOnce(privateRequests[6]!, 10_000)).token, "target-app-token");
+    assert.equal(
+      observed(publicArgs, 5_000, { GH_TOKEN: "explicit-token" }).token,
+      "explicit-token",
+    );
+    assert.equal(
+      observed(publicArgs, 5_000, { GITHUB_TOKEN: "explicit-github-token" }).token,
+      "target-app-token",
+    );
 
     const execution = createGitHubExecution({
       ROOT: process.cwd(),
@@ -207,20 +220,81 @@ test("exact publication spends workflow credentials only on public target REST r
     );
 
     process.env.EXACT_EVENT_PUBLICATION = "false";
+    process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN = "   ";
     assert.equal(observed(publicArgs).token, "target-app-token");
+    delete process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN;
+    assert.equal(observed(publicArgs).token, "target-app-token");
+
     process.env.EXACT_EVENT_PUBLICATION = "true";
+    assert.equal(observed(publicArgs).token, "workflow-repository-token");
+
+    process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN = "public-read-token";
 
     currentTarget = "openclaw/private";
-    assert.equal(observed(publicArgs).token, "target-app-token");
+    assert.equal(observed(publicArgs).token, "public-read-token");
     currentTarget = "openclaw/openclaw";
 
     process.env.GH_HOST = "enterprise.example.invalid";
     assert.equal(observed(publicArgs).token, "target-app-token");
     delete process.env.GH_HOST;
 
+    delete process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN;
     delete process.env.REPO_TOKEN;
     assert.equal(observed(publicArgs).token, "target-app-token");
     assert.ok(requests.length > privateRequests.length);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("sweep public read throttles fall back once to the ambient App token", () => {
+  const fixtureEnv = {
+    GH_TOKEN: "sweep-fallback-app-token",
+    CLAWSWEEPER_PUBLIC_GH_TOKEN: "sweep-fallback-public-token",
+  };
+  const previous = Object.fromEntries(
+    Object.keys(fixtureEnv).map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, fixtureEnv);
+
+  const observedTokens: string[] = [];
+  const run = (
+    _command: string,
+    _args: string[],
+    options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
+  ) => {
+    const token = options?.env?.GH_TOKEN ?? process.env.GH_TOKEN ?? "";
+    observedTokens.push(token);
+    if (token === fixtureEnv.CLAWSWEEPER_PUBLIC_GH_TOKEN) {
+      throw new Error("gh: API rate limit exceeded for installation (HTTP 403)");
+    }
+    return JSON.stringify({ token });
+  };
+  const runtime = createGitHubRuntime({
+    ROOT: process.cwd(),
+    run,
+    targetRepo: () => "openclaw/openclaw",
+  });
+  const execution = createGitHubExecution({
+    ROOT: process.cwd(),
+    gitHubRuntime: runtime,
+    labelAlreadyExistsError: () => false,
+  });
+
+  try {
+    const args = ["api", "repos/openclaw/openclaw/issues/123"];
+    assert.equal(JSON.parse(execution.ghWithRetry(args)).token, fixtureEnv.GH_TOKEN);
+    assert.deepEqual(observedTokens, [fixtureEnv.CLAWSWEEPER_PUBLIC_GH_TOKEN, fixtureEnv.GH_TOKEN]);
+
+    assert.throws(() => execution.ghWithRetry(args), { name: "GitHubRateLimitError" });
+    assert.deepEqual(observedTokens, [
+      fixtureEnv.CLAWSWEEPER_PUBLIC_GH_TOKEN,
+      fixtureEnv.GH_TOKEN,
+      fixtureEnv.CLAWSWEEPER_PUBLIC_GH_TOKEN,
+    ]);
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];
@@ -513,6 +587,7 @@ function githubRetryExecution(
     run: request,
     gitHubRuntime: {
       GitHubRuntimeBudgetError: TestGitHubRuntimeBudgetError,
+      claimPublicReadFallback: () => null,
       ensureGitHubRetryFits: () => undefined,
       ensureGitHubRuntimeAvailable: () => undefined,
       gh: request,

@@ -1077,8 +1077,8 @@ jobs:
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
-          CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-read-token.outputs.token }}
+          CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.target-read-token.outputs.token }}
           ADDITIONAL_PROMPT: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).additionalPrompt || '' }}
           CLAWSWEEPER_RELATED_GITHUB_SEARCH: ${{ vars.CLAWSWEEPER_RELATED_GITHUB_SEARCH || '1' }}
           EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
@@ -1349,6 +1349,7 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          CLAWSWEEPER_PUBLIC_GH_TOKEN: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}
           REPO_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
@@ -2333,6 +2334,7 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          CLAWSWEEPER_PUBLIC_GH_TOKEN: ${{ steps.publication-context.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}
           REPO_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
@@ -2697,7 +2699,7 @@ jobs:
         id: confirm-terminal-item
         if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.release-terminal-review-leases.outcome == 'success' }}
         env:
-          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          GH_TOKEN: ${{ steps.publication-context.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
         run: |
@@ -4166,7 +4168,7 @@ jobs:
         working-directory: clawsweeper
         env:
           GH_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
-          CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.codex-inspection-token.outputs.token || github.token }}
+          CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.codex-inspection-token.outputs.token }}
           ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || github.event.client_payload.review_options.additional_prompt || github.event.client_payload.additional_prompt || '' }}
           EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
           EXPECTED_SOURCE_REVISION: ${{ github.event.client_payload.expected_source_revision || '' }}
@@ -4768,6 +4770,7 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          CLAWSWEEPER_PUBLIC_GH_TOKEN: ${{ needs.plan.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
         run: |
@@ -5276,15 +5279,15 @@ jobs:
       - name: Select target read token
         id: target-token
         env:
-          APP_TOKEN: ${{ steps.target-read-token.outputs.token }}
-          FALLBACK_TOKEN: ${{ github.token }}
+          PRIMARY_TOKEN: ${{ github.token }}
+          APP_FALLBACK_TOKEN: ${{ steps.target-read-token.outputs.token }}
         run: |
-          if [ -n "$APP_TOKEN" ]; then
-            echo "Using ClawSweeper App token for audit reads."
-            echo "token=$APP_TOKEN" >> "$GITHUB_OUTPUT"
+          if [ -n "$PRIMARY_TOKEN" ]; then
+            echo "Using workflow token for public audit reads."
+            echo "token=$PRIMARY_TOKEN" >> "$GITHUB_OUTPUT"
           else
-            echo "Using workflow token fallback for public audit reads."
-            echo "token=$FALLBACK_TOKEN" >> "$GITHUB_OUTPUT"
+            echo "Using ClawSweeper App token fallback for audit reads."
+            echo "token=$APP_FALLBACK_TOKEN" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create state token
@@ -5416,8 +5419,12 @@ jobs:
             exit 1
           fi
           target_slug="$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
+          target_owner="${target_repo%%/*}"
+          target_name="${target_repo#*/}"
           echo "target_repo=$target_repo" >> "$GITHUB_OUTPUT"
           echo "target_slug=$target_slug" >> "$GITHUB_OUTPUT"
+          echo "target_repo_owner=$target_owner" >> "$GITHUB_OUTPUT"
+          echo "target_repo_name=$target_name" >> "$GITHUB_OUTPUT"
 
       - name: Resolve proof artifact identity
         id: proof-artifact
@@ -5531,6 +5538,20 @@ jobs:
       - uses: ./.github/actions/setup-openclaw
         if: ${{ steps.proof-select.outputs.item_numbers != '' }}
 
+      - name: Create target proof inspection token
+        id: proof-inspection-token
+        if: ${{ steps.proof-select.outputs.item_numbers != '' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_repo_owner }}
+          repositories: ${{ steps.target.outputs.target_repo_name }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+
       - name: Generate bound close coverage proofs
         id: generate-apply-proofs
         if: ${{ steps.proof-select.outputs.item_numbers != '' }}
@@ -5538,7 +5559,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GH_TOKEN: ${{ github.token }}
-          CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.proof-inspection-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |
           set -euo pipefail
@@ -5806,7 +5827,7 @@ jobs:
         if: ${{ !(github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *') && !(github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_sync_comments_only == 'true' || github.event.inputs.apply_item_numbers == '__cursor__')) }}
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          GH_TOKEN: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-write-token.outputs.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
         run: |
@@ -5822,6 +5843,7 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          CLAWSWEEPER_PUBLIC_GH_TOKEN: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}
           CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS: ${{ steps.target-write-token.outputs.minted-at-ms }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
