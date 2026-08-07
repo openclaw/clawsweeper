@@ -1,5 +1,5 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
-import { parsePullRequestUrl } from "./github-ref.js";
+import { parsePullRequestUrl, sameRepoSlug } from "./github-ref.js";
 
 export function automergeOutcomeReviewedShaFromResult({
   result,
@@ -21,7 +21,7 @@ export function automergeOutcomeReviewedShaFromResult({
   if (direct) return direct;
 
   const canonicalPr = parsePullRequestUrl(result.canonical_pr);
-  if (!canonicalPr || canonicalPr.repo !== String(repo)) return null;
+  if (!canonicalPr || !sameRepoSlug(canonicalPr.repo, repo)) return null;
   if (target !== undefined && Number(canonicalPr.number) !== Number(target)) return null;
 
   return (

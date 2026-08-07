@@ -17,7 +17,7 @@ import {
   ghJsonWithRetry as ghJson,
   ghTextWithRetry as ghWithRetry,
 } from "./github-cli.js";
-import { parsePullRequestUrl } from "./github-ref.js";
+import { parsePullRequestUrl, sameRepoSlug } from "./github-ref.js";
 import { sleepMs } from "./timing.js";
 import {
   CLAWSWEEPER_LABEL,
@@ -161,7 +161,7 @@ function finalizeFixPr(action: LooseRecord) {
   }
 
   const parsed = parsePullRequestUrl(action.pr_url ?? action.target);
-  if (!parsed || parsed.repo !== result.repo) {
+  if (!parsed || !sameRepoSlug(parsed.repo, result.repo)) {
     return { ...base, status: "blocked", reason: "fix PR URL is missing or outside target repo" };
   }
 
