@@ -160,6 +160,7 @@ test("sweep runtime routes only public target REST reads onto the public token",
   try {
     for (const args of [
       ["api", "repos/openclaw/openclaw/issues/123"],
+      ["api", "-i", "repos/openclaw/openclaw/issues/123/timeline?per_page=100"],
       ["api", "repos/openclaw/openclaw/issues/123/comments?per_page=100", "--paginate", "--slurp"],
       ["api", "repos/openclaw/openclaw/pulls/123/reviews?per_page=100", "--paginate", "--slurp"],
       ["api", "repos/openclaw/openclaw/pulls/123", "--jq", ".requested_reviewers"],
@@ -184,6 +185,7 @@ test("sweep runtime routes only public target REST reads onto the public token",
       ["api", "repos/openclaw/openclaw/issues/123", "-f", "body=mutated"],
       ["api", "repos/openclaw/openclaw/issues/123", "--input", "payload.json"],
       ["api", "repos/openclaw/openclaw/issues/123", "--hostname", "example.invalid"],
+      ["api", "-i", "repos/openclaw/openclaw/issues/123", "--method", "PATCH"],
       ["pr", "view", "123"],
     ];
     for (const args of privateRequests) {

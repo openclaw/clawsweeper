@@ -1,6 +1,7 @@
 export function isPublicOpenClawReadOnlyRequest(ghArgs: readonly string[]): boolean {
   if (ghArgs[0] !== "api") return false;
-  const endpoint = ghArgs[1] ?? "";
+  const endpointIndex = ghArgs[1] === "-i" ? 2 : 1;
+  const endpoint = ghArgs[endpointIndex] ?? "";
   const endpointPath = endpoint.split("?", 1)[0] ?? "";
   if (!/^repos\/openclaw\/openclaw\/(?:issues|pulls)(?:\/|$)/.test(endpointPath)) {
     return false;
@@ -13,7 +14,7 @@ export function isPublicOpenClawReadOnlyRequest(ghArgs: readonly string[]): bool
     return false;
   }
 
-  for (let index = 2; index < ghArgs.length; index += 1) {
+  for (let index = endpointIndex + 1; index < ghArgs.length; index += 1) {
     const flag = ghArgs[index];
     if (flag === "--paginate" || flag === "--slurp") continue;
     if ((flag === "--jq" || flag === "-q") && index + 1 < ghArgs.length) {
