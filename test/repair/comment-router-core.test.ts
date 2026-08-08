@@ -4440,3 +4440,49 @@ test("issue authors can request read-only re-review with trailing context", () =
     false,
   );
 });
+
+test("an unreadable status-comment author is not trusted", async () => {
+  const { isTrustedStatusCommentAuthor } = await import("../../dist/repair/comment-router-core.js");
+  const trusted = new Set(["clawsweeper[bot]", "openclaw-clawsweeper[bot]"]);
+
+  // Adopting a status comment means reading durable state from it and editing it
+  // in place, so an author we cannot read must never satisfy the guard. GitHub
+  // types issue-comment.user as nullable, which is why the read is defensive.
+  assert.equal(isTrustedStatusCommentAuthor({ user: null }, trusted), false);
+  assert.equal(isTrustedStatusCommentAuthor({}, trusted), false);
+  assert.equal(isTrustedStatusCommentAuthor({ user: {} }, trusted), false);
+  assert.equal(isTrustedStatusCommentAuthor({ user: { login: "" } }, trusted), false);
+  assert.equal(isTrustedStatusCommentAuthor({ user: { login: "   " } }, trusted), false);
+  assert.equal(isTrustedStatusCommentAuthor(null, trusted), false);
+  assert.equal(isTrustedStatusCommentAuthor(undefined, trusted), false);
+
+  // A deleted account is reattributed to `ghost`, which is a real login and must
+  // be rejected on its own merits rather than by the absent-author path.
+  assert.equal(isTrustedStatusCommentAuthor({ user: { login: "ghost" } }, trusted), false);
+});
+
+test("genuine ClawSweeper and configured trusted bots remain trusted", async () => {
+  const { isTrustedStatusCommentAuthor } = await import("../../dist/repair/comment-router-core.js");
+  const trusted = new Set(["clawsweeper[bot]", "openclaw-clawsweeper[bot]"]);
+
+  for (const login of [
+    "clawsweeper",
+    "ClawSweeper",
+    "clawsweeper[bot]",
+    "ClawSweeper[Bot]",
+    "openclaw-clawsweeper[bot]",
+    "  clawsweeper[bot]  ",
+  ]) {
+    assert.equal(
+      isTrustedStatusCommentAuthor({ user: { login } }, trusted),
+      true,
+      `${JSON.stringify(login)} must stay trusted`,
+    );
+  }
+
+  // An untrusted human is still rejected, and an empty trusted set does not
+  // widen the guard.
+  assert.equal(isTrustedStatusCommentAuthor({ user: { login: "contributor" } }, trusted), false);
+  assert.equal(isTrustedStatusCommentAuthor({ user: { login: "other[bot]" } }, trusted), false);
+  assert.equal(isTrustedStatusCommentAuthor({ user: { login: "" } }, new Set()), false);
+});
