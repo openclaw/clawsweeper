@@ -825,16 +825,22 @@ export function existingRepairLoopModeOutcome({ intent, trustedBot }: LooseRecor
  * be adopted and overwritten. Fail closed instead: an unknown author is not a
  * known-good one.
  *
- * Every ClawSweeper-authored comment carries a login, so failing closed here
- * cannot orphan a genuine status comment.
+ * The login is compared case-insensitively but **not trimmed**. Trimming would
+ * widen the boundary: a malformed `"  clawsweeper[bot]  "` would become
+ * equivalent to the real login. GitHub logins never contain whitespace, so a
+ * padded value is malformed data, not a trusted identity.
+ *
+ * Tradeoff to keep in view: in normal operation every ClawSweeper-authored
+ * comment carries a login, so failing closed costs nothing. If GitHub ever does
+ * return a null or empty author for a genuine ClawSweeper comment, this guard
+ * will decline to adopt it and ClawSweeper will post a duplicate status comment
+ * rather than editing in place. That is the intended direction to fail.
  */
 export function isTrustedStatusCommentAuthor(
   comment: LooseRecord | null | undefined,
   trustedAuthors: ReadonlySet<string>,
 ): boolean {
-  const author = String(comment?.user?.login ?? "")
-    .trim()
-    .toLowerCase();
+  const author = String(comment?.user?.login ?? "").toLowerCase();
   if (!author) return false;
   return author === "clawsweeper" || trustedAuthors.has(author);
 }

@@ -57,7 +57,7 @@ import {
   isCanonicalLandingNeedsHumanText,
   isTrustedStatusCommentAuthor,
 } from "./comment-router-core.js";
-import { parsePullRequestUrl, pullRequestNumberFromUrl } from "./github-ref.js";
+import { parsePullRequestUrl, pullRequestNumberFromUrl, sameRepoSlug } from "./github-ref.js";
 import {
   clawsweeperGitUserEmail,
   clawsweeperGitUserName,

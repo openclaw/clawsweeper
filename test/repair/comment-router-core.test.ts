@@ -4471,7 +4471,6 @@ test("genuine ClawSweeper and configured trusted bots remain trusted", async () 
     "clawsweeper[bot]",
     "ClawSweeper[Bot]",
     "openclaw-clawsweeper[bot]",
-    "  clawsweeper[bot]  ",
   ]) {
     assert.equal(
       isTrustedStatusCommentAuthor({ user: { login } }, trusted),
@@ -4485,4 +4484,15 @@ test("genuine ClawSweeper and configured trusted bots remain trusted", async () 
   assert.equal(isTrustedStatusCommentAuthor({ user: { login: "contributor" } }, trusted), false);
   assert.equal(isTrustedStatusCommentAuthor({ user: { login: "other[bot]" } }, trusted), false);
   assert.equal(isTrustedStatusCommentAuthor({ user: { login: "" } }, new Set()), false);
+
+  // A padded login is malformed data, not a trusted identity. GitHub logins
+  // never contain whitespace, so trimming here would widen the boundary rather
+  // than normalize it.
+  for (const login of ["  clawsweeper[bot]  ", " clawsweeper", "clawsweeper ", "\tclawsweeper"]) {
+    assert.equal(
+      isTrustedStatusCommentAuthor({ user: { login } }, trusted),
+      false,
+      `${JSON.stringify(login)} is malformed and must not be trusted`,
+    );
+  }
 });
