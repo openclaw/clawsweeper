@@ -79,12 +79,19 @@ const CASES = {
 
 /* -- Claim 1: every returned entry is one well-formed comment -------------- */
 
+/**
+ * One well-formed comment: opens, closes, and carries no terminator before the
+ * closing one. Expressed as "the body before the final terminator contains no
+ * terminator" rather than `indexOf("-->") === length - 3`, which compares equal
+ * when indexOf returns -1 and the string is two characters long.
+ */
+const isSingleWellFormedComment = (marker) =>
+  marker.startsWith("<!--") && marker.endsWith("-->") && !marker.slice(0, -3).includes("-->");
+
 console.log("== Claim 1: every returned entry is a single well-formed comment ==\n");
 for (const [name, body] of Object.entries(CASES)) {
   const markers = trailingHtmlComments(body);
-  const bad = markers.filter(
-    (m) => !m.startsWith("<!--") || !m.endsWith("-->") || m.indexOf("-->") !== m.length - 3,
-  );
+  const bad = markers.filter((m) => !isSingleWellFormedComment(m));
   check(
     `${name} (${markers.length} marker${markers.length === 1 ? "" : "s"})`,
     bad.length === 0,

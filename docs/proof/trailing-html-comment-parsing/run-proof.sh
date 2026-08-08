@@ -9,7 +9,38 @@ set -euo pipefail
 
 ARTIFACT_DIR=".artifacts/trailing-html-comment-proof"
 mkdir -p "$ARTIFACT_DIR"
-BASE_REF="${MARKER_PROOF_BASE:-0588bda9}"
+
+# Derive the merge base rather than pinning a SHA: a pinned base silently goes
+# stale after a rebase and would compare the no-loss claim against an obsolete
+# revision.
+#
+# Prefer MARKER_PROOF_BASE, computed on the host and passed in with --allow-env
+# (the pattern docs/proof/openclaw-bay uses for BAY_PROOF_SOURCE_SHA). Deriving
+# it inside the lease also works, but depends on lease-side git succeeding; that
+# has been observed to fail transiently under heavy host I/O contention. Falling
+# back keeps the script usable standalone while the env var makes a lease run
+# deterministic.
+BASE_REF="${MARKER_PROOF_BASE:-}"
+BASE_SOURCE="MARKER_PROOF_BASE"
+if [ -z "$BASE_REF" ]; then
+  BASE_SOURCE="merge-base derived in-lease"
+  BASE_ERR="$( { git merge-base HEAD origin/main || git merge-base HEAD main; } 2>&1 1>/dev/null || true )"
+  BASE_REF="$( { git merge-base HEAD origin/main || git merge-base HEAD main; } 2>/dev/null || true )"
+fi
+if [ -z "$BASE_REF" ]; then
+  echo "FAIL: could not determine the merge base with main."
+  echo "      git said: ${BASE_ERR:-<no output>}"
+  echo "      Re-run with the base computed on the host:"
+  echo "        MARKER_PROOF_BASE=\"\$(git merge-base HEAD origin/main)\" \\"
+  echo "        crabbox run ... --allow-env MARKER_PROOF_BASE ..."
+  exit 1
+fi
+if ! git cat-file -e "$BASE_REF:src/review-comment-markers.ts" 2>/dev/null; then
+  echo "FAIL: $BASE_REF does not contain src/review-comment-markers.ts;"
+  echo "      the no-loss claim cannot be measured against it."
+  exit 1
+fi
+echo "base ref: $BASE_REF (source: $BASE_SOURCE)"
 
 echo "== environment =="
 uname -a
@@ -20,7 +51,6 @@ if [ "$NODE_MAJOR" -lt 24 ]; then
   exit 1
 fi
 echo "head: $(git rev-parse HEAD 2>/dev/null || echo 'unavailable')"
-echo "base: $BASE_REF"
 echo
 
 echo "== build =="
