@@ -266,3 +266,123 @@ test("review blob sizes use one bounded GraphQL metadata request", () => {
     /invalid bounded review blob metadata request/,
   );
 });
+
+// The review cache materializes a missing base or head with `--depth=1`
+// (`ensureReviewTreeCommit`), which leaves both trees present and their shared
+// history absent. The attribution rule in `prompts/review-item.md` is written
+// around that boundary, so this pins it: the operations the prompt names must
+// run offline after hydration, and the ones it forbids must be the ones that
+// cannot. Found by the first live ClawSweeper review of openclaw/clawsweeper#1075.
+function shallowReviewCacheFixture() {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-shallow-cache-"));
+  const origin = join(root, "origin.git");
+  const source = join(root, "source");
+  const target = join(root, "target");
+  mkdirSync(source);
+  git(root, "init", "--bare", "-q", origin);
+  git(origin, "config", "uploadpack.allowFilter", "true");
+  git(source, "init", "-q", "-b", "main");
+  git(source, "config", "user.name", "ClawSweeper Review Test");
+  git(source, "config", "user.email", "review-test@example.com");
+  git(source, "config", "commit.gpgsign", "false");
+  writeFileSync(join(source, "touched.txt"), "before\n");
+  writeFileSync(join(source, "moved.txt"), "pre-existing condition\n");
+  git(source, "add", ".");
+  git(source, "commit", "-qm", "base");
+  const baseSha = git(source, "rev-parse", "HEAD");
+  git(source, "remote", "add", "origin", origin);
+  git(source, "push", "-q", "origin", "main");
+
+  git(source, "checkout", "-qb", "feature");
+  writeFileSync(join(source, "touched.txt"), "after\n");
+  git(source, "mv", "moved.txt", "renamed.txt");
+  git(source, "add", ".");
+  git(source, "commit", "-qm", "feature");
+  const headSha = git(source, "rev-parse", "HEAD");
+  git(source, "push", "-q", "origin", "HEAD:refs/pull/991/head");
+
+  // Exactly what `ensureReviewTreeCommit` runs when neither commit is present.
+  git(target === "" ? root : root, "init", "-q", target);
+  git(target, "remote", "add", "origin", `file://${origin}`);
+  for (const [ref, destination] of [
+    ["refs/heads/main", "refs/clawsweeper/review-cache/base-991"],
+    ["refs/pull/991/head", "refs/clawsweeper/review-cache/head-991"],
+  ] as const) {
+    git(
+      target,
+      "fetch",
+      "--force",
+      "--filter=blob:none",
+      "origin",
+      `${ref}:${destination}`,
+      "--depth=1",
+    );
+  }
+  return { root, source, target, baseSha, headSha };
+}
+
+function gitStatusOffline(cwd: string, ...args: string[]): number {
+  return (
+    spawnSync("git", args, {
+      cwd,
+      env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+      stdio: "ignore",
+    }).status ?? -1
+  );
+}
+
+test("attribution reads survive the depth-1 review cache that has no shared history", () => {
+  const fixture = shallowReviewCacheFixture();
+  try {
+    const result = hydratePullRequestReviewBlobs({
+      targetDir: fixture.target,
+      baseSha: fixture.baseSha,
+      headSha: fixture.headSha,
+      resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
+      files: [
+        { filename: "touched.txt", status: "modified" },
+        { filename: "renamed.txt", previous_filename: "moved.txt", status: "renamed" },
+      ],
+    });
+    assert.equal(result.hydrated, true);
+
+    // Both commits are present — the P1's premise, not a contradiction of it.
+    assert.equal(
+      gitStatusOffline(fixture.target, "cat-file", "-e", `${fixture.baseSha}^{commit}`),
+      0,
+    );
+    assert.equal(
+      gitStatusOffline(fixture.target, "cat-file", "-e", `${fixture.headSha}^{commit}`),
+      0,
+    );
+
+    // Ancestry is not. These are the two commands the prompt must never name.
+    assert.notEqual(
+      gitStatusOffline(fixture.target, "merge-base", fixture.baseSha, fixture.headSha),
+      0,
+    );
+    assert.notEqual(
+      gitStatusOffline(fixture.target, "diff", `${fixture.baseSha}...${fixture.headSha}`),
+      0,
+    );
+
+    // What the prompt does name works offline, including the renamed file read
+    // through its previous path. Cut the remote so a lazy fetch cannot rescue it.
+    git(fixture.target, "remote", "set-url", "origin", "https://invalid.invalid/offline.git");
+    assert.equal(git(fixture.target, "show", `${fixture.baseSha}:touched.txt`), "before");
+    assert.equal(
+      git(fixture.target, "show", `${fixture.baseSha}:moved.txt`),
+      "pre-existing condition",
+    );
+    assert.equal(
+      git(fixture.target, "show", `${fixture.headSha}:renamed.txt`),
+      "pre-existing condition",
+    );
+
+    // The rename trap: the head path does not exist on the base side, and that
+    // absence must never be read as "the patch introduced this file".
+    assert.notEqual(gitStatusOffline(fixture.target, "show", `${fixture.baseSha}:renamed.txt`), 0);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});

@@ -483,68 +483,69 @@ test("review prompt requires base attribution before a finding is filed", () => 
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
   assert.match(prompt, /Establish patch attribution before you emit an actionable PR finding/);
-  assert.match(prompt, /carries the pull request's `base\.sha` and `head\.sha`/);
-  assert.match(prompt, /git show \$\(git merge-base <base-sha> <head-sha>\):<file>/);
-  // Both reads resolve to the same snapshot, or they can contradict each other.
-  assert.match(prompt, /Anchor every check\s+on one snapshot/);
-  assert.match(prompt, /instead of inferring\s+provenance from the finding's line number/);
 
-  // Three-dot against the PR head, not two-dot against HEAD: the two-dot form
-  // drags in base-branch commits made since the branch diverged, and HEAD is
-  // not guaranteed to be the PR head in every review lane.
-  assert.match(prompt, /git diff <base-sha>\.\.\.<head-sha> -- <file>/);
-  assert.match(prompt, /which resolves to that same merge\s+base/);
-  assert.match(prompt, /For these comparisons do not anchor on `HEAD`/);
-  // ...but the prohibition must stay scoped: the re-review paragraph below
-  // still requires `git diff <earlier-sha>..HEAD` for lateFinding.
-  assert.match(prompt, /`HEAD` remains correct where another instruction names it/);
+  // The PR diff is the primary source and carries merge-base semantics, which
+  // `base.sha` alone does not.
+  assert.match(prompt, /read\s+it off the pull request diff first/);
+  assert.match(prompt, /computed against the merge\s+base/);
+
+  // ...but that diff is bounded, so the fallback and its caveat are both stated.
+  assert.match(prompt, /each file's patch is truncated and the\s+file list is capped/);
+  assert.match(prompt, /GIT_NO_LAZY_FETCH=1 git show <base-sha>:<file>/);
+  // A truncated patch must not leave head-side code unreadable.
+  assert.match(prompt, /GIT_NO_LAZY_FETCH=1 git show\s+<head-sha>:<file>/);
+  assert.match(prompt, /when a truncated patch hides the change you are reviewing/);
+  // Hydration skips oversized blobs on purpose; a bare `git show` in a
+  // promisor clone would fetch them back and bypass that budget.
+  assert.match(prompt, /review hydration deliberately skips blobs over its size budget/);
+  assert.match(prompt, /Let the read\s+fail instead/);
+  assert.match(prompt, /the base branch's current tip, not the merge base/);
+  // The fallback is asymmetric on a stale branch: it may raise doubt, never
+  // clear the patch, or independent base-branch work reads as inherited code.
+  assert.match(prompt, /that read cuts both ways and settles nothing on\s+its own/);
+  assert.match(prompt, /introduced independently after the branch diverged/);
+  assert.match(prompt, /raise doubt, never to clear the patch/);
+  // Unknown staleness must default to the safe side, not to "not behind".
+  assert.match(prompt, /Unless the context positively shows the branch is not behind/);
+  assert.match(prompt, /an\s+absent or unknown `mergeableState` is not that showing/);
+
+  // Ancestry is unavailable in the depth-1 review cache, so the procedure may
+  // not name it. See review-blob-hydration.test.ts for the executable proof.
+  assert.match(prompt, /Do not run `git merge-base`/);
+  assert.match(prompt, /do not use the three-dot\s+`git diff <a>\.\.\.<b>` form/);
+  assert.match(prompt, /--depth=1/);
+  assert.doesNotMatch(prompt, /git show \$\(git merge-base/);
+  assert.doesNotMatch(prompt, /git diff <base-sha>\.\.\.<head-sha>/);
+  assert.doesNotMatch(prompt, /git diff <base-sha>\.\.HEAD/);
 
   // A renamed file has no base-side path under its new name; reading that as
   // "introduced by the patch" would misattribute untouched code.
+  assert.match(prompt, /`previous_filename` when the patch renamed it/);
+  assert.match(prompt, /do not treat the new path's absence on the base side as evidence/);
+  // ...but only for renames: an added file legitimately has no base side.
+  assert.match(prompt, /That exception\s+is for renames only/);
+  assert.match(prompt, /absence is exactly\s+what added means/);
+
+  // Hydration is best-effort, so unknown provenance keeps the finding without
+  // scoring the patch for it.
+  assert.match(prompt, /Blob hydration is best-effort/);
+  assert.match(prompt, /keep the finding rather than dropping a real defect/);
+  // Retention is deliberate and costly, so the prompt says so rather than
+  // implying the overallCorrectness guard makes it free.
+  assert.match(prompt, /A retained finding\s+still counts as contributor work/);
+  assert.match(prompt, /say in its body that\s+provenance could not be established/);
   assert.match(
     prompt,
-    /When the patch renamed the file, its path does not exist on the\s+base side/,
-  );
-  assert.match(prompt, /pass both paths to the diff/);
-  assert.match(prompt, /do not read the missing path as evidence/);
-  assert.doesNotMatch(prompt, /git diff <base-sha>\.\.HEAD/);
-  assert.match(
-    prompt,
-    /introduced the condition,\s+made it materially worse, or newly made the bad path reachable/,
+    /do not let an unestablished attribution\s+by itself set `overallCorrectness` to `patch is incorrect`/,
   );
 
-  // A patch that misses state it claimed to cover stays a finding: attribution
-  // must not become an escape hatch for anything that predates the branch.
-  assert.match(prompt, /covering the condition is part of the\s+PR's own stated scope/);
-  assert.match(prompt, /incomplete against its own claim/);
-
-  // A genuine pre-existing prerequisite is kept out of both channels that score
-  // the contributor's patch.
+  // A pre-existing prerequisite stays out of both channels that score the patch.
   assert.match(prompt, /Do not file it as a\s+`reviewFinding`/);
-  assert.match(prompt, /do not let it set `overallCorrectness` to `patch is\s+incorrect`/);
-  assert.match(
-    prompt,
-    /charge the contributor's patch quality for debt the\s+branch did not create/,
-  );
-
-  // ...and routed to the field that actually pauses automated landing.
   assert.match(prompt, /set `maintainerDecision\.required:\s+true` with the scope question/);
-  assert.match(prompt, /automation pauses for the human choice/);
-
-  // fix_before_merge is the wrong destination: it authorizes automergeInstruction.
   assert.match(
     prompt,
     /Do not mark such an option\s+`fix_before_merge` merely to signal a blocker/,
   );
-  assert.match(prompt, /invites the repair lane to widen this PR into the\s+pre-existing debt/);
-
-  // Fail closed: an unprovable provenance claim keeps the finding.
-  assert.match(
-    prompt,
-    /base commit is unavailable or the comparison is\s+inconclusive, treat the condition as patch-attributable/,
-  );
-
-  // Scope stays the target repository's call, not ClawSweeper's.
   assert.match(prompt, /let the target `AGENTS\.md` policy govern the scope call/);
 });
 

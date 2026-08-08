@@ -405,20 +405,46 @@ correct` when the PR has no blocking correctness finding, and `not a patch` for
 issues and other non-PR reviews. Set `overallConfidenceScore` to a 0-1 number
 matching your confidence in the overall verdict.
 
-Establish patch attribution before you emit an actionable PR finding. The review
-context carries the pull request's `base.sha` and `head.sha`. Anchor every check
-on one snapshot — the merge base of those two commits — so the reads cannot
-disagree with each other. Read the base side of the affected file directly,
-`git show $(git merge-base <base-sha> <head-sha>):<file>`, instead of inferring
-provenance from the finding's line number or from the fact that a nearby line
-changed; and to see only what this branch changed use the three-dot form,
-`git diff <base-sha>...<head-sha> -- <file>`, which resolves to that same merge
-base, so base-branch commits made since the branch diverged are not read as this
-patch's work. When the patch renamed the file, its path does not exist on the
-base side: use the previous path for the base read, pass both paths to the diff,
-and do not read the missing path as evidence that the patch introduced the
-condition. For these comparisons do not anchor on `HEAD`, which is not guaranteed
-to be the PR head; `HEAD` remains correct where another instruction names it.
+Establish patch attribution before you emit an actionable PR finding, and read
+it off the pull request diff first. That diff is computed against the merge
+base, so lines it shows as added or changed are this branch's work and lines it
+leaves as context are not. When the cited lines are visible there, that settles
+attribution.
+
+The diff in this context is bounded — each file's patch is truncated and the
+file list is capped — so it will not always reach the cited lines. Then read the
+files directly. Both sides are available: `GIT_NO_LAZY_FETCH=1 git show
+<head-sha>:<file>` for the code as this branch leaves it, which is the read to
+use when a truncated patch hides the change you are reviewing, and
+`GIT_NO_LAZY_FETCH=1 git show <base-sha>:<file>` for the base side,
+using the file's `previous_filename` when the patch renamed it. For a renamed
+file, do not treat the new path's absence on the base side as evidence that the
+patch introduced the condition — read the previous path instead. That exception
+is for renames only: when the diff reports the file as added, absence is exactly
+what added means, and the patch owns what is in it. Keep that environment variable: the checkout is a blobless promisor
+clone and review hydration deliberately skips blobs over its size budget, so a
+plain `git show` would pull an oversized one back over the network. Let the read
+fail instead and fall through to the unresolved case below.
+Note what `base.sha` is: the base branch's current tip, not the merge base. If
+the branch is behind its base, that read cuts both ways and settles nothing on
+its own: a difference there may be the base branch's own work rather than this
+contributor's, and matching content there may be something the base branch
+introduced independently after the branch diverged rather than code the patch
+inherited. Unless the context positively shows the branch is not behind — an
+absent or unknown `mergeableState` is not that showing — use this fallback to
+raise doubt, never to clear the patch. Do not run `git merge-base`, and do not use the three-dot
+`git diff <a>...<b>` form: the review checkout can materialize the base and head
+commits with `--depth=1`, which leaves both trees present and their shared
+history absent, and both commands fail outright in that state.
+
+Blob hydration is best-effort — it is skipped for oversized or unresolvable
+files and only warns — so the base read can be unavailable for a condition that
+predates the branch. If neither the diff nor the base read settles provenance,
+keep the finding rather than dropping a real defect, but say in its body that
+provenance could not be established, and do not let an unestablished attribution
+by itself set `overallCorrectness` to `patch is incorrect`. A retained finding
+still counts as contributor work, so make both reads above a real attempt before
+falling back to this.
 
 A finding belongs in `reviewFindings` when this patch introduced the condition,
 made it materially worse, or newly made the bad path reachable. It also belongs
@@ -438,9 +464,7 @@ true` with the scope question, so automation pauses for the human choice instead
 of treating the PR as clear to land. Do not mark such an option
 `fix_before_merge` merely to signal a blocker: that category authorizes
 `automergeInstruction`, so it invites the repair lane to widen this PR into the
-pre-existing debt. If the base commit is unavailable or the comparison is
-inconclusive, treat the condition as patch-attributable and file the finding as
-usual — never drop a real defect on an unproven provenance claim. Whether a
+pre-existing debt. Whether a
 pre-existing prerequisite should be repaired inside this PR or tracked as
 explicit follow-up is the target repository's scope decision; report the
 prerequisite and let the target `AGENTS.md` policy govern the scope call.
