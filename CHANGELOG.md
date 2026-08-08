@@ -180,6 +180,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Codex subprocess containment now actually suppresses target `.pnpmfile.cjs` execution: pnpm 11 only honors `npm_config_*` environment settings, so the previously used `PNPM_CONFIG_IGNORE_PNPMFILE` spelling was inert and a target repository's pnpmfile could run arbitrary code during repair installs.
 - Reconcile observers now start only for review titles they can classify, so queue-backed `Review exact item` and support runs no longer consume runner slots merely to report `skipped`; a new hourly janitor also cancels runs stuck in `queued` for over 24 hours before they decay into uncancellable zombies.
 - Deployment runs waiting for human approval no longer count as runner-queue congestion in operational health: a forgotten approval gate had pinned `oldest_queued_minutes` at eight-plus days and held work-execution status away from healthy; approval-gated runs now report separately (count and oldest age) in the API and the execution alert.
 - Terminal command acknowledgements whose status comment was deleted (or never existed) now complete as a durable `missing_status_comment` skip instead of requeueing the finalization driver forever every ~20 minutes.

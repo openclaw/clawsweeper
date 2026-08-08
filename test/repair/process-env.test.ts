@@ -36,6 +36,7 @@ test("codexSubprocessEnv forces ClawSweeper git identity and strips tokens", () 
       PNPM_CONFIG_IGNORE_SCRIPTS: "false",
       PNPM_CONFIG_IGNORE_PNPMFILE: "false",
       npm_config_ignore_scripts: "false",
+      npm_config_ignore_pnpmfile: "false",
     },
     () => {
       const env = codexSubprocessEnv();
@@ -59,6 +60,7 @@ test("codexSubprocessEnv forces ClawSweeper git identity and strips tokens", () 
       assert.equal(env.PNPM_CONFIG_IGNORE_SCRIPTS, "true");
       assert.equal(env.PNPM_CONFIG_IGNORE_PNPMFILE, "true");
       assert.equal(env.npm_config_ignore_scripts, "true");
+      assert.equal(env.npm_config_ignore_pnpmfile, "true");
       assert.equal(internalCodexModel("internal"), "secret-model");
       assert.deepEqual(codexModelArgs("internal"), []);
       assert.deepEqual(codexModelArgs("secret-model"), []);
@@ -160,6 +162,7 @@ test("Codex subprocess prevents pnpm deploy from installing target Git hooks", (
     const unsafePnpmfile = deploy("unsafe-pnpmfile", {
       ...codexSubprocessEnv(),
       PNPM_CONFIG_IGNORE_PNPMFILE: "false",
+      npm_config_ignore_pnpmfile: "false",
     });
     assert.equal(unsafePnpmfile.status, 0, unsafePnpmfile.stderr || unsafePnpmfile.stdout);
     assert.equal(git("config", "--local", "--get", "core.hooksPath"), "git-hooks");
