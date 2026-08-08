@@ -65,15 +65,15 @@ EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = "60000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "90000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
 EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"
-# 200/h only sustained ~14 concurrent reviews against a 128-slot pool; with the
-# review/publication lane split (#953) the queue drains to zero pending while
-# 3,306 items have never been reviewed at all (42.9% weekly coverage). Model
-# spend scales with this dial. 600/h saturated the GitHub App installation
-# token budget once the apply and comment-sync lanes resumed alongside reviews
-# (installation 122230863 rate-limit 403s, 2026-07-30 16:56Z): at ~30 API calls
-# per review, 450/h leaves the write lanes headroom inside the shared allowance
-# while still clearing the first-pass backlog in about a day.
-EXACT_REVIEW_TARGET_RATE_PER_HOUR = "450"
+# Model spend scales with this dial. 600/h previously saturated the GitHub App
+# installation token budget (installation 122230863 rate-limit 403s, 2026-07-30)
+# and was trimmed to 450/h. Restored to 600/h on 2026-08-08 after apply-guard
+# read memoization (#1060) cut per-item API cost and the read-pool split
+# (#1062/#1064) moved router/public reads onto the per-repo Actions token pool,
+# leaving the App bucket to memoized review hydration and writes. Telemetry
+# after #1064: ~336 ok reviews/h with near-empty throttle backoff at the 450
+# cap. If installation 403s recur, trim here first.
+EXACT_REVIEW_TARGET_RATE_PER_HOUR = "600"
 EXACT_REVIEW_TARGET_BURST = "120"
 # Keep each mutation lease at 8 while allowing four isolated workflows to prepare
 # concurrently. Final commits still cross the single state-writer coordinator.
