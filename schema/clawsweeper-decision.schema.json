@@ -313,7 +313,7 @@
         "type": "string",
         "enum": ["maturity:stable"]
       },
-      "description": "Issue-only labels for mature taxonomy matches. Use [] for PRs. Select maturity:stable only when the issue's primary owner surface is currently M4/M5 in qa/maturity-scores.yaml; incidental Gateway/CLI transit or implementation plumbing does not qualify a lower-maturity surface."
+      "description": "Issue-only labels for broken existing behavior on a mature taxonomy surface. Use [] for PRs. M4/M5 primary ownership in qa/maturity-scores.yaml is necessary but not sufficient: select maturity:stable only when current docs, tests, API/CLI contracts, or established shipped behavior define the expected behavior that is broken. Use [] for feature proposals, new capabilities, UX preferences, new config or policy choices, docs/support work, cleanup, and unclear reports even when they concern an M4/M5 surface. Incidental Gateway/CLI transit or implementation plumbing does not qualify a lower-maturity surface. When the existing-behavior contract or primary owner remains ambiguous, use []."
     },
     "mergeRiskOptions": {
       "type": "array",

@@ -184,25 +184,21 @@ export function createLabelMutationOperations(
   function ensureMaturityLabel(name: MaturityLabelName, onMutation?: () => void): void {
     const definition = MATURITY_LABELS.find((label) => label.name === name);
     if (!definition) return;
-    try {
-      ghObservedMutationCommand({
-        identity: `label_create:${definition.name}`,
-        args: [
-          "label",
-          "create",
-          definition.name,
-          "--color",
-          definition.color,
-          "--description",
-          definition.description,
-        ],
-        attempts: 2,
-        onMutation,
-        knownNoMutation: labelAlreadyExistsError,
-      });
-    } catch (error) {
-      if (!labelAlreadyExistsError(error)) throw error;
-    }
+    ghObservedMutationCommand({
+      identity: `label_upsert:${definition.name}`,
+      args: [
+        "label",
+        "create",
+        definition.name,
+        "--force",
+        "--color",
+        definition.color,
+        "--description",
+        definition.description,
+      ],
+      attempts: 2,
+      onMutation,
+    });
   }
   function ensurePrRatingLabel(tier: PrRatingTier, onMutation?: () => void): void {
     const definition = ratingLabelForTier(tier);

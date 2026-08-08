@@ -19,9 +19,10 @@ function stableShortlist(text) {
   const nonStableRows = rows.filter((surface) => maturityCode(surface) < 4);
 
   return [
-    "Primary-surface rule: classify the issue by the product surface that owns the broken or missing behavior. Shared Gateway/CLI transit, APIs, hosting, or diagnostics do not make a lower-maturity owner eligible.",
+    "Conservative rule: maturity:stable is for broken existing behavior, not feature proposals, new capabilities, UX preferences, new config or policy choices, docs/support work, cleanup, or unclear reports. M4+ ownership is necessary but not sufficient; use no maturity label when the existing contract or primary owner is ambiguous.",
+    "Primary-surface rule: classify the issue by the product surface that owns the broken behavior. Shared Gateway/CLI transit, APIs, hosting, or diagnostics do not make a lower-maturity owner eligible.",
     "",
-    "M4+ primary surfaces (eligible for maturity:stable):",
+    "M4+ candidate primary owners (the issue must still report broken existing behavior):",
     ...(stableRows.length > 0
       ? stableRows.map((surface) => {
           const categories = surface.categories.length

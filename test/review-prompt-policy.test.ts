@@ -513,7 +513,11 @@ test("review prompt uses token-light maturity shortlist helper", () => {
   assert.match(prompt, /maturity-stable-shortlist\.mjs/);
   assert.match(prompt, /Identify exactly one primary owner surface/);
   assert.match(prompt, /Shared\s+Gateway\/CLI transit/);
-  assert.match(prompt, /feature proposal does\s+not qualify/);
+  assert.match(prompt, /M4\/M5 ownership is necessary but is\s+not enough by itself/);
+  assert.match(prompt, /current docs, tests, an API or\s+CLI contract/);
+  assert.match(prompt, /feature proposal, new capability, UX preference/);
+  assert.match(prompt, /requiresNewFeature: true/);
+  assert.match(prompt, /existing-behavior\s+contract or primary owner remains ambiguous/);
   assert.match(
     runtimePrompt,
     /node "\$CLAWSWEEPER_PROOF_SCRATCH_DIR\/maturity-stable-shortlist\.mjs"/,

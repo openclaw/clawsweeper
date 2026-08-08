@@ -38,8 +38,10 @@ test("maturity shortlist script distinguishes eligible primary surfaces from exc
       scorecard,
     ]).toString();
 
+    assert.match(output, /Conservative rule: maturity:stable is for broken existing behavior/);
+    assert.match(output, /M4\+ ownership is necessary but not sufficient/);
     assert.match(output, /Primary-surface rule:/);
-    assert.match(output, /M4\+ primary surfaces \(eligible for maturity:stable\):/);
+    assert.match(output, /M4\+ candidate primary owners/);
     assert.match(output, /gateway-runtime \| Gateway runtime \| M4 Stable \| q81 c89/);
     assert.match(output, /categories: HTTP APIs/);
     assert.match(output, /Below-M4 primary surfaces \(not eligible for maturity:stable\):/);

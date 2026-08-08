@@ -376,7 +376,7 @@ export const MATURITY_LABELS = [
   {
     name: "maturity:stable",
     color: "1F883D",
-    description: "Issue's primary taxonomy surface is currently scored M4/M5.",
+    description: "Broken existing behavior primarily owned by an M4/M5 scorecard surface.",
   },
 ] as const satisfies readonly {
   name: MaturityLabelName;
