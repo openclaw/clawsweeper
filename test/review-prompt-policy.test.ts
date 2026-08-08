@@ -479,6 +479,75 @@ test("decision schema keeps draft and protected workflow state out of PR rank", 
   );
 });
 
+test("review prompt requires base attribution before a finding is filed", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /Establish patch attribution before you emit an actionable PR finding/);
+  assert.match(prompt, /carries the pull request's `base\.sha` and `head\.sha`/);
+  assert.match(prompt, /git show \$\(git merge-base <base-sha> <head-sha>\):<file>/);
+  // Both reads resolve to the same snapshot, or they can contradict each other.
+  assert.match(prompt, /Anchor every check\s+on one snapshot/);
+  assert.match(prompt, /instead of inferring\s+provenance from the finding's line number/);
+
+  // Three-dot against the PR head, not two-dot against HEAD: the two-dot form
+  // drags in base-branch commits made since the branch diverged, and HEAD is
+  // not guaranteed to be the PR head in every review lane.
+  assert.match(prompt, /git diff <base-sha>\.\.\.<head-sha> -- <file>/);
+  assert.match(prompt, /which resolves to that same merge\s+base/);
+  assert.match(prompt, /For these comparisons do not anchor on `HEAD`/);
+  // ...but the prohibition must stay scoped: the re-review paragraph below
+  // still requires `git diff <earlier-sha>..HEAD` for lateFinding.
+  assert.match(prompt, /`HEAD` remains correct where another instruction names it/);
+
+  // A renamed file has no base-side path under its new name; reading that as
+  // "introduced by the patch" would misattribute untouched code.
+  assert.match(
+    prompt,
+    /When the patch renamed the file, its path does not exist on the\s+base side/,
+  );
+  assert.match(prompt, /pass both paths to the diff/);
+  assert.match(prompt, /do not read the missing path as evidence/);
+  assert.doesNotMatch(prompt, /git diff <base-sha>\.\.HEAD/);
+  assert.match(
+    prompt,
+    /introduced the condition,\s+made it materially worse, or newly made the bad path reachable/,
+  );
+
+  // A patch that misses state it claimed to cover stays a finding: attribution
+  // must not become an escape hatch for anything that predates the branch.
+  assert.match(prompt, /covering the condition is part of the\s+PR's own stated scope/);
+  assert.match(prompt, /incomplete against its own claim/);
+
+  // A genuine pre-existing prerequisite is kept out of both channels that score
+  // the contributor's patch.
+  assert.match(prompt, /Do not file it as a\s+`reviewFinding`/);
+  assert.match(prompt, /do not let it set `overallCorrectness` to `patch is\s+incorrect`/);
+  assert.match(
+    prompt,
+    /charge the contributor's patch quality for debt the\s+branch did not create/,
+  );
+
+  // ...and routed to the field that actually pauses automated landing.
+  assert.match(prompt, /set `maintainerDecision\.required:\s+true` with the scope question/);
+  assert.match(prompt, /automation pauses for the human choice/);
+
+  // fix_before_merge is the wrong destination: it authorizes automergeInstruction.
+  assert.match(
+    prompt,
+    /Do not mark such an option\s+`fix_before_merge` merely to signal a blocker/,
+  );
+  assert.match(prompt, /invites the repair lane to widen this PR into the\s+pre-existing debt/);
+
+  // Fail closed: an unprovable provenance claim keeps the finding.
+  assert.match(
+    prompt,
+    /base commit is unavailable or the comparison is\s+inconclusive, treat the condition as patch-attributable/,
+  );
+
+  // Scope stays the target repository's call, not ClawSweeper's.
+  assert.match(prompt, /let the target `AGENTS\.md` policy govern the scope call/);
+});
+
 test("review finding schema requires every structured-output property", () => {
   const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
   const finding = schema.properties.reviewFindings.items;

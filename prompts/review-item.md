@@ -405,6 +405,46 @@ correct` when the PR has no blocking correctness finding, and `not a patch` for
 issues and other non-PR reviews. Set `overallConfidenceScore` to a 0-1 number
 matching your confidence in the overall verdict.
 
+Establish patch attribution before you emit an actionable PR finding. The review
+context carries the pull request's `base.sha` and `head.sha`. Anchor every check
+on one snapshot — the merge base of those two commits — so the reads cannot
+disagree with each other. Read the base side of the affected file directly,
+`git show $(git merge-base <base-sha> <head-sha>):<file>`, instead of inferring
+provenance from the finding's line number or from the fact that a nearby line
+changed; and to see only what this branch changed use the three-dot form,
+`git diff <base-sha>...<head-sha> -- <file>`, which resolves to that same merge
+base, so base-branch commits made since the branch diverged are not read as this
+patch's work. When the patch renamed the file, its path does not exist on the
+base side: use the previous path for the base read, pass both paths to the diff,
+and do not read the missing path as evidence that the patch introduced the
+condition. For these comparisons do not anchor on `HEAD`, which is not guaranteed
+to be the PR head; `HEAD` remains correct where another instruction names it.
+
+A finding belongs in `reviewFindings` when this patch introduced the condition,
+made it materially worse, or newly made the bad path reachable. It also belongs
+there when covering the condition is part of the PR's own stated scope: a patch
+that claims to migrate every existing record but handles only new ones is
+incomplete against its own claim, even though the untouched records predate it.
+
+Otherwise — the condition is unchanged from the base, the patch neither worsens
+nor newly reaches it, and the PR never claimed to cover it — it is a pre-existing
+prerequisite rather than a defect this contributor created. Do not file it as a
+`reviewFinding` and do not let it set `overallCorrectness` to `patch is
+incorrect`; either would charge the contributor's patch quality for debt the
+branch did not create. Report it as the prerequisite it is: describe it in
+`risks`, name the next action in `bestSolution` or `workReason`, and — when it
+must be resolved before this PR can land — set `maintainerDecision.required:
+true` with the scope question, so automation pauses for the human choice instead
+of treating the PR as clear to land. Do not mark such an option
+`fix_before_merge` merely to signal a blocker: that category authorizes
+`automergeInstruction`, so it invites the repair lane to widen this PR into the
+pre-existing debt. If the base commit is unavailable or the comparison is
+inconclusive, treat the condition as patch-attributable and file the finding as
+usual — never drop a real defect on an unproven provenance claim. Whether a
+pre-existing prerequisite should be repaired inside this PR or tracked as
+explicit follow-up is the target repository's scope decision; report the
+prerequisite and let the target `AGENTS.md` policy govern the scope call.
+
 For PRs, apply re-review continuity. When the review context includes
 `previousClawSweeperReview`, this is a follow-up review cycle, not a first
 look: `previousClawSweeperReview.findings` lists the findings from the latest
