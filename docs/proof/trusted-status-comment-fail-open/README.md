@@ -28,8 +28,11 @@ hardcoded two bot logins.
 1. **Fails closed** — seven unreadable shapes (`user: null`, no `user` key, `user`
    without `login`, empty login, whitespace login, null comment, and the `ghost`
    login a deleted account is reattributed to) are all rejected.
-2. **No loss** — six genuine author spellings are still trusted across casing and
-   surrounding whitespace, and three untrusted logins stay rejected.
+2. **No loss and no widening** — five genuine author spellings are still trusted
+   across casing, three untrusted logins stay rejected, and four **whitespace-padded**
+   logins are rejected. GitHub logins never contain whitespace, so a padded value is
+   malformed data; trimming it would widen the trust boundary rather than normalize
+   it.
 3. **Deduplicated** — the built output of both consumers is scanned: each must
    reference the shared comparator and must **not** contain the `return !author ||`
    fail-open shape. A private copy reintroduced later fails the proof.
@@ -50,7 +53,7 @@ the code that shipped, rather than assumed.
 
 ## Expected observation
 
-25 checks, all PASS, exit 0, plus the measured contrast:
+28 checks, all PASS, exit 0, plus the measured contrast:
 
 ```
 the predicate as it shipped at the base commit:
@@ -94,10 +97,10 @@ node --test test/repair/comment-router-core.test.ts
 - crabbox: `0.15.0`
 - image: `node:24` @ `sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584`
 - container node: `v24.19.0` (satisfies `engines.node >= 24`)
-- lease: `cbx_7a849d5a91ea` (`tidal-shrimp`)
-- run: `run_691f050226af`
-- artifact: `.crabbox/runs/run_691f050226af/run_691f050226af-artifacts.tgz`
-- result: exit `0`; 25/25 proof checks PASS; focused suites `201/201`
+- lease: `cbx_e2edc1ce3159` (`golden-prawn`)
+- run: `run_975c6edae62f`
+- artifact: `.crabbox/runs/run_975c6edae62f/run_975c6edae62f-artifacts.tgz`
+- result: exit `0`; 28/28 proof checks PASS; focused suites `201/201`
 - privacy: synthetic fixtures only. The proof makes no network call, contacts no
   GitHub API, and performs no queue, GitHub, or production mutation.
 
@@ -124,10 +127,13 @@ there is a live incident.
 Covers the trust predicate only. It does not change the marker, issue-number, or
 ack checks that run after the guard, nor the configurable `trustedBots` set.
 
-**Regression direction:** if an absent author *is* reachable for a genuine
-ClawSweeper comment, failing closed means ClawSweeper stops recognising its own
-status comment and posts a duplicate instead of editing it. That is visible but
-harmless, and it needs the same unproven precondition as the defect.
+**Regression direction, stated without overclaiming:** in normal operation every
+ClawSweeper-authored comment carries a login, so failing closed costs nothing. But
+this guard exists precisely because GitHub types the author as nullable — and if
+that case ever occurs for a genuine ClawSweeper comment, the guard will decline to
+adopt it and ClawSweeper will post a **duplicate status comment** instead of editing
+in place. That is the intended direction to fail, not a guarantee that nothing is
+lost.
 
 Claim 3 scans built output for the `return !author ||` shape specifically; a
 differently-spelled fail-open would not be caught by that regex.

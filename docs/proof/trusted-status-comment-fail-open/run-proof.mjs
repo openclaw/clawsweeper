@@ -30,7 +30,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const distCore = path.join(repoRoot, "dist", "repair", "comment-router-core.js");
 
 if (!fs.existsSync(distCore)) {
-  console.error(`missing build artifact: ${distCore}\nrun: pnpm run build:repair`);
+  console.error(`missing build artifact: ${distCore}\nrun: pnpm run build:node (or pnpm run build:repair)`);
   process.exit(2);
 }
 const { isTrustedStatusCommentAuthor } = await import(`file://${distCore}`);
@@ -72,12 +72,20 @@ for (const login of [
   "clawsweeper[bot]",
   "ClawSweeper[Bot]",
   "openclaw-clawsweeper[bot]",
-  "  clawsweeper[bot]  ",
 ]) {
   check(`trusts ${JSON.stringify(login)}`, isTrustedStatusCommentAuthor({ user: { login } }, TRUSTED) === true);
 }
 for (const login of ["contributor", "other[bot]", "clawsweeper-impostor"]) {
   check(`rejects ${JSON.stringify(login)}`, isTrustedStatusCommentAuthor({ user: { login } }, TRUSTED) === false);
+}
+// A padded login is malformed data, not a trusted identity. GitHub logins never
+// contain whitespace, so trimming would widen the boundary rather than normalize
+// it - the guard must not accept these.
+for (const login of ["  clawsweeper[bot]  ", " clawsweeper", "clawsweeper ", "\tclawsweeper"]) {
+  check(
+    `rejects padded ${JSON.stringify(login)}`,
+    isTrustedStatusCommentAuthor({ user: { login } }, TRUSTED) === false,
+  );
 }
 
 /* -- Claim 3: no private copy of the predicate remains ------------------- */
