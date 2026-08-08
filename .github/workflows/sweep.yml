@@ -1077,7 +1077,10 @@ jobs:
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-read-token.outputs.token }}
+          # Review hydration is the largest read stream (~30 calls/review); it
+          # stays on the App installation bucket so the per-repo Actions pool
+          # keeps headroom for the comment-router and support lanes.
+          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
           CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.target-read-token.outputs.token }}
           ADDITIONAL_PROMPT: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).additionalPrompt || '' }}
           CLAWSWEEPER_RELATED_GITHUB_SEARCH: ${{ vars.CLAWSWEEPER_RELATED_GITHUB_SEARCH || '1' }}

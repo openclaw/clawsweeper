@@ -450,7 +450,7 @@ test("review execution tokens can read check runs and commit statuses", () => {
   }
   assert.match(
     eventReviewJob,
-    /Review exact event item[\s\S]*GH_TOKEN: \$\{\{ steps\.target\.outputs\.target_repo == 'openclaw\/openclaw' && github\.token \|\| steps\.target-read-token\.outputs\.token \}\}/,
+    /Review exact event item[\s\S]*GH_TOKEN: \$\{\{ steps\.target-read-token\.outputs\.token \}\}/,
   );
 });
 
@@ -600,7 +600,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.equal(
     step(reviewer, "Review exact event item").env?.GH_TOKEN,
-    "${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-read-token.outputs.token }}",
+    "${{ steps.target-read-token.outputs.token }}",
   );
   assert.equal(
     step(reviewer, "Review exact event item").env?.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
@@ -4684,10 +4684,7 @@ test("public OpenClaw reads use workflow tokens without moving mutation identity
   };
 
   const exactReview = find("event-review-apply", "Review exact event item");
-  assert.equal(
-    exactReview.env?.GH_TOKEN,
-    "${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-read-token.outputs.token }}",
-  );
+  assert.equal(exactReview.env?.GH_TOKEN, "${{ steps.target-read-token.outputs.token }}");
   assert.equal(
     find("event-review-publish", "Confirm terminal item remains closed").env?.GH_TOKEN,
     "${{ steps.publication-context.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-write-token.outputs.token }}",
