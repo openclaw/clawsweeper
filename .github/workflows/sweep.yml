@@ -4168,6 +4168,7 @@ jobs:
         working-directory: clawsweeper
         env:
           GH_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
+          CLAWSWEEPER_PUBLIC_GH_TOKEN: ${{ needs.plan.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}
           CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.codex-inspection-token.outputs.token }}
           ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || github.event.client_payload.review_options.additional_prompt || github.event.client_payload.additional_prompt || '' }}
           EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}

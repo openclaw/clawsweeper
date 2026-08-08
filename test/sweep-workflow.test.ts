@@ -4736,6 +4736,10 @@ test("public OpenClaw reads use workflow tokens without moving mutation identity
   const reviewShard = find("review", "Review shard");
   const applyProof = find("apply-proof", "Generate bound close coverage proofs");
   assert.equal(
+    reviewShard.env?.CLAWSWEEPER_PUBLIC_GH_TOKEN,
+    "${{ needs.plan.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}",
+  );
+  assert.equal(
     exactReview.env?.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
     "${{ steps.target-read-token.outputs.token }}",
   );
