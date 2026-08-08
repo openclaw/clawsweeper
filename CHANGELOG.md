@@ -21,7 +21,6 @@ checkpoint, and status-only commits are intentionally omitted.
 - Increased the AWS Crabbox root volume from 160 GB to 400 GB so trusted checks can provision with the repository's current dependency and build footprint.
 - GitHub-throttled terminal status updates no longer fail the finalization run; the requeue step already re-arms the acknowledgement for after the rate window.
 
-
 - GitHub-throttled live-item checks now release the review claim for a delayed retry instead of failing the run and spending failure budget.
 - Event-review artifact publication completes as a superseded no-op when the reviewed branch vanished upstream (force-push or deletion) instead of failing the run.
 - Worker record requests now retry transient blank/invalid 2xx bodies from the edge within the bounded budget instead of failing hydration on the first occurrence.
@@ -39,6 +38,11 @@ checkpoint, and status-only commits are intentionally omitted.
 - Scoped per-target canonical record hydration to the selected repository and skipped unused ledger/assets downloads in workflow lanes, preventing exact-item review publication from collapsing under concurrent full-fleet state setup.
 - Doubled exact-review admission to 128 global and 120 per target with a separate 194-slot Actions budget that preserves verdict publication at full review load, doubled scheduled fleet review fanout and canonical publication batch preparation, prioritized six-day oldest-review coverage before hot-item churn, exposed a six-hour fleet coverage summary, and raised automatic apply to 40 closes with proportional scan/runtime budgets without changing close eligibility.
 - Completed the Cloudflare-canonical state migration: records publish only to the Durable Object, action ledgers and assets publish only to R2, canonical-only workflows no longer check out `clawsweeper-state`, the former materializer only compacts the legacy append window, and the remaining `jobs`/`results`/`notifications`/apply-report Git writers use the Durable Object coordinator without Git lease refs or rebuild recovery.
+
+### Fixed
+
+- Legacy reports with canonical proof or rating keys outside the apparent leading front-matter block now fail closed, with a read-only workflow to inventory affected canonical records. (#1049)
+- Prevented model-authored report prose and body-shaped front matter from spoofing proof or rating sections, keeping unproven external pull requests in human review instead of routing them into automated repair. (#951)
 
 ### Added
 
@@ -176,6 +180,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Codex subprocess containment now actually suppresses target `.pnpmfile.cjs` execution: pnpm 11 only honors `npm_config_*` environment settings, so the previously used `PNPM_CONFIG_IGNORE_PNPMFILE` spelling was inert and a target repository's pnpmfile could run arbitrary code during repair installs.
+- Reconcile observers now start only for review titles they can classify, so queue-backed `Review exact item` and support runs no longer consume runner slots merely to report `skipped`; a new hourly janitor also cancels runs stuck in `queued` for over 24 hours before they decay into uncancellable zombies.
+- Deployment runs waiting for human approval no longer count as runner-queue congestion in operational health: a forgotten approval gate had pinned `oldest_queued_minutes` at eight-plus days and held work-execution status away from healthy; approval-gated runs now report separately (count and oldest age) in the API and the execution alert.
 - Terminal command acknowledgements whose status comment was deleted (or never existed) now complete as a durable `missing_status_comment` skip instead of requeueing the finalization driver forever every ~20 minutes.
 - Apply and comment-sync publications now recover from canonical record tuple 409 conflicts instead of crashing mid-checkpoint: an equivalent concurrent write is absorbed, an unrelated-section race is rebased onto CURRENT with a single deterministic retry, and a same-section race skips just that item while the rest of the run continues.
 - Prevented weekly coverage from endlessly refreshing tracked records while never-reviewed live items remained invisible behind a full candidate batch; normal fanout now refreshes and consumes the signed live inventory, skips empty repositories, and prioritizes repositories with untracked work.

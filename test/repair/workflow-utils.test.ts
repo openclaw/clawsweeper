@@ -23,6 +23,7 @@ import {
   proposedItemQualitySummary,
   proposedItemNumbers,
   proposedPrCloseCoverageItemNumbers,
+  pullRequestClosePromotionSignalsForTest,
   summarizeApplyReport,
   writeApplyCursor,
   writeCommentSyncCursor,
@@ -36,6 +37,157 @@ import {
 
 const APPLY_RUN_PATH = ".github/workflows/sweep.yml";
 const DEFAULT_APPLY_TITLE = "Apply default ClawSweeper closures for openclaw/openclaw";
+
+test("repair close-promotion readers prefer durable proof and rating front matter", () => {
+  const report = `---
+pr_rating_overall: F
+pr_rating_proof: F
+real_behavior_proof_status: missing
+---
+
+## Summary
+
+## PR Rating
+
+Overall tier: A
+
+Proof tier: A
+
+## Real Behavior Proof
+
+Status: sufficient
+
+## PR Rating
+
+Overall tier: F
+
+Proof tier: F
+
+## Real Behavior Proof
+
+Status: missing
+`;
+
+  assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
+    authorBudget: true,
+    lowSignal: true,
+  });
+});
+
+test("repair close-promotion readers fail closed on body metadata after the leading block", () => {
+  const report = `---
+type: pull_request
+---
+
+## Summary
+
+pr_rating_overall: A
+pr_rating_proof: A
+real_behavior_proof_status: sufficient
+
+## PR Rating
+
+Overall tier: F
+
+Proof tier: F
+
+## Real Behavior Proof
+
+Status: missing
+`;
+
+  assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
+    authorBudget: false,
+    lowSignal: false,
+  });
+});
+
+test("repair close-promotion readers fail closed on duplicate front matter keys", () => {
+  const report = `---
+fixed_release: v1
+pr_rating_overall: A
+pr_rating_proof: A
+real_behavior_proof_status: sufficient
+pr_rating_overall: F
+pr_rating_proof: F
+real_behavior_proof_status: missing
+---
+
+## Summary
+
+## PR Rating
+
+Overall tier: F
+
+Proof tier: F
+
+## Real Behavior Proof
+
+Status: missing
+
+## PR Rating
+
+Overall tier: A
+
+Proof tier: A
+
+## Real Behavior Proof
+
+Status: sufficient
+`;
+
+  assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
+    authorBudget: false,
+    lowSignal: false,
+  });
+});
+
+test("repair close-promotion readers fail closed after an injected front matter terminator", () => {
+  const report = `---
+fixed_release: v1
+pr_rating_overall: F
+pr_rating_proof: F
+real_behavior_proof_status: missing
+---
+pr_rating_overall: A
+pr_rating_proof: A
+real_behavior_proof_status: sufficient
+---
+
+## PR Rating
+
+Overall tier: A
+
+Proof tier: A
+
+## Real Behavior Proof
+
+Status: sufficient
+`;
+
+  assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
+    authorBudget: false,
+    lowSignal: false,
+  });
+});
+
+test("repair close-promotion readers preserve section fallback without front matter", () => {
+  const report = `## PR Rating
+
+Overall tier: F
+
+Proof tier: F
+
+## Real Behavior Proof
+
+Status: missing
+`;
+
+  assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
+    authorBudget: true,
+    lowSignal: true,
+  });
+});
 
 test("apply continuation blocker only shares the default cursor lane", () => {
   const blocker = applyContinuationBlocker(

@@ -36,7 +36,7 @@ import type {
 import { isGitHubNotFoundError } from "./github-retry.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
 import { reviewSemanticPriorReviewDigest } from "./review-semantic-cache.js";
-import { stableJson } from "./stable-json.js";
+import { compareCodeUnits, stableJson } from "./stable-json.js";
 
 interface CreateContextHydrationDependencies {
   asRecord: (value: unknown) => Record<string, unknown>;
@@ -433,14 +433,17 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
       }
       const checkRunsTruncated = checkRunsTotal > rawCheckRuns.length || rawCheckRuns.length > 100;
       const statusesTruncated = statusesTotal > rawStatuses.length || rawStatuses.length > 100;
+      // Order by code unit, not locale collation: these feed pullChecksDigest, and
+      // localeCompare returns 0 for distinct strings, which would leave GitHub's
+      // arbitrary response order in the digest.
       const checkRuns = rawCheckRuns
         .slice(0, 100)
         .map(compactCheckRun)
-        .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+        .sort((left, right) => compareCodeUnits(stableJson(left), stableJson(right)));
       const statuses = rawStatuses
         .slice(0, 100)
         .map(compactCommitStatus)
-        .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+        .sort((left, right) => compareCodeUnits(stableJson(left), stableJson(right)));
       return {
         complete: !checkRunsTruncated && !statusesTruncated,
         checkRuns,

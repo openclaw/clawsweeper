@@ -406,8 +406,9 @@ test("review workflow gives Codex a read-only inspection token", () => {
   assert.match(workflow, /CLAWSWEEPER_PROOF_INSPECTION_TOKEN/);
   assert.match(
     exactReviewStep,
-    /CLAWSWEEPER_PROOF_INSPECTION_TOKEN: \$\{\{ steps\.target-read-token\.outputs\.token \|\| github\.token \}\}/,
+    /CLAWSWEEPER_PROOF_INSPECTION_TOKEN: \$\{\{ steps\.target-read-token\.outputs\.token \}\}/,
   );
+  assert.doesNotMatch(workflow, /CLAWSWEEPER_PROOF_INSPECTION_TOKEN:.*github\.token/);
   assert.match(
     exactReviewStep,
     /report_path="artifacts\/event\/\$\{\{ steps\.target\.outputs\.item_number \}\}\.md"/,
@@ -599,6 +600,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.equal(
     step(reviewer, "Review exact event item").env?.GH_TOKEN,
+    "${{ steps.target-read-token.outputs.token }}",
+  );
+  assert.equal(
+    step(reviewer, "Review exact event item").env?.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
     "${{ steps.target-read-token.outputs.token }}",
   );
   assert.equal(step(reviewer, "Review exact event item").env?.REPO_TOKEN, undefined);
@@ -1705,7 +1710,7 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
     /group: exact-review-reconcile-\$\{\{ github\.event_name == 'workflow_run' && format\('\{0\}-\{1\}', github\.event\.workflow_run\.id, github\.event\.workflow_run\.run_attempt\) \|\| 'sweep' \}\}/,
   );
   assert.match(workflow, /cancel-in-progress: false/);
-  assert.match(eventJob, /if: \$\{\{ github\.event_name == 'workflow_run' \}\}/);
+  assert.match(eventJob, /if: >-\s+\$\{\{\s+github\.event_name == 'workflow_run' &&/);
   assert.match(eventJob, /permissions:\s+actions: read\s+contents: read/);
   assert.match(eventJob, /github\.event\.workflow_run\.event == 'repository_dispatch'/);
   assert.match(
@@ -2077,14 +2082,18 @@ test("apply workflow isolates proof Codex and keeps mutation free of Git recover
   assert.match(applyJob, /queue: max/);
 });
 
-test("comment-only proof preparation never scans the full target repository", () => {
+test("comment-only apply preparation never scans the full target repository", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
     jobs: Record<string, { steps: Array<{ name?: string; if?: string; run?: string }> }>;
   };
   const steps = workflow.jobs["apply-proof"]!.steps;
   const reconcile = steps.find((step) => step.name === "Reconcile read-only proof inputs");
+  const applyReconcile = workflow.jobs["apply-existing"]!.steps.find(
+    (step) => step.name === "Reconcile before apply preselect",
+  );
   const select = steps.find((step) => step.name === "Select bounded coverage proof work");
   assert.ok(reconcile?.if, "proof reconciliation must explicitly exclude comment-only runs");
+  assert.equal(applyReconcile?.if, reconcile.if, "apply preselect must use the same skip gate");
   assert.ok(select?.run, "proof selection must recognize scheduled comment-only maintenance");
 
   const expression = reconcile.if.replace(/^\$\{\{\s*|\s*\}\}$/g, "");
@@ -2112,6 +2121,38 @@ test("comment-only proof preparation never scans the full target repository", ()
   assert.match(select.run, /github\.event\.schedule \|\| ''/);
   assert.match(select.run, /6,21,36,51 \* \* \* \*/);
   assert.match(select.run, /sync_comments_only="true"/);
+});
+
+test("comment-only apply reconciliation scopes only selected items", () => {
+  const reconcileArgs = (itemNumbers: string, syncCommentsOnly: boolean) =>
+    execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          "source scripts/apply-workflow-helpers.sh",
+          'TARGET_REPO="openclaw/openclaw"',
+          `item_numbers="${itemNumbers}"`,
+          `sync_comments_only=${syncCommentsOnly}`,
+          "sync_open_pr_batch=false",
+          "prepare_apply_reconciliation_args",
+          'printf "%s\\n" "${reconcile_args[@]}"',
+        ].join("\n"),
+      ],
+      { encoding: "utf8" },
+    )
+      .trimEnd()
+      .split("\n");
+  const baseArgs = ["--target-repo", "openclaw/openclaw", "--skip-closed-at"];
+
+  assert.deepEqual(reconcileArgs("119890", true), [
+    ...baseArgs,
+    "--item-numbers",
+    "119890",
+    "--only-item-numbers",
+  ]);
+  assert.deepEqual(reconcileArgs("119890", false), [...baseArgs, "--item-numbers", "119890"]);
+  assert.deepEqual(reconcileArgs("", true), baseArgs);
 });
 
 test("apply workflow scopes cursor reconciliation and publishes close reconciliation before idle", () => {
@@ -4589,6 +4630,7 @@ test("sweep target tokens fall back when an org app installation is missing", ()
     "Create target write token",
     "Create target review token",
     "Create target Codex inspection token",
+    "Create target proof inspection token",
   ]) {
     const blocks = stepBlocks(name);
     assert.ok(blocks.length > 0, `missing workflow step: ${name}`);
@@ -4602,8 +4644,9 @@ test("sweep target tokens fall back when an org app installation is missing", ()
   );
   assert.match(
     workflow,
-    /CLAWSWEEPER_PROOF_INSPECTION_TOKEN: \$\{\{ steps\.codex-inspection-token\.outputs\.token \|\| github\.token \}\}/,
+    /CLAWSWEEPER_PROOF_INSPECTION_TOKEN: \$\{\{ steps\.codex-inspection-token\.outputs\.token \}\}/,
   );
+  assert.doesNotMatch(workflow, /CLAWSWEEPER_PROOF_INSPECTION_TOKEN:.*\|\| github\.token/);
   assert.ok(
     workflow.includes(
       "if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.hot_intake != 'true'",
@@ -4620,6 +4663,96 @@ test("sweep target tokens fall back when an org app installation is missing", ()
     ),
   );
   assert.doesNotMatch(workflow, new RegExp("OPENCLAW_" + "GH_TOKEN"));
+});
+
+test("public OpenClaw reads use workflow tokens without moving mutation identity", () => {
+  type Step = {
+    name?: string;
+    id?: string;
+    env?: Record<string, string>;
+    run?: string;
+    with?: Record<string, string>;
+  };
+  type Workflow = { jobs: Record<string, { steps: Step[] }> };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as Workflow;
+  const find = (job: string, name: string) => {
+    const selected = workflow.jobs[job]?.steps.find(
+      (candidate) => candidate.name === name || candidate.id === name,
+    );
+    assert.ok(selected, `${job}: ${name}`);
+    return selected;
+  };
+
+  const exactReview = find("event-review-apply", "Review exact event item");
+  assert.equal(exactReview.env?.GH_TOKEN, "${{ steps.target-read-token.outputs.token }}");
+  assert.equal(
+    find("event-review-publish", "Confirm terminal item remains closed").env?.GH_TOKEN,
+    "${{ steps.publication-context.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-write-token.outputs.token }}",
+  );
+  assert.equal(
+    find("apply-existing", "Reconcile before apply preselect").env?.GH_TOKEN,
+    "${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-write-token.outputs.token }}",
+  );
+
+  const auditSelection = find("audit-dashboard", "Select target read token");
+  assert.equal(auditSelection.env?.PRIMARY_TOKEN, "${{ github.token }}");
+  assert.equal(
+    auditSelection.env?.APP_FALLBACK_TOKEN,
+    "${{ steps.target-read-token.outputs.token }}",
+  );
+  assert.match(auditSelection.run ?? "", /Using workflow token for public audit reads/);
+  assert.match(auditSelection.run ?? "", /Using ClawSweeper App token fallback for audit reads/);
+
+  for (const [job, name, expression] of [
+    [
+      "event-review-apply",
+      "Deliver GitHub effects and prepare direct state mutation",
+      "${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}",
+    ],
+    [
+      "event-review-publish",
+      "Publish event result and apply safe close",
+      "${{ steps.publication-context.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}",
+    ],
+    [
+      "publish",
+      "Sync selected review comments",
+      "${{ needs.plan.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}",
+    ],
+    [
+      "apply-existing",
+      "Apply unchanged proposed decisions with checkpoints",
+      "${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}",
+    ],
+  ] as const) {
+    const selected = find(job, name);
+    assert.equal(selected.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
+    assert.equal(selected.env?.CLAWSWEEPER_PUBLIC_GH_TOKEN, expression);
+  }
+
+  const reviewShard = find("review", "Review shard");
+  const applyProof = find("apply-proof", "Generate bound close coverage proofs");
+  assert.equal(
+    reviewShard.env?.CLAWSWEEPER_PUBLIC_GH_TOKEN,
+    "${{ needs.plan.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}",
+  );
+  assert.equal(
+    exactReview.env?.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
+    "${{ steps.target-read-token.outputs.token }}",
+  );
+  assert.equal(
+    reviewShard.env?.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
+    "${{ steps.codex-inspection-token.outputs.token }}",
+  );
+  assert.equal(
+    applyProof.env?.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
+    "${{ steps.proof-inspection-token.outputs.token }}",
+  );
+  assert.equal(applyProof.env?.GH_TOKEN, "${{ github.token }}");
+  const proofInspectionToken = find("apply-proof", "Create target proof inspection token");
+  assert.equal(proofInspectionToken.with?.["permission-contents"], "read");
+  assert.equal(proofInspectionToken.with?.["permission-issues"], "read");
+  assert.equal(proofInspectionToken.with?.["permission-pull-requests"], "read");
 });
 
 test("sweep target review token can post pull request review leases", () => {
@@ -4942,12 +5075,14 @@ test("sweep workflow coalesces durable issue and PR comment sync batches", () =>
   assert.doesNotMatch(backgroundSync, /-f apply_item_numbers="\$item_numbers"/);
   assert.match(
     cursorPreselect,
-    /if \[ "\$item_numbers" = "__cursor__" \]; then\s+if \[ "\$\{\{ github\.event\.inputs\.apply_sync_comments_only \|\| 'false' \}\}" = "true" \]; then\s+echo "Deferring reconciliation until the bounded comment-sync cursor is selected\."\s+exit 0/,
+    /if: \$\{\{ .*github\.event\.inputs\.apply_sync_comments_only == 'true' \|\| github\.event\.inputs\.apply_item_numbers == '__cursor__'.*\}\}/,
   );
-  assert.match(
-    cursorPreselect,
-    /if \[ "\$\{\{ github\.event_name == 'schedule' && github\.event\.schedule == '6,21,36,51 \* \* \* \*' && 'true' \|\| 'false' \}\}" = "true" \]; then\s+echo "Deferring reconciliation until the bounded comment-sync cursor is selected\."\s+exit 0/,
-    "scheduled comment maintenance must never scan or reconcile the entire repository before selecting its batch",
+  assert.doesNotMatch(cursorPreselect, /Deferring reconciliation/);
+  assert.ok(
+    cursorExecution.indexOf(
+      `sync_comments_only="\${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}"`,
+    ) < cursorExecution.indexOf("prepare_apply_reconciliation_args"),
+    "comment-only mode must be known before execution reconciliation is prepared",
   );
   assert.ok(
     cursorExecution.indexOf('echo "Selected cursor-based comment sync batch: $item_numbers"') <
@@ -4957,8 +5092,8 @@ test("sweep workflow coalesces durable issue and PR comment sync batches", () =>
   assert.match(cursorExecution, /prepare_apply_reconciliation_args/);
   assert.match(
     readText("scripts/apply-workflow-helpers.sh"),
-    /if \[ "\$\{sync_comments_only:-false\}" = "true" \] &&\s+\[ "\$\{sync_open_pr_batch:-false\}" = "true" \]; then\s+reconcile_args\+=\(--only-item-numbers\)/,
-    "cursor reconciliation must not archive or rewrite unrelated durable records",
+    /if \[ "\$\{sync_comments_only:-false\}" = "true" \]; then\s+reconcile_args\+=\(--only-item-numbers\)/,
+    "comment-only reconciliation must not archive or rewrite unrelated durable records",
   );
 });
 
@@ -5486,6 +5621,11 @@ test("planned background reviews allow safe content-cache reuse without weakenin
     reviewJob,
     /--item-numbers "\$\{\{ matrix\.item_numbers \}\}" \\\n+\s+"\$\{planned_automatic_review_arg\[@\]\}"/,
   );
+  assert.match(
+    eventReviewJob,
+    /SOURCE_ACTION: \$\{\{ fromJSON\(steps\.claim-exact-review-queue\.outputs\.decision\)\.sourceAction \|\| '' \}\}/,
+  );
+  assert.match(eventReviewJob, /--review-source-action "\$SOURCE_ACTION"/);
   assert.doesNotMatch(eventReviewJob, /--planned-automatic-review/);
 });
 
@@ -5746,6 +5886,10 @@ test("every action-ledger publication authenticates the expected producer job", 
   assert.equal(commands.length, 7);
   assert.ok(commands.every((command) => command.includes("--expected-producer-job")));
   assert.match(workflow, /--expected-producer-job review/);
+  assert.match(
+    workflow,
+    /--expected-producer-job review \\\n\s+--expected-producer-max-run-attempt "\$GITHUB_RUN_ATTEMPT"/,
+  );
   assert.match(workflow, /--expected-producer-job apply-proof/);
 });
 

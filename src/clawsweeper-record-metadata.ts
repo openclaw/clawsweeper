@@ -50,6 +50,11 @@ interface RecordMetadataDependencies {
   numberForMarkdownFile: (file: string) => number;
 }
 
+export type FrontMatterField =
+  | { status: "absent" }
+  | { status: "ambiguous" }
+  | { status: "value"; value: string };
+
 export function createRecordMetadata({
   reportFileName,
   markdownRepository,
@@ -62,10 +67,26 @@ export function createRecordMetadata({
   markdownFiles,
   numberForMarkdownFile,
 }: RecordMetadataDependencies) {
+  function frontMatterField(markdown: string, key: string): FrontMatterField {
+    const frontMatterMatch = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    if (!frontMatterMatch) return { status: "absent" };
+    const frontMatter = frontMatterMatch[1] ?? "";
+    const remainder = markdown.slice(frontMatterMatch[0].length);
+    if (new RegExp(`^${key}:`, "m").test(remainder)) return { status: "ambiguous" };
+    const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.*)$`, "gm"))];
+    if (matches.length === 0) return { status: "absent" };
+    if (matches.length !== 1) return { status: "ambiguous" };
+    const value = matches[0]?.[1]?.trim();
+    if (!value) return { status: "ambiguous" };
+    return {
+      status: "value",
+      value: value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value,
+    };
+  }
+
   function frontMatterValue(markdown: string, key: string): string | undefined {
-    const match = markdown.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
-    const value = match?.[1]?.trim();
-    return value?.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
+    const field = frontMatterField(markdown, key);
+    return field.status === "value" ? field.value : undefined;
   }
 
   function reportCloseReason(markdown: string): CloseReason | undefined {
@@ -338,7 +359,9 @@ export function createRecordMetadata({
   }
 
   function reviewReportCanPromoteToClose(markdown: string): boolean {
-    return !frontMatterBoolean(markdown, "review_cache_hit");
+    const cacheHit = frontMatterField(markdown, "review_cache_hit");
+    if (cacheHit.status === "absent") return true;
+    return cacheHit.status === "value" && /^false$/i.test(cacheHit.value);
   }
 
   function reviewReportCanPromoteToCloseForTest(markdown: string): boolean {
@@ -580,7 +603,14 @@ export function createRecordMetadata({
 
   function isInfrastructureFailedReview(markdown: string): boolean {
     const detail = failedReviewFailureDetail(markdown);
-    if (frontMatterBoolean(markdown, "review_terminal_failure")) return false;
+    const terminalFailure = frontMatterField(markdown, "review_terminal_failure");
+    if (terminalFailure.status === "ambiguous") return false;
+    if (
+      terminalFailure.status === "value" &&
+      (!/^(?:true|false)$/i.test(terminalFailure.value) || /^true$/i.test(terminalFailure.value))
+    ) {
+      return false;
+    }
     return (
       isRetryableCodexTransportError(detail) ||
       /\b(?:ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|transport failure|codex transport|Codex worker timed out|Codex review failed: timeout|timed out after|shard timeout|workflow timeout|cancelledByParent)\b/i.test(
@@ -765,6 +795,7 @@ export function createRecordMetadata({
     failedReviewRetryResultRevision,
     failedReviewRetryRevisionForReport,
     frontMatterBoolean,
+    frontMatterField,
     frontMatterJsonArray,
     frontMatterStringArray,
     frontMatterValue,

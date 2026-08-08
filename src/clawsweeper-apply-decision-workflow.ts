@@ -139,6 +139,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     recordApplyActionEvents,
     recordApplyActionLedgerItemResults,
     recordApplyMutationBoundary,
+    resetGuardReadCache,
     removeCurrentCursorTraceItem,
     removeIssueLabel,
     renderReviewCommentFromReport,
@@ -452,6 +453,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     // oxfmt-ignore
     for (const entry of fileEntries) {
       releaseActiveApplyMutationLease();
+      resetGuardReadCache();
       const file = entry.name;
       const path = entry.path;
       if (runtimeBudgetExceeded(startedAtMs, maxRuntimeMs, Date.now())) {
@@ -473,6 +475,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       try {
       const markMutationObserved = (): void => {
         if (dryRun) return;
+        resetGuardReadCache();
         activeApplyItem = { repo, number, mutationOccurred: true };
         mutationByItem.set(`${repo}#${number}`, true);
       };

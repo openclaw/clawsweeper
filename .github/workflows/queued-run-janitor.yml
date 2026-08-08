@@ -1,0 +1,66 @@
+name: Reap stale queued workflow runs
+
+# GitHub occasionally strands queued runs forever (observed runs queued since
+# July that both cancel endpoints now 500 on). Reap stale queued runs while
+# the API still accepts cancellation, before they decay into unkillable
+# zombies that pollute run lists and queue-age telemetry. Approval-gated
+# runs report status "waiting", never "queued", so deployment gates are
+# structurally out of scope here.
+
+on:
+  schedule:
+    - cron: "24 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: queued-run-janitor
+  cancel-in-progress: false
+
+env:
+  STALE_HOURS: 24
+  MAX_CANCELLATIONS: 20
+
+jobs:
+  reap:
+    name: Cancel runs stuck in queue
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel queued runs older than the stale window
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cutoff="$(date -u -d "${STALE_HOURS} hours ago" '+%Y-%m-%dT%H:%M:%SZ')"
+          stale_lines="$(gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/runs" \
+            -f status=queued -f "created=<${cutoff}" -F per_page=100 \
+            --jq '.workflow_runs[] | [.id, .created_at, .display_title] | @tsv')"
+          if [ -z "$stale_lines" ]; then
+            echo "no queued runs created before ${cutoff}"
+            exit 0
+          fi
+          cancelled=0
+          wedged=0
+          while IFS= read -r line; do
+            if [ "$((cancelled + wedged))" -ge "$MAX_CANCELLATIONS" ]; then
+              echo "cancellation bound ${MAX_CANCELLATIONS} reached; remaining runs wait for the next pass"
+              break
+            fi
+            run_id="${line%%$'\t'*}"
+            if gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 \
+              || gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/force-cancel" >/dev/null 2>&1; then
+              cancelled=$((cancelled + 1))
+              echo "cancelled: ${line}"
+            else
+              # Runs stranded long enough return 500 from both cancel endpoints
+              # and only GitHub can clear them. Report without failing so the
+              # janitor keeps reaping the runs it still can.
+              wedged=$((wedged + 1))
+              echo "::warning::uncancellable queued run (likely wedged server-side): ${line}"
+            fi
+          done <<<"$stale_lines"
+          echo "stale=$(wc -l <<<"$stale_lines" | tr -d ' ') cancelled=${cancelled} wedged=${wedged}"

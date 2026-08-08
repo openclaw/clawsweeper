@@ -4,7 +4,10 @@ import test from "node:test";
 import {
   appendFloorBackfillCandidates,
   hotIntakeRecencyMs,
+  nextReviewDueAtMs,
   reviewPriority,
+  reviewedAtMs,
+  schedulerBucket,
   selectDueCandidates,
   shouldReviewItem,
 } from "../dist/scheduler-policy.js";
@@ -900,5 +903,131 @@ test("CSW-088 suppresses only the immediate same-head and same-body hot-intake r
       currentReviewPolicy: "current-policy",
     }),
     false,
+  );
+});
+
+test("duplicate due candidates do not strand the rest of the batch", () => {
+  // GitHub's paginated issue listing is sorted by `updated`, so an item touched
+  // mid-pagination can be returned on two pages. selectDueCandidates already
+  // dedupes by repo#number; the weighted drain must not read that skip as
+  // "buckets are empty" and abandon the candidates queued behind it.
+  const now = Date.parse("2026-06-10T00:00:00Z");
+  const reviewedAt = now - 24 * 60 * 60 * 1000; // reviewed yesterday: not weekly-coverage-due
+  const weekly = (number) => ({
+    item: item({ number, kind: "issue", createdAt: "2020-01-01T00:00:00Z" }),
+    review: { reviewStatus: "complete", reviewedAt: new Date(reviewedAt).toISOString() },
+    priority: 6,
+    reviewedAt,
+    nextDueAt: 0,
+    bucket: "weekly_issue", // weight 1: a single duplicate fills one pass
+    coverageTracked: true,
+  });
+
+  // Control: no duplicates.
+  assert.deepEqual(selectedNumbers([weekly(1), weekly(2), weekly(3)], 4, now), [1, 2, 3]);
+
+  // One duplicate of #1 must not cost us #2 and #3.
+  assert.deepEqual(
+    selectedNumbers([weekly(1), weekly(1), weekly(2), weekly(3)], 4, now),
+    [1, 2, 3],
+  );
+
+  // Duplicates are still deduped, and capacity is still respected.
+  assert.deepEqual(selectedNumbers([weekly(1), weekly(1)], 4, now), [1]);
+  assert.deepEqual(selectedNumbers([weekly(1), weekly(1), weekly(2), weekly(3)], 2, now), [1, 2]);
+});
+
+test("a run of duplicates larger than the bucket weight still drains", () => {
+  // hot_issue has weight 4, so eight copies of #1 span two full passes with no
+  // new selection in the second one.
+  const now = Date.parse("2026-06-10T00:00:00Z");
+  const reviewedAt = now - 24 * 60 * 60 * 1000;
+  const hot = (number) => ({
+    item: item({ number, kind: "issue", createdAt: "2020-01-01T00:00:00Z" }),
+    review: { reviewStatus: "complete", reviewedAt: new Date(reviewedAt).toISOString() },
+    priority: 0,
+    reviewedAt,
+    nextDueAt: 0,
+    bucket: "hot_issue",
+    coverageTracked: true,
+  });
+  const due = [...Array.from({ length: 8 }, () => hot(1)), hot(2), hot(3)];
+
+  assert.deepEqual(selectedNumbers(due, 5, now), [1, 2, 3]);
+});
+
+test("duplicates across separate buckets do not stall the weighted drain", () => {
+  const now = Date.parse("2026-06-10T00:00:00Z");
+  const reviewedAt = now - 24 * 60 * 60 * 1000;
+  const candidate = (number, bucket, kind) => ({
+    item: item({ number, kind, createdAt: "2020-01-01T00:00:00Z" }),
+    review: { reviewStatus: "complete", reviewedAt: new Date(reviewedAt).toISOString() },
+    priority: 6,
+    reviewedAt,
+    nextDueAt: 0,
+    bucket,
+    coverageTracked: true,
+  });
+  const due = [
+    candidate(1, "weekly_issue", "issue"),
+    candidate(1, "weekly_issue", "issue"),
+    candidate(2, "daily_pull_request", "pull_request"),
+    candidate(2, "daily_pull_request", "pull_request"),
+    candidate(3, "weekly_issue", "issue"),
+    candidate(4, "daily_pull_request", "pull_request"),
+  ];
+
+  assert.deepEqual(
+    selectedNumbers(due, 6, now).sort((a, b) => a - b),
+    [1, 2, 3, 4],
+  );
+});
+
+test("pagination duplicates do not strand candidates the real planner produces", () => {
+  // The three cases above build candidates by hand. This one derives them the way
+  // dueCandidate() does, so it pins the shape the production planner actually
+  // emits: a PR created two days ago with a prior report is coverage-tracked,
+  // due at the 1-day cadence, and NOT weekly-coverage-due at 6 days - so the
+  // weighted drain, not the coverage preselect lane, owns selection.
+  //
+  // Reachability differs per bucket because a stall needs a whole weighted pass
+  // to consume only duplicates. hot_pull_request has weight 2, so it takes four
+  // page entries for one PR. weekly_issue is unreachable: there, "due" and
+  // "weekly-coverage-due" share the same 6-day threshold, and that lane takes
+  // candidates in a plain loop.
+  const now = Date.parse("2026-06-10T00:00:00Z");
+  const reviewedAt = now - 2 * 24 * 60 * 60 * 1000;
+  const review = {
+    reviewStatus: "complete",
+    reviewedAt: new Date(reviewedAt).toISOString(),
+  };
+  const pull = (number) =>
+    item({
+      number,
+      kind: "pull_request",
+      createdAt: new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString(),
+      updatedAt: new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+  const derived = (number) => {
+    const target = pull(number);
+    assert.equal(schedulerBucket(target, review, now), "hot_pull_request");
+    assert.equal(shouldReviewItem(target, review, now), true, "must be due");
+    return {
+      item: target,
+      review,
+      coverageTracked: true,
+      priority: reviewPriority(target, review, now),
+      reviewedAt: reviewedAtMs(review) ?? 0,
+      nextDueAt: nextReviewDueAtMs(target, review, now),
+      bucket: schedulerBucket(target, review, now),
+    };
+  };
+
+  // #1 listed on four pages: hot_pull_request weight 2, so one full pass
+  // consumes nothing but duplicates.
+  const due = [derived(1), derived(1), derived(1), derived(1), derived(2), derived(3)];
+  assert.deepEqual(
+    selectDueCandidates(due, 10, undefined, now).map((candidate) => candidate.item.number),
+    [1, 2, 3],
   );
 });

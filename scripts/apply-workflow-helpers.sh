@@ -602,8 +602,7 @@ prepare_apply_reconciliation_args() {
     return 0
   fi
   reconcile_args+=(--item-numbers "$item_numbers")
-  if [ "${sync_comments_only:-false}" = "true" ] &&
-    [ "${sync_open_pr_batch:-false}" = "true" ]; then
+  if [ "${sync_comments_only:-false}" = "true" ]; then
     reconcile_args+=(--only-item-numbers)
   fi
 }

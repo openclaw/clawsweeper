@@ -2,7 +2,10 @@ import { spawnSync } from "node:child_process";
 import type { GitHubRuntimeBudget } from "./clawsweeper-types.js";
 import { codexEnv } from "./codex-env.js";
 import { resolveCommand } from "./command.js";
-import { exactPublicationPublicReadToken } from "./github-public-read.js";
+import {
+  exactPublicationPublicReadToken,
+  isPublicOpenClawReadOnlyRequest,
+} from "./github-public-read.js";
 
 interface CreateGitHubRuntimeDependencies {
   ROOT: string;
@@ -13,6 +16,8 @@ interface CreateGitHubRuntimeDependencies {
   ) => string;
   targetRepo: () => string;
 }
+
+const claimedPublicReadFallbackTokens = new Set<string>();
 
 export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencies) {
   const { ROOT, run, targetRepo } = dependencies;
@@ -98,12 +103,67 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     sleepMs(waitMs);
   }
 
-  function ghWithPreparedTimeout(args: string[], timeoutMs: number | undefined): string {
+  function publicReadToken(
+    args: readonly string[],
+    overrides: NodeJS.ProcessEnv = {},
+  ): string | null {
+    const publicToken = process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN?.trim();
+    const env = { ...process.env, ...overrides };
+    if (
+      !publicToken ||
+      Object.hasOwn(overrides, "GH_TOKEN") ||
+      Object.hasOwn(overrides, "GITHUB_TOKEN") ||
+      (env.GH_HOST && env.GH_HOST.toLowerCase() !== "github.com") ||
+      !isPublicOpenClawReadOnlyRequest(args)
+    ) {
+      return null;
+    }
+    return publicToken;
+  }
+
+  function preparedGitHubEnv(
+    args: readonly string[],
+    overrides: NodeJS.ProcessEnv = {},
+  ): NodeJS.ProcessEnv | undefined {
+    const hasExplicitToken =
+      Object.hasOwn(overrides, "GH_TOKEN") || Object.hasOwn(overrides, "GITHUB_TOKEN");
+    const token =
+      publicReadToken(args, overrides) ??
+      (hasExplicitToken
+        ? null
+        : exactPublicationPublicReadToken(args, targetRepo(), {
+            ...process.env,
+            ...overrides,
+          }));
+    if (token) return { ...overrides, GH_TOKEN: token };
+    return Object.keys(overrides).length > 0 ? overrides : undefined;
+  }
+
+  function claimPublicReadFallback(args: readonly string[]): NodeJS.ProcessEnv | null {
+    const publicToken = publicReadToken(args);
+    const appToken = process.env.GH_TOKEN?.trim();
+    if (
+      !publicToken ||
+      !appToken ||
+      publicToken === appToken ||
+      claimedPublicReadFallbackTokens.has(appToken)
+    ) {
+      return null;
+    }
+    claimedPublicReadFallbackTokens.add(appToken);
+    return { GH_TOKEN: appToken };
+  }
+
+  function ghWithPreparedTimeout(
+    args: string[],
+    timeoutMs: number | undefined,
+    env: NodeJS.ProcessEnv = {},
+  ): string {
     const resolvedArgs = args[0] === "api" ? args : ["--repo", targetRepo(), ...args];
-    const publicReadToken = exactPublicationPublicReadToken(resolvedArgs, targetRepo());
+    const preparedEnv = preparedGitHubEnv(resolvedArgs, env);
     return run("gh", resolvedArgs, {
       timeoutMs,
-      ...(publicReadToken ? { env: { GH_TOKEN: publicReadToken } } : {}),
+      ...(preparedEnv ? { env: preparedEnv } : {}),
     });
   }
 
@@ -113,11 +173,10 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
 
   function ghOnce(args: string[], timeoutMs: number): string {
     const resolvedArgs = args[0] === "api" ? args : ["--repo", targetRepo(), ...args];
-    const publicReadToken = exactPublicationPublicReadToken(resolvedArgs, targetRepo());
     const env = {
       ...process.env,
       GIT_OPTIONAL_LOCKS: "0",
-      ...(publicReadToken ? { GH_TOKEN: publicReadToken } : {}),
+      ...preparedGitHubEnv(resolvedArgs),
     };
     const command = resolveCommand("gh", resolvedArgs, env);
     const commandTimeoutMs = githubCommandTimeoutMs(timeoutMs) ?? timeoutMs;
@@ -181,6 +240,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
 
   return {
     GitHubRuntimeBudgetError,
+    claimPublicReadFallback,
     ensureGitHubRetryFits,
     ensureGitHubRuntimeAvailable,
     ensureRuntimeDelayFits,

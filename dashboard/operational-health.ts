@@ -3,7 +3,12 @@ export const OPERATIONAL_RUNNING_STALLED_MS = 150 * 60 * 1000;
 export const HEALTH_HISTORY_SAMPLE_MS = 5 * 60 * 1000;
 export const HEALTH_HISTORY_RETENTION_DAYS = 7;
 
-const QUEUED_STATUSES = new Set(["queued", "waiting", "requested", "pending"]);
+// "waiting" runs sit behind a deployment approval gate: a human decision, not
+// runner congestion. A forgotten approval would otherwise pin
+// oldest_queued_minutes for weeks and hold status at degraded, so they are
+// counted separately instead of inside the queue-pressure metrics.
+const QUEUED_STATUSES = new Set(["queued", "requested", "pending"]);
+const APPROVAL_GATED_STATUSES = new Set(["waiting"]);
 
 type WorkflowRun = {
   status?: string;
@@ -19,6 +24,8 @@ export type OperationalHealth = {
   queued_over_threshold: number;
   queued_threshold_minutes: number;
   oldest_queued_minutes: number;
+  approval_gated_runs: number;
+  oldest_approval_gated_minutes: number;
   running_runs: number;
   running_over_threshold: number;
   running_threshold_minutes: number;
@@ -76,6 +83,9 @@ export function summarizeOperationalHealth(
   const checkedAtMs = Date.parse(checkedAt);
   const now = Number.isFinite(checkedAtMs) ? checkedAtMs : Date.now();
   const queuedRuns = runs.filter((run) => QUEUED_STATUSES.has(String(run.status || "")));
+  const approvalGatedRuns = runs.filter((run) =>
+    APPROVAL_GATED_STATUSES.has(String(run.status || "")),
+  );
   const runningRuns = runs.filter((run) => run.status === "in_progress");
   const queuedAges = queuedRuns.map((run) => ageMs(run.created_at, now));
   const runningAges = runningRuns
@@ -109,6 +119,12 @@ export function summarizeOperationalHealth(
     queued_over_threshold: queuedOverThreshold,
     queued_threshold_minutes: OPERATIONAL_QUEUE_DEGRADED_MS / 60_000,
     oldest_queued_minutes: oldestMinutes(validQueuedAges),
+    approval_gated_runs: approvalGatedRuns.length,
+    oldest_approval_gated_minutes: oldestMinutes(
+      approvalGatedRuns
+        .map((run) => ageMs(run.created_at, now))
+        .filter((age): age is number => age !== null),
+    ),
     running_runs: runningRuns.length,
     running_over_threshold: runningOverThreshold,
     running_threshold_minutes: OPERATIONAL_RUNNING_STALLED_MS / 60_000,

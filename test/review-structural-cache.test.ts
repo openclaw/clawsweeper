@@ -617,6 +617,36 @@ test("explicit dispatch and maintainer requests always hydrate", () => {
   assert.equal(decision({ maintainerRequest: true }).reason, "maintainer_request");
 });
 
+test("a validated reservation covers its own activity but nothing after it", () => {
+  const reservedAt = "2026-07-10T10:05:00Z";
+  const priorRecord = record();
+  const base = {
+    review: review(),
+    priorRecord,
+    currentRecord: record(issueSnapshot({ activityUpdatedAt: reservedAt })),
+    reviewPolicy: "policy-1",
+    reviewModel: "gpt-5.6",
+    explicitDispatch: false,
+    maintainerRequest: false,
+    coordinationEnabled: true,
+    now: NOW,
+  };
+
+  assert.equal(reviewStructuralCacheDecision(base).reason, "activity_changed");
+  assert.deepEqual(
+    reviewStructuralCacheDecision({ ...base, ownedReservationUpdatedAt: reservedAt }),
+    { hit: true, reason: "hit" },
+  );
+  assert.equal(
+    reviewStructuralCacheDecision({
+      ...base,
+      currentRecord: record(issueSnapshot({ activityUpdatedAt: "2026-07-10T10:06:00Z" })),
+      ownedReservationUpdatedAt: reservedAt,
+    }).reason,
+    "activity_changed",
+  );
+});
+
 test("disabled coordination and missing lease revisions force hydration", () => {
   assert.equal(decision({ coordinationEnabled: false }).reason, "coordination_disabled");
   assert.equal(

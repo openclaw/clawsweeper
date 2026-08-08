@@ -793,8 +793,8 @@ function shouldPromoteNeedsHumanReplacement(fixArtifact: LooseRecord, workerResu
   if (fixArtifact.repair_strategy !== "needs_human") return false;
   if (!Array.isArray(fixArtifact.source_prs) || fixArtifact.source_prs.length === 0) return false;
   if (
-    !fixArtifact.source_prs.every(
-      (source: JsonValue) => parsePullRequestUrl(source)?.repo === workerResult.repo,
+    !fixArtifact.source_prs.every((source: JsonValue) =>
+      sameRepoSlug(parsePullRequestUrl(source)?.repo, workerResult.repo),
     )
   )
     return false;
@@ -1385,7 +1385,7 @@ function openReplacementPrFromPreparedRepairCheckout({
   const supersededSourceActions: JsonValue[] = [];
   for (const source of supersededSources) {
     const parsed = parsePullRequestUrl(source);
-    if (!parsed || parsed.repo !== result.repo) continue;
+    if (!parsed || !sameRepoSlug(parsed.repo, result.repo)) continue;
     supersededSourceActions.push(
       closeSupersededSourcePrs
         ? closeSupersededSourcePr({
@@ -1841,7 +1841,7 @@ function executeReplacementBranch({
   if (supersededSources.length > 0) {
     for (const source of supersededSources) {
       const parsed = parsePullRequestUrl(source);
-      if (!parsed || parsed.repo !== result.repo) continue;
+      if (!parsed || !sameRepoSlug(parsed.repo, result.repo)) continue;
       supersededSourceActions.push(
         closeSupersededSourcePrs
           ? closeSupersededSourcePr({
@@ -1883,7 +1883,7 @@ function mergedReplacementSourcePr({ fixArtifact, sourcePr = null, targetDir }: 
   const sources = [...(sourcePr?.url ? [sourcePr.url] : []), ...(fixArtifact.source_prs ?? [])];
   for (const source of uniqueStrings(sources)) {
     const parsed = parsePullRequestUrl(source);
-    if (!parsed || parsed.repo !== result.repo) continue;
+    if (!parsed || !sameRepoSlug(parsed.repo, result.repo)) continue;
     const view = fetchSourcePullRequestView({
       repo: result.repo,
       number: parsed.number,
@@ -1994,7 +1994,7 @@ function replacementSourceLabelSets({ fixArtifact, targetDir }: LooseRecord) {
   const sourceLabelSets: string[][] = [];
   for (const source of fixArtifact.source_prs ?? []) {
     const parsed = parsePullRequestUrl(source);
-    if (!parsed || parsed.repo !== result.repo) continue;
+    if (!parsed || !sameRepoSlug(parsed.repo, result.repo)) continue;
     sourceLabelSets.push(sourcePullRequestLabels({ number: parsed.number, targetDir }));
   }
   return sourceLabelSets;
@@ -3596,7 +3596,7 @@ function jobMaintainerAttribution() {
 function firstSourcePullRequest(fixArtifact: LooseRecord) {
   for (const source of fixArtifact.source_prs ?? []) {
     const parsed = parsePullRequestUrl(source);
-    if (parsed && parsed.repo === result.repo) return parsed;
+    if (parsed && sameRepoSlug(parsed.repo, result.repo)) return parsed;
   }
   throw new Error("fix_artifact.source_prs must include a source PR in the target repo");
 }
@@ -4472,10 +4472,10 @@ function hasSuccessfulFixMutation(report: LooseRecord) {
 
 function automergeOutcomeTargetPrNumber() {
   const canonicalPr = parsePullRequestUrl(result.canonical_pr);
-  if (canonicalPr && canonicalPr.repo === result.repo) return canonicalPr.number;
+  if (canonicalPr && sameRepoSlug(canonicalPr.repo, result.repo)) return canonicalPr.number;
   for (const source of result.fix_artifact?.source_prs ?? []) {
     const parsed = parsePullRequestUrl(source);
-    if (parsed && parsed.repo === result.repo) return parsed.number;
+    if (parsed && sameRepoSlug(parsed.repo, result.repo)) return parsed.number;
   }
   for (const ref of job.frontmatter.canonical ?? []) {
     const match = String(ref).match(/^#(\d+)$/);

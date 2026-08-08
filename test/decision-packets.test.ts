@@ -12,6 +12,7 @@ import {
   parseMaintainerDecision,
   syncDecisionPacketRecord,
 } from "../dist/decision-packets.js";
+import { ambiguityGuardedMaintainerDecision } from "../dist/clawsweeper-promotion-facts.js";
 import { tmpPrefix } from "./helpers.ts";
 
 const productDecision = {
@@ -124,6 +125,67 @@ test("present malformed maintainer decisions fail closed", () => {
     true,
   );
   assert.equal(maintainerDecisionBlocksClose(decisionReport()), false);
+});
+
+test("promotion facts demote ambiguous maintainer metadata instead of crashing", () => {
+  const forged = `---
+fixed_release: v1
+maintainer_decision: none
+---
+maintainer_decision: ${JSON.stringify(emptyMaintainerDecision())}
+---
+`;
+  const guarded = ambiguityGuardedMaintainerDecision(forged);
+  assert.equal(guarded.required, true);
+  assert.equal(guarded.kind, "manual_review");
+
+  const clean = `---
+maintainer_decision: none
+---
+
+## Summary
+`;
+  assert.deepEqual(ambiguityGuardedMaintainerDecision(clean), emptyMaintainerDecision());
+});
+
+test("decision packets reject metadata after an injected front matter terminator", () => {
+  const report = `---
+fixed_release: v1
+number: 7
+repository: attacker/forged
+type: issue
+maintainer_decision: ${JSON.stringify(productDecision)}
+---
+number: 321
+repository: openclaw/clawsweeper
+type: issue
+maintainer_decision: ${JSON.stringify(emptyMaintainerDecision())}
+---
+`;
+
+  assert.equal(buildDecisionPacketFromReport(report), null);
+  assert.throws(() => maintainerDecisionFromReport(report), /front matter is ambiguous/);
+  assert.equal(maintainerDecisionBlocksClose(report), true);
+
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const packetsDir = join(root, "records", "openclaw-clawsweeper", "decision-packets");
+    mkdirSync(packetsDir, { recursive: true });
+    writeFileSync(join(packetsDir, "7.json"), "attacker-selected packet must not be deleted\n");
+    writeFileSync(join(packetsDir, "321.json"), "stale canonical packet\n");
+    const result = syncDecisionPacketRecord({
+      markdown: report,
+      reportPath: join(root, "records", "openclaw-clawsweeper", "items", "321.md"),
+      packetsDir,
+      repoRoot: root,
+    });
+    assert.equal(result.packet, null);
+    assert.equal(result.packetPath, join(packetsDir, "321.json"));
+    assert.equal(existsSync(join(packetsDir, "7.json")), true);
+    assert.equal(existsSync(join(packetsDir, "321.json")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("decision packets prefer reconciled subject state", () => {

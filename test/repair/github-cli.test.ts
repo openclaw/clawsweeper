@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   ghJson,
+  ghJsonWithRetry,
   ghJsonWithRetryAsync,
   ghSpawn,
   githubLimitedPagePath,
@@ -124,6 +125,57 @@ test("public target reads preserve GitHub App mutations and every explicit crede
 
     delete process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN;
     assert.equal(observed(publicArgs).token, "app-mutation-token");
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("public read throttles fall back once to the target App token", async () => {
+  const fixtureEnv = {
+    GH_BIN: process.execPath,
+    GH_BIN_ARGS: JSON.stringify([
+      "--eval",
+      [
+        'if (process.env.GH_TOKEN?.startsWith("public-read-token")) {',
+        '  process.stderr.write("gh: API rate limit exceeded for installation (HTTP 403)\\n");',
+        "  process.exit(1);",
+        "}",
+        "process.stdout.write(JSON.stringify({ token: process.env.GH_TOKEN }));",
+      ].join("\n"),
+      "--",
+    ]),
+    GH_TOKEN: "app-mutation-token",
+    CLAWSWEEPER_PUBLIC_GH_TOKEN: "public-read-token",
+  };
+  const previous = Object.fromEntries(
+    Object.keys(fixtureEnv).map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, fixtureEnv);
+
+  try {
+    const args = ["api", "repos/openclaw/openclaw/issues/123"];
+    assert.equal(ghJsonWithRetry<{ token: string }>(args).token, "app-mutation-token");
+    assert.throws(() => ghJsonWithRetry(args), { name: "GitHubRateLimitError" });
+
+    process.env.GH_TOKEN = "app-mutation-token-async";
+    process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN = "public-read-token-async";
+    assert.equal(
+      (await ghJsonWithRetryAsync<{ token: string }>(args)).token,
+      "app-mutation-token-async",
+    );
+
+    process.env.GH_TOKEN = "app-mutation-token";
+    process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN = "public-read-token";
+    assert.equal(
+      ghJsonWithRetry<{ token: string }>(
+        ["api", "--method", "POST", "repos/openclaw/openclaw/issues/123/labels"],
+        { input: "{}" },
+      ).token,
+      "app-mutation-token",
+    );
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];

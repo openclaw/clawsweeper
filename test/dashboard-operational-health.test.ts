@@ -54,6 +54,25 @@ test("operational health classifies over-age queue pressure and stuck runs", () 
   assert.equal(stalled.oldest_running_minutes, 180);
 });
 
+test("operational health reports approval-gated runs outside queue congestion", () => {
+  const health = summarizeOperationalHealth(
+    [
+      // A deployment waiting a week for human approval is not runner
+      // congestion and must not degrade status or pin oldest_queued_minutes.
+      run("waiting", "2026-07-08T14:00:00Z"),
+      run("queued", "2026-07-15T13:55:00Z"),
+    ],
+    CHECKED_AT,
+    true,
+  );
+  assert.equal(health.status, "healthy");
+  assert.equal(health.queued_runs, 1);
+  assert.equal(health.queued_over_threshold, 0);
+  assert.equal(health.oldest_queued_minutes, 5);
+  assert.equal(health.approval_gated_runs, 1);
+  assert.equal(health.oldest_approval_gated_minutes, 7 * 24 * 60);
+});
+
 test("operational health fails closed when active-run telemetry is incomplete", () => {
   const health = summarizeOperationalHealth([], CHECKED_AT, false);
   assert.equal(health.status, "unknown");

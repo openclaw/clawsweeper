@@ -439,14 +439,11 @@ test("canonical identity hashing rejects excessive depth, nodes, and input size 
   );
 });
 
-test("ledger ordering is binary and locale independent without changing shared stable JSON", () => {
-  const sharedValue = { "\u00e4": 1, z: 2 };
-  const sharedExpected = JSON.stringify(
-    Object.fromEntries(
-      Object.entries(sharedValue).sort(([left], [right]) => left.localeCompare(right)),
-    ),
-  );
-  assert.equal(stableJson(sharedValue), sharedExpected);
+test("ledger and shared JSON ordering are both binary and locale independent", () => {
+  // The shared serializer used to order keys by locale collation, and this test
+  // pinned that difference. It now uses the same code-unit comparator as the
+  // ledger, so "z" (0x7A) precedes "\u00e4" (0xE4) in both.
+  assert.equal(stableJson({ "\u00e4": 1, z: 2 }), '{"z":2,"\u00e4":1}');
   assert.equal(
     actionLedgerJson({ "2": "two", "10": "ten", "\u00e4": 1, z: 2 }),
     '{"10":"ten","2":"two","z":2,"\u00e4":1}',
@@ -463,9 +460,15 @@ test("ledger ordering is binary and locale independent without changing shared s
     event.evidence?.map((entry) => entry.report_path),
     ["records/Z.md", "records/a.md"],
   );
-  const moduleUrl = pathToFileURL(path.join(process.cwd(), "dist", "action-ledger.js")).href;
-  const script = `import { actionLedgerJson } from ${JSON.stringify(moduleUrl)};
-process.stdout.write(actionLedgerJson({ "2": "two", "10": "ten", "\\u00e4": 1, z: 2 }));`;
+  const ledgerUrl = pathToFileURL(path.join(process.cwd(), "dist", "action-ledger.js")).href;
+  const stableJsonUrl = pathToFileURL(path.join(process.cwd(), "dist", "stable-json.js")).href;
+  // Both serializers must be locale independent. sv-SE sorts "\u00e4" after "z" while
+  // en-US sorts it immediately after "a", so a locale-sensitive comparator would
+  // disagree between these two child processes.
+  const script = `import { actionLedgerJson } from ${JSON.stringify(ledgerUrl)};
+import { stableJson } from ${JSON.stringify(stableJsonUrl)};
+const value = { "2": "two", "10": "ten", "\\u00e4": 1, z: 2 };
+process.stdout.write(JSON.stringify([actionLedgerJson(value), stableJson(value)]));`;
   const outputs = ["en_US.UTF-8", "sv_SE.UTF-8"].map((locale) => {
     const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
       encoding: "utf8",
@@ -474,10 +477,16 @@ process.stdout.write(actionLedgerJson({ "2": "two", "10": "ten", "\\u00e4": 1, z
     assert.equal(child.status, 0, child.stderr);
     return child.stdout;
   });
-  assert.deepEqual(outputs, [
+  // The two serializers differ on integer-like keys and that is expected:
+  // actionLedgerJson builds its JSON text directly, so it can emit "10" before
+  // "2", while stableJson rebuilds the object through Object.fromEntries and the
+  // engine re-applies its own ascending-numeric order for array-index keys. That
+  // ordering is specified and locale independent, so both children still agree.
+  const expected = JSON.stringify([
     '{"10":"ten","2":"two","z":2,"\u00e4":1}',
-    '{"10":"ten","2":"two","z":2,"\u00e4":1}',
+    '{"2":"two","10":"ten","z":2,"\u00e4":1}',
   ]);
+  assert.deepEqual(outputs, [expected, expected]);
 });
 
 test("every event persists the required correlation envelope", () => {

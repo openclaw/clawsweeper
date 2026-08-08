@@ -1162,9 +1162,20 @@ test("exact-review queue durably coalesces concurrent unchanged pull request edi
       }
     >;
   };
-  assert.equal(state.items["Steipete/Nameplate#750"].revision, 1);
-  assert.equal(state.items["Steipete/Nameplate#750"].decision.sourceAuthoritySeq, 1);
-  assert.deepEqual(state.items["Steipete/Nameplate#750"].sourceAuthorityWatermark, {
+  // Either concurrent delivery may win the enqueue race; the stored item keeps
+  // the winner's repo casing (seq 1 sent "Steipete/Nameplate", seq 2 lowercase)
+  // while the loser dedupes case-insensitively and the watermark ends at the
+  // maximum sequence in both orders.
+  const queued = responses.find((response) => response.queued === true);
+  const storedKeys = Object.keys(state.items).filter(
+    (key) => key.toLowerCase() === "steipete/nameplate#750",
+  );
+  assert.deepEqual(storedKeys, [queued?.item_key]);
+  const item = state.items[storedKeys[0]];
+  const winnerAuthoritySeq = storedKeys[0] === "Steipete/Nameplate#750" ? 1 : 2;
+  assert.equal(item.revision, 1);
+  assert.equal(item.decision.sourceAuthoritySeq, winnerAuthoritySeq);
+  assert.deepEqual(item.sourceAuthorityWatermark, {
     sequence: 2,
     updatedAt: "2026-07-25T09:00:00Z",
   });
@@ -21100,6 +21111,17 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(
     elementFor("execution-alert").innerHTML,
     /2 workflows waiting for a runner over 30m/,
+  );
+  context.renderExecutionAlert({
+    ...healthyOperational,
+    queued_runs: 2,
+    queued_over_threshold: 2,
+    approval_gated_runs: 1,
+    oldest_approval_gated_minutes: 7 * 24 * 60,
+  });
+  assert.match(
+    elementFor("execution-alert").innerHTML,
+    /1 awaiting deployment approval \(oldest 168h\)/,
   );
   context.renderExecutionAlert({
     ...healthyOperational,

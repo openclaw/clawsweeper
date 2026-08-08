@@ -17,6 +17,18 @@ import {
 import type { Args } from "./clawsweeper-args.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 
+const AUTOMATIC_REVIEW_SOURCE_ACTIONS = new Set([
+  "scheduled_hot_intake",
+  "scheduled_normal_backfill",
+]);
+
+export function isExplicitReviewDispatch(args: Args, hasExplicitItemSelection: boolean): boolean {
+  const sourceAction = stringArg(args.review_source_action, "").trim();
+  const plannedAutomaticReview =
+    boolArg(args.planned_automatic_review) || AUTOMATIC_REVIEW_SOURCE_ACTIONS.has(sourceAction);
+  return !plannedAutomaticReview && hasExplicitItemSelection;
+}
+
 export function prepareReviewCommand(
   args: Args,
   dependencies: CreateReviewCommandWorkflowDependencies,
@@ -159,9 +171,10 @@ export function prepareReviewCommand(
     ? { mainSha: localRangeData.baseSha, releaseStateComplete: true, latestRelease: null }
     : loadReviewGitInfo();
   const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
-  const plannedAutomaticReview = boolArg(args.planned_automatic_review);
-  const explicitDispatch =
-    !plannedAutomaticReview && (itemNumber !== undefined || itemNumbers !== undefined);
+  const explicitDispatch = isExplicitReviewDispatch(
+    args,
+    itemNumber !== undefined || itemNumbers !== undefined,
+  );
   const maintainerRequest = additionalPrompt.trim().length > 0;
 
   return {

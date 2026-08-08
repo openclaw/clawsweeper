@@ -360,6 +360,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
   reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
   reportSecurityReview: (markdown: string) => SecurityReview;
   reportTelegramVisibleProof: (markdown: string) => TelegramVisibleProof;
+  resetGuardReadCache: () => void;
   reviewCommentBodyDigest: (body: string) => string;
   reviewCommentHasCloseVerdictForCanonical: (
     comment: Record<string, unknown> | undefined,

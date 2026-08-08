@@ -11,7 +11,7 @@ import {
   gitLsFiles,
   isAncestor,
 } from "./git-repo-utils.js";
-import { parsePullRequestUrl } from "./github-ref.js";
+import { parsePullRequestUrl, sameRepoSlug } from "./github-ref.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import {
   preparePinnedOpenClawValidationHelper,
@@ -1717,8 +1717,8 @@ export function preflightTargetValidationPlan(
   }
 
   const sourcePr =
-    (fixArtifact.source_prs ?? []).find(
-      (source: JsonValue) => parsePullRequestUrl(source)?.repo === options.targetRepo,
+    (fixArtifact.source_prs ?? []).find((source: JsonValue) =>
+      sameRepoSlug(parsePullRequestUrl(source)?.repo, options.targetRepo),
     ) ?? null;
   return {
     status: "blocked",

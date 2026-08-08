@@ -536,12 +536,18 @@ const applyGuards = createApplyGuards({
   unsponsoredFeatureAgeSkipReason,
   unsponsoredFeatureCloseEnabled: () => unsponsoredFeatureCloseEnabled(),
 });
+const { resetGuardReadCache } = applyGuards;
 export const {
   abandonedPrAgeSkipReason,
   issueRecentHumanCommentBlockReasonFromComments,
   stalledUnprovenPrAgeSkipReason,
-  stalledUnprovenProofRequestBlockReason,
 } = applyGuards;
+export function stalledUnprovenProofRequestBlockReason(
+  ...args: Parameters<typeof applyGuards.stalledUnprovenProofRequestBlockReason>
+): ReturnType<typeof applyGuards.stalledUnprovenProofRequestBlockReason> {
+  resetGuardReadCache();
+  return applyGuards.stalledUnprovenProofRequestBlockReason(...args);
+}
 const { prAutoCloseExemptDecisionReason, prAutoCloseExemptLabel } = applyGuards;
 
 const contextHydration = createContextHydration({

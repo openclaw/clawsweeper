@@ -87,6 +87,15 @@ test("review observer attributes each review entry path without counting support
     classifyReviewRun(run({ display_title: "Apply default ClawSweeper closures" })),
     null,
   );
+  assert.equal(
+    classifyReviewRun(
+      run({
+        display_title:
+          "Review exact item openclaw/openclaw#674 rev 2 head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    ),
+    null,
+  );
   assert.equal(classifyReviewRun(run({ display_title: "Reconcile exact-review leases" })), null);
 });
 

@@ -1848,39 +1848,93 @@ function hasRecommendedPauseOrCloseOption(markdown: string): boolean {
   });
 }
 
+const PR_RATING_TIER_VALUES = new Set(["S", "A", "B", "C", "D", "F", "NA"]);
+const PROOF_STATUS_VALUES = new Set([
+  "sufficient",
+  "override",
+  "insufficient",
+  "mock_only",
+  "missing",
+  "not_applicable",
+]);
+
+function trustedPromotionValue(
+  markdown: string,
+  key: string,
+  legacySectionValue: string,
+  allowed: ReadonlySet<string>,
+): { invalid: boolean; value: string } {
+  const field = frontMatterField(markdown, key);
+  if (field.status === "ambiguous") return { invalid: true, value: "" };
+  const value = field.status === "value" ? field.value : legacySectionValue;
+  return { invalid: Boolean(value) && !allowed.has(value), value };
+}
+
 function hasLowSignalPullRequestPromotionSignal(markdown: string): boolean {
   const ratingSection = sectionValue(markdown, "PR Rating");
   const proofSection = sectionValue(markdown, "Real Behavior Proof");
-  const overallTier =
-    sectionLineValue(ratingSection, "Overall tier") ||
-    frontMatterValue(markdown, "pr_rating_overall");
-  const proofTier =
-    sectionLineValue(ratingSection, "Proof tier") || frontMatterValue(markdown, "pr_rating_proof");
-  const proofStatus =
-    sectionLineValue(proofSection, "Status") ||
-    frontMatterValue(markdown, "real_behavior_proof_status");
+  const overallTier = trustedPromotionValue(
+    markdown,
+    "pr_rating_overall",
+    sectionLineValue(ratingSection, "Overall tier"),
+    PR_RATING_TIER_VALUES,
+  );
+  const proofTier = trustedPromotionValue(
+    markdown,
+    "pr_rating_proof",
+    sectionLineValue(ratingSection, "Proof tier"),
+    PR_RATING_TIER_VALUES,
+  );
+  const proofStatus = trustedPromotionValue(
+    markdown,
+    "real_behavior_proof_status",
+    sectionLineValue(proofSection, "Status"),
+    PROOF_STATUS_VALUES,
+  );
+  if (overallTier.invalid || proofTier.invalid || proofStatus.invalid) return false;
   return (
-    overallTier === "F" &&
-    (proofTier === "F" || ["missing", "mock_only", "insufficient"].includes(proofStatus))
+    overallTier.value === "F" &&
+    (proofTier.value === "F" ||
+      ["missing", "mock_only", "insufficient"].includes(proofStatus.value))
   );
 }
 
 function hasAuthorPrBudgetPromotionSignal(markdown: string): boolean {
   const ratingSection = sectionValue(markdown, "PR Rating");
   const proofSection = sectionValue(markdown, "Real Behavior Proof");
-  const overallTier =
-    sectionLineValue(ratingSection, "Overall tier") ||
-    frontMatterValue(markdown, "pr_rating_overall");
-  const proofStatus =
-    sectionLineValue(proofSection, "Status") ||
-    frontMatterValue(markdown, "real_behavior_proof_status");
-  if (["S", "A", "B"].includes(overallTier) && ["sufficient", "override"].includes(proofStatus)) {
+  const overallTier = trustedPromotionValue(
+    markdown,
+    "pr_rating_overall",
+    sectionLineValue(ratingSection, "Overall tier"),
+    PR_RATING_TIER_VALUES,
+  );
+  const proofStatus = trustedPromotionValue(
+    markdown,
+    "real_behavior_proof_status",
+    sectionLineValue(proofSection, "Status"),
+    PROOF_STATUS_VALUES,
+  );
+  if (overallTier.invalid || proofStatus.invalid) return false;
+  if (
+    ["S", "A", "B"].includes(overallTier.value) &&
+    ["sufficient", "override"].includes(proofStatus.value)
+  ) {
     return false;
   }
   return (
-    ["D", "F"].includes(overallTier) ||
-    ["missing", "mock_only", "insufficient"].includes(proofStatus)
+    ["D", "F"].includes(overallTier.value) ||
+    ["missing", "mock_only", "insufficient"].includes(proofStatus.value)
   );
+}
+
+export function pullRequestClosePromotionSignalsForTest(markdown: string): {
+  authorBudget: boolean;
+  lowSignal: boolean;
+} {
+  return {
+    authorBudget: hasAuthorPrBudgetPromotionSignal(markdown),
+    lowSignal: hasLowSignalPullRequestPromotionSignal(markdown),
+  };
 }
 
 function closePromotionSignalTexts(markdown: string): string[] {
@@ -2537,13 +2591,27 @@ function checkpointNumber(name: string): number {
   return Number(name.match(/\d+/)?.[0] ?? 0);
 }
 
+type FrontMatterField =
+  | { status: "absent" }
+  | { status: "ambiguous" }
+  | { status: "value"; value: string };
+
+function frontMatterField(markdown: string, key: string): FrontMatterField {
+  const frontMatterMatch = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!frontMatterMatch) return { status: "absent" };
+  const frontMatter = frontMatterMatch[1] ?? "";
+  const remainder = markdown.slice(frontMatterMatch[0].length);
+  if (new RegExp(`^${key}:`, "m").test(remainder)) return { status: "ambiguous" };
+  const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.*)$`, "gm"))];
+  if (matches.length === 0) return { status: "absent" };
+  if (matches.length !== 1) return { status: "ambiguous" };
+  const value = matches[0]?.[1]?.trim().replace(/^"|"$/g, "") ?? "";
+  return value ? { status: "value", value } : { status: "ambiguous" };
+}
+
 function frontMatterValue(markdown: string, key: string): string {
-  return (
-    markdown
-      .match(new RegExp(`^${key}:\\s*(.+)$`, "m"))?.[1]
-      ?.trim()
-      .replace(/^"|"$/g, "") ?? ""
-  );
+  const field = frontMatterField(markdown, key);
+  return field.status === "value" ? field.value : "";
 }
 
 function jsonArrayFrontMatter(markdown: string, key: string): JsonValue[] {
