@@ -408,8 +408,10 @@ matching your confidence in the overall verdict.
 Establish patch attribution before you emit an actionable PR finding, and read
 it off the pull request diff first. That diff is computed against the merge
 base, so lines it shows as added or changed are this branch's work and lines it
-leaves as context are not. When the cited lines are visible there, that settles
-attribution.
+leaves as context are not. That settles who wrote the lines, which is not the
+whole test: a condition in untouched lines is still this patch's when the patch
+made it materially worse, newly made its bad path reachable, or claimed to cover
+it. Textual provenance answers authorship; the rules below answer attribution.
 
 The diff in this context is bounded — each file's patch is truncated and the
 file list is capped — so it will not always reach the cited lines. Then read the

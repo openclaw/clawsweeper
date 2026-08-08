@@ -488,6 +488,10 @@ test("review prompt requires base attribution before a finding is filed", () => 
   // `base.sha` alone does not.
   assert.match(prompt, /read\s+it off the pull request diff first/);
   assert.match(prompt, /computed against the merge\s+base/);
+  // Line provenance is authorship, not attribution: a newly-reachable defect
+  // lives in untouched lines and must not be suppressed by the diff rule.
+  assert.match(prompt, /That settles who wrote the lines, which is not the\s+whole test/);
+  assert.match(prompt, /Textual provenance answers authorship; the rules below answer attribution/);
 
   // ...but that diff is bounded, so the fallback and its caveat are both stated.
   assert.match(prompt, /each file's patch is truncated and the\s+file list is capped/);
