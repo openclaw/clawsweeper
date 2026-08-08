@@ -42,3 +42,79 @@ test("trailingHtmlComments recovers when prose contains an unmatched opener", ()
     ],
   );
 });
+
+test("a stray '-->' in prose never merges an earlier marker into a blob", () => {
+  // Backward scanning pairs each "-->" with the nearest preceding "<!--". When
+  // visible prose ends in an arrow, that pairing used to bridge back to a real
+  // marker and swallow everything between them.
+  const markers = trailingHtmlComments(
+    [
+      "<!-- clawsweeper-verdict:needs-human item=321 sha=head -->",
+      "The rust operator `-` then `->` renders as -->",
+      "<!-- clawsweeper-review item=321 -->",
+    ].join("\n"),
+  );
+
+  // Prose separates the verdict marker from the final block, so only the
+  // contiguous trailing block is returned - and no entry spans visible text.
+  assert.deepEqual(markers, ["<!-- clawsweeper-review item=321 -->"]);
+  for (const marker of markers) {
+    assert.doesNotMatch(marker, /renders as/, "a marker must never contain prose");
+    assert.equal(marker.indexOf("-->"), marker.length - 3, "a marker holds exactly one terminator");
+  }
+});
+
+test("a review-history marker cannot be bridged into by later prose", () => {
+  // renderReviewHistorySection emits a mid-body marker inside a <details> block,
+  // which is exactly the earlier opener a stray arrow can bridge back to.
+  const body = [
+    "Codex review: ready for maintainer look.",
+    "",
+    "<details>",
+    "<summary>Review history (2 cycles)</summary>",
+    "<!-- clawsweeper-review-history v=1 total=2 -->",
+    "- reviewed abc :: ready :: none",
+    "</details>",
+    "",
+    "Data flows plan --> review --> apply -->",
+    "",
+    "<!-- clawsweeper-verdict:needs-human item=321 sha=head -->",
+    "<!-- clawsweeper-review item=321 -->",
+  ].join("\n");
+
+  const markers = trailingHtmlComments(body);
+  assert.deepEqual(markers, [
+    "<!-- clawsweeper-verdict:needs-human item=321 sha=head -->",
+    "<!-- clawsweeper-review item=321 -->",
+  ]);
+  assert.equal(
+    markers.some((marker) => marker.includes("clawsweeper-review-history")),
+    false,
+    "the mid-body history marker must not be dragged into the trailing block",
+  );
+});
+
+test("every returned marker is a single well-formed HTML comment", () => {
+  // Property guard: whatever the body, no entry may contain an interior
+  // terminator or visible text between the delimiters.
+  const bodies = [
+    "text --> <!-- a --> <!-- b -->",
+    "<!-- a --> mid --> <!-- b --> <!-- c -->",
+    "<!-- unmatched opener --> trailing prose -->\n<!-- clawsweeper-review item=1 -->",
+    "<!-- a -->",
+    "no markers at all",
+    "-->",
+    "<!--",
+  ];
+  for (const body of bodies) {
+    for (const marker of trailingHtmlComments(body)) {
+      assert.ok(marker.startsWith("<!--"), `must open a comment: ${marker}`);
+      assert.ok(marker.endsWith("-->"), `must close a comment: ${marker}`);
+      assert.equal(
+        marker.indexOf("-->"),
+        marker.length - 3,
+        `must hold exactly one terminator: ${marker}`,
+      );
+    }
+  }
+});
