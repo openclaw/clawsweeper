@@ -815,6 +815,30 @@ export function existingRepairLoopModeOutcome({ intent, trustedBot }: LooseRecor
   };
 }
 
+/**
+ * A status comment may only be adopted — read for durable state, and edited in
+ * place — when ClawSweeper or a configured trusted bot authored it.
+ *
+ * An **absent** author is not evidence of ClawSweeper authorship. GitHub types
+ * `issue-comment.user` as nullable, which is why the read below is defensive;
+ * treating that case as trusted would let a comment whose author cannot be read
+ * be adopted and overwritten. Fail closed instead: an unknown author is not a
+ * known-good one.
+ *
+ * Every ClawSweeper-authored comment carries a login, so failing closed here
+ * cannot orphan a genuine status comment.
+ */
+export function isTrustedStatusCommentAuthor(
+  comment: LooseRecord | null | undefined,
+  trustedAuthors: ReadonlySet<string>,
+): boolean {
+  const author = String(comment?.user?.login ?? "")
+    .trim()
+    .toLowerCase();
+  if (!author) return false;
+  return author === "clawsweeper" || trustedAuthors.has(author);
+}
+
 export function isCanonicalLandingNeedsHumanText(value: JsonValue) {
   const text = String(value ?? "");
   if (!text) return false;

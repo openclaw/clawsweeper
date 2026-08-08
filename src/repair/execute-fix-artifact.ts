@@ -53,7 +53,10 @@ import {
   automergeOutcomeReviewedShaFromResult,
   automergePlanningHeadBlock,
 } from "./automerge-outcome.js";
-import { isCanonicalLandingNeedsHumanText } from "./comment-router-core.js";
+import {
+  isCanonicalLandingNeedsHumanText,
+  isTrustedStatusCommentAuthor,
+} from "./comment-router-core.js";
 import { parsePullRequestUrl, pullRequestNumberFromUrl } from "./github-ref.js";
 import {
   clawsweeperGitUserEmail,
@@ -4556,14 +4559,13 @@ function fetchPullRequestViewForRepo({ repo, number }: LooseRecord) {
   );
 }
 
+const REPAIR_TRUSTED_STATUS_AUTHORS: ReadonlySet<string> = new Set([
+  "clawsweeper[bot]",
+  "openclaw-clawsweeper[bot]",
+]);
+
 function isTrustedStatusComment(comment: LooseRecord) {
-  const author = String(comment.user?.login ?? "").toLowerCase();
-  return (
-    !author ||
-    author === "clawsweeper" ||
-    author === "clawsweeper[bot]" ||
-    author === "openclaw-clawsweeper[bot]"
-  );
+  return isTrustedStatusCommentAuthor(comment, REPAIR_TRUSTED_STATUS_AUTHORS);
 }
 
 function hasAutomergeStatusMarker(body: JsonValue, number: JsonValue) {
