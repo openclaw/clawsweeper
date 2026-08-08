@@ -43,6 +43,16 @@ import { reviewContentCacheHit } from "./scheduler-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
 
+function reviewStartLeaseCommentUpdatedAt(
+  comment: Record<string, unknown> | undefined,
+): string | undefined {
+  for (const key of ["updated_at", "created_at"]) {
+    const value = comment?.[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
+}
+
 export function restoreVerifiedMaintainerPullRequestAuthorAssociation(
   item: Pick<Item, "kind" | "author" | "authorAssociation" | "labels">,
   repositoryPermission: (author: string) => string | null,
@@ -178,6 +188,44 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       // command creates itself must still be deleted, even for a read-only checkout.
       isSuppliedReviewStartLease(suppliedReviewLease, lease) ||
       deleteOwnedDedicatedReviewStartLease(itemNumber, lease);
+    const claimSuppliedReviewLease = (
+      itemNumber: number,
+      currentRevision: string,
+    ):
+      | { status: "claimed"; lease: AcquiredReviewStartLease }
+      | { status: "stale" }
+      | { status: "held"; retryAt: string } => {
+      if (!suppliedReviewLease) return { status: "stale" };
+      const freshLeases = freshDedicatedReviewStartLeases({
+        comments: issueReviewCommentState(itemNumber).leaseComments,
+        itemNumber,
+        headSha: currentRevision,
+        nowMs: Date.now(),
+      });
+      const winner = freshLeases[0];
+      const supplied = freshLeases.find(
+        (lease) =>
+          commentId(lease.comment) === suppliedReviewLease.commentId &&
+          lease.owner === suppliedReviewLease.owner,
+      );
+      if (!supplied || !winner) return { status: "stale" };
+      if (
+        commentId(winner.comment) !== suppliedReviewLease.commentId ||
+        winner.owner !== suppliedReviewLease.owner
+      ) {
+        return { status: "held", retryAt: winner.expiresAt };
+      }
+      return {
+        status: "claimed",
+        lease: {
+          owner: suppliedReviewLease.owner,
+          commentId: suppliedReviewLease.commentId,
+          headSha: currentRevision,
+          comment: supplied.comment,
+        },
+      };
+    };
+    const structuralCacheCoordinationEnabled = !skipStartComment || suppliedReviewLease !== null;
     let reviewLedger: ReviewActionLedger | null = null;
     let activeReviewItem: Item | null = null;
     let completed = 0;
@@ -361,7 +409,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             reviewModel: PUBLIC_CODEX_MODEL,
             explicitDispatch,
             maintainerRequest,
-            coordinationEnabled: !skipStartComment,
+            coordinationEnabled: structuralCacheCoordinationEnabled,
           });
           if (!structuralProbeDecision.hit) {
             structuralCacheReasons.set(
@@ -393,7 +441,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             }
             preHydrationStructuralRecord = structuralRecord;
             if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
-            const structuralDecision = reviewStructuralCacheDecision({
+            const leaseRevision =
+              item.kind === "pull_request"
+                ? structuralRecord?.pullHeadSha
+                : priorReview?.itemSourceRevision;
+            const structuralDecisionInput = {
               review: priorReview,
               priorRecord: priorReview?.structuralRecord ?? null,
               currentRecord: structuralRecord,
@@ -401,8 +453,29 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               reviewModel: PUBLIC_CODEX_MODEL,
               explicitDispatch,
               maintainerRequest,
-              coordinationEnabled: !skipStartComment,
-            });
+              coordinationEnabled: structuralCacheCoordinationEnabled,
+            };
+            let suppliedLeaseClaim: ReturnType<typeof claimSuppliedReviewLease> | null = null;
+            let ownedReservationUpdatedAt: string | undefined;
+            let structuralDecision = reviewStructuralCacheDecision(structuralDecisionInput);
+            if (
+              structuralDecision.reason === "activity_changed" &&
+              suppliedReviewLease &&
+              leaseRevision
+            ) {
+              suppliedLeaseClaim = claimSuppliedReviewLease(item.number, leaseRevision);
+              if (suppliedLeaseClaim.status === "claimed") {
+                ownedReservationUpdatedAt = reviewStartLeaseCommentUpdatedAt(
+                  suppliedLeaseClaim.lease.comment,
+                );
+                if (ownedReservationUpdatedAt) {
+                  structuralDecision = reviewStructuralCacheDecision({
+                    ...structuralDecisionInput,
+                    ownedReservationUpdatedAt,
+                  });
+                }
+              }
+            }
             structuralCacheReasons.set(
               structuralDecision.reason,
               (structuralCacheReasons.get(structuralDecision.reason) ?? 0) + 1,
@@ -410,33 +483,57 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             if (structuralDecision.hit) {
               const initialStructuralRecord = structuralRecord;
               try {
-                const leaseRevision =
-                  item.kind === "pull_request"
-                    ? structuralRecord?.pullHeadSha
-                    : priorReview?.itemSourceRevision;
-                const startComment = postReviewStartStatusComment({
-                  item,
-                  headSha: leaseRevision ?? "",
-                  reviewTimeoutMs: timeoutMs,
-                  position: completed + 1,
-                  total: candidates.length,
-                  shardIndex,
-                  shardCount,
-                });
-                console.error(
-                  `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=${startComment.status} #${item.number}`,
-                );
-                if (startComment.status === "held") {
-                  coordinationHeldRetryAt = startComment.retryAt;
-                  continue;
-                }
-                acquiredReviewLease = startComment.lease;
-                if (!acquiredReviewLease) {
-                  throw new Error(
-                    `structural cache lease acquisition returned no identity for #${item.number}`,
+                if (suppliedReviewLease) {
+                  const claim =
+                    suppliedLeaseClaim ??
+                    (leaseRevision
+                      ? claimSuppliedReviewLease(item.number, leaseRevision)
+                      : ({ status: "stale" } as const));
+                  console.error(
+                    `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=${claim.status === "claimed" ? "reserved" : claim.status === "held" ? "held" : "stale-reservation"} #${item.number}`,
                   );
+                  if (claim.status === "held") {
+                    coordinationHeldRetryAt = claim.retryAt;
+                    continue;
+                  }
+                  if (claim.status === "stale") {
+                    coordinationHeldRetryAt = new Date(Date.now() + 60_000).toISOString();
+                    leaseAcquisitionFailures += 1;
+                    leaseAcquisitionFailureDetails.push(
+                      `#${item.number}: reserved review lease is no longer fresh for the cached revision`,
+                    );
+                    continue;
+                  }
+                  acquiredReviewLease = claim.lease;
+                  ownedReservationUpdatedAt ??= reviewStartLeaseCommentUpdatedAt(
+                    claim.lease.comment,
+                  );
+                  acquiredReviewLeases.push({ itemNumber: item.number, lease: claim.lease });
+                } else {
+                  const startComment = postReviewStartStatusComment({
+                    item,
+                    headSha: leaseRevision ?? "",
+                    reviewTimeoutMs: timeoutMs,
+                    position: completed + 1,
+                    total: candidates.length,
+                    shardIndex,
+                    shardCount,
+                  });
+                  console.error(
+                    `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=${startComment.status} #${item.number}`,
+                  );
+                  if (startComment.status === "held") {
+                    coordinationHeldRetryAt = startComment.retryAt;
+                    continue;
+                  }
+                  acquiredReviewLease = startComment.lease;
+                  if (!acquiredReviewLease) {
+                    throw new Error(
+                      `structural cache lease acquisition returned no identity for #${item.number}`,
+                    );
+                  }
+                  acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
                 }
-                acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
               } catch (error) {
                 leaseAcquisitionFailures += 1;
                 leaseAcquisitionFailureDetails.push(
@@ -478,12 +575,14 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 structuralCacheRevalidationMs += Date.now() - structuralRevalidationStartedAt;
               }
               const revalidationDecision = reviewStructuralCacheDecision({
-                review: priorReview
+                // A lease posted by this command owns activity through now. A
+                // supplied reservation owns activity only through its recorded timestamp.
+                review: priorReview && !suppliedReviewLease
                   ? {
                       ...priorReview,
                       reviewCommentSyncedAt: new Date().toISOString(),
                     }
-                  : null,
+                  : priorReview,
                 priorRecord: initialStructuralRecord,
                 currentRecord: revalidatedStructuralRecord,
                 reviewPolicy,
@@ -491,6 +590,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 explicitDispatch,
                 maintainerRequest,
                 coordinationEnabled: true,
+                ...(ownedReservationUpdatedAt ? { ownedReservationUpdatedAt } : {}),
               });
               const previousReviewIdentityMatches =
                 expectedPreviousReviewDigest !== null &&
@@ -655,19 +755,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             );
             continue;
           }
-          const freshLeases = freshDedicatedReviewStartLeases({
-            comments: issueReviewCommentState(item.number).leaseComments,
-            itemNumber: item.number,
-            headSha: currentRevision,
-            nowMs: Date.now(),
-          });
-          const winner = freshLeases[0];
-          const supplied = freshLeases.find(
-            (lease) =>
-              commentId(lease.comment) === suppliedReviewLease.commentId &&
-              lease.owner === suppliedReviewLease.owner,
-          );
-          if (!supplied || !winner) {
+          const claim = claimSuppliedReviewLease(item.number, currentRevision);
+          if (claim.status === "stale") {
             coordinationHeldRetryAt = new Date(Date.now() + 60_000).toISOString();
             leaseAcquisitionFailures += 1;
             leaseAcquisitionFailureDetails.push(
@@ -678,24 +767,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             );
             continue;
           }
-          if (
-            commentId(winner.comment) !== suppliedReviewLease.commentId ||
-            winner.owner !== suppliedReviewLease.owner
-          ) {
-            coordinationHeldRetryAt = winner.expiresAt;
+          if (claim.status === "held") {
+            coordinationHeldRetryAt = claim.retryAt;
             console.error(
               `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=held #${item.number}`,
             );
             continue;
           }
-          const claimedLease: AcquiredReviewStartLease = {
-            owner: suppliedReviewLease.owner,
-            commentId: suppliedReviewLease.commentId,
-            headSha: currentRevision,
-            comment: supplied.comment,
-          };
-          acquiredReviewLease = claimedLease;
-          acquiredReviewLeases.push({ itemNumber: item.number, lease: claimedLease });
+          acquiredReviewLease = claim.lease;
+          acquiredReviewLeases.push({ itemNumber: item.number, lease: claim.lease });
         }
         if (!localRangeData && contextItemUpdatedAt && preHydrationStructuralRecord) {
           structuralCacheRevalidations += 1;
