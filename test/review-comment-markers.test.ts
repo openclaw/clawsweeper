@@ -60,7 +60,14 @@ test("a stray '-->' in prose never merges an earlier marker into a blob", () => 
   assert.deepEqual(markers, ["<!-- clawsweeper-review item=321 -->"]);
   for (const marker of markers) {
     assert.doesNotMatch(marker, /renders as/, "a marker must never contain prose");
-    assert.equal(marker.indexOf("-->"), marker.length - 3, "a marker holds exactly one terminator");
+    // "no terminator before the closing one" rather than
+    // indexOf("-->") === length - 3, which compares equal when indexOf returns
+    // -1 and the string is two characters long.
+    assert.equal(
+      marker.slice(0, -3).includes("-->"),
+      false,
+      "a marker holds exactly one terminator",
+    );
   }
 });
 
@@ -111,8 +118,8 @@ test("every returned marker is a single well-formed HTML comment", () => {
       assert.ok(marker.startsWith("<!--"), `must open a comment: ${marker}`);
       assert.ok(marker.endsWith("-->"), `must close a comment: ${marker}`);
       assert.equal(
-        marker.indexOf("-->"),
-        marker.length - 3,
+        marker.slice(0, -3).includes("-->"),
+        false,
         `must hold exactly one terminator: ${marker}`,
       );
     }
