@@ -524,6 +524,7 @@ test("review item source revision ignores advisory labels but tracks protected l
           { name: "mantis: telegram-visible-proof" },
           { name: "triage: needs-real-behavior-proof" },
           { name: "clawsweeper:reviewed" },
+          { name: "clawsweeper-recovery-stuck" },
           { name: "no-stale" },
           { name: "stale" },
         ],
@@ -1481,24 +1482,35 @@ test("publishing the durable review comment sweeps superseded placeholders", () 
 
   const applyStart = source.indexOf('syncReasons.push("updated durable Codex review comment")');
   assert.ok(applyStart >= 0);
-  const applyWindow = source.slice(applyStart, applyStart + 1200);
+  const applyCatch = source.indexOf("const commentAuthError", applyStart);
+  assert.ok(applyCatch > applyStart);
+  const applyWindow = source.slice(applyStart, applyCatch);
   assert.match(applyWindow, /cleanupSupersededReviewPlaceholderComments\(\{/);
 });
 
-test("completed durable publication clears a recovery escalation only after the review exists", () => {
+test("recovery cleanup preserves durable-review ordering and exact publication batching", () => {
   const source = readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8");
+  const delayedBatch = source.indexOf("const delayIssueLabelBatchForRecoveryCleanup =");
   const publication = source.indexOf("syncedComment = upsertReviewComment(");
   const recoveryCleanup = source.indexOf("clearResolvedReviewRecoveryLabel({", publication);
-  const nextCatch = source.indexOf("} catch (error)", recoveryCleanup);
+  const delayedFlush = source.indexOf(
+    "if (delayIssueLabelBatchForRecoveryCleanup)",
+    recoveryCleanup,
+  );
+  const nextCatch = source.indexOf("} catch (error)", delayedFlush);
 
+  assert.ok(delayedBatch >= 0);
+  assert.ok(delayedBatch < publication);
   assert.ok(publication >= 0);
   assert.ok(recoveryCleanup > publication);
+  assert.ok(delayedFlush > recoveryCleanup);
   assert.match(
-    source.slice(publication, recoveryCleanup),
-    /if \(complete && item\.labels\.includes\(REVIEW_RECOVERY_STUCK_LABEL\)\)/,
+    source.slice(delayedBatch, publication),
+    /if \(!delayIssueLabelBatchForRecoveryCleanup\)/,
   );
+  assert.match(source.slice(recoveryCleanup, delayedFlush), /if \(issueLabelBatchActive\)/);
+  assert.match(source.slice(delayedFlush, nextCatch), /flushIssueLabelBatchForDurableComment\(\);/);
   assert.match(source.slice(recoveryCleanup, nextCatch), /removeLabel:\s*removeIssueLabel/);
-  assert.match(source.slice(recoveryCleanup, nextCatch), /"labels_synced_at"/);
 });
 
 test("placeholder sweep retries on every apply pass independent of comment body sync", () => {

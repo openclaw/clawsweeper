@@ -755,7 +755,7 @@ test("exact publication rechecks after batched labels and again before close", (
       active_lock_reason: null,
       author_association: "CONTRIBUTOR",
       user: { login: "reporter" },
-      labels: [],
+      labels: ["clawsweeper-recovery-stuck"],
       comments: 3,
       pull_request: null,
     };
@@ -772,7 +772,7 @@ test("exact publication rechecks after batched labels and again before close", (
       item_source_revision: sourceRevision,
       review_lease_owner: leaseOwner,
       review_lease_comment_id: String(leaseCommentId),
-      labels: JSON.stringify([]),
+      labels: JSON.stringify(["clawsweeper-recovery-stuck"]),
       triage_priority: "P2",
       impact_labels: JSON.stringify(["impact:message-loss"]),
     });
@@ -800,7 +800,7 @@ test("exact publication rechecks after batched labels and again before close", (
     writeFileSync(
       statePath,
       JSON.stringify({
-        labels: [],
+        labels: ["clawsweeper-recovery-stuck"],
         state: "open",
         comments: [
           {
@@ -870,7 +870,7 @@ if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && ar
     state.state = "closed";
     saveState(state);
   }
-  console.log(JSON.stringify({ ...issue, state: state.state, labels: state.labels.map(name => ({ name })) }));
+  console.log(JSON.stringify({ ...issue, state: state.state, labels: state.labels }));
 } else if (args[0] === "api" && path.startsWith("search/issues?")) {
   console.log(JSON.stringify({ items: [] }));
 } else if (args[0] === "issue" && args[1] === "view") {
@@ -943,9 +943,9 @@ if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && ar
         args.includes("DELETE"),
     );
     assert.ok(
-      labelIndex >= 0 &&
-        commentIndex > labelIndex &&
-        placeholderCleanupIndex > commentIndex &&
+      commentIndex >= 0 &&
+        labelIndex > commentIndex &&
+        placeholderCleanupIndex > labelIndex &&
         closeIndex > placeholderCleanupIndex,
     );
     const isGuardRead = (args: string[]): boolean =>
@@ -953,15 +953,15 @@ if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && ar
       !args.includes("--method") &&
       (args[1]?.includes(`/issues/${number}`) ?? false);
     assert.ok(
-      commands.slice(labelIndex + 1, commentIndex).some(isGuardRead),
-      `expected a fresh comment guard after label publication: ${JSON.stringify(
-        commands.slice(labelIndex + 1, commentIndex),
+      commands.slice(commentIndex + 1, labelIndex).some(isGuardRead),
+      `expected a fresh label guard after comment publication: ${JSON.stringify(
+        commands.slice(commentIndex + 1, labelIndex),
       )}`,
     );
     assert.ok(
-      commands.slice(commentIndex + 1, placeholderCleanupIndex).some(isGuardRead),
-      `expected a fresh placeholder-cleanup guard after comment publication: ${JSON.stringify(
-        commands.slice(commentIndex + 1, placeholderCleanupIndex),
+      commands.slice(labelIndex + 1, placeholderCleanupIndex).some(isGuardRead),
+      `expected a fresh placeholder-cleanup guard after label publication: ${JSON.stringify(
+        commands.slice(labelIndex + 1, placeholderCleanupIndex),
       )}`,
     );
     const postCommentIssueReads = commands
@@ -972,6 +972,12 @@ if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && ar
       `expected a fresh close guard after the post-publication receipt: ${JSON.stringify(postCommentIssueReads)}`,
     );
     assert.equal(readFileSync(statePath, "utf8").includes('"state":"closed"'), true);
+    assert.equal(
+      (JSON.parse(readFileSync(statePath, "utf8")).labels as string[]).includes(
+        "clawsweeper-recovery-stuck",
+      ),
+      false,
+    );
     assert.match(readFileSync(join(closedDir, `${number}.md`), "utf8"), /^labels_synced_at: /m);
   } finally {
     rmSync(root, { recursive: true, force: true });

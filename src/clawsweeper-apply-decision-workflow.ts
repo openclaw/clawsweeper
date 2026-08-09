@@ -2054,13 +2054,23 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 break;
               continue;
             }
-            const labelMutationPublished = flushIssueLabelBatch(false);
-            preserveGuardReadCacheAfterMutation = false;
-            resetMutationGuardBoundary();
-            if (labelMutationPublished && deferredSelfMutationReceipt) {
-              rememberSelfMutationUpdatedAt();
-              deferredSelfMutationReceipt = false;
+            const delayIssueLabelBatchForRecoveryCleanup = Boolean(
+              exactEventPublication &&
+              complete &&
+              item.labels.includes(REVIEW_RECOVERY_STUCK_LABEL),
+            );
+            const flushIssueLabelBatchForDurableComment = (): void => {
+              const labelMutationPublished = flushIssueLabelBatch(false);
+              preserveGuardReadCacheAfterMutation = false;
               resetMutationGuardBoundary();
+              if (labelMutationPublished && deferredSelfMutationReceipt) {
+                rememberSelfMutationUpdatedAt();
+                deferredSelfMutationReceipt = false;
+                resetMutationGuardBoundary();
+              }
+            };
+            if (!delayIssueLabelBatchForRecoveryCleanup) {
+              flushIssueLabelBatchForDurableComment();
             }
             try {
               syncedComment = upsertReviewComment(
@@ -2071,6 +2081,41 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
               rememberSelfMutationUpdatedAt();
               deferredSelfMutationReceipt = false;
               syncReasons.push("updated durable Codex review comment");
+              if (complete && item.labels.includes(REVIEW_RECOVERY_STUCK_LABEL)) {
+                try {
+                  clearResolvedReviewRecoveryLabel({
+                    number,
+                    labels: item.labels,
+                    complete,
+                    removeLabel: removeIssueLabel,
+                    onMutation: recordMutation,
+                  });
+                  markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+                  if (issueLabelBatchActive) {
+                    clawSweeperLabelsChanged = true;
+                    rememberLabelMutationUpdatedAt();
+                  } else {
+                    markdown = replaceFrontMatterValue(
+                      markdown,
+                      "labels_synced_at",
+                      new Date().toISOString(),
+                    );
+                    rememberSelfMutationUpdatedAt();
+                  }
+                  syncReasons.push("cleared resolved review recovery label");
+                } catch (error) {
+                  if (error instanceof GitHubRuntimeBudgetError || error instanceof GitHubRateLimitError)
+                    throw error;
+                  console.error(
+                    `[apply] could not clear resolved review recovery label for #${number}: ${
+                      error instanceof Error ? error.message : String(error)
+                    }`,
+                  );
+                }
+              }
+              if (delayIssueLabelBatchForRecoveryCleanup) {
+                flushIssueLabelBatchForDurableComment();
+              }
               // The durable review comment is now published, so stale "review
               // started" placeholders from failed earlier attempts are clutter.
               const placeholderKeepCommentIds = new Set<number>();
@@ -2090,33 +2135,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 comments: latestLeaseState.comments,
                 keepCommentIds: placeholderKeepCommentIds,
               });
-              if (complete && item.labels.includes(REVIEW_RECOVERY_STUCK_LABEL)) {
-                try {
-                  clearResolvedReviewRecoveryLabel({
-                    number,
-                    labels: item.labels,
-                    complete,
-                    removeLabel: removeIssueLabel,
-                    onMutation: recordMutation,
-                  });
-                  markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
-                  markdown = replaceFrontMatterValue(
-                    markdown,
-                    "labels_synced_at",
-                    new Date().toISOString(),
-                  );
-                  rememberSelfMutationUpdatedAt();
-                  syncReasons.push("cleared resolved review recovery label");
-                } catch (error) {
-                  if (error instanceof GitHubRuntimeBudgetError || error instanceof GitHubRateLimitError)
-                    throw error;
-                  console.error(
-                    `[apply] could not clear resolved review recovery label for #${number}: ${
-                      error instanceof Error ? error.message : String(error)
-                    }`,
-                  );
-                }
-              }
             } catch (error) {
               const commentAuthError = isGitHubRequiresAuthenticationError(error);
               if (!commentAuthError && !isLockedConversationCommentError(error)) throw error;
