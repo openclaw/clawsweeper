@@ -829,7 +829,8 @@ jobs:
                   rm -f "$classification_output" "$comments_error"
                   {
                     echo "proceed=false"
-                    echo "terminal_noop=true"
+                    echo "terminal_noop=false"
+                    echo "scheduled_semantic_noop=true"
                     echo "terminal_missing=false"
                     echo "guarded_open=false"
                     echo "guarded_open_action="
@@ -849,6 +850,7 @@ jobs:
           fi
           case "$live_state" in
             open)
+              echo "scheduled_semantic_noop=false" >> "$GITHUB_OUTPUT"
               echo "terminal_noop=false" >> "$GITHUB_OUTPUT"
               echo "terminal_missing=false" >> "$GITHUB_OUTPUT"
               if [ "$live_locked" = "true" ]; then
@@ -863,6 +865,7 @@ jobs:
               fi
               ;;
             closed)
+              echo "scheduled_semantic_noop=false" >> "$GITHUB_OUTPUT"
               echo "proceed=false" >> "$GITHUB_OUTPUT"
               echo "terminal_noop=true" >> "$GITHUB_OUTPUT"
               echo "terminal_missing=false" >> "$GITHUB_OUTPUT"
@@ -923,7 +926,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         id: setup-pnpm
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.admission_retry != 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.scheduled_semantic_noop != 'true' && steps.live-item.outputs.admission_retry != 'true' }}
         with:
           build-script: ${{ steps.live-item.outputs.proceed == 'true' && 'build:all' || 'build:repair' }}
 
@@ -1340,7 +1343,7 @@ jobs:
 
       - name: Create exact review artifact bundle
         id: create-exact-review-bundle
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.target.outputs.target_enabled == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.admission_retry != 'true' && steps.setup-pnpm.outcome == 'success' && steps.review-exact-event-item.outputs.superseded != 'true' && (steps.live-item.outputs.proceed != 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.retry_at == '')) }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.target.outputs.target_enabled == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.scheduled_semantic_noop != 'true' && steps.live-item.outputs.admission_retry != 'true' && steps.setup-pnpm.outcome == 'success' && steps.review-exact-event-item.outputs.superseded != 'true' && (steps.live-item.outputs.proceed != 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.retry_at == '')) }}
         env:
           EXACT_REVIEW_ACTION_LEDGER_ROOT: ${{ env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT }}
           EXACT_REVIEW_BUNDLE_DIR: .artifacts/exact-review-bundle
@@ -1716,6 +1719,7 @@ jobs:
           DIRECT_PUBLICATION_RETRY_AT: ${{ steps.prepare-direct-exact-review-publication.outputs.retry_at }}
           TARGET_ENABLED: ${{ steps.target.outputs.target_enabled }}
           LIVE_OUTCOME: ${{ steps.live-item.outcome }}
+          SCHEDULED_SEMANTIC_NOOP: ${{ steps.live-item.outputs.scheduled_semantic_noop || 'false' }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
           REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded || 'false' }}
           RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status }}
@@ -1738,6 +1742,8 @@ jobs:
             outcome=success
             requeue_latest=true
           elif [ "$TARGET_ENABLED" = "false" ]; then
+            outcome=success
+          elif [ "$SCHEDULED_SEMANTIC_NOOP" = "true" ] && [ "$LIVE_OUTCOME" = "success" ]; then
             outcome=success
           elif [ "$RESERVATION_STATUS" = "superseded" ] || [ "$REVIEW_SUPERSEDED" = "true" ]; then
             outcome=success

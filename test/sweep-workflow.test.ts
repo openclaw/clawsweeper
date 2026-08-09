@@ -653,7 +653,8 @@ fi
     const output = readFileSync(outputPath, "utf8");
     assert.match(output, /^scheduled_noop=true$/m);
     assert.match(output, /^proceed=false$/m);
-    assert.match(output, /^terminal_noop=true$/m);
+    assert.match(output, /^terminal_noop=false$/m);
+    assert.match(output, /^scheduled_semantic_noop=true$/m);
     assert.doesNotMatch(readFileSync(logPath, "utf8"), /--method|-X/);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
@@ -817,6 +818,12 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(liveItem.run ?? "", /scripts\/classify-scheduled-review-noop\.ts/);
   const targetToken = job.steps.find((step) => step.id === "target-write-token");
   assert.match(targetToken?.if ?? "", /steps\.live-item\.outputs\.proceed == 'true'/);
+  const setupPnpm = job.steps.find((step) => step.id === "setup-pnpm");
+  assert.match(setupPnpm?.if ?? "", /scheduled_semantic_noop != 'true'/);
+  const bundle = job.steps.find((step) => step.id === "create-exact-review-bundle");
+  assert.match(bundle?.if ?? "", /scheduled_semantic_noop != 'true'/);
+  const semanticNoopResult = job.steps.find((step) => step.id === "exact-review-generation-result");
+  assert.match(semanticNoopResult?.run ?? "", /SCHEDULED_SEMANTIC_NOOP.*outcome=success/s);
   assert.match(liveItem.run ?? "", /scheduled_noop=true/);
   assert.match(liveItem.run ?? "", /Completing .* as a scheduled no-op before target checkout/);
   assert.match(
