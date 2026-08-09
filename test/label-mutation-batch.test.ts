@@ -278,7 +278,7 @@ test("optional batch failures retain successful final operations and report skip
   const result = operations.flushIssueLabelMutationBatch(
     321,
     () => events.push("freshness"),
-    () => events.push("receipt"),
+    (confirmed) => events.push(confirmed ? "receipt" : "possible mutation"),
   );
 
   assert.equal(result.itemMutationPublished, true);
@@ -295,7 +295,7 @@ test("optional batch failures retain successful final operations and report skip
   assert.deepEqual(events, [
     "freshness",
     "issue edit 321 --add-label impact:message-loss,P2 --remove-label P1",
-    "receipt",
+    "possible mutation",
     "freshness",
     "issue edit 321 --remove-label P1",
     "receipt",
@@ -305,6 +305,29 @@ test("optional batch failures retain successful final operations and report skip
     "freshness",
     "issue edit 321 --add-label P2",
   ]);
+});
+
+test("a rejected optional-only batch does not publish a label-sync receipt", () => {
+  const capacityFailure = new Error("labels can have a maximum of 100 labels");
+  let labelsSyncedAt: string | undefined;
+  const receiptCertainty: boolean[] = [];
+  const { operations } = createOperations({
+    mutate: ({ args }) => {
+      if (args.includes("--add-label")) throw capacityFailure;
+    },
+  });
+
+  operations.beginIssueLabelMutationBatch(321);
+  operations.tryAddOptionalLabel({ number: 321, label: "P2", currentLabels: [] });
+  const result = operations.flushIssueLabelMutationBatch(321, undefined, (confirmed) => {
+    receiptCertainty.push(confirmed);
+    if (confirmed) labelsSyncedAt = new Date().toISOString();
+  });
+
+  assert.equal(result.itemMutationPublished, false);
+  assert.deepEqual(result.skippedAdditions, ["P2"]);
+  assert.deepEqual(receiptCertainty, [false]);
+  assert.equal(labelsSyncedAt, undefined);
 });
 
 test("capacity fallback publishes required additions before optional additions", () => {

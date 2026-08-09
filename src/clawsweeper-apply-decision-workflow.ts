@@ -504,8 +504,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         mutationGuardBoundaryReason = null;
         resetGuardReadCache();
       };
-      const rememberPublishedLabelMutation = (): void => {
-        rememberPublishedLabelSync();
+      const rememberLabelMutationResult = (confirmed: boolean): void => {
+        if (confirmed) rememberPublishedLabelSync();
         rememberSelfMutationUpdatedAt();
         deferredSelfMutationReceipt = false;
         resetMutationGuardBoundary();
@@ -517,7 +517,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           const result = flushIssueLabelMutationBatch(
             number,
             resetMutationGuardBoundary,
-            rememberPublishedLabelMutation,
+            rememberLabelMutationResult,
           );
           if (result.skippedAdditions.length > 0) {
             reconcileSkippedIssueLabelAdditions(result.skippedAdditions);

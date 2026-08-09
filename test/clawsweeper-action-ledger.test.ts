@@ -774,12 +774,12 @@ test("blocked exact close publication discards staged labels before writing the 
   const blockedCloseStart = source.indexOf("if (closeBlockedForCommentSync) {");
   const blockedCloseEnd = source.indexOf("clawSweeperLabelsChanged &&", blockedCloseStart);
   const blockedClose = source.slice(blockedCloseStart, blockedCloseEnd);
-  const publishedLabelReceiptStart = source.indexOf("const rememberPublishedLabelMutation =");
-  const publishedLabelReceiptEnd = source.indexOf(
+  const labelMutationResultStart = source.indexOf("const rememberLabelMutationResult =");
+  const labelMutationResultEnd = source.indexOf(
     "const flushIssueLabelBatch =",
-    publishedLabelReceiptStart,
+    labelMutationResultStart,
   );
-  const publishedLabelReceipt = source.slice(publishedLabelReceiptStart, publishedLabelReceiptEnd);
+  const labelMutationResult = source.slice(labelMutationResultStart, labelMutationResultEnd);
   const stagedLabelReceiptStart = source.indexOf("const rememberLabelMutationUpdatedAt =");
   const stagedLabelReceiptEnd = source.indexOf(
     "const previousApplyMutationRunner =",
@@ -793,7 +793,10 @@ test("blocked exact close publication discards staged labels before writing the 
     blockedClose,
     /if \(!needsReviewCommentSync\) \{\s*discardIssueLabelBatch\(\);[\s\S]*?writeReportMarkdown\(path, markdown\);/,
   );
-  assert.match(publishedLabelReceipt, /rememberPublishedLabelSync\(\);/);
+  assert.ok(labelMutationResultStart >= 0);
+  assert.ok(labelMutationResultEnd > labelMutationResultStart);
+  assert.match(labelMutationResult, /if \(confirmed\) rememberPublishedLabelSync\(\);/);
+  assert.match(labelMutationResult, /rememberSelfMutationUpdatedAt\(\);/);
   assert.match(
     stagedLabelReceipt,
     /if \(issueLabelBatchActive\) deferredSelfMutationReceipt = true;/,

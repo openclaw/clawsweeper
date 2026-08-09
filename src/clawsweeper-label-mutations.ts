@@ -220,7 +220,7 @@ export function createLabelMutationOperations(
   function flushIssueLabelMutationBatch(
     number: number,
     beforeItemMutation?: () => void,
-    afterItemMutation?: () => void,
+    afterItemMutation?: (confirmed: boolean) => void,
   ): {
     itemMutationPublished: boolean;
     repositoryDefinitionMutated: boolean;
@@ -303,7 +303,7 @@ export function createLabelMutationOperations(
         args,
         onMutation: batch.onMutation,
       });
-      afterItemMutation?.();
+      afterItemMutation?.(true);
       return {
         itemMutationPublished: true,
         repositoryDefinitionMutated: definitionMutated,
@@ -312,9 +312,10 @@ export function createLabelMutationOperations(
     } catch (error) {
       if (!isOptionalFailure(error)) throw error;
       // `gh issue edit` can apply removals before a missing optional addition
-      // makes the command exit nonzero. Conservatively receipt the live item
-      // before any guarded fallback command.
-      afterItemMutation?.();
+      // makes the command exit nonzero. Refresh the live self-mutation receipt
+      // before any guarded fallback command, but do not claim a confirmed label
+      // sync unless a fallback succeeds.
+      afterItemMutation?.(false);
       console.warn(
         `Combined optional label sync for item ${number} failed; retrying its final operations individually: ${
           error instanceof Error ? error.message : String(error)
@@ -328,7 +329,7 @@ export function createLabelMutationOperations(
           args: ["issue", "edit", String(number), "--remove-label", removals.join(",")],
           onMutation: batch.onMutation,
         });
-        afterItemMutation?.();
+        afterItemMutation?.(true);
         itemMutationPublished = true;
       }
       const fallbackAdditions = [
@@ -347,7 +348,7 @@ export function createLabelMutationOperations(
               optional &&
               (missingLabelError(fallbackError, label) || labelCapacityError(fallbackError)),
           });
-          afterItemMutation?.();
+          afterItemMutation?.(true);
           itemMutationPublished = true;
         } catch (fallbackError) {
           if (

@@ -195,7 +195,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
   flushIssueLabelMutationBatch: (
     number: number,
     beforeItemMutation?: () => void,
-    afterItemMutation?: () => void,
+    afterItemMutation?: (confirmed: boolean) => void,
   ) => {
     itemMutationPublished: boolean;
     repositoryDefinitionMutated: boolean;
