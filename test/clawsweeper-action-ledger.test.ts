@@ -740,7 +740,7 @@ test("GitHub throttles abort apply lease checks and preserve durable lease owner
   );
   assert.match(
     applySource,
-    /if \(error instanceof GitHubRateLimitError\) \{[\s\S]*?activeApplyMutationLease = null;[\s\S]*?throw error;\s*\} finally \{\s*releaseActiveApplyMutationLease\(\);/,
+    /if \(error instanceof GitHubRateLimitError\) \{[\s\S]*?activeApplyMutationLease = null;[\s\S]*?throw error;\s*\} finally \{\s*discardIssueLabelBatch\(\);\s*releaseActiveApplyMutationLease\(\);/,
   );
 });
 
