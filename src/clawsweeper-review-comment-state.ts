@@ -17,6 +17,14 @@ import { normalizeRepo } from "./repository-profiles.js";
 import { trailingHtmlComments } from "./review-comment-markers.js";
 import { neutralizeReviewControlMarkers } from "./review-history.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
+
+export function normalizeNoopReviewMarkerMetadata(body: string): string {
+  return body.replace(
+    /<!--\s+clawsweeper-(?:review-version|verdict:[^\s>]+|action:[^\s>]+|security:[^\s>]+)\b[^>]*-->/g,
+    (marker) =>
+      marker.replace(/\s(?:reviewed_at|updated_at|lease_owner|lease_comment_id)=[^\s>]+/g, ""),
+  );
+}
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
 
 export function createReviewCommentState(
@@ -548,9 +556,14 @@ export function createReviewCommentState(
     const actual = commentBody(comment)?.trim();
     const expected = body.trim();
     if (actual === expected) return true;
-    if (!actual || !options.allowApplyCloseActionUpgrade) return false;
+    if (!actual) return false;
+    const normalizedActual = normalizeNoopReviewMarkerMetadata(actual);
+    const normalizedExpected = normalizeNoopReviewMarkerMetadata(expected);
+    if (normalizedActual === normalizedExpected) return true;
+    if (!options.allowApplyCloseActionUpgrade) return false;
     return (
-      normalizeApplySyncCloseMarkerAction(actual) === normalizeApplySyncCloseMarkerAction(expected)
+      normalizeApplySyncCloseMarkerAction(normalizedActual) ===
+      normalizeApplySyncCloseMarkerAction(normalizedExpected)
     );
   }
 
@@ -562,15 +575,16 @@ export function createReviewCommentState(
     options: { allowApplyCloseActionUpgrade?: boolean } = {},
   ): boolean {
     if (storedHash === expectedHash) return true;
-    if (!storedHash || !options.allowApplyCloseActionUpgrade) return false;
+    if (!storedHash) return false;
     const actual = commentBody(comment)?.trim();
     if (!actual) return false;
-    if (
-      normalizeApplySyncCloseMarkerAction(actual) !==
-      normalizeApplySyncCloseMarkerAction(body.trim())
-    ) {
-      return false;
-    }
+    const normalizedActual = normalizeNoopReviewMarkerMetadata(actual);
+    const normalizedExpected = normalizeNoopReviewMarkerMetadata(body.trim());
+    const equivalent = options.allowApplyCloseActionUpgrade
+      ? normalizeApplySyncCloseMarkerAction(normalizedActual) ===
+        normalizeApplySyncCloseMarkerAction(normalizedExpected)
+      : normalizedActual === normalizedExpected;
+    if (!equivalent) return false;
     return storedHash === reviewCommentBodyDigest(actual);
   }
 

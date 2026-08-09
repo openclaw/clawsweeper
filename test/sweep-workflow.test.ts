@@ -17,6 +17,7 @@ import YAML from "yaml";
 
 import { makeTreeReadOnlyForTest, restoreTreeModesForTest } from "../dist/clawsweeper.js";
 import { readText, tmpPrefix } from "./helpers.ts";
+import { scheduledReviewSemanticSourceRevision } from "../scripts/classify-scheduled-review-noop.ts";
 
 test("sweep keeps optional media tooling out of review startup", () => {
   const workflow = readText(".github/workflows/sweep.yml");
@@ -41,6 +42,10 @@ test("exact event review exposes the token-only signal before runtime setup", ()
     return value;
   };
   const ordered = [
+    [
+      "claim-time no-op revalidation",
+      index((step) => step.name === "Check live target item state", "live item"),
+    ],
     [
       "target write token",
       index((step) => step.name === "Create target write token", "write token"),
@@ -70,8 +75,8 @@ test("exact event review exposes the token-only signal before runtime setup", ()
       `${ordered[position - 1]![0]} must precede ${ordered[position]![0]}`,
     );
   }
-  assert.equal(steps[ordered[1][1]]!["continue-on-error"], true);
-  assert.equal(steps[ordered[6][1]]!.id, "reserve-exact-review-lease");
+  assert.equal(steps[ordered[2][1]]!["continue-on-error"], true);
+  assert.equal(steps[ordered[7][1]]!.id, "reserve-exact-review-lease");
 });
 
 test("automatic OpenClaw bug dispatch uses one gate across direct and deferred publication", () => {
@@ -570,6 +575,91 @@ esac
   }
 });
 
+test("scheduled claim-time no-op completes before target checkout with zero GitHub writes", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Array<{ name?: string; run?: string }> }>;
+  };
+  const run = workflow.jobs["event-review-apply"]?.steps.find(
+    (candidate) => candidate.name === "Check live target item state",
+  )?.run;
+  assert.ok(run);
+  const temporary = mkdtempSync(tmpPrefix);
+  try {
+    const fakeBin = join(temporary, "bin");
+    mkdirSync(fakeBin);
+    const fakeGh = join(fakeBin, "gh");
+    const outputPath = join(temporary, "output");
+    const logPath = join(temporary, "gh.log");
+    const issue = {
+      number: 41,
+      title: "Unchanged issue",
+      body: "Original body",
+      state: "open",
+      locked: false,
+      updated_at: "2026-08-09T21:12:38Z",
+      labels: [],
+    };
+    const human = {
+      id: 1,
+      user: { login: "reporter" },
+      body: "Existing evidence",
+      created_at: "2026-08-09T19:00:00Z",
+      updated_at: "2026-08-09T19:00:00Z",
+    };
+    const revision = scheduledReviewSemanticSourceRevision(issue, [human]);
+    const comments = [
+      human,
+      {
+        id: 2,
+        user: { login: "clawsweeper[bot]" },
+        body: `Unchanged review\n\n<!-- clawsweeper-review-version item=41 reviewed_at=2026-08-09T21:12:33Z sha=na source_revision=${revision} lease_owner=old lease_comment_id=2 v=1 -->`,
+        created_at: "2026-08-09T20:00:00Z",
+        updated_at: "2026-08-09T21:12:33Z",
+      },
+    ];
+    writeFileSync(
+      fakeGh,
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> ${JSON.stringify(logPath)}
+if [[ " $* " == *" --method "* ]] || [[ " $* " == *" -X "* ]]; then exit 97; fi
+if [[ "$*" == *"repos/openclaw/libterminal/issues/41/comments"* ]]; then
+  printf '%s\\n' '${JSON.stringify([comments])}'
+elif [[ "$*" == *"repos/openclaw/libterminal/issues/41"* ]]; then
+  printf '%s\\n' '${JSON.stringify(issue)}'
+else
+  exit 1
+fi
+`,
+    );
+    chmodSync(fakeGh, 0o755);
+    execFileSync("bash", ["-c", run], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        CLAIM_DECISION: JSON.stringify({
+          targetBranch: "main",
+          sourceAction: "scheduled_hot_intake",
+          sourceUpdatedAt: issue.updated_at,
+        }),
+        CLAIM_TARGET_BRANCH: "main",
+        GH_TOKEN: "test-token",
+        GITHUB_OUTPUT: outputPath,
+        ITEM_NUMBER: "41",
+        PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+        TARGET_REPO: "openclaw/libterminal",
+      },
+    });
+    const output = readFileSync(outputPath, "utf8");
+    assert.match(output, /^scheduled_noop=true$/m);
+    assert.match(output, /^proceed=false$/m);
+    assert.match(output, /^terminal_noop=true$/m);
+    assert.doesNotMatch(readFileSync(logPath, "utf8"), /--method|-X/);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 test("manual review shards receive the compiler-backed runtime artifact", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const planJobStart = workflow.indexOf("\n  plan:");
@@ -724,6 +814,9 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.match(liveItem.run ?? "", /throttled the live-item check/);
   assert.match(liveItem.run ?? "", /decision\.targetBranch = process\.env\.TARGET_BRANCH/);
+  assert.match(liveItem.run ?? "", /scripts\/classify-scheduled-review-noop\.ts/);
+  assert.match(liveItem.run ?? "", /scheduled_noop=true/);
+  assert.match(liveItem.run ?? "", /Completing .* as a scheduled no-op before target checkout/);
   assert.match(
     step(reviewer, "Review exact event item").if ?? "",
     /reserve-exact-review-lease\.outputs\.status == 'posted'/,

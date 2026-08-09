@@ -810,6 +810,43 @@ jobs:
           live_locked="$(jq -r '.locked == true' <<< "$live_item")"
           item_kind="$(jq -r 'if .pull_request then "pull_request" else "issue" end' <<< "$live_item")"
           echo "item_kind=$item_kind" >> "$GITHUB_OUTPUT"
+          if [ "$live_state" = "open" ] && [ "$live_locked" != "true" ]; then
+            live_head_sha=""
+            if [ "$item_kind" = "pull_request" ]; then
+              if ! live_head_sha="$(gh api "repos/$TARGET_REPO/pulls/$ITEM_NUMBER" --jq '.head.sha')"; then
+                echo "::warning::Unable to read the live pull request head; preserving normal review admission."
+                live_head_sha=""
+              fi
+            fi
+            comments_error="$(mktemp)"
+            if live_comments="$(gh api --paginate --slurp "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100" 2>"$comments_error" | jq 'add')"; then
+              classification_output="$(mktemp)"
+              if CLAIM_DECISION="$CLAIM_DECISION" LIVE_ITEM="$live_item" LIVE_COMMENTS="$live_comments" LIVE_HEAD_SHA="$live_head_sha" GITHUB_OUTPUT="$classification_output" \
+                node scripts/classify-scheduled-review-noop.ts; then
+                cat "$classification_output" >> "$GITHUB_OUTPUT"
+                if grep -qx 'scheduled_noop=true' "$classification_output"; then
+                  reason="$(sed -n 's/^scheduled_noop_reason=//p' "$classification_output")"
+                  rm -f "$classification_output" "$comments_error"
+                  {
+                    echo "proceed=false"
+                    echo "terminal_noop=true"
+                    echo "terminal_missing=false"
+                    echo "guarded_open=false"
+                    echo "guarded_open_action="
+                  } >> "$GITHUB_OUTPUT"
+                  echo "::notice::Completing $TARGET_REPO#$ITEM_NUMBER as a scheduled no-op before target checkout because $reason."
+                  exit 0
+                fi
+              else
+                echo "::warning::Scheduled no-op classification failed; preserving normal review admission."
+              fi
+              rm -f "$classification_output"
+            else
+              echo "::warning::Unable to read comments for scheduled no-op classification; preserving normal review admission."
+              cat "$comments_error" >&2
+            fi
+            rm -f "$comments_error"
+          fi
           case "$live_state" in
             open)
               echo "terminal_noop=false" >> "$GITHUB_OUTPUT"
