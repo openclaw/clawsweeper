@@ -937,6 +937,7 @@ if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && ar
       `expected a fresh close guard after the post-publication receipt: ${JSON.stringify(postCommentIssueReads)}`,
     );
     assert.equal(readFileSync(statePath, "utf8").includes('"state":"closed"'), true);
+    assert.match(readFileSync(join(closedDir, `${number}.md`), "utf8"), /^labels_synced_at: /m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -774,6 +774,14 @@ test("blocked exact close publication discards staged labels before writing the 
   const blockedCloseStart = source.indexOf("if (closeBlockedForCommentSync) {");
   const blockedCloseEnd = source.indexOf("clawSweeperLabelsChanged &&", blockedCloseStart);
   const blockedClose = source.slice(blockedCloseStart, blockedCloseEnd);
+  const publishedLabelReceiptStart = source.indexOf("const rememberPublishedLabelMutation =");
+  const publishedLabelReceiptEnd = source.indexOf(
+    "const flushIssueLabelBatch =",
+    publishedLabelReceiptStart,
+  );
+  const publishedLabelReceipt = source.slice(publishedLabelReceiptStart, publishedLabelReceiptEnd);
+  const labelDecisionStart = source.indexOf("const labelSyncReason =");
+  const labelDecisionPrefix = source.slice(publishedLabelReceiptEnd, labelDecisionStart);
 
   assert.ok(blockedCloseStart >= 0);
   assert.ok(blockedCloseEnd > blockedCloseStart);
@@ -781,6 +789,8 @@ test("blocked exact close publication discards staged labels before writing the 
     blockedClose,
     /if \(!needsReviewCommentSync\) \{\s*discardIssueLabelBatch\(\);[\s\S]*?writeReportMarkdown\(path, markdown\);/,
   );
+  assert.match(publishedLabelReceipt, /rememberPublishedLabelSync\(\);/);
+  assert.doesNotMatch(labelDecisionPrefix, /"labels_synced_at"/);
 });
 
 test("retry dispatch outcomes distinguish definite rejection, ambiguity, and acceptance", () => {

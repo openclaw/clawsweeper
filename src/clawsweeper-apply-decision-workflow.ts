@@ -485,9 +485,16 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let reconcileSkippedIssueLabelAdditions = (_labels: readonly string[]): void => {};
       let refreshRenderedReviewComment = (): void => {};
       let restoreDiscardedIssueLabelState = (): void => {};
+      const rememberPublishedLabelSync = (): void => {
+        if (dryRun) return;
+        markdown = replaceFrontMatterValue(markdown, "labels_synced_at", new Date().toISOString());
+      };
       const rememberLabelMutationUpdatedAt = (): void => {
         if (issueLabelBatchActive) deferredSelfMutationReceipt = true;
-        else rememberSelfMutationUpdatedAt();
+        else {
+          rememberPublishedLabelSync();
+          rememberSelfMutationUpdatedAt();
+        }
       };
       const previousApplyMutationRunner = dependencies.activeApplyMutationRunner;
       const resetMutationGuardBoundary = (): void => {
@@ -496,6 +503,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         resetGuardReadCache();
       };
       const rememberPublishedLabelMutation = (): void => {
+        rememberPublishedLabelSync();
         rememberSelfMutationUpdatedAt();
         deferredSelfMutationReceipt = false;
         resetMutationGuardBoundary();
@@ -1083,12 +1091,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         currentStaleVersionBugBlockReason,
       } = candidateGuards;
       const recordRuntimeBudgetYield = (reason: string): void => {
-        if (clawSweeperLabelsChanged && !dryRun) {
-          markdown = replaceFrontMatterValue(
-            markdown,
-            "labels_synced_at",
-            new Date().toISOString(),
-          );
+        if (clawSweeperLabelsChanged && !dryRun && !issueLabelBatchActive) {
           writeReportMarkdown(path, markdown);
         }
         removeCurrentCursorTraceItem(examinedItemNumbers, number);
@@ -1845,9 +1848,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             break;
           continue;
         }
-      }
-      if (clawSweeperLabelsChanged && !dryRun) {
-        markdown = replaceFrontMatterValue(markdown, "labels_synced_at", new Date().toISOString());
       }
       const labelSyncReason = issueAdvisoryLabelsChanged
         ? dryRun
