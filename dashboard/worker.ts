@@ -2470,11 +2470,14 @@ async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
     permissions: { issues: "write", pull_requests: "write" },
   });
   const ackMarker = pullRequestFastAckMarker(decision.itemNumber, decision.sourceAction);
+  const ackMatch = pullRequestFastAckMatch(decision.itemNumber);
   const statusCommentId = await createFastAckCommentOnce({
     token,
     repo: decision.targetRepo,
     itemNumber: decision.itemNumber,
     ackMarker,
+    ackMatch,
+    ackDedupeKey: "clawsweeper-pr-ack",
     ackBody: renderPullRequestFastAckComment(ackMarker),
   });
   settleFastAckComments({
@@ -2482,6 +2485,7 @@ async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
     repo: decision.targetRepo,
     itemNumber: decision.itemNumber,
     ackMarker,
+    ackMatch,
     delaysMs: fastAckSettleDelaysMs(env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS),
     waitUntil: ctx?.waitUntil?.bind(ctx),
   });
@@ -2494,9 +2498,10 @@ async function createFastAckComment({
   itemNumber,
   sourceCommentId = undefined,
   ackMarker = fastAckMarker(sourceCommentId),
+  ackMatch = undefined,
   ackBody = renderFastAckComment(sourceCommentId),
 }) {
-  const existingId = await pruneFastAckComments({ token, repo, itemNumber, ackMarker });
+  const existingId = await pruneFastAckComments({ token, repo, itemNumber, ackMarker, ackMatch });
   if (existingId) return existingId;
   const payload = await githubTokenJson({
     token,
@@ -2506,7 +2511,7 @@ async function createFastAckComment({
     errorLabel: "ClawSweeper ack comment",
   });
   return (
-    (await pruneFastAckComments({ token, repo, itemNumber, ackMarker })) ||
+    (await pruneFastAckComments({ token, repo, itemNumber, ackMarker, ackMatch })) ||
     Number(payload.id) ||
     null
   );
@@ -2518,13 +2523,14 @@ function settleFastAckComments({
   itemNumber,
   sourceCommentId = undefined,
   ackMarker = fastAckMarker(sourceCommentId),
+  ackMatch = undefined,
   delaysMs = DEFAULT_FAST_ACK_SETTLE_DELAYS_MS,
   waitUntil,
 }) {
   const cleanup = async () => {
     for (const delayMs of delaysMs) {
       await sleep(delayMs);
-      await pruneFastAckComments({ token, repo, itemNumber, ackMarker });
+      await pruneFastAckComments({ token, repo, itemNumber, ackMarker, ackMatch });
     }
   };
   const promise = cleanup().catch((error) => {
@@ -2547,12 +2553,21 @@ async function createFastAckCommentOnce({
   itemNumber,
   sourceCommentId = undefined,
   ackMarker = fastAckMarker(sourceCommentId),
+  ackMatch = undefined,
+  ackDedupeKey = ackMarker,
   ackBody = renderFastAckComment(sourceCommentId),
 }) {
-  const key = fastAckKey({ repo, itemNumber, ackMarker });
+  const key = fastAckKey({ repo, itemNumber, ackMarker: ackDedupeKey });
   const pending = inFlightFastAcks.get(key);
   if (pending) return pending;
-  const next = createFastAckComment({ token, repo, itemNumber, ackMarker, ackBody }).finally(() => {
+  const next = createFastAckComment({
+    token,
+    repo,
+    itemNumber,
+    ackMarker,
+    ackMatch,
+    ackBody,
+  }).finally(() => {
     inFlightFastAcks.delete(key);
   });
   inFlightFastAcks.set(key, next);
@@ -2576,8 +2591,9 @@ async function pruneFastAckComments({
   itemNumber,
   sourceCommentId = undefined,
   ackMarker = fastAckMarker(sourceCommentId),
+  ackMatch = undefined,
 }) {
-  const comments = await listFastAckComments({ token, repo, itemNumber, ackMarker });
+  const comments = await listFastAckComments({ token, repo, itemNumber, ackMarker, ackMatch });
   if (!comments.length) return null;
   const hasStatusComment = comments.some(isStatusBearingFastAckComment);
   comments.sort(compareFastAckKeepPriority);
@@ -2634,8 +2650,9 @@ function compareCommentsByCreatedAt(left, right) {
   );
 }
 
-async function listFastAckComments({ token, repo, itemNumber, ackMarker }) {
+async function listFastAckComments({ token, repo, itemNumber, ackMarker, ackMatch = undefined }) {
   const comments = [];
+  const matchesAckBody = ackMatch || ((body) => body.includes(ackMarker));
   const since = encodeURIComponent(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
   for (let page = 1; page <= 5; page += 1) {
     const payload = await githubTokenJson({
@@ -2648,7 +2665,7 @@ async function listFastAckComments({ token, repo, itemNumber, ackMarker }) {
     if (!Array.isArray(payload)) return comments;
     for (const comment of payload) {
       if (
-        String(objectValue(comment).body || "").includes(ackMarker) &&
+        matchesAckBody(String(objectValue(comment).body || "")) &&
         isClawsweeperGithubWebhookSender(objectValue(objectValue(comment).user))
       ) {
         comments.push(comment);
@@ -2675,6 +2692,14 @@ function fastAckMarker(sourceCommentId) {
 
 function pullRequestFastAckMarker(itemNumber, sourceAction) {
   return `<!-- clawsweeper-pr-ack:${sourceAction} item=${itemNumber} -->`;
+}
+
+// `opened` and `ready_for_review` can arrive seconds apart for one pull
+// request, so receipts dedupe per item across actions — the same
+// prefix+suffix identity the target dispatch workflow checks.
+function pullRequestFastAckMatch(itemNumber) {
+  const suffix = ` item=${itemNumber} -->`;
+  return (body) => body.includes("clawsweeper-pr-ack:") && body.includes(suffix);
 }
 
 function renderPullRequestFastAckComment(ackMarker) {

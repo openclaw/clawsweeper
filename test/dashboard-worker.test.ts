@@ -26123,6 +26123,178 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
   }
 });
 
+test("hosted pull request receipts dedupe across opened and ready_for_review", async () => {
+  const originalFetch = globalThis.fetch;
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  type AckComment = {
+    id: number;
+    body: string;
+    created_at: string;
+    user: { login: string };
+  };
+  const comments = new Map<number, AckComment[]>();
+  const waitUntilPromises: Promise<unknown>[] = [];
+  const fastAckPostAttempts = new Map<number, number>();
+  const deletedCommentIds: number[] = [];
+  const repository = {
+    full_name: "openclaw/gogcli",
+    default_branch: "trunk",
+    private: false,
+    archived: false,
+    fork: false,
+    has_issues: true,
+  };
+  const pullRequestFastAckBody = (itemNumber: number, sourceAction: string) =>
+    [
+      `<!-- clawsweeper-pr-ack:${sourceAction} item=${itemNumber} -->`,
+      "🦞👀",
+      "ClawSweeper picked this up.",
+      "",
+      "Pull request received. I will update this pull request when review starts.",
+    ].join("\n");
+
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/app/installations/123/access_tokens") {
+      return jsonResponse({ token: "target-token" });
+    }
+    const pullMatch = /^\/repos\/openclaw\/gogcli\/pulls\/(\d+)$/.exec(url.pathname);
+    if (pullMatch) {
+      return jsonResponse({
+        head: { sha: Number(pullMatch[1]) === 640 ? "9".repeat(40) : "8".repeat(40) },
+      });
+    }
+    const commentsMatch = /^\/repos\/openclaw\/gogcli\/issues\/(\d+)\/comments$/.exec(url.pathname);
+    if (commentsMatch && init?.method === "GET") {
+      return jsonResponse([...(comments.get(Number(commentsMatch[1])) || [])]);
+    }
+    if (commentsMatch && init?.method === "POST") {
+      const itemNumber = Number(commentsMatch[1]);
+      fastAckPostAttempts.set(itemNumber, (fastAckPostAttempts.get(itemNumber) || 0) + 1);
+      const body = JSON.parse(String(init.body || "{}"));
+      const comment = {
+        id: 9000 + itemNumber + (comments.get(itemNumber)?.length || 0),
+        body: String(body.body || ""),
+        created_at: "2026-08-09T12:00:01Z",
+        user: { login: "openclaw-clawsweeper[bot]" },
+      };
+      comments.set(itemNumber, [...(comments.get(itemNumber) || []), comment]);
+      return jsonResponse(comment);
+    }
+    const deleteMatch = /^\/repos\/openclaw\/gogcli\/issues\/comments\/(\d+)$/.exec(url.pathname);
+    if (deleteMatch && init?.method === "DELETE") {
+      const commentId = Number(deleteMatch[1]);
+      deletedCommentIds.push(commentId);
+      for (const [itemNumber, list] of comments) {
+        comments.set(
+          itemNumber,
+          list.filter((comment) => comment.id !== commentId),
+        );
+      }
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  const env = {
+    CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+    CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+    CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS: "0",
+    GITHUB_TOKEN: "verification-token",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const context = {
+    waitUntil: (promise: Promise<unknown>) => waitUntilPromises.push(promise),
+  };
+  const send = (
+    deliveryId: string,
+    action: string,
+    pullRequest: { number: number; head: { sha: string }; updated_at: string; body: string },
+  ) =>
+    worker.fetch(
+      signedGithubWebhookRequest({
+        event: "pull_request",
+        secret: "test-secret",
+        deliveryId,
+        payload: {
+          action,
+          repository,
+          pull_request: pullRequest,
+          installation: { id: 123 },
+        },
+      }),
+      env,
+      context,
+    );
+
+  try {
+    // A ready_for_review arriving seconds after opened must reuse the opened
+    // receipt instead of posting a second, action-suffixed duplicate.
+    const opened = {
+      number: 640,
+      head: { sha: "9".repeat(40) },
+      updated_at: "2026-08-09T12:00:00Z",
+      body: "Opened, then marked ready seconds later.",
+    };
+    assert.equal((await send("pr-ack-dual-opened", "opened", opened)).status, 202);
+    assert.equal(fastAckPostAttempts.get(640), 1);
+    assert.equal(
+      (
+        await send("pr-ack-dual-ready", "ready_for_review", {
+          ...opened,
+          updated_at: "2026-08-09T12:00:05Z",
+        })
+      ).status,
+      202,
+    );
+    assert.equal(fastAckPostAttempts.get(640), 1);
+    assert.equal(comments.get(640)?.length, 1);
+    assert.match(comments.get(640)?.[0]?.body || "", /clawsweeper-pr-ack:opened item=640/);
+
+    // A pair that already slipped through settles down to the earliest receipt.
+    comments.set(641, [
+      {
+        id: 9100,
+        body: pullRequestFastAckBody(641, "opened"),
+        created_at: "2026-08-09T12:01:01Z",
+        user: { login: "openclaw-clawsweeper[bot]" },
+      },
+      {
+        id: 9101,
+        body: pullRequestFastAckBody(641, "ready_for_review"),
+        created_at: "2026-08-09T12:01:03Z",
+        user: { login: "openclaw-clawsweeper[bot]" },
+      },
+    ]);
+    assert.equal(
+      (
+        await send("pr-ack-settle-ready", "ready_for_review", {
+          number: 641,
+          head: { sha: "8".repeat(40) },
+          updated_at: "2026-08-09T12:01:10Z",
+          body: "Duplicate receipts already exist.",
+        })
+      ).status,
+      202,
+    );
+    assert.equal(fastAckPostAttempts.has(641), false);
+    assert.deepEqual(deletedCommentIds, [9101]);
+    assert.equal(comments.get(641)?.length, 1);
+    assert.equal(comments.get(641)?.[0]?.id, 9100);
+    assert.match(comments.get(641)?.[0]?.body || "", /clawsweeper-pr-ack:opened item=641/);
+    await Promise.all(waitUntilPromises);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("hosted webhook reuses existing fast ack comments on redelivery", async () => {
   const originalFetch = globalThis.fetch;
   const { privateKey } = generateKeyPairSync("rsa", {
