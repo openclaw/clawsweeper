@@ -24,6 +24,56 @@ test("sweep keeps optional media tooling out of review startup", () => {
   assert.doesNotMatch(workflow, /setup-media-proof-tools/);
 });
 
+test("exact event review exposes the token-only signal before runtime setup", () => {
+  type Step = {
+    name?: string;
+    uses?: string;
+    id?: string;
+    "continue-on-error"?: boolean;
+  };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Step[] }>;
+  };
+  const steps = workflow.jobs["event-review-apply"]!.steps;
+  const index = (predicate: (step: Step) => boolean, label: string) => {
+    const value = steps.findIndex(predicate);
+    assert.notEqual(value, -1, label);
+    return value;
+  };
+  const ordered = [
+    [
+      "target write token",
+      index((step) => step.name === "Create target write token", "write token"),
+    ],
+    [
+      "eyes reaction",
+      index((step) => step.name === "React to target item review start", "reaction"),
+    ],
+    ["pnpm build", index((step) => step.uses === "./.github/actions/setup-pnpm", "pnpm")],
+    [
+      "target checkout",
+      index((step) => step.name === "Check out target repository", "target checkout"),
+    ],
+    ["Codex setup", index((step) => step.uses === "./.github/actions/setup-codex", "Codex setup")],
+    [
+      "OpenClaw setup",
+      index((step) => step.uses === "./.github/actions/setup-openclaw", "OpenClaw setup"),
+    ],
+    [
+      "review lease reservation",
+      index((step) => step.name === "Reserve exact review lease", "lease"),
+    ],
+  ] as const;
+  for (let position = 1; position < ordered.length; position += 1) {
+    assert.ok(
+      ordered[position - 1]![1] < ordered[position]![1],
+      `${ordered[position - 1]![0]} must precede ${ordered[position]![0]}`,
+    );
+  }
+  assert.equal(steps[ordered[1][1]]!["continue-on-error"], true);
+  assert.equal(steps[ordered[6][1]]!.id, "reserve-exact-review-lease");
+});
+
 test("automatic OpenClaw bug dispatch uses one gate across direct and deferred publication", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
     jobs: Record<

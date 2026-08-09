@@ -1264,6 +1264,7 @@ async function githubWebhook(request, env, ctx) {
       ingress,
     });
     if (!queued) return json({ error: "exact_review_queue_not_configured" }, 503);
+    await acknowledgePullRequestEnqueue({ env, ctx, decision: exactReviewDecision });
     if (sourceAuthoritySeq !== null) {
       await completeExactReviewSourceAuthority(
         env,
@@ -2444,18 +2445,63 @@ async function enqueueExactReview({
   return body;
 }
 
-async function createFastAckComment({ token, repo, itemNumber, sourceCommentId }) {
-  const existingId = await pruneFastAckComments({ token, repo, itemNumber, sourceCommentId });
+async function acknowledgePullRequestEnqueue({ env, ctx, decision }) {
+  if (
+    decision.itemKind !== "pull_request" ||
+    !["opened", "ready_for_review"].includes(decision.sourceAction)
+  ) {
+    return null;
+  }
+  const credentials = githubAppCredentials(env);
+  if (!credentials || !Number.isInteger(decision.installationId) || decision.installationId <= 0) {
+    return null;
+  }
+  const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
+  const token = await createGithubAppTokenFor({
+    appJwt,
+    installationId: decision.installationId,
+    label: decision.targetRepo,
+    repositories: [repoName(decision.targetRepo)],
+    permissions: { issues: "write", pull_requests: "read" },
+  });
+  const ackMarker = pullRequestFastAckMarker(decision.itemNumber, decision.sourceAction);
+  const statusCommentId = await createFastAckCommentOnce({
+    token,
+    repo: decision.targetRepo,
+    itemNumber: decision.itemNumber,
+    ackMarker,
+    ackBody: renderPullRequestFastAckComment(ackMarker),
+  });
+  settleFastAckComments({
+    token,
+    repo: decision.targetRepo,
+    itemNumber: decision.itemNumber,
+    ackMarker,
+    delaysMs: fastAckSettleDelaysMs(env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS),
+    waitUntil: ctx?.waitUntil?.bind(ctx),
+  });
+  return statusCommentId;
+}
+
+async function createFastAckComment({
+  token,
+  repo,
+  itemNumber,
+  sourceCommentId = undefined,
+  ackMarker = fastAckMarker(sourceCommentId),
+  ackBody = renderFastAckComment(sourceCommentId),
+}) {
+  const existingId = await pruneFastAckComments({ token, repo, itemNumber, ackMarker });
   if (existingId) return existingId;
   const payload = await githubTokenJson({
     token,
     path: `/repos/${repo}/issues/${itemNumber}/comments`,
     method: "POST",
-    body: { body: renderFastAckComment(sourceCommentId) },
+    body: { body: ackBody },
     errorLabel: "ClawSweeper ack comment",
   });
   return (
-    (await pruneFastAckComments({ token, repo, itemNumber, sourceCommentId })) ||
+    (await pruneFastAckComments({ token, repo, itemNumber, ackMarker })) ||
     Number(payload.id) ||
     null
   );
@@ -2465,14 +2511,15 @@ function settleFastAckComments({
   token,
   repo,
   itemNumber,
-  sourceCommentId,
+  sourceCommentId = undefined,
+  ackMarker = fastAckMarker(sourceCommentId),
   delaysMs = DEFAULT_FAST_ACK_SETTLE_DELAYS_MS,
   waitUntil,
 }) {
   const cleanup = async () => {
     for (const delayMs of delaysMs) {
       await sleep(delayMs);
-      await pruneFastAckComments({ token, repo, itemNumber, sourceCommentId });
+      await pruneFastAckComments({ token, repo, itemNumber, ackMarker });
     }
   };
   const promise = cleanup().catch((error) => {
@@ -2489,19 +2536,26 @@ function fastAckSettleDelaysMs(value) {
   return delays.length > 0 ? delays : DEFAULT_FAST_ACK_SETTLE_DELAYS_MS;
 }
 
-async function createFastAckCommentOnce({ token, repo, itemNumber, sourceCommentId }) {
-  const key = fastAckKey({ repo, itemNumber, sourceCommentId });
+async function createFastAckCommentOnce({
+  token,
+  repo,
+  itemNumber,
+  sourceCommentId = undefined,
+  ackMarker = fastAckMarker(sourceCommentId),
+  ackBody = renderFastAckComment(sourceCommentId),
+}) {
+  const key = fastAckKey({ repo, itemNumber, ackMarker });
   const pending = inFlightFastAcks.get(key);
   if (pending) return pending;
-  const next = createFastAckComment({ token, repo, itemNumber, sourceCommentId }).finally(() => {
+  const next = createFastAckComment({ token, repo, itemNumber, ackMarker, ackBody }).finally(() => {
     inFlightFastAcks.delete(key);
   });
   inFlightFastAcks.set(key, next);
   return next;
 }
 
-function fastAckKey({ repo, itemNumber, sourceCommentId }) {
-  return `${String(repo).toLowerCase()}:${itemNumber}:${sourceCommentId}`;
+function fastAckKey({ repo, itemNumber, ackMarker }) {
+  return `${String(repo).toLowerCase()}:${itemNumber}:${ackMarker}`;
 }
 
 function sleep(delayMs) {
@@ -2511,8 +2565,14 @@ function sleep(delayMs) {
   });
 }
 
-async function pruneFastAckComments({ token, repo, itemNumber, sourceCommentId }) {
-  const comments = await listFastAckComments({ token, repo, itemNumber, sourceCommentId });
+async function pruneFastAckComments({
+  token,
+  repo,
+  itemNumber,
+  sourceCommentId = undefined,
+  ackMarker = fastAckMarker(sourceCommentId),
+}) {
+  const comments = await listFastAckComments({ token, repo, itemNumber, ackMarker });
   if (!comments.length) return null;
   const hasStatusComment = comments.some(isStatusBearingFastAckComment);
   comments.sort(compareFastAckKeepPriority);
@@ -2569,9 +2629,8 @@ function compareCommentsByCreatedAt(left, right) {
   );
 }
 
-async function listFastAckComments({ token, repo, itemNumber, sourceCommentId }) {
+async function listFastAckComments({ token, repo, itemNumber, ackMarker }) {
   const comments = [];
-  const marker = fastAckMarker(sourceCommentId);
   const since = encodeURIComponent(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
   for (let page = 1; page <= 5; page += 1) {
     const payload = await githubTokenJson({
@@ -2584,7 +2643,7 @@ async function listFastAckComments({ token, repo, itemNumber, sourceCommentId })
     if (!Array.isArray(payload)) return comments;
     for (const comment of payload) {
       if (
-        String(objectValue(comment).body || "").includes(marker) &&
+        String(objectValue(comment).body || "").includes(ackMarker) &&
         isClawsweeperGithubWebhookSender(objectValue(objectValue(comment).user))
       ) {
         comments.push(comment);
@@ -2607,6 +2666,20 @@ function renderFastAckComment(sourceCommentId) {
 
 function fastAckMarker(sourceCommentId) {
   return `<!-- clawsweeper-command-ack:${sourceCommentId} -->`;
+}
+
+function pullRequestFastAckMarker(itemNumber, sourceAction) {
+  return `<!-- clawsweeper-pr-ack:${sourceAction} item=${itemNumber} -->`;
+}
+
+function renderPullRequestFastAckComment(ackMarker) {
+  return [
+    ackMarker,
+    "🦞👀",
+    "ClawSweeper picked this up.",
+    "",
+    "Pull request review queued. I will update this pull request when review starts.",
+  ].join("\n");
 }
 
 async function addIssueCommentReaction({ token, repo, commentId, content }) {

@@ -1312,7 +1312,7 @@ export class ExactReviewQueue {
             revision: this.nextExactReviewItemRevisionSync(key),
             createdAt: now,
             updatedAt: now,
-            ...exactReviewQueueDebouncedAttempt(state, decision, now, now, this.env),
+            ...exactReviewQueueDebouncedAttempt(state, decision, now, now, this.env, true),
             attempts: 0,
             ...(exactReviewSourceAuthorityWatermark(decision)
               ? { sourceAuthorityWatermark: exactReviewSourceAuthorityWatermark(decision)! }
@@ -11124,9 +11124,12 @@ function exactReviewQueueDebouncedAttempt(
   now: number,
   firstEnqueuedAt: number,
   env,
+  isFirstEvent = false,
 ) {
   const baseAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
-  if (isImmediateExactReviewDecision(decision)) return exactReviewQueueEnqueueAttempt(state, now);
+  if (isImmediateExactReviewDecision(decision, isFirstEvent)) {
+    return exactReviewQueueEnqueueAttempt(state, now);
+  }
   const debounceAt = Math.min(
     now + exactReviewDispatchDebounceMs(env),
     firstEnqueuedAt + exactReviewDispatchDebounceMaxMs(env),
@@ -11143,9 +11146,14 @@ function exactReviewQueueDebouncedAttempt(
   };
 }
 
-function isImmediateExactReviewDecision(decision: ExactReviewDecision) {
+function isImmediateExactReviewDecision(decision: ExactReviewDecision, isFirstEvent = false) {
   return Boolean(
-    decision.commandStatusMarker || decision.publication || exactReviewScheduledLane(decision),
+    decision.commandStatusMarker ||
+    decision.publication ||
+    exactReviewScheduledLane(decision) ||
+    (isFirstEvent &&
+      decision.itemKind === "pull_request" &&
+      ["opened", "ready_for_review"].includes(decision.sourceAction)),
   );
 }
 

@@ -855,12 +855,6 @@ jobs:
           permission-pull-requests: write
           permission-statuses: read
 
-      - uses: ./.github/actions/setup-pnpm
-        id: setup-pnpm
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.admission_retry != 'true' }}
-        with:
-          build-script: ${{ steps.live-item.outputs.proceed == 'true' && 'build:all' || 'build:repair' }}
-
       - name: React to target item review start
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         continue-on-error: true
@@ -889,6 +883,12 @@ jobs:
             rm -f "$err"
           }
           react "eyes"
+
+      - uses: ./.github/actions/setup-pnpm
+        id: setup-pnpm
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.admission_retry != 'true' }}
+        with:
+          build-script: ${{ steps.live-item.outputs.proceed == 'true' && 'build:all' || 'build:repair' }}
 
       - uses: actions/cache@v6
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}

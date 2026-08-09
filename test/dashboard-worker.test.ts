@@ -1727,6 +1727,50 @@ test("exact-review queue bypasses debounce for commands and publications", async
   }
 });
 
+test("exact-review queue bypasses debounce only for fresh pull request openings", async () => {
+  const originalNow = Date.now;
+  let now = 2_500_000;
+  Date.now = () => now;
+  try {
+    const storage = new MemoryDurableStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "90000",
+        EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS: "180000",
+      },
+    );
+    await queue.fetch(buildExactReviewQueueRequest("fresh-opened", 753, "opened", "pull_request"));
+    await queue.fetch(
+      buildExactReviewQueueRequest("fresh-ready", 754, "ready_for_review", "pull_request"),
+    );
+    await queue.fetch(
+      buildExactReviewQueueRequest("fresh-synchronize", 755, "synchronize", "pull_request"),
+    );
+    await queue.fetch(
+      buildExactReviewQueueRequest("scheduled-unchanged", 756, "scheduled_normal_backfill"),
+    );
+    await queue.fetch(buildExactReviewQueueRequest("existing-organic", 757, "opened"));
+
+    let state = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { nextAttemptAt: number; revision: number }>;
+    };
+    assert.equal(state.items["openclaw/gogcli#753"].nextAttemptAt, now);
+    assert.equal(state.items["openclaw/gogcli#754"].nextAttemptAt, now);
+    assert.equal(state.items["openclaw/gogcli#755"].nextAttemptAt, now + 90_000);
+    assert.equal(state.items["openclaw/gogcli#756"].nextAttemptAt, now);
+    assert.equal(state.items["openclaw/gogcli#757"].nextAttemptAt, now + 90_000);
+
+    now += 1_000;
+    await queue.fetch(buildExactReviewQueueRequest("existing-coalesced", 757, "edited"));
+    state = (await storage.get("exact-review-queue")) as typeof state;
+    assert.equal(state.items["openclaw/gogcli#757"].revision, 2);
+    assert.equal(state.items["openclaw/gogcli#757"].nextAttemptAt, now + 90_000);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("replacing a queued command cannot inherit another command's delivery identity", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
@@ -25857,6 +25901,157 @@ test("hosted webhook ignores removal of non-close-guard labels", async () => {
   });
 });
 
+test("hosted pull request openings post one fast ack across both ingress routes", async () => {
+  const originalFetch = globalThis.fetch;
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const comments: Array<{
+    id: number;
+    body: string;
+    created_at: string;
+    user: { login: string };
+  }> = [];
+  const waitUntilPromises: Promise<unknown>[] = [];
+  let fastAckPosts = 0;
+  const repository = {
+    full_name: "openclaw/gogcli",
+    default_branch: "trunk",
+    private: false,
+    archived: false,
+    fork: false,
+    has_issues: true,
+  };
+  const openedPullRequest = {
+    number: 597,
+    head: { sha: "a".repeat(40) },
+    updated_at: "2026-08-08T12:00:00Z",
+    body: "Ready for review.",
+  };
+  const fingerprint = createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 1,
+        target_repo: "openclaw/gogcli",
+        item_number: 597,
+        action: "opened",
+        head_sha: "a".repeat(40),
+        updated_at: "2026-08-08T12:00:00Z",
+        body: "Ready for review.",
+        label: "",
+      }),
+    )
+    .digest("hex");
+
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/app/installations/123/access_tokens") {
+      return jsonResponse({ token: "target-token" });
+    }
+    if (/^\/repos\/openclaw\/gogcli\/pulls\/(597|598)$/.test(url.pathname)) {
+      return jsonResponse({
+        head: { sha: url.pathname.endsWith("597") ? "a".repeat(40) : "b".repeat(40) },
+      });
+    }
+    if (url.pathname === "/repos/openclaw/gogcli/issues/597/comments" && init?.method === "GET") {
+      return jsonResponse([...comments]);
+    }
+    if (url.pathname === "/repos/openclaw/gogcli/issues/597/comments" && init?.method === "POST") {
+      fastAckPosts += 1;
+      const body = JSON.parse(String(init.body || "{}"));
+      const comment = {
+        id: 9001,
+        body: String(body.body || ""),
+        created_at: "2026-08-08T12:00:01Z",
+        user: { login: "openclaw-clawsweeper[bot]" },
+      };
+      comments.push(comment);
+      return jsonResponse(comment);
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  const env = {
+    CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+    CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+    CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS: "0",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const context = {
+    waitUntil: (promise: Promise<unknown>) => waitUntilPromises.push(promise),
+  };
+  const send = (deliveryId: string, action: string, pullRequest = openedPullRequest) =>
+    worker.fetch(
+      signedGithubWebhookRequest({
+        event: "pull_request",
+        secret: "test-secret",
+        deliveryId,
+        payload: {
+          action,
+          repository,
+          pull_request: pullRequest,
+          installation: { id: 123 },
+        },
+      }),
+      env,
+      context,
+    );
+
+  try {
+    const fallback = await queue.fetch(
+      buildExactReviewQueueRequest(
+        "dispatcher-opened",
+        597,
+        "opened",
+        "pull_request",
+        "openclaw/gogcli",
+        { targetBranch: "trunk" },
+        { ingress: { route: "target_dispatcher", fingerprint } },
+      ),
+    );
+    assert.equal((await fallback.json()).queued, true);
+
+    assert.equal((await send("app-opened-1", "opened")).status, 202);
+    assert.equal((await send("app-opened-2", "opened")).status, 202);
+    assert.equal(fastAckPosts, 1);
+    assert.equal(comments.length, 1);
+    assert.equal(
+      comments[0]?.body,
+      [
+        "<!-- clawsweeper-pr-ack:opened item=597 -->",
+        "🦞👀",
+        "ClawSweeper picked this up.",
+        "",
+        "Pull request review queued. I will update this pull request when review starts.",
+      ].join("\n"),
+    );
+    assert.doesNotMatch(comments[0]?.body || "", /clawsweeper-command-ack:/);
+    assert.doesNotMatch(comments[0]?.body || "", /clawsweeper-review-status:started/);
+    assert.doesNotMatch(comments[0]?.body || "", /^ClawSweeper status: review started\./);
+
+    assert.equal(
+      (
+        await send("app-synchronize", "synchronize", {
+          number: 598,
+          head: { sha: "b".repeat(40) },
+          updated_at: "2026-08-08T12:01:00Z",
+          body: "Follow-up push.",
+        })
+      ).status,
+      202,
+    );
+    assert.equal(fastAckPosts, 1);
+    await Promise.all(waitUntilPromises);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("hosted webhook reuses existing fast ack comments on redelivery", async () => {
   const originalFetch = globalThis.fetch;
   const { privateKey } = generateKeyPairSync("rsa", {
@@ -26079,7 +26274,16 @@ test("hosted webhook coalesces concurrent duplicate fast ack comments", async ()
     assert.equal(fastAckPosts, 1);
     assert.equal(reactions, 2);
     assert.equal(comments.length, 1);
-    assert.match(comments[0]?.body || "", /clawsweeper-command-ack:456/);
+    assert.equal(
+      comments[0]?.body,
+      [
+        "<!-- clawsweeper-command-ack:456 -->",
+        "🦞👀",
+        "ClawSweeper picked this up.",
+        "",
+        "Command router queued. I will update this comment with the next step.",
+      ].join("\n"),
+    );
     assert.equal(dispatchBodies.length, 2);
     assert.deepEqual(
       dispatchBodies.map(
