@@ -741,6 +741,7 @@ test("exact publication rechecks after batched labels and again before close", (
     const leaseExpiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
     const leaseOwner = `exact-issue-${number}`;
     const leaseCommentId = 700_000 + number;
+    const supersededLeaseCommentId = leaseCommentId - 1;
     const issue = {
       number,
       title: `Incident issue ${number}`,
@@ -755,7 +756,7 @@ test("exact publication rechecks after batched labels and again before close", (
       author_association: "CONTRIBUTOR",
       user: { login: "reporter" },
       labels: [],
-      comments: 2,
+      comments: 3,
       pull_request: null,
     };
     const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
@@ -786,6 +787,15 @@ test("exact publication rechecks after batched labels and again before close", (
       leaseExpiresAt,
       leaseOwner,
     });
+    const supersededLeaseComment = renderReviewStartStatusComment({
+      number,
+      kind: "issue",
+      title: issue.title,
+      headSha: sourceRevision,
+      startedAt: new Date(Date.now() - 15 * 60_000).toISOString(),
+      leaseExpiresAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      leaseOwner: `superseded-${leaseOwner}`,
+    });
     const durableCommentId = 9000 + number;
     writeFileSync(
       statePath,
@@ -808,6 +818,14 @@ test("exact publication rechecks after batched labels and again before close", (
             updated_at: leaseUpdatedAt,
             user: { login: "clawsweeper[bot]" },
             body: leaseComment,
+          },
+          {
+            id: supersededLeaseCommentId,
+            html_url: `${issue.html_url}#issuecomment-${supersededLeaseCommentId}`,
+            created_at: new Date(Date.now() - 15 * 60_000).toISOString(),
+            updated_at: new Date(Date.now() - 15 * 60_000).toISOString(),
+            user: { login: "clawsweeper[bot]" },
+            body: supersededLeaseComment,
           },
         ],
       }),
@@ -918,7 +936,18 @@ if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && ar
       (args) =>
         args[0] === "api" && args[1]?.endsWith(`/issues/${number}`) && args.includes("PATCH"),
     );
-    assert.ok(labelIndex >= 0 && commentIndex > labelIndex && closeIndex > commentIndex);
+    const placeholderCleanupIndex = commands.findIndex(
+      (args) =>
+        args[0] === "api" &&
+        args[1]?.endsWith(`/issues/comments/${supersededLeaseCommentId}`) &&
+        args.includes("DELETE"),
+    );
+    assert.ok(
+      labelIndex >= 0 &&
+        commentIndex > labelIndex &&
+        placeholderCleanupIndex > commentIndex &&
+        closeIndex > placeholderCleanupIndex,
+    );
     const isGuardRead = (args: string[]): boolean =>
       args[0] === "api" &&
       !args.includes("--method") &&
@@ -927,6 +956,12 @@ if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && ar
       commands.slice(labelIndex + 1, commentIndex).some(isGuardRead),
       `expected a fresh comment guard after label publication: ${JSON.stringify(
         commands.slice(labelIndex + 1, commentIndex),
+      )}`,
+    );
+    assert.ok(
+      commands.slice(commentIndex + 1, placeholderCleanupIndex).some(isGuardRead),
+      `expected a fresh placeholder-cleanup guard after comment publication: ${JSON.stringify(
+        commands.slice(commentIndex + 1, placeholderCleanupIndex),
       )}`,
     );
     const postCommentIssueReads = commands

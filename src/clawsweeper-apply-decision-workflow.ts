@@ -2040,6 +2040,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
               continue;
             }
             const labelMutationPublished = flushIssueLabelBatch(false);
+            preserveGuardReadCacheAfterMutation = false;
+            resetMutationGuardBoundary();
             if (labelMutationPublished && deferredSelfMutationReceipt) {
               rememberSelfMutationUpdatedAt();
               deferredSelfMutationReceipt = false;
