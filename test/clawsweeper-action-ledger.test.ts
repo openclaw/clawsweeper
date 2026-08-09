@@ -671,11 +671,14 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
     readText("src/clawsweeper-label-mutations.ts"),
     readText("src/clawsweeper-label-operations.ts"),
   ].join("\n");
-  const labelCreates = labelSource.match(/identity: `label_create:/g) ?? [];
-  const labelNoMutationClassifiers =
-    labelSource.match(/knownNoMutation: labelAlreadyExistsError/g) ?? [];
-  assert.ok(labelCreates.length > 0);
-  assert.ok(labelNoMutationClassifiers.length >= labelCreates.length);
+  assert.match(
+    labelSource,
+    /identity: `\$\{force \? "label_upsert" : "label_create"\}:\$\{definition\.name\}`/,
+  );
+  assert.match(
+    labelSource,
+    /\.\.\.\(force \? \{\} : \{ knownNoMutation: labelAlreadyExistsError \}\)/,
+  );
   assert.match(source, /identity: `review_lease_post:/);
   assert.match(source, /identity: `review_lease_delete:/);
   assert.doesNotMatch(source, /identity: `apply_lease_acquire:/);
