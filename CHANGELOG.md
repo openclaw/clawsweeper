@@ -41,6 +41,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- The target dispatcher no longer double-posts pull request receipt acknowledgements when `opened` and `ready_for_review` fire seconds apart: the ack step now waits and rechecks for any existing marker immediately before posting.
 - Restored pull request 🦞👀 receipt comments by granting fast-ack tokens `pull_requests: write`. (#1082)
 - Scoped GitHub App tokens to their named repositories via the documented `repositories` parameter. (#1082)
 - Legacy reports with canonical proof or rating keys outside the apparent leading front-matter block now fail closed, with a read-only workflow to inventory affected canonical records. (#1049)
