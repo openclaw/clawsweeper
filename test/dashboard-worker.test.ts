@@ -25901,7 +25901,7 @@ test("hosted webhook ignores removal of non-close-guard labels", async () => {
   });
 });
 
-test("hosted pull request openings post one fast ack across both ingress routes", async () => {
+test("hosted pull request receipt fast acks precede verification and stay idempotent", async () => {
   const originalFetch = globalThis.fetch;
   const { privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
@@ -25910,14 +25910,15 @@ test("hosted pull request openings post one fast ack across both ingress routes"
   });
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
-  const comments: Array<{
+  type AckComment = {
     id: number;
     body: string;
     created_at: string;
     user: { login: string };
-  }> = [];
+  };
+  const comments = new Map<number, AckComment[]>();
   const waitUntilPromises: Promise<unknown>[] = [];
-  let fastAckPosts = 0;
+  const fastAckPostAttempts = new Map<number, number>();
   const repository = {
     full_name: "openclaw/gogcli",
     default_branch: "trunk",
@@ -25952,24 +25953,40 @@ test("hosted pull request openings post one fast ack across both ingress routes"
     if (url.pathname === "/app/installations/123/access_tokens") {
       return jsonResponse({ token: "target-token" });
     }
-    if (/^\/repos\/openclaw\/gogcli\/pulls\/(597|598)$/.test(url.pathname)) {
+    const pullMatch = /^\/repos\/openclaw\/gogcli\/pulls\/(\d+)$/.exec(url.pathname);
+    if (pullMatch) {
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer verification-token");
+      const itemNumber = Number(pullMatch[1]);
+      if (itemNumber === 599) throw new Error("transient GitHub verification failure");
       return jsonResponse({
-        head: { sha: url.pathname.endsWith("597") ? "a".repeat(40) : "b".repeat(40) },
+        head: {
+          sha:
+            itemNumber === 597
+              ? "a".repeat(40)
+              : itemNumber === 598
+                ? "b".repeat(40)
+                : itemNumber === 600
+                  ? "e".repeat(40)
+                  : "f".repeat(40),
+        },
       });
     }
-    if (url.pathname === "/repos/openclaw/gogcli/issues/597/comments" && init?.method === "GET") {
-      return jsonResponse([...comments]);
+    const commentMatch = /^\/repos\/openclaw\/gogcli\/issues\/(\d+)\/comments$/.exec(url.pathname);
+    if (commentMatch && init?.method === "GET") {
+      return jsonResponse([...(comments.get(Number(commentMatch[1])) || [])]);
     }
-    if (url.pathname === "/repos/openclaw/gogcli/issues/597/comments" && init?.method === "POST") {
-      fastAckPosts += 1;
+    if (commentMatch && init?.method === "POST") {
+      const itemNumber = Number(commentMatch[1]);
+      fastAckPostAttempts.set(itemNumber, (fastAckPostAttempts.get(itemNumber) || 0) + 1);
+      if (itemNumber === 601) throw new Error("GitHub comment write failed");
       const body = JSON.parse(String(init.body || "{}"));
       const comment = {
-        id: 9001,
+        id: 9000 + itemNumber,
         body: String(body.body || ""),
         created_at: "2026-08-08T12:00:01Z",
         user: { login: "openclaw-clawsweeper[bot]" },
       };
-      comments.push(comment);
+      comments.set(itemNumber, [...(comments.get(itemNumber) || []), comment]);
       return jsonResponse(comment);
     }
     throw new Error(`unexpected fetch ${url}`);
@@ -25980,6 +25997,7 @@ test("hosted pull request openings post one fast ack across both ingress routes"
     CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
     CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
     CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS: "0",
+    GITHUB_TOKEN: "verification-token",
     EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
   };
   const context = {
@@ -26018,21 +26036,24 @@ test("hosted pull request openings post one fast ack across both ingress routes"
 
     assert.equal((await send("app-opened-1", "opened")).status, 202);
     assert.equal((await send("app-opened-2", "opened")).status, 202);
-    assert.equal(fastAckPosts, 1);
-    assert.equal(comments.length, 1);
+    assert.equal(fastAckPostAttempts.get(597), 1);
+    assert.equal(comments.get(597)?.length, 1);
     assert.equal(
-      comments[0]?.body,
+      comments.get(597)?.[0]?.body,
       [
         "<!-- clawsweeper-pr-ack:opened item=597 -->",
         "🦞👀",
         "ClawSweeper picked this up.",
         "",
-        "Pull request review queued. I will update this pull request when review starts.",
+        "Pull request received. I will update this pull request when review starts.",
       ].join("\n"),
     );
-    assert.doesNotMatch(comments[0]?.body || "", /clawsweeper-command-ack:/);
-    assert.doesNotMatch(comments[0]?.body || "", /clawsweeper-review-status:started/);
-    assert.doesNotMatch(comments[0]?.body || "", /^ClawSweeper status: review started\./);
+    assert.doesNotMatch(comments.get(597)?.[0]?.body || "", /clawsweeper-command-ack:/);
+    assert.doesNotMatch(comments.get(597)?.[0]?.body || "", /clawsweeper-review-status:started/);
+    assert.doesNotMatch(
+      comments.get(597)?.[0]?.body || "",
+      /^ClawSweeper status: review started\./,
+    );
 
     assert.equal(
       (
@@ -26045,7 +26066,48 @@ test("hosted pull request openings post one fast ack across both ingress routes"
       ).status,
       202,
     );
-    assert.equal(fastAckPosts, 1);
+    assert.equal(fastAckPostAttempts.has(598), false);
+    assert.equal(comments.has(598), false);
+
+    const deferred = await send("app-opened-deferred", "opened", {
+      number: 599,
+      head: { sha: "c".repeat(40) },
+      updated_at: "2026-08-08T12:02:00Z",
+      body: "Verification will be retried.",
+    });
+    assert.deepEqual(await deferred.json(), {
+      ok: true,
+      accepted: true,
+      deferred: true,
+      reason: "pull request head verification deferred",
+    });
+    assert.equal(fastAckPostAttempts.get(599), 1);
+    assert.equal(comments.get(599)?.length, 1);
+
+    const stale = await send("app-ready-stale", "ready_for_review", {
+      number: 600,
+      head: { sha: "d".repeat(40) },
+      updated_at: "2026-08-08T12:03:00Z",
+      body: "The webhook head is already stale.",
+    });
+    assert.deepEqual(await stale.json(), {
+      ok: true,
+      accepted: false,
+      reason: "stale pull request head",
+    });
+    assert.equal(fastAckPostAttempts.get(600), 1);
+    assert.equal(comments.get(600)?.length, 1);
+    assert.match(comments.get(600)?.[0]?.body || "", /clawsweeper-pr-ack:ready_for_review/);
+
+    const ackFailure = await send("app-opened-ack-failure", "opened", {
+      number: 601,
+      head: { sha: "f".repeat(40) },
+      updated_at: "2026-08-08T12:04:00Z",
+      body: "The ack write fails, but enqueue continues.",
+    });
+    assert.equal(ackFailure.status, 202);
+    assert.equal((await ackFailure.json()).queued, true);
+    assert.equal(fastAckPostAttempts.get(601), 1);
     await Promise.all(waitUntilPromises);
   } finally {
     globalThis.fetch = originalFetch;

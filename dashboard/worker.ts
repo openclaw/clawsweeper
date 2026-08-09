@@ -1198,6 +1198,11 @@ async function githubWebhook(request, env, ctx) {
   if ("type" in decision && decision.type === "item") {
     const deliveryId = request.headers.get("x-github-delivery") || "";
     let itemDecision = decision as ExactReviewDecision & { installationId?: number };
+    if (itemDecision.itemKind === "pull_request") {
+      await acknowledgePullRequestReceipt({ env, ctx, decision: itemDecision }).catch(
+        () => undefined,
+      );
+    }
     itemDecision = await withPullRequestEditContentRevision({
       event,
       payload,
@@ -1264,7 +1269,6 @@ async function githubWebhook(request, env, ctx) {
       ingress,
     });
     if (!queued) return json({ error: "exact_review_queue_not_configured" }, 503);
-    await acknowledgePullRequestEnqueue({ env, ctx, decision: exactReviewDecision });
     if (sourceAuthoritySeq !== null) {
       await completeExactReviewSourceAuthority(
         env,
@@ -2445,7 +2449,7 @@ async function enqueueExactReview({
   return body;
 }
 
-async function acknowledgePullRequestEnqueue({ env, ctx, decision }) {
+async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
   if (
     decision.itemKind !== "pull_request" ||
     !["opened", "ready_for_review"].includes(decision.sourceAction)
@@ -2678,7 +2682,7 @@ function renderPullRequestFastAckComment(ackMarker) {
     "🦞👀",
     "ClawSweeper picked this up.",
     "",
-    "Pull request review queued. I will update this pull request when review starts.",
+    "Pull request received. I will update this pull request when review starts.",
   ].join("\n");
 }
 
