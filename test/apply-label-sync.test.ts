@@ -951,6 +951,7 @@ test("exact metadata-only publication flushes recoverable labels and drops faile
     const reportPath = join(root, "apply-report.json");
     const statePath = join(root, "state.json");
     const logPath = join(root, "gh.log");
+    const patchedCommentPath = join(root, "patched-comment.md");
     const number = 103702;
     const reviewedAt = new Date(Date.now() - 5 * 60_000).toISOString();
     const leaseUpdatedAt = new Date(Date.now() - 60_000).toISOString();
@@ -1028,6 +1029,7 @@ const issue = ${JSON.stringify(issue)};
 const comments = ${JSON.stringify(comments)};
 const statePath = ${JSON.stringify(statePath)};
 const logPath = ${JSON.stringify(logPath)};
+const patchedCommentPath = ${JSON.stringify(patchedCommentPath)};
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
@@ -1046,7 +1048,12 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
   }));
 } else if (args[0] === "api" && path.startsWith("search/issues?")) {
   console.log(JSON.stringify({ items: [] }));
-} else if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && args.includes("--method")) {
+} else if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && args.includes("PATCH")) {
+  const payloadPath = args[args.indexOf("--input") + 1];
+  const payload = JSON.parse(readFileSync(payloadPath, "utf8"));
+  writeFileSync(patchedCommentPath, payload.body, "utf8");
+  console.log(JSON.stringify({ ...comments[0], body: payload.body }));
+} else if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && args.includes("DELETE")) {
   console.log("");
 } else if (args[0] === "issue" && args[1] === "view") {
   console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
@@ -1137,21 +1144,35 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
         )}`,
       );
     }
-    assert.equal(
-      commands.some(
-        (args) =>
-          args[0] === "api" &&
-          /\/issues\/comments\/\d+$/.test(args[1] ?? "") &&
-          args.includes("PATCH"),
-      ),
-      false,
+    const commentPatchIndex = commands.findIndex(
+      (args) =>
+        args[0] === "api" &&
+        /\/issues\/comments\/\d+$/.test(args[1] ?? "") &&
+        args.includes("PATCH"),
     );
+    assert.ok(commentPatchIndex > itemLabelIndexes.at(-1)!);
+    assert.ok(
+      commands
+        .slice(itemLabelIndexes.at(-1)! + 1, commentPatchIndex)
+        .some(
+          (args) =>
+            args[0] === "api" &&
+            args[1]?.endsWith(`/issues/${number}`) &&
+            !args.includes("--method"),
+        ),
+      `expected a fresh comment guard after recovered label publication: ${JSON.stringify(
+        commands.slice(itemLabelIndexes.at(-1)! + 1, commentPatchIndex),
+      )}`,
+    );
+    const patchedComment = readFileSync(patchedCommentPath, "utf8");
+    assert.notEqual(patchedComment, synced.comment);
+    assert.doesNotMatch(patchedComment, /- add `P2`/);
     assert.doesNotMatch(readFileSync(join(itemsDir, `${number}.md`), "utf8"), /^labels:.*P2/m);
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number,
         action: "review_comment_synced",
-        reason: "recorded existing durable comment metadata",
+        reason: "updated durable Codex review comment",
         durableReviewSynced: true,
       },
     ]);

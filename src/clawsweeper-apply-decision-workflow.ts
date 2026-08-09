@@ -1682,6 +1682,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       reviewComment = renderCurrentReviewComment();
       markedReviewComment = markedReviewCommentForApply(reviewComment);
       refreshRenderedReviewComment = (): void => {
+        renderOptions.publishedLabels = [...item.labels];
         reviewComment = renderCurrentReviewComment();
         markedReviewComment = markedReviewCommentForApply(reviewComment);
       };
@@ -1891,6 +1892,48 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
             reviewedAt: frontMatterValue(markdown, "reviewed_at"),
             lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
+            hasExistingReviewComment: Boolean(existingReviewComment),
+            needsReviewCommentBodySync,
+            needsReviewCommentHashSync,
+            needsReviewCommentReferenceSync,
+            forceReviewCommentBodySync: true,
+          });
+        }
+      }
+      if (
+        !closeBlockedForCommentSync &&
+        !needsReviewCommentBodySync &&
+        (!isCloseProposal || syncCommentsOnly)
+      ) {
+        const markedReviewCommentBeforeLabelFlush = markedReviewComment;
+        flushIssueLabelBatch();
+        if (markedReviewComment !== markedReviewCommentBeforeLabelFlush) {
+          reviewCommentHash = reviewCommentBodyDigest(markedReviewComment);
+          existingReviewCommentMatches = commentBodyMatches(
+            existingReviewComment,
+            markedReviewComment,
+            { allowApplyCloseActionUpgrade },
+          );
+          needsReviewCommentBodySync = !existingReviewComment || !existingReviewCommentMatches;
+          needsReviewCommentHashSync = !reviewCommentHashMatches(
+            existingReviewComment,
+            markedReviewComment,
+            frontMatterValue(markdown, "review_comment_sha256"),
+            reviewCommentHash,
+            { allowApplyCloseActionUpgrade },
+          );
+          needsReviewCommentReferenceSync =
+            /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_id") ?? "") ||
+            /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_url") ?? "");
+          needsReviewCommentSync = shouldSyncReviewComment({
+            syncCommentsOnly,
+            isCloseProposal,
+            commentSyncMinAgeDays,
+            reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
+            reviewCommentVerifiedAt: frontMatterValue(markdown, "review_comment_checked_at"),
+            reviewedAt: frontMatterValue(markdown, "reviewed_at"),
+            lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
+            guardedReviewedAt: guarded ? frontMatterValue(markdown, "apply_checked_at") : undefined,
             hasExistingReviewComment: Boolean(existingReviewComment),
             needsReviewCommentBodySync,
             needsReviewCommentHashSync,
@@ -2124,9 +2167,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           if (processedCount >= processedLimit) break;
         }
         continue;
-      }
-      if (!needsReviewCommentSync && (!isCloseProposal || syncCommentsOnly)) {
-        flushIssueLabelBatch();
       }
       if (
         clawSweeperLabelsChanged &&

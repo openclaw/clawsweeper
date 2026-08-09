@@ -488,6 +488,7 @@ export interface ReviewMetric {
 export interface ReviewCommentRenderOptions {
   prStatusKind?: PrStatusLabelKind | null;
   previousLabels?: readonly string[];
+  publishedLabels?: readonly string[];
   hasOpenLinkedPullRequest?: boolean;
   previousReviewCommentBody?: string;
   suppressAutomationMarkers?: boolean;

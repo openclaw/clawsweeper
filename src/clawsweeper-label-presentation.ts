@@ -276,11 +276,9 @@ export function createReportLabelPresentation(
     options: ReviewCommentRenderOptions = {},
   ): LabelTransitionJustification[] {
     const currentLabels = options.previousLabels ?? frontMatterStringArray(markdown, "labels");
-    const desiredLabels = desiredClawSweeperLabelsFromPublicReport(
-      markdown,
-      currentLabels,
-      options,
-    );
+    const desiredLabels =
+      options.publishedLabels ??
+      desiredClawSweeperLabelsFromPublicReport(markdown, currentLabels, options);
     const currentKeys = new Set(currentLabels.map((label) => label.toLowerCase()));
     const desiredKeys = new Set(desiredLabels.map((label) => label.toLowerCase()));
     const finalByLabel = new Map(finalJustifications.map((entry) => [entry.label, entry.reason]));

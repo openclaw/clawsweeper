@@ -772,10 +772,7 @@ test("runtime yields bind the active item and terminal Codex failures preserve r
 test("blocked exact close publication discards staged labels before writing the report", () => {
   const source = readText("src/clawsweeper-apply-decision-workflow.ts");
   const blockedCloseStart = source.indexOf("if (closeBlockedForCommentSync) {");
-  const blockedCloseEnd = source.indexOf(
-    "if (!needsReviewCommentSync && (!isCloseProposal || syncCommentsOnly))",
-    blockedCloseStart,
-  );
+  const blockedCloseEnd = source.indexOf("clawSweeperLabelsChanged &&", blockedCloseStart);
   const blockedClose = source.slice(blockedCloseStart, blockedCloseEnd);
 
   assert.ok(blockedCloseStart >= 0);
