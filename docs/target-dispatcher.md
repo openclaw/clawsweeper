@@ -156,13 +156,27 @@ jobs:
             echo "::notice::Skipping ClawSweeper pull request acknowledgement because no target credential is configured."
             exit 0
           fi
+          has_ack_marker() {
+            jq -e \
+              --arg marker_prefix "clawsweeper-pr-ack:" \
+              --arg marker_suffix " item=$ITEM_NUMBER -->" \
+              'any(.[]; (.body // "") as $body | ($body | contains($marker_prefix)) and ($body | contains($marker_suffix)))' \
+              <<< "$1" >/dev/null
+          }
           comments="$(GH_TOKEN="$ACK_TOKEN" gh api \
             "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100")"
-          if jq -e \
-            --arg marker_prefix "clawsweeper-pr-ack:" \
-            --arg marker_suffix " item=$ITEM_NUMBER -->" \
-            'any(.[]; (.body // "") as $body | ($body | contains($marker_prefix)) and ($body | contains($marker_suffix)))' \
-            <<< "$comments" >/dev/null; then
+          if has_ack_marker "$comments"; then
+            echo "ClawSweeper pull request acknowledgement already exists."
+            exit 0
+          fi
+          # opened and ready_for_review can fire seconds apart for the same
+          # pull request, and both runs can list comments before either
+          # acknowledgement is visible. Wait, then recheck right before
+          # posting; a superseding run cancels this one while it sleeps.
+          sleep 15
+          comments="$(GH_TOKEN="$ACK_TOKEN" gh api \
+            "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100")"
+          if has_ack_marker "$comments"; then
             echo "ClawSweeper pull request acknowledgement already exists."
             exit 0
           fi
@@ -310,6 +324,14 @@ jobs:
             --method POST \
             --input - <<< "$payload"
 ```
+
+Non-draft pull request receipts get one best-effort `clawsweeper-pr-ack`
+comment. `opened` and `ready_for_review` can fire seconds apart when a draft is
+marked ready immediately after creation, and both runs can list comments before
+either acknowledgement is visible. The acknowledgement step therefore matches
+any existing `clawsweeper-pr-ack` marker for the item, then waits and rechecks
+right before posting; when a superseding event arrives during that wait, the
+shared concurrency group cancels the sleeping run before it posts.
 
 Comments are a lightweight trigger only when the body contains a ClawSweeper
 command, and generated proof-nudge comments are explicitly ignored before command
