@@ -489,10 +489,16 @@ const EXACT_REVIEW_QUEUE_ROLLBACK_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX = "__clawsweeper_sql_generation:";
 const EXACT_REVIEW_QUEUE_STATE_KEY = "exact-review-queue";
 const EXACT_REVIEW_SOURCE_AUTHORITY_SEQUENCE_KEY = "exact-review-source-authority-sequence:v1";
-const TARGET_FANOUT_CURSOR_KEY_PREFIX = "target-fanout-cursor:v1:";
-type TargetFanoutMode = "hot-intake" | "normal-review" | "audit";
-type TargetFanoutCursor = {
-  mode: TargetFanoutMode;
+// Preserve the original key prefix so existing fanout cursors survive the
+// broader operational-cursor contract introduced for bounded recovery lanes.
+const OPERATIONAL_CURSOR_KEY_PREFIX = "target-fanout-cursor:v1:";
+type OperationalCursorMode =
+  | "hot-intake"
+  | "normal-review"
+  | "audit"
+  | `review-placeholder-${string}-${"open" | "closed"}`;
+type OperationalCursor = {
+  mode: OperationalCursorMode;
   nextCursor: number;
   revision: number;
   updatedAt: number;
@@ -632,12 +638,15 @@ export class ExactReviewQueue {
       this.reviewCoverageCache = null;
       return json({ ok: true, accepted: true }, 202);
     }
-    const targetFanoutMode = targetFanoutModeFromPath(url.pathname);
-    if (targetFanoutMode && request.method === "GET") {
-      return this.readTargetFanoutCursor(targetFanoutMode);
+    const operationalCursorMode = operationalCursorModeFromPath(url.pathname);
+    if (operationalCursorMode && request.method === "GET") {
+      return this.readOperationalCursor(operationalCursorMode);
     }
-    if (targetFanoutMode && request.method === "PUT") {
-      return this.writeTargetFanoutCursor(targetFanoutMode, await request.json().catch(() => null));
+    if (operationalCursorMode && request.method === "PUT") {
+      return this.writeOperationalCursor(
+        operationalCursorMode,
+        await request.json().catch(() => null),
+      );
     }
     if (request.method === "GET" && url.pathname === "/recent-durable-publication-events") {
       const events = this.recentDurablePublicationEvents(
@@ -3100,13 +3109,13 @@ export class ExactReviewQueue {
     return value;
   }
 
-  private readTargetFanoutCursor(mode: TargetFanoutMode) {
-    const stored = readTargetFanoutCursor(this.storage.kv.get(targetFanoutCursorKey(mode)), mode);
+  private readOperationalCursor(mode: OperationalCursorMode) {
+    const stored = readOperationalCursor(this.storage.kv.get(operationalCursorKey(mode)), mode);
     if (stored === "invalid") return json({ error: "fanout_cursor_store_invalid" }, 500);
-    return json(targetFanoutCursorJson(stored ?? emptyTargetFanoutCursor(mode)));
+    return json(operationalCursorJson(stored ?? emptyOperationalCursor(mode)));
   }
 
-  private writeTargetFanoutCursor(mode: TargetFanoutMode, value: unknown) {
+  private writeOperationalCursor(mode: OperationalCursorMode, value: unknown) {
     const body = objectValue(value);
     const nextCursor = Number(body.next_cursor);
     const expectedRevision = Number(body.expected_revision);
@@ -3120,25 +3129,22 @@ export class ExactReviewQueue {
     }
     try {
       const result = this.storage.transactionSync(() => {
-        const stored = readTargetFanoutCursor(
-          this.storage.kv.get(targetFanoutCursorKey(mode)),
-          mode,
-        );
+        const stored = readOperationalCursor(this.storage.kv.get(operationalCursorKey(mode)), mode);
         if (stored === "invalid") return { kind: "invalid" as const };
-        const current = stored ?? emptyTargetFanoutCursor(mode);
+        const current = stored ?? emptyOperationalCursor(mode);
         if (current.revision !== expectedRevision) {
           return { kind: "conflict" as const, current };
         }
         if (current.revision >= Number.MAX_SAFE_INTEGER) {
           return { kind: "invalid" as const };
         }
-        const next: TargetFanoutCursor = {
+        const next: OperationalCursor = {
           mode,
           nextCursor,
           revision: current.revision + 1,
           updatedAt: Date.now(),
         };
-        this.storage.kv.put(targetFanoutCursorKey(mode), next);
+        this.storage.kv.put(operationalCursorKey(mode), next);
         return { kind: "written" as const, cursor: next };
       });
       if (result.kind === "invalid") return json({ error: "fanout_cursor_store_invalid" }, 500);
@@ -3146,12 +3152,12 @@ export class ExactReviewQueue {
         return json(
           {
             error: "fanout_cursor_revision_conflict",
-            current: targetFanoutCursorJson(result.current),
+            current: operationalCursorJson(result.current),
           },
           409,
         );
       }
-      return json(targetFanoutCursorJson(result.cursor), 202);
+      return json(operationalCursorJson(result.cursor), 202);
     } catch (error) {
       console.error(`fanout cursor write failed: ${sanitizedServerError(error)}`);
       return json({ error: "fanout_cursor_store_unavailable" }, 503);
@@ -13699,23 +13705,26 @@ function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-function targetFanoutModeFromPath(path: string): TargetFanoutMode | null {
-  const match = /^\/cursors\/(hot-intake|normal-review|audit)$/.exec(path);
-  return (match?.[1] as TargetFanoutMode | undefined) ?? null;
+function operationalCursorModeFromPath(path: string): OperationalCursorMode | null {
+  const match =
+    /^\/cursors\/(hot-intake|normal-review|audit|review-placeholder-[a-f0-9]{16}-(?:open|closed))$/.exec(
+      path,
+    );
+  return (match?.[1] as OperationalCursorMode | undefined) ?? null;
 }
 
-function targetFanoutCursorKey(mode: TargetFanoutMode): string {
-  return `${TARGET_FANOUT_CURSOR_KEY_PREFIX}${mode}`;
+function operationalCursorKey(mode: OperationalCursorMode): string {
+  return `${OPERATIONAL_CURSOR_KEY_PREFIX}${mode}`;
 }
 
-function emptyTargetFanoutCursor(mode: TargetFanoutMode): TargetFanoutCursor {
+function emptyOperationalCursor(mode: OperationalCursorMode): OperationalCursor {
   return { mode, nextCursor: 0, revision: 0, updatedAt: 0 };
 }
 
-function readTargetFanoutCursor(
+function readOperationalCursor(
   value: unknown,
-  mode: TargetFanoutMode,
-): TargetFanoutCursor | "invalid" | null {
+  mode: OperationalCursorMode,
+): OperationalCursor | "invalid" | null {
   if (value === undefined) return null;
   const cursor = objectValue(value);
   const nextCursor = Number(cursor.nextCursor);
@@ -13735,7 +13744,7 @@ function readTargetFanoutCursor(
   return { mode, nextCursor, revision, updatedAt };
 }
 
-function targetFanoutCursorJson(cursor: TargetFanoutCursor) {
+function operationalCursorJson(cursor: OperationalCursor) {
   return {
     ok: true,
     mode: cursor.mode,

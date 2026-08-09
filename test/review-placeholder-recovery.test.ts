@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   isOrphanedReviewPlaceholder,
   REVIEW_PLACEHOLDER_MARKER,
+  reviewPlaceholderCursorMode,
   reviewPlaceholderRecoveryFailureReason,
   runReviewPlaceholderRecovery,
   selectReviewPlaceholderComment,
@@ -1092,6 +1093,296 @@ test("a large search count remains telemetry and does not fail the run", async (
     "summary line reports the discovery backlog",
   );
   assert.equal(reviewPlaceholderRecoveryFailureReason(summary), null);
+});
+
+test("durable discovery rotation reaches later open and closed candidates without bypassing age", async () => {
+  const openNumbers = Array.from({ length: 180 }, (_, index) => 1_001 + index);
+  const closedNumbers = Array.from({ length: 180 }, (_, index) => 2_001 + index);
+  const cursorModes = {
+    open: reviewPlaceholderCursorMode("openclaw/openclaw", "open"),
+    closed: reviewPlaceholderCursorMode("openclaw/openclaw", "closed"),
+  };
+  const stored = new Map(
+    Object.values(cursorModes).map((mode) => [
+      mode,
+      { next_cursor: 0, revision: 0, updated_at: null as string | null },
+    ]),
+  );
+  const checks = Array.from({ length: 4 }, () => ({
+    open: [] as number[],
+    closed: [] as number[],
+  }));
+  const enqueued: number[] = [];
+  const deleted: number[] = [];
+  let runIndex = 0;
+  let runNow = now;
+  let closedTargetDeleted = false;
+
+  const candidate = (number: number, index: number) => ({
+    number,
+    updated_at: new Date(Date.parse("2026-07-15T12:00:00.000Z") + index * 1_000).toISOString(),
+  });
+  const placeholder = (number: number, commentId: number, createdAt: string) => ({
+    id: commentId,
+    body: `${REVIEW_PLACEHOLDER_MARKER}\n\n<!-- clawsweeper-review-status:started item=${number} sha=abc v=1 -->`,
+    created_at: createdAt,
+    updated_at: createdAt,
+    user: bot,
+  });
+  const mockFetch = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    const cursorMatch = url.pathname.match(/\/internal\/state\/cursors\/([^/]+)$/);
+    if (cursorMatch) {
+      const mode = decodeURIComponent(cursorMatch[1]!);
+      const cursor = stored.get(mode);
+      assert.ok(cursor, `unexpected cursor mode ${mode}`);
+      if (init?.method === "PUT") {
+        const update = JSON.parse(String(init.body)) as {
+          next_cursor: number;
+          expected_revision: number;
+        };
+        assert.equal(update.expected_revision, cursor.revision);
+        cursor.next_cursor = update.next_cursor;
+        cursor.revision += 1;
+        cursor.updated_at = runNow.toISOString();
+      }
+      return Response.json({ ok: true, mode, ...cursor });
+    }
+    if (url.pathname === "/search/issues") {
+      const query = url.searchParams.get("q") ?? "";
+      const state = query.includes("is:closed") ? "closed" : "open";
+      const numbers = state === "closed" ? closedNumbers : openNumbers;
+      const page = Number(url.searchParams.get("page"));
+      const pageStart = (page - 1) * 100;
+      return Response.json({
+        // Search count is intentionally stale for closed items; page contents
+        // remain the only completion authority for cursor advancement.
+        total_count: state === "closed" ? 1 : numbers.length,
+        incomplete_results: false,
+        items: numbers.slice(pageStart, pageStart + 100).map(candidate),
+      });
+    }
+    const commentsMatch = url.pathname.match(/\/issues\/(\d+)\/comments$/);
+    if (commentsMatch) {
+      const number = Number(commentsMatch[1]);
+      const state = number >= 2_000 ? "closed" : "open";
+      checks[runIndex]![state].push(number);
+      if (number === 1_001) {
+        return Response.json([placeholder(number, 91_001, "2026-07-17T11:00:00.000Z")]);
+      }
+      if (number === 2_144 && !closedTargetDeleted) {
+        return Response.json([placeholder(number, 92_144, "2026-07-17T06:00:00.000Z")]);
+      }
+      return Response.json([
+        {
+          body: "ClawSweeper review: keep open.",
+          created_at: "2026-07-17T06:00:00.000Z",
+          user: bot,
+        },
+      ]);
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/issues/2144") {
+      return Response.json({ state: "closed", locked: false });
+    }
+    if (
+      url.pathname === "/repos/openclaw/openclaw/issues/comments/92144" &&
+      init?.method === "DELETE"
+    ) {
+      deleted.push(92_144);
+      closedTargetDeleted = true;
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/issues/comments/92144") {
+      return Response.json(placeholder(2_144, 92_144, "2026-07-17T06:00:00.000Z"));
+    }
+    if (url.pathname === "/internal/exact-review/enqueue") {
+      const body = JSON.parse(String(init?.body)) as { decision: { itemNumber: number } };
+      enqueued.push(body.decision.itemNumber);
+      return Response.json({ ok: true, queued: true }, { status: 202 });
+    }
+    throw new Error(`unexpected request: ${init?.method ?? "GET"} ${url.pathname}`);
+  };
+
+  const run = async (index: number, at: Date) => {
+    runIndex = index;
+    runNow = at;
+    return runReviewPlaceholderRecovery({
+      env: {
+        GH_TOKEN: "read-token",
+        TARGET_WRITE_TOKEN: "write-token",
+        CLAWSWEEPER_WEBHOOK_SECRET: "cursor-secret",
+        GITHUB_API_URL: "https://api.github.test",
+        QUEUE_URL: "https://queue.test",
+        REVIEW_PLACEHOLDER_CURSOR_STORE_URL: "https://queue.test",
+        REVIEW_PLACEHOLDER_MAX_CHECKS: "60",
+        REVIEW_PLACEHOLDER_MAX_RECOVERIES: "5",
+        REVIEW_PLACEHOLDER_MIN_AGE_HOURS: "2",
+        TARGET_REPO: "openclaw/openclaw",
+        GITHUB_RUN_ID: String(10_000 + index),
+      },
+      fetchImpl: mockFetch as typeof fetch,
+      now: at,
+    });
+  };
+
+  const first = await run(0, now);
+  const second = await run(1, now);
+  const third = await run(2, now);
+  const fourth = await run(3, new Date("2026-07-17T14:00:00.000Z"));
+
+  assert.equal(first.cleaned, 0);
+  assert.equal(second.cleaned, 0);
+  assert.equal(third.cleaned, 1, "the rank-144 closed placeholder is reached on cycle three");
+  assert.equal(fourth.enqueued, 1, "the under-age open placeholder is retried after wrap");
+  assert.deepEqual(enqueued, [1_001]);
+  assert.deepEqual(deleted, [92_144]);
+  for (const [index, expected] of [
+    [0, [0, 60]],
+    [1, [60, 120]],
+    [2, [120, 180]],
+    [3, [0, 60]],
+  ] as const) {
+    assert.deepEqual(checks[index]!.open, openNumbers.slice(...expected));
+    assert.deepEqual(checks[index]!.closed, closedNumbers.slice(...expected));
+  }
+  assert.equal(stored.get(cursorModes.open)?.next_cursor, 60);
+  assert.equal(stored.get(cursorModes.closed)?.next_cursor, 60);
+});
+
+test("a stale discovery cursor resets inside the current result set", async () => {
+  const mode = reviewPlaceholderCursorMode("openclaw/openclaw", "open");
+  const closedMode = reviewPlaceholderCursorMode("openclaw/openclaw", "closed");
+  let stored = { next_cursor: 900, revision: 7, updated_at: now.toISOString() };
+  const checked: number[] = [];
+  const fetchImpl = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    if (url.pathname.endsWith(`/${mode}`)) {
+      if (init?.method === "PUT") {
+        const update = JSON.parse(String(init.body)) as {
+          next_cursor: number;
+          expected_revision: number;
+        };
+        assert.equal(update.expected_revision, 7);
+        stored = { next_cursor: update.next_cursor, revision: 8, updated_at: now.toISOString() };
+      }
+      return Response.json({ ok: true, mode, ...stored });
+    }
+    if (url.pathname.endsWith(`/${closedMode}`)) {
+      return Response.json({
+        ok: true,
+        mode: closedMode,
+        next_cursor: 0,
+        revision: 0,
+        updated_at: null,
+      });
+    }
+    if (url.pathname === "/search/issues") {
+      const query = url.searchParams.get("q") ?? "";
+      if (query.includes("is:closed")) return Response.json({ total_count: 0, items: [] });
+      if (url.searchParams.get("page") !== "1") {
+        return Response.json({ total_count: 1, items: [] });
+      }
+      return Response.json({ total_count: 1, items: [{ number: 7_001 }] });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/issues/7001/comments") {
+      checked.push(7_001);
+      return Response.json([]);
+    }
+    throw new Error(`unexpected request: ${init?.method ?? "GET"} ${url.pathname}`);
+  };
+
+  await runReviewPlaceholderRecovery({
+    env: {
+      GH_TOKEN: "read-token",
+      CLAWSWEEPER_WEBHOOK_SECRET: "cursor-secret",
+      GITHUB_API_URL: "https://api.github.test",
+      QUEUE_URL: "https://queue.test",
+      REVIEW_PLACEHOLDER_CURSOR_STORE_URL: "https://queue.test",
+      TARGET_REPO: "openclaw/openclaw",
+    },
+    fetchImpl: fetchImpl as typeof fetch,
+    now,
+  });
+
+  assert.deepEqual(checked, [7_001]);
+  assert.equal(stored.next_cursor, 0);
+});
+
+test("cursor conflict repeats productive recovery safely after restart", async () => {
+  const modes = {
+    open: reviewPlaceholderCursorMode("openclaw/openclaw", "open"),
+    closed: reviewPlaceholderCursorMode("openclaw/openclaw", "closed"),
+  };
+  const checked: number[] = [];
+  const enqueued: number[] = [];
+  const fetchImpl = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    const cursorMode = Object.values(modes).find((mode) => url.pathname.endsWith(`/${mode}`));
+    if (cursorMode) {
+      if (init?.method === "PUT") {
+        return Response.json({ error: "fanout_cursor_revision_conflict" }, { status: 409 });
+      }
+      return Response.json({
+        ok: true,
+        mode: cursorMode,
+        next_cursor: 0,
+        revision: 0,
+        updated_at: null,
+      });
+    }
+    if (url.pathname === "/search/issues") {
+      const query = url.searchParams.get("q") ?? "";
+      if (query.includes("is:closed")) return Response.json({ total_count: 0, items: [] });
+      return Response.json({ total_count: 2, items: [{ number: 8_001 }, { number: 8_002 }] });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/issues/8001/comments") {
+      checked.push(8_001);
+      return Response.json([
+        {
+          body: `${REVIEW_PLACEHOLDER_MARKER}\n\n<!-- clawsweeper-review-status:started item=8001 sha=abc v=1 -->`,
+          created_at: "2026-07-17T06:00:00.000Z",
+          user: bot,
+        },
+      ]);
+    }
+    if (url.pathname === "/internal/exact-review/enqueue") {
+      enqueued.push(8_001);
+      return Response.json(
+        enqueued.length === 1 ? { ok: true, queued: true } : { ok: true, deduped: true },
+        { status: 202 },
+      );
+    }
+    throw new Error(`unexpected request: ${init?.method ?? "GET"} ${url.pathname}`);
+  };
+  const run = (runId: string) =>
+    runReviewPlaceholderRecovery({
+      env: {
+        GH_TOKEN: "read-token",
+        CLAWSWEEPER_WEBHOOK_SECRET: "cursor-secret",
+        GITHUB_API_URL: "https://api.github.test",
+        QUEUE_URL: "https://queue.test",
+        REVIEW_PLACEHOLDER_CURSOR_STORE_URL: "https://queue.test",
+        REVIEW_PLACEHOLDER_MAX_CHECKS: "1",
+        TARGET_REPO: "openclaw/openclaw",
+        GITHUB_RUN_ID: runId,
+      },
+      fetchImpl: fetchImpl as typeof fetch,
+      now,
+    });
+
+  assert.equal((await run("restart-1")).enqueued, 1);
+  assert.equal((await run("restart-2")).enqueued, 1);
+  assert.deepEqual(checked, [8_001, 8_001]);
+  assert.deepEqual(enqueued, [8_001, 8_001]);
 });
 
 test("placeholder refreshed recently by an active recovery is not orphaned", () => {

@@ -318,9 +318,11 @@ and hot intake `14`. Existing repair lanes keep their
   the two most recently updated pages for sponsorship commands, then alternates
   newest/oldest created-order scans. Reaction-only revival can lag in very large
   archives; raise this override to scan deeper per run.
-- `REVIEW_PLACEHOLDER_MAX_CHECKS` overrides the number of open search candidates
-  examined by each 15-minute orphaned-placeholder recovery pass; the default is
-  20 and the maximum is 1000.
+- `REVIEW_PLACEHOLDER_MAX_CHECKS` overrides the number of search candidates
+  examined per open and closed state class by each 15-minute
+  orphaned-placeholder recovery pass; the default is 20 and the maximum is
+  1000. Independent durable cursors rotate both state classes so non-actionable
+  matches cannot permanently pin later placeholders behind the bounded pass.
 - `REVIEW_PLACEHOLDER_MIN_AGE_HOURS` overrides how old the latest ClawSweeper bot
   review-start placeholder must be before recovery; the default is 2 hours and
   the maximum is 720 hours.

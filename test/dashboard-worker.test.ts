@@ -5725,6 +5725,48 @@ test("authenticated fanout cursors round-trip through durable storage", async ()
   assert.deepEqual(await (await worker.fetch(request("GET"), env)).json(), written);
 });
 
+test("placeholder recovery cursor survives queue reconstruction", async () => {
+  const storage = new MemoryDurableStorage();
+  const secret = "placeholder-cursor-secret";
+  const mode = "review-placeholder-0123456789abcdef-closed";
+  const path = `/internal/state/cursors/${mode}`;
+  let queue = new ExactReviewQueue({ storage }, {});
+  let env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const request = (method: "GET" | "PUT", payload?: unknown) => {
+    const body = method === "PUT" ? JSON.stringify(payload) : "";
+    return new Request(`https://clawsweeper.openclaw.ai${path}`, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+      },
+      ...(method === "PUT" ? { body } : {}),
+    });
+  };
+
+  const written = await worker.fetch(
+    request("PUT", { next_cursor: 120, expected_revision: 0 }),
+    env,
+  );
+  assert.equal(written.status, 202);
+
+  queue = new ExactReviewQueue({ storage }, {});
+  env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  assert.deepEqual(await (await worker.fetch(request("GET"), env)).json(), {
+    ok: true,
+    mode,
+    next_cursor: 120,
+    revision: 1,
+    updated_at: (await written.clone().json()).updated_at,
+  });
+});
+
 test("Worker lifecycle projection permits one command acknowledgement after durable routing", async () => {
   const storage = new MemoryDurableStorage();
   const leased = leasedExactReviewPublicationItem(778, "7780");
@@ -15525,9 +15567,9 @@ test("exact-review review retries park at the attempt ceiling and recover after 
     );
 
     const due = (await storage.get("exact-review-queue")) as {
-      items: Record<string, { parkedRecoveryAt?: number }>;
+      items: Record<string, { parkedRecoveryAt?: number; updatedAt: number }>;
     };
-    due.items[itemKey].parkedRecoveryAt = Date.now() - 1;
+    due.items[itemKey].parkedRecoveryAt = due.items[itemKey].updatedAt;
     await storage.put("exact-review-queue", due);
     await queue.alarm();
     assert.equal(dispatched.length, 9);
@@ -17290,7 +17332,7 @@ test("exact-review queue automatically retries a parked dispatch rejection after
     const parked = due.items["openclaw/gogcli#600"];
     assert.ok(Number(parked.parkedRecoveryAt) >= parked.updatedAt + 3.75 * 60_000);
     assert.ok(Number(parked.parkedRecoveryAt) <= parked.updatedAt + 7.5 * 60_000);
-    parked.parkedRecoveryAt = Date.now() - 1;
+    parked.parkedRecoveryAt = parked.updatedAt;
     await storage.put("exact-review-queue", due);
     await queue.alarm();
     const recovered = (await storage.get("exact-review-queue")) as {

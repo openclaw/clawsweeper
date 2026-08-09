@@ -551,10 +551,11 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/source-authority");
     if (url.pathname === "/internal/review-coverage/inventory" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/review-coverage/inventory");
-    const fanoutCursorPath = /^\/internal\/state\/cursors\/(hot-intake|normal-review|audit)$/.exec(
-      url.pathname,
-    );
-    if (fanoutCursorPath && (request.method === "GET" || request.method === "PUT"))
+    const operationalCursorPath =
+      /^\/internal\/state\/cursors\/(hot-intake|normal-review|audit|review-placeholder-[a-f0-9]{16}-(?:open|closed))$/.exec(
+        url.pathname,
+      );
+    if (operationalCursorPath && (request.method === "GET" || request.method === "PUT"))
       return authenticatedExactReviewQueueCursorRequest(
         request,
         env,

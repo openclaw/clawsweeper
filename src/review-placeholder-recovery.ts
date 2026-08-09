@@ -1,7 +1,13 @@
 #!/usr/bin/env node
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  fetchDurableCursor,
+  putDurableCursor,
+  type DurableCursorSnapshot,
+  type DurableCursorStoreOptions,
+} from "./durable-cursor-store.js";
 import {
   REVIEW_RECOVERY_STUCK_LABEL,
   runReviewRecoveryLabelBackfill,
@@ -16,7 +22,7 @@ export const REVIEW_PLACEHOLDER_STUCK_LABEL = REVIEW_RECOVERY_STUCK_LABEL;
 export const DEFAULT_REVIEW_PLACEHOLDER_LOOKBACK_HOURS = 48;
 
 const SEARCH_PAGE_SIZE = 100;
-const SEARCH_MAX_PAGES = 2;
+const SEARCH_RESULT_LIMIT = 1_000;
 const COMMENT_PAGE_SIZE = 100;
 const COMMENT_MAX_PAGES = 5;
 const CLAWSWEEPER_BOT_LOGINS = new Set(["clawsweeper[bot]", "openclaw-clawsweeper[bot]"]);
@@ -47,6 +53,20 @@ export type ReviewPlaceholderRecoverySummary = {
   matched: number;
   remaining: number;
 };
+
+type ReviewPlaceholderState = "open" | "closed";
+type ReviewPlaceholderCursorMode = `review-placeholder-${string}-${ReviewPlaceholderState}`;
+
+export function reviewPlaceholderCursorMode(
+  repository: string,
+  state: ReviewPlaceholderState,
+): ReviewPlaceholderCursorMode {
+  const repositoryKey = createHash("sha256")
+    .update(repository.toLowerCase())
+    .digest("hex")
+    .slice(0, 16);
+  return `review-placeholder-${repositoryKey}-${state}`;
+}
 
 // The scheduled sweep should go red only when placeholders needed resolution
 // and the run resolved none of them; routine transient noise with nothing to
@@ -132,6 +152,11 @@ function candidateUpdatedAtMs(candidate: ReviewPlaceholderCandidate): number {
   return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
 }
 
+function candidateNumber(candidate: ReviewPlaceholderCandidate): number {
+  const number = Number(candidate.number);
+  return Number.isSafeInteger(number) && number > 0 ? number : Number.MAX_SAFE_INTEGER;
+}
+
 function candidateLabelNames(candidate: ReviewPlaceholderCandidate): string[] {
   if (!Array.isArray(candidate.labels)) return [];
   const names: string[] = [];
@@ -182,6 +207,7 @@ export async function runReviewPlaceholderRecovery(
   const targetBranch = env.TARGET_BRANCH ?? "main";
   const apiUrl = (env.GITHUB_API_URL ?? "https://api.github.com").replace(/\/$/, "");
   const queueUrl = (env.QUEUE_URL ?? "").replace(/\/$/, "");
+  const cursorStoreUrl = (env.REVIEW_PLACEHOLDER_CURSOR_STORE_URL ?? "").replace(/\/$/, "");
   const maximumChecks = boundedPositiveInteger(
     env.REVIEW_PLACEHOLDER_MAX_CHECKS,
     DEFAULT_REVIEW_PLACEHOLDER_MAX_CHECKS,
@@ -219,6 +245,15 @@ export async function runReviewPlaceholderRecovery(
   let errors = 0;
   let actionFailures = 0;
   let matched = 0;
+
+  const cursorStore = (
+    state: ReviewPlaceholderState,
+  ): DurableCursorStoreOptions<ReviewPlaceholderCursorMode> => ({
+    baseUrl: cursorStoreUrl,
+    webhookSecret,
+    mode: reviewPlaceholderCursorMode(repo, state),
+    fetchImpl,
+  });
 
   const summary = (): ReviewPlaceholderRecoverySummary => {
     const remaining = Math.max(0, matched - checked);
@@ -407,56 +442,134 @@ export async function runReviewPlaceholderRecovery(
 
   const candidates = new Map<number, { candidate: ReviewPlaceholderCandidate; closed: boolean }>();
   const updatedSince = new Date(now.getTime() - lookbackHours * 60 * 60 * 1_000).toISOString();
-  // Each state class gets its own check budget; sharing one would let a
-  // backlog of open placeholders permanently starve closed-item cleanup.
-  const searchCandidates = async (stateQualifier: "is:open" | "is:closed"): Promise<void> => {
-    const query = `repo:${repo} "${REVIEW_PLACEHOLDER_MARKER}" in:comments updated:>=${updatedSince} ${stateQualifier}`;
-    const found: ReviewPlaceholderCandidate[] = [];
-    let total = 0;
-    for (let page = 1; page <= SEARCH_MAX_PAGES && found.length < maximumChecks; page += 1) {
-      const result = await github<{ items?: unknown; total_count?: unknown }>(
+  const cursors = new Map<
+    ReviewPlaceholderState,
+    DurableCursorSnapshot<ReviewPlaceholderCursorMode> & { loaded: boolean }
+  >();
+  const cursorUpdates = new Map<ReviewPlaceholderState, number>();
+  for (const state of ["open", "closed"] as const) {
+    if (!cursorStoreUrl) {
+      cursors.set(state, {
+        mode: reviewPlaceholderCursorMode(repo, state),
+        nextCursor: 0,
+        revision: 0,
+        updatedAt: null,
+        loaded: false,
+      });
+      continue;
+    }
+    try {
+      cursors.set(state, { ...(await fetchDurableCursor(cursorStore(state))), loaded: true });
+    } catch (error) {
+      errors += 1;
+      cursors.set(state, {
+        mode: reviewPlaceholderCursorMode(repo, state),
+        nextCursor: 0,
+        revision: 0,
+        updatedAt: null,
+        loaded: false,
+      });
+      console.warn(
+        `review-placeholder ${state} cursor unavailable; starting at 0 without advancing it: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  // Each state class gets its own check budget and durable offset. The cursor
+  // advances through every examined search slot, not only actionable rows, so
+  // a permanent false positive cannot pin later placeholders behind it.
+  const searchCandidates = async (state: ReviewPlaceholderState): Promise<void> => {
+    const query = `repo:${repo} "${REVIEW_PLACEHOLDER_MARKER}" in:comments updated:>=${updatedSince} is:${state}`;
+    const cursor = cursors.get(state)!;
+    const pages = new Map<number, { items: unknown[]; total: number; incomplete: boolean }>();
+    const fetchPage = async (page: number) => {
+      const cached = pages.get(page);
+      if (cached) return cached;
+      const result = await github<{
+        items?: unknown;
+        total_count?: unknown;
+        incomplete_results?: unknown;
+      }>(
         `/search/issues?q=${encodeURIComponent(query)}&sort=updated&order=asc&per_page=${SEARCH_PAGE_SIZE}&page=${page}`,
       );
+      const totalValue = Number(result.total_count);
       const items = Array.isArray(result.items) ? result.items : [];
-      if (page === 1 && typeof result.total_count === "number") {
-        total = Number.isFinite(result.total_count)
-          ? Math.max(0, Math.trunc(result.total_count))
-          : 0;
-      }
-      for (const value of items) {
-        if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-        found.push(value as ReviewPlaceholderCandidate);
-      }
-      if (items.length < SEARCH_PAGE_SIZE) break;
+      const value = {
+        items,
+        total: Number.isFinite(totalValue)
+          ? Math.max(0, Math.trunc(totalValue), items.length)
+          : items.length,
+        incomplete: result.incomplete_results === true,
+      };
+      pages.set(page, value);
+      return value;
+    };
+
+    let start = cursor.nextCursor < SEARCH_RESULT_LIMIT ? cursor.nextCursor : 0;
+    let page = Math.floor(start / SEARCH_PAGE_SIZE) + 1;
+    let result = await fetchPage(page);
+    if (result.incomplete) throw new Error("GitHub returned incomplete search results");
+    let telemetryTotal = Math.max(result.total, result.items.length);
+    const pageOffset = start - (page - 1) * SEARCH_PAGE_SIZE;
+    if (start > 0 && pageOffset >= result.items.length) {
+      // Search counts lag comment mutations, so an empty/out-of-range page is
+      // the completion signal. Reset from live page contents, never total_count.
+      start = 0;
+      page = 1;
+      result = await fetchPage(page);
+      if (result.incomplete) throw new Error("GitHub returned incomplete search results");
+      telemetryTotal = Math.max(telemetryTotal, result.total, result.items.length);
     }
-    matched += Math.max(total, found.length);
-    const ranked = found.map((candidate, index) => ({
-      candidate,
-      index,
-      updatedAtMs: candidateUpdatedAtMs(candidate),
-    }));
-    ranked.sort((a, b) =>
-      a.updatedAtMs === b.updatedAtMs ? a.index - b.index : a.updatedAtMs - b.updatedAtMs,
-    );
-    let added = 0;
-    for (const entry of ranked) {
-      if (added >= maximumChecks) break;
-      const number = Number(entry.candidate.number);
-      if (!Number.isInteger(number) || number <= 0 || candidates.has(number)) continue;
-      candidates.set(number, {
-        candidate: entry.candidate,
-        closed: stateQualifier === "is:closed",
+    matched += telemetryTotal;
+
+    let remainingChecks = maximumChecks;
+    let nextCursor = start;
+    let reachedEnd = false;
+    while (remainingChecks > 0 && page * SEARCH_PAGE_SIZE <= SEARCH_RESULT_LIMIT) {
+      result = await fetchPage(page);
+      if (result.incomplete) throw new Error("GitHub returned incomplete search results");
+      const pageStart = (page - 1) * SEARCH_PAGE_SIZE;
+      const from = page === Math.floor(start / SEARCH_PAGE_SIZE) + 1 ? start - pageStart : 0;
+      const to = Math.min(result.items.length, from + remainingChecks);
+      const ranked = result.items.map((value, index) => {
+        const candidate =
+          value && typeof value === "object" && !Array.isArray(value)
+            ? (value as ReviewPlaceholderCandidate)
+            : null;
+        return {
+          candidate,
+          index,
+          number: candidate ? candidateNumber(candidate) : Number.MAX_SAFE_INTEGER,
+          updatedAtMs: candidate ? candidateUpdatedAtMs(candidate) : Number.POSITIVE_INFINITY,
+        };
       });
-      added += 1;
+      ranked.sort(
+        (a, b) => a.updatedAtMs - b.updatedAtMs || a.number - b.number || a.index - b.index,
+      );
+      for (const entry of ranked.slice(from, to)) {
+        if (!entry.candidate || entry.number === Number.MAX_SAFE_INTEGER) continue;
+        if (candidates.has(entry.number)) continue;
+        candidates.set(entry.number, { candidate: entry.candidate, closed: state === "closed" });
+      }
+      const consumed = Math.max(0, to - from);
+      remainingChecks -= consumed;
+      nextCursor = pageStart + to;
+      if (result.items.length < SEARCH_PAGE_SIZE) {
+        reachedEnd = to >= result.items.length;
+        break;
+      }
+      if (to < result.items.length) break;
+      page += 1;
     }
+    cursorUpdates.set(state, reachedEnd || nextCursor >= SEARCH_RESULT_LIMIT ? 0 : nextCursor);
   };
-  for (const stateQualifier of ["is:open", "is:closed"] as const) {
+  for (const state of ["open", "closed"] as const) {
     try {
-      await searchCandidates(stateQualifier);
+      await searchCandidates(state);
     } catch (error) {
       errors += 1;
       console.warn(
-        `review-placeholder discovery (${stateQualifier}) skipped: ${error instanceof Error ? error.message : String(error)}`,
+        `review-placeholder discovery (is:${state}) skipped: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
@@ -564,6 +677,22 @@ export async function runReviewPlaceholderRecovery(
           error instanceof Error ? error.message : String(error)
         }`,
       );
+    }
+  }
+  if (cursorStoreUrl) {
+    for (const state of ["open", "closed"] as const) {
+      const cursor = cursors.get(state)!;
+      const nextCursor = cursorUpdates.get(state);
+      if (!cursor.loaded || nextCursor === undefined || nextCursor === cursor.nextCursor) continue;
+      try {
+        await putDurableCursor(cursorStore(state), nextCursor, cursor.revision);
+        console.log(`review-placeholder ${state} cursor advanced to ${nextCursor}`);
+      } catch (error) {
+        errors += 1;
+        console.warn(
+          `review-placeholder ${state} cursor did not persist; attempted work remains idempotent: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
   return summary();
