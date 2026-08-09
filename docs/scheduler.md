@@ -384,7 +384,9 @@ run-summary funnel for selected, attempted, enqueued, deduped, shed, and deferre
 items. The queue exposes the configured rate, burst, and currently available
 token balance under `scheduled_feed` in `GET /api/exact-review-queue`. It also
 exposes backpressure and scheduled-rate shed counts separately so an operator
-can distinguish a full review queue from intentional 600/hour pacing.
+can distinguish a full review queue from intentional 300/hour pacing. The
+30-item burst bounds a cold-start cohort to roughly 900 GitHub requests at the
+observed planning average of 30 requests per completed review.
 The producer probes that field before its first enqueue and fails closed while
 an older Worker is still deployed, preventing a workflow-first rollout from
 bypassing the rate limiter.
@@ -393,11 +395,14 @@ Each hourly normal-fanout step can offer
 `50 items/target * 12 targets = 600 items/hour`. The direct five-minute hot and
 normal schedules can each offer `50 * 12 = 600 items/hour`, so either lane has
 enough candidates to keep its token bucket fed despite dedupe or uneven fleet
-distribution. At a 4.1-minute mean service time, 600/hour needs about
-`600 * 4.1 / 60 = 41` concurrent review workers, below the 120 per-target and
-128 global claim limits. The target rate, burst, and pending limit are explicit
-spend and GitHub API dials; lower them together when sustained traffic warrants
-more headroom.
+distribution. The queue admits at most 300 scheduled reviews/hour, which needs
+about `300 * 4.1 / 60 = 21` concurrent review workers at a 4.1-minute mean
+service time and budgets roughly 9,000 GitHub requests/hour. That leaves about
+6,000 requests in the shared 15,000-request installation allowance for exact
+ingress, routing, apply proof, publication, and support lanes. The target rate
+and burst are GitHub spend dials. The pending soft limit is a separate queue
+backpressure bound and should change only when queue-memory or latency evidence
+requires it, not automatically with the request budget.
 
 On saturated queues, normal planning reads the complete bounded open-item scan
 before selecting candidates. For the current largest repository this is about
