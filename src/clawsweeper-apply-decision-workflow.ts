@@ -481,12 +481,14 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let mutationGuardBoundaryReason: string | null = null;
       let currentApplyMutationBoundaryBlockReason = (): string | null => null;
       let deferredSelfMutationReceipt = false;
+      let publishedIssueLabelMutation = false;
       let rememberSelfMutationUpdatedAt = (): void => {};
       let reconcileSkippedIssueLabelAdditions = (_labels: readonly string[]): void => {};
       let refreshRenderedReviewComment = (): void => {};
       let restoreDiscardedIssueLabelState = (): void => {};
       const rememberPublishedLabelSync = (): void => {
         if (dryRun) return;
+        publishedIssueLabelMutation = true;
         markdown = replaceFrontMatterValue(markdown, "labels_synced_at", new Date().toISOString());
       };
       const rememberLabelMutationUpdatedAt = (): void => {
@@ -543,6 +545,14 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         } finally {
           issueLabelBatchActive = false;
         }
+      };
+      const writeReportAfterDiscardingIssueLabelBatch = (
+        reportPath: string,
+        nextMarkdown: string,
+      ): void => {
+        markdown = nextMarkdown;
+        discardIssueLabelBatch();
+        writeReportMarkdown(reportPath, markdown);
       };
       try {
       const markMutationObserved = (): void => {
@@ -655,6 +665,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         renameSync(path, closedPath);
       };
       const markApplyChecked = (subjectState: DecisionPacketSubjectState = "open"): void => {
+        discardIssueLabelBatch();
         markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
         if (!dryRun) writeReportMarkdown(path, markdown, subjectState);
       };
@@ -1023,7 +1034,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           staleCanonicalCommentSyncPending = next.staleCanonicalCommentSyncPending;
         },
         shouldProbeClosedState,
-        writeReportMarkdown,
+        writeReportMarkdown: writeReportAfterDiscardingIssueLabelBatch,
       });
       const {
         applyCanonicalCommentSyncGuard,
@@ -1091,6 +1102,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         currentStaleVersionBugBlockReason,
       } = candidateGuards;
       const recordRuntimeBudgetYield = (reason: string): void => {
+        discardIssueLabelBatch();
         if (clawSweeperLabelsChanged && !dryRun && !issueLabelBatchActive) {
           writeReportMarkdown(path, markdown);
         }
@@ -1374,7 +1386,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         results,
         setMarkdown: (next) => { markdown = next; },
         setProcessedCount: (next) => { processedCount = next; },
-        writeReportMarkdown,
+        writeReportMarkdown: writeReportAfterDiscardingIssueLabelBatch,
       });
       const stalePrReviewHead =
         state === "open" && item.kind === "pull_request"
@@ -1680,6 +1692,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       currentClosingPullRequests = reportLabelSync.currentClosingPullRequests;
       issueAdvisoryLabelsChanged = reportLabelSync.issueAdvisoryLabelsChanged;
       markdown = reportLabelSync.markdown;
+      if (publishedIssueLabelMutation && !issueLabelBatchActive && !dryRun) {
+        markdown = replaceFrontMatterValue(markdown, "labels_synced_at", new Date().toISOString());
+      }
       if (reportLabelSync.stopApply) break;
       if (reportLabelSync.skipCurrentItem) continue;
       reviewComment = renderCurrentReviewComment();
@@ -1950,7 +1965,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             "apply_checked_at",
             new Date().toISOString(),
           );
-          if (!dryRun) writeReportMarkdown(path, markdown);
+          if (!dryRun) writeReportAfterDiscardingIssueLabelBatch(path, markdown);
           results.push({
             number,
             action: "skipped_stale_review_comment_sync",
@@ -2013,7 +2028,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 "apply_checked_at",
                 new Date().toISOString(),
               );
-              writeReportMarkdown(path, markdown);
+              writeReportAfterDiscardingIssueLabelBatch(path, markdown);
               results.push({
                 number,
                 action: "skipped_stale_review_comment_sync",
@@ -2133,7 +2148,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           markdown = completeStaleCanonicalCommentSyncReport(markdown);
         }
         if (!isCloseProposal || syncCommentsOnly) flushIssueLabelBatch();
-        if (!dryRun) writeReportMarkdown(path, markdown);
+        if (!dryRun && !issueLabelBatchActive) writeReportMarkdown(path, markdown);
         results.push({
           number,
           action: closeBlockedForCommentSync?.actionTaken ?? "review_comment_synced",

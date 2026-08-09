@@ -780,8 +780,12 @@ test("blocked exact close publication discards staged labels before writing the 
     publishedLabelReceiptStart,
   );
   const publishedLabelReceipt = source.slice(publishedLabelReceiptStart, publishedLabelReceiptEnd);
-  const labelDecisionStart = source.indexOf("const labelSyncReason =");
-  const labelDecisionPrefix = source.slice(publishedLabelReceiptEnd, labelDecisionStart);
+  const stagedLabelReceiptStart = source.indexOf("const rememberLabelMutationUpdatedAt =");
+  const stagedLabelReceiptEnd = source.indexOf(
+    "const previousApplyMutationRunner =",
+    stagedLabelReceiptStart,
+  );
+  const stagedLabelReceipt = source.slice(stagedLabelReceiptStart, stagedLabelReceiptEnd);
 
   assert.ok(blockedCloseStart >= 0);
   assert.ok(blockedCloseEnd > blockedCloseStart);
@@ -790,7 +794,11 @@ test("blocked exact close publication discards staged labels before writing the 
     /if \(!needsReviewCommentSync\) \{\s*discardIssueLabelBatch\(\);[\s\S]*?writeReportMarkdown\(path, markdown\);/,
   );
   assert.match(publishedLabelReceipt, /rememberPublishedLabelSync\(\);/);
-  assert.doesNotMatch(labelDecisionPrefix, /"labels_synced_at"/);
+  assert.match(
+    stagedLabelReceipt,
+    /if \(issueLabelBatchActive\) deferredSelfMutationReceipt = true;/,
+  );
+  assert.doesNotMatch(stagedLabelReceipt, /"labels_synced_at"/);
 });
 
 test("retry dispatch outcomes distinguish definite rejection, ambiguity, and acceptance", () => {

@@ -232,7 +232,7 @@ function prCloseCoverageProofReportMarkdown(markdown: string): string {
   if (!match) return markdown.trim();
   const frontMatter = (match[2] ?? "")
     .split(/\r?\n/)
-    .filter((line) => !/^automation_item_updated_at\s*:/.test(line))
+    .filter((line) => !/^(?:automation_item_updated_at|labels_synced_at)\s*:/.test(line))
     .join("\n");
   return `${match[1] ?? "---\n"}${frontMatter}${match[3] ?? "\n---\n"}${markdown.slice(
     match[0].length,
