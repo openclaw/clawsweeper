@@ -815,6 +815,8 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(liveItem.run ?? "", /throttled the live-item check/);
   assert.match(liveItem.run ?? "", /decision\.targetBranch = process\.env\.TARGET_BRANCH/);
   assert.match(liveItem.run ?? "", /scripts\/classify-scheduled-review-noop\.ts/);
+  const targetToken = job.steps.find((step) => step.id === "target-write-token");
+  assert.match(targetToken?.if ?? "", /steps\.live-item\.outputs\.proceed == 'true'/);
   assert.match(liveItem.run ?? "", /scheduled_noop=true/);
   assert.match(liveItem.run ?? "", /Completing .* as a scheduled no-op before target checkout/);
   assert.match(
