@@ -766,6 +766,23 @@ test("runtime yields bind the active item and terminal Codex failures preserve r
   assert.equal(combinedCodexReviewRetryableForTest(false, true), true);
 });
 
+test("blocked exact close publication discards staged labels before writing the report", () => {
+  const source = readText("src/clawsweeper-apply-decision-workflow.ts");
+  const blockedCloseStart = source.indexOf("if (closeBlockedForCommentSync) {");
+  const blockedCloseEnd = source.indexOf(
+    "if (!needsReviewCommentSync && (!isCloseProposal || syncCommentsOnly))",
+    blockedCloseStart,
+  );
+  const blockedClose = source.slice(blockedCloseStart, blockedCloseEnd);
+
+  assert.ok(blockedCloseStart >= 0);
+  assert.ok(blockedCloseEnd > blockedCloseStart);
+  assert.match(
+    blockedClose,
+    /if \(!needsReviewCommentSync\) \{\s*discardIssueLabelBatch\(\);[\s\S]*?writeReportMarkdown\(path, markdown\);/,
+  );
+});
+
 test("retry dispatch outcomes distinguish definite rejection, ambiguity, and acceptance", () => {
   assert.equal(
     classifyGitHubDispatchResultForTest({ status: 1, stderr: "HTTP 422: validation failed" }),

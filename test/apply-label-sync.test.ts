@@ -970,7 +970,7 @@ test("exact metadata-only publication flushes recoverable labels and drops faile
       active_lock_reason: null,
       author_association: "CONTRIBUTOR",
       user: { login: "reporter" },
-      labels: [],
+      labels: ["P1"],
       comments: 2,
       pull_request: null,
     };
@@ -987,7 +987,7 @@ test("exact metadata-only publication flushes recoverable labels and drops faile
       item_source_revision: sourceRevision,
       review_lease_owner: leaseOwner,
       review_lease_comment_id: String(leaseCommentId),
-      labels: JSON.stringify([]),
+      labels: JSON.stringify(["P1"]),
       triage_priority: "P2",
     });
     const synced = reportWithSyncedReviewComment(sourceReport, number);
@@ -1020,7 +1020,7 @@ test("exact metadata-only publication flushes recoverable labels and drops faile
         body: leaseComment,
       },
     ];
-    writeFileSync(statePath, JSON.stringify({ labels: [] }), "utf8");
+    writeFileSync(statePath, JSON.stringify({ labels: ["P1"], updatedAt: leaseUpdatedAt }), "utf8");
 
     const ghMock = `
 const { appendFileSync, readFileSync, writeFileSync } = require("fs");
@@ -1039,7 +1039,11 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
   console.log(JSON.stringify(slurp ? [[]] : []));
 } else if (args[0] === "api" && new RegExp("/issues/${number}$").test(path)) {
   const state = JSON.parse(readFileSync(statePath, "utf8"));
-  console.log(JSON.stringify({ ...issue, labels: state.labels.map(name => ({ name })) }));
+  console.log(JSON.stringify({
+    ...issue,
+    updated_at: state.updatedAt,
+    labels: state.labels,
+  }));
 } else if (args[0] === "api" && path.startsWith("search/issues?")) {
   console.log(JSON.stringify({ items: [] }));
 } else if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && args.includes("--method")) {
@@ -1055,7 +1059,11 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
 } else if (args[0] === "issue" && args[1] === "edit") {
   const state = JSON.parse(readFileSync(statePath, "utf8"));
   const additions = args.includes("--add-label") ? args[args.indexOf("--add-label") + 1].split(",") : [];
+  const removals = args.includes("--remove-label") ? args[args.indexOf("--remove-label") + 1].split(",") : [];
+  state.labels = state.labels.filter(name => !removals.includes(name));
+  state.updatedAt = new Date(Date.parse(state.updatedAt) + 1000).toISOString();
   if (additions.length > 1 || additions[0] === "P2") {
+    writeFileSync(statePath, JSON.stringify(state));
     console.error("labels can have a maximum of 100 labels");
     process.exit(1);
   }

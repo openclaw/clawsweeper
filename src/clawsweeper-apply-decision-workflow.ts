@@ -495,11 +495,20 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         mutationGuardBoundaryReason = null;
         resetGuardReadCache();
       };
+      const rememberPublishedLabelMutation = (): void => {
+        rememberSelfMutationUpdatedAt();
+        deferredSelfMutationReceipt = false;
+        resetMutationGuardBoundary();
+      };
       const flushIssueLabelBatch = (rememberMutation = true): boolean => {
         if (!issueLabelBatchActive) return false;
         try {
           resetMutationGuardBoundary();
-          const result = flushIssueLabelMutationBatch(number, resetMutationGuardBoundary);
+          const result = flushIssueLabelMutationBatch(
+            number,
+            resetMutationGuardBoundary,
+            rememberPublishedLabelMutation,
+          );
           if (result.skippedAdditions.length > 0) {
             reconcileSkippedIssueLabelAdditions(result.skippedAdditions);
             refreshRenderedReviewComment();
@@ -2095,6 +2104,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       }
       if (closeBlockedForCommentSync) {
         if (!needsReviewCommentSync) {
+          discardIssueLabelBatch();
           if (staleCanonicalCommentSyncPending) {
             markdown = completeStaleCanonicalCommentSyncReport(markdown);
           }

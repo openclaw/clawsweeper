@@ -275,7 +275,11 @@ test("optional batch failures retain successful final operations and report skip
     currentLabels: ["P2"],
   });
   operations.removeIssueLabel(321, "P1");
-  const result = operations.flushIssueLabelMutationBatch(321, () => events.push("freshness"));
+  const result = operations.flushIssueLabelMutationBatch(
+    321,
+    () => events.push("freshness"),
+    () => events.push("receipt"),
+  );
 
   assert.equal(result.itemMutationPublished, true);
   assert.deepEqual(result.skippedAdditions, ["P2"]);
@@ -291,13 +295,58 @@ test("optional batch failures retain successful final operations and report skip
   assert.deepEqual(events, [
     "freshness",
     "issue edit 321 --add-label impact:message-loss,P2 --remove-label P1",
+    "receipt",
     "freshness",
     "issue edit 321 --remove-label P1",
+    "receipt",
     "freshness",
     "issue edit 321 --add-label impact:message-loss",
+    "receipt",
     "freshness",
     "issue edit 321 --add-label P2",
   ]);
+});
+
+test("capacity fallback publishes required additions before optional additions", () => {
+  const capacityFailure = new Error("labels can have a maximum of 100 labels");
+  let individualAdditionPublished = false;
+  const { mutations, operations } = createOperations({
+    mutate: ({ args }) => {
+      const additions = args.includes("--add-label")
+        ? args[args.indexOf("--add-label") + 1]
+        : undefined;
+      if (additions?.includes(",")) throw capacityFailure;
+      if (!additions) return;
+      if (individualAdditionPublished) throw capacityFailure;
+      individualAdditionPublished = true;
+    },
+  });
+
+  operations.beginIssueLabelMutationBatch(321);
+  operations.tryAddOptionalLabel({
+    number: 321,
+    label: "proof: sufficient",
+    currentLabels: [],
+  });
+  operations.addIssueLabel(321, "status: ready for maintainer look");
+  const result = operations.flushIssueLabelMutationBatch(321);
+
+  assert.equal(result.itemMutationPublished, true);
+  assert.deepEqual(result.skippedAdditions, ["proof: sufficient"]);
+  assert.deepEqual(
+    mutations.map(({ args }) => args),
+    [
+      [
+        "issue",
+        "edit",
+        "321",
+        "--add-label",
+        "proof: sufficient,status: ready for maintainer look",
+      ],
+      ["issue", "edit", "321", "--add-label", "status: ready for maintainer look"],
+      ["issue", "edit", "321", "--add-label", "proof: sufficient"],
+    ],
+  );
 });
 
 test("optional definition creation failures omit only the affected addition", () => {

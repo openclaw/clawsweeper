@@ -220,6 +220,7 @@ export function createLabelMutationOperations(
   function flushIssueLabelMutationBatch(
     number: number,
     beforeItemMutation?: () => void,
+    afterItemMutation?: () => void,
   ): {
     itemMutationPublished: boolean;
     repositoryDefinitionMutated: boolean;
@@ -301,8 +302,8 @@ export function createLabelMutationOperations(
         identity: `issue_labels_sync:${number}:add=${additions.join("|")}:remove=${removals.join("|")}`,
         args,
         onMutation: batch.onMutation,
-        knownNoMutation: isOptionalFailure,
       });
+      afterItemMutation?.();
       return {
         itemMutationPublished: true,
         repositoryDefinitionMutated: definitionMutated,
@@ -310,6 +311,10 @@ export function createLabelMutationOperations(
       };
     } catch (error) {
       if (!isOptionalFailure(error)) throw error;
+      // `gh issue edit` can apply removals before a missing optional addition
+      // makes the command exit nonzero. Conservatively receipt the live item
+      // before any guarded fallback command.
+      afterItemMutation?.();
       console.warn(
         `Combined optional label sync for item ${number} failed; retrying its final operations individually: ${
           error instanceof Error ? error.message : String(error)
@@ -323,9 +328,14 @@ export function createLabelMutationOperations(
           args: ["issue", "edit", String(number), "--remove-label", removals.join(",")],
           onMutation: batch.onMutation,
         });
+        afterItemMutation?.();
         itemMutationPublished = true;
       }
-      for (const label of additions) {
+      const fallbackAdditions = [
+        ...additions.filter((label) => !batch.optionalAdditions.has(normalizeLabelName(label))),
+        ...additions.filter((label) => batch.optionalAdditions.has(normalizeLabelName(label))),
+      ];
+      for (const label of fallbackAdditions) {
         const optional = batch.optionalAdditions.has(normalizeLabelName(label));
         try {
           beforeItemMutation?.();
@@ -337,6 +347,7 @@ export function createLabelMutationOperations(
               optional &&
               (missingLabelError(fallbackError, label) || labelCapacityError(fallbackError)),
           });
+          afterItemMutation?.();
           itemMutationPublished = true;
         } catch (fallbackError) {
           if (
