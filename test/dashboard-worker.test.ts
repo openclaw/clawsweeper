@@ -19566,7 +19566,7 @@ test("failed shard recovery replaces an expired recovery lease", async () => {
 for (const retryKind of ["coordination", "throttle"] as const) {
   test(`exact-review queue defers ${retryKind} without spending review attempts`, async () => {
     const originalNow = Date.now;
-    const now = Date.parse("2026-08-08T13:00:00.000Z");
+    let now = Date.parse("2026-08-08T13:00:00.000Z");
     Date.now = () => now;
     try {
       const storage = new MemoryDurableStorage();
@@ -19651,6 +19651,61 @@ for (const retryKind of ["coordination", "throttle"] as const) {
               superseded_publications: 0,
             },
       );
+      for (const [index, sourceAction] of [
+        "failed_review_shard_recovery",
+        "artifact_retention_recovery",
+        "source_drift_requeue",
+      ].entries()) {
+        const background = await queue.fetch(
+          buildExactReviewQueueRequest(
+            `background-after-${retryKind}-${sourceAction}`,
+            713 + index,
+            sourceAction,
+          ),
+        );
+        assert.deepEqual(
+          await background.json(),
+          retryKind === "throttle"
+            ? { ok: true, shed: true, reason: "scheduled_rate" }
+            : {
+                ok: true,
+                queued: true,
+                item_key: `openclaw/gogcli#${713 + index}`,
+                superseded_publications: 0,
+              },
+        );
+      }
+      const interactive = await queue.fetch(
+        buildExactReviewQueueRequest(`interactive-after-${retryKind}`, 716, "opened"),
+      );
+      assert.deepEqual(await interactive.json(), {
+        ok: true,
+        queued: true,
+        item_key: "openclaw/gogcli#716",
+        superseded_publications: 0,
+      });
+      if (retryKind === "throttle") {
+        now += 91 * 60_000;
+        const recovered = await queue.fetch(
+          buildExactReviewQueueRequest(
+            "background-after-throttle-recovery",
+            717,
+            "source_drift_requeue",
+          ),
+        );
+        assert.deepEqual(await recovered.json(), {
+          ok: true,
+          queued: true,
+          item_key: "openclaw/gogcli#717",
+          superseded_publications: 0,
+        });
+        const recoveredStats = await (
+          await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+        ).json();
+        assert.equal("throttle_source" in recoveredStats.scheduled_feed, false);
+        assert.equal("throttle_observed_at" in recoveredStats.scheduled_feed, false);
+        assert.equal("throttle_recovery_at" in recoveredStats.scheduled_feed, false);
+      }
     } finally {
       Date.now = originalNow;
     }

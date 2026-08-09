@@ -1289,15 +1289,12 @@ export class ExactReviewQueue {
             );
             return { shed: true as const, reason: "backpressure" as const };
           }
-          if (
-            exactReviewScheduledLane(decision) &&
-            !this.takeScheduledReviewTokenSync(decision, now)
-          ) {
+          if (!this.takeScheduledReviewTokenSync(decision, now)) {
             state.shedSinceReset = exactReviewShedSinceReset(state) + 1;
             this.writeStateSync(state);
             this.incrementQueueMetricsSync({ reviewShed: 1, reviewShedScheduledRate: 1 });
             console.warn(
-              `exact-review admission shed: reason=scheduled_rate item=${key} lane=${exactReviewScheduledLane(decision)}`,
+              `exact-review admission shed: reason=scheduled_rate item=${key} lane=${exactReviewScheduledLane(decision) || "background"}`,
             );
             return { shed: true as const, reason: "scheduled_rate" as const };
           }
@@ -8016,13 +8013,15 @@ export class ExactReviewQueue {
 
   private takeScheduledReviewTokenSync(decision: ExactReviewDecision, now: number) {
     const lane = exactReviewScheduledLane(decision);
-    if (!lane) return true;
+    const lowPriority = isLowPriorityExactReviewDecision(decision);
+    if (!lane && !lowPriority) return true;
     const global = this.scheduledReviewBucketSync("global", now);
-    const bucket = this.scheduledReviewBucketSync(lane, now);
+    const bucket = lane ? this.scheduledReviewBucketSync(lane, now) : null;
     const admitted =
-      Number(global.throttleUntil || 0) <= now && global.tokens >= 1 && bucket.tokens >= 1;
+      Number(global.throttleUntil || 0) <= now &&
+      (lowPriority || (global.tokens >= 1 && Number(bucket?.tokens || 0) >= 1));
     this.storage.kv.put(exactReviewScheduledFeedKey("global"), {
-      tokens: admitted ? global.tokens - 1 : global.tokens,
+      tokens: admitted && lane ? global.tokens - 1 : global.tokens,
       updatedAt: now,
       ...(global.throttleObservedAt
         ? {
@@ -8032,10 +8031,12 @@ export class ExactReviewQueue {
           }
         : {}),
     });
-    this.storage.kv.put(exactReviewScheduledFeedKey(lane), {
-      tokens: admitted ? bucket.tokens - 1 : bucket.tokens,
-      updatedAt: now,
-    });
+    if (lane && bucket) {
+      this.storage.kv.put(exactReviewScheduledFeedKey(lane), {
+        tokens: admitted ? bucket.tokens - 1 : bucket.tokens,
+        updatedAt: now,
+      });
+    }
     return admitted;
   }
 
@@ -8087,10 +8088,13 @@ export class ExactReviewQueue {
       updatedAt: now,
       ratePerHour,
       burst,
-      ...(Number.isFinite(throttleObservedAt) && throttleObservedAt > 0
+      ...(Number.isFinite(throttleObservedAt) &&
+      throttleObservedAt > 0 &&
+      Number.isFinite(throttleUntil) &&
+      throttleUntil > now
         ? {
             throttleObservedAt,
-            throttleUntil: Number.isFinite(throttleUntil) ? throttleUntil : 0,
+            throttleUntil,
             throttleSource: String(stored.throttleSource || "unknown"),
           }
         : {}),
