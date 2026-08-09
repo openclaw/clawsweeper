@@ -3840,7 +3840,7 @@ jobs:
             # The Durable Object turns every selected item into an independent exact-review
             # workflow. Direct schedules use current free queue capacity; target fanout may
             # request a smaller backlog-weighted share. The Worker remains the final owner of
-            # the fleet-wide 600/hour admission target and queue backpressure.
+            # the fleet-wide 300/hour admission target and queue backpressure.
             requested_batch_size="${{ github.event.client_payload.batch_size || '' }}"
             if ! [[ "$requested_batch_size" =~ ^[0-9]+$ ]] || [ "$requested_batch_size" -lt 1 ]; then
               requested_batch_size="$queue_candidate_capacity"

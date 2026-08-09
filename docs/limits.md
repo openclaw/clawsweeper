@@ -149,7 +149,7 @@ unset, empty, or invalid values use the defaults.
 | `CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS`  | 7200000 |
 
 Only manual normal review and manual hot intake use this pressure
-multiplier. Scheduled review uses the queue's 600-item soft limit and 600/hour
+multiplier. Scheduled review uses the queue's 600-item soft limit and 300/hour
 admission target. Repair, assist, issue implementation, cluster repair, and
 exact-item review keep their existing priority budgets.
 
@@ -208,8 +208,8 @@ backlog cannot consume review admission capacity. Existing items, webhook
 events, commands, and publications remain admitted. The queue reports shed
 counts under `lanes.review.shed_reasons_since_reset` and the rolling flow by
 `backpressure` versus `scheduled_rate`; pre-migration totals remain
-`unattributed`. All newly queued review work debits a durable 600-review/hour
-budget with a 120-item burst. Organic work is always admitted and consumes the
+`unattributed`. All newly queued review work debits a durable 300-review/hour
+budget with a 30-item burst. Organic work is always admitted and consumes the
 budget first; scheduled work fills the remainder and is split 35% hot intake and
 65% normal backfill so hot churn cannot starve oldest-first coverage. Re-offering an item
 that is already pending, dispatching, or leased is a semantic dedupe: it does not

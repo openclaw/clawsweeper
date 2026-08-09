@@ -307,9 +307,9 @@ Current defaults:
 - scheduled hot intake and normal backfill: select up to 50 due items per target
   cycle, then enqueue each item through the durable exact-review queue; every
   admitted item receives its own parallel workflow
-- total review admission target: 600 items/hour across the fleet; organic work
+- total review admission target: 300 items/hour across the fleet; organic work
   consumes the budget first and scheduled backfill fills the remainder, split
-  35% hot intake and 65% normal backfill, with a 120-item burst
+  35% hot intake and 65% normal backfill, with a 30-item burst
 - review admission and pressure are computed independently from publication;
   top-level queue health describes reviews while `lanes.publication` retains
   publication backlog, retry, DLQ, and health telemetry
@@ -354,7 +354,7 @@ serializes per target repository, selects globally before sharding, and offers
 never-reviewed candidates before the oldest due tracked candidates to the
 durable queue. Queue admission is fleet-wide,
 so overlapping core and fanout cycles fill only the residual of the configured
-600/hour model-spend target after organic review demand.
+300/hour model-spend target after organic review demand.
 
 The manual quiet-system ceiling is not a promise that every operator run dispatches
 that many shards. The `mode` step checks active repair workers, exact-item sweep
