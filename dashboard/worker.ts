@@ -57,6 +57,7 @@ import {
 export {
   ExactReviewQueue,
   exactReviewEffectiveLeaseExpiresAt,
+  exactReviewJitteredDelayMs,
   exactReviewPublicationCapacity,
   exactReviewPublicationCapacityForState,
   exactReviewQueueAdmittedItems,

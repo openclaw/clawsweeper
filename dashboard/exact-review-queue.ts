@@ -198,6 +198,7 @@ export type ExactReviewQueueItem = {
   claimedAt?: number;
   parkedReason?: ExactReviewParkedReason;
   parkedRecoveryAttempts?: number;
+  parkedRecoveryAt?: number;
   dispatchFailureStatus?: number;
   dispatchFailureClass?: ExactReviewDispatchFailureClass;
   dispatchFailureAt?: number;
@@ -573,6 +574,7 @@ export class ExactReviewQueue {
   private stateWriterCoordinator;
   private lifecycleProjectionStore;
   private lifecycleTelemetryStore;
+  private readonly random: () => number;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
   private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
   private recentDurablePublicationEventsCache = new Map<
@@ -580,10 +582,11 @@ export class ExactReviewQueue {
     { expiresAt: number; value: NonNullable<ReturnType<typeof recentDurablePublicationEvents>> }
   >();
 
-  constructor(state, env) {
+  constructor(state, env, random: () => number = Math.random) {
     this.state = state;
     this.storage = state.storage;
     this.env = env;
+    this.random = random;
     this.batchStore = new ExactReviewPublicationBatchStore(this.storage);
     this.directPublicationStore = new ExactReviewDirectPublicationStore(this.storage);
     this.recordSnapshotStore = new ExactReviewRecordSnapshotStore(
@@ -1872,6 +1875,7 @@ export class ExactReviewQueue {
                 requestedRetryAt ?? undefined,
                 requeueLatest,
                 retryKind,
+                this.random,
               ),
               retried: outcome !== "success",
               refreshed: false,
@@ -2819,6 +2823,10 @@ export class ExactReviewQueue {
           item,
           now,
           run.outcome,
+          0,
+          false,
+          undefined,
+          this.random,
         );
         reconciled += 1;
         if (parked) continue;
@@ -3628,10 +3636,7 @@ export class ExactReviewQueue {
         const failureAttempts = Number(item.reviewFailureAttempts || 0) + 1;
         item.reviewFailureAttempts = failureAttempts;
         if (failureAttempts >= EXACT_REVIEW_RETRY_LIMIT) {
-          item.state = "parked";
-          item.parkedReason = "review_retry_exhausted";
-          item.backoffReason = undefined;
-          item.updatedAt = checkedAt;
+          parkRecoverableExactReviewItem(item, "review_retry_exhausted", checkedAt, this.random);
           continue;
         }
         item.nextAttemptAt = Math.max(
@@ -3852,9 +3857,7 @@ export class ExactReviewQueue {
         item.backoffReason = "publication_retry";
         item.attempts = Number(item.attempts || 0) + 1;
       } else if (failure.attempted && failure.failure.scope === "item") {
-        item.state = "parked";
-        item.parkedReason = "dispatch_rejected";
-        item.backoffReason = undefined;
+        parkRecoverableExactReviewItem(item, "dispatch_rejected", completedAt, this.random);
       } else {
         item.state = "pending";
         item.nextAttemptAt = completedAt;
@@ -10736,6 +10739,7 @@ function finishExactReviewQueueItem(
   requestedRetryAt = 0,
   requeueLatest = false,
   retryKind?: ExactReviewRetryKind,
+  random: () => number = Math.random,
 ) {
   const retryingFailure = outcome !== "success";
   const hasNewerRevision = item.revision > Number(item.leaseRevision || 0);
@@ -10755,7 +10759,11 @@ function finishExactReviewQueueItem(
   item.state = "pending";
   if (typedDeferral) {
     const dispatcherAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
-    item.nextAttemptAt = Math.max(dispatcherAttemptAt, requestedRetryAt);
+    const deferredAttemptAt =
+      retryKind === "throttle"
+        ? now + exactReviewJitteredDelayMs(Math.max(0, requestedRetryAt - now), random)
+        : requestedRetryAt;
+    item.nextAttemptAt = Math.max(dispatcherAttemptAt, deferredAttemptAt);
     item.backoffReason =
       dispatcherAttemptAt >= item.nextAttemptAt
         ? "dispatcher_backoff"
@@ -10769,10 +10777,7 @@ function finishExactReviewQueueItem(
       const failureAttempts = Number(item.reviewFailureAttempts || 0) + 1;
       item.reviewFailureAttempts = failureAttempts;
       if (failureAttempts >= EXACT_REVIEW_RETRY_LIMIT) {
-        item.state = "parked";
-        item.parkedReason = "review_retry_exhausted";
-        item.backoffReason = undefined;
-        item.updatedAt = now;
+        parkRecoverableExactReviewItem(item, "review_retry_exhausted", now, random);
         return { requeued: false, parked: true };
       }
     }
@@ -10940,7 +10945,7 @@ function reclaimExpiredExactReviewLease(
   return true;
 }
 
-function exactReviewParkedRecoveryAt(item: ExactReviewQueueItem) {
+function exactReviewParkedRecoveryDelayMs(item: ExactReviewQueueItem) {
   if (
     item.state !== "parked" ||
     exactReviewQueueIsPublication(item) ||
@@ -10950,11 +10955,36 @@ function exactReviewParkedRecoveryAt(item: ExactReviewQueueItem) {
   }
   const recoveries = exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts);
   if (recoveries >= EXACT_REVIEW_PARKED_RECOVERY_LIMIT) return null;
-  const delay = Math.min(
+  return Math.min(
     EXACT_REVIEW_PARKED_RECOVERY_MAX_MS,
     EXACT_REVIEW_PARKED_RECOVERY_BASE_MS * 2 ** recoveries,
   );
-  return item.updatedAt + delay;
+}
+
+function parkRecoverableExactReviewItem(
+  item: ExactReviewQueueItem,
+  reason: Extract<ExactReviewParkedReason, "dispatch_rejected" | "review_retry_exhausted">,
+  now: number,
+  random: () => number,
+) {
+  item.state = "parked";
+  item.parkedReason = reason;
+  item.backoffReason = undefined;
+  item.updatedAt = now;
+  const delay = exactReviewParkedRecoveryDelayMs(item);
+  item.parkedRecoveryAt =
+    delay === null ? undefined : now + exactReviewJitteredDelayMs(delay, random);
+}
+
+function exactReviewParkedRecoveryAt(item: ExactReviewQueueItem) {
+  const delay = exactReviewParkedRecoveryDelayMs(item);
+  if (delay === null) return null;
+  const scheduled = Number(item.parkedRecoveryAt);
+  // Pre-jitter records did not persist their recovery timestamp. Preserve their
+  // established ladder for one final cycle instead of resampling on every read.
+  return Number.isSafeInteger(scheduled) && scheduled >= item.updatedAt
+    ? scheduled
+    : item.updatedAt + delay;
 }
 
 function recoverParkedExactReviewItems(state: ExactReviewQueueState, now: number) {
@@ -10964,6 +10994,7 @@ function recoverParkedExactReviewItems(state: ExactReviewQueueState, now: number
     if (retryAt === null || retryAt > now) continue;
     item.state = "pending";
     item.parkedReason = undefined;
+    item.parkedRecoveryAt = undefined;
     item.parkedRecoveryAttempts =
       exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) + 1;
     item.nextAttemptAt = now;
@@ -10980,6 +11011,15 @@ function recoverParkedExactReviewItems(state: ExactReviewQueueState, now: number
 function exactReviewParkedRecoveryAttempts(value: unknown) {
   const attempts = Number(value || 0);
   return Number.isSafeInteger(attempts) && attempts > 0 ? attempts : 0;
+}
+
+export function exactReviewJitteredDelayMs(delayMs: number, random: () => number = Math.random) {
+  const delay = Math.max(0, delayMs);
+  const sample = random();
+  const unit = Number.isFinite(sample) ? Math.max(0, Math.min(1, sample)) : 0.5;
+  const minimum = Math.ceil(delay * 0.75);
+  const maximum = Math.floor(delay * 1.5);
+  return Math.max(minimum, Math.min(maximum, Math.round(delay * (0.75 + 0.75 * unit))));
 }
 
 function expireExactReviewPublicationItems(state: ExactReviewQueueState, now: number, env) {
