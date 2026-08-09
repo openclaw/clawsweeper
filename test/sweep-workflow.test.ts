@@ -817,7 +817,8 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(liveItem.run ?? "", /decision\.targetBranch = process\.env\.TARGET_BRANCH/);
   assert.match(liveItem.run ?? "", /scripts\/classify-scheduled-review-noop\.ts/);
   const targetToken = job.steps.find((step) => step.id === "target-write-token");
-  assert.match(targetToken?.if ?? "", /steps\.live-item\.outputs\.proceed == 'true'/);
+  assert.match(targetToken?.if ?? "", /scheduled_semantic_noop != 'true'/);
+  assert.doesNotMatch(targetToken?.if ?? "", /outputs\.proceed == 'true'/);
   const setupPnpm = job.steps.find((step) => step.id === "setup-pnpm");
   assert.match(setupPnpm?.if ?? "", /scheduled_semantic_noop != 'true'/);
   const bundle = job.steps.find((step) => step.id === "create-exact-review-bundle");
