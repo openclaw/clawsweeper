@@ -5264,6 +5264,34 @@ test("target fanout uses the canonical cursor store without a git publisher", ()
   assert.doesNotMatch(workflow, /Publish fanout cursor/);
 });
 
+test("hot fleet fanout runs every 20 minutes without changing other schedules", () => {
+  const workflowText = readText(".github/workflows/sweep.yml");
+  const workflow = YAML.parse(workflowText) as {
+    on: { schedule: Array<{ cron: string }> };
+  };
+  const schedules = workflow.on.schedule.map(({ cron }) => cron);
+  const fanoutBlock = workflowText.slice(
+    workflowText.indexOf("\n  target-fanout:"),
+    workflowText.indexOf("\n  plan:"),
+  );
+
+  assert.ok(schedules.includes("4/20 * * * *"));
+  assert.ok(!schedules.includes("4/5 * * * *"));
+  assert.ok(schedules.includes("*/5 * * * *"));
+  assert.ok(schedules.includes("2/5 * * * *"));
+  assert.ok(schedules.includes("41/10 * * * *"));
+  assert.ok(schedules.includes("37 */6 * * *"));
+  assert.match(fanoutBlock, /github\.event\.schedule == '4\/20 \* \* \* \*'/);
+  assert.match(
+    fanoutBlock,
+    /FANOUT_MODE: \$\{\{ github\.event\.schedule == '41\/10 \* \* \* \*' && 'normal-review' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && 'audit' \|\| 'hot-intake'\) \}\}/,
+  );
+  assert.match(
+    fanoutBlock,
+    /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41\/10 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
+  );
+});
+
 test("review git info follows checked-out target branch", () => {
   const source = readText("src/clawsweeper-review-runtime.ts");
 

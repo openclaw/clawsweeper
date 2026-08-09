@@ -140,9 +140,47 @@ Target fanout dispatches review batches through `repository_dispatch` so each
 selected repository can carry its inventory default branch without consuming
 manual workflow inputs. Scheduled fanout uses:
 
-- hot intake: `4/5 * * * *`, 20 target repositories per cursor step
+- hot intake: `4/20 * * * *`, 20 target repositories per cursor step. This
+  20-minute cadence is temporary containment for scheduled self-feedback;
+  restore a faster cadence only after the loop is fixed and quota telemetry
+  confirms it is safe. [PR #959](https://github.com/openclaw/clawsweeper/pull/959)
+  intentionally moved this selector from every 15 minutes to every 5 minutes;
+  this containment adjusts that current cadence without attributing the
+  self-feedback defect to PR #959.
 - normal review: `41/10 * * * *`, 12 target repositories per cursor step
 - audit: `37 */6 * * *`, 12 target repositories per cursor step
+
+[PR #1007](https://github.com/openclaw/clawsweeper/pull/1007) is directly
+relevant but was insufficient for the observed `openclaw/libterminal#41`
+path. It was intended to recognize structurally proven ClawSweeper-owned
+comment or label activity while keeping timestamp-only or incomplete evidence
+eligible for conservative structural verification. Its mainline commit
+`b83f2983da` predates and is an ancestor of the ClawSweeper head used by
+[run 31336140651](https://github.com/openclaw/clawsweeper/actions/runs/31336140651).
+That later scheduled run still reported one structural-cache check, zero
+structural-cache hits, and one full hydration before publishing the durable
+comment again. The evidence therefore shows that #1007 did not suppress this
+specific execution path; it does not prove whether the receipt was missing,
+incomplete, stale, or bypassed at admission, and it does not make #1007 the
+cause of the loop. The temporary cadence reduction bounds demand while that
+remaining path is corrected.
+
+There is no ClawSweeper PR #1032: the relevant record is
+[issue #1032](https://github.com/openclaw/clawsweeper/issues/1032), which
+reported a post-#1007 review storm and was closed by
+[PR #1036](https://github.com/openclaw/clawsweeper/pull/1036). PR #1036 changed
+the exact-review workflow and review-preparation boundary to forward
+`sourceAction` and classify `scheduled_hot_intake` and
+`scheduled_normal_backfill` as automatic, making them eligible for receipt and
+cache reuse instead of treating queued item numbers as explicit reviews. Its
+merge commit `138ee2f96e` predates and is an ancestor of run 31336140651. The
+run log contains `--review-source-action scheduled_hot_intake`, so #1036 was
+effective at the classification boundary and was not bypassed there. The same
+run nevertheless recorded zero structural-cache hits and one full hydration,
+making #1036 a partial but insufficient mitigation for this case: it opened the
+cache-eligible path, while the available structural receipt still failed to
+match. This evidence does not attribute the remaining receipt mismatch to
+#1036 itself.
 
 Each mode's cursor lives in the authenticated ExactReviewQueue Durable Object,
 not generated Git state. Reads and writes use a monotonic revision. If the
@@ -275,7 +313,8 @@ Current defaults:
 - review admission and pressure are computed independently from publication;
   top-level queue health describes reviews while `lanes.publication` retains
   publication backlog, retry, DLQ, and health telemetry
-- fleet fanout: 20 hot targets every 15 minutes and 12 normal targets hourly;
+- fleet fanout: 20 hot targets every 20 minutes as temporary self-feedback
+  containment, and 12 normal targets every 10 minutes;
   each target cycle can offer up to 50 due items to the shared admission budget
 - manual broad hot intake: up to 44 shards when quiet
 - manual normal backfill: defaults to 89 shards, batch size 3, and scans up to
