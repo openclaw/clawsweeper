@@ -25951,6 +25951,10 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
     if (url.pathname === "/app/installations/123/access_tokens") {
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        repositories: ["gogcli"],
+        permissions: { issues: "write", pull_requests: "write" },
+      });
       return jsonResponse({ token: "target-token" });
     }
     const pullMatch = /^\/repos\/openclaw\/gogcli\/pulls\/(\d+)$/.exec(url.pathname);
@@ -25978,7 +25982,12 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
     if (commentMatch && init?.method === "POST") {
       const itemNumber = Number(commentMatch[1]);
       fastAckPostAttempts.set(itemNumber, (fastAckPostAttempts.get(itemNumber) || 0) + 1);
-      if (itemNumber === 601) throw new Error("GitHub comment write failed");
+      if (itemNumber === 601) {
+        return new Response(JSON.stringify({ message: "Resource not accessible by integration" }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        });
+      }
       const body = JSON.parse(String(init.body || "{}"));
       const comment = {
         id: 9000 + itemNumber,

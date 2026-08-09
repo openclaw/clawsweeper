@@ -13093,7 +13093,7 @@ export async function createGithubAppTokenFor({
     {
       method: "POST",
       body: JSON.stringify({
-        repository_names: repositories.filter(Boolean),
+        repositories: repositories.filter(Boolean),
         permissions,
       }),
       errorLabel: `GitHub App token for ${label}`,

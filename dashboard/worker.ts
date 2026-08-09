@@ -1199,9 +1199,10 @@ async function githubWebhook(request, env, ctx) {
     const deliveryId = request.headers.get("x-github-delivery") || "";
     let itemDecision = decision as ExactReviewDecision & { installationId?: number };
     if (itemDecision.itemKind === "pull_request") {
-      await acknowledgePullRequestReceipt({ env, ctx, decision: itemDecision }).catch(
-        () => undefined,
-      );
+      await acknowledgePullRequestReceipt({ env, ctx, decision: itemDecision }).catch((error) => {
+        console.error(`ClawSweeper pull request fast ack failed: ${error?.message || error}`);
+        return undefined;
+      });
     }
     itemDecision = await withPullRequestEditContentRevision({
       event,
@@ -2466,7 +2467,7 @@ async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
     installationId: decision.installationId,
     label: decision.targetRepo,
     repositories: [repoName(decision.targetRepo)],
-    permissions: { issues: "write", pull_requests: "read" },
+    permissions: { issues: "write", pull_requests: "write" },
   });
   const ackMarker = pullRequestFastAckMarker(decision.itemNumber, decision.sourceAction);
   const statusCommentId = await createFastAckCommentOnce({

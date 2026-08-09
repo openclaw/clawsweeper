@@ -1709,7 +1709,7 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
     if (url.pathname === "/app/installations/1000/access_tokens") {
       const body = JSON.parse(String(init?.body));
       assert.deepEqual(body, {
-        repository_names: ["openclaw"],
+        repositories: ["openclaw"],
         permissions: { issues: "read", pull_requests: "read" },
       });
       return new Response(JSON.stringify({ token: "target-token" }), {

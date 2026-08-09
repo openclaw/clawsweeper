@@ -466,7 +466,7 @@ async function createInstallationToken({
     path: `/app/installations/${installationId}/access_tokens`,
     method: "POST",
     body: {
-      repository_names: repositories.filter(Boolean),
+      repositories: repositories.filter(Boolean),
       permissions,
     },
     authScheme: "Bearer",
