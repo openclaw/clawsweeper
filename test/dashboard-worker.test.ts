@@ -203,8 +203,8 @@ test("production doubles exact review claims and canonical publication batches",
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT = "8"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_COOLDOWN_MS = "5000"/);
-  assert.match(wrangler, /EXACT_REVIEW_TARGET_RATE_PER_HOUR = "450"/);
-  assert.match(wrangler, /EXACT_REVIEW_TARGET_BURST = "120"/);
+  assert.match(wrangler, /EXACT_REVIEW_TARGET_RATE_PER_HOUR = "300"/);
+  assert.match(wrangler, /EXACT_REVIEW_TARGET_BURST = "30"/);
   assert.match(wrangler, /EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"/);
 });
 
@@ -19580,6 +19580,15 @@ for (const retryKind of ["coordination", "throttle"] as const) {
           "openclaw/openclaw#711": item,
         },
       });
+      if (retryKind === "throttle") {
+        await storage.put("exact-review-scheduled-feed:v1:global", {
+          tokens: 1,
+          updatedAt: now,
+          throttleObservedAt: now - 60_000,
+          throttleUntil: now + 90 * 60_000,
+          throttleSource: "review_completion",
+        });
+      }
       const queue = new ExactReviewQueue({ storage }, {}, () => 0);
 
       const response = await queue.fetch(
@@ -19612,6 +19621,36 @@ for (const retryKind of ["coordination", "throttle"] as const) {
       assert.equal(deferred.attempts, 3);
       assert.equal(deferred.reviewFailureAttempts, 2);
       assert.equal(deferred.backoffReason, `${retryKind}_retry`);
+      if (retryKind === "throttle") {
+        const stats = await (
+          await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+        ).json();
+        assert.equal(stats.scheduled_feed.throttle_source, "review_completion");
+        assert.equal(stats.scheduled_feed.throttle_observed_at, new Date(now).toISOString());
+        assert.equal(
+          stats.scheduled_feed.throttle_recovery_at,
+          new Date(now + 90 * 60_000).toISOString(),
+        );
+        assert.ok(stats.scheduled_feed.token_balance >= 0);
+      }
+      const scheduled = await queue.fetch(
+        buildExactReviewQueueRequest(
+          `scheduled-after-${retryKind}`,
+          712,
+          "scheduled_normal_backfill",
+        ),
+      );
+      assert.deepEqual(
+        await scheduled.json(),
+        retryKind === "throttle"
+          ? { ok: true, shed: true, reason: "scheduled_rate" }
+          : {
+              ok: true,
+              queued: true,
+              item_key: "openclaw/gogcli#712",
+              superseded_publications: 0,
+            },
+      );
     } finally {
       Date.now = originalNow;
     }

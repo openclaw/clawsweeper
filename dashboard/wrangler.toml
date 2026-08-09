@@ -65,16 +65,14 @@ EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = "60000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "90000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
 EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"
-# 200/h only sustained ~14 concurrent reviews against a 128-slot pool; with the
-# review/publication lane split (#953) the queue drains to zero pending while
-# 3,306 items have never been reviewed at all (42.9% weekly coverage). Model
-# spend scales with this dial. 600/h saturated the GitHub App installation
-# token budget once the apply and comment-sync lanes resumed alongside reviews
-# (installation 122230863 rate-limit 403s, 2026-07-30 16:56Z): at ~30 API calls
-# per review, 450/h leaves the write lanes headroom inside the shared allowance
-# while still clearing the first-pass backlog in about a day.
-EXACT_REVIEW_TARGET_RATE_PER_HOUR = "450"
-EXACT_REVIEW_TARGET_BURST = "120"
+# A full review consumes about 30 GitHub requests. Keep scheduled review demand
+# at or below 9,000 requests/hour so the 15,000-request installation bucket has
+# explicit capacity for exact ingress, comment routing, apply proof, publication,
+# and support lanes. A 30-item burst bounds cold-start demand to roughly 900
+# requests instead of allowing a 3,600-request spike before the hourly limiter
+# takes effect. Interactive exact-event reviews keep their independent lane.
+EXACT_REVIEW_TARGET_RATE_PER_HOUR = "300"
+EXACT_REVIEW_TARGET_BURST = "30"
 # Keep each mutation lease at 8 while allowing four isolated workflows to prepare
 # concurrently. Final commits still cross the single state-writer coordinator.
 # A full-window publish moves ~2k paths and observed ~40 min; the drain lease
