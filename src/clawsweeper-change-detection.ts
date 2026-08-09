@@ -80,7 +80,10 @@ export function dataModelChangeFromContext(repo: string, context: ItemContext): 
     const previousPath =
       typeof file.previous_filename === "string" ? file.previous_filename.trim() : "";
     const candidates = [path, previousPath].filter(Boolean);
-    const likelyPath = candidates.find(isLikelyOpenClawDataModelPath) ?? "";
+    const productionCandidates = candidates.filter(
+      (candidate) => !isOpenClawDataModelTestPath(candidate),
+    );
+    const likelyPath = productionCandidates.find(isLikelyOpenClawDataModelPath) ?? "";
     const patch = typeof file.patch === "string" ? file.patch : null;
     const lines = patch === null ? [] : changedPatchLines(patch);
 
@@ -91,7 +94,7 @@ export function dataModelChangeFromContext(repo: string, context: ItemContext): 
       surfaces.add(dataModelSurfaceLabel(likelyPath, "unknown-data-model-change"));
     }
 
-    for (const candidate of candidates) {
+    for (const candidate of productionCandidates) {
       if (isDocsPath(candidate)) {
         if (patch !== null && !configSurfacePatchIsTruncated(patch)) {
           dataModelSurfacesFromPatch(candidate, lines, { docsOnly: true }).forEach((surface) =>
@@ -312,7 +315,7 @@ function dataModelSurfacesFromPatch(
   ) {
     add("database schema");
   }
-  if (/\b(?:migration|migrate|upgrade|backfill|doctor|repair|reindex|rehydrat\w*)\b/i.test(text)) {
+  if (/\b(?:migrations?|migrat(?:e|ed|es|ing)|backfill\w*)\b/i.test(text)) {
     add("migration/backfill/repair");
   }
   if (
@@ -322,22 +325,26 @@ function dataModelSurfacesFromPatch(
   ) {
     add("durable storage schema");
   }
-  if (
-    /\b(?:JSON\.(?:parse|stringify)|readFile|writeFile|localStorage|sessionStorage|workspaceState|globalState|serialized|persisted?|statePath)\b/i.test(
-      text,
-    )
-  ) {
+  const hasExplicitSerializedState =
+    /\b(?:localStorage|sessionStorage|workspaceState|globalState|statePath)\b/i.test(text);
+  const hasJsonFilePersistence = lines.some((_, index) => {
+    const operation = lines.slice(Math.max(0, index - 2), index + 3).join("\n");
+    return (
+      /\b(?:readFile|writeFile)\w*\b/i.test(operation) &&
+      /\bJSON\.(?:parse|stringify)\b/i.test(operation) &&
+      /\b(?:state|checkpoint|snapshot|cache|store|storage|record|session|history|queue|registry|cursor|profile|credential|memory|database|db)(?:[ _-]?(?:path|file|dir(?:ectory)?)){0,2}\b/i.test(
+        operation,
+      )
+    );
+  });
+  if (hasExplicitSerializedState || hasJsonFilePersistence) {
     add("serialized state");
   }
-  if (
-    /\b(?:cache(?:Key|Version|Schema|Namespace)?|cache[_-]?(?:key|version|schema|namespace)|ttl)\b/i.test(
-      text,
-    )
-  ) {
+  if (/\bcache[ _-]?(?:key|version|schema|namespace|ttl)\b/i.test(text)) {
     add("persistent cache schema");
   }
   if (
-    /\b(?:embedding|vector|collection|dimension|metadata|row[_-]?id|document[_-]?id|chunk[_-]?id|similarity[_-]?index)\b/i.test(
+    /\b(?:embedding[ _-]?dimension|vector[ _-]?dimension|collection[ _-]?name|row[ _-]?id|document[ _-]?id|chunk[ _-]?id|similarity[ _-]?index)\b/i.test(
       text,
     )
   ) {
@@ -358,6 +365,14 @@ function dataModelLineLooksSemantic(line: string, options: { docsOnly: boolean }
 function isLikelyOpenClawDataModelPath(path: string): boolean {
   if (!path || isDocsPath(path)) return false;
   return Boolean(dataModelPathHint(path)) || /\.(?:sql|sqlite|db|prisma)$/.test(path);
+}
+
+function isOpenClawDataModelTestPath(path: string): boolean {
+  return (
+    /(^|\/)(?:__tests__|test|tests|fixtures|__snapshots__)(?:\/|$)/i.test(path) ||
+    /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(path) ||
+    /\.snap$/i.test(path)
+  );
 }
 
 function dataModelPathHint(path: string): string {
@@ -386,7 +401,7 @@ function dataModelPathHint(path: string): string {
     return "vector/embedding metadata";
   }
   if (
-    /(^|\/)(?:migrations?|backfill|doctor|repair|upgrade)(?:\/|[-_.])|(?:migration|backfill|doctor|repair|upgrade)\.(?:ts|js)$/i.test(
+    /(^|\/)(?:migrations?|backfill|doctor|repair|upgrade)(?:\/|[-_.])|(^|\/)(?:migration|backfill|doctor|repair|upgrade)\.(?:ts|js)$/i.test(
       path,
     )
   ) {

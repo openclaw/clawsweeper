@@ -294,6 +294,196 @@ test("data model detector ignores query-only and non-semantic docs changes", () 
   assert.deepEqual(detection, { change: false, surfaces: [] });
 });
 
+test("data model detector ignores workflow, test, and fixture vocabulary", () => {
+  const detection = dataModelChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: ".github/workflows/release.yml",
+        patch:
+          '@@\n+          metadata=".artifacts/pkg/candidate.json"\n+          if [[ ! -f "$metadata" ]]; then',
+      },
+      {
+        filename: ".github/workflows/checks.yml",
+        patch: "@@\n+  vector-tests:\n+    runs-on: ubuntu-latest",
+      },
+      {
+        filename: "test/scripts/package-acceptance.test.ts",
+        patch: '@@\n+  assert.deepEqual(result.metadata, { name: "openclaw" });',
+      },
+      {
+        filename: "test/fixtures/layout.json",
+        patch: '@@\n+  "dimension": 24,',
+      },
+      {
+        filename: "test/fixtures/vector-schema.ts",
+        patch: "@@\n+  embeddingDimension: 24,",
+      },
+      {
+        filename: "src/talk/session-runtime.test.ts",
+        patch: "@@\n+  const parsed = JSON.parse(raw);",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, { change: false, surfaces: [] });
+});
+
+test("data model detector ignores runtime repair, telemetry, and cache vocabulary", () => {
+  const detection = dataModelChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "src/agents/embedded-agent-runner/run/code-mode-tool-call-repair.ts",
+        patch: "@@\n+  return repairSmallModelToolCall(payload);",
+      },
+      {
+        filename: "src/agents/tool-search-telemetry.ts",
+        patch: "@@\n+  metadata: toolMetadata,\n+  cacheRead: usage.cacheRead,",
+      },
+      {
+        filename: "src/agents/code-mode-tool-input-repair.ts",
+        patch: "@@\n+  return JSON.parse(candidate);",
+      },
+      {
+        filename: "src/gateway/websocket.ts",
+        patch: '@@\n+  if (req.headers.upgrade !== "websocket") return;',
+      },
+      {
+        filename: "src/util/memo.ts",
+        patch: "@@\n+const cache = new Map<string, number>();\n+cache.set(key, value);",
+      },
+      {
+        filename: "docs/reference/full-release-validation.md",
+        patch: "@@\n+| Cross-OS | Tests: upgrade from the prior release |",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, { change: false, surfaces: [] });
+});
+
+test("data model detector keeps explicit repair and persistence surfaces", () => {
+  const detection = dataModelChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "src/doctor/repair.ts",
+        patch: "@@\n+  await repair(database);",
+      },
+      {
+        filename: "src/cache/schema.ts",
+        patch: "@@\n+  entryFingerprint: string;",
+      },
+      {
+        filename: "src/runtime/checkpoint.ts",
+        patch:
+          "@@\n+  const raw = await readFile(checkpointPath, 'utf8');\n+  return JSON.parse(raw);",
+      },
+      {
+        filename: "scripts/config-fixture.ts",
+        patch:
+          "@@\n+  await writeFile(configPath, JSON.stringify(config));\n+  return readFile(resultPath, 'utf8');",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    surfaces: [
+      "migration/backfill/repair: src/doctor/repair.ts",
+      "persistent cache schema: src/cache/schema.ts",
+      "serialized state: src/runtime/checkpoint.ts",
+    ],
+  });
+});
+
+test("data model detector keeps production snapshot schemas", () => {
+  const detection = dataModelChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "src/storage/snapshots/schema.sql",
+        patch: "@@\n+ALTER TABLE snapshots ADD COLUMN format_version INTEGER;",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    surfaces: ["database schema: src/storage/snapshots/schema.sql"],
+  });
+});
+
+test("data model detector recognizes semantic prose forms", () => {
+  const detection = dataModelChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "docs/storage.md",
+        patch:
+          "@@\n+The cache version changes when persisted entries become incompatible.\n+The embedding dimension remains part of stored vector metadata.",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    surfaces: [
+      "persistent cache schema: docs/storage.md",
+      "vector/embedding metadata: docs/storage.md",
+    ],
+  });
+});
+
+test("data model detector recognizes compound persisted path identifiers", () => {
+  const detection = dataModelChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "src/runtime/load-checkpoint.ts",
+        patch:
+          "@@\n+  const raw = await readFile(checkpointFilePath, 'utf8');\n+  return JSON.parse(raw);",
+      },
+      {
+        filename: "src/runtime/load-state.ts",
+        patch:
+          "@@\n+  const raw = await readFile(state_file_path, 'utf8');\n+  return JSON.parse(raw);",
+      },
+      {
+        filename: "src/runtime/load-cache.ts",
+        patch:
+          "@@\n+  const raw = await readFile(cacheDirectoryPath, 'utf8');\n+  return JSON.parse(raw);",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    surfaces: [
+      "serialized state: src/runtime/load-cache.ts",
+      "serialized state: src/runtime/load-checkpoint.ts",
+      "serialized state: src/runtime/load-state.ts",
+    ],
+  });
+});
+
+test("data model detector keeps persistence outside the normal source tree", () => {
+  const detection = dataModelChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "migrations/0001-init.sql",
+        patch: "@@\n+CREATE TABLE sessions (id TEXT PRIMARY KEY);",
+      },
+      {
+        filename: "state/persisted-state.json",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    surfaces: [
+      "database schema: migrations/0001-init.sql",
+      "unknown-data-model-change: state/persisted-state.json",
+    ],
+  });
+});
+
 test("data model detector flags path-hinted persisted field declarations", () => {
   const detection = dataModelChangeFromPullFilesForTest({
     pullFiles: [
