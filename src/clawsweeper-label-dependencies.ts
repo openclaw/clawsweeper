@@ -2,6 +2,7 @@ import type { createLabelPolicy } from "./clawsweeper-label-policy.js";
 import type { SecurityReview } from "./clawsweeper-types.js";
 
 export interface LabelSynchronizationDependencies {
+  ghJson: <T>(args: string[]) => T;
   ghObservedMutationCommand: (options: {
     identity: string;
     args: string[];

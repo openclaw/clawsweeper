@@ -726,6 +726,432 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
   }
 });
 
+test("exact publication rechecks after batched labels and again before close", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const statePath = join(root, "state.json");
+    const logPath = join(root, "gh.log");
+    const number = 103701;
+    const reviewedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const leaseUpdatedAt = new Date(Date.now() - 60_000).toISOString();
+    const leaseExpiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    const leaseOwner = `exact-issue-${number}`;
+    const leaseCommentId = 700_000 + number;
+    const issue = {
+      number,
+      title: `Incident issue ${number}`,
+      body: "The reviewed issue source remains unchanged.",
+      html_url: `https://github.com/openclaw/openclaw/issues/${number}`,
+      created_at: "2026-04-01T00:00:00Z",
+      updated_at: leaseUpdatedAt,
+      closed_at: null,
+      state: "open",
+      locked: false,
+      active_lock_reason: null,
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 2,
+      pull_request: null,
+    };
+    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const closeReport = implementedCloseReport({
+      repository: "openclaw/openclaw",
+      number,
+      type: "issue",
+      title: issue.title,
+      reviewed_at: reviewedAt,
+      item_updated_at: reviewedAt,
+      item_source_revision: sourceRevision,
+      review_lease_owner: leaseOwner,
+      review_lease_comment_id: String(leaseCommentId),
+      labels: JSON.stringify([]),
+      triage_priority: "P2",
+      impact_labels: JSON.stringify(["impact:message-loss"]),
+    });
+    const synced = reportWithSyncedReviewComment(closeReport, number, "implemented_on_main");
+    writeFileSync(join(itemsDir, `${number}.md`), synced.report, "utf8");
+    const leaseComment = renderReviewStartStatusComment({
+      number,
+      kind: "issue",
+      title: issue.title,
+      headSha: sourceRevision,
+      startedAt: leaseUpdatedAt,
+      leaseExpiresAt,
+      leaseOwner,
+    });
+    const durableCommentId = 9000 + number;
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        labels: [],
+        state: "open",
+        comments: [
+          {
+            id: durableCommentId,
+            html_url: `${issue.html_url}#issuecomment-${durableCommentId}`,
+            created_at: reviewedAt,
+            updated_at: reviewedAt,
+            user: { login: "clawsweeper[bot]" },
+            body: `${synced.comment}\n\nPrior publication body.`,
+          },
+          {
+            id: leaseCommentId,
+            html_url: `${issue.html_url}#issuecomment-${leaseCommentId}`,
+            created_at: leaseUpdatedAt,
+            updated_at: leaseUpdatedAt,
+            user: { login: "clawsweeper[bot]" },
+            body: leaseComment,
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const ghMock = `
+const { appendFileSync, readFileSync, writeFileSync } = require("fs");
+const issue = ${JSON.stringify(issue)};
+const statePath = ${JSON.stringify(statePath)};
+const logPath = ${JSON.stringify(logPath)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+const slurp = args.includes("--slurp");
+const readState = () => JSON.parse(readFileSync(statePath, "utf8"));
+const saveState = value => writeFileSync(statePath, JSON.stringify(value));
+if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && args.includes("--method")) {
+  const state = readState();
+  const id = Number(path.match(/\\d+$/)[0]);
+  if (args[args.indexOf("--method") + 1] === "DELETE") {
+    state.comments = state.comments.filter(comment => comment.id !== id);
+    saveState(state);
+    console.log("");
+  } else {
+    const payload = JSON.parse(readFileSync(args[args.indexOf("--input") + 1], "utf8"));
+    const comment = state.comments.find(candidate => candidate.id === id);
+    comment.body = payload.body;
+    comment.updated_at = new Date().toISOString();
+    saveState(state);
+    console.log(JSON.stringify(comment));
+  }
+} else if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").test(path)) {
+  const comments = readState().comments;
+  console.log(JSON.stringify(slurp ? [comments] : comments));
+} else if (args[0] === "api" && new RegExp("/issues/${number}/timeline(?:\\\\?|$)").test(path)) {
+  console.log(JSON.stringify(slurp ? [[]] : []));
+} else if (args[0] === "api" && new RegExp("/issues/${number}$").test(path)) {
+  const state = readState();
+  if (args.includes("--method")) {
+    state.state = "closed";
+    saveState(state);
+  }
+  console.log(JSON.stringify({ ...issue, state: state.state, labels: state.labels.map(name => ({ name })) }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "label" && args[1] === "list") {
+  console.log(JSON.stringify([
+    { name: "P2", color: "FBCA04", description: "Important but bounded work with a practical workaround or moderate scope." },
+    { name: "impact:message-loss", color: "D93F0B", description: "This issue is about lost, duplicated, misrouted, or suppressed channel messages." }
+  ]));
+} else if (args[0] === "label" && args[1] === "create") {
+  console.log("");
+} else if (args[0] === "issue" && args[1] === "edit") {
+  const state = readState();
+  const additions = args.includes("--add-label") ? args[args.indexOf("--add-label") + 1].split(",") : [];
+  const removals = args.includes("--remove-label") ? args[args.indexOf("--remove-label") + 1].split(",") : [];
+  state.labels = [...new Set([...state.labels.filter(label => !removals.includes(label)), ...additions])];
+  saveState(state);
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--event-apply-proof",
+          "--exact-event-publication",
+          "--item-numbers",
+          String(number),
+          "--processed-limit",
+          "2",
+        ],
+      });
+    });
+
+    const commands = readFileSync(logPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as string[]);
+    const labelCommands = commands.filter(
+      (args) => args[0] === "issue" && args[1] === "edit" && args[2] === String(number),
+    );
+    assert.equal(labelCommands.length, 1);
+    assert.ok(
+      labelCommands[0]?.includes("P2") || labelCommands[0]?.some((arg) => arg.includes("P2")),
+    );
+    assert.ok(labelCommands[0]?.some((arg) => arg.includes("impact:message-loss")));
+
+    const labelIndex = commands.indexOf(labelCommands[0] as string[]);
+    const commentIndex = commands.findIndex(
+      (args) =>
+        args[0] === "api" &&
+        args[1]?.endsWith(`/issues/comments/${durableCommentId}`) &&
+        args.includes("PATCH"),
+    );
+    const closeIndex = commands.findIndex(
+      (args) =>
+        args[0] === "api" && args[1]?.endsWith(`/issues/${number}`) && args.includes("PATCH"),
+    );
+    assert.ok(labelIndex >= 0 && commentIndex > labelIndex && closeIndex > commentIndex);
+    const isGuardRead = (args: string[]): boolean =>
+      args[0] === "api" &&
+      !args.includes("--method") &&
+      (args[1]?.includes(`/issues/${number}`) ?? false);
+    assert.ok(
+      commands.slice(labelIndex + 1, commentIndex).some(isGuardRead),
+      `expected a fresh comment guard after label publication: ${JSON.stringify(
+        commands.slice(labelIndex + 1, commentIndex),
+      )}`,
+    );
+    const postCommentIssueReads = commands
+      .slice(commentIndex + 1, closeIndex)
+      .filter((args) => isGuardRead(args) && args[1]?.endsWith(`/issues/${number}`));
+    assert.ok(
+      postCommentIssueReads.length >= 2,
+      `expected a fresh close guard after the post-publication receipt: ${JSON.stringify(postCommentIssueReads)}`,
+    );
+    assert.equal(readFileSync(statePath, "utf8").includes('"state":"closed"'), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("exact metadata-only publication flushes recoverable labels and drops failed optional additions", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const statePath = join(root, "state.json");
+    const logPath = join(root, "gh.log");
+    const number = 103702;
+    const reviewedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const leaseUpdatedAt = new Date(Date.now() - 60_000).toISOString();
+    const leaseExpiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    const leaseOwner = `exact-issue-${number}`;
+    const leaseCommentId = 700_000 + number;
+    const issue = {
+      number,
+      title: `Metadata-only publication ${number}`,
+      body: "The reviewed issue source remains unchanged.",
+      html_url: `https://github.com/openclaw/openclaw/issues/${number}`,
+      created_at: "2026-04-01T00:00:00Z",
+      updated_at: leaseUpdatedAt,
+      closed_at: null,
+      state: "open",
+      locked: false,
+      active_lock_reason: null,
+      author_association: "CONTRIBUTOR",
+      user: { login: "reporter" },
+      labels: [],
+      comments: 2,
+      pull_request: null,
+    };
+    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const sourceReport = workPlanCandidateReport({
+      repository: "openclaw/openclaw",
+      number,
+      title: issue.title,
+      reviewed_at: reviewedAt,
+      item_updated_at: reviewedAt,
+      item_snapshot_hash: "reviewed-snapshot",
+      item_source_revision: sourceRevision,
+      review_lease_owner: leaseOwner,
+      review_lease_comment_id: String(leaseCommentId),
+      labels: JSON.stringify([]),
+      triage_priority: "P2",
+    });
+    const synced = reportWithSyncedReviewComment(sourceReport, number);
+    const metadataOnlyReport = synced.report.replace(/^review_comment_id:.*\n/m, "");
+    writeFileSync(join(itemsDir, `${number}.md`), metadataOnlyReport, "utf8");
+    const leaseComment = renderReviewStartStatusComment({
+      number,
+      kind: "issue",
+      title: issue.title,
+      headSha: sourceRevision,
+      startedAt: leaseUpdatedAt,
+      leaseExpiresAt,
+      leaseOwner,
+    });
+    const comments = [
+      {
+        id: 9000 + number,
+        html_url: `${issue.html_url}#issuecomment-${9000 + number}`,
+        created_at: reviewedAt,
+        updated_at: reviewedAt,
+        user: { login: "clawsweeper[bot]" },
+        body: synced.comment,
+      },
+      {
+        id: leaseCommentId,
+        html_url: `${issue.html_url}#issuecomment-${leaseCommentId}`,
+        created_at: leaseUpdatedAt,
+        updated_at: leaseUpdatedAt,
+        user: { login: "clawsweeper[bot]" },
+        body: leaseComment,
+      },
+    ];
+    writeFileSync(statePath, JSON.stringify({ labels: [] }), "utf8");
+
+    const ghMock = `
+const { appendFileSync, readFileSync, writeFileSync } = require("fs");
+const issue = ${JSON.stringify(issue)};
+const comments = ${JSON.stringify(comments)};
+const statePath = ${JSON.stringify(statePath)};
+const logPath = ${JSON.stringify(logPath)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+const slurp = args.includes("--slurp");
+if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").test(path)) {
+  console.log(JSON.stringify(slurp ? [comments] : comments));
+} else if (args[0] === "api" && new RegExp("/issues/${number}/timeline(?:\\\\?|$)").test(path)) {
+  console.log(JSON.stringify(slurp ? [[]] : []));
+} else if (args[0] === "api" && new RegExp("/issues/${number}$").test(path)) {
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  console.log(JSON.stringify({ ...issue, labels: state.labels.map(name => ({ name })) }));
+} else if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+} else if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && args.includes("--method")) {
+  console.log("");
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "label" && args[1] === "list") {
+  console.log(JSON.stringify([
+    { name: "P2", color: "FBCA04", description: "Important but bounded work with a practical workaround or moderate scope." }
+  ]));
+} else if (args[0] === "label" && args[1] === "create") {
+  console.log("");
+} else if (args[0] === "issue" && args[1] === "edit") {
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  const additions = args.includes("--add-label") ? args[args.indexOf("--add-label") + 1].split(",") : [];
+  if (additions.length > 1 || additions[0] === "P2") {
+    console.error("labels can have a maximum of 100 labels");
+    process.exit(1);
+  }
+  state.labels = [...new Set([...state.labels, ...additions])];
+  writeFileSync(statePath, JSON.stringify(state));
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        targetRepo: "openclaw/openclaw",
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--sync-comments-only",
+          "--event-apply-proof",
+          "--exact-event-publication",
+          "--item-numbers",
+          String(number),
+        ],
+      });
+    });
+
+    const commands = readFileSync(logPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as string[]);
+    const publishedLabels = JSON.parse(readFileSync(statePath, "utf8")).labels as string[];
+    assert.ok(publishedLabels.length > 0, JSON.stringify(commands));
+    assert.equal(publishedLabels.includes("P2"), false);
+    assert.ok(commands.filter((args) => args[0] === "issue" && args[1] === "edit").length > 1);
+    const lastDefinitionIndex = commands.findLastIndex(
+      (args) => args[0] === "label" && args[1] === "create",
+    );
+    const itemLabelIndex = commands.findIndex((args) => args[0] === "issue" && args[1] === "edit");
+    assert.ok(lastDefinitionIndex >= 0 && itemLabelIndex > lastDefinitionIndex);
+    assert.ok(
+      commands
+        .slice(lastDefinitionIndex + 1, itemLabelIndex)
+        .some(
+          (args) =>
+            args[0] === "api" &&
+            args[1]?.endsWith(`/issues/${number}`) &&
+            !args.includes("--method"),
+        ),
+      JSON.stringify(commands.slice(lastDefinitionIndex + 1, itemLabelIndex)),
+    );
+    const itemLabelIndexes = commands
+      .map((args, index) => ({ args, index }))
+      .filter(({ args }) => args[0] === "issue" && args[1] === "edit")
+      .map(({ index }) => index);
+    for (let index = 1; index < itemLabelIndexes.length; index += 1) {
+      const previous = itemLabelIndexes[index - 1] ?? -1;
+      const current = itemLabelIndexes[index] ?? -1;
+      assert.ok(
+        commands
+          .slice(previous + 1, current)
+          .some(
+            (args) =>
+              args[0] === "api" &&
+              args[1]?.endsWith(`/issues/${number}`) &&
+              !args.includes("--method"),
+          ),
+        `expected a fresh item guard between fallback edits: ${JSON.stringify(
+          commands.slice(previous + 1, current),
+        )}`,
+      );
+    }
+    assert.equal(
+      commands.some(
+        (args) =>
+          args[0] === "api" &&
+          /\/issues\/comments\/\d+$/.test(args[1] ?? "") &&
+          args.includes("PATCH"),
+      ),
+      false,
+    );
+    assert.doesNotMatch(readFileSync(join(itemsDir, `${number}.md`), "utf8"), /^labels:.*P2/m);
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+      {
+        number,
+        action: "review_comment_synced",
+        reason: "recorded existing durable comment metadata",
+        durableReviewSynced: true,
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("issue apply CAS blocks a newer durable review tuple published after preflight", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
