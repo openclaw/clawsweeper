@@ -76,6 +76,15 @@ pending work instead of building a duplicate queue. Durable exact-review leases
 use lease-scoped workflow groups and remain owned by the Worker admission lane.
 Recoverable parked reviews use the nominal 5/10/20-minute retry ladder, but
 each item persists a schedule-time uniform jitter of 0.75-1.5x for every rung.
+After the third automatic recovery, operator-only HMAC-signed routes provide a
+bounded parked-review inventory and guarded resolution/fresh-recovery path. The
+five-minute dead-letter reconcile workflow inspects at most 100 parked targets,
+resolves terminal or repository-gone targets with an audit note, and can queue
+at most five fresh reviews with replay-safe recovery keys. Manual runs remain
+read-only unless `execute` is enabled; scheduled runs execute. Their sanitized
+parked inventory is uploaded beside the publication dead-letter inventory.
+This drains the existing queue state and does not add a dashboard health input
+or an OpenClaw Bay action: Bay remains observer-only.
 GitHub throttle deferrals use the same per-item jitter band when the queue turns
 the reported cooldown into its next-attempt timestamp, preventing a parked
 cohort from becoming eligible in lockstep; coordination and ordinary failure

@@ -650,6 +650,18 @@ export default {
       return authenticatedExactReviewOperatorRequest(request, env, "/dead-letters/recover-fresh");
     if (url.pathname === "/internal/exact-review/dead-letters/resolve" && request.method === "POST")
       return authenticatedExactReviewOperatorRequest(request, env, "/dead-letters/resolve");
+    if (url.pathname === "/internal/exact-review/parked-reviews/list" && request.method === "POST")
+      return authenticatedExactReviewOperatorRequest(request, env, "/parked-reviews/list");
+    if (
+      url.pathname === "/internal/exact-review/parked-reviews/resolve" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewOperatorRequest(request, env, "/parked-reviews/resolve");
+    if (
+      url.pathname === "/internal/exact-review/parked-reviews/recover-fresh" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewOperatorRequest(request, env, "/parked-reviews/recover-fresh");
     if (url.pathname === "/internal/exact-review/publications/list" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/publications/list");
     if (

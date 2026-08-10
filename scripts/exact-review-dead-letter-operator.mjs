@@ -9,6 +9,8 @@ const DEFAULT_OUTPUT = ".artifacts/exact-review-dlq/inventory.json";
 const MAX_SELECTED_IDS = 2;
 const MAX_RECONCILE_TARGETS = 100;
 const MAX_RECONCILE_RECOVERIES = 10;
+const MAX_PARKED_RECONCILE_RECOVERIES = 5;
+const MAX_PARKED_INVENTORY_PAGE_SIZE = 50;
 const MAX_TERMINAL_TARGET_RECHECKS = 10;
 const MAX_RESOLUTION_IDS = 20;
 const MAX_INVENTORY_ROWS = 10_000;
@@ -30,7 +32,7 @@ class DeadLetterInventoryChangedError extends Error {
 }
 
 const HELP = `Usage:
-  node scripts/exact-review-dead-letter-operator.mjs --action <inventory|recover-fresh|resolve|reconcile> [options]
+  node scripts/exact-review-dead-letter-operator.mjs --action <inventory|recover-fresh|resolve|reconcile|reconcile-parked> [options]
 
 Options:
   --action <action>             Required operator action
@@ -38,7 +40,7 @@ Options:
   --idempotency-key <key>       Required for recover-fresh
   --note <text>                 Required for resolve
   --max-targets <count>         Reconcile at most 1-100 canonical targets (default 100)
-  --max-recoveries <count>      Queue at most 0-10 fresh reviews (default 10)
+  --max-recoveries <count>      Queue at most 0-10 DLQ or 0-5 parked reviews (default 10)
   --execute                     Apply the selected mutation; otherwise preview only
   --output <path>               Inventory artifact path
   -h, --help                    Show this help
@@ -57,6 +59,18 @@ async function main(argv) {
   const secret = String(process.env.CLAWSWEEPER_WEBHOOK_SECRET || "");
   if (!queueUrl || !secret) {
     throw new Error("EXACT_REVIEW_QUEUE_URL and CLAWSWEEPER_WEBHOOK_SECRET are required");
+  }
+
+  if (args.action === "reconcile-parked") {
+    const inventory = await loadParkedReviewInventory({
+      queueUrl,
+      secret,
+      maxRows: args.maxTargets,
+    });
+    await mkdir(dirname(resolve(args.output)), { recursive: true });
+    await writeFile(args.output, `${JSON.stringify(inventory, null, 2)}\n`, "utf8");
+    await reconcileParkedReviews({ inventory, queueUrl, secret, args });
+    return;
   }
 
   let inventory = await loadInventory({
@@ -215,6 +229,7 @@ function parseArgs(argv) {
     execute: false,
     maxTargets: MAX_RECONCILE_TARGETS,
     maxRecoveries: MAX_RECONCILE_RECOVERIES,
+    maxRecoveriesProvided: false,
     output: DEFAULT_OUTPUT,
     help: false,
   };
@@ -234,6 +249,7 @@ function parseArgs(argv) {
     else if (value === "--max-targets") {
       args.maxTargets = boundedInteger(argv[++index], "--max-targets", 1, MAX_RECONCILE_TARGETS);
     } else if (value === "--max-recoveries") {
+      args.maxRecoveriesProvided = true;
       args.maxRecoveries = boundedInteger(
         argv[++index],
         "--max-recoveries",
@@ -244,11 +260,29 @@ function parseArgs(argv) {
     else throw new Error(`unknown option ${value}; use --help`);
   }
   if (args.help) return args;
-  if (!["inventory", "recover-fresh", "resolve", "reconcile"].includes(args.action)) {
-    throw new Error("--action must be inventory, recover-fresh, resolve, or reconcile");
+  if (
+    !["inventory", "recover-fresh", "resolve", "reconcile", "reconcile-parked"].includes(
+      args.action,
+    )
+  ) {
+    throw new Error(
+      "--action must be inventory, recover-fresh, resolve, reconcile, or reconcile-parked",
+    );
   }
   if (!args.output) throw new Error("--output is required");
-  if (args.action !== "inventory" && args.action !== "reconcile") {
+  if (args.action === "reconcile-parked" && !args.maxRecoveriesProvided) {
+    args.maxRecoveries = MAX_PARKED_RECONCILE_RECOVERIES;
+  }
+  if (args.action === "reconcile-parked" && args.maxRecoveries > MAX_PARKED_RECONCILE_RECOVERIES) {
+    throw new Error(
+      `--max-recoveries must be between 0 and ${MAX_PARKED_RECONCILE_RECOVERIES} for reconcile-parked`,
+    );
+  }
+  if (
+    args.action !== "inventory" &&
+    args.action !== "reconcile" &&
+    args.action !== "reconcile-parked"
+  ) {
     if (args.ids.length < 1 || args.ids.length > MAX_SELECTED_IDS) {
       throw new Error(`mutation actions require between 1 and ${MAX_SELECTED_IDS} --ids`);
     }
@@ -632,6 +666,235 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
     }
   }
   printResult(summary);
+}
+
+async function reconcileParkedReviews({ inventory, queueUrl, secret, args }) {
+  const pressure = await readQueuePressure(queueUrl);
+  const summary = {
+    action: "reconcile-parked",
+    dry_run: !args.execute,
+    inventory_complete: inventory.complete,
+    queue_pressure: pressure.status,
+    inspected_targets: 0,
+    terminal_targets: 0,
+    repository_gone_targets: 0,
+    resolved_targets: 0,
+    open_targets: 0,
+    recovered_targets: 0,
+    skipped_targets: 0,
+  };
+  const terminal = [];
+  const recoverable = [];
+  for (const row of inventory.parked_reviews.slice(0, args.maxTargets)) {
+    summary.inspected_targets += 1;
+    let target;
+    try {
+      target = await inspectParkedReviewTarget(`${row.target_repo}#${row.item_number}`);
+    } catch {
+      summary.skipped_targets += 1;
+      continue;
+    }
+    if (target.state === "closed" || target.state === "repository_gone") {
+      terminal.push({ row, target });
+      summary.terminal_targets += 1;
+      if (target.state === "repository_gone") summary.repository_gone_targets += 1;
+    } else if (target.state === "open") {
+      summary.open_targets += 1;
+      if (recoverable.length < args.maxRecoveries) recoverable.push({ row, target });
+      else summary.skipped_targets += 1;
+    } else {
+      summary.skipped_targets += 1;
+    }
+  }
+
+  for (const candidate of terminal) {
+    if (!args.execute) {
+      summary.resolved_targets += 1;
+      continue;
+    }
+    let current;
+    try {
+      current = await inspectParkedReviewTarget(candidate.target.requested_target);
+    } catch {
+      summary.skipped_targets += 1;
+      continue;
+    }
+    if (current.state !== candidate.target.state) {
+      summary.skipped_targets += 1;
+      continue;
+    }
+    const result = await signedPost({
+      queueUrl,
+      secret,
+      path: "/internal/exact-review/parked-reviews/resolve",
+      payload: {
+        items: [parkedMutationItem(candidate.row)],
+        note:
+          current.state === "repository_gone"
+            ? `automatic reconciliation: repository for ${current.requested_target} no longer exists`
+            : `automatic reconciliation: GitHub target ${current.canonical_target} is terminal`,
+      },
+    });
+    summary.resolved_targets += requiredCount(result, "resolved");
+    summary.skipped_targets += requiredCount(result, "skipped");
+  }
+
+  if (recoverable.length && pressure.status === "idle") {
+    const available = Math.min(args.maxRecoveries, pressure.availableSlots);
+    const admitted = [];
+    for (const candidate of recoverable.slice(0, available)) {
+      let current;
+      try {
+        current = await inspectParkedReviewTarget(candidate.target.requested_target);
+      } catch {
+        summary.skipped_targets += 1;
+        continue;
+      }
+      if (current.state !== "open" || current.node_id !== candidate.target.node_id) {
+        summary.skipped_targets += 1;
+        continue;
+      }
+      admitted.push(candidate.row);
+    }
+    summary.skipped_targets += recoverable.length - Math.min(recoverable.length, available);
+    if (!args.execute) {
+      summary.recovered_targets += admitted.length;
+    } else if (admitted.length) {
+      const identity = admitted
+        .map((row) => `${row.item_key}:${row.updated_at_ms}`)
+        .sort()
+        .join("\n");
+      const result = await signedPost({
+        queueUrl,
+        secret,
+        path: "/internal/exact-review/parked-reviews/recover-fresh",
+        payload: {
+          items: admitted.map(parkedMutationItem),
+          idempotency_key: `parked-reconcile:${createHash("sha256").update(identity).digest("hex")}`,
+        },
+      });
+      summary.recovered_targets +=
+        requiredCount(result, "recovered") + requiredCount(result, "deduped");
+      summary.skipped_targets += requiredCount(result, "skipped");
+    }
+  } else {
+    summary.skipped_targets += recoverable.length;
+  }
+  printResult(summary);
+}
+
+async function loadParkedReviewInventory({ queueUrl, secret, maxRows }) {
+  const rows = [];
+  let cursor = "";
+  let complete = false;
+  while (rows.length < maxRows) {
+    const limit = Math.min(MAX_PARKED_INVENTORY_PAGE_SIZE, maxRows - rows.length);
+    const page = await signedPost({
+      queueUrl,
+      secret,
+      path: "/internal/exact-review/parked-reviews/list",
+      payload: { limit, ...(cursor ? { cursor } : {}) },
+    });
+    const pageRows = Array.isArray(page.parked_reviews) ? page.parked_reviews : [];
+    rows.push(...pageRows.map(sanitizeParkedReviewRow));
+    cursor = String(page.next_cursor || "");
+    if (!cursor) {
+      complete = true;
+      break;
+    }
+    if (!pageRows.length) throw new Error("parked review inventory cursor did not advance");
+  }
+  return {
+    generated_at: new Date().toISOString(),
+    complete,
+    next_cursor: complete ? null : cursor,
+    summary: {
+      rows: rows.length,
+      by_reason: countBy(rows, (row) => row.parked_reason || "unknown"),
+    },
+    parked_reviews: rows,
+  };
+}
+
+function sanitizeParkedReviewRow(row) {
+  const value = row && typeof row === "object" ? row : {};
+  const itemKey = String(value.item_key || "");
+  const targetRepo = String(value.target_repo || "");
+  const itemNumber = Number(value.item_number);
+  const updatedAtMs = Number(value.updated_at_ms);
+  if (
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(itemKey) ||
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo) ||
+    !Number.isSafeInteger(itemNumber) ||
+    itemNumber < 1 ||
+    !Number.isSafeInteger(updatedAtMs) ||
+    updatedAtMs < 1
+  ) {
+    throw new Error("parked review inventory returned an invalid row");
+  }
+  return {
+    item_key: itemKey,
+    target_repo: targetRepo,
+    item_number: itemNumber,
+    item_kind: String(value.item_kind || ""),
+    parked_reason: String(value.parked_reason || "") || null,
+    parked_recovery_attempts: Number(value.parked_recovery_attempts || 0),
+    first_failed_at: value.first_failed_at ? String(value.first_failed_at) : null,
+    last_failure_reason: String(value.last_failure_reason || "") || null,
+    updated_at: String(value.updated_at || ""),
+    updated_at_ms: updatedAtMs,
+  };
+}
+
+function parkedMutationItem(row) {
+  return { item_key: row.item_key, updated_at_ms: row.updated_at_ms };
+}
+
+async function inspectParkedReviewTarget(target) {
+  const apiUrl = String(process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
+  const token = String(process.env.GITHUB_TOKEN || "");
+  const match = /^([^/]+)\/([^#]+)#([1-9]\d*)$/.exec(target);
+  if (!match) throw new Error(`invalid parked review target: ${target}`);
+  const [, owner, repo, number] = match;
+  const headers = {
+    accept: "application/vnd.github+json",
+    "user-agent": "clawsweeper-parked-review-operator",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
+  const response = await fetch(
+    `${apiUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`,
+    { headers, signal: AbortSignal.timeout(20_000) },
+  );
+  if (response.status === 404) {
+    const repository = await fetch(
+      `${apiUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+      { headers, signal: AbortSignal.timeout(20_000) },
+    );
+    if (repository.status === 404) {
+      return {
+        state: "repository_gone",
+        requested_target: normalizeRecoveryTargetKey(target),
+        canonical_target: normalizeRecoveryTargetKey(target),
+        node_id: null,
+      };
+    }
+    throw new Error(`parked review target is missing from an existing repository: ${target}`);
+  }
+  if (!response.ok) throw new Error(`parked review target check failed for ${target}`);
+  const item = await response.json();
+  if (
+    typeof item?.node_id !== "string" ||
+    !item.node_id ||
+    !["open", "closed"].includes(String(item.state || "").toLowerCase())
+  ) {
+    throw new Error(`parked review target check returned an invalid identity for ${target}`);
+  }
+  return {
+    state: String(item.state).toLowerCase(),
+    requested_target: normalizeRecoveryTargetKey(target),
+    canonical_target: canonicalGitHubTarget(item, target),
+    node_id: item.node_id,
+  };
 }
 
 async function readQueuePressure(queueUrl) {

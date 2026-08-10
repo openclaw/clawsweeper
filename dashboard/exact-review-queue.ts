@@ -555,6 +555,7 @@ const EXACT_REVIEW_QUEUE_METRICS_TABLE = "exact_review_queue_metrics";
 const EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE = "exact_review_queue_metric_buckets";
 const EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE = "exact_review_queue_supersessions";
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE = "exact_review_queue_dead_letters";
+const EXACT_REVIEW_QUEUE_PARKED_ACTION_TABLE = "exact_review_queue_parked_actions";
 const EXACT_REVIEW_PUBLICATION_HEAD_TABLE = "exact_review_publication_heads";
 const EXACT_REVIEW_RUN_TELEMETRY_TABLE = "exact_review_run_telemetry";
 const EXACT_REVIEW_GITHUB_TELEMETRY_RECEIPT_TABLE = "exact_review_github_telemetry_receipts";
@@ -568,6 +569,10 @@ const EXACT_REVIEW_STATE_WRITER_LIVE_MS = 90 * 1000;
 const REVIEW_OBSERVABILITY_SCAN_LIMIT = 10_000;
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_LIMIT = 5_000;
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_RESOLVED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const EXACT_REVIEW_QUEUE_PARKED_ACTION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const EXACT_REVIEW_PARKED_LIST_MAX_LIMIT = 50;
+const EXACT_REVIEW_PARKED_RESOLVE_MAX_ITEMS = 20;
+const EXACT_REVIEW_PARKED_RECOVER_MAX_ITEMS = 5;
 const EXACT_REVIEW_QUEUE_METRIC_BUCKET_MS = 5 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_METRIC_BUCKET_TTL_MS = 48 * 60 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_SUPERSESSION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -2168,6 +2173,18 @@ export class ExactReviewQueue {
 
     if (request.method === "POST" && url.pathname === "/dead-letters/resolve") {
       return this.resolveDeadLetters(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/parked-reviews/list") {
+      return this.listParkedReviews(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/parked-reviews/resolve") {
+      return this.resolveParkedReviews(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/parked-reviews/recover-fresh") {
+      return this.recoverParkedReviewsFresh(await request.json().catch(() => null));
     }
 
     if (request.method === "POST" && url.pathname === "/publications/list") {
@@ -4543,6 +4560,207 @@ export class ExactReviewQueue {
       }
     });
     return json({ ok: true, resolved, skipped: ids.length - resolved, unparked });
+  }
+
+  private listParkedReviews(value: unknown) {
+    const body = objectValue(value);
+    const limit = body.limit === undefined ? 20 : Number(body.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > EXACT_REVIEW_PARKED_LIST_MAX_LIMIT) {
+      return json({ error: "invalid_limit" }, 400);
+    }
+    const cursor = String(body.cursor || "");
+    if (cursor && cursor.length > 500) return json({ error: "invalid_cursor" }, 400);
+    const rows = Object.values(this.readStateSync().items)
+      .filter(
+        (item) =>
+          item.state === "parked" &&
+          !exactReviewQueueIsPublication(item) &&
+          item.key.localeCompare(cursor) > 0,
+      )
+      .sort((left, right) => left.key.localeCompare(right.key))
+      .slice(0, limit + 1);
+    const page = rows.slice(0, limit);
+    return json({
+      ok: true,
+      parked_reviews: page.map((item) => ({
+        item_key: item.key,
+        target_repo: item.decision.targetRepo,
+        item_number: item.decision.itemNumber,
+        item_kind: item.decision.itemKind,
+        parked_reason: item.parkedReason || null,
+        parked_recovery_attempts: exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts),
+        first_failed_at: item.firstFailureAt
+          ? new Date(item.firstFailureAt).toISOString()
+          : item.dispatchFailureAt
+            ? new Date(item.dispatchFailureAt).toISOString()
+            : null,
+        last_failure_reason:
+          item.lastFailureReason || item.dispatchFailureClass || item.parkedReason || null,
+        updated_at: new Date(item.updatedAt).toISOString(),
+        updated_at_ms: item.updatedAt,
+      })),
+      next_cursor: rows.length > limit ? page.at(-1)?.key || null : null,
+    });
+  }
+
+  private resolveParkedReviews(value: unknown) {
+    const body = objectValue(value);
+    const items = exactReviewParkedOperatorItems(body.items, EXACT_REVIEW_PARKED_RESOLVE_MAX_ITEMS);
+    const note = String(body.note || "").trim();
+    if (!items) return json({ error: "invalid_parked_review_items" }, 400);
+    if (!note || note.length > 500) return json({ error: "invalid_resolution_note" }, 400);
+    const now = Date.now();
+    const result = this.storage.transactionSync(() => {
+      this.pruneParkedReviewActionsSync(now);
+      const state = this.readStateSync();
+      let resolved = 0;
+      let skipped = 0;
+      for (const expected of items) {
+        const item = state.items[expected.itemKey];
+        if (
+          !item ||
+          item.state !== "parked" ||
+          exactReviewQueueIsPublication(item) ||
+          item.updatedAt !== expected.updatedAt
+        ) {
+          skipped += 1;
+          continue;
+        }
+        delete state.items[item.key];
+        this.recordParkedReviewActionSync({
+          itemKey: item.key,
+          action: "resolved",
+          actionKey: null,
+          note,
+          sourceUpdatedAt: expected.updatedAt,
+          actedAt: now,
+        });
+        resolved += 1;
+      }
+      if (resolved) this.writeStateSync(state);
+      else this.syncLegacyCompatibilitySync(state);
+      return { resolved, skipped };
+    });
+    return json({ ok: true, ...result });
+  }
+
+  private async recoverParkedReviewsFresh(value: unknown) {
+    const body = objectValue(value);
+    const items = exactReviewParkedOperatorItems(body.items, EXACT_REVIEW_PARKED_RECOVER_MAX_ITEMS);
+    const recoveryKey = String(body.idempotency_key || "").trim();
+    if (!items) return json({ error: "invalid_parked_review_items" }, 400);
+    if (!/^[A-Za-z0-9:._-]{1,200}$/.test(recoveryKey)) {
+      return json({ error: "invalid_idempotency_key" }, 400);
+    }
+    const now = Date.now();
+    const result = this.storage.transactionSync(() => {
+      this.pruneParkedReviewActionsSync(now);
+      const state = this.readStateSync();
+      let recovered = 0;
+      let deduped = 0;
+      let skipped = 0;
+      for (const expected of items) {
+        const previous = Array.from(
+          this.storage.sql.exec(
+            `SELECT action, action_key, source_updated_at
+               FROM ${EXACT_REVIEW_QUEUE_PARKED_ACTION_TABLE}
+              WHERE item_key = ?`,
+            expected.itemKey,
+          ),
+        )[0] as { action?: string; action_key?: string; source_updated_at?: number } | undefined;
+        if (
+          previous?.action === "recovered_fresh" &&
+          previous.action_key === recoveryKey &&
+          Number(previous.source_updated_at) === expected.updatedAt
+        ) {
+          deduped += 1;
+          continue;
+        }
+        const item = state.items[expected.itemKey];
+        if (
+          !item ||
+          item.state !== "parked" ||
+          exactReviewQueueIsPublication(item) ||
+          item.updatedAt !== expected.updatedAt ||
+          exactReviewQueueActiveReviewCount(state) >= exactReviewQueueCapacity(this.env)
+        ) {
+          skipped += 1;
+          continue;
+        }
+        clearExactReviewLease(item);
+        item.state = "pending";
+        item.revision = Math.max(item.revision + 1, this.nextExactReviewItemRevisionSync(item.key));
+        item.admissionDeliveryId = `parked-recovery:${recoveryKey}:${item.key}`;
+        item.createdAt = now;
+        item.updatedAt = now;
+        item.parkedReason = undefined;
+        item.parkedRecoveryAttempts = 0;
+        item.parkedRecoveryAt = undefined;
+        item.attempts = 0;
+        item.publicationFailureAttempts = 0;
+        item.reviewFailureAttempts = 0;
+        item.firstFailureAt = undefined;
+        item.lastFailureReason = undefined;
+        clearExactReviewDispatchFailure(item);
+        Object.assign(
+          item,
+          exactReviewQueueDebouncedAttempt(state, item.decision, now, now, this.env),
+        );
+        this.recordParkedReviewActionSync({
+          itemKey: item.key,
+          action: "recovered_fresh",
+          actionKey: recoveryKey,
+          note: "recovered_fresh",
+          sourceUpdatedAt: expected.updatedAt,
+          actedAt: now,
+        });
+        recovered += 1;
+      }
+      if (recovered) this.writeStateSync(state);
+      else this.syncLegacyCompatibilitySync(state);
+      return { state, recovered, deduped, skipped };
+    });
+    if (result.recovered) await this.scheduleNext(result.state, now);
+    return json({
+      ok: true,
+      recovered: result.recovered,
+      deduped: result.deduped,
+      skipped: result.skipped,
+    });
+  }
+
+  private recordParkedReviewActionSync(input: {
+    itemKey: string;
+    action: "resolved" | "recovered_fresh";
+    actionKey: string | null;
+    note: string;
+    sourceUpdatedAt: number;
+    actedAt: number;
+  }) {
+    this.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_QUEUE_PARKED_ACTION_TABLE}
+       (item_key, action, action_key, note, source_updated_at, acted_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(item_key) DO UPDATE SET
+         action = excluded.action,
+         action_key = excluded.action_key,
+         note = excluded.note,
+         source_updated_at = excluded.source_updated_at,
+         acted_at = excluded.acted_at`,
+      input.itemKey,
+      input.action,
+      input.actionKey,
+      input.note,
+      input.sourceUpdatedAt,
+      input.actedAt,
+    );
+  }
+
+  private pruneParkedReviewActionsSync(now: number) {
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_QUEUE_PARKED_ACTION_TABLE} WHERE acted_at <= ?`,
+      now - EXACT_REVIEW_QUEUE_PARKED_ACTION_TTL_MS,
+    );
   }
 
   private listPublicationCandidates(value: unknown) {
@@ -7398,6 +7616,20 @@ export class ExactReviewQueue {
          (status, last_failed_at, dead_letter_id)`,
     );
     this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_PARKED_ACTION_TABLE} (
+         item_key TEXT PRIMARY KEY,
+         action TEXT NOT NULL CHECK (action IN ('resolved', 'recovered_fresh')),
+         action_key TEXT,
+         note TEXT NOT NULL,
+         source_updated_at INTEGER NOT NULL,
+         acted_at INTEGER NOT NULL
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_queue_parked_actions_acted
+         ON ${EXACT_REVIEW_QUEUE_PARKED_ACTION_TABLE} (acted_at, item_key)`,
+    );
+    this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_RUN_TELEMETRY_TABLE} (
          run_id TEXT NOT NULL,
          run_attempt INTEGER NOT NULL CHECK (run_attempt >= 1),
@@ -10154,6 +10386,31 @@ function exactReviewDeadLetterIds(value): string[] | null {
   const ids = value.map((entry) => String(entry || "").trim());
   if (ids.some((id) => !id || id.length > 500) || new Set(ids).size !== ids.length) return null;
   return ids;
+}
+
+function exactReviewParkedOperatorItems(
+  value: unknown,
+  maximum: number,
+): Array<{ itemKey: string; updatedAt: number }> | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > maximum) return null;
+  const items: Array<{ itemKey: string; updatedAt: number }> = [];
+  const keys = new Set<string>();
+  for (const raw of value) {
+    const item = objectValue(raw);
+    const itemKey = String(item.item_key || "").trim();
+    const updatedAt = Number(item.updated_at_ms);
+    if (
+      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(itemKey) ||
+      keys.has(itemKey.toLowerCase()) ||
+      !Number.isSafeInteger(updatedAt) ||
+      updatedAt < 1
+    ) {
+      return null;
+    }
+    keys.add(itemKey.toLowerCase());
+    items.push({ itemKey, updatedAt });
+  }
+  return items;
 }
 
 function exactReviewRecoveryAliases(

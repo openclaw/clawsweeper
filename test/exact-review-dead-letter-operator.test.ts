@@ -67,13 +67,181 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
   assert.equal(scheduled.jobs.reconcile.env.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
   assert.match(step.run, /--max-targets "\$MAX_TARGETS"/);
   assert.match(step.run, /--max-recoveries "\$MAX_RECOVERIES"/);
-  assert.match(step.run, /\/api\/health/);
-  assert.match(step.run, /\.deployment_sha/);
-  assert.match(step.run, /live_deploy_sha.*expected_deploy_sha/);
-  assert.match(step.run, /git fetch --no-tags --depth=1 origin "\$live_deploy_sha"/);
-  assert.match(step.run, /dashboard\/exact-review-queue\.ts/);
-  assert.match(step.run, /live_guard_blob.*expected_guard_blob/);
+  const guard = scheduled.jobs.reconcile.steps.find(
+    (candidate) => candidate.name === "Verify live recovery guards",
+  );
+  assert.match(guard.run, /\/api\/health/);
+  assert.match(guard.run, /\.deployment_sha/);
+  assert.match(guard.run, /live_deploy_sha.*expected_deploy_sha/);
+  assert.match(guard.run, /git fetch --no-tags --depth=1 origin "\$live_deploy_sha"/);
+  assert.match(guard.run, /dashboard\/exact-review-queue\.ts/);
+  assert.match(guard.run, /live_guard_blob.*expected_guard_blob/);
+  const parked = scheduled.jobs.reconcile.steps.find(
+    (candidate) => candidate.name === "Reconcile terminal and open parked reviews",
+  );
+  assert.equal(
+    parked.env.CLAWSWEEPER_WEBHOOK_SECRET,
+    "${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}",
+  );
+  assert.equal(parked.env.GITHUB_TOKEN, "${{ github.token }}");
+  assert.match(parked.run, /--action reconcile-parked/);
+  assert.match(parked.run, /--max-targets "\$MAX_TARGETS"/);
+  assert.match(parked.run, /--max-recoveries 5/);
+  assert.match(parked.run, /parked-reviews\.json/);
+  const upload = scheduled.jobs.reconcile.steps.find(
+    (candidate) => candidate.name === "Upload sanitized inventory",
+  );
+  assert.match(upload.with.path, /inventory\.json/);
+  assert.match(upload.with.path, /parked-reviews\.json/);
   assert.doesNotMatch(source, /dead-letters\/replay/);
+});
+
+test("parked review reconciliation plans by default and executes terminal resolve plus open recovery", async () => {
+  const secret = "test-parked-review-reconcile";
+  const mutations = [];
+  const parkedRows = [
+    parkedRow("openclaw/repo#1", "openclaw/repo", 1, 1_000),
+    parkedRow("openclaw/repo#2", "openclaw/repo", 2, 2_000),
+    parkedRow("gone/repo#3", "gone/repo", 3, 3_000),
+  ];
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    if (request.url === "/api/exact-review-queue") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ pressure: { status: "idle", active: 0, capacity: 128 } }));
+      return;
+    }
+    if (request.url === "/repos/openclaw/repo/issues/1") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          node_id: "ISSUE_1",
+          state: "open",
+          number: 1,
+          repository_url: "https://api.github.com/repos/openclaw/repo",
+        }),
+      );
+      return;
+    }
+    if (request.url === "/repos/openclaw/repo/issues/2") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          node_id: "ISSUE_2",
+          state: "closed",
+          number: 2,
+          repository_url: "https://api.github.com/repos/openclaw/repo",
+        }),
+      );
+      return;
+    }
+    if (request.url === "/repos/gone/repo/issues/3" || request.url === "/repos/gone/repo") {
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ message: "Not Found" }));
+      return;
+    }
+    const body = Buffer.concat(chunks).toString("utf8");
+    const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+    assert.equal(request.headers["x-clawsweeper-exact-review-signature"], expected);
+    const payload = JSON.parse(body);
+    if (request.url?.endsWith("/parked-reviews/list")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, parked_reviews: parkedRows, next_cursor: null }));
+      return;
+    }
+    mutations.push({ url: request.url, payload });
+    response.writeHead(200, { "content-type": "application/json" });
+    if (request.url?.endsWith("/recover-fresh")) {
+      response.end(
+        JSON.stringify({
+          ok: true,
+          recovered: payload.items.length,
+          deduped: 0,
+          skipped: 0,
+        }),
+      );
+    } else {
+      response.end(JSON.stringify({ ok: true, resolved: payload.items.length, skipped: 0 }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const directory = await mkdtemp(join(tmpdir(), "clawsweeper-parked-reconcile-"));
+  try {
+    const common = [
+      "--action",
+      "reconcile-parked",
+      "--max-targets",
+      "100",
+      "--max-recoveries",
+      "5",
+    ];
+    const planned = await runOperator(
+      [...common, "--output", join(directory, "planned.json")],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(planned.code, 0, planned.stderr);
+    assert.deepEqual(JSON.parse(planned.stdout), {
+      action: "reconcile-parked",
+      dry_run: true,
+      inventory_complete: true,
+      queue_pressure: "idle",
+      inspected_targets: 3,
+      terminal_targets: 2,
+      repository_gone_targets: 1,
+      resolved_targets: 2,
+      open_targets: 1,
+      recovered_targets: 1,
+      skipped_targets: 0,
+    });
+    assert.equal(mutations.length, 0);
+
+    const executed = await runOperator(
+      [...common, "--execute", "--output", join(directory, "executed.json")],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(executed.code, 0, executed.stderr);
+    assert.deepEqual(JSON.parse(executed.stdout), {
+      action: "reconcile-parked",
+      dry_run: false,
+      inventory_complete: true,
+      queue_pressure: "idle",
+      inspected_targets: 3,
+      terminal_targets: 2,
+      repository_gone_targets: 1,
+      resolved_targets: 2,
+      open_targets: 1,
+      recovered_targets: 1,
+      skipped_targets: 0,
+    });
+    assert.equal(mutations.filter((entry) => entry.url?.endsWith("/resolve")).length, 2);
+    const recovery = mutations.find((entry) => entry.url?.endsWith("/recover-fresh"));
+    assert.deepEqual(recovery.payload.items, [
+      { item_key: "openclaw/repo#1", updated_at_ms: 1_000 },
+    ]);
+    assert.match(recovery.payload.idempotency_key, /^parked-reconcile:[a-f0-9]{64}$/);
+    const artifact = JSON.parse(await readFile(join(directory, "executed.json"), "utf8"));
+    assert.deepEqual(artifact.summary, {
+      rows: 3,
+      by_reason: { review_retry_exhausted: 3 },
+    });
+    assert.equal(JSON.stringify(artifact).includes("test-parked-review-reconcile"), false);
+
+    const overCap = await runOperator(
+      ["--action", "reconcile-parked", "--max-recoveries", "6"],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(overCap.code, 1);
+    assert.match(overCap.stderr, /between 0 and 5 for reconcile-parked/);
+  } finally {
+    server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("automatic reconciliation resolves terminal rows and recovers one fresh review per target", async () => {
@@ -2586,6 +2754,21 @@ function row(
       reason: recoveryReason,
       item_key: recoveryItemKey,
     },
+  };
+}
+
+function parkedRow(itemKey, targetRepo, itemNumber, updatedAtMs) {
+  return {
+    item_key: itemKey,
+    target_repo: targetRepo,
+    item_number: itemNumber,
+    item_kind: "issue",
+    parked_reason: "review_retry_exhausted",
+    parked_recovery_attempts: 3,
+    first_failed_at: "2026-08-09T00:00:00.000Z",
+    last_failure_reason: "review_retry_exhausted",
+    updated_at: new Date(updatedAtMs).toISOString(),
+    updated_at_ms: updatedAtMs,
   };
 }
 
