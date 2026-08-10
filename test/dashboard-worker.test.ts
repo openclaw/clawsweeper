@@ -3342,7 +3342,7 @@ test("scheduled review feed is lane-paced and exposes its configured target", as
 test("scheduled untracked reviews are ready and claimable within one tick when 122 slots are free", async () => {
   const storage = new MemoryDurableStorage();
   const active = Object.fromEntries(
-    Array.from({ length: 7 }, (_, index) => {
+    Array.from({ length: 6 }, (_, index) => {
       const item = leasedExactReviewQueueItem(120_000 + index, String(120_000 + index));
       return [item.key, item];
     }),
