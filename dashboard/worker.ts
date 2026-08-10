@@ -9396,7 +9396,26 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
 .health-chip.ok { border-color: color-mix(in srgb, var(--green) 28%, var(--line)); }
 .health-chip.amber { border-color: color-mix(in srgb, var(--amber) 35%, var(--line)); }
 .health-chip.red { border-color: color-mix(in srgb, var(--red) 35%, var(--line)); }
-.review-coverage { margin-top: 6px; }
+.review-coverage { margin-top: 28px; }
+.review-coverage > summary {
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.coverage-summary-content {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+  width: calc(100% - 24px);
+  margin-left: 8px;
+}
+.review-coverage > summary:hover h2 { color: var(--claw); }
+.review-coverage > summary:focus-visible { outline: 2px solid var(--claw); outline-offset: 4px; }
+.review-coverage > summary h2 { display: inline; margin: 0; }
+.review-coverage > summary .muted { text-align: right; }
+.review-coverage[open] > summary { margin-bottom: 14px; }
 .coverage-fleets { display: grid; gap: 10px; margin-top: 14px; }
 .coverage-fleet {
   display: grid;
@@ -9465,6 +9484,8 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   .worker-toolbar { align-items: stretch; flex-direction: column; }
   .coverage-fleet { grid-template-columns: 1fr; gap: 9px; }
   .coverage-value { justify-items: start; }
+  .coverage-summary-content { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .review-coverage > summary .muted { padding-left: 24px; text-align: left; }
 }
 @media (max-width: 560px) {
   main { width: min(100vw - 24px, 1280px); padding-top: 18px; }
@@ -9507,13 +9528,6 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
     <div class="health-strip" id="health-strip" aria-label="Subsystem health at a glance"></div>
   </section>
   <section class="grid" id="metrics"></section>
-  <section class="review-coverage" aria-labelledby="review-coverage-title">
-    <div class="overview-head">
-      <h2 id="review-coverage-title">Fleet Review Coverage</h2>
-      <span class="muted" id="review-coverage-note">Open items reviewed in the trailing 7 days</span>
-    </div>
-    <div id="review-coverage-body" aria-live="polite"><div class="empty">Loading review coverage…</div></div>
-  </section>
   <section class="overview-shell" aria-labelledby="system-overview-title">
     <div class="overview-head">
       <h2 id="system-overview-title">System Overview</h2>
@@ -9568,6 +9582,15 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
     </div>
     <div id="workers"></div>
   </section>
+  <details class="review-coverage">
+    <summary>
+      <span class="coverage-summary-content">
+        <h2 id="review-coverage-title">Fleet Review Coverage</h2>
+        <span class="muted" id="review-coverage-note">Open items reviewed in the trailing 7 days</span>
+      </span>
+    </summary>
+    <div id="review-coverage-body" aria-live="polite" aria-labelledby="review-coverage-title"><div class="empty">Loading review coverage…</div></div>
+  </details>
   <section class="automerge-health" aria-labelledby="automerge-product-title">
     <div class="automerge-health-head">
       <h2 id="automerge-product-title">Automerge Product Health</h2>
