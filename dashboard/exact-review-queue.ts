@@ -192,6 +192,7 @@ export type ExactReviewQueueItem = {
   parkedReason?: ExactReviewParkedReason;
   parkedRecoveryAttempts?: number;
   parkedRecoveryAt?: number;
+  parkedTerminalCheckedAt?: number;
   dispatchFailureStatus?: number;
   dispatchFailureClass?: ExactReviewDispatchFailureClass;
   dispatchFailureAt?: number;
@@ -349,6 +350,7 @@ export type ExactReviewQueueState = {
       updatedAt: number;
       counters: Record<string, number>;
     };
+    parkedTerminalCheckedAt?: number;
   };
 };
 type LegacyExactReviewQueueState = ExactReviewQueueState & {
@@ -500,6 +502,7 @@ const EXACT_REVIEW_RETRY_LIMIT = 8;
 const EXACT_REVIEW_PARKED_RECOVERY_LIMIT = 3;
 const EXACT_REVIEW_PARKED_RECOVERY_BASE_MS = 5 * 60_000;
 const EXACT_REVIEW_PARKED_RECOVERY_MAX_MS = 30 * 60_000;
+const EXACT_REVIEW_PARKED_TERMINAL_CHECK_INTERVAL_MS = 5 * 60_000;
 const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 128;
 const EXACT_REVIEW_RECONCILE_CLAIM_MATCH_LIMIT = EXACT_REVIEW_RECONCILE_RUN_LIMIT * 2;
 export const EXACT_REVIEW_RECONCILE_CONCURRENCY = 8;
@@ -3403,7 +3406,7 @@ export class ExactReviewQueue {
         await this.writeState(current);
       }
     }
-    if (!snapshotAdmission.length) {
+    if (!snapshotAdmission.length && !exactReviewDueParkedTerminalItem(snapshot, startedAt)) {
       const current = batchDispatchAttempted ? this.readStateSync() : snapshot;
       await this.scheduleNext(current, Date.now());
       return;
@@ -3528,8 +3531,31 @@ export class ExactReviewQueue {
     // repeated App-token, item-read, and workflow-dispatch bursts.
     const reviewCandidates = admission
       .filter((item) => !exactReviewQueueIsPublication(item))
-      .map((item) => ({ key: item.key, revision: item.revision, decision: item.decision }));
-    const liveCandidates = reviewCandidates.slice(0, EXACT_REVIEW_ADMISSION_LIVE_CHECK_MAX_ITEMS);
+      .map((item) => ({
+        key: item.key,
+        revision: item.revision,
+        decision: item.decision,
+        queueState: "pending" as const,
+      }));
+    const parkedCandidate = exactReviewDueParkedTerminalItem(state, now);
+    const parkedCandidates = parkedCandidate
+      ? [
+          {
+            key: parkedCandidate.key,
+            revision: parkedCandidate.revision,
+            decision: parkedCandidate.decision,
+            queueState: "parked" as const,
+          },
+        ]
+      : [];
+    const parkedTerminalCheckedAt = parkedCandidates.length
+      ? now
+      : state.dispatcher?.parkedTerminalCheckedAt;
+    const pendingLiveLimit = Math.max(
+      0,
+      EXACT_REVIEW_ADMISSION_LIVE_CHECK_MAX_ITEMS - parkedCandidates.length,
+    );
+    const liveCandidates = [...reviewCandidates.slice(0, pendingLiveLimit), ...parkedCandidates];
     const targetTokens = new Map<string, Promise<string>>();
     const targetTokenFor = (targetRepo: string) => {
       let token = targetTokens.get(targetRepo);
@@ -3621,7 +3647,7 @@ export class ExactReviewQueue {
       if (
         !item ||
         item.revision !== candidate.revision ||
-        item.state !== "pending" ||
+        item.state !== candidate.queueState ||
         exactReviewQueueIsPublication(item)
       ) {
         continue;
@@ -3670,6 +3696,14 @@ export class ExactReviewQueue {
         continue;
       }
       if (candidate.state.state === "unavailable") {
+        if (item.state === "parked") {
+          // A permanently exhausted item is only being checked for terminal
+          // cleanup. A failed read must neither revive it nor spend another
+          // review retry budget; defer the next bounded observation instead.
+          item.parkedTerminalCheckedAt = checkedAt;
+          item.updatedAt = checkedAt;
+          continue;
+        }
         // A shared GitHub or credential failure must not consume each item's
         // retry budget. The dispatcher backoff below holds the whole admission
         // pass until that dependency recovers.
@@ -3689,6 +3723,11 @@ export class ExactReviewQueue {
           exactReviewQueueEnqueueAttemptAt(checkedState, checkedAt) >= item.nextAttemptAt
             ? "dispatcher_backoff"
             : "admission_retry";
+        item.updatedAt = checkedAt;
+        continue;
+      }
+      if (item.state === "parked") {
+        item.parkedTerminalCheckedAt = checkedAt;
         item.updatedAt = checkedAt;
       }
     }
@@ -3726,6 +3765,7 @@ export class ExactReviewQueue {
         dispatchFailureFingerprint: globalAdmissionFailure.fingerprint,
         dispatchConsecutiveFailures: consecutiveFailures,
         ...checkedBatchDispatcherFields,
+        ...(parkedTerminalCheckedAt ? { parkedTerminalCheckedAt } : {}),
       };
       await this.writeState(
         checkedState,
@@ -3785,6 +3825,7 @@ export class ExactReviewQueue {
         ? { reviewAdmissionNextAt: nextReviewAdmissionAt }
         : {}),
       ...checkedBatchDispatcherFields,
+      ...(parkedTerminalCheckedAt ? { parkedTerminalCheckedAt } : {}),
     };
     for (const item of dispatchable) {
       item.state = "dispatching";
@@ -10859,6 +10900,43 @@ function exactReviewParkedRecoveryAttempts(value: unknown) {
   return Number.isSafeInteger(attempts) && attempts > 0 ? attempts : 0;
 }
 
+function exactReviewParkedTerminalCheckAt(item: ExactReviewQueueItem) {
+  if (
+    item.state !== "parked" ||
+    exactReviewQueueIsPublication(item) ||
+    exactReviewQueueHasCommandContext(item) ||
+    (item.parkedReason !== "review_retry_exhausted" && item.parkedReason !== "dispatch_rejected") ||
+    exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) <
+      EXACT_REVIEW_PARKED_RECOVERY_LIMIT
+  ) {
+    return null;
+  }
+  return Number(item.parkedTerminalCheckedAt || 0) + EXACT_REVIEW_PARKED_TERMINAL_CHECK_INTERVAL_MS;
+}
+
+function exactReviewDueParkedTerminalItem(state: ExactReviewQueueState, now: number) {
+  if (exactReviewParkedTerminalGlobalCheckAt(state) > now) return undefined;
+  return Object.values(state.items)
+    .filter((item) => {
+      const checkAt = exactReviewParkedTerminalCheckAt(item);
+      return checkAt !== null && checkAt <= now;
+    })
+    .sort(
+      (left, right) =>
+        Number(left.parkedTerminalCheckedAt || 0) - Number(right.parkedTerminalCheckedAt || 0) ||
+        left.createdAt - right.createdAt ||
+        left.key.localeCompare(right.key),
+    )[0];
+}
+
+function exactReviewParkedTerminalGlobalCheckAt(state: ExactReviewQueueState) {
+  const lastCheckedAt = Object.values(state.items).reduce(
+    (latest, item) => Math.max(latest, Number(item.parkedTerminalCheckedAt || 0)),
+    Number(state.dispatcher?.parkedTerminalCheckedAt || 0),
+  );
+  return lastCheckedAt + EXACT_REVIEW_PARKED_TERMINAL_CHECK_INTERVAL_MS;
+}
+
 export function exactReviewJitteredDelayMs(delayMs: number, random: () => number = Math.random) {
   const delay = Math.max(0, delayMs);
   const sample = random();
@@ -11870,6 +11948,7 @@ export function exactReviewQueueNextWakeAt(
       );
     }
   }
+  const parkedTerminalGlobalCheckAt = exactReviewParkedTerminalGlobalCheckAt(state);
   const times = items.flatMap((item) => {
     if (item.state === "pending") {
       if (excludedItemKeys.has(item.key)) return [];
@@ -11915,7 +11994,17 @@ export function exactReviewQueueNextWakeAt(
     }
     if (item.state === "parked") {
       const recoveryAt = exactReviewParkedRecoveryAt(item);
-      return recoveryAt === null ? [] : [recoveryAt];
+      const terminalCheckAt = exactReviewParkedTerminalCheckAt(item);
+      return [
+        recoveryAt,
+        terminalCheckAt === null
+          ? null
+          : Math.max(
+              terminalCheckAt,
+              parkedTerminalGlobalCheckAt,
+              dispatcherPaused ? dispatcherRetryAt : 0,
+            ),
+      ].filter((value): value is number => value !== null);
     }
     const leaseExpiresAt = exactReviewEffectiveLeaseExpiresAt(
       item,
@@ -12482,6 +12571,9 @@ function exactReviewBatchDispatcherFields(dispatcher: ExactReviewQueueState["dis
       : {}),
     ...(dispatcher?.githubRequestMetrics
       ? { githubRequestMetrics: dispatcher.githubRequestMetrics }
+      : {}),
+    ...(dispatcher?.parkedTerminalCheckedAt
+      ? { parkedTerminalCheckedAt: dispatcher.parkedTerminalCheckedAt }
       : {}),
     ...(dispatcher?.publicationBatchDispatchId
       ? { publicationBatchDispatchId: dispatcher.publicationBatchDispatchId }

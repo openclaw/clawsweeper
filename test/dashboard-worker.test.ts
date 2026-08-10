@@ -12644,7 +12644,11 @@ test("exact-review queue coalesces deliveries, dispatches a bound rollout snapsh
 });
 
 test("exact-review queue resolves a closed item before dispatch", async () => {
-  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "closed" }));
+  const harness = createExactReviewAdmissionHarness(
+    (_targetRepo, itemNumber) =>
+      jsonResponse({ state: itemNumber === 113_347 ? "open" : "closed" }),
+    { dispatch: () => jsonResponse({ message: "temporary failure" }, { status: 500 }) },
+  );
   try {
     assert.equal(
       (await harness.queue.fetch(buildExactReviewQueueRequest("terminal-item", 597, "opened")))
@@ -15914,33 +15918,240 @@ test("exact-review parking spreads a same-tick cohort across persisted recovery 
 });
 
 test("exact-review automatic parked recovery remains bounded", async () => {
+  const originalNow = Date.now;
+  const now = Date.parse("2026-08-10T15:00:00.000Z");
+  Date.now = () => now;
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });
-  await queue.fetch(buildExactReviewQueueRequest("bounded-parked-recovery", 113_342, "opened"));
-  const state = (await storage.get("exact-review-queue")) as {
-    items: Record<
-      string,
-      {
-        state: string;
-        parkedReason?: string;
-        parkedRecoveryAttempts?: number;
-        updatedAt: number;
-      }
-    >;
-  };
-  const item = state.items["openclaw/gogcli#113342"];
-  item.state = "parked";
-  item.parkedReason = "review_retry_exhausted";
-  item.parkedRecoveryAttempts = 3;
-  item.updatedAt = Date.now() - 24 * 60 * 60_000;
-  await storage.put("exact-review-queue", state);
+  try {
+    await queue.fetch(buildExactReviewQueueRequest("bounded-parked-recovery", 113_342, "opened"));
+    const state = (await storage.get("exact-review-queue")) as {
+      items: Record<
+        string,
+        {
+          state: string;
+          parkedReason?: string;
+          parkedRecoveryAttempts?: number;
+          parkedTerminalCheckedAt?: number;
+          updatedAt: number;
+        }
+      >;
+    };
+    const item = state.items["openclaw/gogcli#113342"];
+    item.state = "parked";
+    item.parkedReason = "review_retry_exhausted";
+    item.parkedRecoveryAttempts = 3;
+    item.updatedAt = now - 24 * 60 * 60_000;
+    await storage.put("exact-review-queue", state);
+    await storage.deleteAlarm();
 
-  await queue.alarm();
+    await queue.alarm();
 
-  const retained = (await storage.get("exact-review-queue")) as typeof state;
-  assert.equal(retained.items["openclaw/gogcli#113342"].state, "parked");
-  assert.equal(retained.items["openclaw/gogcli#113342"].parkedRecoveryAttempts, 3);
-  assert.equal(await storage.getAlarm(), null);
+    const retained = (await storage.get("exact-review-queue")) as typeof state;
+    assert.equal(retained.items["openclaw/gogcli#113342"].state, "parked");
+    assert.equal(retained.items["openclaw/gogcli#113342"].parkedRecoveryAttempts, 3);
+    const nextAlarm = Number(await storage.getAlarm());
+    assert.ok(nextAlarm > now);
+    assert.ok(nextAlarm <= now + 5 * 60_000);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("exact-review queue removes a terminal target after parked recovery is exhausted", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-08-10T15:30:00.000Z");
+  Date.now = () => now;
+  let workflowChecks = 0;
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "closed" }), {
+    workflow: () =>
+      ++workflowChecks <= 2
+        ? jsonResponse({ state: "active" })
+        : jsonResponse({ message: "temporary failure" }, { status: 500 }),
+  });
+  try {
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest("terminal-exhausted-parked", 113_343, "opened"),
+    );
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest("second-terminal-exhausted-parked", 113_346, "opened"),
+    );
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest("third-terminal-exhausted-parked", 113_348, "opened"),
+    );
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      dispatcher?: { parkedTerminalCheckedAt?: number };
+      items: Record<
+        string,
+        {
+          state: string;
+          parkedReason?: string;
+          parkedRecoveryAttempts?: number;
+          parkedTerminalCheckedAt?: number;
+        }
+      >;
+    };
+    const item = state.items["openclaw/gogcli#113343"];
+    item.state = "parked";
+    item.parkedReason = "review_retry_exhausted";
+    item.parkedRecoveryAttempts = 3;
+    item.parkedTerminalCheckedAt = now - 10 * 60_000;
+    const second = state.items["openclaw/gogcli#113346"];
+    second.state = "parked";
+    second.parkedReason = "review_retry_exhausted";
+    second.parkedRecoveryAttempts = 3;
+    second.parkedTerminalCheckedAt = now - 9 * 60_000;
+    const third = state.items["openclaw/gogcli#113348"];
+    third.state = "parked";
+    third.parkedReason = "review_retry_exhausted";
+    third.parkedRecoveryAttempts = 3;
+    third.parkedTerminalCheckedAt = now - 8 * 60_000;
+    await harness.storage.put("exact-review-queue", state);
+
+    await harness.queue.alarm();
+
+    const reconciled = (await harness.storage.get("exact-review-queue")) as typeof state;
+    assert.equal(reconciled.items["openclaw/gogcli#113343"], undefined);
+    assert.equal(reconciled.items["openclaw/gogcli#113346"].state, "parked");
+    assert.equal(reconciled.dispatcher?.parkedTerminalCheckedAt, now);
+    assert.equal(await harness.storage.getAlarm(), now + 5 * 60_000);
+    assert.equal(harness.dispatched.length, 0);
+    const stats = await (
+      await harness.queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.lanes.review.parked, 2);
+    assert.equal(stats.lanes.review.completed_total, 1);
+
+    now += 5 * 60_000;
+    await harness.storage.deleteAlarm();
+    await harness.queue.alarm();
+    const secondReconciled = (await harness.storage.get("exact-review-queue")) as typeof state;
+    assert.equal(secondReconciled.items["openclaw/gogcli#113346"], undefined);
+    assert.equal(secondReconciled.items["openclaw/gogcli#113348"].state, "parked");
+    assert.equal(secondReconciled.dispatcher?.parkedTerminalCheckedAt, now);
+    assert.equal(await harness.storage.getAlarm(), now + 5 * 60_000);
+
+    const terminalCheckedAt = now;
+    now += 5 * 60_000;
+    await harness.storage.deleteAlarm();
+    await harness.queue.alarm();
+    const failedPreflight = (await harness.storage.get("exact-review-queue")) as typeof state;
+    assert.equal(failedPreflight.dispatcher?.parkedTerminalCheckedAt, terminalCheckedAt);
+    assert.ok(Number(await harness.storage.getAlarm()) > now);
+  } finally {
+    Date.now = originalNow;
+    harness.restore();
+  }
+});
+
+test("exact-review queue retains open exhausted parked work and schedules another terminal check", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-08-10T16:00:00.000Z");
+  Date.now = () => now;
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }));
+  try {
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest("open-exhausted-parked", 113_344, "opened"),
+    );
+    now += 1;
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest("second-open-exhausted-parked", 113_345, "opened"),
+    );
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<
+        string,
+        {
+          state: string;
+          attempts: number;
+          parkedReason?: string;
+          parkedRecoveryAttempts?: number;
+          parkedTerminalCheckedAt?: number;
+        }
+      >;
+    };
+    const item = state.items["openclaw/gogcli#113344"];
+    item.state = "parked";
+    item.attempts = 8;
+    item.parkedReason = "review_retry_exhausted";
+    item.parkedRecoveryAttempts = 3;
+    const second = state.items["openclaw/gogcli#113345"];
+    second.state = "parked";
+    second.attempts = 8;
+    second.parkedReason = "review_retry_exhausted";
+    second.parkedRecoveryAttempts = 3;
+    await harness.storage.put("exact-review-queue", state);
+
+    await harness.queue.alarm();
+
+    const retained = (await harness.storage.get("exact-review-queue")) as typeof state;
+    const checked = retained.items["openclaw/gogcli#113344"];
+    assert.equal(checked.state, "parked");
+    assert.equal(checked.attempts, 8);
+    assert.equal(checked.parkedRecoveryAttempts, 3);
+    assert.equal(checked.parkedTerminalCheckedAt, now);
+    assert.equal(retained.items["openclaw/gogcli#113345"].parkedTerminalCheckedAt, undefined);
+    assert.equal(harness.dispatched.length, 0);
+    assert.equal(await harness.storage.getAlarm(), now + 5 * 60_000);
+    assert.equal(
+      exactReviewQueueNextWakeAt(
+        {
+          ...retained,
+          dispatcher: { state: "blocked", checkedAt: now, retryAt: now + 10 * 60_000 },
+        } as never,
+        now,
+      ),
+      now + 10 * 60_000,
+    );
+
+    now += 4 * 60_000;
+    await harness.queue.alarm();
+    const notDue = (await harness.storage.get("exact-review-queue")) as typeof state;
+    assert.equal(
+      notDue.items["openclaw/gogcli#113344"].parkedTerminalCheckedAt,
+      checked.parkedTerminalCheckedAt,
+    );
+    assert.equal(notDue.items["openclaw/gogcli#113345"].parkedTerminalCheckedAt, undefined);
+
+    now += 60_000;
+    await harness.queue.alarm();
+    const rotated = (await harness.storage.get("exact-review-queue")) as typeof state;
+    assert.equal(rotated.items["openclaw/gogcli#113345"].parkedTerminalCheckedAt, now);
+  } finally {
+    Date.now = originalNow;
+    harness.restore();
+  }
+});
+
+test("exact-review queue removes a terminal dispatch rejection after parked recovery is exhausted", async () => {
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "closed" }));
+  try {
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest("terminal-exhausted-dispatch-rejection", 113_349, "opened"),
+    );
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<
+        string,
+        {
+          state: string;
+          parkedReason?: string;
+          parkedRecoveryAttempts?: number;
+        }
+      >;
+    };
+    const item = state.items["openclaw/gogcli#113349"];
+    item.state = "parked";
+    item.parkedReason = "dispatch_rejected";
+    item.parkedRecoveryAttempts = 3;
+    await harness.storage.put("exact-review-queue", state);
+
+    await harness.queue.alarm();
+
+    const reconciled = (await harness.storage.get("exact-review-queue")) as typeof state;
+    assert.equal(reconciled.items["openclaw/gogcli#113349"], undefined);
+    assert.equal(harness.dispatched.length, 0);
+  } finally {
+    harness.restore();
+  }
 });
 
 test("exact-review admission requeue_latest resets failures instead of parking at the review ceiling", async () => {
@@ -27446,6 +27657,7 @@ function createExactReviewAdmissionHarness(
     publicationBatchSize?: string;
     publicationFreshLane?: boolean;
     captureBatchDispatch?: boolean;
+    workflow?: () => Response | Promise<Response>;
     targetInstallation?: (targetRepo: string) => Response | Promise<Response>;
     targetRepository?: (targetRepo: string) => Response | Promise<Response>;
     targetItem?: (targetRepo: string) => Response | Promise<Response>;
@@ -27471,7 +27683,7 @@ function createExactReviewAdmissionHarness(
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
     if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml") {
-      return jsonResponse({ state: "active" });
+      return options.workflow?.() ?? jsonResponse({ state: "active" });
     }
     const installation = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/installation$/);
     if (installation) {
