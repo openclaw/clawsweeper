@@ -53,6 +53,14 @@ export type ExactReviewHistorySample = {
   collection_ok: boolean;
   review?: ExactReviewLaneHistorySample;
   publication?: ExactReviewLaneHistorySample;
+  handoff?: ExactReviewHandoffHistorySample;
+};
+
+export type ExactReviewHandoffHistorySample = {
+  status: "idle" | "healthy" | "degraded" | "stalled";
+  pending: number;
+  dispatching: number;
+  leased: number;
 };
 
 export type ExactReviewLaneHistorySample = {
@@ -234,14 +242,17 @@ export function stateWriterHistorySample(value: unknown): StateWriterHistorySamp
 }
 
 export function exactReviewHistorySample(value: unknown): ExactReviewHistorySample {
-  const lanes = objectValue(objectValue(value).lanes);
+  const queue = objectValue(value);
+  const lanes = objectValue(queue.lanes);
   const review = queueLaneHistorySample(lanes.review, true);
   const publication = queueLaneHistorySample(lanes.publication, false);
   if (!review || !publication) return { collection_ok: false };
+  const handoff = queueHandoffHistorySample(queue.handoff_health);
   return {
     collection_ok: true,
     review,
     publication,
+    ...(handoff ? { handoff } : {}),
   };
 }
 
@@ -254,10 +265,46 @@ function normalizeExactReviewHistorySample(value: unknown): ExactReviewHistorySa
   const review = storedLaneHistorySample(sample.review, true);
   const publication = storedLaneHistorySample(sample.publication, false);
   if (!review || !publication) return null;
+  const handoff = storedHandoffHistorySample(sample.handoff);
+  if (sample.handoff !== undefined && !handoff) return null;
   return {
     collection_ok: true,
     review,
     publication,
+    ...(handoff ? { handoff } : {}),
+  };
+}
+
+function queueHandoffHistorySample(value: unknown): ExactReviewHandoffHistorySample | null {
+  const handoff = objectValue(value);
+  const phases = objectValue(handoff.phases);
+  return handoffHistorySample({
+    status: handoff.status,
+    pending: objectValue(phases.pending).count,
+    dispatching: objectValue(phases.dispatching).count,
+    leased: objectValue(phases.leased).count,
+  });
+}
+
+function storedHandoffHistorySample(value: unknown): ExactReviewHandoffHistorySample | null {
+  if (value === undefined) return null;
+  return handoffHistorySample(objectValue(value));
+}
+
+function handoffHistorySample(
+  value: Record<string, unknown>,
+): ExactReviewHandoffHistorySample | null {
+  const status = String(value.status || "");
+  const pending = nonNegativeInteger(value.pending);
+  const dispatching = nonNegativeInteger(value.dispatching);
+  const leased = nonNegativeInteger(value.leased);
+  if (!["idle", "healthy", "degraded", "stalled"].includes(status)) return null;
+  if (pending === null || dispatching === null || leased === null) return null;
+  return {
+    status: status as ExactReviewHandoffHistorySample["status"],
+    pending,
+    dispatching,
+    leased,
   };
 }
 

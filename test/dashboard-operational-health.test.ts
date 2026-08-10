@@ -174,12 +174,21 @@ test("health history preserves legacy samples and normalizes exact-review backlo
       },
       publication: { pending: 1502, enqueued_total: 50, completed_total: 42 },
     },
+    handoff_health: {
+      status: "degraded",
+      phases: {
+        pending: { count: 317 },
+        dispatching: { count: 8 },
+        leased: { count: 34 },
+      },
+    },
   });
   const normalized = normalizeHealthHistorySample({ ...legacy, exact_review: exactReview });
   assert.deepEqual(normalized?.exact_review, {
     collection_ok: true,
     review: { pending: 317, enqueued_total: 90, completed_total: 70, shed_total: 3 },
     publication: { pending: 1502, enqueued_total: 50, completed_total: 42 },
+    handoff: { status: "degraded", pending: 317, dispatching: 8, leased: 34 },
   });
   assert.deepEqual(normalizeHealthHistorySample({ at: CHECKED_AT, exact_review: exactReview }), {
     at: CHECKED_AT,

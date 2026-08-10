@@ -758,7 +758,11 @@ export default {
     if (url.pathname === "/api/triage") return triageJson(request, env, ctx);
     if (url.pathname === "/api/pr-proof-triage") return prProofTriageJson(request, env, ctx);
     if (url.pathname === "/" || url.pathname === "/index.html") return html(dashboardHtml(env));
-    if (url.pathname === "/bay-demo") return demoHtml(bayHtml());
+    if (url.pathname === "/bay") return demoHtml(bayHtml());
+    if (url.pathname === "/bay-demo") {
+      url.pathname = "/bay";
+      return Response.redirect(url.toString(), 308);
+    }
     if (url.pathname === "/triage" || url.pathname === "/triage.html")
       return html(triageHtml(issueTriagePageConfig()));
     if (url.pathname === "/pr-proof-triage" || url.pathname === "/pr-proof-triage.html")
@@ -7330,7 +7334,7 @@ function issueTriagePageConfig() {
     highlightLabelPrefixes: ["clawsweeper:"],
     links: [
       { href: "/", label: "Live pipeline" },
-      { href: "/bay-demo", label: "OpenClaw Bay" },
+      { href: "/bay", label: "OpenClaw Bay" },
       { href: "/pr-proof-triage", label: "PR proof triage" },
     ],
     columns: [
@@ -7379,7 +7383,7 @@ function prProofTriagePageConfig() {
     highlightLabelPrefixes: ["triage:", "proof:", "mantis:"],
     links: [
       { href: "/", label: "Live pipeline" },
-      { href: "/bay-demo", label: "OpenClaw Bay" },
+      { href: "/bay", label: "OpenClaw Bay" },
       { href: "/triage", label: "Issue triage" },
     ],
     columns: [
@@ -9514,7 +9518,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   <header>
     <h1>ClawSweeper <span class="live-tag">Live</span></h1>
     <div class="top-links">
-      <a class="top-link" href="/bay-demo">OpenClaw Bay</a>
+      <a class="top-link" href="/bay">OpenClaw Bay</a>
       <a class="top-link" href="/triage">Issue triage</a>
       <a class="top-link" href="/pr-proof-triage">PR proof triage</a>
       <a class="top-link" href="${escapeHtml(crabfleetUrl)}">Live terminals</a>

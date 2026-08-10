@@ -10,7 +10,7 @@ const outputDir = path.resolve(process.env.BAY_PROOF_OUTPUT || ".artifacts/openc
 const sourceSha = process.env.SOURCE_SHA || "unknown";
 const port = Number(process.env.BAY_PROOF_PORT || 8787);
 const origin = `http://bay-proof.test:${port}`;
-const proofUrl = `${origin}/bay-demo`;
+const proofUrl = `${origin}/bay`;
 const browserPath =
   process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ||
   "/ms-playwright/chromium-1223/chrome-linux64/chrome";
@@ -774,7 +774,7 @@ try {
   await page.evaluate(() => document.fonts.ready);
 
   assertProof("real Bay route loaded", (await page.title()).includes("OpenClaw Bay"), {
-    route: "/bay-demo",
+    route: "/bay",
   });
   assertProof(
     "Bay is indexable and retains hardened response headers",
@@ -799,7 +799,7 @@ try {
     JSON.stringify(bayHeaderLinks) ===
       JSON.stringify([
         { label: "Overview", href: "/" },
-        { label: "OpenClaw Bay", href: "/bay-demo" },
+        { label: "OpenClaw Bay", href: "/bay" },
         { label: "Issue triage", href: "/triage" },
         { label: "PR proof triage", href: "/pr-proof-triage" },
       ]),
@@ -812,8 +812,8 @@ try {
     await navigationPage.goto(`${origin}${route}`, { waitUntil: "domcontentloaded" });
     headerNavigation.push({
       route,
-      bay_links: await navigationPage.locator('a[href="/bay-demo"]').count(),
-      visible: await navigationPage.locator('a[href="/bay-demo"]').first().isVisible(),
+      bay_links: await navigationPage.locator('a[href="/bay"]').count(),
+      visible: await navigationPage.locator('a[href="/bay"]').first().isVisible(),
     });
     await navigationPage.close();
   }
@@ -2001,7 +2001,7 @@ if (proofError) {
 const manifest = {
   proof: "OpenClaw Bay deterministic Playwright browser proof",
   source_sha: sourceSha,
-  route: "/bay-demo",
+  route: "/bay",
   data_classification: "fully synthetic and redacted; no live/private dashboard payloads",
   fixture_sha256: fixtureSha256,
   fixture_snapshots: fixtureSnapshotSha256,
@@ -2060,7 +2060,7 @@ for (const item of evidence) {
 }
 const reportHtml = `<!doctype html><html><head><meta charset="utf-8"><title>OpenClaw Bay Playwright proof</title><style>
 *{box-sizing:border-box}body{margin:0;padding:28px;background:#edf7f5;color:#263533;font:16px/1.45 system-ui,sans-serif}header{max-width:1640px;margin:0 auto 24px;padding:24px 28px;border-radius:18px;background:#174e52;color:white;box-shadow:0 14px 35px rgba(24,67,69,.18)}header h1{margin:0 0 8px;font-size:34px}header p{margin:4px 0;color:#d9f1ed}.pass{display:inline-block;margin-top:12px;padding:7px 11px;border-radius:999px;background:#dff5dc;color:#174e52;font-weight:850}.grid{max-width:1640px;margin:auto;display:grid;grid-template-columns:1fr 1fr;gap:22px}article{overflow:hidden;border:1px solid #b8d3cf;border-radius:16px;background:white;box-shadow:0 10px 25px rgba(25,70,70,.11)}.copy{min-height:112px;padding:16px 18px;border-bottom:1px solid #d6e5e2}.copy h2{margin:0 0 6px;color:#bc4b31;font-size:21px}.copy p{margin:0;color:#536864}img{display:block;width:100%;height:auto}@media(max-width:900px){.grid{grid-template-columns:1fr}}
-</style></head><body><header><h1>OpenClaw Bay · deterministic Playwright proof</h1><p>Real <code>/bay-demo</code> page and artwork; dashboard status, history, and triage reads are replaced with fully synthetic, redacted fixtures.</p><p>Source ${escapeHtml(sourceSha)} · fixture SHA-256 ${escapeHtml(fixtureSha256)}</p><span class="pass">${assertions.length} assertions passed · 0 GitHub API requests · 0 mutation requests</span></header><main class="grid">${cards.join("")}</main></body></html>`;
+</style></head><body><header><h1>OpenClaw Bay · deterministic Playwright proof</h1><p>Real <code>/bay</code> page and artwork; dashboard status, history, and triage reads are replaced with fully synthetic, redacted fixtures.</p><p>Source ${escapeHtml(sourceSha)} · fixture SHA-256 ${escapeHtml(fixtureSha256)}</p><span class="pass">${assertions.length} assertions passed · 0 GitHub API requests · 0 mutation requests</span></header><main class="grid">${cards.join("")}</main></body></html>`;
 const reportPath = path.join(outputDir, "playwright-proof-report.html");
 await writeFile(reportPath, reportHtml);
 

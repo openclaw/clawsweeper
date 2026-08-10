@@ -329,7 +329,7 @@ proof, supplied-but-not-sufficient proof, mock-only proof, and proof label
 mismatches. See
 [`docs/pr-proof-triage-dashboard.md`](docs/pr-proof-triage-dashboard.md).
 
-OpenClaw Bay at `/bay-demo` is a public, indexable ClawSweeper dashboard
+OpenClaw Bay at `/bay` is a public, indexable ClawSweeper dashboard
 destination that renders the same read-only operational status as an animated
 shoreline. It is linked from the Overview, issue-triage, and PR-proof headers,
 and adds no browser-to-GitHub requests or new GitHub query path. See

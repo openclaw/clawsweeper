@@ -9926,9 +9926,9 @@ test("issue triage exposes impact-group controls without changing PR proof triag
   const proofHtml = await proofPage.text();
   assert.match(issueHtml, /id="routing-group"/);
   assert.match(issueHtml, /Impact group/);
-  assert.match(issueHtml, /href="\/bay-demo">OpenClaw Bay/);
-  assert.match(proofHtml, /href="\/bay-demo">OpenClaw Bay/);
-  assert.match(await overviewPage.text(), /href="\/bay-demo">OpenClaw Bay/);
+  assert.match(issueHtml, /href="\/bay">OpenClaw Bay/);
+  assert.match(proofHtml, /href="\/bay">OpenClaw Bay/);
+  assert.match(await overviewPage.text(), /href="\/bay">OpenClaw Bay/);
   assert.doesNotMatch(proofHtml, /id="routing-group"/);
 });
 
@@ -9945,8 +9945,8 @@ test("dashboard health identifies the deployed revision", async () => {
   assert.equal(response.headers.get("cache-control"), "no-store");
 });
 
-test("OpenClaw Bay is a public, indexable, hardened route", async () => {
-  const response = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/bay-demo"), {});
+test("OpenClaw Bay is a public, indexable, hardened canonical route", async () => {
+  const response = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/bay"), {});
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -9961,7 +9961,7 @@ test("OpenClaw Bay is a public, indexable, hardened route", async () => {
   assert.match(body, /<title>OpenClaw Bay · ClawSweeper<\/title>/);
   assert.doesNotMatch(body, /<meta name="robots"/);
   assert.doesNotMatch(body, /Experimental demo/);
-  assert.match(body, /href="\/bay-demo" aria-current="page"/);
+  assert.match(body, /href="\/bay" aria-current="page"/);
   assert.match(body, /Where's my crustacean\?/);
   assert.match(body, /20 distinct terminal items per tide/);
   assert.match(body, /Master Sweeper/);
@@ -9978,11 +9978,9 @@ test("OpenClaw Bay is a public, indexable, hardened route", async () => {
   assert.doesNotMatch(body, /function bayRecentPublicationEvents/);
   assert.match(body, /id="durable-lifecycle-kanban"/);
   assert.match(body, /Durable lifecycle Kanban/);
-  assert.match(body, /id="live-activity-panel"/);
-  assert.match(body, /Transient signals only/);
-  assert.match(body, /class="live-activity hero-live-activity"/);
-  assert.match(body, /fetch\("\/api\/live-activity-bay"/);
-  assert.match(body, /never create, move, count, or complete a durable lifecycle card/);
+  assert.doesNotMatch(body, /Live activity/i);
+  assert.doesNotMatch(body, /live-activity/);
+  assert.doesNotMatch(body, /fetch\("\/api\/live-activity-bay"/);
   assert.match(body, /function durableSnapshot/);
   assert.match(body, /fetch\("\/api\/durable-lifecycle-bay"/);
   assert.match(body, /durableLifecycleLoading/);
@@ -9993,23 +9991,11 @@ test("OpenClaw Bay is a public, indexable, hardened route", async () => {
     body,
     /No counts or cards are shown until a complete, fresh projection is available/,
   );
-  assert.match(
-    body,
-    /Transient signals only; they never create, move, count, or complete a durable lifecycle card/,
-  );
   const durableScriptStart = body.indexOf("function durableSnapshot");
   const durableScriptEnd = body.indexOf("function hash", durableScriptStart);
   assert.ok(durableScriptStart > 0 && durableScriptEnd > durableScriptStart);
   const durableScript = body.slice(durableScriptStart, durableScriptEnd);
   assert.doesNotMatch(durableScript, /\/api\/status|workers|current_step|stageFor/);
-  const liveScriptStart = body.indexOf("function liveActivitySnapshot");
-  const liveScriptEnd = body.indexOf("function hash", liveScriptStart);
-  assert.ok(liveScriptStart > 0 && liveScriptEnd > liveScriptStart);
-  const liveScript = body.slice(liveScriptStart, liveScriptEnd);
-  assert.doesNotMatch(
-    liveScript,
-    /durable-lifecycle-bay|durableLifecycle|stageFor|\/api\/status|workers|current_step/,
-  );
   assert.match(body, /function durableNoSensitiveFields/);
   assert.doesNotMatch(durableScript, /JSON\.stringify\(card\|\|\{\}\)/);
   assert.match(body, /function loadBayHistory/);
@@ -10021,6 +10007,12 @@ test("OpenClaw Bay is a public, indexable, hardened route", async () => {
   assert.match(body, /data-bay-history-range="24h"/);
   assert.match(body, /data-bay-history-range="7d"/);
   assert.match(body, /bay-control-axis-label/);
+  assert.match(body, /function bayHandoffHistory/);
+  assert.match(body, /function bayHandoffSparkline/);
+  assert.match(body, /bay-handoff-line pending/);
+  assert.match(body, /Pending, dispatching, and leased queue handoffs/);
+  assert.match(body, /oldest pending/);
+  assert.match(body, /handoff\.message\|\|handoff\.reason/);
   assert.match(body, /api\/health-history\?range="\+encodeURIComponent\(range\)/);
   assert.match(body, /function expandQueue/);
   assert.match(body, /function queueProjectionStage/);
@@ -10274,7 +10266,17 @@ test("OpenClaw Bay is a public, indexable, hardened route", async () => {
   assert.equal(confirmingContext.result[0].stage, "completed");
   assert.equal(Object.keys(confirmingContext.state.confirmingOutcomes).length, 0);
 
-  for (const path of ["/bay", "/bay.html", "/bay-demo.html"]) {
+  const legacy = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/bay-demo?repo=openclaw%2Fopenclaw&q=review"),
+    {},
+  );
+  assert.equal(legacy.status, 308);
+  assert.equal(
+    legacy.headers.get("location"),
+    "https://clawsweeper.openclaw.ai/bay?repo=openclaw%2Fopenclaw&q=review",
+  );
+
+  for (const path of ["/bay.html", "/bay-demo.html", "/not-a-dashboard-route"]) {
     const missing = await worker.fetch(new Request(`https://clawsweeper.openclaw.ai${path}`), {});
     assert.equal(missing.status, 404, `${path} should remain unpublished`);
   }
@@ -10282,7 +10284,7 @@ test("OpenClaw Bay is a public, indexable, hardened route", async () => {
   for (const path of ["/", "/triage", "/pr-proof-triage"]) {
     const page = await worker.fetch(new Request(`https://clawsweeper.openclaw.ai${path}`), {});
     const pageBody = await page.text();
-    assert.match(pageBody, /href="\/bay-demo">OpenClaw Bay/);
+    assert.match(pageBody, /href="\/bay">OpenClaw Bay/);
     if (path === "/") assert.match(pageBody, /setInterval\(load, 15000\)/);
   }
 });
