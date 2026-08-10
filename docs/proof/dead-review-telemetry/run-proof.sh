@@ -21,9 +21,44 @@ mkdir -p "$output_dir"
 
 stop_worker() {
   if test -n "$wrangler_pid"; then
-    kill "$wrangler_pid" >/dev/null 2>&1 || true
+    local -a worker_pids=("$wrangler_pid")
+    local child_pid
+    while IFS= read -r child_pid; do
+      worker_pids+=("$child_pid")
+    done < <(
+      ps -eo pid=,ppid= | awk -v root="$wrangler_pid" '
+        { parent[$1] = $2 }
+        END {
+          for (pid in parent) {
+            current = pid
+            for (depth = 0; depth < 100 && current in parent; depth++) {
+              current = parent[current]
+              if (current == root) {
+                print pid
+                break
+              }
+            }
+          }
+        }
+      '
+    )
+    kill "${worker_pids[@]}" >/dev/null 2>&1 || true
     wait "$wrangler_pid" >/dev/null 2>&1 || true
     wrangler_pid=""
+
+    local stopped=false
+    for _ in $(seq 1 50); do
+      if ! curl --silent --max-time 1 "http://127.0.0.1:${worker_port}/api/health" \
+        >/dev/null 2>&1; then
+        stopped=true
+        break
+      fi
+      sleep 0.1
+    done
+    if test "$stopped" != true; then
+      echo "failed to stop the Wrangler process tree before restart" >&2
+      exit 1
+    fi
   fi
 }
 

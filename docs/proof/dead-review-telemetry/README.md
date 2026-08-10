@@ -15,12 +15,13 @@ The behavior contract is:
 - the removed internal per-item write route and public per-item read route return 404.
 
 The proof first boots the Worker to create the real queue database, stops it, and seeds the retired
-table plus its three indexes. After restart, its first upgrade request is the signed run-level
-telemetry write. Once the remaining HTTP observations are complete, the proof stops the Worker and
-uses `node:sqlite` to find that unique row in the queue database. A missing row fails explicitly
-with `Durable Object did not initialize`; only a confirmed row allows the retired-schema assertion
-to run. This prevents a cached or snapshot-served HTTP 200 from being mistaken for Durable Object
-initialization.
+table plus its three indexes. The stop terminates the full Wrangler process tree and confirms the
+health endpoint is down, preventing a child process from surviving as a fake restart. After restart,
+the first upgrade request is the signed run-level telemetry write. Once the remaining HTTP
+observations are complete, the proof stops the Worker and uses `node:sqlite` to find that unique row
+in the queue database. A missing row fails explicitly with `Durable Object did not initialize`;
+only a confirmed row allows the retired-schema assertion to run. This prevents a cached or
+snapshot-served HTTP 200 from being mistaken for Durable Object initialization.
 
 Run `docs/proof/dead-review-telemetry/run-proof.sh`. Set
 `DEAD_REVIEW_TELEMETRY_PROOF_OUTPUT` to keep artifacts outside the repository. The proof is local
