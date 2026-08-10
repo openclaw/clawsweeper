@@ -8,6 +8,10 @@ output_dir="${DEAD_REVIEW_TELEMETRY_PROOF_OUTPUT:-docs/proof/dead-review-telemet
 worker_port="${DEAD_REVIEW_TELEMETRY_PROOF_PORT:-8796}"
 proof_secret="dead-review-telemetry-disposable-local-secret"
 sqlite_helper="docs/proof/dead-review-telemetry/sqlite-proof.mjs"
+proof_run_id="$(node -e '
+  const { randomInt } = require("node:crypto");
+  process.stdout.write(`${Date.now()}${randomInt(1_000_000).toString().padStart(6, "0")}`);
+')"
 state_dir="$(mktemp -d /tmp/dead-review-telemetry-state.XXXXXX)"
 wrangler_raw_log="$(mktemp /tmp/dead-review-telemetry-wrangler.XXXXXX)"
 wrangler_pid=""
@@ -90,9 +94,41 @@ node "$sqlite_helper" list-retired-schema "$queue_db" \
   >"${output_dir}/retired-schema-before.txt"
 test "$(wc -l <"${output_dir}/retired-schema-before.txt" | tr -d ' ')" = "4"
 
-# Reboot the current Worker against the persisted legacy schema and drive all
-# assertions over its real HTTP surface.
+# Reboot the current Worker against the persisted legacy schema. The signed
+# run-telemetry write must reach the Durable Object, so use it to force
+# initialization before making any upgrade assertions.
 start_worker
+run_record="${output_dir}/run-telemetry-record.json"
+node -e '
+  const fs = require("node:fs");
+  const completed = new Date();
+  const started = new Date(completed.getTime() - 60_000);
+  const runId = process.argv[2];
+  fs.writeFileSync(process.argv[1], JSON.stringify({
+    run_id: runId,
+    run_attempt: 1,
+    workflow_outcome: "success",
+    trigger_lane: "normal_backfill",
+    trigger_origin: "schedule",
+    target_repo: "openclaw/openclaw",
+    started_at: started.toISOString(),
+    completed_at: completed.toISOString(),
+    run_url: `https://github.com/openclaw/clawsweeper/actions/runs/${runId}`,
+    plan_count: 1,
+    item_count: 3,
+    publication_count: 1
+  }));
+' "$run_record" "$proof_run_id"
+run_signature="$(openssl dgst -sha256 -hmac "$proof_secret" -hex <"$run_record" | awk '{print $NF}')"
+run_post_status="$(http_status "${output_dir}/run-telemetry-post.json" \
+  -X POST \
+  -H "content-type: application/json" \
+  -H "x-clawsweeper-exact-review-signature: sha256=${run_signature}" \
+  --data-binary "@${run_record}" \
+  "http://127.0.0.1:${worker_port}/internal/exact-review/review-run-telemetry")"
+test "$run_post_status" = "200"
+
+# Drive the remaining assertions over the real HTTP surface.
 upgrade_queue_status="$(http_status "${output_dir}/queue-after-upgrade.json" \
   "http://127.0.0.1:${worker_port}/api/exact-review-queue")"
 health_status="$(http_status "${output_dir}/health.json" \
@@ -111,36 +147,8 @@ node -e '
   if (!status.exact_review_queue || Object.hasOwn(status.exact_review_queue, "review_telemetry_health")) process.exit(1);
 ' "${output_dir}/health.json" "${output_dir}/status.json"
 
-run_record="${output_dir}/run-telemetry-record.json"
-node -e '
-  const fs = require("node:fs");
-  const completed = new Date();
-  const started = new Date(completed.getTime() - 60_000);
-  fs.writeFileSync(process.argv[1], JSON.stringify({
-    run_id: "9900001",
-    run_attempt: 1,
-    workflow_outcome: "success",
-    trigger_lane: "normal_backfill",
-    trigger_origin: "schedule",
-    target_repo: "openclaw/openclaw",
-    started_at: started.toISOString(),
-    completed_at: completed.toISOString(),
-    run_url: "https://github.com/openclaw/clawsweeper/actions/runs/9900001",
-    plan_count: 1,
-    item_count: 3,
-    publication_count: 1
-  }));
-' "$run_record"
-run_signature="$(openssl dgst -sha256 -hmac "$proof_secret" -hex <"$run_record" | awk '{print $NF}')"
-run_post_status="$(http_status "${output_dir}/run-telemetry-post.json" \
-  -X POST \
-  -H "content-type: application/json" \
-  -H "x-clawsweeper-exact-review-signature: sha256=${run_signature}" \
-  --data-binary "@${run_record}" \
-  "http://127.0.0.1:${worker_port}/internal/exact-review/review-run-telemetry")"
 observability_status="$(http_status "${output_dir}/review-observability.json" \
   "http://127.0.0.1:${worker_port}/api/review-observability?range=24h&repo=all")"
-test "$run_post_status" = "200"
 test "$observability_status" = "200"
 
 node -e '
@@ -169,13 +177,12 @@ test "$removed_post_status" = "404"
 test "$removed_get_status" = "404"
 
 stop_worker
+node "$sqlite_helper" assert-proof-run-record "$queue_db" "$proof_run_id"
 node "$sqlite_helper" list-retired-schema "$queue_db" \
   >"${output_dir}/retired-schema-after.txt"
 test ! -s "${output_dir}/retired-schema-after.txt"
 run_table_count="$(node "$sqlite_helper" has-run-table "$queue_db")"
-run_record_count="$(node "$sqlite_helper" count-proof-run-record "$queue_db")"
 test "$run_table_count" = "1"
-test "$run_record_count" = "1"
 if grep -Eiq 'SQLITE_ERROR|no such table|schema error' "$wrangler_raw_log"; then
   sed -n '1,240p' "$wrangler_raw_log" >&2
   exit 1
@@ -185,6 +192,7 @@ UPGRADE_QUEUE_STATUS="$upgrade_queue_status" \
 STATUS_STATUS="$status_status" \
 HEALTH_STATUS="$health_status" \
 RUN_POST_STATUS="$run_post_status" \
+PROOF_RUN_ID="$proof_run_id" \
 OBSERVABILITY_STATUS="$observability_status" \
 REMOVED_POST_STATUS="$removed_post_status" \
 REMOVED_GET_STATUS="$removed_get_status" \
@@ -202,7 +210,7 @@ node -e '
     "/api/review-observability: HTTP " + process.env.OBSERVABILITY_STATUS + "; lanes exact_event,hot_intake,normal_backfill,recovery; normal_backfill run_count " + lane.run_count + "; item_count " + lane.item_count + "; last_run_at " + lane.last_run_at,
     "POST /internal/exact-review/review-telemetry: HTTP " + process.env.REMOVED_POST_STATUS,
     "GET /api/exact-review-queue/reviews: HTTP " + process.env.REMOVED_GET_STATUS,
-    "run-level storage after upgrade: exact_review_run_telemetry present; posted row present"
+    "run-level storage after upgrade: exact_review_run_telemetry present; posted run_id " + process.env.PROOF_RUN_ID + " present in inspected queue database"
   ];
   fs.writeFileSync(process.argv[2], lines.join("\n") + "\n");
 ' "${output_dir}/review-observability.json" "${output_dir}/runtime-transcript.txt"

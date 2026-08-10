@@ -1,8 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 
-const [operation, databasePath] = process.argv.slice(2);
+const [operation, databasePath, proofRunId] = process.argv.slice(2);
 if (!operation || !databasePath) {
-  throw new Error("usage: sqlite-proof.mjs <operation> <database-path>");
+  throw new Error("usage: sqlite-proof.mjs <operation> <database-path> [run-id]");
 }
 
 const database = new DatabaseSync(databasePath);
@@ -50,13 +50,20 @@ try {
       for (const row of rows) console.log(row.entry);
       break;
     }
-    case "count-proof-run-record": {
+    case "assert-proof-run-record": {
+      if (!proofRunId || !/^\d+$/.test(proofRunId)) {
+        throw new Error("assert-proof-run-record requires a numeric run_id");
+      }
       const row = database
         .prepare(
-          "SELECT COUNT(*) AS count FROM exact_review_run_telemetry WHERE run_id = '9900001' AND run_attempt = 1",
+          "SELECT COUNT(*) AS count FROM exact_review_run_telemetry WHERE run_id = ? AND run_attempt = 1",
         )
-        .get();
-      console.log(row.count);
+        .get(proofRunId);
+      if (row.count !== 1) {
+        throw new Error(
+          `Durable Object did not initialize against the inspected queue database: run_id ${proofRunId} is absent from ${databasePath}`,
+        );
+      }
       break;
     }
     default:
