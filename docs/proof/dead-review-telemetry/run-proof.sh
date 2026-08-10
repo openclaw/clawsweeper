@@ -7,6 +7,7 @@ export WRANGLER_SEND_METRICS=false
 output_dir="${DEAD_REVIEW_TELEMETRY_PROOF_OUTPUT:-docs/proof/dead-review-telemetry/artifacts}"
 worker_port="${DEAD_REVIEW_TELEMETRY_PROOF_PORT:-8796}"
 proof_secret="dead-review-telemetry-disposable-local-secret"
+sqlite_helper="docs/proof/dead-review-telemetry/sqlite-proof.mjs"
 state_dir="$(mktemp -d /tmp/dead-review-telemetry-state.XXXXXX)"
 wrangler_raw_log="$(mktemp /tmp/dead-review-telemetry-wrangler.XXXXXX)"
 wrangler_pid=""
@@ -75,38 +76,17 @@ test "$initial_queue_status" = "200"
 stop_worker
 
 while IFS= read -r candidate; do
-  if test "$(sqlite3 "$candidate" \
-    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='exact_review_run_telemetry';")" = "1"; then
+  candidate_has_run_table="$(node "$sqlite_helper" has-run-table "$candidate")"
+  if test "$candidate_has_run_table" = "1"; then
     queue_db="$candidate"
     break
   fi
 done < <(find "$state_dir" -type f -name '*.sqlite' -print)
 test -n "$queue_db"
 
-sqlite3 "$queue_db" <<'SQL'
-CREATE TABLE exact_review_review_telemetry (
-  repo TEXT NOT NULL,
-  item_number INTEGER NOT NULL,
-  run_id TEXT NOT NULL,
-  run_attempt INTEGER NOT NULL,
-  status TEXT NOT NULL,
-  updated_at INTEGER NOT NULL,
-  record_json TEXT NOT NULL,
-  PRIMARY KEY (repo, item_number, run_id, run_attempt)
-) STRICT;
-CREATE INDEX exact_review_review_telemetry_status
-  ON exact_review_review_telemetry (status, updated_at);
-CREATE INDEX exact_review_review_telemetry_aggregate
-  ON exact_review_review_telemetry (repo, updated_at);
-CREATE INDEX exact_review_review_telemetry_operation
-  ON exact_review_review_telemetry (run_id, run_attempt);
-INSERT INTO exact_review_review_telemetry
-  (repo, item_number, run_id, run_attempt, status, updated_at, record_json)
-VALUES ('openclaw/openclaw', 674, '67400', 1, 'completed', 1, '{}');
-SQL
+node "$sqlite_helper" seed-legacy-schema "$queue_db"
 
-sqlite3 "$queue_db" \
-  "SELECT type || ':' || name FROM sqlite_master WHERE name LIKE 'exact_review_review_telemetry%' ORDER BY type, name;" \
+node "$sqlite_helper" list-retired-schema "$queue_db" \
   >"${output_dir}/retired-schema-before.txt"
 test "$(wc -l <"${output_dir}/retired-schema-before.txt" | tr -d ' ')" = "4"
 
@@ -189,14 +169,11 @@ test "$removed_post_status" = "404"
 test "$removed_get_status" = "404"
 
 stop_worker
-sqlite3 "$queue_db" \
-  "SELECT type || ':' || name FROM sqlite_master WHERE name LIKE 'exact_review_review_telemetry%' ORDER BY type, name;" \
+node "$sqlite_helper" list-retired-schema "$queue_db" \
   >"${output_dir}/retired-schema-after.txt"
 test ! -s "${output_dir}/retired-schema-after.txt"
-run_table_count="$(sqlite3 "$queue_db" \
-  "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='exact_review_run_telemetry';")"
-run_record_count="$(sqlite3 "$queue_db" \
-  "SELECT COUNT(*) FROM exact_review_run_telemetry WHERE run_id='9900001' AND run_attempt=1;")"
+run_table_count="$(node "$sqlite_helper" has-run-table "$queue_db")"
+run_record_count="$(node "$sqlite_helper" count-proof-run-record "$queue_db")"
 test "$run_table_count" = "1"
 test "$run_record_count" = "1"
 if grep -Eiq 'SQLITE_ERROR|no such table|schema error' "$wrangler_raw_log"; then
