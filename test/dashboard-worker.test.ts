@@ -16270,10 +16270,10 @@ test("parked review operator routes paginate, resolve, and recover idempotently 
   const storage = new MemoryDurableStorage();
   const now = Date.parse("2026-08-10T12:00:00.000Z");
   const items = Object.fromEntries(
-    Array.from({ length: 6 }, (_, index) => {
+    Array.from({ length: 8 }, (_, index) => {
       const item = leasedExactReviewQueueItem(114_000 + index, `91400${index}`);
       item.state = "parked";
-      item.parkedReason = "review_retry_exhausted";
+      item.parkedReason = index === 7 ? "dead_letter_capacity" : "review_retry_exhausted";
       item.parkedRecoveryAttempts = index === 6 ? 2 : 3;
       item.parkedRecoveryAt = undefined;
       item.attempts = 8;
@@ -16311,6 +16311,10 @@ test("parked review operator routes paginate, resolve, and recover idempotently 
     all.parked_reviews.some((item) => item.item_key === "openclaw/openclaw#114006"),
     false,
   );
+  assert.equal(
+    all.parked_reviews.some((item) => item.item_key === "openclaw/openclaw#114007"),
+    false,
+  );
   assert.equal(first.parked_reviews[0].item_key, "openclaw/openclaw#114000");
   assert.deepEqual(
     Object.keys(first.parked_reviews[0]).sort(),
@@ -16344,6 +16348,44 @@ test("parked review operator routes paginate, resolve, and recover idempotently 
     second.parked_reviews.map((item) => item.item_key),
     ["openclaw/openclaw#114002", "openclaw/openclaw#114003"],
   );
+
+  const ineligible = [6, 7].map((index) => ({
+    item_key: `openclaw/openclaw#${114_000 + index}`,
+    revision: 1,
+    updated_at_ms: now + index,
+  }));
+  const earlyResolve = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/parked-reviews/resolve", {
+      method: "POST",
+      body: JSON.stringify({ items: ineligible, note: "must remain parked" }),
+    }),
+  );
+  assert.deepEqual(await earlyResolve.json(), { ok: true, resolved: 0, skipped: 2 });
+  const earlyRecover = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/parked-reviews/recover-fresh", {
+      method: "POST",
+      body: JSON.stringify({
+        items: ineligible,
+        idempotency_key: "parked-reconcile:ineligible",
+      }),
+    }),
+  );
+  assert.deepEqual(await earlyRecover.json(), {
+    ok: true,
+    recovered: 0,
+    deduped: 0,
+    skipped: 2,
+  });
+  const guarded = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      { state: string; parkedRecoveryAttempts?: number; parkedReason?: string }
+    >;
+  };
+  assert.equal(guarded.items["openclaw/openclaw#114006"].state, "parked");
+  assert.equal(guarded.items["openclaw/openclaw#114006"].parkedRecoveryAttempts, 2);
+  assert.equal(guarded.items["openclaw/openclaw#114007"].state, "parked");
+  assert.equal(guarded.items["openclaw/openclaw#114007"].parkedReason, "dead_letter_capacity");
 
   const terminal = first.parked_reviews[0];
   const resolved = await queue.fetch(

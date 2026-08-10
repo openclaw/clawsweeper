@@ -60,6 +60,18 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
   assert.equal(scheduled.on.workflow_dispatch.inputs.execute.default, false);
   assert.equal(scheduled.on.workflow_dispatch.inputs.max_targets.default, "100");
   assert.equal(scheduled.on.workflow_dispatch.inputs.max_recoveries.default, "10");
+  const deadline = scheduled.jobs.reconcile.steps.find(
+    (candidate) => candidate.name === "Establish reconciliation deadline",
+  );
+  assert.match(deadline.run, /EXACT_REVIEW_RECONCILE_DEADLINE_MS/);
+  assert.match(deadline.run, /13 \* 60 \* 1000/);
+  assert.match(deadline.run, /GITHUB_ENV/);
+  assert.ok(
+    scheduled.jobs.reconcile.steps.indexOf(deadline) <
+      scheduled.jobs.reconcile.steps.findIndex((candidate) =>
+        candidate.uses?.startsWith("actions/checkout@"),
+      ),
+  );
   const step = scheduled.jobs.reconcile.steps.find(
     (candidate) => candidate.name === "Reconcile closed, duplicate, and recoverable dead letters",
   );
@@ -238,6 +250,85 @@ test("parked review reconciliation plans by default and executes terminal resolv
     );
     assert.equal(overCap.code, 1);
     assert.match(overCap.stderr, /between 0 and 5 for reconcile-parked/);
+  } finally {
+    server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("parked review reconciliation stops safely at the workflow deadline", async () => {
+  const secret = "test-parked-review-deadline";
+  const parkedRows = [
+    parkedRow("openclaw/repo#1", "openclaw/repo", 1, 1_000),
+    parkedRow("openclaw/repo#2", "openclaw/repo", 2, 2_000),
+    parkedRow("openclaw/repo#3", "openclaw/repo", 3, 3_000),
+  ];
+  let mutations = 0;
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    if (request.url === "/api/exact-review-queue") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ pressure: { status: "idle", active: 0, capacity: 128 } }));
+      return;
+    }
+    if (request.url?.startsWith("/repos/openclaw/repo/issues/")) {
+      const timer = setTimeout(() => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ node_id: "ISSUE_DELAYED", state: "open", number: 1 }));
+      }, 5_000);
+      response.once("close", () => clearTimeout(timer));
+      return;
+    }
+    const body = Buffer.concat(chunks).toString("utf8");
+    const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+    assert.equal(request.headers["x-clawsweeper-exact-review-signature"], expected);
+    if (request.url?.endsWith("/parked-reviews/list")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, parked_reviews: parkedRows, next_cursor: null }));
+      return;
+    }
+    mutations += 1;
+    response.writeHead(500, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "unexpected_mutation" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const directory = await mkdtemp(join(tmpdir(), "clawsweeper-parked-deadline-"));
+  try {
+    const startedAt = Date.now();
+    const result = await runOperator(
+      [
+        "--action",
+        "reconcile-parked",
+        "--execute",
+        "--max-targets",
+        "100",
+        "--output",
+        join(directory, "deadline.json"),
+      ],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+      { EXACT_REVIEW_RECONCILE_DEADLINE_MS: String(Date.now() + 1_000) },
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(Date.now() - startedAt < 2_500);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      action: "reconcile-parked",
+      dry_run: false,
+      inventory_complete: true,
+      queue_pressure: "idle",
+      inspected_targets: 1,
+      terminal_targets: 0,
+      repository_gone_targets: 0,
+      resolved_targets: 0,
+      open_targets: 0,
+      recovered_targets: 0,
+      skipped_targets: 3,
+      deadline_reached: true,
+    });
+    assert.equal(mutations, 0);
   } finally {
     server.close();
     await rm(directory, { recursive: true, force: true });
@@ -2773,7 +2864,7 @@ function parkedRow(itemKey, targetRepo, itemNumber, updatedAtMs) {
   };
 }
 
-function runOperator(args, queueUrl, secret) {
+function runOperator(args, queueUrl, secret, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
@@ -2785,6 +2876,7 @@ function runOperator(args, queueUrl, secret) {
           CLAWSWEEPER_WEBHOOK_SECRET: secret,
           GITHUB_API_URL: queueUrl,
           GITHUB_TOKEN: "test-github-token",
+          ...extraEnv,
         },
         stdio: ["ignore", "pipe", "pipe"],
       },

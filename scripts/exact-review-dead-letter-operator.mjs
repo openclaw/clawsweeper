@@ -19,6 +19,8 @@ const MAX_RECONCILE_INVENTORY_REFRESHES = 2;
 const GRAPHQL_IDENTITY_BATCH_SIZE = 40;
 const ACTIVE_RECOVERY_REASONS = new Set(["fresh_review_already_active", "publication_item_active"]);
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9:._-]{1,200}$/;
+const OPERATOR_REQUEST_TIMEOUT_MS = 20_000;
+const OPERATOR_DEADLINE_SETTLE_MS = 25;
 
 class DeadLetterInventoryChangedError extends Error {
   constructor(summary, rowIds, targetKeys, blockedGroups) {
@@ -62,14 +64,16 @@ async function main(argv) {
   }
 
   if (args.action === "reconcile-parked") {
+    const deadlineAt = parkedReconcileDeadlineAt();
     const inventory = await loadParkedReviewInventory({
       queueUrl,
       secret,
       maxRows: args.maxTargets,
+      deadlineAt,
     });
     await mkdir(dirname(resolve(args.output)), { recursive: true });
     await writeFile(args.output, `${JSON.stringify(inventory, null, 2)}\n`, "utf8");
-    await reconcileParkedReviews({ inventory, queueUrl, secret, args });
+    await reconcileParkedReviews({ inventory, queueUrl, secret, args, deadlineAt });
     return;
   }
 
@@ -668,8 +672,10 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
   printResult(summary);
 }
 
-async function reconcileParkedReviews({ inventory, queueUrl, secret, args }) {
-  const pressure = await readQueuePressure(queueUrl);
+async function reconcileParkedReviews({ inventory, queueUrl, secret, args, deadlineAt }) {
+  const pressure = parkedReconcileDeadlineReached(deadlineAt)
+    ? { status: "unknown", availableSlots: 0 }
+    : await readQueuePressure(queueUrl, deadlineAt);
   const summary = {
     action: "reconcile-parked",
     dry_run: !args.execute,
@@ -683,14 +689,32 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args }) {
     recovered_targets: 0,
     skipped_targets: 0,
   };
+  const stopForDeadline = (skippedTargets) => {
+    summary.deadline_reached = true;
+    summary.skipped_targets += skippedTargets;
+    printResult(summary);
+  };
   const terminal = [];
   const recoverable = [];
-  for (const row of inventory.parked_reviews.slice(0, args.maxTargets)) {
+  const selectedRows = inventory.parked_reviews.slice(0, args.maxTargets);
+  if (inventory.deadline_reached || parkedReconcileDeadlineReached(deadlineAt)) {
+    stopForDeadline(selectedRows.length);
+    return;
+  }
+  for (const [index, row] of selectedRows.entries()) {
+    if (parkedReconcileDeadlineReached(deadlineAt)) {
+      stopForDeadline(selectedRows.length - index + terminal.length + recoverable.length);
+      return;
+    }
     summary.inspected_targets += 1;
     let target;
     try {
-      target = await inspectParkedReviewTarget(`${row.target_repo}#${row.item_number}`);
+      target = await inspectParkedReviewTarget(`${row.target_repo}#${row.item_number}`, deadlineAt);
     } catch {
+      if (parkedReconcileDeadlineReached(deadlineAt)) {
+        stopForDeadline(selectedRows.length - index + terminal.length + recoverable.length);
+        return;
+      }
       summary.skipped_targets += 1;
       continue;
     }
@@ -707,15 +731,23 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args }) {
     }
   }
 
-  for (const candidate of terminal) {
+  for (const [index, candidate] of terminal.entries()) {
+    if (parkedReconcileDeadlineReached(deadlineAt)) {
+      stopForDeadline(terminal.length - index + recoverable.length);
+      return;
+    }
     if (!args.execute) {
       summary.resolved_targets += 1;
       continue;
     }
     let current;
     try {
-      current = await inspectParkedReviewTarget(candidate.target.requested_target);
+      current = await inspectParkedReviewTarget(candidate.target.requested_target, deadlineAt);
     } catch {
+      if (parkedReconcileDeadlineReached(deadlineAt)) {
+        stopForDeadline(terminal.length - index + recoverable.length);
+        return;
+      }
       summary.skipped_targets += 1;
       continue;
     }
@@ -723,18 +755,28 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args }) {
       summary.skipped_targets += 1;
       continue;
     }
-    const result = await signedPost({
-      queueUrl,
-      secret,
-      path: "/internal/exact-review/parked-reviews/resolve",
-      payload: {
-        items: [parkedMutationItem(candidate.row)],
-        note:
-          current.state === "repository_gone"
-            ? `automatic reconciliation: repository for ${current.requested_target} no longer exists`
-            : `automatic reconciliation: GitHub target ${current.canonical_target} is terminal`,
-      },
-    });
+    let result;
+    try {
+      result = await signedPost({
+        queueUrl,
+        secret,
+        path: "/internal/exact-review/parked-reviews/resolve",
+        payload: {
+          items: [parkedMutationItem(candidate.row)],
+          note:
+            current.state === "repository_gone"
+              ? `automatic reconciliation: repository for ${current.requested_target} no longer exists`
+              : `automatic reconciliation: GitHub target ${current.canonical_target} is terminal`,
+        },
+        deadlineAt,
+      });
+    } catch (error) {
+      if (parkedReconcileDeadlineReached(deadlineAt)) {
+        stopForDeadline(terminal.length - index + recoverable.length);
+        return;
+      }
+      throw error;
+    }
     summary.resolved_targets += requiredCount(result, "resolved");
     summary.skipped_targets += requiredCount(result, "skipped");
   }
@@ -742,11 +784,21 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args }) {
   if (recoverable.length && pressure.status === "idle") {
     const available = Math.min(args.maxRecoveries, pressure.availableSlots);
     const admitted = [];
-    for (const candidate of recoverable.slice(0, available)) {
+    const selectedRecoveries = recoverable.slice(0, available);
+    summary.skipped_targets += recoverable.length - selectedRecoveries.length;
+    for (const [index, candidate] of selectedRecoveries.entries()) {
+      if (parkedReconcileDeadlineReached(deadlineAt)) {
+        stopForDeadline(admitted.length + selectedRecoveries.length - index);
+        return;
+      }
       let current;
       try {
-        current = await inspectParkedReviewTarget(candidate.target.requested_target);
+        current = await inspectParkedReviewTarget(candidate.target.requested_target, deadlineAt);
       } catch {
+        if (parkedReconcileDeadlineReached(deadlineAt)) {
+          stopForDeadline(admitted.length + selectedRecoveries.length - index);
+          return;
+        }
         summary.skipped_targets += 1;
         continue;
       }
@@ -756,23 +808,36 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args }) {
       }
       admitted.push(candidate.row);
     }
-    summary.skipped_targets += recoverable.length - Math.min(recoverable.length, available);
     if (!args.execute) {
       summary.recovered_targets += admitted.length;
     } else if (admitted.length) {
+      if (parkedReconcileDeadlineReached(deadlineAt)) {
+        stopForDeadline(admitted.length);
+        return;
+      }
       const identity = admitted
         .map((row) => `${row.item_key}:${row.revision}:${row.updated_at_ms}`)
         .sort()
         .join("\n");
-      const result = await signedPost({
-        queueUrl,
-        secret,
-        path: "/internal/exact-review/parked-reviews/recover-fresh",
-        payload: {
-          items: admitted.map(parkedMutationItem),
-          idempotency_key: `parked-reconcile:${createHash("sha256").update(identity).digest("hex")}`,
-        },
-      });
+      let result;
+      try {
+        result = await signedPost({
+          queueUrl,
+          secret,
+          path: "/internal/exact-review/parked-reviews/recover-fresh",
+          payload: {
+            items: admitted.map(parkedMutationItem),
+            idempotency_key: `parked-reconcile:${createHash("sha256").update(identity).digest("hex")}`,
+          },
+          deadlineAt,
+        });
+      } catch (error) {
+        if (parkedReconcileDeadlineReached(deadlineAt)) {
+          stopForDeadline(admitted.length);
+          return;
+        }
+        throw error;
+      }
       summary.recovered_targets +=
         requiredCount(result, "recovered") + requiredCount(result, "deduped");
       summary.skipped_targets += requiredCount(result, "skipped");
@@ -783,18 +848,31 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args }) {
   printResult(summary);
 }
 
-async function loadParkedReviewInventory({ queueUrl, secret, maxRows }) {
+async function loadParkedReviewInventory({ queueUrl, secret, maxRows, deadlineAt }) {
   const rows = [];
   let cursor = "";
   let complete = false;
+  let deadlineReached = false;
   while (rows.length < maxRows) {
+    if (parkedReconcileDeadlineReached(deadlineAt)) {
+      deadlineReached = true;
+      break;
+    }
     const limit = Math.min(MAX_PARKED_INVENTORY_PAGE_SIZE, maxRows - rows.length);
-    const page = await signedPost({
-      queueUrl,
-      secret,
-      path: "/internal/exact-review/parked-reviews/list",
-      payload: { limit, ...(cursor ? { cursor } : {}) },
-    });
+    let page;
+    try {
+      page = await signedPost({
+        queueUrl,
+        secret,
+        path: "/internal/exact-review/parked-reviews/list",
+        payload: { limit, ...(cursor ? { cursor } : {}) },
+        deadlineAt,
+      });
+    } catch (error) {
+      if (!parkedReconcileDeadlineReached(deadlineAt)) throw error;
+      deadlineReached = true;
+      break;
+    }
     const pageRows = Array.isArray(page.parked_reviews) ? page.parked_reviews : [];
     rows.push(...pageRows.map(sanitizeParkedReviewRow));
     cursor = String(page.next_cursor || "");
@@ -807,6 +885,7 @@ async function loadParkedReviewInventory({ queueUrl, secret, maxRows }) {
   return {
     generated_at: new Date().toISOString(),
     complete,
+    ...(deadlineReached ? { deadline_reached: true } : {}),
     next_cursor: complete ? null : cursor,
     summary: {
       rows: rows.length,
@@ -854,7 +933,31 @@ function parkedMutationItem(row) {
   return { item_key: row.item_key, revision: row.revision, updated_at_ms: row.updated_at_ms };
 }
 
-async function inspectParkedReviewTarget(target) {
+function parkedReconcileDeadlineAt() {
+  const raw = String(process.env.EXACT_REVIEW_RECONCILE_DEADLINE_MS || "").trim();
+  if (!raw) return Number.POSITIVE_INFINITY;
+  const deadlineAt = Number(raw);
+  if (!Number.isSafeInteger(deadlineAt) || deadlineAt < 1) {
+    throw new Error("EXACT_REVIEW_RECONCILE_DEADLINE_MS must be a positive epoch millisecond");
+  }
+  return deadlineAt;
+}
+
+function parkedReconcileDeadlineReached(deadlineAt) {
+  return Number.isFinite(deadlineAt) && Date.now() + OPERATOR_DEADLINE_SETTLE_MS >= deadlineAt;
+}
+
+function operatorRequestSignal(deadlineAt = Number.POSITIVE_INFINITY) {
+  if (parkedReconcileDeadlineReached(deadlineAt)) {
+    throw new Error("exact-review reconciliation deadline reached");
+  }
+  const remaining = Number.isFinite(deadlineAt)
+    ? Math.max(1, deadlineAt - Date.now())
+    : OPERATOR_REQUEST_TIMEOUT_MS;
+  return AbortSignal.timeout(Math.min(OPERATOR_REQUEST_TIMEOUT_MS, remaining));
+}
+
+async function inspectParkedReviewTarget(target, deadlineAt = Number.POSITIVE_INFINITY) {
   const apiUrl = String(process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
   const token = String(process.env.GITHUB_TOKEN || "");
   const match = /^([^/]+)\/([^#]+)#([1-9]\d*)$/.exec(target);
@@ -867,12 +970,12 @@ async function inspectParkedReviewTarget(target) {
   };
   const response = await fetch(
     `${apiUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`,
-    { headers, signal: AbortSignal.timeout(20_000) },
+    { headers, signal: operatorRequestSignal(deadlineAt) },
   );
   if (response.status === 404) {
     const repository = await fetch(
       `${apiUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
-      { headers, signal: AbortSignal.timeout(20_000) },
+      { headers, signal: operatorRequestSignal(deadlineAt) },
     );
     if (repository.status === 404) {
       return {
@@ -901,11 +1004,11 @@ async function inspectParkedReviewTarget(target) {
   };
 }
 
-async function readQueuePressure(queueUrl) {
+async function readQueuePressure(queueUrl, deadlineAt = Number.POSITIVE_INFINITY) {
   try {
     const response = await fetch(`${queueUrl}/api/exact-review-queue`, {
       cache: "no-store",
-      signal: AbortSignal.timeout(20_000),
+      signal: operatorRequestSignal(deadlineAt),
     });
     if (!response.ok || response.headers.get("x-clawsweeper-cache") === "stale") {
       return { status: "unknown", availableSlots: 0 };
@@ -1165,7 +1268,13 @@ function countBy(rows, keyFor) {
   );
 }
 
-async function signedPost({ queueUrl, secret, path, payload }) {
+async function signedPost({
+  queueUrl,
+  secret,
+  path,
+  payload,
+  deadlineAt = Number.POSITIVE_INFINITY,
+}) {
   const body = JSON.stringify(payload);
   const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
   const response = await fetch(`${queueUrl}${path}`, {
@@ -1175,7 +1284,7 @@ async function signedPost({ queueUrl, secret, path, payload }) {
       "x-clawsweeper-exact-review-signature": signature,
     },
     body,
-    signal: AbortSignal.timeout(20_000),
+    signal: operatorRequestSignal(deadlineAt),
   });
   const text = await response.text();
   if (!response.ok) throw new Error(`${path} returned ${response.status}`);

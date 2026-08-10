@@ -4572,12 +4572,7 @@ export class ExactReviewQueue {
     if (cursor && cursor.length > 500) return json({ error: "invalid_cursor" }, 400);
     const rows = Object.values(this.readStateSync().items)
       .filter(
-        (item) =>
-          item.state === "parked" &&
-          !exactReviewQueueIsPublication(item) &&
-          exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) >=
-            EXACT_REVIEW_PARKED_RECOVERY_LIMIT &&
-          item.key.localeCompare(cursor) > 0,
+        (item) => exactReviewParkedOperatorEligible(item) && item.key.localeCompare(cursor) > 0,
       )
       .sort((left, right) => left.key.localeCompare(right.key))
       .slice(0, limit + 1);
@@ -4622,8 +4617,7 @@ export class ExactReviewQueue {
         const item = state.items[expected.itemKey];
         if (
           !item ||
-          item.state !== "parked" ||
-          exactReviewQueueIsPublication(item) ||
+          !exactReviewParkedOperatorEligible(item) ||
           item.revision !== expected.revision
         ) {
           skipped += 1;
@@ -4682,8 +4676,7 @@ export class ExactReviewQueue {
         const item = state.items[expected.itemKey];
         if (
           !item ||
-          item.state !== "parked" ||
-          exactReviewQueueIsPublication(item) ||
+          !exactReviewParkedOperatorEligible(item) ||
           item.revision !== expected.revision ||
           exactReviewQueueActiveReviewCount(state) >= exactReviewQueueCapacity(this.env)
         ) {
@@ -11166,15 +11159,18 @@ function exactReviewParkedRecoveryAttempts(value: unknown) {
   return Number.isSafeInteger(attempts) && attempts > 0 ? attempts : 0;
 }
 
-function exactReviewParkedTerminalCheckAt(item: ExactReviewQueueItem) {
-  if (
-    item.state !== "parked" ||
-    exactReviewQueueIsPublication(item) ||
-    exactReviewQueueHasCommandContext(item) ||
-    (item.parkedReason !== "review_retry_exhausted" && item.parkedReason !== "dispatch_rejected") ||
-    exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) <
+function exactReviewParkedOperatorEligible(item: ExactReviewQueueItem) {
+  return (
+    item.state === "parked" &&
+    !exactReviewQueueIsPublication(item) &&
+    (item.parkedReason === "dispatch_rejected" || item.parkedReason === "review_retry_exhausted") &&
+    exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) >=
       EXACT_REVIEW_PARKED_RECOVERY_LIMIT
-  ) {
+  );
+}
+
+function exactReviewParkedTerminalCheckAt(item: ExactReviewQueueItem) {
+  if (!exactReviewParkedOperatorEligible(item) || exactReviewQueueHasCommandContext(item)) {
     return null;
   }
   return Number(item.parkedTerminalCheckedAt || 0) + EXACT_REVIEW_PARKED_TERMINAL_CHECK_INTERVAL_MS;

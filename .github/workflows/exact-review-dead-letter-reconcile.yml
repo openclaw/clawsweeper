@@ -38,6 +38,11 @@ jobs:
     env:
       EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
     steps:
+      - name: Establish reconciliation deadline
+        run: |
+          deadline_ms="$(( $(date +%s) * 1000 + 13 * 60 * 1000 ))"
+          echo "EXACT_REVIEW_RECONCILE_DEADLINE_MS=$deadline_ms" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           ref: main
