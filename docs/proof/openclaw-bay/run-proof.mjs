@@ -791,9 +791,11 @@ try {
       x_frame_options: bayResponse?.headers()["x-frame-options"] || null,
     },
   );
-  const bayHeaderLinks = await page.locator('nav[aria-label="Dashboard views"] a').evaluateAll((links) =>
-    links.map((link) => ({ label: link.textContent?.trim(), href: link.getAttribute("href") })),
-  );
+  const bayHeaderLinks = await page
+    .locator('nav[aria-label="Dashboard views"] a')
+    .evaluateAll((links) =>
+      links.map((link) => ({ label: link.textContent?.trim(), href: link.getAttribute("href") })),
+    );
   assertProof(
     "Bay header exposes the consistent public dashboard navigation",
     JSON.stringify(bayHeaderLinks) ===
@@ -1693,15 +1695,24 @@ try {
   await page
     .locator('#beach.tide-washing[data-tide-mode="real"][data-tide-phase="crest"]')
     .waitFor({ state: "visible", timeout: 5_000 });
-  await page.waitForFunction(
-    () =>
-      Array.from(document.querySelectorAll(".pool .critter")).every(
-        (node) => Number(getComputedStyle(node).opacity) < 0.25,
-      ),
-    null,
+  const realWashObservation = await page.waitForFunction(
+    (expectedCount) => {
+      const nodes = Array.from(document.querySelectorAll(".pool .critter[data-key]"));
+      const summary = document.getElementById("tide-summary")?.textContent || "";
+      if (
+        nodes.length !== expectedCount ||
+        !nodes.every((node) => Number(getComputedStyle(node).opacity) < 0.25) ||
+        !/Last tide 17:58 UTC/.test(summary)
+      ) {
+        return false;
+      }
+      return { count: nodes.length, summary };
+    },
+    denseTerminalBuffer.length,
     { timeout: 1_800 },
   );
-  const realWashCount = await page.locator(".pool .critter[data-key]").count();
+  const realWashSnapshot = await realWashObservation.jsonValue();
+  const realWashCount = realWashSnapshot.count;
   const realUsesPreviewClass = await page
     .locator("#beach")
     .evaluate((node) => node.classList.contains("preview-tide-cleared"));
@@ -1709,6 +1720,11 @@ try {
     () => document.querySelectorAll(".pool .critter[data-key]").length === 0,
     null,
     { timeout: 2_000 },
+  );
+  const clearedPoolCouldMatchWash = await page.evaluate(
+    (expectedCount) =>
+      document.querySelectorAll(".pool .critter[data-key]").length === expectedCount,
+    denseTerminalBuffer.length,
   );
   await capture(
     "16-real-tide-cleared",
@@ -1730,13 +1746,16 @@ try {
     realWashCount === denseTerminalBuffer.length &&
       !realUsesPreviewClass &&
       (await page.locator(".pool .critter[data-key]").count()) === 0 &&
+      !clearedPoolCouldMatchWash &&
       realCountdown === "0 / 20" &&
       /Last tide 17:58 UTC/.test(realTideSummary) &&
       JSON.stringify(activeAfterRealTide) === JSON.stringify(activeBeforeRealTide),
     {
       washed_terminal_count: realWashCount,
+      displayed_last_tide_before_clearing: realWashSnapshot.summary,
       preview_class_used: realUsesPreviewClass,
       terminal_after: 0,
+      cleared_pool_could_match_wash: clearedPoolCouldMatchWash,
       countdown: realCountdown,
       displayed_last_tide: realTideSummary,
       active_keys_unchanged:
