@@ -73,9 +73,9 @@ the reported cooldown into its next-attempt timestamp, preventing a parked
 cohort from becoming eligible in lockstep; coordination and ordinary failure
 retries keep their existing timing.
 Review publication and apply/comment sync use separate non-dropping queues.
-The source fallback starts exact-review publication at 24 concurrent publishers
-and can scale to 48, but production overrides minimum, base, and maximum
-capacity to 8, 32, and 40. The adaptive controller classifies GitHub pressure:
+The source fallback publication minimum, base, and maximum are 4, 24, and 48,
+but production overrides them to 8, 32, and 40. The adaptive controller
+classifies GitHub pressure:
 a 403/429 or
 explicit rate-limit failure records a 15-minute cooldown, while GitHub 5xx
 failures record a 5-minute cooldown. Demand and recovery signals scale effective

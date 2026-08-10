@@ -217,8 +217,8 @@ that is already pending, dispatching, or leased is a semantic dedupe: it does no
 advance the queue revision, revoke a lease, or count as new work.
 
 Exact-review result publication has a separate adaptive Actions lane. Source
-fallbacks start at 24 and rise in steps of 8 up to 48; production overrides
-minimum, base, and maximum to 8, 32, and 40. The controller records GitHub
+fallback minimum, base, and maximum are 4, 24, and 48; production overrides
+them to 8, 32, and 40. The controller records GitHub
 pressure, cooldown, recovery, and demand telemetry, and can scale within that
 production range. Admission enforces a 16-slot control-plane reserve inside
 `EXACT_REVIEW_ACTIONS_BUDGET`; with 128 active exact reviews and the current

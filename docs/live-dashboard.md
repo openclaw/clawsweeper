@@ -339,8 +339,8 @@ recovery progress, and last classified GitHub pressure failure. `/api/status` re
 low-actionability section.
 
 Production overrides publication minimum, base, and maximum capacity to 8, 32,
-and 40, while the source fallback remains adaptive from 24 to 48. The controller
-records failure, cooldown, recovery, and demand telemetry and scales within the
+and 40, while source fallback values are 4, 24, and 48. The controller records
+failure, cooldown, recovery, and demand telemetry and scales within the
 production range. The publication lane also
 exposes `batches` and `direct`: production enables up to eight concurrent size-8
 batches, reserves two fresh-lane members per batch, and enables direct
