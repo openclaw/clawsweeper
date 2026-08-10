@@ -27,3 +27,19 @@ Run `docs/proof/dead-review-telemetry/run-proof.sh`. Set
 `DEAD_REVIEW_TELEMETRY_PROOF_OUTPUT` to keep artifacts outside the repository. The proof is local
 Worker/Durable Object evidence; it does not deploy or mutate production and does not validate
 production traffic volume.
+
+## Crabbox provenance
+
+The proof ran unchanged on reviewed head `087100c3ab9343563c42ac57243cde03ad1733a5`
+inside a Docker-backed Crabbox `local-container` using Crabbox CLI 0.39.0, image
+`node:24-bookworm`, Docker 29.4.0 via OrbStack, lease `cbx_7e5d92b51d8b`, and a clean
+`--fresh-pr` checkout. It completed with `PROOF_RC=0`. See the
+[Crabbox provenance](artifacts/crabbox-local-container-provenance.json) and
+[captured stdout](artifacts/crabbox-local-container-stdout.log). Corepack is enabled into the
+container user's `~/.local/bin` because the lease user is unprivileged.
+
+Earlier revisions passed on macOS and failed in the container because `stop_worker` killed only the
+Wrangler parent and left the child `workerd` alive, so the restart was a no-op and the Durable Object
+was never re-initialized. The proof now kills the full process tree, waits for `/api/health` to stop
+answering, and asserts that the posted `run_id` is present in the inspected queue database before
+asserting the retired schema.
