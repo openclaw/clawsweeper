@@ -154,7 +154,7 @@ weakening the strict bug gate.
 ### Commit Reviews (retired)
 
 The push/manual commit-review lane was retired in July 2026. Use
-`pnpm local-review` for offline branch reviews.
+`pnpm local-review` for GitHub-isolated local branch reviews.
 
 ### Operations
 
@@ -524,8 +524,8 @@ local-container, CI, and Crabbox harness in
 ### Commit Review Lane (retired)
 
 The hosted commit-review lane was retired in July 2026 (zero successful runs in
-its final month). The offline review engine survives as `pnpm local-review`;
-see [docs/commit-sweeper.md](docs/commit-sweeper.md).
+its final month). The local, GitHub-isolated review engine survives as
+`pnpm local-review`; see [docs/commit-sweeper.md](docs/commit-sweeper.md).
 
 ### Safety Model
 
@@ -788,8 +788,9 @@ Token flow:
   context.
 - Apply mode uses the same app token for review comments and closes, so GitHub
   attributes mutations to the app bot account instead of a PAT user.
-- Offline `pnpm local-review` does not mint target write/check credentials or
-  publish hosted commit-review results.
+- GitHub-isolated `pnpm local-review` does not mint target write/check
+  credentials or publish hosted commit-review results; Codex still connects to
+  the configured model service.
 - The ClawSweeper GitHub App commits only the remaining operational paths to
   `openclaw/clawsweeper-state`; reports publish to the canonical Worker store.
 

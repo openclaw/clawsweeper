@@ -24,4 +24,9 @@ test("docs site emits an early persistent theme switcher", () => {
   assert.match(html, /themeQuery\?\.addEventListener\('change'/);
   assert.match(html, /setAttribute\('aria-pressed',selected\?'true':'false'\)/);
   assert.match(html, /setAttribute\("content", themeColor\[active\]\)/);
+  assert.match(html, /Three hosted operational lanes/);
+  assert.match(html, /Three hosted lanes, plus local review/);
+  assert.match(html, /GitHub context stays local while Codex connects/);
+  assert.doesNotMatch(html, /Four operational lanes|Four lanes, one engine/);
+  assert.doesNotMatch(html, /commit-range review without polling/);
 });

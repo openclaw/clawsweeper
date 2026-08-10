@@ -487,7 +487,7 @@ function landingHero(rootPrefix) {
         <div class="hero-text">
           <p class="eyebrow">OpenClaw - maintenance bot</p>
           <h1>Sideways through the <em>backlog</em>.<br>Sweep what's safe.<br>Leave the rest.</h1>
-          <p class="lede">ClawSweeper is the conservative maintenance bot for OpenClaw. It reviews issues, pull requests, and code-bearing commits; keeps one durable public comment per item; and turns narrow trusted findings into guarded repair or automerge work.</p>
+          <p class="lede">ClawSweeper is the conservative maintenance bot for OpenClaw. It reviews issues and pull requests, can inspect a committed local branch range before submission, keeps one durable public comment per GitHub item, and turns narrow trusted findings into guarded repair or automerge work.</p>
           <div class="cta">
             <a class="cta-primary" href="${rootPrefix}scheduler.html">Read the docs</a>
             <a class="cta-secondary" href="${repoUrl}" rel="noopener">View on GitHub</a>
@@ -518,13 +518,13 @@ function landingBody() {
       "shield",
     ],
     [
-      "Four operational lanes",
-      "Review, apply, repair, and commit review run as separate lanes. Each lane has its own state, gates, and GitHub Actions path.",
+      "Three hosted operational lanes",
+      "Review, apply, and repair run as separate hosted lanes. Local branch review is a pre-submission tool, not a hosted workflow lane.",
       "lanes",
     ],
     [
       "Targeted dispatch",
-      "Target repos forward <code>repository_dispatch</code> for low-latency single-item review or commit-range review without polling.",
+      "Target repos forward <code>repository_dispatch</code> for low-latency single-item review without polling.",
       "bolt",
     ],
     [
@@ -559,7 +559,7 @@ function landingBody() {
     {
       name: "Local Branch Review",
       href: "commit-sweeper.html",
-      desc: "Offline pre-PR self-review of a branch's committed range. Never contacts GitHub.",
+      desc: "Pre-PR review of a committed local branch range. GitHub context stays local while Codex connects to its configured model service.",
     },
   ];
   const laneCards = lanes
@@ -591,7 +591,7 @@ function landingBody() {
 <span class="comment"># guarded close/comment mutations only after live re-fetch</span></code></pre>
         </section>
         <section class="lanes-row" aria-label="The lanes">
-          <h2>Four lanes, one engine</h2>
+          <h2>Three hosted lanes, plus local review</h2>
           <div class="lanes">${laneCards}</div>
         </section>
         <section class="rules" aria-label="Guardrails">
