@@ -112,6 +112,29 @@ test("direct producer treats structured 413 as immediate legacy fallback", async
   assert.equal(result.status, 413);
 });
 
+test("direct producer includes a structured rejection detail in its fallback reason", async () => {
+  const result = await postDirectPublicationResult({
+    baseUrl: "https://clawsweeper.openclaw.ai",
+    webhookSecret: "test-secret",
+    payload: directPayload(),
+    fetch: async () =>
+      new Response(
+        JSON.stringify({
+          error: "invalid_direct_publication_plan",
+          fallback_required: true,
+          detail: "invalid direct publication revision",
+        }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      ),
+  });
+  assert.deepEqual(result, {
+    kind: "fallback",
+    attempts: 1,
+    reason: "invalid_direct_publication_plan: invalid direct publication revision",
+    status: 400,
+  });
+});
+
 test("direct publication flag defaults through workflow wiring while explicit off stays legacy", () => {
   assert.equal(exactReviewDirectPublicationEnabled("1"), true);
   assert.equal(exactReviewDirectPublicationEnabled("true"), true);

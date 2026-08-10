@@ -300,6 +300,95 @@ globalThis.fetch = async (url, init) => {
   });
 }
 
+test("batch publication fingerprints distinct direct-plan rejection details separately", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-batch-cli-publication-details-"));
+  try {
+    const member = batchMember("openclaw/openclaw#806@publish:8060:1", 806);
+    const outcomePath = join(root, "eligible.json");
+    const manifestPath = join(root, "manifest.json");
+    const preloadPath = join(root, "fetch-preload.cjs");
+    writeFileSync(
+      outcomePath,
+      JSON.stringify({
+        kind: "eligible",
+        plan: mutationPlan(member),
+        postEffectsComplete: true,
+      }),
+    );
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        batchId: "batch-publication-rejection-details",
+        leaseOwner: "proof-worker",
+        configuredBatchSize: 1,
+        batchWaitMs: 0,
+        items: [{ ...member, outcomePath }],
+      }),
+    );
+    writeFileSync(
+      preloadPath,
+      `const fs = require("node:fs");
+const manifest = JSON.parse(fs.readFileSync(process.env.EXACT_REVIEW_BATCH_MANIFEST, "utf8"));
+const wireItems = manifest.items.map((item) => ({ item_key: item.itemKey, revision: item.revision, claim_generation: item.claimGeneration, decision: item.decision }));
+const response = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+globalThis.setTimeout = (callback, _delay, ...args) => {
+  queueMicrotask(() => callback(...args));
+  return 0;
+};
+globalThis.fetch = async (url) => {
+  const target = String(url);
+  if (target.endsWith("/publication-batches/fetch")) {
+    return response({ batch: { batch_id: manifest.batchId, lease_owner: manifest.leaseOwner, lease_expires_at: "2026-08-01T00:00:00.000Z", items: wireItems }, items: wireItems, superseded: 0 });
+  }
+  if (target.endsWith("/publication-batches/heartbeat")) {
+    return response({ batch: { batch_id: manifest.batchId, lease_owner: manifest.leaseOwner, lease_expires_at: "2026-08-01T00:00:00.000Z", items: wireItems } });
+  }
+  if (target.endsWith("/publication-batch-results")) {
+    return response({ error: "invalid_direct_publication_plan", fallback_required: true, detail: process.env.BATCH_CLI_DETAIL }, 400);
+  }
+  throw new Error("unexpected mock fetch target: " + target);
+};
+`,
+    );
+
+    const fingerprintFor = (detail: string, suffix: string) => {
+      const receiptPath = join(root, `receipt-${suffix}.json`);
+      const result = spawnSync(
+        process.execPath,
+        ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", "commit"],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+            EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+            EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+            EXACT_REVIEW_BATCH_RECEIPT: receiptPath,
+            BATCH_CLI_DETAIL: detail,
+          },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as {
+        outcomes: Array<{ errorFingerprint: string }>;
+      };
+      const fingerprint = receipt.outcomes[0]?.errorFingerprint ?? "";
+      assert.match(fingerprint, /^[a-f0-9]{64}$/);
+      return fingerprint;
+    };
+
+    const invalidRevision = fingerprintFor("invalid direct publication revision", "revision");
+    const outsidePath = fingerprintFor(
+      "direct publication path is outside openclaw-openclaw#806",
+      "path",
+    );
+    assert.notEqual(invalidRevision, outsidePath);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("batch release retains a committed eligible member until lifecycle post-effects complete", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-batch-cli-release-"));
   try {

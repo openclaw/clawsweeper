@@ -3753,6 +3753,32 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     error: "direct_publication_source_sha_required",
     fallback_required: true,
   });
+  const urlCredentials = ["alice", "hunter2"].join(":");
+  const credentialPath = `https://${urlCredentials}@example.invalid/GITHUB_TOKEN=ghp_${"a".repeat(24)}`;
+  const invalidPlanBody = JSON.stringify({
+    ...payload,
+    operations: [{ ...payload.operations[0], path: credentialPath }],
+  });
+  const invalidPlanSignature = `sha256=${createHmac("sha256", "test-secret").update(invalidPlanBody).digest("hex")}`;
+  const invalidPlan = await worker.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": invalidPlanSignature },
+      body: invalidPlanBody,
+    }),
+    env,
+  );
+  assert.equal(invalidPlan.status, 400);
+  const invalidPlanResponse = (await invalidPlan.json()) as {
+    error: string;
+    fallback_required: boolean;
+    detail: string;
+  };
+  assert.equal(invalidPlanResponse.error, "invalid_direct_publication_plan");
+  assert.equal(invalidPlanResponse.fallback_required, true);
+  assert.match(invalidPlanResponse.detail, /^invalid bounded state mutation path: /);
+  assert.match(invalidPlanResponse.detail, /\[REDACTED\]/);
+  assert.doesNotMatch(invalidPlanResponse.detail, /alice|hunter2|ghp_[A-Za-z0-9_]+/);
   for (const expected of [
     { accepted: true, deduped: false },
     { accepted: false, deduped: true },

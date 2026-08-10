@@ -2631,11 +2631,13 @@ export class ExactReviewQueue {
           202,
         );
       } catch (error) {
-        console.warn(`direct publication plan rejected: ${sanitizedServerError(error)}`);
+        const detail = sanitizedServerError(error);
+        console.warn(`direct publication plan rejected: ${detail}`);
         return json(
           {
             error: "invalid_direct_publication_plan",
             fallback_required: true,
+            detail,
           },
           400,
         );
