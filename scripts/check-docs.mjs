@@ -301,7 +301,6 @@ function inlineText(token) {
 
 function githubSlug(value) {
   return value
-    .replace(/<[^>]+>/g, "")
     .replace(/[`*~]/g, "")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s_-]/gu, "")

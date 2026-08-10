@@ -23,6 +23,7 @@ function fixture(): string {
       "[Underscore heading](docs/guide.md#stalled_unproven_pr)",
       "[Directory heading](docs/#documentation-home)",
       "[Explicit anchor](docs/guide.md#MixedCase)",
+      "[Escaped HTML-like heading](docs/guide.md#inline-span-html)",
       "`[Literal](docs/missing.md)`",
       "``[Literal `tick`](docs/missing.md)``",
       "```markdown",
@@ -46,7 +47,7 @@ function fixture(): string {
       "`gh workflow run ci.yml`",
     ].join("\n"),
     "docs/guide.md":
-      '# Operation\n\n<a id="MixedCase"></a>\n\n[Root](/README.md)\n\n## Foo & Bar\n\n## [Linked Operations](#operation)\n\n## `stalled_unproven_pr`\n\nSetext Operation\ncontinuation\n----------------\n\n~~~markdown\n## Example Only\n~~~\n\nCapacity is 50.\n\n# implemented\n',
+      '# Operation\n\n<a id="MixedCase"></a>\n\n[Root](/README.md)\n\n## Foo & Bar\n\n## [Linked Operations](#operation)\n\n## `stalled_unproven_pr`\n\n## Inline &lt;span&gt; HTML\n\nSetext Operation\ncontinuation\n----------------\n\n~~~markdown\n## Example Only\n~~~\n\nCapacity is 50.\n\n# implemented\n',
     "docs/README.md": "# Documentation Home\n",
     "docs/API_(legacy).md": "# Legacy API\n",
     "scripts/example.mjs": "export {};\n",
