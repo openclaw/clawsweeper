@@ -7710,7 +7710,8 @@ export class ExactReviewQueue {
   }
 
   private refreshPublicationControlSync(state: ExactReviewQueueState, now: number) {
-    const current = this.publicationControlSync();
+    const stored = this.storage.kv.get(EXACT_REVIEW_PUBLICATION_CONTROL_KEY);
+    const current = exactReviewPublicationControl(this.env, stored);
     const publications = Object.values(state.items).filter(exactReviewQueueIsPublication);
     const pending = publications.filter((item) => item.state === "pending");
     const oldestPendingAt = pending.reduce<number | null>(
@@ -7724,7 +7725,7 @@ export class ExactReviewQueue {
       oldestPendingAgeMs: oldestPendingAt === null ? 0 : Math.max(0, now - oldestPendingAt),
       netDrainRatePerHour: flow.net_drain_rate_per_hour,
     });
-    if (stableJson(next) !== stableJson(current)) {
+    if (stableJson(next) !== stableJson(objectValue(stored))) {
       this.storage.kv.put(EXACT_REVIEW_PUBLICATION_CONTROL_KEY, next);
     }
     return next;
@@ -11819,19 +11820,31 @@ function exactReviewPublicationControl(env, value: unknown): ExactReviewPublicat
   const control = objectValue(value);
   const maximum = exactReviewPublicationMaximum(env);
   const minimum = exactReviewPublicationMinimum(env, maximum);
+  const base = exactReviewPublicationBase(env, maximum);
   const rawCeiling = Number(control.capacityCeiling);
   const rawDemandCapacity = Number(control.demandCapacity);
   const rawCooldown = Number(control.cooldownUntil);
   const rawRecoverySuccesses = Number(control.recoverySuccesses);
   const rawLastFailureAt = Number(control.lastFailureAt);
   const lastFailureKind = exactReviewPublicationFailureKind(control.lastFailureKind);
+  // A fixed higher-capacity policy persists both values above a later policy's
+  // maximum (for example the temporary 50/50/50 override). On downgrade, the
+  // ceiling may retain the new maximum, but demand must restart at the new base
+  // instead of turning the old fixed target into a permanent maximum target.
+  const fixedPolicyDowngrade =
+    Number.isSafeInteger(rawCeiling) &&
+    Number.isSafeInteger(rawDemandCapacity) &&
+    rawCeiling > maximum &&
+    rawDemandCapacity > maximum;
   return {
     capacityCeiling: Number.isSafeInteger(rawCeiling)
       ? Math.max(minimum, Math.min(maximum, rawCeiling))
       : maximum,
-    demandCapacity: Number.isSafeInteger(rawDemandCapacity)
-      ? Math.max(minimum, Math.min(maximum, rawDemandCapacity))
-      : exactReviewPublicationBase(env, maximum),
+    demandCapacity: fixedPolicyDowngrade
+      ? base
+      : Number.isSafeInteger(rawDemandCapacity)
+        ? Math.max(minimum, Math.min(maximum, rawDemandCapacity))
+        : base,
     cooldownUntil: Number.isSafeInteger(rawCooldown) && rawCooldown > 0 ? rawCooldown : 0,
     recoverySuccesses:
       Number.isSafeInteger(rawRecoverySuccesses) && rawRecoverySuccesses > 0

@@ -1648,6 +1648,71 @@ test("exact-review publication admission applies the hysteresis controller deman
   }
 });
 
+test("exact-review publication controller adopts the staged base after a fixed-policy downgrade", async () => {
+  const originalNow = Date.now;
+  const now = Date.parse("2026-08-10T09:00:00.000Z");
+  Date.now = () => now;
+  try {
+    const storage = new MemoryDurableStorage();
+    const items: Record<string, ReturnType<typeof leasedExactReviewPublicationItem>> = {};
+    for (let index = 0; index < 50; index += 1) {
+      const item = leasedExactReviewPublicationItem(20_000 + index, String(200_000 + index));
+      item.state = "pending";
+      item.createdAt = now - 60_000;
+      item.updatedAt = now - 60_000;
+      items[item.key] = item;
+    }
+    await storage.put("exact-review-queue", { deliveries: {}, items });
+    await storage.put("exact-review-publication-control:v1", {
+      capacityCeiling: 50,
+      demandCapacity: 50,
+      cooldownUntil: 0,
+      recoverySuccesses: 0,
+      demandSamples: 0,
+      demandTier: 0,
+      lastDemandSampleAt: now,
+      lastScaleAt: now,
+    });
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT: "8",
+        EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT: "32",
+        EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "40",
+      },
+    );
+
+    const stats = await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.lanes.publication.pending, 50);
+    assert.deepEqual(stats.lanes.publication.capacity_control, {
+      mode: "adaptive",
+      minimum: 8,
+      base: 32,
+      maximum: 40,
+      ceiling: 40,
+      demand_capacity: 32,
+      demand_samples: 0,
+      demand_tier: 0,
+      last_scale_at: new Date(now).toISOString(),
+      cooldown_until: null,
+      recovery_successes: 0,
+      last_failure_at: null,
+      last_failure_kind: null,
+    });
+    assert.equal(stats.lanes.publication.capacity, 32);
+    const persisted = (await storage.get("exact-review-publication-control:v1")) as {
+      capacityCeiling: number;
+      demandCapacity: number;
+    };
+    assert.equal(persisted.capacityCeiling, 40);
+    assert.equal(persisted.demandCapacity, 32);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("exact-review queue debounces fresh work and caps pending revision extensions", async () => {
   const originalNow = Date.now;
   let now = 1_000_000;
