@@ -203,6 +203,9 @@ test("production doubles exact review claims and canonical publication batches",
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT = "8"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_COOLDOWN_MS = "5000"/);
+  assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT = "8"/);
+  assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT = "32"/);
+  assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT = "40"/);
   assert.match(wrangler, /EXACT_REVIEW_TARGET_RATE_PER_HOUR = "300"/);
   assert.match(wrangler, /EXACT_REVIEW_TARGET_BURST = "30"/);
   assert.match(wrangler, /EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"/);
@@ -1061,7 +1064,7 @@ test("lifecycle telemetry counts durable terminal coverage without treating ackn
   assert.equal(JSON.stringify(summary).includes("openclaw/openclaw"), false);
 });
 
-test("full exact-review admission preserves production verdict publication capacity", () => {
+test("full review admission does not inflate staged publication capacity", () => {
   const state = {
     items: Object.fromEntries(
       Array.from({ length: 128 }, (_, index) => {
@@ -1074,14 +1077,14 @@ test("full exact-review admission preserves production verdict publication capac
     exactReviewPublicationCapacityForState(
       {
         EXACT_REVIEW_ACTIONS_BUDGET: "194",
-        EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT: "50",
-        EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT: "50",
-        EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "50",
+        EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT: "8",
+        EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT: "32",
+        EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "40",
       },
       state,
       Date.now(),
     ),
-    50,
+    32,
   );
 });
 
@@ -1585,6 +1588,19 @@ test("exact-review publication scales bounded capacity with ready backlog", () =
       EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "24",
       EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "16",
     }),
+    16,
+  );
+  assert.equal(
+    exactReviewPublicationCapacity(
+      {
+        EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT: "8",
+        EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT: "32",
+        EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "40",
+      },
+      400,
+      0,
+      16,
+    ),
     16,
   );
 });
@@ -4134,6 +4150,132 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     max_bytes: 4 * 1024 * 1024,
     fallback_required: true,
   });
+});
+
+test("direct publication keeps GitHub casing while using lowercase canonical record slugs", async () => {
+  const fixtures = [
+    { targetRepo: "steipete/CodexBar", repoSlug: "steipete-codexbar", itemNumber: 2831 },
+    { targetRepo: "openclaw/Peekaboo", repoSlug: "openclaw-peekaboo", itemNumber: 364 },
+  ] as const;
+  const storage = new MemoryDurableStorage();
+  const items: Record<string, ReturnType<typeof leasedExactReviewQueueItem>> = {};
+  for (const fixture of fixtures) {
+    const leased = leasedExactReviewQueueItem(fixture.itemNumber, String(fixture.itemNumber));
+    leased.key = `${fixture.targetRepo}#${fixture.itemNumber}`;
+    leased.decision.targetRepo = fixture.targetRepo;
+    leased.leaseDecision.targetRepo = fixture.targetRepo;
+    leased.revision = 4;
+    leased.leaseRevision = 4;
+    leased.claimGeneration = 2;
+    leased.admissionDeliveryId = `mixed-case-direct:${fixture.itemNumber}`;
+    items[leased.key] = leased;
+  }
+  await storage.put("exact-review-queue", { deliveries: {}, items });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "mixed-case-direct-secret",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const url = "https://clawsweeper.openclaw.ai/internal/exact-review/publication-results";
+
+  for (const fixture of fixtures) {
+    const canonicalTargetKey = `${fixture.targetRepo}#${fixture.itemNumber}`;
+    const content = `mixed-case direct publication for ${canonicalTargetKey}\n`;
+    const payload = {
+      canonicalTargetKey,
+      fenceKey: canonicalTargetKey,
+      revision: 4,
+      sourceSha: "c".repeat(40),
+      identity: {
+        canonicalTargetKey,
+        fenceKey: canonicalTargetKey,
+        revision: 4,
+        claimGeneration: 2,
+      },
+      operations: [
+        {
+          path: `records/${fixture.repoSlug}/items/${fixture.itemNumber}.md`,
+          deleted: false,
+          mode: "100644",
+          bytes: Buffer.byteLength(content),
+          contentBase64: Buffer.from(content).toString("base64"),
+        },
+      ],
+      totalBytes: Buffer.byteLength(content),
+      lifecycle: { kind: "router" },
+    };
+    const body = JSON.stringify(payload);
+    const signature = `sha256=${createHmac("sha256", env.CLAWSWEEPER_WEBHOOK_SECRET).update(body).digest("hex")}`;
+    for (const expected of [
+      { accepted: true, deduped: false },
+      { accepted: false, deduped: true },
+    ]) {
+      const response = await worker.fetch(
+        new Request(url, {
+          method: "POST",
+          headers: { "x-clawsweeper-exact-review-signature": signature },
+          body,
+        }),
+        env,
+      );
+      assert.equal(response.status, 202);
+      assert.deepEqual(await response.json(), {
+        ok: true,
+        ...expected,
+        superseded: false,
+        superseded_revisions: [],
+        canonical_target_key: canonicalTargetKey,
+        fence_key: canonicalTargetKey,
+        state_commit_sha: "do-revision:4",
+      });
+    }
+
+    const canonical = await (
+      await queue.fetch(
+        new Request(`https://queue/records/${fixture.repoSlug}/items/${fixture.itemNumber}`, {
+          method: "GET",
+        }),
+      )
+    ).json();
+    assert.equal(canonical.content, content);
+    assert.equal(canonical.revision, 4);
+  }
+
+  const uppercasePathPayload = {
+    canonicalTargetKey: "steipete/CodexBar#2831",
+    fenceKey: "steipete/CodexBar#2831",
+    revision: 4,
+    sourceSha: "c".repeat(40),
+    identity: {
+      canonicalTargetKey: "steipete/CodexBar#2831",
+      fenceKey: "steipete/CodexBar#2831",
+      revision: 4,
+      claimGeneration: 2,
+    },
+    operations: [
+      {
+        path: "records/steipete-CodexBar/items/2831.md",
+        deleted: false,
+        mode: "100644",
+        bytes: 1,
+        contentBase64: "eA==",
+      },
+    ],
+    totalBytes: 1,
+    lifecycle: { kind: "router" },
+  };
+  const uppercaseBody = JSON.stringify(uppercasePathPayload);
+  const uppercaseSignature = `sha256=${createHmac("sha256", env.CLAWSWEEPER_WEBHOOK_SECRET).update(uppercaseBody).digest("hex")}`;
+  const uppercase = await worker.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": uppercaseSignature },
+      body: uppercaseBody,
+    }),
+    env,
+  );
+  assert.equal(uppercase.status, 400);
+  assert.equal((await uppercase.json()).error, "invalid_direct_publication_plan");
 });
 
 test("fetching a stale publication batch records a durable superseded telemetry outcome", async () => {
@@ -16333,6 +16475,72 @@ test("canonical tuple publication updates Worker authority without a git project
       ],
     },
   });
+});
+
+test("fallback tuple publication normalizes mixed-case keys onto existing lowercase storage", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const item =
+    "---\nrepo: steipete/CodexBar\nnumber: 2831\nreviewed_at: 2026-08-10T08:00:00.000Z\n---\n\nreview\n";
+  const mutation = {
+    deliveryId: "record-tuple:mixed-case:2831",
+    key: "steipete-CodexBar/2831",
+    operations: [
+      {
+        path: "records/steipete-codexbar/items/2831.md",
+        expectedDigest: null,
+        contentBase64: Buffer.from(item).toString("base64"),
+      },
+      { path: "records/steipete-codexbar/closed/2831.md", expectedDigest: null },
+      { path: "records/steipete-codexbar/plans/2831.md", expectedDigest: null },
+      {
+        path: "records/steipete-codexbar/decision-packets/2831.json",
+        expectedDigest: null,
+      },
+    ],
+  };
+
+  const accepted = await queue.fetch(stateAppendQueueRequest("/records/tuples", mutation));
+  assert.equal(accepted.status, 202);
+  assert.deepEqual(await accepted.json(), {
+    ok: true,
+    accepted: true,
+    deduped: false,
+    revision: 1,
+  });
+
+  const normalizedRetry = structuredClone(mutation);
+  normalizedRetry.key = "steipete-codexbar/2831";
+  const deduped = await queue.fetch(stateAppendQueueRequest("/records/tuples", normalizedRetry));
+  assert.equal(deduped.status, 202);
+  assert.deepEqual(await deduped.json(), {
+    ok: true,
+    accepted: false,
+    deduped: true,
+    revision: 1,
+  });
+
+  const canonical = await (
+    await queue.fetch(
+      new Request("https://queue/records/steipete-codexbar/items/2831", { method: "GET" }),
+    )
+  ).json();
+  assert.equal(canonical.content, item);
+  assert.equal(canonical.revision, 1);
+
+  const parallelNamespace = await queue.fetch(
+    new Request("https://queue/records/steipete-CodexBar/items/2831", { method: "GET" }),
+  );
+  assert.equal(parallelNamespace.status, 404);
+
+  const uppercasePaths = structuredClone(mutation);
+  uppercasePaths.deliveryId = "record-tuple:mixed-case:2831:uppercase-path";
+  uppercasePaths.operations = uppercasePaths.operations.map((operation) => ({
+    ...operation,
+    path: operation.path.replace("steipete-codexbar", "steipete-CodexBar"),
+  }));
+  const rejected = await queue.fetch(stateAppendQueueRequest("/records/tuples", uppercasePaths));
+  assert.equal(rejected.status, 400);
+  assert.deepEqual(await rejected.json(), { error: "invalid_canonical_record_tuple" });
 });
 
 test("review coverage summarizes canonical item records per fleet", async () => {

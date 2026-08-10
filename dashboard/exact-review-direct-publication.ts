@@ -1403,13 +1403,14 @@ export async function validateCanonicalRecordTupleMutation(
   ) {
     throw new Error("invalid canonical tuple delivery id");
   }
-  const key = String(mutation.key || "").trim();
-  const keyMatch = /^([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\/([1-9]\d*)$/.exec(key);
-  const repoSlug = validateRepoSlug(keyMatch?.[1]);
+  const inputKey = String(mutation.key || "").trim();
+  const keyMatch = /^([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\/([1-9]\d*)$/.exec(inputKey);
+  const repoSlug = validateRepoSlug(keyMatch?.[1])?.toLowerCase() ?? null;
   const itemId = Number(keyMatch?.[2]);
   if (!repoSlug || !Number.isSafeInteger(itemId) || itemId < 1) {
     throw new Error("invalid canonical tuple key");
   }
+  const key = `${repoSlug}/${itemId}`;
   if (!Array.isArray(mutation.operations) || mutation.operations.length !== 4) {
     throw new Error("canonical tuple publication must include all four record sections");
   }
@@ -1586,7 +1587,7 @@ export async function validateDirectPublicationPlan(
   if (plan.operations.length > EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES) {
     throw new Error("a direct publication plan exceeds the exact-review tuple file limit");
   }
-  const repoSlug = `${itemIdentity[1]}-${itemIdentity[2]}`;
+  const repoSlug = `${itemIdentity[1]}-${itemIdentity[2]}`.toLowerCase();
   const itemId = Number(itemIdentity[3]);
   const paths = new Set<string>();
   let totalBytes = 0;
