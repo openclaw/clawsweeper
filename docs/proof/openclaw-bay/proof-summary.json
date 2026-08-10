@@ -1,6 +1,6 @@
 {
   "proof": "OpenClaw Bay deterministic Playwright browser proof",
-  "source_sha": "71b16d208511700bb241ea06276c94f71c977d89",
+  "source_sha": "0cf6b147fe86f56e4ec8c77352e3d31433e3a1d2",
   "route": "/bay",
   "data_classification": "fully synthetic and redacted; no live/private dashboard payloads",
   "fixture_sha256": "B0180F79C465964AD39E6E45F730211294742E1206EA4CE1A4C39DEB61AFCB71",
@@ -19,7 +19,7 @@
     }
   ],
   "derived_real_tide_snapshot_sha256": "078023220BCDBF72E4CF212011760751EB63A841CF98070A77E4777A5BD4386E",
-  "generated_at": "2026-08-10T20:18:50.314Z",
+  "generated_at": "2026-08-10T21:45:54.619Z",
   "assertions": [
     {
       "name": "real Bay route loaded",
@@ -270,7 +270,7 @@
       "name": "master sweeper animation advances",
       "status": "PASS",
       "phase": "sweeping",
-      "elapsed_animation_ms": 350
+      "elapsed_animation_ms": 317
     },
     {
       "name": "forward transition lands in applying",
@@ -282,7 +282,7 @@
       "status": "PASS",
       "source_hole": 1,
       "target_hole": 1,
-      "target_hole_opacity": 0.392181,
+      "target_hole_opacity": 0.392264,
       "label": "openclaw/openclaw#97722 burrowing"
     },
     {
@@ -331,7 +331,7 @@
     {
       "name": "layered preview tide visibly animates",
       "status": "PASS",
-      "elapsed_animation_ms": 83,
+      "elapsed_animation_ms": 67,
       "tide_layers": 3
     },
     {
@@ -349,7 +349,7 @@
       "status": "PASS",
       "duration": "520ms",
       "animation_name": "none",
-      "elapsed_ms": 668
+      "elapsed_ms": 650
     },
     {
       "name": "tide previews do not poll status",
@@ -380,8 +380,10 @@
       "name": "real tide shows the final terminal completion time before clearing",
       "status": "PASS",
       "washed_terminal_count": 20,
+      "displayed_last_tide_before_clearing": "Last tide 17:58 UTC",
       "preview_class_used": false,
       "terminal_after": 0,
+      "cleared_pool_could_match_wash": false,
       "countdown": "0 / 20",
       "displayed_last_tide": "Last tide 17:58 UTC",
       "active_keys_unchanged": true
@@ -1494,13 +1496,13 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/api/status",
+        "path": "/bay-assets/bay-background.webp",
         "search": ""
       },
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/bay-assets/bay-background.webp",
+        "path": "/api/status",
         "search": ""
       },
       {
@@ -1518,14 +1520,14 @@
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/api/health-history",
-        "search": "?range=6h"
+        "path": "/bay-assets/crustaceans-atlas.webp",
+        "search": ""
       },
       {
         "status": 200,
         "host": "bay-proof.test:8787",
-        "path": "/bay-assets/crustaceans-atlas.webp",
-        "search": ""
+        "path": "/api/health-history",
+        "search": "?range=6h"
       },
       {
         "status": 200,

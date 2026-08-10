@@ -1,7 +1,7 @@
 # Historical OpenClaw Bay deterministic browser proof
 
 Status: historical evidence for behavior source
-`71b16d208511700bb241ea06276c94f71c977d89`. This package is retained for
+`0cf6b147fe86f56e4ec8c77352e3d31433e3a1d2`. This package is retained for
 auditability and is not the active exact-head proof for later commits.
 
 This proof package exercises the real `/bay` page and its checked-in
@@ -32,7 +32,8 @@ The sequence proves:
 - the short static reduced-motion tide cue preserving the same preview state;
 - completed and failed/cancelled outcomes grouped into their respective terminal pools;
 - twenty completed outcomes fitting individually in the expanded terminal pool without a hidden overflow at the standard desktop width, plus a constrained-width layout that keeps twelve labels readable and makes the remaining eight explicit; and
-- a generated real tide visibly washing terminal crustaceans before clearing the shared buffer; and
+- a generated real tide atomically proving all twenty terminal crustaceans and
+  the final completion time are visible before clearing the shared buffer; and
 - zero browser-to-GitHub API requests, mutation requests, unexpected console
   errors, or uncaught page errors. The deliberate synthetic health-history
   outage records one expected 503 console error while the resilience state is
@@ -82,7 +83,7 @@ crabbox run \
 
 ## Provenance and privacy
 
-- captured behavior source: `71b16d208511700bb241ea06276c94f71c977d89`
+- captured behavior source: `0cf6b147fe86f56e4ec8c77352e3d31433e3a1d2`
 - provider: direct local Docker under the user-authorized CSW-124 fallback;
   this is not a successful Crabbox lease receipt
 - image: `mcr.microsoft.com/playwright:v1.60.0-noble`
