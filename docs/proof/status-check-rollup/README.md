@@ -62,3 +62,19 @@ current source is whatever branch checkout runs the script.
 No Bay change is needed. The proof exercises a repair-only interpretation fix;
 the Worker contract, report schema, queue/lifecycle contract, dashboard code,
 and observer/action boundary are unchanged.
+
+## Crabbox provenance
+
+The same script passed unchanged at pushed head
+`283be4dbd4ff0f9bb0b0d5a4d64ebbdcfc8cf983` inside a Docker-backed Crabbox
+`local-container`, using Crabbox CLI `0.38.3-5-g2a79805d`, image
+`node:24-bookworm`, Docker 29.4.0, and lease `cbx_7fcaae473719`
+(`jade-prawn-fb36`). The run used a clean
+`--fresh-pr openclaw/clawsweeper#1109 --no-hydrate` checkout, installed Corepack
+plus checksum-verified static GitHub CLI 2.97.0 and jq 1.8.1 into
+`$HOME/.local/bin`, completed with `PROOF_RC=0`, and stopped the lease
+automatically.
+
+See the
+[machine-readable container provenance](artifacts/crabbox-local-container-provenance.json)
+and [captured container stdout](artifacts/crabbox-local-container-stdout.log).
