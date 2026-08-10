@@ -27533,7 +27533,7 @@ test("exact-review queue drops the retired per-item review telemetry table", asy
   );
 });
 
-test("removed per-item review telemetry routes return not found", async () => {
+test("removed per-item review telemetry write routes return not found", async () => {
   const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
   const env = {
     CLAWSWEEPER_WEBHOOK_SECRET: "test-token-placeholder",
@@ -27550,14 +27550,34 @@ test("removed per-item review telemetry routes return not found", async () => {
     }),
     env,
   );
-  const publicRoute = await worker.fetch(
-    new Request("https://clawsweeper.openclaw.ai/api/exact-review-queue/reviews"),
-    env,
+  assert.deepEqual([queuePost.status, queueGet.status, internal.status], [404, 404, 404]);
+});
+
+test("public per-item review read contract returns a stable empty envelope", async () => {
+  const response = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/api/exact-review-queue/reviews?repo=openclaw%2Fopenclaw&item_number=674&limit=100",
+    ),
+    {},
   );
-  assert.deepEqual(
-    [queuePost.status, queueGet.status, internal.status, publicRoute.status],
-    [404, 404, 404, 404],
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    repo: "openclaw/openclaw",
+    item_number: 674,
+    reviews: [],
+  });
+});
+
+test("public per-item review read contract rejects invalid queries", async () => {
+  const response = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/api/exact-review-queue/reviews?repo=openclaw&item_number=0&limit=101",
+    ),
+    {},
   );
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "invalid_review_telemetry_query" });
 });
 
 test("review observer write is signed while aggregate telemetry remains read-only", async () => {

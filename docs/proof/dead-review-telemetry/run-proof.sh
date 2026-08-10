@@ -206,10 +206,21 @@ removed_post_status="$(http_status "${output_dir}/removed-review-telemetry-post.
   -H "x-clawsweeper-exact-review-signature: sha256=${removed_signature}" \
   --data-binary "$removed_body" \
   "http://127.0.0.1:${worker_port}/internal/exact-review/review-telemetry")"
-removed_get_status="$(http_status "${output_dir}/removed-reviews-get.txt" \
+reviews_get_status="$(http_status "${output_dir}/reviews-get.txt" \
   "http://127.0.0.1:${worker_port}/api/exact-review-queue/reviews?repo=openclaw%2Fopenclaw&item_number=674")"
 test "$removed_post_status" = "404"
-test "$removed_get_status" = "404"
+test "$reviews_get_status" = "200"
+node -e '
+  const assert = require("node:assert/strict");
+  const fs = require("node:fs");
+  const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  assert.deepEqual(body, {
+    ok: true,
+    repo: "openclaw/openclaw",
+    item_number: 674,
+    reviews: [],
+  });
+' "${output_dir}/reviews-get.txt"
 
 stop_worker
 node "$sqlite_helper" assert-proof-run-record "$queue_db" "$proof_run_id"
@@ -230,7 +241,7 @@ RUN_POST_STATUS="$run_post_status" \
 PROOF_RUN_ID="$proof_run_id" \
 OBSERVABILITY_STATUS="$observability_status" \
 REMOVED_POST_STATUS="$removed_post_status" \
-REMOVED_GET_STATUS="$removed_get_status" \
+REVIEWS_GET_STATUS="$reviews_get_status" \
 node -e '
   const fs = require("node:fs");
   const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -244,7 +255,7 @@ node -e '
     "POST /internal/exact-review/review-run-telemetry: HTTP " + process.env.RUN_POST_STATUS,
     "/api/review-observability: HTTP " + process.env.OBSERVABILITY_STATUS + "; lanes exact_event,hot_intake,normal_backfill,recovery; normal_backfill run_count " + lane.run_count + "; item_count " + lane.item_count + "; last_run_at " + lane.last_run_at,
     "POST /internal/exact-review/review-telemetry: HTTP " + process.env.REMOVED_POST_STATUS,
-    "GET /api/exact-review-queue/reviews: HTTP " + process.env.REMOVED_GET_STATUS,
+    "GET /api/exact-review-queue/reviews: HTTP " + process.env.REVIEWS_GET_STATUS + "; envelope { ok: true, repo: openclaw/openclaw, item_number: 674, reviews: [] }",
     "run-level storage after upgrade: exact_review_run_telemetry present; posted run_id " + process.env.PROOF_RUN_ID + " present in inspected queue database"
   ];
   fs.writeFileSync(process.argv[2], lines.join("\n") + "\n");

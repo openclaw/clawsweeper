@@ -12,7 +12,9 @@ The behavior contract is:
   retired schema before the proof asserts that the retired objects are gone;
 - `/api/status` omits `exact_review_queue.review_telemetry_health` while `/api/health` remains OK;
 - a signed run-level telemetry write appears in the four-row `/api/review-observability` lane view;
-- the removed internal per-item write route and public per-item read route return 404.
+- the removed internal per-item write route returns 404;
+- the documented public per-item read route returns its stable HTTP 200 envelope with an empty
+  `reviews` array.
 
 The proof first boots the Worker to create the real queue database, stops it, and seeds the retired
 table plus its three indexes. The stop terminates the full Wrangler process tree and confirms the
@@ -28,15 +30,17 @@ Run `docs/proof/dead-review-telemetry/run-proof.sh`. Set
 Worker/Durable Object evidence; it does not deploy or mutate production and does not validate
 production traffic volume.
 
-## Crabbox provenance
+## Earlier Crabbox provenance
 
-The proof ran unchanged on reviewed head `087100c3ab9343563c42ac57243cde03ad1733a5`
+The removal-only revision of this proof ran on reviewed head
+`087100c3ab9343563c42ac57243cde03ad1733a5`
 inside a Docker-backed Crabbox `local-container` using Crabbox CLI 0.39.0, image
 `node:24-bookworm`, Docker 29.4.0 via OrbStack, lease `cbx_7e5d92b51d8b`, and a clean
 `--fresh-pr` checkout. It completed with `PROOF_RC=0`. See the
 [Crabbox provenance](artifacts/crabbox-local-container-provenance.json) and
 [captured stdout](artifacts/crabbox-local-container-stdout.log). Corepack is enabled into the
-container user's `~/.local/bin` because the lease user is unprivileged.
+container user's `~/.local/bin` because the lease user is unprivileged. Current fresh-PR container
+provenance belongs in the pull request's `pr-behavior-proof` section.
 
 Earlier revisions passed on macOS and failed in the container because `stop_worker` killed only the
 Wrangler parent and left the child `workerd` alive, so the restart was a no-op and the Durable Object

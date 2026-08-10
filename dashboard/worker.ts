@@ -739,6 +739,8 @@ export default {
       );
     if (url.pathname === "/api/exact-review-queue/item" && request.method === "GET")
       return exactReviewQueueRequest(env, `/item-status?${url.searchParams.toString()}`);
+    if (url.pathname === "/api/exact-review-queue/reviews" && request.method === "GET")
+      return emptyPerItemReviewsJson(url.searchParams);
     if (url.pathname === "/api/review-observability" && request.method === "GET")
       return exactReviewQueueRequest(env, `/review-observability?${url.searchParams.toString()}`);
     if (url.pathname === "/api/review-coverage" && request.method === "GET")
@@ -7208,6 +7210,23 @@ function json(value, status = 200) {
       },
     }),
   );
+}
+
+function emptyPerItemReviewsJson(search: URLSearchParams) {
+  const repo = String(search.get("repo") || "").trim();
+  const itemNumber = Number(search.get("item_number"));
+  const limit = search.has("limit") ? Number(search.get("limit")) : 20;
+  if (
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) ||
+    !Number.isInteger(itemNumber) ||
+    itemNumber < 1 ||
+    !Number.isInteger(limit) ||
+    limit < 1 ||
+    limit > 100
+  ) {
+    return json({ error: "invalid_review_telemetry_query" }, 400);
+  }
+  return json({ ok: true, repo, item_number: itemNumber, reviews: [] });
 }
 
 function html(value) {
