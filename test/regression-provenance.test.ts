@@ -104,6 +104,25 @@ test("regression provenance publishes only an exact blame-to-merge match", () =>
   }
 });
 
+test("exact verified provenance survives unsafe author redaction", () => {
+  const { result } = verify({
+    git: (args) => {
+      if (args[0] === "rev-parse") return `${reviewedSha}\n`;
+      if (args[0] === "blame") {
+        return `${mergeSha} 42 42 1\nauthor Private Author <private@example.test>\n`;
+      }
+      return "src/clawsweeper-review-runtime.ts\n";
+    },
+  });
+
+  assert.deepEqual(result, {
+    ...candidate(),
+    evidenceType: "blame_to_merge_commit",
+    mergedAt: "2026-07-31T12:00:00Z",
+    reviewedCommitSha: reviewedSha,
+  });
+});
+
 test("regression provenance rejects malformed or self candidates before metadata or Git", () => {
   for (const invalid of [
     candidate({ sourcePath: "../secrets" }),

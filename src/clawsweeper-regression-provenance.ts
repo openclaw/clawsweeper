@@ -110,9 +110,9 @@ export function createRegressionProvenanceVerifier({
       if (hasBlameBoundary(blame) || !sourceCommitSha) return null;
 
       const sourceAuthor = blamedAuthor(blame);
-      if (!sourceAuthor || !isSafeSourceAuthor(sourceAuthor)) return null;
 
       if (sourceCommitSha !== candidate.mergeCommitSha) {
+        if (!sourceAuthor || !isSafeSourceAuthor(sourceAuthor)) return null;
         runGit(["merge-base", "--is-ancestor", sourceCommitSha, reviewedBaseCommitSha], {
           cwd: options.checkoutDir,
           env,
@@ -151,8 +151,9 @@ export function createRegressionProvenanceVerifier({
         evidenceType: "blame_to_merge_commit",
         mergedAt: pull.mergedAt,
         reviewedCommitSha: checkoutHeadSha,
-        sourceCommitSha: candidate.mergeCommitSha,
-        sourceAuthor,
+        ...(sourceAuthor && isSafeSourceAuthor(sourceAuthor)
+          ? { sourceCommitSha: candidate.mergeCommitSha, sourceAuthor }
+          : {}),
       };
     } catch {
       // Metadata, checkout history, and tracked-path failures are unknown, not
