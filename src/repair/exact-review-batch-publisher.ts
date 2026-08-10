@@ -17,6 +17,8 @@ export type ExactReviewBatchCompletion = ExactReviewBatchMember & {
   terminalOutcome: ExactReviewBatchTerminalOutcome;
   reasonCode?: string;
   errorFingerprint?: string;
+  retryAt?: string;
+  attempted?: boolean;
 };
 
 export type ExactReviewBatchItemResult =

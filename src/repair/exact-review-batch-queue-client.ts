@@ -6,7 +6,36 @@ import type {
 } from "./exact-review-batch-publisher.js";
 import type { StateWriterOperation, StateWriterProgress } from "../state-writer-telemetry.js";
 
-export type ExactReviewBatchQueueItem = ExactReviewBatchMember & { decision: unknown };
+export type ExactReviewBatchQueueItem = ExactReviewBatchMember & {
+  decision: unknown;
+  repeatRevision?: boolean;
+};
+
+export type ExactReviewGithubRateLimitObservation = {
+  scope: "repository_actions" | "target_app";
+  targetOwner?: string;
+  observedAt: string;
+  retryAt: string;
+  provenance: "retry_after" | "rate_limit_reset" | "rate_limit_status" | "fallback";
+  authoritative: boolean;
+};
+
+export type ExactReviewGithubRequestMetric = {
+  scope: "repository_actions" | "target_app";
+  category:
+    | "artifact_download"
+    | "rate_status"
+    | "comments"
+    | "labels"
+    | "reviews"
+    | "workflow_dispatch"
+    | "item_metadata"
+    | "other";
+  mode: "read" | "mutation_or_private_read";
+  outcome: "success" | "throttle" | "transient" | "error" | "skipped_by_circuit";
+  repeatRevision: boolean;
+  count: number;
+};
 
 export type ExactReviewBatchLease = {
   batchId: string;
@@ -82,7 +111,15 @@ export interface ExactReviewBatchQueue {
     stateCommitSha?: string;
     failureFingerprint?: string;
     stateWriter?: StateWriterOperation;
-  }): Promise<{ accepted: number; skipped: number; batch: ExactReviewBatchLease }>;
+    rateLimitObservations?: readonly ExactReviewGithubRateLimitObservation[];
+    requestMetrics?: readonly ExactReviewGithubRequestMetric[];
+    telemetryId?: string;
+  }): Promise<{
+    accepted: number;
+    skipped: number;
+    telemetryAccepted: boolean;
+    batch: ExactReviewBatchLease;
+  }>;
 }
 
 type QueueClientOptions = {
@@ -278,6 +315,9 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     stateCommitSha?: string;
     failureFingerprint?: string;
     stateWriter?: StateWriterOperation;
+    rateLimitObservations?: readonly ExactReviewGithubRateLimitObservation[];
+    requestMetrics?: readonly ExactReviewGithubRequestMetric[];
+    telemetryId?: string;
   }) {
     const response = await this.post("complete", {
       batch_id: input.batchId,
@@ -289,14 +329,42 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
         terminal_outcome: item.terminalOutcome,
         ...(item.reasonCode ? { reason_code: item.reasonCode } : {}),
         ...(item.errorFingerprint ? { error_fingerprint: item.errorFingerprint } : {}),
+        ...(item.retryAt ? { retry_at: item.retryAt } : {}),
+        ...(item.attempted !== undefined ? { attempted: item.attempted } : {}),
       })),
       ...(input.stateCommitSha ? { state_commit_sha: input.stateCommitSha } : {}),
       ...(input.failureFingerprint ? { failure_fingerprint: input.failureFingerprint } : {}),
       ...(input.stateWriter ? { state_writer: input.stateWriter } : {}),
+      ...(input.rateLimitObservations?.length
+        ? {
+            github_rate_limit_observations: input.rateLimitObservations.map((observation) => ({
+              scope: observation.scope,
+              ...(observation.targetOwner ? { target_owner: observation.targetOwner } : {}),
+              observed_at: observation.observedAt,
+              retry_at: observation.retryAt,
+              provenance: observation.provenance,
+              authoritative: observation.authoritative,
+            })),
+          }
+        : {}),
+      ...(input.requestMetrics?.length
+        ? {
+            github_request_metrics: input.requestMetrics.map((metric) => ({
+              scope: metric.scope,
+              category: metric.category,
+              mode: metric.mode,
+              outcome: metric.outcome,
+              repeat_revision: metric.repeatRevision,
+              count: metric.count,
+            })),
+          }
+        : {}),
+      ...(input.telemetryId ? { github_telemetry_id: input.telemetryId } : {}),
     });
     return {
       accepted: nonNegativeInteger(response.accepted, "accepted"),
       skipped: nonNegativeInteger(response.skipped, "skipped"),
+      telemetryAccepted: response.telemetry_accepted === true,
       batch: parseLease(response.batch),
     };
   }
@@ -353,7 +421,11 @@ export function verifyExactReviewBatchSignature(
 
 function parseQueueItem(value: unknown): ExactReviewBatchQueueItem {
   const item = objectValue(value);
-  return { ...parseMember(item), decision: item.decision };
+  return {
+    ...parseMember(item),
+    decision: item.decision,
+    ...(item.repeat_revision === true ? { repeatRevision: true } : {}),
+  };
 }
 
 function parseLease(value: unknown): ExactReviewBatchLease {

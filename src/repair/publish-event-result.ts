@@ -117,6 +117,15 @@ try {
       kind: completionKind,
       reasonCode,
       errorFingerprint: fingerprint,
+      ...(error instanceof GitHubRateLimitError
+        ? {
+            retryAt: error.retryAt,
+            rateLimitScope: error.scope,
+            rateLimitProvenance: error.provenance,
+            rateLimitAuthoritative: error.authoritative,
+            attempted: true,
+          }
+        : {}),
     });
   }
   writePublicationCompletionOutputs(

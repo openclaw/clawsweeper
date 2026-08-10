@@ -385,8 +385,22 @@ dialog{border:0;padding:0;margin:0 0 0 auto;width:min(580px,94vw);height:100vh;m
       '<div class="bay-control-rate ',historyGap||historyStale?"collecting":"",'">',esc(mode+" · "+(historyGap?"history gap · awaiting current sample":historyStale?"history stale":terminal)),'</div></section>'
     ].join("");
   }
+  function renderBayPublicationQuotaContext(board,queue){
+    var lane=queue.lanes&&queue.lanes.publication||{};
+    var circuits=Array.isArray(lane.credential_circuits)?lane.credential_circuits:[];
+    var counters=lane.github_request_metrics&&lane.github_request_metrics.counters||{};
+    var throttleCount=Object.keys(counters).filter(function(key){return key.indexOf(":throttle:")>=0;}).reduce(function(total,key){return total+Math.max(0,Number(counters[key])||0);},0);
+    if(!circuits.length&&!Object.keys(counters).length)return;
+    var active=circuits.filter(function(circuit){return circuit&&circuit.active===true;});
+    var details=circuits.map(function(circuit){var owner=circuit.target_owner?" · "+circuit.target_owner:"";var reset=circuit.reset_source?" · "+circuit.reset_source:"";var authority=circuit.authoritative===true?" · authoritative":" · estimated";var affected=Number(circuit.affected_pending||0);return String(circuit.pool||circuit.scope||"credential")+owner+" · "+(circuit.active===true?"blocked until "+bayFormatTime(circuit.blocked_until):"recovered")+reset+authority+" · "+affected+" pending";}).join("; ");
+    var card=board.querySelectorAll(".bay-control-card")[1];
+    if(!card)return;
+    var summary=card.querySelector(".bay-control-summary span");
+    if(active.length&&summary)summary.textContent+=(summary.textContent?" · ":"")+active.length+" credential-blocked";
+    card.insertAdjacentHTML("beforeend",'<div class="bay-control-rate '+(active.length?"rising":"")+'">'+esc(active.length?active.length+" credential circuit"+(active.length===1?"":"s")+" active":"Credential circuits recovered")+(throttleCount?" · "+esc(throttleCount)+" GitHub throttles observed":"")+'</div><div class="bay-control-empty">'+esc(details||"No circuit detail")+'</div>');
+  }
   var renderBayControlBeforeStateWriter=renderBayControl;
-  renderBayControl=function(){renderBayControlBeforeStateWriter();var queue=state.data&&state.data.exact_review_queue;var board=document.getElementById("bay-control-board");if(queue&&board)board.insertAdjacentHTML("beforeend",bayStateWriterCard());};
+  renderBayControl=function(){renderBayControlBeforeStateWriter();var queue=state.data&&state.data.exact_review_queue;var board=document.getElementById("bay-control-board");if(queue&&board){renderBayPublicationQuotaContext(board,queue);board.insertAdjacentHTML("beforeend",bayStateWriterCard());}};
 })();
 </script>
 </body>

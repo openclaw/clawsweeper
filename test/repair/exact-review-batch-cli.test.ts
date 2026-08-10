@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -384,6 +384,307 @@ globalThis.fetch = async (url) => {
       "path",
     );
     assert.notEqual(invalidRevision, outsidePath);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("batch completion forwards one quota circuit and marks collapsed members unattempted", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-batch-cli-quota-"));
+  try {
+    const attempted = batchMember("openclaw/openclaw#811@publish:8110:1", 811);
+    const collapsed = batchMember("openclaw/openclaw#812@publish:8120:1", 812);
+    const attemptedOutcome = join(root, "attempted.json");
+    const collapsedOutcome = join(root, "collapsed.json");
+    const manifestPath = join(root, "manifest.json");
+    const receiptPath = join(root, "receipt.json");
+    const completionPath = join(root, "completion.json");
+    const observationsPath = join(root, "github-rate-limits.jsonl");
+    const metricsPath = join(root, "github-request-metrics.jsonl");
+    const preloadPath = join(root, "fetch-preload.cjs");
+    const retryAt = "2026-08-10T15:00:00.000Z";
+    writeFileSync(
+      attemptedOutcome,
+      JSON.stringify({
+        kind: "retryable_failure",
+        reasonCode: "github_rate_limit",
+        retryAt,
+        attempted: true,
+      }),
+    );
+    writeFileSync(
+      collapsedOutcome,
+      JSON.stringify({
+        kind: "retryable_failure",
+        reasonCode: "github_rate_limit",
+        retryAt,
+        attempted: false,
+      }),
+    );
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        batchId: "batch-quota-collapse",
+        leaseOwner: "proof-worker",
+        configuredBatchSize: 2,
+        batchWaitMs: 0,
+        items: [
+          { ...attempted, outcomePath: attemptedOutcome },
+          { ...collapsed, outcomePath: collapsedOutcome },
+        ],
+      }),
+    );
+    writeFileSync(
+      receiptPath,
+      JSON.stringify({
+        batchId: "batch-quota-collapse",
+        publishedItemKeys: [],
+        outcomes: [],
+      }),
+    );
+    writeFileSync(
+      observationsPath,
+      `${JSON.stringify({
+        scope: "repository_actions",
+        observed_at: "2026-08-10T14:50:00.000Z",
+        retry_at: retryAt,
+        provenance: "rate_limit_status",
+        authoritative: true,
+      })}\n`,
+    );
+    writeFileSync(
+      metricsPath,
+      `${JSON.stringify({
+        scope: "repository_actions",
+        category: "item_metadata",
+        mode: "read",
+        outcome: "throttle",
+        repeat_revision: false,
+        count: 1,
+      })}\n`,
+    );
+    writeFileSync(
+      preloadPath,
+      `const fs = require("node:fs");
+const manifest = JSON.parse(fs.readFileSync(process.env.EXACT_REVIEW_BATCH_MANIFEST, "utf8"));
+const wireItems = manifest.items.map((item) => ({ item_key: item.itemKey, revision: item.revision, claim_generation: item.claimGeneration, decision: item.decision }));
+globalThis.fetch = async (url, init) => {
+  const target = String(url);
+  const response = (value) => new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+  if (target.endsWith("/publication-batches/fetch")) return response({ batch: { batch_id: manifest.batchId, lease_owner: manifest.leaseOwner, lease_expires_at: "2026-08-10T16:00:00.000Z", items: wireItems }, items: wireItems, superseded: 0 });
+  if (target.endsWith("/publication-batches/complete")) {
+    fs.writeFileSync(process.env.BATCH_CLI_COMPLETION, init.body);
+    return response({ accepted: 2, skipped: 0, telemetry_accepted: true, batch: { batch_id: manifest.batchId, lease_owner: manifest.leaseOwner, lease_expires_at: "2026-08-10T16:00:00.000Z", items: [] } });
+  }
+  throw new Error("unexpected mock fetch target: " + target);
+};
+`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", "complete"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+          EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+          EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+          EXACT_REVIEW_BATCH_RECEIPT: receiptPath,
+          CLAWSWEEPER_GITHUB_RATE_LIMIT_OBSERVATION_PATH: observationsPath,
+          CLAWSWEEPER_GITHUB_REQUEST_METRICS_PATH: metricsPath,
+          BATCH_CLI_COMPLETION: completionPath,
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const completion = JSON.parse(readFileSync(completionPath, "utf8"));
+    assert.deepEqual(completion.items, [
+      {
+        item_key: attempted.itemKey,
+        revision: attempted.revision,
+        claim_generation: attempted.claimGeneration,
+        terminal_outcome: "retryable_failure",
+        reason_code: "github_rate_limit",
+        retry_at: retryAt,
+      },
+      {
+        item_key: collapsed.itemKey,
+        revision: collapsed.revision,
+        claim_generation: collapsed.claimGeneration,
+        terminal_outcome: "retryable_failure",
+        reason_code: "github_rate_limit",
+        retry_at: retryAt,
+        attempted: false,
+      },
+    ]);
+    assert.equal(completion.github_rate_limit_observations.length, 1);
+    assert.deepEqual(completion.github_request_metrics, [
+      {
+        scope: "repository_actions",
+        category: "item_metadata",
+        mode: "read",
+        outcome: "throttle",
+        repeat_revision: false,
+        count: 1,
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("batch completion forwards telemetry appended after an earlier acknowledgement", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-batch-cli-late-telemetry-"));
+  try {
+    const member = batchMember("openclaw/openclaw#813@publish:8130:1", 813);
+    const outcomePath = join(root, "outcome.json");
+    const manifestPath = join(root, "manifest.json");
+    const receiptPath = join(root, "receipt.json");
+    const completionPath = join(root, "completion.jsonl");
+    const observationsPath = join(root, "github-rate-limits.jsonl");
+    const metricsPath = join(root, "github-request-metrics.jsonl");
+    const preloadPath = join(root, "fetch-preload.cjs");
+    const firstRetryAt = "2026-08-10T15:00:00.000Z";
+    const lateRetryAt = "2026-08-10T15:30:00.000Z";
+    writeFileSync(
+      outcomePath,
+      JSON.stringify({
+        kind: "retryable_failure",
+        reasonCode: "github_rate_limit",
+        retryAt: firstRetryAt,
+      }),
+    );
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        batchId: "batch-late-telemetry",
+        leaseOwner: "proof-worker",
+        configuredBatchSize: 1,
+        batchWaitMs: 0,
+        items: [{ ...member, outcomePath }],
+      }),
+    );
+    writeFileSync(
+      receiptPath,
+      JSON.stringify({ batchId: "batch-late-telemetry", publishedItemKeys: [], outcomes: [] }),
+    );
+    writeFileSync(
+      observationsPath,
+      `${JSON.stringify({ scope: "repository_actions", observed_at: "2026-08-10T14:50:00.000Z", retry_at: firstRetryAt, provenance: "rate_limit_status", authoritative: true })}\n`,
+    );
+    writeFileSync(
+      metricsPath,
+      `${JSON.stringify({ scope: "repository_actions", category: "artifact_download", mode: "read", outcome: "throttle", repeat_revision: false, count: 1 })}\n`,
+    );
+    writeFileSync(
+      preloadPath,
+      `const fs = require("node:fs");
+globalThis.fetch = async (url, init) => {
+  if (String(url).endsWith("/publication-batches/fetch")) {
+    return new Response(JSON.stringify({ batch: { batch_id: "batch-late-telemetry", lease_owner: "proof-worker", lease_expires_at: "2026-08-10T16:00:00.000Z", items: [] }, items: [], superseded: 0 }), { status: 200, headers: { "content-type": "application/json" } });
+  }
+  if (!String(url).endsWith("/publication-batches/complete")) throw new Error("unexpected mock fetch target: " + url);
+  fs.appendFileSync(process.env.BATCH_CLI_COMPLETION, init.body + "\\n");
+  return new Response(JSON.stringify({ accepted: 1, skipped: 0, telemetry_accepted: true, batch: { batch_id: "batch-late-telemetry", lease_owner: "proof-worker", lease_expires_at: "2026-08-10T16:00:00.000Z", items: [] } }), { status: 200, headers: { "content-type": "application/json" } });
+};
+`,
+    );
+    const runCompletion = () =>
+      spawnSync(
+        process.execPath,
+        ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", "complete"],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+            EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+            EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+            EXACT_REVIEW_BATCH_RECEIPT: receiptPath,
+            CLAWSWEEPER_GITHUB_RATE_LIMIT_OBSERVATION_PATH: observationsPath,
+            CLAWSWEEPER_GITHUB_REQUEST_METRICS_PATH: metricsPath,
+            BATCH_CLI_COMPLETION: completionPath,
+          },
+        },
+      );
+    const first = runCompletion();
+    assert.equal(first.status, 0, first.stderr);
+    appendFileSync(
+      observationsPath,
+      `${JSON.stringify({ scope: "target_app", target_owner: "late-owner", observed_at: "2026-08-10T15:05:00.000Z", retry_at: lateRetryAt, provenance: "retry_after", authoritative: true })}\n`,
+    );
+    appendFileSync(
+      metricsPath,
+      `${JSON.stringify({ scope: "target_app", category: "workflow_dispatch", mode: "mutation_or_private_read", outcome: "throttle", repeat_revision: false, count: 1 })}\n`,
+    );
+    const second = runCompletion();
+    assert.equal(second.status, 0, second.stderr);
+    const completions = readFileSync(completionPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line));
+    assert.equal(completions.length, 2);
+    assert.deepEqual(completions[1].github_rate_limit_observations, [
+      {
+        scope: "target_app",
+        target_owner: "late-owner",
+        observed_at: "2026-08-10T15:05:00.000Z",
+        retry_at: lateRetryAt,
+        provenance: "retry_after",
+        authoritative: true,
+      },
+    ]);
+    assert.deepEqual(completions[1].github_request_metrics, [
+      {
+        scope: "target_app",
+        category: "workflow_dispatch",
+        mode: "mutation_or_private_read",
+        outcome: "throttle",
+        repeat_revision: false,
+        count: 1,
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("router request metrics retain successful repeated-revision state", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-batch-cli-router-metric-"));
+  try {
+    const manifestPath = join(root, "manifest.json");
+    const metricsPath = join(root, "github-request-metrics.jsonl");
+    writeFileSync(manifestPath, "{}");
+    const result = spawnSync(
+      process.execPath,
+      ["dist/repair/exact-review-batch-cli.js", "request-metric"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+          EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+          EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+          CLAWSWEEPER_GITHUB_REQUEST_METRICS_PATH: metricsPath,
+          EXACT_REVIEW_GITHUB_RATE_LIMIT_SCOPE: "repository_actions",
+          EXACT_REVIEW_GITHUB_REQUEST_OUTCOME: "success",
+          EXACT_REVIEW_GITHUB_REQUEST_REPEAT: "true",
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(metricsPath, "utf8")), {
+      scope: "repository_actions",
+      category: "workflow_dispatch",
+      mode: "mutation_or_private_read",
+      outcome: "success",
+      repeat_revision: true,
+      count: 1,
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

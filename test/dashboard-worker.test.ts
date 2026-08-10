@@ -9732,6 +9732,10 @@ test("OpenClaw Bay is a public, indexable, hardened route", async () => {
   assert.match(body, /id="bay-control-board"/);
   assert.match(body, /Review admission/);
   assert.match(body, /Result publication/);
+  assert.match(body, /renderBayPublicationQuotaContext/);
+  assert.match(body, /credential_circuits/);
+  assert.match(body, /github_request_metrics/);
+  assert.match(body, /credential-blocked/);
   assert.match(body, /State writer/);
   assert.match(body, /Queue handoff/);
   assert.doesNotMatch(body, /Recent durable events/);

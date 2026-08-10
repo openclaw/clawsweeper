@@ -356,6 +356,22 @@ publication with retry/batch fallback. Document effective production values from
 `dashboard/wrangler.toml`, not only fallback constants in
 `dashboard/exact-review-queue.ts`.
 
+The publication lane exposes two additional observer-only surfaces:
+
+- `credential_circuits` lists the redacted pool class, optional target owner,
+  observation time, `blocked_until`, reset source, authority flag, active state,
+  and affected pending count. `active: true` with free publication slots means
+  credential-blocked, not capacity-starved or healthy-idle.
+- `github_request_metrics` contains cumulative redacted counters keyed by pool
+  class, endpoint category, operation class, outcome, and whether the item
+  revision was already retried. These counters are for request-budget analysis;
+  they never contain raw URLs, item content, credentials, or local paths.
+
+Bay renders these fields as health context only. It has no circuit reset,
+workflow dispatch, queue retry, replay, acknowledgement, or gate control.
+Expired circuit observations remain visible as `active: false` for diagnosis;
+new work resumes automatically after the deadline and bounded item jitter.
+
 The standalone **State writer** panel separates the repo-wide serialization
 boundary from exact-review materialization telemetry. After the coordinator
 cutover, `state_writer.coordinator` is authoritative for the active writer,

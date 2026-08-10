@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import YAML from "yaml";
 
@@ -305,6 +307,144 @@ test("sweep public read throttles fall back once to the ambient App token", () =
   }
 });
 
+test("exact publication records the Actions reset before one bounded App fallback", () => {
+  const observationPath = join(
+    tmpdir(),
+    `clawsweeper-rate-limit-${process.pid}-${Date.now()}.jsonl`,
+  );
+  const fixtureEnv = {
+    EXACT_EVENT_PUBLICATION: "true",
+    GH_TOKEN: "exact-fallback-app-token",
+    REPO_TOKEN: "exact-actions-token",
+    CLAWSWEEPER_GITHUB_RATE_LIMIT_OBSERVATION_PATH: observationPath,
+  };
+  const previous = Object.fromEntries(
+    Object.keys(fixtureEnv).map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, fixtureEnv);
+  const observed: Array<{ token: string; args: string[] }> = [];
+  const reset = Math.floor(Date.now() / 1_000) + 600;
+  const run = (_command: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
+    const token = options?.env?.GH_TOKEN ?? process.env.GH_TOKEN ?? "";
+    observed.push({ token, args });
+    if (args[0] === "api" && args[1] === "rate_limit") {
+      return JSON.stringify({ remaining: 0, reset });
+    }
+    if (token === fixtureEnv.REPO_TOKEN) {
+      throw new Error("gh: API rate limit exceeded for repository token (HTTP 403)");
+    }
+    return JSON.stringify({ token });
+  };
+  const runtime = createGitHubRuntime({
+    ROOT: process.cwd(),
+    run,
+    targetRepo: () => "openclaw/openclaw",
+  });
+  const execution = createGitHubExecution({
+    ROOT: process.cwd(),
+    gitHubRuntime: runtime,
+    labelAlreadyExistsError: () => false,
+  });
+  try {
+    const result = JSON.parse(execution.ghWithRetry(["api", "repos/openclaw/openclaw/issues/123"]));
+    assert.equal(result.token, fixtureEnv.GH_TOKEN);
+    assert.deepEqual(
+      observed.map(({ token }) => token),
+      [fixtureEnv.REPO_TOKEN, fixtureEnv.REPO_TOKEN, fixtureEnv.GH_TOKEN],
+    );
+    const observations = readFileSync(observationPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(observations, [
+      {
+        scope: "repository_actions",
+        observed_at: observations[0].observed_at,
+        retry_at: new Date(reset * 1_000).toISOString(),
+        provenance: "rate_limit_status",
+        authoritative: true,
+      },
+    ]);
+  } finally {
+    rmSync(observationPath, { force: true });
+    rmSync(`${observationPath}.lookup-repository_actions.lock`, { force: true });
+    rmSync(`${observationPath}.fallback-target_app.lock`, { force: true });
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("inherited GitHub Actions credentials open the repository quota circuit", () => {
+  const observationPath = join(
+    tmpdir(),
+    `clawsweeper-inherited-actions-rate-limit-${process.pid}-${Date.now()}.jsonl`,
+  );
+  const fixtureEnv = {
+    GITHUB_TOKEN: "inherited-actions-token",
+    CLAWSWEEPER_GITHUB_RATE_LIMIT_OBSERVATION_PATH: observationPath,
+  };
+  const clearedKeys = ["GH_TOKEN", "REPO_TOKEN", "CLAWSWEEPER_PUBLIC_GH_TOKEN"];
+  const previous = Object.fromEntries(
+    [...Object.keys(fixtureEnv), ...clearedKeys].map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, fixtureEnv);
+  for (const key of clearedKeys) delete process.env[key];
+  const observedTokens: string[] = [];
+  const reset = Math.floor(Date.now() / 1_000) + 300;
+  const run = (_command: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
+    const token =
+      options?.env?.GH_TOKEN ??
+      options?.env?.GITHUB_TOKEN ??
+      process.env.GH_TOKEN ??
+      process.env.GITHUB_TOKEN ??
+      "";
+    observedTokens.push(token);
+    if (args[0] === "api" && args[1] === "rate_limit") {
+      return JSON.stringify({ remaining: 0, reset });
+    }
+    throw new Error("gh: API rate limit exceeded for GITHUB_TOKEN (HTTP 403)");
+  };
+  const runtime = createGitHubRuntime({
+    ROOT: process.cwd(),
+    run,
+    targetRepo: () => "openclaw/openclaw",
+  });
+  const execution = createGitHubExecution({
+    ROOT: process.cwd(),
+    gitHubRuntime: runtime,
+    labelAlreadyExistsError: () => false,
+  });
+  try {
+    assert.throws(
+      () => execution.ghWithRetry(["api", "repos/openclaw/openclaw/issues/123/comments"]),
+      { name: "GitHubRateLimitError" },
+    );
+    assert.deepEqual(observedTokens, [fixtureEnv.GITHUB_TOKEN, fixtureEnv.GITHUB_TOKEN]);
+    const observations = readFileSync(observationPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(observations, [
+      {
+        scope: "repository_actions",
+        observed_at: observations[0].observed_at,
+        retry_at: new Date(reset * 1_000).toISOString(),
+        provenance: "rate_limit_status",
+        authoritative: true,
+      },
+    ]);
+  } finally {
+    rmSync(observationPath, { force: true });
+    rmSync(`${observationPath}.lookup-repository_actions.lock`, { force: true });
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test("batch workflow signs queue ownership, isolates item failures, and commits once", () => {
   assert.match(source, /repair:exact-review-batch claim/);
   assert.match(source, /repair:exact-review-batch heartbeat/);
@@ -332,8 +472,24 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   // Keep the fixture from looking like an embedded credential while still
   // proving that artifact downloads use the owner-scoped repository token.
   const ghToken = ["GH", "TOKEN"].join("_");
-  assert.match(prepareSource, new RegExp(`${ghToken}: env\\("REPO_TOKEN"\\)`));
+  assert.match(prepareSource, new RegExp(`${ghToken}: repositoryToken`));
+  assert.match(prepareSource, /activeCircuit[\s\S]*?attempted: false/);
+  assert.match(
+    prepareSource,
+    /githubThrottleText\(result\.stderr\)[\s\S]*?resolveRateLimitObservation/,
+  );
+  assert.match(prepareSource, /was submitted too quickly/);
   assert.match(source, /gh workflow run repair-comment-router\.yml/);
+  assert.match(source, /EXACT_REVIEW_GITHUB_REQUEST_REPEAT="\$repeat_revision"/);
+  assert.match(
+    source,
+    /EXACT_REVIEW_GITHUB_REQUEST_OUTCOME=success[\s\S]*?repair:exact-review-batch request-metric/,
+  );
+  assert.match(source, /was submitted too quickly[\s\S]*?repair:exact-review-batch rate-limit/);
+  assert.match(
+    source,
+    /EXACT_REVIEW_GITHUB_REQUEST_OUTCOME=error[\s\S]*?repair:exact-review-batch request-metric/,
+  );
   assert.match(
     source,
     /AUTO_IMPLEMENT_ISSUES: \$\{\{ vars\.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES \}\}/,
@@ -398,7 +554,7 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /Record batch preparation finish/);
   assert.match(source, /EXACT_REVIEW_BATCH_OBSERVATION=final_github_apply/);
   assert.match(source, /EXACT_REVIEW_BATCH_OBSERVATION=github_throttle/);
-  assert.match(source, /rate limit\|HTTP 429/);
+  assert.match(source, /rate limit\|abuse detection\|was submitted too quickly\|HTTP 429/);
   assert.match(cliSource, /"observe"/);
   assert.match(cliSource, /optionalDispatchTelemetry/);
   assert.match(cliSource, /optionalRunnerTelemetry/);

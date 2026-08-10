@@ -3,8 +3,11 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   cpSync,
+  closeSync,
   existsSync,
+  appendFileSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -73,14 +76,52 @@ async function controller() {
     process.env.EXACT_REVIEW_BATCH_HEARTBEAT_FAILURE_PATH ||
       ".artifacts/exact-review-batch/heartbeat-failed",
   );
+  const rateLimitObservationPath = resolve(
+    workspace,
+    process.env.CLAWSWEEPER_GITHUB_RATE_LIMIT_OBSERVATION_PATH ||
+      ".artifacts/exact-review-batch/github-rate-limits.jsonl",
+  );
+  const requestMetricsPath = resolve(
+    workspace,
+    process.env.CLAWSWEEPER_GITHUB_REQUEST_METRICS_PATH ||
+      ".artifacts/exact-review-batch/github-request-metrics.jsonl",
+  );
   rmSync(workersRoot, { recursive: true, force: true });
   mkdirSync(workersRoot, { recursive: true });
+  mkdirSync(dirname(rateLimitObservationPath), { recursive: true });
+  rmSync(rateLimitObservationPath, { force: true });
+  rmSync(`${rateLimitObservationPath}.lookup-repository_actions.lock`, { force: true });
+  rmSync(`${rateLimitObservationPath}.lookup-target_app.lock`, { force: true });
+  rmSync(`${rateLimitObservationPath}.fallback-target_app.lock`, { force: true });
+  rmSync(requestMetricsPath, { force: true });
   let cleanupFailures = 0;
   const durations = [];
   let timeouts = 0;
   let admitted = 0;
+  let collapsed = 0;
+  let activeCircuit = null;
   const { peak } = await runBoundedPool(items, concurrency, async (item, index) => {
     const outcomePath = checkedOutcomePath(workspace, item.outcomePath);
+    activeCircuit = activeCircuit || latestActiveRateLimitObservation(rateLimitObservationPath);
+    if (activeCircuit) {
+      collapsed += 1;
+      appendRequestMetric(requestMetricsPath, {
+        scope: activeCircuit.scope,
+        category: "artifact_download",
+        mode: "read",
+        outcome: "skipped_by_circuit",
+        repeat_revision: item.repeatRevision === true,
+        count: 1,
+      });
+      writeFailure(outcomePath, "retryable_failure", "github_rate_limit", {
+        retryAt: activeCircuit.retry_at,
+        rateLimitScope: activeCircuit.scope,
+        rateLimitProvenance: activeCircuit.provenance,
+        rateLimitAuthoritative: activeCircuit.authoritative === true,
+        attempted: false,
+      });
+      return { kind: "circuit_deferred", durationMs: 0 };
+    }
     if (existsSync(heartbeatFailurePath) || Date.now() >= deadline) {
       writeFailure(outcomePath, "retryable_failure", "unknown_failure");
       return { kind: "not_admitted", durationMs: 0 };
@@ -118,6 +159,7 @@ async function controller() {
       }
       console.error(`Failed to prepare batch member ${item.itemKey} during ${failureStage}`);
     } finally {
+      activeCircuit = activeCircuit || latestActiveRateLimitObservation(rateLimitObservationPath);
       durations.push(Date.now() - workerStartedAt);
       try {
         rmSync(root, { recursive: true, force: true });
@@ -136,6 +178,7 @@ async function controller() {
     workerMaximumMs: sortedDurations.at(-1) || 0,
     workerP95Ms: percentile(sortedDurations, 0.95),
     admitted,
+    collapsed,
     completedOutcomes: items.filter((item) =>
       existsSync(checkedOutcomePath(workspace, item.outcomePath)),
     ).length,
@@ -174,6 +217,17 @@ async function worker(itemPath, root, workspace) {
   mkdirSync(eventArtifacts, { recursive: true });
   mkdirSync(dirname(outcomePath), { recursive: true });
 
+  const rateLimitObservationPath = resolve(
+    workspace,
+    process.env.CLAWSWEEPER_GITHUB_RATE_LIMIT_OBSERVATION_PATH ||
+      ".artifacts/exact-review-batch/github-rate-limits.jsonl",
+  );
+  const requestMetricsPath = resolve(
+    workspace,
+    process.env.CLAWSWEEPER_GITHUB_REQUEST_METRICS_PATH ||
+      ".artifacts/exact-review-batch/github-request-metrics.jsonl",
+  );
+  const repositoryToken = env("REPO_TOKEN");
   let result = await run(
     "gh",
     [
@@ -187,8 +241,32 @@ async function worker(itemPath, root, workspace) {
       "--dir",
       bundleDir,
     ],
-    { env: { ...process.env, GH_TOKEN: env("REPO_TOKEN") } },
+    { env: { ...process.env, GH_TOKEN: repositoryToken }, capture: true },
   );
+  appendRequestMetric(requestMetricsPath, {
+    scope: "repository_actions",
+    category: "artifact_download",
+    mode: "read",
+    outcome:
+      result.code === 0 ? "success" : githubThrottleText(result.stderr) ? "throttle" : "error",
+    repeat_revision: item.repeatRevision === true,
+    count: 1,
+  });
+  if (result.code !== 0 && githubThrottleText(result.stderr)) {
+    const observation = await resolveRateLimitObservation(
+      repositoryToken,
+      requestMetricsPath,
+      rateLimitObservationPath,
+    );
+    appendJsonLine(rateLimitObservationPath, observation);
+    return writeFailure(outcomePath, "retryable_failure", "github_rate_limit", {
+      retryAt: observation.retry_at,
+      rateLimitScope: observation.scope,
+      rateLimitProvenance: observation.provenance,
+      rateLimitAuthoritative: observation.authoritative,
+      attempted: true,
+    });
+  }
   if (result.code !== 0)
     return writeFailure(outcomePath, "retryable_failure", "artifact_unavailable");
   const artifactBytes = directoryBytes(bundleDir);
@@ -255,6 +333,9 @@ async function worker(itemPath, root, workspace) {
       EXACT_REVIEW_BATCH_REVISION: String(item.revision),
       EXACT_REVIEW_BATCH_CLAIM_GENERATION: String(item.claimGeneration),
       EXACT_REVIEW_BATCH_MUTATION_OUTPUT: outcomePath,
+      CLAWSWEEPER_GITHUB_RATE_LIMIT_OBSERVATION_PATH: rateLimitObservationPath,
+      CLAWSWEEPER_GITHUB_REQUEST_METRICS_PATH: requestMetricsPath,
+      CLAWSWEEPER_GITHUB_REQUEST_REPEAT: String(item.repeatRevision === true),
     },
   });
   if (result.code !== 0 && !existsSync(outcomePath)) {
@@ -271,9 +352,93 @@ function checkedOutcomePath(workspace, path) {
   return candidate;
 }
 
-function writeFailure(path, kind, reasonCode) {
+function writeFailure(path, kind, reasonCode, details = {}) {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify({ kind, reasonCode })}\n`, "utf8");
+  writeFileSync(path, `${JSON.stringify({ kind, reasonCode, ...details })}\n`, "utf8");
+}
+
+function githubThrottleText(value) {
+  return /api rate limit exceeded|secondary rate limit|abuse detection|http\s*429|rate limited|was submitted too quickly/i.test(
+    String(value || ""),
+  );
+}
+
+async function resolveRateLimitObservation(token, requestMetricsPath, observationPath) {
+  const now = Date.now();
+  try {
+    closeSync(openSync(`${observationPath}.lookup-repository_actions.lock`, "wx"));
+  } catch {
+    return {
+      scope: "repository_actions",
+      observed_at: new Date(now).toISOString(),
+      retry_at: new Date(now + 60_000).toISOString(),
+      provenance: "fallback",
+      authoritative: false,
+    };
+  }
+  const status = await run(
+    "gh",
+    [
+      "api",
+      "rate_limit",
+      "--jq",
+      "{remaining:.resources.core.remaining,reset:.resources.core.reset}",
+    ],
+    { env: { ...process.env, GH_TOKEN: token }, capture: true },
+  );
+  appendRequestMetric(requestMetricsPath, {
+    scope: "repository_actions",
+    category: "rate_status",
+    mode: "read",
+    outcome:
+      status.code === 0 ? "success" : githubThrottleText(status.stderr) ? "throttle" : "error",
+    repeat_revision: false,
+    count: 1,
+  });
+  let resetAt = 0;
+  if (status.code === 0) {
+    try {
+      const parsed = JSON.parse(status.stdout || "null");
+      if (Number(parsed?.remaining) <= 0 && Number.isSafeInteger(Number(parsed?.reset))) {
+        resetAt = Number(parsed.reset) * 1_000;
+      }
+    } catch {
+      // The shared circuit still uses the conservative fallback below.
+    }
+  }
+  return {
+    scope: "repository_actions",
+    observed_at: new Date(now).toISOString(),
+    retry_at: new Date(Math.max(now + 60_000, resetAt)).toISOString(),
+    provenance: resetAt ? "rate_limit_status" : "fallback",
+    authoritative: resetAt > 0,
+  };
+}
+
+function appendJsonLine(path, value) {
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, `${JSON.stringify(value)}\n`, "utf8");
+}
+
+function appendRequestMetric(path, value) {
+  appendJsonLine(path, value);
+}
+
+function latestActiveRateLimitObservation(path) {
+  if (!existsSync(path)) return null;
+  let latest = null;
+  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const value = JSON.parse(line);
+      const retryAt = Date.parse(String(value.retry_at || ""));
+      if (retryAt > Date.now() && (!latest || retryAt > Date.parse(latest.retry_at)))
+        latest = value;
+    } catch {
+      // A partial observation cannot open a circuit; the publisher outcome remains authoritative.
+    }
+  }
+  return latest;
 }
 
 function legacyTupleless(markdown) {
@@ -326,8 +491,21 @@ export function run(command, args, options = {}) {
       cwd: options.cwd,
       detached: Boolean(options.timeoutMs),
       env: options.env || process.env,
-      stdio: "inherit",
+      stdio: options.capture ? ["ignore", "pipe", "pipe"] : "inherit",
     });
+    let stdout = "";
+    let stderr = "";
+    if (options.capture) {
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk;
+        process.stderr.write(chunk);
+      });
+    }
     let timedOut = false;
     let forceTimer = null;
     const terminate = (signal) => {
@@ -348,7 +526,7 @@ export function run(command, args, options = {}) {
     child.once("exit", (code, signal) => {
       if (timer) clearTimeout(timer);
       if (forceTimer) clearTimeout(forceTimer);
-      resolvePromise({ code: code ?? 1, signal, timedOut });
+      resolvePromise({ code: code ?? 1, signal, timedOut, stdout, stderr });
     });
   });
 }

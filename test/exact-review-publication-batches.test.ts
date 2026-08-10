@@ -31,9 +31,14 @@ class SqlCursor<T extends Record<string, unknown>> implements Iterable<T> {
 class TestStorage {
   private readonly database = new DatabaseSync(":memory:");
   private readonly values = new Map<string, unknown>();
+  private failSqlPattern: RegExp | null = null;
   private alarmAt: number | null = null;
   readonly sql = {
     exec: (query: string, ...bindings: unknown[]) => {
+      if (this.failSqlPattern?.test(query)) {
+        this.failSqlPattern = null;
+        throw new Error("injected telemetry state write failure");
+      }
       const statement = this.database.prepare(query);
       if (/^\s*(?:SELECT|WITH)\b/i.test(query) || /\bRETURNING\b/i.test(query)) {
         return new SqlCursor(statement.all(...bindings) as Record<string, unknown>[]);
@@ -42,6 +47,10 @@ class TestStorage {
       return new SqlCursor<Record<string, unknown>>([]);
     },
   };
+
+  failNextSqlMatching(pattern: RegExp) {
+    this.failSqlPattern = pattern;
+  }
   readonly kv = {
     get: (key: string) => this.values.get(key),
     put: (key: string, value: unknown) => this.values.set(key, structuredClone(value)),
@@ -3256,6 +3265,423 @@ test("retryable batch completion releases ownership and preserves queue retry po
       )
     ).json();
     assert.equal(fetchedReplacement.items.length, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("credential circuits persist, preserve healthy owners, and defer unattempted members without retry charge", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-08-10T14:00:00.000Z");
+  Date.now = () => now;
+  try {
+    const storage = new TestStorage();
+    let queue = new ExactReviewQueue(
+      { storage },
+      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+    );
+    for (let index = 0; index < 52; index += 1) {
+      await queue.fetch(
+        publicationRequest(`owner-a-${index}`, 201 + index, String(1201 + index), "aaa/repo"),
+      );
+    }
+    await queue.fetch(publicationRequest("owner-b", 300, "1300", "bbb/repo"));
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-owner-a",
+          lease_owner: "worker-a",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    const member = claim.batch.items[0];
+    assert.match(member.item_key, /^aaa\/repo#/);
+    const malformedUnattempted = await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-a",
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "retryable_failure",
+            reason_code: "github_rate_limit",
+            attempted: false,
+          },
+        ],
+      }),
+    );
+    assert.equal(malformedUnattempted.status, 400);
+    assert.deepEqual(await malformedUnattempted.json(), { error: "invalid_batch_completions" });
+    const longerReset = now + 120_000;
+    const completion = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/complete", {
+          batch_id: claim.batch.batch_id,
+          lease_owner: "worker-a",
+          github_rate_limit_observations: [
+            {
+              scope: "target_app",
+              target_owner: "aaa",
+              observed_at: new Date(now).toISOString(),
+              retry_at: new Date(longerReset).toISOString(),
+              provenance: "rate_limit_status",
+              authoritative: true,
+            },
+            {
+              scope: "target_app",
+              target_owner: "aaa",
+              observed_at: new Date(now + 1).toISOString(),
+              retry_at: new Date(now + 60_000).toISOString(),
+              provenance: "fallback",
+              authoritative: false,
+            },
+          ],
+          github_request_metrics: [
+            {
+              scope: "target_app",
+              category: "item_metadata",
+              mode: "read",
+              outcome: "throttle",
+              repeat_revision: false,
+              count: 1,
+            },
+          ],
+          items: [
+            {
+              item_key: member.item_key,
+              revision: member.revision,
+              claim_generation: member.claim_generation,
+              terminal_outcome: "retryable_failure",
+              reason_code: "github_rate_limit",
+              retry_at: new Date(longerReset).toISOString(),
+              attempted: false,
+            },
+          ],
+        }),
+      )
+    ).json();
+    assert.equal(completion.accepted, 1, JSON.stringify(completion));
+
+    let stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.retried_total, 0);
+    assert.equal(stats.lanes.publication.credential_circuits.length, 1);
+    assert.deepEqual(stats.lanes.publication.credential_circuits[0], {
+      pool: "target_app:aaa",
+      scope: "target_app",
+      target_owner: "aaa",
+      observed_at: new Date(now).toISOString(),
+      blocked_until: new Date(longerReset).toISOString(),
+      reset_source: "rate_limit_status",
+      authoritative: true,
+      active: true,
+      affected_pending: 52,
+    });
+    assert.equal(
+      stats.lanes.publication.github_request_metrics.counters[
+        "target_app:item_metadata:read:throttle:first"
+      ],
+      1,
+    );
+    assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, "github_rate_limit");
+
+    const lateReset = now + 180_000;
+    const lateTelemetry = {
+      batch_id: claim.batch.batch_id,
+      lease_owner: "worker-a",
+      github_telemetry_id: "a".repeat(64),
+      github_rate_limit_observations: [
+        {
+          scope: "target_app",
+          target_owner: "aaa",
+          observed_at: new Date(now + 2).toISOString(),
+          retry_at: new Date(lateReset).toISOString(),
+          provenance: "retry_after",
+          authoritative: true,
+        },
+      ],
+      github_request_metrics: [
+        {
+          scope: "target_app",
+          category: "workflow_dispatch",
+          mode: "mutation_or_private_read",
+          outcome: "throttle",
+          repeat_revision: true,
+          count: 1,
+        },
+      ],
+      items: [],
+    };
+    storage.failNextSqlMatching(/UPDATE exact_review_queue_meta/);
+    await assert.rejects(
+      queue.fetch(batchRequest("/publication-batches/complete", lateTelemetry)),
+      /injected telemetry state write failure/,
+    );
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(
+      stats.lanes.publication.github_request_metrics.counters[
+        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+      ],
+      undefined,
+    );
+    assert.equal(
+      stats.lanes.publication.credential_circuits[0].blocked_until,
+      new Date(longerReset).toISOString(),
+    );
+    const late = await (
+      await queue.fetch(batchRequest("/publication-batches/complete", lateTelemetry))
+    ).json();
+    assert.equal(late.accepted, 0);
+    assert.equal(late.telemetry_accepted, true);
+    const duplicate = await (
+      await queue.fetch(batchRequest("/publication-batches/complete", lateTelemetry))
+    ).json();
+    assert.equal(duplicate.telemetry_accepted, true);
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(
+      stats.lanes.publication.credential_circuits[0].blocked_until,
+      new Date(lateReset).toISOString(),
+    );
+    assert.equal(
+      stats.lanes.publication.github_request_metrics.counters[
+        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+      ],
+      1,
+    );
+    assert.equal(stats.lanes.publication.capacity_control.ceiling, 12);
+    queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" });
+    const healthyOwner = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-owner-b",
+          lease_owner: "worker-b",
+          max_items: 50,
+        }),
+      )
+    ).json();
+    assert.equal(healthyOwner.claimed, true, JSON.stringify(healthyOwner));
+    assert.match(healthyOwner.batch.items[0].item_key, /^bbb\/repo#/);
+    const replacementLeaseDuplicate = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/complete", {
+          ...lateTelemetry,
+          batch_id: healthyOwner.batch.batch_id,
+          lease_owner: "worker-b",
+        }),
+      )
+    ).json();
+    assert.equal(replacementLeaseDuplicate.telemetry_accepted, true);
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(
+      stats.lanes.publication.github_request_metrics.counters[
+        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+      ],
+      1,
+    );
+    const independentTelemetry = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/complete", {
+          ...lateTelemetry,
+          batch_id: healthyOwner.batch.batch_id,
+          lease_owner: "worker-b",
+          github_telemetry_id: "b".repeat(64),
+        }),
+      )
+    ).json();
+    assert.equal(independentTelemetry.telemetry_accepted, true);
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(
+      stats.lanes.publication.github_request_metrics.counters[
+        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+      ],
+      2,
+    );
+    assert.equal(stats.lanes.publication.capacity_control.ceiling, 6);
+    const retainedReceiptPayloads: Record<string, unknown>[] = [];
+    for (let index = 0; index < 201; index += 1) {
+      const payload = {
+        batch_id: healthyOwner.batch.batch_id,
+        lease_owner: "worker-b",
+        github_telemetry_id: index.toString(16).padStart(64, "0"),
+        github_request_metrics: lateTelemetry.github_request_metrics,
+        items: [],
+      };
+      retainedReceiptPayloads.push(payload);
+      const recorded = await (
+        await queue.fetch(batchRequest("/publication-batches/complete", payload))
+      ).json();
+      assert.equal(recorded.telemetry_accepted, true);
+    }
+    const delayedDuplicate = await (
+      await queue.fetch(batchRequest("/publication-batches/complete", retainedReceiptPayloads[0]))
+    ).json();
+    assert.equal(delayedDuplicate.telemetry_accepted, true);
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(
+      stats.lanes.publication.github_request_metrics.counters[
+        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+      ],
+      203,
+    );
+
+    const receiptFailureReset = lateReset + 60_000;
+    const receiptFailureTelemetry = {
+      batch_id: healthyOwner.batch.batch_id,
+      lease_owner: "worker-b",
+      github_telemetry_id: "c".repeat(64),
+      github_rate_limit_observations: [
+        {
+          scope: "target_app",
+          target_owner: "aaa",
+          observed_at: new Date(now + 3).toISOString(),
+          retry_at: new Date(receiptFailureReset).toISOString(),
+          provenance: "retry_after",
+          authoritative: true,
+        },
+      ],
+      items: [],
+    };
+    storage.failNextSqlMatching(/INSERT INTO exact_review_github_telemetry_receipts/);
+    await assert.rejects(
+      queue.fetch(batchRequest("/publication-batches/complete", receiptFailureTelemetry)),
+      /injected telemetry state write failure/,
+    );
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.capacity_control.ceiling, 6);
+    assert.equal(
+      stats.lanes.publication.credential_circuits[0].blocked_until,
+      new Date(lateReset).toISOString(),
+    );
+    const receiptReplay = await (
+      await queue.fetch(batchRequest("/publication-batches/complete", receiptFailureTelemetry))
+    ).json();
+    assert.equal(receiptReplay.telemetry_accepted, true);
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.capacity_control.ceiling, 4);
+    assert.equal(
+      stats.lanes.publication.credential_circuits[0].blocked_until,
+      new Date(receiptFailureReset).toISOString(),
+    );
+
+    const healthyMember = healthyOwner.batch.items[0];
+    const healthyCompletion = await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: healthyOwner.batch.batch_id,
+        lease_owner: "worker-b",
+        items: [
+          {
+            item_key: healthyMember.item_key,
+            revision: healthyMember.revision,
+            claim_generation: healthyMember.claim_generation,
+            terminal_outcome: "superseded",
+          },
+        ],
+      }),
+    );
+    assert.equal(
+      healthyCompletion.status,
+      200,
+      JSON.stringify(await healthyCompletion.clone().json()),
+    );
+
+    now = receiptFailureReset + 16 * 60_000;
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.credential_circuits[0].active, false);
+    const recoveredOwner = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-owner-a-recovered",
+          lease_owner: "worker-c",
+          max_items: 50,
+        }),
+      )
+    ).json();
+    assert.equal(recoveredOwner.claimed, true, JSON.stringify(recoveredOwner));
+    assert.match(recoveredOwner.batch.items[0].item_key, /^aaa\/repo#/);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("repository Actions circuit blocks every publication batch until reset", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-08-10T14:00:00.000Z");
+  Date.now = () => now;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+    );
+    await queue.fetch(publicationRequest("actions-a", 211, "1211", "aaa/repo"));
+    await queue.fetch(publicationRequest("actions-b", 212, "1212", "bbb/repo"));
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-actions-a",
+          lease_owner: "worker-a",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    const member = claim.batch.items[0];
+    const resetAt = now + 90_000;
+    const completed = await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-a",
+        github_rate_limit_observations: [
+          {
+            scope: "repository_actions",
+            observed_at: new Date(now).toISOString(),
+            retry_at: new Date(resetAt).toISOString(),
+            provenance: "rate_limit_status",
+            authoritative: true,
+          },
+        ],
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "retryable_failure",
+            reason_code: "github_rate_limit",
+            retry_at: new Date(resetAt).toISOString(),
+            attempted: false,
+          },
+        ],
+      }),
+    );
+    assert.equal(completed.status, 200, JSON.stringify(await completed.clone().json()));
+    const blocked = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-actions-blocked",
+          lease_owner: "worker-b",
+          max_items: 2,
+        }),
+      )
+    ).json();
+    assert.equal(blocked.claimed, false, JSON.stringify(blocked));
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(
+      stats.lanes.publication.credential_circuits[0].pool,
+      "actions:openclaw/clawsweeper",
+    );
+    assert.equal(stats.lanes.publication.credential_circuits[0].affected_pending, 2);
+
+    now = resetAt + 31_000;
+    const recovered = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-actions-recovered",
+          lease_owner: "worker-c",
+          max_items: 2,
+        }),
+      )
+    ).json();
+    assert.equal(recovered.claimed, true, JSON.stringify(recovered));
   } finally {
     Date.now = originalNow;
   }

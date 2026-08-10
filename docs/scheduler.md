@@ -96,6 +96,27 @@ remains per-target serialized. See [`docs/limits.md`](limits.md) for effective v
 Tuple-aware state reconciliation prevents stale review snapshots from reviving
 closed records.
 
+Batch admission is additionally gated by persisted GitHub credential circuits.
+Every batch needs the `actions:openclaw/clawsweeper` pool for producer artifact
+download, while target App circuits are owner-scoped so one exhausted
+installation does not stop healthy owners. A blocked pool prevents workflow
+dispatch, state hydration, and artifact download until its reported reset; the
+alarm wakes at the earliest circuit deadline. The current batch collapses after
+the first pool failure, and unattempted members return without advancing their
+retry budget. Reset recovery is spread by deterministic item jitter.
+An owner-scoped target App circuit also defers new exact-review admission for
+that owner, because review and publication share the installation quota; other
+owners remain admissible.
+
+Exact publication routes only classifier-approved public reads through the
+repository Actions token. If that pool is exhausted after the current member's
+artifact is already present, the member may use the ambient target App once;
+later members still stop because they require the blocked Actions pool. The
+workflow also records a typed repository-pool observation if its final comment
+router dispatch encounters quota pressure. All typed observations and request
+counters are acknowledged with the same fenced batch completion, so a delayed
+cleanup is idempotent and cannot duplicate accounting.
+
 ## Schedules
 
 `openclaw/openclaw`:
