@@ -337,6 +337,12 @@ jobs:
             --input - <<< "$payload"
 ```
 
+`target_branch` is branch authority from the signed event repository payload,
+not a guess. Carrying it lets legacy intake enqueue without an extra GitHub API
+read. During a rolling upgrade, a branchless legacy payload is held in the
+durable control plane until the target App resolves and validates the repository
+default branch; it is never silently rewritten to `main`.
+
 Non-draft pull request receipts get one best-effort `clawsweeper-pr-ack`
 comment. `opened` and `ready_for_review` can fire seconds apart when a draft is
 marked ready immediately after creation, and both runs can list comments before

@@ -244,7 +244,8 @@ shared Git writer constraint, so production now admits 8 preparation
 batches (up to 64 publication members) while retaining the Durable Object's
 transactional SQLite ownership boundaries.
 
-Publication batching also owns reset-aware GitHub credential circuits. The
+The durable control plane owns reset-aware GitHub credential circuits for both
+review authority reads and publication batching. The
 repository Actions pool is identified only as `actions:openclaw/clawsweeper`;
 target App pools are identified by the non-secret target owner. A primary or
 secondary rate-limit observation persists its reset deadline in the queue
@@ -253,6 +254,18 @@ that deadline to the next alarm wake-up. A later observation may extend but
 cannot shorten an open circuit. When `gh` omits response headers, the publisher
 performs at most one same-credential `/rate_limit` lookup; the one-minute
 fallback is used only when no authoritative reset is available.
+
+Legacy exact-review payloads that do not carry `target_branch` are durably held
+before admission while the target App resolves the repository default branch;
+they never silently default to `main`. The same owner-scoped target App circuit
+protects that lookup and direct-webhook pull-request head verification. The
+first reset-aware 403/429 opens the circuit; later reservations for that owner
+defer to the shared deadline without another GitHub request or another
+reservation attempt, while other owners continue. A carried valid branch takes
+the normal enqueue path with no branch lookup.
+The status payload exposes these pre-admission records under
+`lanes.review.authority_pending`; owner-scoped circuit `affected_pending` counts
+include them, so quota pressure before normal queue admission remains visible.
 
 The first quota failure in a preparation batch stops later members before
 artifact download. The observing member records a normal retryable failure;

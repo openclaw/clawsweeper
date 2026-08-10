@@ -107,6 +107,14 @@ retry budget. Reset recovery is spread by deterministic item jitter.
 An owner-scoped target App circuit also defers new exact-review admission for
 that owner, because review and publication share the installation quota; other
 owners remain admissible.
+Legacy dispatches normally carry the event repository's validated default
+branch. If an older producer omits it, intake creates a durable pre-admission
+branch-authority reservation instead of spending the workflow repository's
+Actions quota or assuming `main`. Resolution and direct-webhook source-head
+verification both consult and update the same owner-scoped target App circuit:
+the first quota response preserves its reset deadline, later same-owner
+reservations defer without another read or attempt charge, and reset recovery is
+bounded by the Durable Object alarm processor.
 
 Exact publication routes only classifier-approved public reads through the
 repository Actions token. If that pool is exhausted after the current member's

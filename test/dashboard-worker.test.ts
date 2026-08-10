@@ -1153,6 +1153,243 @@ test("exact-review source authority sequence survives queue restarts", async () 
   });
 });
 
+test("branch authority shares the target App circuit and collapses same-owner retries", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let now = 4_000_000;
+  const resetAt = now + 90_000;
+  Date.now = () => now;
+  const storage = new MemoryDurableStorage();
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+  );
+  let openclawInstallationTokens = 0;
+  let openclawRepositoryReads = 0;
+  let openclawPullReads = 0;
+  let otherRepositoryReads = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/app/installations/123/access_tokens") {
+      openclawInstallationTokens += 1;
+      return jsonResponse({ token: "openclaw-token" });
+    }
+    if (url.pathname === "/app/installations/456/access_tokens") {
+      return jsonResponse({ token: "other-token" });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw") {
+      openclawRepositoryReads += 1;
+      if (openclawRepositoryReads === 1) {
+        return new Response(JSON.stringify({ message: "API rate limit exceeded" }), {
+          status: 403,
+          headers: {
+            "content-type": "application/json",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": String(resetAt / 1_000),
+          },
+        });
+      }
+      return jsonResponse({ default_branch: "trunk" });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/pulls/903") {
+      openclawPullReads += 1;
+      return jsonResponse({ head: { sha: "d".repeat(40) } });
+    }
+    if (url.pathname === "/repos/other/repo") {
+      otherRepositoryReads += 1;
+      return jsonResponse({ default_branch: "stable" });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const branchReservation = (
+    deliveryId: string,
+    targetRepo: string,
+    itemNumber: number,
+    installationId: number,
+  ) =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/branch-authority", {
+        method: "POST",
+        body: JSON.stringify({
+          delivery_id: deliveryId,
+          installation_id: installationId,
+          decision: {
+            targetRepo,
+            itemNumber,
+            itemKind: "issue",
+            sourceEvent: "issues",
+            sourceAction: "legacy_dispatch",
+            supersedesInProgress: false,
+          },
+        }),
+      }),
+    );
+
+  try {
+    for (const [deliveryId, targetRepo, itemNumber, installationId] of [
+      ["a-openclaw", "openclaw/openclaw", 900, 123],
+      ["b-openclaw", "openclaw/openclaw", 901, 123],
+      ["c-other", "other/repo", 902, 456],
+    ] as const) {
+      const response = await branchReservation(deliveryId, targetRepo, itemNumber, installationId);
+      assert.equal(response.status, 202);
+    }
+    const sourceResponse = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/source-authority", {
+        method: "POST",
+        body: JSON.stringify({
+          delivery_id: "d-source-openclaw",
+          installation_id: 123,
+          decision: {
+            targetRepo: "openclaw/openclaw",
+            targetBranch: "trunk",
+            itemNumber: 903,
+            itemKind: "pull_request",
+            sourceEvent: "pull_request",
+            sourceAction: "synchronize",
+            supersedesInProgress: true,
+            sourceHeadSha: "d".repeat(40),
+          },
+        }),
+      }),
+    );
+    assert.equal(sourceResponse.status, 200);
+
+    await queue.alarm();
+
+    assert.equal(openclawInstallationTokens, 1);
+    assert.equal(openclawRepositoryReads, 1);
+    assert.equal(openclawPullReads, 0);
+    assert.equal(otherRepositoryReads, 1);
+    assert.deepEqual(
+      {
+        first: storage.rawGet("exact-review-branch-authority-reservation:v1:a-openclaw"),
+        second: storage.rawGet("exact-review-branch-authority-reservation:v1:b-openclaw"),
+        source: storage.rawGet("exact-review-source-authority-reservation:v1:d-source-openclaw"),
+      },
+      {
+        first: {
+          deliveryId: "a-openclaw",
+          decision: {
+            targetRepo: "openclaw/openclaw",
+            itemNumber: 900,
+            itemKind: "issue",
+            sourceEvent: "issues",
+            sourceAction: "legacy_dispatch",
+            supersedesInProgress: false,
+          },
+          installationId: 123,
+          sourceAuthorityRequired: false,
+          attempts: 1,
+          nextAttemptAt: resetAt,
+        },
+        second: {
+          deliveryId: "b-openclaw",
+          decision: {
+            targetRepo: "openclaw/openclaw",
+            itemNumber: 901,
+            itemKind: "issue",
+            sourceEvent: "issues",
+            sourceAction: "legacy_dispatch",
+            supersedesInProgress: false,
+          },
+          installationId: 123,
+          sourceAuthorityRequired: false,
+          attempts: 0,
+          nextAttemptAt: resetAt,
+        },
+        source: {
+          deliveryId: "d-source-openclaw",
+          decision: {
+            targetRepo: "openclaw/openclaw",
+            targetBranch: "trunk",
+            itemNumber: 903,
+            itemKind: "pull_request",
+            sourceEvent: "pull_request",
+            sourceAction: "synchronize",
+            supersedesInProgress: true,
+            sourceHeadSha: "d".repeat(40),
+            sourceAuthoritySeq: 1,
+          },
+          installationId: 123,
+          sourceAuthoritySeq: 1,
+          attempts: 0,
+          nextAttemptAt: resetAt,
+        },
+      },
+    );
+    const throttled = (await storage.get("exact-review-queue")) as {
+      dispatcher: {
+        githubCredentialCircuits: Record<
+          string,
+          { retryAt: number; provenance: string; authoritative: boolean }
+        >;
+        githubRequestMetrics: { counters: Record<string, number> };
+      };
+      items: Record<string, { decision: { targetBranch: string } }>;
+    };
+    assert.deepEqual(throttled.dispatcher.githubCredentialCircuits["target_app:openclaw"], {
+      scope: "target_app",
+      targetOwner: "openclaw",
+      observedAt: now,
+      retryAt: resetAt,
+      provenance: "rate_limit_reset",
+      authoritative: true,
+      poolKey: "target_app:openclaw",
+    });
+    assert.equal(
+      throttled.dispatcher.githubRequestMetrics.counters[
+        "target_app:item_metadata:read:skipped_by_circuit:first"
+      ],
+      2,
+    );
+    assert.equal(throttled.items["other/repo#902"].decision.targetBranch, "stable");
+    const stats = (await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json()) as {
+      lanes: {
+        review: { authority_pending: Record<string, number> };
+        publication: { credential_circuits: Array<{ pool: string; affected_pending: number }> };
+      };
+    };
+    assert.deepEqual(stats.lanes.review.authority_pending, {
+      total: 3,
+      branch_resolution: 2,
+      source_verification: 1,
+    });
+    assert.equal(
+      stats.lanes.publication.credential_circuits.find(
+        (circuit) => circuit.pool === "target_app:openclaw",
+      )?.affected_pending,
+      3,
+    );
+
+    now = resetAt;
+    await queue.alarm();
+    const recovered = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: { targetBranch: string } }>;
+    };
+    assert.equal(recovered.items["openclaw/openclaw#900"].decision.targetBranch, "trunk");
+    assert.equal(recovered.items["openclaw/openclaw#901"].decision.targetBranch, "trunk");
+    assert.equal(recovered.items["openclaw/openclaw#903"].decision.targetBranch, "trunk");
+    assert.equal(openclawRepositoryReads, 3);
+    assert.equal(openclawPullReads, 1);
+    assert.equal(storage.rawHas("exact-review-branch-authority-reservation:v1:a-openclaw"), false);
+    assert.equal(storage.rawHas("exact-review-branch-authority-reservation:v1:b-openclaw"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+  }
+});
+
 test("exact-review queue durably coalesces concurrent unchanged pull request edits", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
@@ -17746,6 +17983,44 @@ test("authenticated legacy pull request intake reserves source authority", async
   );
   assert.equal(accepted.status, 200);
   assert.deepEqual(await accepted.json(), { ok: true, source_authority_seq: 1 });
+});
+
+test("authenticated legacy intake durably reserves missing branch authority", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const payload = JSON.stringify({
+    delivery_id: "legacy:branchless:858:1",
+    installation_id: 123,
+    decision: {
+      targetRepo: "openclaw/gogcli",
+      itemNumber: 858,
+      itemKind: "issue",
+      sourceEvent: "issues",
+      sourceAction: "legacy_dispatch",
+      supersedesInProgress: false,
+    },
+  });
+  const signature = `sha256=${createHmac("sha256", "test-secret").update(payload).digest("hex")}`;
+  const accepted = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/branch-authority", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-clawsweeper-exact-review-signature": signature,
+      },
+      body: payload,
+    }),
+    {
+      CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    },
+  );
+  assert.equal(accepted.status, 202);
+  assert.deepEqual(await accepted.json(), { ok: true, branch_authority_pending: true });
+  assert.equal(
+    storage.rawHas("exact-review-branch-authority-reservation:v1:legacy%3Abranchless%3A858%3A1"),
+    true,
+  );
 });
 
 test("exact-review queue rejects unbounded or unsafe command context", async () => {

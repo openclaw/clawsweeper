@@ -413,6 +413,16 @@ type ExactReviewSourceAuthorityReservation = {
   attempts: number;
   nextAttemptAt: number;
 };
+type ExactReviewBranchAuthorityDecision = Omit<ExactReviewDecision, "targetBranch" | "publication">;
+type ExactReviewBranchAuthorityReservation = {
+  deliveryId: string;
+  decision: ExactReviewBranchAuthorityDecision;
+  ingress?: ExactReviewIngress;
+  installationId?: number;
+  sourceAuthorityRequired: boolean;
+  attempts: number;
+  nextAttemptAt: number;
+};
 type ExactReviewEditedSemanticInput = {
   // Queue state preserves the repository's display casing, while this durable
   // semantic cursor canonicalizes it so equivalent GitHub repository spellings
@@ -543,6 +553,8 @@ type OperationalCursor = {
 };
 const EXACT_REVIEW_SOURCE_AUTHORITY_RESERVATION_PREFIX =
   "exact-review-source-authority-reservation:v1:";
+const EXACT_REVIEW_BRANCH_AUTHORITY_RESERVATION_PREFIX =
+  "exact-review-branch-authority-reservation:v1:";
 const EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT = 16;
 const EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_BASE_MS = 15_000;
 const EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_MAX_MS = 15 * 60_000;
@@ -695,6 +707,73 @@ export class ExactReviewQueue {
       return events
         ? json({ recent_durable_publication_events: events })
         : json({ error: "invalid_window" }, 400);
+    }
+    if (request.method === "POST" && url.pathname === "/branch-authority") {
+      const body = objectValue(await request.json().catch(() => null));
+      const deliveryId = String(body.delivery_id || "").trim();
+      const decision = exactReviewBranchAuthorityDecisionFrom(body.decision);
+      const ingress = body.ingress === undefined ? undefined : exactReviewIngressFrom(body.ingress);
+      const installationId =
+        body.installation_id === undefined ? undefined : Number(body.installation_id);
+      const sourceAuthorityRequired = body.source_authority_required === true;
+      if (
+        !deliveryId ||
+        deliveryId.length > 200 ||
+        !decision ||
+        (body.ingress !== undefined && !ingress) ||
+        (installationId !== undefined &&
+          (!Number.isInteger(installationId) || installationId <= 0)) ||
+        (sourceAuthorityRequired &&
+          (decision.itemKind !== "pull_request" ||
+            installationId === undefined ||
+            ingress?.route === "target_dispatcher"))
+      ) {
+        return json({ error: "invalid_branch_authority_reservation" }, 400);
+      }
+      const reservationKey = exactReviewBranchAuthorityReservationKey(deliveryId);
+      const now = Date.now();
+      try {
+        const reserved = this.storage.transactionSync(() => {
+          const completed = Array.from(
+            this.storage.sql.exec(
+              `SELECT delivery_id FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
+                WHERE delivery_id = ?`,
+              deliveryId,
+            ),
+          ).length;
+          if (completed) return { deduped: true as const };
+          const existing = exactReviewBranchAuthorityReservationFrom(
+            this.storage.kv.get(reservationKey),
+          );
+          if (existing) {
+            if (
+              stableJson(existing.decision) !== stableJson(decision) ||
+              stableJson(existing.ingress || null) !== stableJson(ingress || null) ||
+              existing.installationId !== installationId ||
+              existing.sourceAuthorityRequired !== sourceAuthorityRequired
+            ) {
+              throw new Error("conflicting exact-review branch authority reservation");
+            }
+            return { deduped: false as const, reservation: existing };
+          }
+          const created: ExactReviewBranchAuthorityReservation = {
+            deliveryId,
+            decision,
+            ...(ingress ? { ingress } : {}),
+            ...(installationId === undefined ? {} : { installationId }),
+            sourceAuthorityRequired,
+            attempts: 0,
+            nextAttemptAt: now,
+          };
+          this.storage.kv.put(reservationKey, created);
+          return { deduped: false as const, reservation: created };
+        });
+        if (reserved.deduped) return json({ ok: true, deduped: true });
+        await this.scheduleSourceAuthorityVerification(reserved.reservation.nextAttemptAt);
+        return json({ ok: true, branch_authority_pending: true }, 202);
+      } catch {
+        return json({ error: "branch_authority_unavailable" }, 409);
+      }
     }
     if (request.method === "POST" && url.pathname === "/source-authority") {
       const body = objectValue(await request.json().catch(() => null));
@@ -2938,6 +3017,12 @@ export class ExactReviewQueue {
       );
       const publicationBatches = this.batchStore.stats(now);
       const directPublications = this.directPublicationStore.list();
+      const sourceAuthorityReservations = await this.sourceAuthorityReservations();
+      const branchAuthorityReservations = await this.branchAuthorityReservations();
+      const authorityPendingByOwner = exactReviewAuthorityPendingByOwner([
+        ...sourceAuthorityReservations,
+        ...branchAuthorityReservations,
+      ]);
       const batchByItemKey = new Map<string, ExactReviewBayBatchOwner>(
         publicationBatches.activeItemBatches.map((batch) => [batch.itemKey, batch] as const),
       );
@@ -3009,6 +3094,11 @@ export class ExactReviewQueue {
               scheduled_rate: metrics.review.shedScheduledRate,
               unattributed: Math.max(0, exactReviewShedSinceReset(state) - metrics.review.shed),
             },
+            authority_pending: {
+              total: sourceAuthorityReservations.length + branchAuthorityReservations.length,
+              branch_resolution: branchAuthorityReservations.length,
+              source_verification: sourceAuthorityReservations.length,
+            },
             flow: reviewFlow,
           },
           publication: {
@@ -3026,7 +3116,11 @@ export class ExactReviewQueue {
             dead_letters: deadLetters,
             health: publicationHealth,
             capacity_control: exactReviewPublicationControlStatus(this.env, publicationControl),
-            credential_circuits: exactReviewGithubCredentialCircuitStatus(state, now),
+            credential_circuits: exactReviewGithubCredentialCircuitStatus(
+              state,
+              now,
+              authorityPendingByOwner,
+            ),
             github_request_metrics: {
               updated_at: state.dispatcher?.githubRequestMetrics?.updatedAt
                 ? new Date(state.dispatcher.githubRequestMetrics.updatedAt).toISOString()
@@ -3199,6 +3293,7 @@ export class ExactReviewQueue {
     this.cleanupLegacyCompatibilitySync();
     const startedAt = Date.now();
     await this.storage.deleteAlarm();
+    await this.processBranchAuthorityReservations(startedAt);
     await this.processSourceAuthorityReservations(startedAt);
     this.storage.transactionSync(() => {
       this.pruneDeliveryReceiptsSync(startedAt);
@@ -9069,8 +9164,29 @@ export class ExactReviewQueue {
       )
       .slice(0, 8);
     for (const reservation of reservations) {
+      const circuitRetryAt = exactReviewGithubTargetAppCircuitRetryAt(
+        this.readStateSync(),
+        reservation.decision.targetRepo,
+        now,
+      );
+      if (circuitRetryAt > now) {
+        this.recordAuthorityGithubOutcomeSync(
+          reservation.decision.targetRepo,
+          reservation.attempts > 0,
+          "skipped_by_circuit",
+          now,
+        );
+        this.deferSourceAuthorityReservationSync(reservation, now, circuitRetryAt, false);
+        continue;
+      }
       try {
         const liveHeadSha = await exactReviewSourceAuthorityLiveHead(this.env, reservation);
+        this.recordAuthorityGithubOutcomeSync(
+          reservation.decision.targetRepo,
+          reservation.attempts > 0,
+          "success",
+          Date.now(),
+        );
         const reservedHeadSha = String(reservation.decision.sourceHeadSha || "").toLowerCase();
         if (liveHeadSha !== reservedHeadSha) {
           this.completeSourceAuthorityReservationSync(reservation, "mismatch");
@@ -9093,13 +9209,131 @@ export class ExactReviewQueue {
         if (!response.ok) throw new Error(`source authority enqueue failed: ${response.status}`);
         this.completeSourceAuthorityReservationSync(reservation, "enqueued");
       } catch (error) {
+        const observedAt = Date.now();
+        const observation = exactReviewGithubTargetAppObservation(
+          error,
+          reservation.decision.targetRepo,
+          observedAt,
+        );
+        this.recordAuthorityGithubOutcomeSync(
+          reservation.decision.targetRepo,
+          reservation.attempts > 0,
+          observation ? "throttle" : "error",
+          observedAt,
+          observation,
+        );
         console.warn(
           "exact-review source authority verification deferred",
           error instanceof Error ? error.message : String(error),
         );
-        this.deferSourceAuthorityReservationSync(reservation, Date.now());
+        this.deferSourceAuthorityReservationSync(reservation, observedAt, observation?.retryAt);
       }
     }
+  }
+
+  private async processBranchAuthorityReservations(now: number) {
+    const reservations = (await this.branchAuthorityReservations())
+      .filter((reservation) => reservation.nextAttemptAt <= now)
+      .sort(
+        (left, right) =>
+          left.nextAttemptAt - right.nextAttemptAt ||
+          left.deliveryId.localeCompare(right.deliveryId),
+      )
+      .slice(0, 8);
+    for (const reservation of reservations) {
+      const circuitRetryAt = exactReviewGithubTargetAppCircuitRetryAt(
+        this.readStateSync(),
+        reservation.decision.targetRepo,
+        now,
+      );
+      if (circuitRetryAt > now) {
+        this.recordAuthorityGithubOutcomeSync(
+          reservation.decision.targetRepo,
+          reservation.attempts > 0,
+          "skipped_by_circuit",
+          now,
+        );
+        this.deferBranchAuthorityReservationSync(reservation, now, circuitRetryAt, false);
+        continue;
+      }
+      try {
+        const targetBranch = await exactReviewTargetDefaultBranch(
+          this.env,
+          reservation.decision.targetRepo,
+          reservation.installationId,
+        );
+        this.recordAuthorityGithubOutcomeSync(
+          reservation.decision.targetRepo,
+          reservation.attempts > 0,
+          "success",
+          Date.now(),
+        );
+        const forwardPath = reservation.sourceAuthorityRequired ? "/source-authority" : "/enqueue";
+        const response = await this.fetch(
+          new Request(`https://clawsweeper-exact-review-queue${forwardPath}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              delivery_id: reservation.deliveryId,
+              ...(reservation.ingress ? { ingress: reservation.ingress } : {}),
+              ...(reservation.sourceAuthorityRequired
+                ? { installation_id: reservation.installationId }
+                : {}),
+              decision: { ...reservation.decision, targetBranch },
+            }),
+          }),
+        );
+        if (!response.ok) throw new Error(`branch authority forward failed: ${response.status}`);
+        this.completeBranchAuthorityReservationSync(reservation);
+      } catch (error) {
+        const observedAt = Date.now();
+        const observation = exactReviewGithubTargetAppObservation(
+          error,
+          reservation.decision.targetRepo,
+          observedAt,
+        );
+        this.recordAuthorityGithubOutcomeSync(
+          reservation.decision.targetRepo,
+          reservation.attempts > 0,
+          observation ? "throttle" : "error",
+          observedAt,
+          observation,
+        );
+        console.warn(
+          "exact-review branch authority resolution deferred",
+          error instanceof Error ? error.message : String(error),
+        );
+        this.deferBranchAuthorityReservationSync(reservation, observedAt, observation?.retryAt);
+      }
+    }
+  }
+
+  private recordAuthorityGithubOutcomeSync(
+    targetRepo: string,
+    repeatRevision: boolean,
+    outcome: ExactReviewGithubRequestMetric["outcome"],
+    now: number,
+    observation?: ExactReviewGithubRateLimitObservation,
+  ) {
+    this.storage.transactionSync(() => {
+      const state = this.readStateSync();
+      if (observation) applyExactReviewGithubCredentialCircuits(state, [observation]);
+      applyExactReviewGithubRequestMetrics(
+        state,
+        [
+          {
+            scope: "target_app",
+            category: "item_metadata",
+            mode: "read",
+            outcome,
+            repeatRevision,
+            count: 1,
+          },
+        ],
+        now,
+      );
+      this.writeStateSync(state);
+    });
   }
 
   private completeSourceAuthorityReservationSync(
@@ -9126,12 +9360,16 @@ export class ExactReviewQueue {
   private deferSourceAuthorityReservationSync(
     expected: ExactReviewSourceAuthorityReservation,
     now: number,
+    requestedRetryAt?: number,
+    incrementAttempts = true,
   ) {
     this.storage.transactionSync(() => {
       const key = exactReviewSourceAuthorityReservationKey(expected.deliveryId);
       const current = exactReviewSourceAuthorityReservationFrom(this.storage.kv.get(key));
       if (current?.sourceAuthoritySeq !== expected.sourceAuthoritySeq) return;
-      const attempts = Math.min(EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT, current.attempts + 1);
+      const attempts = incrementAttempts
+        ? Math.min(EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT, current.attempts + 1)
+        : current.attempts;
       const backoffMs = Math.min(
         EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_MAX_MS,
         EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1),
@@ -9139,7 +9377,40 @@ export class ExactReviewQueue {
       this.storage.kv.put(key, {
         ...current,
         attempts,
-        nextAttemptAt: now + backoffMs,
+        nextAttemptAt: Math.max(now + 1_000, requestedRetryAt || now + backoffMs),
+      });
+    });
+  }
+
+  private completeBranchAuthorityReservationSync(expected: ExactReviewBranchAuthorityReservation) {
+    this.storage.transactionSync(() => {
+      const key = exactReviewBranchAuthorityReservationKey(expected.deliveryId);
+      const current = exactReviewBranchAuthorityReservationFrom(this.storage.kv.get(key));
+      if (current && stableJson(current) === stableJson(expected)) this.storage.kv.delete(key);
+    });
+  }
+
+  private deferBranchAuthorityReservationSync(
+    expected: ExactReviewBranchAuthorityReservation,
+    now: number,
+    requestedRetryAt?: number,
+    incrementAttempts = true,
+  ) {
+    this.storage.transactionSync(() => {
+      const key = exactReviewBranchAuthorityReservationKey(expected.deliveryId);
+      const current = exactReviewBranchAuthorityReservationFrom(this.storage.kv.get(key));
+      if (!current || stableJson(current) !== stableJson(expected)) return;
+      const attempts = incrementAttempts
+        ? Math.min(EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT, current.attempts + 1)
+        : current.attempts;
+      const backoffMs = Math.min(
+        EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_MAX_MS,
+        EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1),
+      );
+      this.storage.kv.put(key, {
+        ...current,
+        attempts,
+        nextAttemptAt: Math.max(now + 1_000, requestedRetryAt || now + backoffMs),
       });
     });
   }
@@ -9155,8 +9426,23 @@ export class ExactReviewQueue {
       );
   }
 
+  private async branchAuthorityReservations() {
+    const values = await this.storage.list({
+      prefix: EXACT_REVIEW_BRANCH_AUTHORITY_RESERVATION_PREFIX,
+    });
+    return Array.from(values.values())
+      .map(exactReviewBranchAuthorityReservationFrom)
+      .filter(
+        (reservation): reservation is ExactReviewBranchAuthorityReservation => reservation !== null,
+      );
+  }
+
   private async nextSourceAuthorityVerificationAt() {
-    return (await this.sourceAuthorityReservations()).reduce<number | null>(
+    const reservations = [
+      ...(await this.sourceAuthorityReservations()),
+      ...(await this.branchAuthorityReservations()),
+    ];
+    return reservations.reduce<number | null>(
       (next, reservation) =>
         next === null ? reservation.nextAttemptAt : Math.min(next, reservation.nextAttemptAt),
       null,
@@ -9280,6 +9566,65 @@ function exactReviewDecisionWithoutSourceAuthority(decision: ExactReviewDecision
     ...rest
   } = decision;
   return rest;
+}
+
+function exactReviewBranchAuthorityDecisionFrom(value): ExactReviewBranchAuthorityDecision | null {
+  const raw = objectValue(value);
+  if (String(raw.targetBranch || "").trim() || Object.hasOwn(raw, "publication")) return null;
+  const parsed = exactReviewDecisionFrom({
+    ...raw,
+    targetBranch: "branch-authority-pending",
+  });
+  if (!parsed || parsed.publication) return null;
+  const { targetBranch: _targetBranch, ...decision } = parsed;
+  return decision;
+}
+
+function exactReviewBranchAuthorityReservationKey(deliveryId: string) {
+  return `${EXACT_REVIEW_BRANCH_AUTHORITY_RESERVATION_PREFIX}${encodeURIComponent(deliveryId)}`;
+}
+
+function exactReviewBranchAuthorityReservationFrom(
+  value,
+): ExactReviewBranchAuthorityReservation | null {
+  const reservation = objectValue(value);
+  const deliveryId = String(reservation.deliveryId || "").trim();
+  const decision = exactReviewBranchAuthorityDecisionFrom(reservation.decision);
+  const ingress =
+    reservation.ingress === undefined ? undefined : exactReviewIngressFrom(reservation.ingress);
+  const installationId =
+    reservation.installationId === undefined ? undefined : Number(reservation.installationId);
+  const sourceAuthorityRequired = reservation.sourceAuthorityRequired === true;
+  const attempts = Number(reservation.attempts);
+  const nextAttemptAt = Number(reservation.nextAttemptAt);
+  if (
+    !deliveryId ||
+    deliveryId.length > 200 ||
+    !decision ||
+    (reservation.ingress !== undefined && !ingress) ||
+    (installationId !== undefined && (!Number.isInteger(installationId) || installationId <= 0)) ||
+    (sourceAuthorityRequired &&
+      (decision.itemKind !== "pull_request" ||
+        installationId === undefined ||
+        ingress?.route === "target_dispatcher")) ||
+    typeof reservation.sourceAuthorityRequired !== "boolean" ||
+    !Number.isInteger(attempts) ||
+    attempts < 0 ||
+    attempts > EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT ||
+    !Number.isSafeInteger(nextAttemptAt) ||
+    nextAttemptAt < 0
+  ) {
+    return null;
+  }
+  return {
+    deliveryId,
+    decision,
+    ...(ingress ? { ingress } : {}),
+    ...(installationId === undefined ? {} : { installationId }),
+    sourceAuthorityRequired,
+    attempts,
+    nextAttemptAt,
+  };
 }
 
 function exactReviewSourceAuthorityReservationKey(deliveryId: string) {
@@ -12852,11 +13197,12 @@ async function exactReviewSourceAuthorityLiveHead(
     .toLowerCase();
 }
 
-async function exactReviewTargetReadToken(env, targetRepo: string) {
+async function exactReviewTargetReadToken(env, targetRepo: string, knownInstallationId?: number) {
   const credentials = githubAppCredentials(env);
   if (!credentials) throw new Error("github app is not configured");
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
-  const installationId = await githubAppInstallationId(appJwt, targetRepo, env);
+  const installationId =
+    knownInstallationId ?? (await githubAppInstallationId(appJwt, targetRepo, env));
   return createGithubAppTokenFor({
     env,
     appJwt,
@@ -12865,6 +13211,27 @@ async function exactReviewTargetReadToken(env, targetRepo: string) {
     repositories: [repoName(targetRepo)],
     permissions: { issues: "read", pull_requests: "read" },
   });
+}
+
+async function exactReviewTargetDefaultBranch(
+  env,
+  targetRepo: string,
+  knownInstallationId?: number,
+) {
+  const token = await exactReviewTargetReadToken(env, targetRepo, knownInstallationId);
+  const repository = await githubTokenJson({
+    env,
+    token,
+    path: `/repos/${targetRepo}`,
+    method: "GET",
+    body: undefined,
+    errorLabel: "target repository default branch",
+  });
+  const targetBranch = String(objectValue(repository).default_branch || "").trim();
+  if (!/^[A-Za-z0-9_./-]+$/.test(targetBranch)) {
+    throw new Error("target repository response missing valid default branch");
+  }
+  return targetBranch;
 }
 
 type ExactReviewTargetItemState =
@@ -13165,11 +13532,19 @@ type ExactReviewDispatchFailureDetail = {
   validationCodes: string[];
 };
 
+type GitHubRateLimitHint = {
+  observedAt: number;
+  retryAt: number;
+  provenance: ExactReviewGithubRateLimitProvenance;
+  authoritative: boolean;
+};
+
 class GitHubRequestError extends Error {
   readonly status?: number;
   readonly timedOut: boolean;
   readonly rateLimited: boolean;
   readonly validationDetail?: ExactReviewDispatchFailureDetail;
+  readonly rateLimitHint?: GitHubRateLimitHint;
 
   constructor(
     message: string,
@@ -13177,6 +13552,7 @@ class GitHubRequestError extends Error {
     timedOut = false,
     rateLimited = false,
     validationDetail?: ExactReviewDispatchFailureDetail,
+    rateLimitHint?: GitHubRateLimitHint,
   ) {
     super(message);
     this.name = "GitHubRequestError";
@@ -13184,6 +13560,7 @@ class GitHubRequestError extends Error {
     this.timedOut = timedOut;
     this.rateLimited = rateLimited;
     this.validationDetail = validationDetail;
+    this.rateLimitHint = rateLimitHint;
   }
 }
 
@@ -13321,12 +13698,14 @@ async function githubTokenJson({ env = {}, token, path, method = "GET", body, er
   }
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    const rateLimited = githubResponseRateLimited(response, text);
     throw new GitHubRequestError(
       `${errorLabel || "GitHub"} ${response.status}`,
       response.status,
       false,
-      githubResponseRateLimited(response, text),
+      rateLimited,
       githubResponseValidationDetail(response.status, text),
+      rateLimited ? githubResponseRateLimitHint(response, Date.now()) : undefined,
     );
   }
   if (response.status === 204) return {};
@@ -13529,14 +13908,34 @@ function exactReviewGithubCircuitNextWakeAt(state: ExactReviewQueueState, now: n
   );
 }
 
-function exactReviewGithubCredentialCircuitStatus(state: ExactReviewQueueState, now: number) {
+function exactReviewAuthorityPendingByOwner(
+  reservations: Array<
+    ExactReviewSourceAuthorityReservation | ExactReviewBranchAuthorityReservation
+  >,
+) {
+  const pending = new Map<string, number>();
+  for (const reservation of reservations) {
+    const owner = reservation.decision.targetRepo.split("/", 1)[0]?.toLowerCase();
+    if (owner) pending.set(owner, (pending.get(owner) || 0) + 1);
+  }
+  return pending;
+}
+
+function exactReviewGithubCredentialCircuitStatus(
+  state: ExactReviewQueueState,
+  now: number,
+  authorityPendingByOwner = new Map<string, number>(),
+) {
   return exactReviewGithubCredentialCircuits(state)
     .map((circuit) => {
-      const affectedPending = Object.values(state.items).filter((item) => {
+      let affectedPending = Object.values(state.items).filter((item) => {
         if (!exactReviewQueueIsBatchablePublication(item) || item.state !== "pending") return false;
         if (circuit.scope === "repository_actions") return true;
         return item.decision.targetRepo.split("/", 1)[0]?.toLowerCase() === circuit.targetOwner;
       }).length;
+      if (circuit.scope === "target_app" && circuit.targetOwner) {
+        affectedPending += authorityPendingByOwner.get(circuit.targetOwner) || 0;
+      }
       return {
         pool: circuit.poolKey,
         scope: circuit.scope,
@@ -14055,12 +14454,14 @@ async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}, e
   }
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    const rateLimited = githubResponseRateLimited(response, text);
     throw new GitHubRequestError(
       `${options.errorLabel || "GitHub App"} ${response.status}`,
       response.status,
       false,
-      githubResponseRateLimited(response, text),
+      rateLimited,
       githubResponseValidationDetail(response.status, text),
+      rateLimited ? githubResponseRateLimitHint(response, Date.now()) : undefined,
     );
   }
   return response.json();
@@ -14073,6 +14474,66 @@ function githubResponseRateLimited(response: Response, text: string) {
     response.headers.get("x-ratelimit-remaining") === "0" ||
     /(?:secondary )?rate limit|api rate limit|abuse detection/i.test(text)
   );
+}
+
+function githubResponseRateLimitHint(response: Response, observedAt: number): GitHubRateLimitHint {
+  const maxRetryAt = observedAt + EXACT_REVIEW_COMPLETION_RETRY_MAX_MS;
+  const retryAfter = String(response.headers.get("retry-after") || "").trim();
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    const parsed = Number.isFinite(seconds)
+      ? observedAt + Math.max(0, seconds) * 1_000
+      : Date.parse(retryAfter);
+    if (Number.isFinite(parsed)) {
+      return {
+        observedAt,
+        retryAt: Math.max(observedAt + 1_000, Math.min(maxRetryAt, parsed)),
+        provenance: "retry_after",
+        authoritative: true,
+      };
+    }
+  }
+  const resetSeconds = Number(response.headers.get("x-ratelimit-reset"));
+  if (Number.isFinite(resetSeconds) && resetSeconds > 0) {
+    return {
+      observedAt,
+      retryAt: Math.max(observedAt + 1_000, Math.min(maxRetryAt, resetSeconds * 1_000)),
+      provenance: "rate_limit_reset",
+      authoritative: true,
+    };
+  }
+  return {
+    observedAt,
+    retryAt: observedAt + EXACT_REVIEW_GITHUB_THROTTLE_ADMISSION_COOLDOWN_MS,
+    provenance: "fallback",
+    authoritative: false,
+  };
+}
+
+function exactReviewGithubTargetAppObservation(
+  error: unknown,
+  targetRepo: string,
+  observedAt: number,
+): ExactReviewGithubRateLimitObservation | undefined {
+  if (!(error instanceof GitHubRequestError) || !error.rateLimited) return undefined;
+  const targetOwner = targetRepo.split("/", 1)[0]?.trim().toLowerCase();
+  if (!targetOwner) return undefined;
+  const hint =
+    error.rateLimitHint ||
+    ({
+      observedAt,
+      retryAt: observedAt + EXACT_REVIEW_GITHUB_THROTTLE_ADMISSION_COOLDOWN_MS,
+      provenance: "fallback",
+      authoritative: false,
+    } satisfies GitHubRateLimitHint);
+  return {
+    scope: "target_app",
+    targetOwner,
+    observedAt: hint.observedAt,
+    retryAt: hint.retryAt,
+    provenance: hint.provenance,
+    authoritative: hint.authoritative,
+  };
 }
 
 function githubResponseValidationDetail(status: number, text: string) {

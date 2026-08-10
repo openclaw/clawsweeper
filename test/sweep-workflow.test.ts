@@ -5927,6 +5927,28 @@ test("legacy event field serializer preserves branchless issue and PR intake", (
   assert.equal(reviewDecision.decision.codexTimeoutMs, 1_200_000);
   assert.equal(reviewDecision.decision.mediaProofTimeoutMs, 480_000);
   assert.equal(reviewDecision.decision.sourceDeliveryId, "original-review-delivery");
+
+  const branchlessDecision = JSON.parse(
+    execFileSync(process.execPath, ["-"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CLIENT_PAYLOAD: JSON.stringify({
+          target_repo: "openclaw/openclaw",
+          item_number: 117839,
+          item_kind: "issue",
+          installation_id: 123,
+        }),
+        TARGET_REPO: "openclaw/openclaw",
+        TARGET_BRANCH: "",
+        USE_SOURCE_AUTHORITY: "0",
+      },
+      input: scripts[1],
+    }),
+  );
+  assert.equal(Object.hasOwn(branchlessDecision.decision, "targetBranch"), false);
+  assert.equal(branchlessDecision.installation_id, 123);
+  assert.equal(Object.hasOwn(branchlessDecision, "source_authority_required"), false);
 });
 
 test("sweep issue and PR event reviews and target fanout avoid storm amplification", () => {
@@ -5958,8 +5980,9 @@ test("sweep issue and PR event reviews and target fanout avoid storm amplificati
   assert.match(legacyIntakeBlock, /legacy-event-queue-intake:/);
   assert.match(legacyIntakeBlock, /\/internal\/exact-review\/enqueue/);
   assert.match(legacyIntakeBlock, /\/internal\/exact-review\/source-authority/);
-  assert.match(legacyIntakeBlock, /gh api "repos\/\$target_repo" --jq \.default_branch/);
-  assert.match(legacyIntakeBlock, /targetBranch: process\.env\.TARGET_BRANCH/);
+  assert.match(legacyIntakeBlock, /\/internal\/exact-review\/branch-authority/);
+  assert.doesNotMatch(legacyIntakeBlock, /gh api "repos\/\$target_repo" --jq \.default_branch/);
+  assert.match(legacyIntakeBlock, /targetBranch \? \{ targetBranch \} : \{\}/);
   assert.doesNotMatch(legacyIntakeBlock, /targetBranch: payload\.target_branch \|\| "main"/);
   assert.match(legacyIntakeBlock, /mapfile -d '' -t legacy_intake_fields/);
   assert.match(legacyIntakeBlock, /\.trim\(\)\}\\0\$\{String\(payload\.target_branch/);

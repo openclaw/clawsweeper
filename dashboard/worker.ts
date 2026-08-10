@@ -548,6 +548,8 @@ export default {
       return githubWebhook(request, env, ctx);
     if (url.pathname === "/internal/exact-review/enqueue" && request.method === "POST")
       return authenticatedExactReviewEnqueue(request, env);
+    if (url.pathname === "/internal/exact-review/branch-authority" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/branch-authority");
     if (url.pathname === "/internal/exact-review/source-authority" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/source-authority");
     if (url.pathname === "/internal/review-coverage/inventory" && request.method === "POST")

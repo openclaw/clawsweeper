@@ -262,7 +262,6 @@ jobs:
       - name: Enqueue legacy event through the durable control plane
         env:
           CLIENT_PAYLOAD: ${{ toJson(github.event.client_payload) }}
-          GH_TOKEN: ${{ github.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
@@ -314,18 +313,17 @@ jobs:
             echo "Invalid legacy target repository: $target_repo" >&2
             exit 1
           fi
-          if [ -z "$target_branch" ]; then
-            target_branch="$(gh api "repos/$target_repo" --jq .default_branch)"
-          fi
-          if ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$'; then
+          if [ -n "$target_branch" ] && ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$'; then
             echo "Invalid legacy target branch for $target_repo: $target_branch" >&2
             exit 1
           fi
           queue_path="/internal/exact-review/enqueue"
-          if [ "$use_source_authority" = "1" ]; then
+          if [ -z "$target_branch" ]; then
+            queue_path="/internal/exact-review/branch-authority"
+          elif [ "$use_source_authority" = "1" ]; then
             queue_path="/internal/exact-review/source-authority"
           fi
-          payload="$(TARGET_REPO="$target_repo" TARGET_BRANCH="$target_branch" node <<'NODE'
+          payload="$(TARGET_REPO="$target_repo" TARGET_BRANCH="$target_branch" USE_SOURCE_AUTHORITY="$use_source_authority" node <<'NODE'
           const payload = JSON.parse(process.env.CLIENT_PAYLOAD || "{}");
           const itemKind = payload.item_kind === "pull_request" ? "pull_request" : "issue";
           const sourceEvent =
@@ -353,17 +351,22 @@ jobs:
           const sourceContentRevision = String(queueClaim.source_content_revision ?? payload.source_content_revision ?? "").trim().toLowerCase();
           const sourceUpdatedAt = String(queueClaim.source_updated_at ?? payload.source_updated_at ?? "").trim();
           const installationId = Number(queueClaim.installation_id ?? payload.installation_id);
+          const targetBranch = String(process.env.TARGET_BRANCH || "").trim();
+          const sourceAuthorityRequired = process.env.USE_SOURCE_AUTHORITY === "1";
           process.stdout.write(
             JSON.stringify({
               delivery_id: dispatchKey
                 ? `router:${dispatchKey}`
                 : `legacy:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
-              ...(itemKind === "pull_request" && Number.isInteger(installationId) && installationId > 0
+              ...(Number.isInteger(installationId) && installationId > 0
                 ? { installation_id: installationId }
+                : {}),
+              ...(!targetBranch && sourceAuthorityRequired
+                ? { source_authority_required: true }
                 : {}),
               decision: {
                 targetRepo: process.env.TARGET_REPO,
-                targetBranch: process.env.TARGET_BRANCH,
+                ...(targetBranch ? { targetBranch } : {}),
                 itemNumber: Number(payload.item_number),
                 itemKind,
                 sourceEvent,
