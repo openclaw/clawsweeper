@@ -156,8 +156,10 @@ The cluster worker has two jobs:
    - labels ClawSweeper targets
    - uploads final artifacts
 
-The workflow concurrency group is based on job path and mode, so repeat
-dispatches of the same job queue instead of racing each other.
+The ordinary workflow concurrency group is based on job path only, so repeat
+dispatches and different modes for the same job queue behind its active run.
+Explicit requeues use a dedicated run-specific group so they can replace a
+stale-head worker without cancelling the active run's gate cleanup.
 
 ## Creating Implementation PRs
 

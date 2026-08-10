@@ -266,8 +266,9 @@ ten automatic ClawSweeper-triggered repair iterations. The per-PR cap is total
 across all head SHAs and stops the automatic review/repair loop even when every
 iteration produces a new commit.
 
-Runs for the same job path and mode share the `repair-cluster-worker.yml` concurrency
-group, so repeated dispatches queue instead of racing the same branch.
+Ordinary runs for the same job path share the `repair-cluster-worker.yml`
+concurrency group across modes, so repeated dispatches queue instead of racing
+the same branch. Explicit requeues use a dedicated run-specific group.
 
 For automerge activation and scheduled label sweeps, a dirty or behind merge
 state is enough to dispatch repair. That lets Codex rebase or resolve conflicts

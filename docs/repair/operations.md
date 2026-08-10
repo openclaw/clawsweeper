@@ -293,7 +293,9 @@ This avoids failing on GitHub's "No commits between" response when the repair is
 already represented on `main` or the resumed replacement branch collapsed to an
 empty diff after rebase.
 
-Runs for the same job path and mode share a concurrency group. Different cluster jobs can still run in parallel.
+Ordinary runs for the same job path share one concurrency group across modes.
+Different job paths can still run in parallel, and explicit requeues use a
+dedicated run-specific group.
 
 Live preflight hydrates job-provided refs by default and records linked refs without expanding them. Set repo variables `CLAWSWEEPER_MAX_LINKED_REFS` above `0` only for small clusters that need first-hop context and `CLAWSWEEPER_HYDRATE_COMMENTS=1` when comment bodies are necessary evidence; normal scale runs use issue/PR metadata, body excerpts, PR files, and PR checks.
 
