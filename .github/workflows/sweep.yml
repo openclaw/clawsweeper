@@ -4776,8 +4776,7 @@ jobs:
               -f candidate_kind=viable \
               -f report_repo=openclaw/clawsweeper-state \
               -f report_path="$report_path" \
-              -f report_url="$report_url" \
-              -f model=internal
+              -f report_url="$report_url"
           done < /tmp/viable-implementation-candidates.tsv
 
       - name: Dispatch background review comment sync

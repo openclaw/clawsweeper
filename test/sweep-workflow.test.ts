@@ -103,6 +103,22 @@ test("automatic OpenClaw bug dispatch uses one gate across direct and deferred p
   }
 });
 
+test("issue implementation dispatches omit the deleted model input", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps?: Array<{ name?: string; run?: string }> }>;
+  };
+  const dispatches = Object.entries(workflow.jobs).flatMap(([jobName, job]) =>
+    (job.steps ?? [])
+      .filter((step) => step.run?.includes("repair-issue-implementation-intake.yml"))
+      .map((step) => ({ jobName, step })),
+  );
+
+  assert.ok(dispatches.length > 0);
+  for (const { jobName, step } of dispatches) {
+    assert.doesNotMatch(step.run ?? "", /-f\s+model=/, `${jobName}: ${step.name}`);
+  }
+});
+
 test("automatic bug backfill runs independently of queue-fed scheduled sweeps", () => {
   const workflow = YAML.parse(
     readText(".github/workflows/repair-issue-implementation-backfill.yml"),
