@@ -18,6 +18,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Batch publication no longer dead-letters finished reviews an hour into a GitHub throttling episode: network errors, 429s, and 5xx responses now complete as `state_contention` (48 attempts / 24 h) instead of `unknown_failure` (14 attempts / 1 h), matching the single-item publication path. 98% of the 721 `retry_exhausted` dead letters had spent fewer than 14 attempts and died on the one-hour cap alone.
 - Increased the AWS Crabbox root volume from 160 GB to 400 GB so trusted checks can provision with the repository's current dependency and build footprint.
 - GitHub-throttled terminal status updates no longer fail the finalization run; the requeue step already re-arms the acknowledgement for after the rate window.
 

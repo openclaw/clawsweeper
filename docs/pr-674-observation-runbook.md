@@ -5,6 +5,19 @@ This observation layer must land before
 PR's per-item shard implementation or generation-bound queue protocol. Instead it provides the
 backward-compatible contract that the later PR can populate.
 
+> **Status: the producer this contract was built for never landed.** PR 674 was closed
+> unmerged on 2026-07-21, so nothing in production posts to
+> `POST /internal/exact-review/review-telemetry`; the only callers are tests. The run-level
+> observer (`scripts/review-run-observer.mjs`) is wired and does write
+> `review-run-telemetry`, which is why `/api/review-observability` reports a large
+> `expected_attempts` against `terminal_attempts: 0`, `terminal_coverage: 0`, and
+> `abnormal_rate_percent: 100`. Those values describe a missing producer, not failing reviews.
+> `REVIEW_OBSERVABILITY_REQUIRED=0` keeps the layer in passive mode, so the empty pipeline
+> does not colour dashboard health. Read the rollout steps below as pending work: they take
+> effect only if a per-item producer is built. Until then, treat
+> `exact_review_queue.review_telemetry_health` as vacuously green — it only reports on
+> `refreshing` rows, and no rows exist.
+
 ## Health policy
 
 The dashboard hero is green (`All clear`) only when every known signal is healthy. The aggregate

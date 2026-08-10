@@ -40,7 +40,7 @@ type BatchPublicationOutcome = {
   revision: number;
   claimGeneration: number;
   outcome: "accepted" | "deduped" | "superseded" | "retryable" | "permanent";
-  reasonCode?: "tuple_protocol_invalid" | "unknown_failure";
+  reasonCode?: "state_contention" | "tuple_protocol_invalid" | "unknown_failure";
   errorFingerprint?: string;
 };
 
@@ -501,6 +501,14 @@ function publicationOutcomeFromResult(
       errorFingerprint: fingerprint,
     };
   }
+  if (result.status === undefined || result.status === 429 || result.status >= 500) {
+    return {
+      ...identity,
+      outcome: "retryable",
+      reasonCode: "state_contention",
+      errorFingerprint: fingerprint,
+    };
+  }
   return {
     ...identity,
     outcome: "retryable",
@@ -607,7 +615,12 @@ function batchPublicationOutcome(value: unknown): BatchPublicationOutcome {
     outcome.reasonCode === undefined
       ? undefined
       : exactIdentityValue(outcome.reasonCode, "reasonCode");
-  if (reasonCode && reasonCode !== "tuple_protocol_invalid" && reasonCode !== "unknown_failure") {
+  if (
+    reasonCode &&
+    reasonCode !== "state_contention" &&
+    reasonCode !== "tuple_protocol_invalid" &&
+    reasonCode !== "unknown_failure"
+  ) {
     throw new Error("Invalid batch receipt publication reason code");
   }
   const errorFingerprint =
@@ -654,7 +667,11 @@ function publicationCompletion(
     return { ...member, terminalOutcome: "superseded" };
   }
   if (publication.outcome === "retryable") {
-    return retryableCompletion(member, "unknown_failure", publication.errorFingerprint);
+    return retryableCompletion(
+      member,
+      publication.reasonCode ?? "unknown_failure",
+      publication.errorFingerprint,
+    );
   }
   if (outcome.kind !== "eligible" || hasPendingPostEffects(outcome)) {
     return retryableCompletion(member, "unknown_failure", publication.errorFingerprint);
