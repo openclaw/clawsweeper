@@ -316,9 +316,13 @@ Current defaults:
 
 - exact event review: 1 shard, 1 item
 - exact manual hot intake: 1 shard, 1 item
-- scheduled hot intake and normal backfill: select up to 50 due items per target
-  cycle, then enqueue each item through the durable exact-review queue; every
-  admitted item receives its own parallel workflow
+- scheduled hot intake and normal backfill: size candidate selection from live
+  queue-advertised capacity, with normal fanout sharing that budget across its
+  selected targets. If the capacity probe is unavailable, a direct single-target
+  schedule falls back to 50 candidates; normal fanout creates a pool of 50
+  candidates per selected target and apportions that pool by backlog. Each
+  selected item enters the durable exact-review queue, and every admitted item
+  receives its own parallel workflow
 - total review admission target: 300 items/hour across the fleet; organic work
   consumes the budget first and scheduled backfill fills the remainder, split
   35% hot intake and 65% normal backfill, with a 30-item burst
