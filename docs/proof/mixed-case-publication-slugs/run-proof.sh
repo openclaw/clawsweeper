@@ -102,6 +102,7 @@ http_status() {
 signed_post() {
   local body_file="$1"
   local output_file="$2"
+  local endpoint="${3:-/internal/exact-review/publication-results}"
   local signature
   signature="$(openssl dgst -sha256 -hmac "$proof_secret" -hex <"$body_file" | awk '{print $NF}')"
   http_status "$output_file" \
@@ -109,7 +110,7 @@ signed_post() {
     -H "content-type: application/json" \
     -H "x-clawsweeper-exact-review-signature: sha256=${signature}" \
     --data-binary "@${body_file}" \
-    "http://127.0.0.1:${worker_port}/internal/exact-review/publication-results"
+    "http://127.0.0.1:${worker_port}${endpoint}"
 }
 
 pnpm install --frozen-lockfile >"${output_dir}/dependencies-install.log" 2>&1
@@ -158,7 +159,7 @@ node -e '
   });
   fs.writeFileSync(
     process.argv[1],
-    JSON.stringify(plan("steipete/CodexBar#2516", "records/steipete-codexbar/items/2516.md")),
+    JSON.stringify(plan("steipete/CodexBar#2516", "records/steipete-CodexBar/items/2516.md")),
   );
   fs.writeFileSync(
     process.argv[2],
@@ -168,10 +169,32 @@ node -e '
     process.argv[3],
     JSON.stringify(plan("openclaw/openclaw#806", "records/openclaw-openclaw/items/806.md")),
   );
+  fs.writeFileSync(
+    process.argv[4],
+    JSON.stringify({
+      repoSlug: "steipete-codexbar",
+      sections: ["items"],
+      sinceRevision: 0,
+      cursor: 0,
+      limit: 100,
+    }),
+  );
+  fs.writeFileSync(
+    process.argv[5],
+    JSON.stringify({
+      repoSlug: "steipete-CodexBar",
+      sections: ["items"],
+      sinceRevision: 0,
+      cursor: 0,
+      limit: 100,
+    }),
+  );
 ' \
   "${output_dir}/mixed-case-request.json" \
   "${output_dir}/different-repository-request.json" \
-  "${output_dir}/lowercase-request.json"
+  "${output_dir}/lowercase-request.json" \
+  "${output_dir}/lowercase-export-request.json" \
+  "${output_dir}/uppercase-export-request.json"
 
 start_worker
 mixed_status="$(signed_post \
@@ -183,23 +206,43 @@ different_status="$(signed_post \
 lowercase_status="$(signed_post \
   "${output_dir}/lowercase-request.json" \
   "${output_dir}/lowercase-response.json")"
+lowercase_export_status="$(signed_post \
+  "${output_dir}/lowercase-export-request.json" \
+  "${output_dir}/lowercase-export-response.json" \
+  "/internal/state/records/export")"
+uppercase_export_status="$(signed_post \
+  "${output_dir}/uppercase-export-request.json" \
+  "${output_dir}/uppercase-export-response.json" \
+  "/internal/state/records/export")"
 test "$mixed_status" = "202"
 test "$different_status" = "400"
 test "$lowercase_status" = "202"
+test "$lowercase_export_status" = "200"
+test "$uppercase_export_status" = "200"
 
 MIXED_STATUS="$mixed_status" DIFFERENT_STATUS="$different_status" LOWERCASE_STATUS="$lowercase_status" \
+  LOWERCASE_EXPORT_STATUS="$lowercase_export_status" UPPERCASE_EXPORT_STATUS="$uppercase_export_status" \
   node -e '
     const assert = require("node:assert/strict");
     const fs = require("node:fs");
     const mixed = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
     const different = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
     const lowercase = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+    const lowercaseExport = JSON.parse(fs.readFileSync(process.argv[4], "utf8"));
+    const uppercaseExport = JSON.parse(fs.readFileSync(process.argv[5], "utf8"));
     for (const body of [mixed, lowercase]) {
       assert.equal(body.ok, true);
       assert.equal(body.accepted || body.deduped, true);
     }
     assert.equal(mixed.canonical_target_key, "steipete/CodexBar#2516");
     assert.equal(lowercase.canonical_target_key, "openclaw/openclaw#806");
+    assert.equal(lowercaseExport.repoSlug, "steipete-codexbar");
+    assert.equal(lowercaseExport.records.length, 1);
+    assert.equal(lowercaseExport.records[0].section, "items");
+    assert.equal(lowercaseExport.records[0].id, "2516");
+    assert.equal(lowercaseExport.records[0].content, "x");
+    assert.equal(uppercaseExport.repoSlug, "steipete-CodexBar");
+    assert.deepEqual(uppercaseExport.records, []);
     assert.equal(different.error, "invalid_direct_publication_plan");
     assert.equal(different.fallback_required, true);
     assert.match(
@@ -208,16 +251,25 @@ MIXED_STATUS="$mixed_status" DIFFERENT_STATUS="$different_status" LOWERCASE_STAT
     );
     const lines = [
       "Durable Object initialized: exact_review_direct_publication_plans table present",
-      "mixed-case repository with lowercase path: HTTP " + process.env.MIXED_STATUS + "; accepted=" + mixed.accepted + "; deduped=" + mixed.deduped + "; canonical_target_key=" + mixed.canonical_target_key,
+      "mixed-case repository with uppercase path: HTTP " + process.env.MIXED_STATUS + "; accepted=" + mixed.accepted + "; deduped=" + mixed.deduped + "; canonical_target_key=" + mixed.canonical_target_key,
       "different repository: HTTP " + process.env.DIFFERENT_STATUS + "; error=" + different.error + "; fallback_required=" + different.fallback_required + "; detail=" + different.detail,
       "lowercase repository: HTTP " + process.env.LOWERCASE_STATUS + "; accepted=" + lowercase.accepted + "; deduped=" + lowercase.deduped + "; canonical_target_key=" + lowercase.canonical_target_key,
+      "lowercase namespace export: HTTP " + process.env.LOWERCASE_EXPORT_STATUS + "; records=" + lowercaseExport.records.length + "; content=" + lowercaseExport.records[0].content,
+      "uppercase namespace export: HTTP " + process.env.UPPERCASE_EXPORT_STATUS + "; records=" + uppercaseExport.records.length,
     ];
-    fs.writeFileSync(process.argv[4], lines.join("\n") + "\n");
+    fs.writeFileSync(process.argv[6], lines.join("\n") + "\n");
   ' \
   "${output_dir}/mixed-case-response.json" \
   "${output_dir}/different-repository-response.json" \
   "${output_dir}/lowercase-response.json" \
+  "${output_dir}/lowercase-export-response.json" \
+  "${output_dir}/uppercase-export-response.json" \
   "${output_dir}/runtime-transcript.txt"
+
+stop_worker
+node "${proof_dir}/assert-durable-object.mjs" "$queue_db" canonical-namespace \
+  >"${output_dir}/namespace-storage.json"
+cat "${output_dir}/namespace-storage.json" >>"${output_dir}/runtime-transcript.txt"
 
 test -s "${output_dir}/runtime-transcript.txt"
 cat "${output_dir}/runtime-transcript.txt"

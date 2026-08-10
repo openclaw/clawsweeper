@@ -4219,8 +4219,18 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
 
 test("direct publication keeps GitHub casing while using lowercase canonical record slugs", async () => {
   const fixtures = [
-    { targetRepo: "steipete/CodexBar", repoSlug: "steipete-codexbar", itemNumber: 2831 },
-    { targetRepo: "openclaw/Peekaboo", repoSlug: "openclaw-peekaboo", itemNumber: 364 },
+    {
+      targetRepo: "steipete/CodexBar",
+      inputRepoSlug: "steipete-CodexBar",
+      repoSlug: "steipete-codexbar",
+      itemNumber: 2831,
+    },
+    {
+      targetRepo: "openclaw/Peekaboo",
+      inputRepoSlug: "openclaw-peekaboo",
+      repoSlug: "openclaw-peekaboo",
+      itemNumber: 364,
+    },
   ] as const;
   const storage = new MemoryDurableStorage();
   const items: Record<string, ReturnType<typeof leasedExactReviewQueueItem>> = {};
@@ -4259,7 +4269,7 @@ test("direct publication keeps GitHub casing while using lowercase canonical rec
       },
       operations: [
         {
-          path: `records/${fixture.repoSlug}/items/${fixture.itemNumber}.md`,
+          path: `records/${fixture.inputRepoSlug}/items/${fixture.itemNumber}.md`,
           deleted: false,
           mode: "100644",
           bytes: Buffer.byteLength(content),
@@ -4304,43 +4314,32 @@ test("direct publication keeps GitHub casing while using lowercase canonical rec
     ).json();
     assert.equal(canonical.content, content);
     assert.equal(canonical.revision, 4);
+    if (fixture.inputRepoSlug !== fixture.repoSlug) {
+      assert.equal(
+        (
+          await queue.fetch(
+            new Request(
+              `https://queue/records/${fixture.inputRepoSlug}/items/${fixture.itemNumber}`,
+              { method: "GET" },
+            ),
+          )
+        ).status,
+        404,
+      );
+    }
   }
 
-  const uppercasePathPayload = {
-    canonicalTargetKey: "steipete/CodexBar#2831",
-    fenceKey: "steipete/CodexBar#2831",
-    revision: 4,
-    sourceSha: "c".repeat(40),
-    identity: {
-      canonicalTargetKey: "steipete/CodexBar#2831",
-      fenceKey: "steipete/CodexBar#2831",
-      revision: 4,
-      claimGeneration: 2,
-    },
-    operations: [
-      {
-        path: "records/steipete-CodexBar/items/2831.md",
-        deleted: false,
-        mode: "100644",
-        bytes: 1,
-        contentBase64: "eA==",
-      },
-    ],
-    totalBytes: 1,
-    lifecycle: { kind: "router" },
-  };
-  const uppercaseBody = JSON.stringify(uppercasePathPayload);
-  const uppercaseSignature = `sha256=${createHmac("sha256", env.CLAWSWEEPER_WEBHOOK_SECRET).update(uppercaseBody).digest("hex")}`;
-  const uppercase = await worker.fetch(
-    new Request(url, {
-      method: "POST",
-      headers: { "x-clawsweeper-exact-review-signature": uppercaseSignature },
-      body: uppercaseBody,
-    }),
-    env,
+  const [parallelNamespaceRows] = Array.from(
+    storage.sql.exec(
+      `SELECT
+         (SELECT COUNT(*) FROM exact_review_canonical_records
+           WHERE repo_slug = 'steipete-CodexBar') AS canonical_count,
+         (SELECT COUNT(*) FROM exact_review_record_export_index
+           WHERE repo_slug = 'steipete-CodexBar') AS export_count`,
+    ),
   );
-  assert.equal(uppercase.status, 400);
-  assert.equal((await uppercase.json()).error, "invalid_direct_publication_plan");
+  assert.equal(parallelNamespaceRows?.canonical_count, 0);
+  assert.equal(parallelNamespaceRows?.export_count, 0);
 });
 
 test("fetching a stale publication batch records a durable superseded telemetry outcome", async () => {
@@ -16603,12 +16602,54 @@ test("fallback tuple publication normalizes mixed-case keys onto existing lowerc
     ...operation,
     path: operation.path.replace("steipete-codexbar", "steipete-CodexBar"),
   }));
-  const casingQueue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const casingStorage = new MemoryDurableStorage();
+  const casingQueue = new ExactReviewQueue({ storage: casingStorage }, {});
   const uppercaseAccepted = await casingQueue.fetch(
     stateAppendQueueRequest("/records/tuples", uppercasePaths),
   );
   assert.equal(uppercaseAccepted.status, 202);
   assert.equal((await uppercaseAccepted.json()).accepted, true);
+
+  const lowercasePathRetry = structuredClone(uppercasePaths);
+  lowercasePathRetry.operations = lowercasePathRetry.operations.map((operation) => ({
+    ...operation,
+    path: operation.path.replace("steipete-CodexBar", "steipete-codexbar"),
+  }));
+  const casingDeduped = await casingQueue.fetch(
+    stateAppendQueueRequest("/records/tuples", lowercasePathRetry),
+  );
+  assert.equal(casingDeduped.status, 202);
+  assert.deepEqual(await casingDeduped.json(), {
+    ok: true,
+    accepted: false,
+    deduped: true,
+    revision: 1,
+  });
+
+  const lowercaseCanonical = await casingQueue.fetch(
+    new Request("https://queue/records/steipete-codexbar/items/2831", { method: "GET" }),
+  );
+  assert.equal(lowercaseCanonical.status, 200);
+  assert.equal((await lowercaseCanonical.json()).content, item);
+  assert.equal(
+    (
+      await casingQueue.fetch(
+        new Request("https://queue/records/steipete-CodexBar/items/2831", { method: "GET" }),
+      )
+    ).status,
+    404,
+  );
+  const [uppercaseNamespaceRows] = Array.from(
+    casingStorage.sql.exec(
+      `SELECT
+         (SELECT COUNT(*) FROM exact_review_canonical_records
+           WHERE repo_slug = 'steipete-CodexBar') AS canonical_count,
+         (SELECT COUNT(*) FROM exact_review_record_export_index
+           WHERE repo_slug = 'steipete-CodexBar') AS export_count`,
+    ),
+  );
+  assert.equal(uppercaseNamespaceRows?.canonical_count, 0);
+  assert.equal(uppercaseNamespaceRows?.export_count, 0);
 
   const differentRepository = structuredClone(mutation);
   differentRepository.deliveryId = "record-tuple:mixed-case:2831:different-repository";

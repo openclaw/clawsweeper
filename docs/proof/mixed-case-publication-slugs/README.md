@@ -7,8 +7,10 @@ direct exact-review publication while repository identity remains contained.
 The behavior contract is:
 
 - the real Durable Object initializes before any publication claim is made;
-- a signed plan for `steipete/CodexBar#2516` whose operation uses the lowercase
-  `records/steipete-codexbar/...` path returns HTTP 202 with an accepted or deduped receipt;
+- a signed plan for `steipete/CodexBar#2516` whose operation uses the mixed-case
+  `records/steipete-CodexBar/...` path returns HTTP 202 with an accepted or deduped receipt;
+- the real Worker export surface serves that record only from `steipete-codexbar`, and the
+  persisted Durable Object SQLite contains no `steipete-CodexBar` canonical or export row;
 - a signed plan whose operation names `steipete-other` returns the detailed HTTP 400
   `invalid_direct_publication_plan` response;
 - a signed all-lowercase `openclaw/openclaw` plan still returns HTTP 202 with an accepted or
@@ -17,7 +19,9 @@ The behavior contract is:
 The script boots the Worker, drives `/api/exact-review-queue`, terminates the full Wrangler process
 tree, and inspects Wrangler's persisted SQLite database for the direct-publication table. Only
 after that assertion does it seed disposable pending fences, restart the Worker, and submit the
-three signed plans. Pending fences let the real Worker accept and persist the valid plans without
+three signed plans. It then reads the accepted mixed-case plan through the signed record-export
+route, stops the Worker, and verifies the canonical, export-index, and stored receipt namespaces
+directly in SQLite. Pending fences let the real Worker accept and persist the valid plans without
 mocking the publication store or bypassing HTTP validation.
 
 Run from the repository root on Node 24 or newer:

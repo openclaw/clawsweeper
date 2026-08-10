@@ -436,7 +436,7 @@ test("direct publication validates tuple and per-file size caps", async () => {
 
 test("direct publication accepts repository-only path casing differences", async () => {
   const mixedCase = directPlan("steipete/CodexBar#2516", 1, {
-    path: "records/steipete-codexbar/items/2516.md",
+    path: "records/steipete-CodexBar/items/2516.md",
   });
   const accepted = await validateDirectPublicationPlan(mixedCase);
   assert.equal(accepted.operations[0]?.path, "records/steipete-codexbar/items/2516.md");
@@ -445,6 +445,42 @@ test("direct publication accepts repository-only path casing differences", async
     accepted.operations[0]?.digest,
     createHash("sha256").update(Buffer.from("result-1")).digest("hex"),
   );
+
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  assert.equal(store.accept(accepted, 1_000).outcome, "accepted");
+  const normalizedRetry = await validateDirectPublicationPlan(
+    directPlan("steipete/CodexBar#2516", 1, {
+      path: "records/steipete-codexbar/items/2516.md",
+    }),
+  );
+  assert.equal(store.accept(normalizedRetry, 1_001).outcome, "deduped");
+  assert.equal(store.list().length, 1);
+  assert.equal(store.readCanonical("steipete-codexbar", "items", 2516)?.content, "result-1");
+  assert.equal(store.readCanonical("steipete-CodexBar", "items", 2516), null);
+  assert.equal(
+    storage.scalar(
+      `SELECT COUNT(*) AS value FROM exact_review_canonical_records
+        WHERE repo_slug = 'steipete-CodexBar'`,
+    ),
+    0,
+  );
+  assert.equal(
+    storage.scalar(
+      `SELECT COUNT(*) AS value FROM exact_review_record_export_index
+        WHERE repo_slug = 'steipete-CodexBar'`,
+    ),
+    0,
+  );
+  assert.deepEqual(store.get(accepted.fenceKey, accepted.revision)?.operations, [
+    {
+      path: "records/steipete-codexbar/items/2516.md",
+      bytes: Buffer.byteLength("result-1"),
+      digest: createHash("sha256").update(Buffer.from("result-1")).digest("hex"),
+      deleted: false,
+    },
+  ]);
 
   const differentRepository = structuredClone(mixedCase);
   differentRepository.operations[0]!.path = "records/steipete-other/items/2516.md";
@@ -455,7 +491,10 @@ test("direct publication accepts repository-only path casing differences", async
 
   const invalidMode = structuredClone(mixedCase);
   invalidMode.operations[0]!.mode = "100755" as "100644";
-  await assert.rejects(validateDirectPublicationPlan(invalidMode), /invalid mutation mode/);
+  await assert.rejects(
+    validateDirectPublicationPlan(invalidMode),
+    /invalid mutation mode for records\/steipete-CodexBar\/items\/2516\.md/,
+  );
 
   const invalidBytes = structuredClone(mixedCase);
   invalidBytes.operations[0]!.bytes += 1;
