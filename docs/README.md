@@ -154,6 +154,18 @@ Review the relevant pages in the same change when any of these surfaces move:
 - workflow retirement or replacement: every command example and compatibility
   page that names the workflow
 
-The current index and lifecycle labels are human-reviewed. Follow-on automated
-checks validate links, documented commands, and selected configuration-derived
-claims; they do not decide policy or production ownership.
+## Automated drift checks
+
+`pnpm run check:docs` validates exact-case relative links and Markdown anchors,
+documented package scripts, workflow files, repository source paths, and the
+selected configuration-derived claims in
+`config/documentation-sync.json`. It runs through the existing static check and
+CI path. Add a manifest claim when volatile production configuration is quoted
+as a concrete value in prose. Stage newly added files before running the check
+so its repository inventory matches the proposed commit rather than unrelated
+untracked workspace contents.
+
+The check deliberately does not crawl external URLs, infer policy, assign
+ownership, or treat historical proof commands and paths as current contracts.
+The index, lifecycle labels, and whether a configuration claim should become
+policy remain human-reviewed.

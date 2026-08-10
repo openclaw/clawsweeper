@@ -98,6 +98,7 @@
     "test:coverage:changed:no-build": "node scripts/run-node-tests.mjs fix-prompt-builder -- --experimental-test-coverage --test-coverage-include='dist/repair/fix-prompt-builder.js' --test-coverage-lines=85 --test-coverage-branches=85 --test-coverage-functions=85",
     "check:active-surface": "node scripts/check-active-surface.ts",
     "check:dashboard-queue-boundary": "node scripts/check-dashboard-queue-boundary.ts",
+    "check:docs": "node scripts/check-docs.mjs",
     "check:limits": "node scripts/check-limits.ts",
     "lint": "pnpm run \"/^lint:.*/\"",
     "lint:src": "oxlint src --ignore-pattern \"src/repair/**\" --tsconfig tsconfig.json --type-aware --deny-warnings --report-unused-disable-directives -D correctness",
@@ -108,7 +109,7 @@
     "format:check": "oxfmt --check src scripts test dashboard package.json tsconfig.json tsconfig.repair.json tsconfig.dashboard.json .oxfmtrc.json config schema .github/actions .github/workflows",
     "oxformat": "pnpm run format",
     "oxformat:check": "pnpm run format:check",
-    "check:static": "pnpm run \"/^(check:active-surface|check:dashboard-queue-boundary|check:limits|format:check)$/\"",
+    "check:static": "pnpm run \"/^(check:active-surface|check:dashboard-queue-boundary|check:docs|check:limits|format:check)$/\"",
     "check:parallel": "pnpm run check:static && pnpm run build:all && pnpm run lint && pnpm run test:coverage:changed:no-build && pnpm run test:coverage:no-build",
     "check": "pnpm run check:parallel",
     "check:changed": "pnpm run check",
@@ -125,6 +126,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "markdown-it": "^15.0.0",
     "oxfmt": "^0.58.0",
     "oxlint": "^1.73.0",
     "oxlint-tsgolint": "0.24.0"

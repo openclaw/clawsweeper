@@ -45,6 +45,8 @@ Documentation-only changes should also classify new pages as active, proposed,
 compatibility-only, or historical. Active runbooks need a role owner, owning
 source, last-verified revision, and concrete update triggers; see the
 [documentation index](docs/README.md#document-lifecycle).
+Run `pnpm run check:docs` while editing documentation; the full `pnpm run check`
+gate runs it again through the static-check path.
 
 ## Create or Update a Pull Request
 

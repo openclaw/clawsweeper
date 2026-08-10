@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "path": "dashboard/wrangler.toml",
+      "expect": {
+        "EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT": "8",
+        "EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT": "32",
+        "EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT": "40",
+        "EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED": "1",
+        "EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED": "1",
+        "EXACT_REVIEW_PUBLICATION_BATCH_SIZE": "8",
+        "EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT": "8",
+        "EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED": "1",
+        "EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS": "2",
+        "EXACT_REVIEW_TARGET_RATE_PER_HOUR": "300",
+        "EXACT_REVIEW_TARGET_BURST": "30"
+      },
+      "claims": [
+        {
+          "document": "README.md",
+          "text": "production overrides them with {{EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT}}/{{EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT}}/{{EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT}} and enables direct publication plus up to {{EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT}} concurrent size-{{EXACT_REVIEW_PUBLICATION_BATCH_SIZE}}"
+        },
+        {
+          "document": "docs/scheduler.md",
+          "text": "production overrides them to {{EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT}}, {{EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT}}, and {{EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT}}"
+        },
+        {
+          "document": "docs/scheduler.md",
+          "text": "preparation is enabled for up to {{EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT}} concurrent size-{{EXACT_REVIEW_PUBLICATION_BATCH_SIZE}} batches"
+        },
+        {
+          "document": "docs/scheduler.md",
+          "text": "including {{EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS}} fresh-lane members per batch"
+        },
+        {
+          "document": "docs/live-dashboard.md",
+          "text": "Production overrides publication minimum, base, and maximum capacity to {{EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT}}, {{EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT}}, and {{EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT}}"
+        },
+        {
+          "document": "docs/live-dashboard.md",
+          "text": "production enables up to {{EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT}} concurrent size-{{EXACT_REVIEW_PUBLICATION_BATCH_SIZE}} batches"
+        },
+        {
+          "document": "docs/limits.md",
+          "text": "production overrides them to {{EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT}}, {{EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT}}, and {{EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT}}"
+        },
+        {
+          "document": "docs/limits.md",
+          "text": "production now admits {{EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT}} preparation batches"
+        },
+        {
+          "document": "docs/limits.md",
+          "text": "durable {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}}-review/hour budget with a {{EXACT_REVIEW_TARGET_BURST}}-item burst"
+        },
+        {
+          "document": "docs/scheduler.md",
+          "text": "total review admission target: {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}} items/hour across the fleet"
+        },
+        {
+          "document": "docs/scheduler.md",
+          "text": "with a {{EXACT_REVIEW_TARGET_BURST}}-item burst"
+        }
+      ]
+    },
+    {
+      "path": "config/target-repositories.json",
+      "expect": {
+        "generic_fallbacks.0.apply_close_rules.issue.0": "implemented_on_main",
+        "generic_fallbacks.0.apply_close_rules.pull_request.0": "implemented_on_main",
+        "generic_fallbacks.0.apply_close_rules.pull_request.1": "mostly_implemented_on_main"
+      },
+      "claims": [
+        {
+          "document": "docs/target-repositories.md",
+          "text": "generic `openclaw/*` issues can auto-close only for `{{generic_fallbacks.0.apply_close_rules.issue.0}}`; PRs can auto-close for `{{generic_fallbacks.0.apply_close_rules.pull_request.0}}` or age-gated `{{generic_fallbacks.0.apply_close_rules.pull_request.1}}`"
+        }
+      ]
+    }
+  ]
+}

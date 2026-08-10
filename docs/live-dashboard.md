@@ -350,7 +350,7 @@ Production overrides publication minimum, base, and maximum capacity to 8, 32,
 and 40, while source fallback values are 4, 24, and 48. The controller records
 failure, cooldown, recovery, and demand telemetry and scales within the
 production range. The publication lane also
-exposes `batches` and `direct`: production enables up to eight concurrent size-8
+exposes `batches` and `direct`: production enables up to 8 concurrent size-8
 batches, reserves two fresh-lane members per batch, and enables direct
 publication with retry/batch fallback. Document effective production values from
 `dashboard/wrangler.toml`, not only fallback constants in

@@ -56,7 +56,7 @@ job. That is the primary duplicate-PR guard.
 
 Path: `.clawsweeper-repair/runs/<run>/cluster-plan.json`
 
-Created by `scripts/plan-cluster.ts`. It hydrates the listed GitHub refs,
+Created by `src/repair/plan-cluster.ts`. It hydrates the listed GitHub refs,
 linked refs, labels, bodies, comments, PR files, PR reviews, PR review
 comments, checks, and current `main` state. The Codex worker receives this as
 its live evidence bundle.
@@ -65,11 +65,11 @@ its live evidence bundle.
 
 Path: `.clawsweeper-repair/runs/<run>/result.json`
 
-Created by `scripts/run-worker.ts` via `codex exec` using
+Created by `src/repair/run-worker.ts` via `codex exec` using
 `schema/repair/codex-result.schema.json`. The worker can recommend actions and fix
 artifacts, but it must not mutate GitHub directly.
 
-`scripts/review-results.ts` validates the result before any follow-up lane
+`src/repair/review-results.ts` validates the result before any follow-up lane
 trusts it.
 
 Long Codex calls emit periodic `[clawsweeper repair] ... still running` log
@@ -171,7 +171,7 @@ stale-head worker without cancelling the active run's gate cleanup.
 
 ## Creating Implementation PRs
 
-Script: `scripts/execute-fix-artifact.ts`
+Script: `src/repair/execute-fix-artifact.ts`
 
 This is the PR creation and branch repair engine.
 
@@ -215,7 +215,7 @@ Generated ClawSweeper PRs are marked by:
 - branch prefix: `clawsweeper/`
 - committed repair job metadata for the branch cluster id
 
-The `clawsweeper` label is a reporting hint from `scripts/tag-clawsweeper-targets.ts`,
+The `clawsweeper` label is a reporting hint from `src/repair/tag-clawsweeper-targets.ts`,
 not a PR identity boundary.
 
 Current operational gotcha: OpenClaw's PR queue policy can close PRs when the
@@ -307,7 +307,7 @@ label.
 
 ## Applying Comments, Closures, And Merges
 
-Script: `scripts/apply-result.ts`
+Script: `src/repair/apply-result.ts`
 
 This script owns safe GitHub mutations from reviewed worker results.
 
@@ -341,7 +341,7 @@ instead of merging.
 
 ## Post-Flight Finalization
 
-Script: `scripts/post-flight.ts`
+Script: `src/repair/post-flight.ts`
 
 Post-flight watches the PRs that `execute-fix-artifact` opened or repaired.
 It waits for merge readiness, validates merge preflight, and either:
@@ -532,7 +532,7 @@ instead of leaving duplicate crustacean notes.
 
 ## Label Backfill
 
-Script: `scripts/tag-clawsweeper-targets.ts`
+Script: `src/repair/tag-clawsweeper-targets.ts`
 
 This script labels ClawSweeper-created or ClawSweeper-tracked PRs/issues in the
 target repo. It helps downstream tools and maintainers distinguish generated
@@ -549,9 +549,9 @@ truth.
 
 Scripts:
 
-- `scripts/sweep-openclaw-jobs.ts`
-- `scripts/promote-stuck-jobs.ts`
-- `scripts/requeue-job.ts`
+- `src/repair/sweep-openclaw-jobs.ts`
+- `src/repair/promote-stuck-jobs.ts`
+- `src/repair/requeue-job.ts`
 
 These scripts manage the ClawSweeper backlog:
 
@@ -565,8 +565,8 @@ inventory and dispatch pressure.
 
 ## Dashboard Publishing
 
-Workflow: `.github/workflows/publish-results.yml`
-Script: `scripts/publish-result.ts`
+Workflow: `.github/workflows/repair-publish-results.yml`
+Script: `src/repair/publish-result.ts`
 
 Publishing turns raw run artifacts into durable, sanitized summaries. It updates
 the README dashboard, per-cluster markdown reports, and aggregate JSON ledgers.

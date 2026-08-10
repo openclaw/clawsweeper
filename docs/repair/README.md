@@ -136,8 +136,8 @@ Each cluster job:
 4. Runs Codex with repo-local policy prompts and JSON output schema in a read-only sandbox when a planning pass is needed. Adopted automerge/autofix PR repairs skip this read-only model pass after live hydration and emit a generic fix artifact directly.
 5. Writes structured run artifacts under `.clawsweeper-repair/runs/`.
 6. Reviews the worker artifact with deterministic safety checks.
-7. Executes credited fix artifacts through `scripts/execute-fix-artifact.ts` when the fix gate is open: repair a writable contributor branch first, treating same-repo head branches as writable even when GitHub reports `maintainer_can_modify=false`; otherwise raise a narrow replacement PR, copy source labels, add non-bot source PR authors as replacement co-authors, and close the uneditable source PR after the replacement push succeeds.
-8. Applies guarded close/comment and explicit merge actions through `scripts/apply-result.ts`.
+7. Executes credited fix artifacts through `src/repair/execute-fix-artifact.ts` when the fix gate is open: repair a writable contributor branch first, treating same-repo head branches as writable even when GitHub reports `maintainer_can_modify=false`; otherwise raise a narrow replacement PR, copy source labels, add non-bot source PR authors as replacement co-authors, and close the uneditable source PR after the replacement push succeeds.
+8. Applies guarded close/comment and explicit merge actions through `src/repair/apply-result.ts`.
 9. Publishes a sanitized result ledger back to `openclaw/clawsweeper-state`
    under `results/`, `jobs/openclaw/closed/`, `repair-apply-report.json`, and
    `notifications/`; the external dashboard and Discord notification dedupe
@@ -179,7 +179,7 @@ maintainer comment router. The command matrix, accepted authors and mentions,
 idempotency behavior, execution switch, and recovery procedure are canonical in
 [Operations: Maintainer Comment Routing](operations.md#maintainer-comment-routing).
 The trusted PR state contract and label behavior are canonical in
-[Auto-Updating ClawSweeper PRs](auto-update-prs.md#maintainer-commands).
+[Auto-Updating ClawSweeper PRs](auto-update-prs.md).
 
 Keep these boundaries visible from the entry point:
 
