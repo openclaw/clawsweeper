@@ -169,3 +169,10 @@ The check deliberately does not crawl external URLs, infer policy, assign
 ownership, or treat historical proof commands and paths as current contracts.
 The index, lifecycle labels, and whether a configuration claim should become
 policy remain human-reviewed.
+
+The public documentation build reads `config/documentation-site.json` as its
+exhaustive lifecycle manifest. Active pages appear in navigation, search, the
+sitemap, and `llms.txt`. Proposed, historical, and proof pages remain available
+at stable generated paths for evidence links, but carry a visible lifecycle
+banner and `noindex` metadata and are excluded from canonical discovery. The
+documentation check fails when a page is unclassified or classified twice.

@@ -127,9 +127,10 @@ is absent or a cache event lands in another Cloudflare colo.
 - a budget-sized capacity rail plus lane filters for issue-to-PR, PR repair,
   review, repair, commit, assist, and other workers
 - queued/waiting run count
-- operational health derived from queue age and running age: queued runs become
-  degraded after 30 minutes, and in-progress runs become stalled after 150
-  minutes
+- operational health derived from queue age and running age: queued runs from
+  30 through 1440 minutes old degrade operational health; queued runs older
+  than 1440 minutes are reported separately as zombies; approval-gated runs are
+  also reported separately; in-progress runs become stalled after 150 minutes
 - 24-hour and seven-day health trends for total queue depth, over-age queue
   depth, and the oldest queued/running ages
 - job-level worker attempt error rate, recovery rate, and unresolved failures,
@@ -232,16 +233,23 @@ rate appears about five minutes after deployment.
 Operational health remains a current-snapshot alert rather than a historical
 chart. `/api/status` classifies the already-fetched active workflow runs as:
 
-- `healthy`: complete telemetry and no over-age runs;
-- `degraded`: at least one queued run is 30 minutes old;
+- `healthy`: complete telemetry and no non-zombie over-age runs;
+- `degraded`: at least one queued run is from 30 through 1440 minutes old;
 - `stalled`: at least one in-progress run is 150 minutes old;
 - `unknown`: one or more actionable-status reads failed.
 
-Healthy status stays hidden. A queued run over 30 minutes, an in-progress run
-over 150 minutes, or incomplete Actions telemetry opens the expandable “Work
-execution needs attention” alert. This live diagnostic reuses the status
-snapshot's Actions reads; the history cron no longer stores queue pressure or
-oldest-run values.
+Healthy status stays hidden. A non-zombie queued run over 30 minutes, an
+in-progress run over 150 minutes, or incomplete Actions telemetry opens the
+expandable “Work execution needs attention” alert. This live diagnostic reuses
+the status snapshot's Actions reads; the history cron no longer stores queue
+pressure or oldest-run values.
+
+Queued runs older than 1440 minutes are reported separately as zombies and do
+not contribute to `queued_over_threshold` or `oldest_queued_minutes`; they
+therefore do not make an otherwise healthy snapshot degraded. The API exposes
+them as `zombie_queued_runs` and `oldest_zombie_queued_minutes`. Runs waiting on
+deployment approval are also excluded from queue pressure and exposed as
+`approval_gated_runs` and `oldest_approval_gated_minutes`.
 
 ## Boundaries
 

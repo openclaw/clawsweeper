@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -52,9 +52,16 @@ function fixture(): string {
       '# Operation\n\n<a id="MixedCase"></a>\n\n[Root](/README.md)\n\n## Foo & Bar\n\n## [Linked Operations](#operation)\n\n## `stalled_unproven_pr`\n\n## Inline &lt;span&gt; HTML\n\nSetext Operation\ncontinuation\n----------------\n\n~~~markdown\n## Example Only\n~~~\n\nCapacity is 50.\n\n# implemented\n',
     "docs/README.md": "# Documentation Home\n",
     "docs/API_(legacy).md": "# Legacy API\n",
+    "docs/live-dashboard.md":
+      "# Dashboard\n\nqueued runs from 30 through 1440 minutes old degrade operational health. queued runs older than 1440 minutes are reported separately as zombies. in-progress runs become stalled after 150 minutes. `zombie_queued_runs` `oldest_zombie_queued_minutes` `approval_gated_runs`\n",
     "scripts/example.mjs": "export {};\n",
     ".github/workflows/ci.yml": "name: CI\n",
     "dashboard/wrangler.toml": 'CAPACITY = "50"\n',
+    "dashboard/operational-health.ts": [
+      "export const OPERATIONAL_QUEUE_DEGRADED_MS = 30 * 60 * 1000;",
+      "export const OPERATIONAL_QUEUE_ZOMBIE_MS = 24 * 60 * 60 * 1000;",
+      "export const OPERATIONAL_RUNNING_STALLED_MS = 150 * 60 * 1000;",
+    ].join("\n"),
     "config/targets.json": JSON.stringify({ close: { issue: "implemented" } }),
     "config/documentation-sync.json": JSON.stringify({
       version: 1,
@@ -69,6 +76,16 @@ function fixture(): string {
           claims: [{ document: "docs/guide.md", text: "# {{close.issue}}" }],
         },
       ],
+    }),
+    "config/documentation-site.json": JSON.stringify({
+      version: 1,
+      sections: [
+        {
+          name: "Docs",
+          pages: ["README.md", "API_(legacy).md", "guide.md", "live-dashboard.md"],
+        },
+      ],
+      noncanonical: [],
     }),
   };
   for (const [relative, contents] of Object.entries(files)) {
@@ -90,6 +107,35 @@ function withFixture(run: (root: string) => void): void {
 
 test("accepts synchronized documentation references", () => {
   withFixture((root) => assert.deepEqual(checkDocumentation(root), []));
+});
+
+test("reports unclassified and multiply classified documentation pages", () => {
+  withFixture((root) => {
+    writeFileSync(join(root, "docs/unclassified.md"), "# Unclassified\n");
+    const manifest = JSON.parse(String(readFileSync(join(root, "config/documentation-site.json"))));
+    manifest.noncanonical.push({ path: "guide.md", lifecycle: "historical", banner: "Old" });
+    writeFileSync(join(root, "config/documentation-site.json"), JSON.stringify(manifest));
+    const findings = checkDocumentation(root).filter(
+      (finding) => finding.kind === "docs-lifecycle",
+    );
+    assert.ok(findings.some((finding) => finding.message.includes("unclassified.md has no")));
+    assert.ok(findings.some((finding) => finding.message.includes("guide.md has multiple")));
+  });
+});
+
+test("reports operational health documentation drift", () => {
+  withFixture((root) => {
+    writeFileSync(
+      join(root, "dashboard/operational-health.ts"),
+      [
+        "export const OPERATIONAL_QUEUE_DEGRADED_MS = 31 * 60 * 1000;",
+        "export const OPERATIONAL_QUEUE_ZOMBIE_MS = 24 * 60 * 60 * 1000;",
+        "export const OPERATIONAL_RUNNING_STALLED_MS = 150 * 60 * 1000;",
+      ].join("\n"),
+    );
+    const findings = checkDocumentation(root);
+    assert.ok(findings.some((finding) => finding.kind === "operational-health-claim"));
+  });
 });
 
 test("accepts the full URI scheme syntax for external links", () => {

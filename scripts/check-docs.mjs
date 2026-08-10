@@ -94,7 +94,93 @@ export function checkDocumentation(root = process.cwd()) {
   }
 
   checkConfiguredClaims({ root, inventory, findings });
+  checkDocumentationSiteManifest({ root, inventory, findings });
+  checkOperationalHealthDocumentation({ root, findings });
   return findings.sort(compareFindings);
+}
+
+function checkDocumentationSiteManifest({ root, inventory, findings }) {
+  const manifestPath = "config/documentation-site.json";
+  const manifest = readJson(path.join(root, manifestPath));
+  const canonical = new Set();
+  for (const section of manifest.sections ?? []) {
+    for (const page of section.pages ?? []) {
+      if (canonical.has(page)) {
+        addFinding(
+          findings,
+          manifestPath,
+          1,
+          "docs-lifecycle",
+          `duplicates canonical page ${page}`,
+        );
+      }
+      canonical.add(page);
+      if (!inventory.exact.has(`docs/${page}`)) {
+        addFinding(
+          findings,
+          manifestPath,
+          1,
+          "docs-lifecycle",
+          `references missing page docs/${page}`,
+        );
+      }
+    }
+  }
+
+  const docsPages = [...inventory.exact]
+    .filter((file) => file.startsWith("docs/") && file.endsWith(".md"))
+    .map((file) => file.slice("docs/".length));
+  for (const page of docsPages) {
+    const matches = (manifest.noncanonical ?? []).filter(
+      (entry) => entry.path === page || (entry.prefix && page.startsWith(entry.prefix)),
+    );
+    const classifications = Number(canonical.has(page)) + matches.length;
+    if (classifications !== 1) {
+      addFinding(
+        findings,
+        manifestPath,
+        1,
+        "docs-lifecycle",
+        `${page} has ${classifications === 0 ? "no" : "multiple"} lifecycle classifications`,
+      );
+    }
+  }
+}
+
+function checkOperationalHealthDocumentation({ root, findings }) {
+  const sourcePath = "dashboard/operational-health.ts";
+  const documentPath = "docs/live-dashboard.md";
+  const source = fs.readFileSync(path.join(root, sourcePath), "utf8");
+  const document = normalizeWhitespace(fs.readFileSync(path.join(root, documentPath), "utf8"));
+  const minutes = (name) => {
+    const expression = source.match(new RegExp(`export const ${name} = ([0-9 *]+);`))?.[1];
+    if (!expression) return null;
+    return (
+      expression
+        .split("*")
+        .map(Number)
+        .reduce((total, value) => total * value, 1) / 60_000
+    );
+  };
+  const expected = [
+    `queued runs from ${minutes("OPERATIONAL_QUEUE_DEGRADED_MS")} through ${minutes("OPERATIONAL_QUEUE_ZOMBIE_MS")} minutes old degrade operational health`,
+    `queued runs older than ${minutes("OPERATIONAL_QUEUE_ZOMBIE_MS")} minutes are reported separately as zombies`,
+    `in-progress runs become stalled after ${minutes("OPERATIONAL_RUNNING_STALLED_MS")} minutes`,
+    "zombie_queued_runs",
+    "oldest_zombie_queued_minutes",
+    "approval_gated_runs",
+  ];
+  for (const claim of expected) {
+    if (!document.includes(claim)) {
+      addFinding(
+        findings,
+        documentPath,
+        1,
+        "operational-health-claim",
+        `missing source-derived claim: ${claim}`,
+      );
+    }
+  }
 }
 
 function buildInventory(root) {

@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "Start",
+      "pages": ["README.md", "orchestration.md", "scheduler.md", "work-lane.md"]
+    },
+    {
+      "name": "Review and policy",
+      "pages": [
+        "commit-sweeper.md",
+        "review-cache.md",
+        "pr-review-comments.md",
+        "pr-proof-triage-dashboard.md",
+        "author-pr-budget-close-policy.md",
+        "obsolescence-close-policies.md",
+        "product-direction-close-policy.md",
+        "stalled-pr-close-policies.md",
+        "unsponsored-feature-close-policy.md"
+      ]
+    },
+    {
+      "name": "Operations",
+      "pages": [
+        "limits.md",
+        "live-dashboard.md",
+        "openclaw-bay-demo.md",
+        "openclaw-event-hooks.md",
+        "state-storage.md",
+        "action-ledger.md",
+        "target-dispatcher.md",
+        "target-repositories.md",
+        "triage-dashboard.md",
+        "related-issue-discovery.md",
+        "spam-scanner.md",
+        "local-clawsweeper-skill.md"
+      ]
+    },
+    {
+      "name": "Repair",
+      "pages": [
+        "steerable-repair-automation.md",
+        "repair/README.md",
+        "repair/operations.md",
+        "repair/automatic-issue-prs.md",
+        "repair/auto-update-prs.md",
+        "repair/automerge-flow.md",
+        "repair/automerge-e2e.md",
+        "repair/internal-features.md"
+      ]
+    }
+  ],
+  "noncanonical": [
+    {
+      "path": "queue-service-split-runbook.md",
+      "lifecycle": "proposed",
+      "banner": "This is an unapproved proposal, not current operator guidance."
+    },
+    {
+      "path": "repair/containment-validation-todo.md",
+      "lifecycle": "historical",
+      "banner": "This is historical decision evidence, not current operator guidance."
+    },
+    {
+      "prefix": "proof/",
+      "lifecycle": "historical proof",
+      "banner": "This immutable proof records behavior at its stated revision and does not override current documentation."
+    }
+  ]
+}
