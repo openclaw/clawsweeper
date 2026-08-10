@@ -1,0 +1,26 @@
+{
+  "ok": true,
+  "target_repo": "openclaw/openclaw",
+  "item_number": 108904,
+  "items": [
+    {
+      "lane": "publication",
+      "state": "pending",
+      "parked_reason": null,
+      "parked_recovery_attempts": 0,
+      "backoff_reason": "publication_retry",
+      "revision": 1,
+      "attempts": 1,
+      "dispatch_failure_status": null,
+      "dispatch_failure_class": null,
+      "dispatch_failure_at": null,
+      "dispatch_failure_fingerprint": null,
+      "dispatch_failure_detail": null,
+      "created_at": "2026-08-10T01:26:04.386Z",
+      "next_attempt_at": "2026-08-10T01:27:15.800Z",
+      "older_ready_count": 0
+    }
+  ],
+  "dead_letters": [],
+  "position_is_approximate": true
+}

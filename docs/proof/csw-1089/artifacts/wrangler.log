@@ -1,0 +1,78 @@
+
+ ⛅️ wrangler 4.107.0 (update available 4.120.0)
+───────────────────────────────────────────────
+Your Worker has access to the following bindings:
+Binding                                                                                                      Resource                  Mode
+env.STATUS_STORE (StatusStore)                                                                               Durable Object            local
+env.EXACT_REVIEW_QUEUE (ExactReviewQueue)                                                                    Durable Object            local
+env.STATE_SNAPSHOTS (clawsweeper-state-snapshots)                                                            R2 Bucket                 local
+env.CLAWSWEEPER_REPO ("openclaw/clawsweeper")                                                                Environment Variable      local
+env.CLAWSWEEPER_APP_CLIENT_ID ("Iv23liOECG0slfuhz093")                                                       Environment Variable      local
+env.CLAWSWEEPER_CRABFLEET_URL ("https://crabfleet.openclaw.ai")                                              Environment Variable      local
+env.TARGET_REPOS ("openclaw/openclaw,openclaw/clawhub,op...")                                                Environment Variable      local
+env.APPLY_TARGET_REPOS ("openclaw/openclaw")                                                                 Environment Variable      local
+env.APPLY_OPTIONAL_TARGET_REPOS ("openclaw/clawhub")                                                         Environment Variable      local
+env.CLAWSWEEPER_ENABLE_CLAWHUB ("1")                                                                         Environment Variable      local
+env.WORKER_BUDGET ("128")                                                                                    Environment Variable      local
+env.EXACT_REVIEW_ACTIONS_BUDGET ("194")                                                                      Environment Variable      local
+env.WORKER_DETAIL_RUN_LIMIT ("128")                                                                          Environment Variable      local
+env.WORKER_JOB_FETCH_CONCURRENCY ("12")                                                                      Environment Variable      local
+env.WORKER_JOB_CACHE_TTL_SECONDS ("60")                                                                      Environment Variable      local
+env.WORKER_HEALTH_CACHE_TTL_SECONDS ("120")                                                                  Environment Variable      local
+env.WORKER_HEALTH_FETCH_CONCURRENCY ("10")                                                                   Environment Variable      local
+env.AUTOMERGE_CACHE_TTL_SECONDS ("300")                                                                      Environment Variable      local
+env.RECENT_CLOSED_CACHE_TTL_SECONDS ("300")                                                                  Environment Variable      local
+env.CACHE_TTL_SECONDS ("20")                                                                                 Environment Variable      local
+env.INCLUDE_CI_STATUS ("1")                                                                                  Environment Variable      local
+env.EXACT_REVIEW_QUEUE_MAX_CONCURRENT ("128")                                                                Environment Variable      local
+env.EXACT_REVIEW_TARGET_MAX_CONCURRENT ("120")                                                               Environment Variable      local
+env.EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT ("50")                                                           Environment Variable      local
+env.EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT ("50")                                                          Environment Variable      local
+env.EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT ("50")                                                           Environment Variable      local
+env.EXACT_REVIEW_DISPATCH_LEASE_MS ("360000")                                                                Environment Variable      local
+env.EXACT_REVIEW_EXECUTION_LEASE_MS ("7800000")                                                              Environment Variable      local
+env.EXACT_REVIEW_HEARTBEAT_GRACE_MS ("1200000")                                                              Environment Variable      local
+env.EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS ("60000")                                                          Environment Variable      local
+env.EXACT_REVIEW_DISPATCH_DEBOUNCE_MS ("90000")                                                              Environment Variable      local
+env.EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS ("180000")                                                         Environment Variable      local
+env.EXACT_REVIEW_PENDING_SOFT_LIMIT ("600")                                                                  Environment Variable      local
+env.EXACT_REVIEW_TARGET_RATE_PER_HOUR ("300")                                                                Environment Variable      local
+env.EXACT_REVIEW_TARGET_BURST ("30")                                                                         Environment Variable      local
+env.STATE_APPEND_DRAIN_LEASE_MS ("5400000")                                                                  Environment Variable      local
+env.EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED ("1")                                                          Environment Variable      local
+env.EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED ("1")                                                            Environment Variable      local
+env.EXACT_REVIEW_STATE_REPO ("openclaw/clawsweeper-state")                                                   Environment Variable      local
+env.EXACT_REVIEW_STATE_REF ("state")                                                                         Environment Variable      local
+env.EXACT_REVIEW_PUBLICATION_BATCH_SIZE ("8")                                                                Environment Variable      local
+env.EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT ("8")                                                      Environment Variable      local
+env.EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED ("1")                                                        Environment Variable      local
+env.EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS ("2")                                                      Environment Variable      local
+env.EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS ("900000")                                                Environment Variable      local
+env.EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS ("60000")                                                         Environment Variable      local
+env.EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_COOLDOWN_MS ("5000")                                             Environment Variable      local
+env.EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_RESERVATION_MS ("600000")                                        Environment Variable      local
+env.REVIEW_OBSERVABILITY_REQUIRED ("0")                                                                      Environment Variable      local
+env.REVIEW_RECOVERY_ENABLED ("0")                                                                            Environment Variable      local
+env.CLAWSWEEPER_WEBHOOK_SECRET ("(hidden)")                                                                  Environment Variable      local
+
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mScheduled Workers are not automatically triggered during local development.[0m
+
+  To manually trigger a scheduled event, run:
+    curl "http://127.0.0.1:8799/cdn-cgi/handler/scheduled"
+  For more details, see [4mhttps://developers.cloudflare.com/workers/configuration/cron-triggers/#test-cron-triggers-locally[0m
+
+
+⎔ Starting local server...
+[wrangler:info] Ready on http://127.0.0.1:8799
+[wrangler:info] GET /api/health 200 OK (4ms)
+[wrangler:info] POST /internal/exact-review/enqueue 202 Accepted (23ms)
+[wrangler:info] POST /internal/exact-review/publication-batches/claim 200 OK (4ms)
+[wrangler:info] GET /api/exact-review-queue/item 200 OK (2ms)
+[wrangler:info] POST /internal/exact-review/publication-batches/complete 200 OK (5ms)
+[wrangler:info] GET /api/exact-review-queue/item 200 OK (1ms)
+[wrangler:info] POST /internal/exact-review/enqueue 202 Accepted (3ms)
+[wrangler:info] POST /internal/exact-review/publication-batches/claim 200 OK (3ms)
+[wrangler:info] GET /api/exact-review-queue/item 200 OK (2ms)
+[wrangler:info] POST /internal/exact-review/publication-batches/complete 200 OK (2ms)
+[wrangler:info] GET /api/exact-review-queue/item 200 OK (1ms)
+[wrangler:info] GET /api/exact-review-queue 200 OK (5ms)
