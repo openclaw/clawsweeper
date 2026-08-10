@@ -19,7 +19,7 @@ The proof boots three fresh Workers. Each boot gets a disposable Wrangler persis
 
 1. The GitHub stub returns one queued run aged 25 hours. `/api/status` must report `queued_runs: 1`, `zombie_queued_runs: 1`, `queued_over_threshold: 0`, operational status `healthy`, and no `workflow_execution_degraded` dashboard reason.
 2. The stub adds a second run aged 31 minutes. `/api/status` must report one zombie plus one over-threshold live queued run, operational status `degraded`, and the `workflow_execution_degraded` dashboard reason.
-3. `GITHUB_API_URL` is unset and no GitHub credential is provided. The resulting status payload and its local-sandbox GitHub error shape are retained to demonstrate that the default-origin path remains active without sending credentials.
+3. `GITHUB_API_URL` is unset and no GitHub credential is provided. The resulting status payload and its public GitHub response or local-sandbox error shape are retained to demonstrate that the default-origin path remains active without sending credentials.
 
 ## Command and environment
 

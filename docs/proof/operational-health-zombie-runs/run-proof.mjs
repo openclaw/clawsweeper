@@ -109,6 +109,8 @@ async function runDefaultScenario() {
     assert.ok(payload.operational_health);
     return {
       scenario: "default-origin-unset",
+      github_api_url_binding: "unset",
+      github_credentials_forwarded: false,
       operational_health: payload.operational_health,
       dashboard_health: payload.dashboard_health,
       diagnostic_errors: payload.diagnostics.errors,
