@@ -338,10 +338,10 @@ recovery progress, and last classified GitHub pressure failure. `/api/status` re
 `control_plane` compatibility field, but the dashboard no longer renders that
 low-actionability section.
 
-Production pins publication minimum, base, and maximum capacity at 50 even
-though the source fallback remains adaptive from 24 to 48. The controller still
-records failure, cooldown, and recovery telemetry, but the equal production
-minimum and maximum keep its effective capacity fixed. The publication lane also
+Production overrides publication minimum, base, and maximum capacity to 8, 32,
+and 40, while the source fallback remains adaptive from 24 to 48. The controller
+records failure, cooldown, recovery, and demand telemetry and scales within the
+production range. The publication lane also
 exposes `batches` and `direct`: production enables up to eight concurrent size-8
 batches, reserves two fresh-lane members per batch, and enables direct
 publication with retry/batch fallback. Document effective production values from
