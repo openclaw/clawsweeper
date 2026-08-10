@@ -4,7 +4,7 @@
 
 The real dashboard Worker excludes queued workflow runs older than 24 hours from queue-pressure health while retaining them in `queued_runs` and surfacing them through `zombie_queued_runs` and `oldest_zombie_queued_minutes`. A non-zombie run queued for 31 minutes still degrades operational health exactly as before.
 
-The GitHub base-URL binding is dependency injection for testability. Production behavior is unchanged by default: when `GITHUB_API_URL` is unset, every dashboard GitHub REST and GraphQL request still uses `https://api.github.com`.
+The GitHub base-URL binding is dependency injection for testability. Production behavior is unchanged by default: when `GITHUB_API_URL` is unset, every dashboard GitHub REST and GraphQL request still uses `https://api.github.com`. Other HTTPS origins are rejected by design so credentialed requests cannot be redirected away from GitHub; only explicit-port HTTP loopback origins are accepted for local proof stubs.
 
 ## Exercised surface
 

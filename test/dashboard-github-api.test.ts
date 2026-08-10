@@ -5,6 +5,10 @@ import { DEFAULT_GITHUB_API_URL, githubApiBaseUrl, githubApiUrl } from "../dashb
 
 test("GitHub API URL uses the production origin by default", () => {
   assert.equal(githubApiBaseUrl({}), DEFAULT_GITHUB_API_URL);
+  assert.equal(
+    githubApiBaseUrl({ GITHUB_API_URL: "https://api.github.com" }),
+    DEFAULT_GITHUB_API_URL,
+  );
   assert.equal(githubApiUrl({}, "/graphql"), "https://api.github.com/graphql");
 });
 
@@ -15,24 +19,23 @@ test("GitHub API URL honors a validated loopback override", () => {
     githubApiUrl(env, "/repos/openclaw/clawsweeper"),
     "http://127.0.0.1:8788/repos/openclaw/clawsweeper",
   );
-});
-
-test("GitHub API URL rejects insecure or non-origin overrides", () => {
-  for (const value of [
-    "http://github.example.test",
-    "http://localhost",
-    "http://127.0.0.1:8788/api",
-    "https://api.github.test/v3",
-    "https://user@example.test",
-  ]) {
-    assert.throws(() => githubApiBaseUrl({ GITHUB_API_URL: value }), /invalid GITHUB_API_URL/);
-  }
-  assert.equal(
-    githubApiBaseUrl({ GITHUB_API_URL: "https://api.github.test" }),
-    "https://api.github.test",
-  );
   assert.equal(
     githubApiBaseUrl({ GITHUB_API_URL: "http://localhost:8788" }),
     "http://localhost:8788",
   );
+});
+
+test("GitHub API URL rejects non-default remote or non-origin overrides", () => {
+  for (const value of [
+    "http://github.example.test",
+    "http://localhost",
+    "http://127.0.0.1",
+    "http://127.0.0.1:8788/api",
+    "https://api.github.test/v3",
+    "https://user@example.test",
+    "https://evil.example",
+    "https://api.github.com:8443",
+  ]) {
+    assert.throws(() => githubApiBaseUrl({ GITHUB_API_URL: value }), /invalid GITHUB_API_URL/);
+  }
 });

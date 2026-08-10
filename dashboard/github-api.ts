@@ -15,13 +15,13 @@ export function githubApiBaseUrl(env: GithubApiEnv = {}): string {
   } catch {
     throw invalidGithubApiUrl();
   }
-  const isHttps = url.protocol === "https:";
+  const isDefaultGithubOrigin = configured === DEFAULT_GITHUB_API_URL;
   const isLoopbackHttp =
     url.protocol === "http:" &&
     (url.hostname === "127.0.0.1" || url.hostname === "localhost") &&
     Boolean(url.port);
   if (
-    (!isHttps && !isLoopbackHttp) ||
+    (!isDefaultGithubOrigin && !isLoopbackHttp) ||
     url.username ||
     url.password ||
     url.pathname !== "/" ||
@@ -42,6 +42,6 @@ export function githubApiUrl(env: GithubApiEnv, path: string): string {
 
 function invalidGithubApiUrl(): Error {
   return new Error(
-    "invalid GITHUB_API_URL: expected an https origin or an http://127.0.0.1:<port> / http://localhost:<port> origin",
+    "invalid GITHUB_API_URL: expected https://api.github.com or an http://127.0.0.1:<port> / http://localhost:<port> origin",
   );
 }
