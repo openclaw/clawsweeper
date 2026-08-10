@@ -238,8 +238,8 @@ chart. `/api/status` classifies the already-fetched active workflow runs as:
 - `stalled`: at least one in-progress run is 150 minutes old;
 - `unknown`: one or more actionable-status reads failed.
 
-Healthy status stays hidden. A non-zombie queued run over 30 minutes, an
-in-progress run over 150 minutes, or incomplete Actions telemetry opens the
+Healthy status stays hidden. A non-zombie queued run at least 30 minutes old, an
+in-progress run at least 150 minutes old, or incomplete Actions telemetry opens the
 expandable “Work execution needs attention” alert. This live diagnostic reuses
 the status snapshot's Actions reads; the history cron no longer stores queue
 pressure or oldest-run values.
