@@ -37,14 +37,6 @@ export function summarizeDashboardHealth(snapshot: Record<string, unknown>): Das
       objectValue(objectValue(objectValue(queue.lanes).publication).dead_letters).open,
     );
     if (openDeadLetters > 0) raise("amber", "publication_dlq_open");
-
-    const reviewTelemetry = objectValue(queue.review_telemetry_health);
-    const reviewTelemetryStatus = String(reviewTelemetry.status || "");
-    if (reviewTelemetryStatus === "critical") raise("red", "orphan_review_status");
-    else if (reviewTelemetryStatus === "degraded") raise("amber", "slow_review_status");
-    else if (reviewTelemetryStatus !== "healthy") {
-      raise("amber", "review_telemetry_unavailable");
-    }
   }
 
   const operationalStatus = String(objectValue(snapshot.operational_health).status || "");

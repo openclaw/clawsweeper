@@ -698,8 +698,6 @@ export default {
       request.method === "POST"
     )
       return authenticatedLifecycleCommandAcknowledgement(request, env, ctx);
-    if (url.pathname === "/internal/exact-review/review-telemetry" && request.method === "POST")
-      return authenticatedExactReviewQueueRequest(request, env, "/review-telemetry");
     if (url.pathname === "/internal/exact-review/review-run-telemetry" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/review-run-telemetry");
     if (
@@ -741,8 +739,6 @@ export default {
       );
     if (url.pathname === "/api/exact-review-queue/item" && request.method === "GET")
       return exactReviewQueueRequest(env, `/item-status?${url.searchParams.toString()}`);
-    if (url.pathname === "/api/exact-review-queue/reviews" && request.method === "GET")
-      return exactReviewQueueRequest(env, `/review-telemetry?${url.searchParams.toString()}`);
     if (url.pathname === "/api/review-observability" && request.method === "GET")
       return exactReviewQueueRequest(env, `/review-observability?${url.searchParams.toString()}`);
     if (url.pathname === "/api/review-coverage" && request.method === "GET")
