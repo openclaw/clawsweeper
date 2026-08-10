@@ -73,13 +73,18 @@ the reported cooldown into its next-attempt timestamp, preventing a parked
 cohort from becoming eligible in lockstep; coordination and ordinary failure
 retries keep their existing timing.
 Review publication and apply/comment sync use separate non-dropping queues.
-Exact-review publication starts at 24 concurrent publishers in the Durable
-Object and scales admission by ready backlog: every 250 ready publications adds
-8 slots, up to 48. Backoff work does not trigger expansion, and scaling down
-does not cancel publishers that already started. A GitHub 403/429 or explicit
-rate-limit failure halves the admission ceiling for 15 minutes; GitHub 5xx
-failures lower it by 8 for 5 minutes. Repeated pressure can reduce admission to 4. After cooldown, every 50 successful
-publications restores 8 slots. Apply/comment sync remains per-target serialized.
+The source fallback starts exact-review publication at 24 concurrent publishers
+and can scale to 48, but production pins minimum, base, and maximum capacity at
+50. The adaptive controller still classifies GitHub pressure: a 403/429 or
+explicit rate-limit failure records a 15-minute cooldown, while GitHub 5xx
+failures record a 5-minute cooldown. Because production sets the minimum and
+maximum to the same value, those signals do not lower effective capacity below
+50; the source fallback can lower its wider adaptive range. Production batch
+preparation is enabled for up to eight concurrent size-8 batches, including two
+fresh-lane members per batch. Direct publication is also enabled and falls back
+to the retry/batch path when the direct result is retryable. Apply/comment sync
+remains per-target serialized. See [`docs/limits.md`](limits.md) for effective values and
+[`docs/live-dashboard.md`](live-dashboard.md) for the public lane telemetry.
 Tuple-aware state reconciliation prevents stale review snapshots from reviving
 closed records.
 
@@ -117,8 +122,7 @@ Failed Codex review backstop:
 
 - exact event review: enabled through the target repository dispatcher
 - scheduled review/apply/audit: not enabled yet
-- issues are review/comment-only; PRs may auto-close only when already
-  implemented on `main`
+- issues and PRs may auto-close only when already implemented on `main`
 
 Generic `openclaw/*` and `steipete/*` repositories:
 
@@ -126,9 +130,9 @@ Generic `openclaw/*` and `steipete/*` repositories:
   the target dispatcher and GitHub App installation are present
 - scheduled review/audit: target fanout dispatches small cursor-based batches
   from `target_inventory.owners`
-- generic OpenClaw issues are review/comment-only; generic OpenClaw PRs may
-  auto-close only when already implemented on the default branch or age-gated
-  mostly implemented there
+- generic OpenClaw issues may auto-close only when already implemented on the
+  default branch; generic OpenClaw PRs may additionally use age-gated mostly
+  implemented there
 - generic `steipete/*` repositories are review/comment-only for issues and PRs
 
 Manual `workflow_dispatch` can override `target_repo`, `item_number`,

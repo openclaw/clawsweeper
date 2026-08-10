@@ -30,13 +30,14 @@ design.
 
 ## What It Shows
 
-The five active lanes group the current worker state into:
+The six active lanes group the current worker and durable queue state into:
 
 - Arriving
 - Setting up
 - Reviewing
-- Repairing
-- Applying
+- Publishing
+- Repair cove
+- Applying & writing
 
 An item that advances raises a ready flag before the master sweeper moves it to
 the next reported lane. Any observed new run for the same GitHub item is
@@ -59,6 +60,19 @@ browser animation and does not mutate stored state.
 Repository filters and **Where's my crustacean?** operate entirely on the
 current snapshot. Selecting a crustacean opens the same GitHub and workflow-run
 links exposed by the source worker data.
+
+The exact-review control board above the shoreline separates review admission
+from result publication. It shows current lane totals, bounded 6-hour, 24-hour,
+or 7-day history, and the durable handoff between them. A separate state-writer
+card reports the coordinator that serializes remaining Git-backed operational
+writes. These cards are observational: they expose no queue, recovery, deploy,
+or rollback controls.
+
+Lane totals may exceed the individually rendered crustaceans. The public queue
+projection intentionally bounds its item-reference sample; the overflow drawer
+shows known references and explains when additional counted items fall outside
+that sample. It never invents identities or performs a browser-side GitHub
+lookup to fill the gap.
 
 ## Data And GitHub API Load
 

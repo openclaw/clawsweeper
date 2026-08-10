@@ -6,14 +6,22 @@ failures.
 
 ClawSweeper has two target-repository paths:
 
-- configured dashboard targets in `config/target-repositories.json`
+- configured runtime profiles in `config/target-repositories.json`
 - conservative generic fallbacks for exact event/manual reviews of configured
   owner inventories such as `openclaw/*` and `steipete/*`
 
 `openclaw/openclaw` remains a built-in profile because it has broader
-auto-close policy. Other configured targets default to safer repo-local rules:
-issues are review/comment-only, and PRs may auto-close only when the same
-change is certainly already implemented on `main`.
+auto-close policy. Every other configured profile declares its own issue and PR
+close rules in `apply_close_rules`; do not infer those rules from whether the
+repository appears in the dashboard or receives scheduled work. The current
+configured profiles allow `implemented_on_main` for issues and PRs, and some
+profiles additionally allow age-gated `mostly_implemented_on_main` for PRs.
+
+Dashboard targets are configured separately with `TARGET_REPOS` in
+`dashboard/wrangler.toml`. Scheduled target selection comes from
+`target_inventory`, and apply-enabled targets use the dashboard's
+`APPLY_TARGET_REPOS` and `APPLY_OPTIONAL_TARGET_REPOS`. A runtime profile alone
+does not enable any of those surfaces.
 
 ## Generic Fallbacks
 
@@ -25,8 +33,9 @@ without a TypeScript change. It is intentionally narrow:
 - denied repositories are rejected
 - scheduled fanout is public-only unless a private state publication path exists
 - auto-close policy comes from that owner fallback
-- `openclaw/*` issues cannot be auto-closed; PRs can auto-close only for
-  `implemented_on_main` or age-gated `mostly_implemented_on_main`
+- generic `openclaw/*` issues can auto-close only for
+  `implemented_on_main`; PRs can auto-close for `implemented_on_main` or
+  age-gated `mostly_implemented_on_main`
 - `steipete/*` starts review/comment-only for issues and PRs
 - scheduled dashboard/backfill rows are added only through target fanout
 
@@ -46,10 +55,11 @@ workflow and GitHub App installation.
    `https://github.com/openclaw/clawsweeper/actions`.
 6. Confirm the target item gets one durable ClawSweeper review comment.
 
-For a repo that should appear in the README dashboard or scheduled queues, add
-it to `config/target-repositories.json` with an explicit prompt note and
-close-policy block. Keep the default policy unless the repo has a documented
-reason to allow broader issue closes.
+Add a `config/target-repositories.json` entry when a repository needs explicit
+review guidance, toolchain configuration, or close rules. Dashboard and
+scheduled-queue membership are separate changes; update their owning
+configuration only when that rollout is intended. Keep close rules narrow
+unless the repository has a documented reason for broader policy.
 
 ## Add Many Repositories
 

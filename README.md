@@ -6,8 +6,11 @@ ClawSweeper is the conservative maintenance bot for OpenClaw repositories. It
 keeps the backlog reviewed, keeps maintainer-visible GitHub comments tidy, and
 turns narrow trusted findings into guarded repair or automerge work.
 
-The current production targets are `openclaw/openclaw`, `openclaw/clawhub`, and
-self-review for `openclaw/clawsweeper`.
+The dashboard Worker's explicit production targets are `openclaw/openclaw`,
+`openclaw/clawhub`, `openclaw/clawsweeper`, and `openclaw/fs-safe`. Additional
+public `openclaw/*` and `steipete/*` repositories can use configured profiles or
+conservative generic fallback review through event dispatch and scheduled
+fanout.
 
 Project vision and boundaries: [`VISION.md`](VISION.md)
 
@@ -37,7 +40,8 @@ At a high level ClawSweeper:
 - automatically opens guarded implementation PRs for viable reviewed issues in
   eligible public `openclaw/*` and `steipete/*` projects outside
   `openclaw/openclaw` and `openclaw/clawhub`
-- can manually review selected code-bearing commits on target `main` branches
+- can review local branch ranges with repository and GitHub access kept local
+  while Codex connects to the configured model service
 - publishes canonical review records to the Cloudflare Worker, action ledgers
   and assets to R2, and the remaining operational state to
   `openclaw/clawsweeper-state`
@@ -340,7 +344,7 @@ maintainer engagement. See
 
 ## How It Works
 
-ClawSweeper is split into four operational lanes:
+ClawSweeper is split into three operational lanes:
 
 - review lane: scheduled and event-driven issue/PR reviews, durable reports, and
   public review comment sync
@@ -427,10 +431,12 @@ Exact event runs skip the bulk planner and shard matrix. The read-only reviewer
 handles only the selected item, uploads a hash-bound GitHub Actions artifact,
 enqueues a separate durable publication lease, and then releases its review
 lease without checking out or pushing the state repository. The queue retries
-publication independently, so a cancelled publisher does not rerun Codex. A
-Durable Object-bounded publisher lane (24 base, adaptively capped at 48)
-validates each artifact's workflow run, queue tuple, target, decision digest,
-file inventory, sizes, and SHA-256 hashes before it receives write tokens.
+publication independently, so a cancelled publisher does not rerun Codex. The
+source fallback uses a 24-to-48 adaptive publisher range; production pins the
+lane at 50 and enables direct publication plus up to eight concurrent size-8
+batches. The Durable Object validates each artifact's workflow run, queue tuple,
+target, decision digest, file inventory, sizes, and SHA-256 hashes before a
+publisher receives write tokens.
 Publication leases reserve the bounded publisher lane's maximum queue wait;
 terminal-run reconciliation releases dead dispatches early. The publisher then
 uses the same review and apply paths with only the
@@ -536,14 +542,13 @@ see [docs/commit-sweeper.md](docs/commit-sweeper.md).
 - Codex runs without GitHub write tokens.
 - Issue/PR event jobs create target write and report-push credentials only after
   Codex exits.
-- Commit review workers give Codex only a read-scoped target token as `GH_TOKEN`
-  so it can inspect mentioned issues, PRs, workflow runs, and commit metadata.
-- Commit write/check credentials are created only after Codex exits.
+- The retired hosted commit-review lane no longer mints target credentials;
+  `pnpm local-review` operates on the local branch range without GitHub writes.
 - CI makes the target checkout read-only for reviews.
 - Reviews fail if Codex leaves tracked or untracked changes behind.
 - Snapshot changes block apply unless the only change is the bot’s own review
   comment.
-- Commit Check Runs are optional and disabled by default.
+- The retired hosted commit-review lane no longer publishes Commit Check Runs.
 
 ### Audit
 
@@ -783,9 +788,8 @@ Token flow:
   context.
 - Apply mode uses the same app token for review comments and closes, so GitHub
   attributes mutations to the app bot account instead of a PAT user.
-- Commit review passes Codex only a read-scoped target token as `GH_TOKEN` for
-  issue/PR/workflow/commit hydration, then creates write/check credentials only
-  after Codex exits.
+- Offline `pnpm local-review` does not mint target write/check credentials or
+  publish hosted commit-review results.
 - The ClawSweeper GitHub App commits only the remaining operational paths to
   `openclaw/clawsweeper-state`; reports publish to the canonical Worker store.
 
@@ -828,6 +832,3 @@ Target repository setup:
 - install the issue/PR dispatcher from
   [docs/target-dispatcher.md](docs/target-dispatcher.md) for exact item event
   reviews
-- optionally set `CLAWSWEEPER_COMMIT_REVIEW_SETTLE_SECONDS=0` for manual
-  backfills where the target commit range is already settled; the default is
-  `60`

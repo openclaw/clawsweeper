@@ -138,6 +138,10 @@ gh api repos/openclaw/clawsweeper/readme --jq '.content' | base64 --decode
 gh api graphql -f query='query { repository(owner:"openclaw", name:"openclaw") { issues(states: OPEN) { totalCount } pullRequests(states: OPEN) { totalCount } } }'
 ```
 
-For throughput/default tuning, inspect and update both `src/clawsweeper.ts` and
-`.github/workflows/sweep.yml`; continuation paths can otherwise keep stale
-defaults.
+For throughput/default tuning, start with `config/automation-limits.json` and
+[`docs/limits.md`](docs/limits.md). `scripts/check-limits.ts` identifies the
+derived docs, Worker values, and the `workflow_dispatch` literals that must stay
+aligned. Effective exact-review admission, publication, and batching overrides
+live in `dashboard/wrangler.toml`; owning fallback behavior lives in
+`dashboard/exact-review-queue.ts`. Update `.github/workflows/sweep.yml` or
+`src/clawsweeper.ts` only when the changed contract is actually owned there.

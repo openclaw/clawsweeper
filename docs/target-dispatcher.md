@@ -23,9 +23,11 @@ For issue and PR dispatch, copy this workflow into each target repository as
 Target repositories no longer need a TypeScript profile before exact event
 review can run. Any installed `openclaw/*` repository that is not denied in
 `config/target-repositories.json` uses the conservative generic profile:
-issues stay open, and PRs can auto-close only when already implemented on
-`main`. Add a config entry only when the repo should appear in the dashboard or
-needs repo-specific review guidance.
+issues can auto-close only when already implemented on the default branch, and
+PRs can also use the age-gated `mostly_implemented_on_main` rule. Add a config
+entry only when the repo needs explicit review guidance, toolchain settings, or
+different close rules. Dashboard and scheduled-fanout membership are configured
+separately.
 
 Exact event reviews enable related issue GitHub Search by default so newly
 opened issues get stronger duplicate and adjacent-report context. Set repository

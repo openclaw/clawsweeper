@@ -2,7 +2,7 @@
 
 For the internal feature map across job creation, PR generation, comment
 commands, finalizers, self-heal, gates, and ledgers, see
-[`docs/INTERNAL_FEATURES.md`](INTERNAL_FEATURES.md).
+[`internal-features.md`](internal-features.md).
 
 For the trusted ClawSweeper-to-ClawSweeper PR repair loop, see
 [`docs/repair/auto-update-prs.md`](auto-update-prs.md).
@@ -72,7 +72,8 @@ pnpm run status -- \
 
 ## Manual Fix PR From Issue or PR Refs
 
-Use `scripts/create-job.ts` when ClawSweeper or a maintainer has identified a
+Use `pnpm run repair:create-job` (implemented by
+`src/repair/create-job.ts`) when ClawSweeper or a maintainer has identified a
 valid issue/PR cluster that should get one implementation PR. It writes one
 idempotent job file and checks for an existing open PR or branch before creating
 another job.
@@ -118,22 +119,12 @@ Keep `CLAWSWEEPER_ALLOW_MERGE=0` unless a human explicitly opens the merge gate.
 
 ## Manual Fix PR From Commit Finding
 
-Use the `commit finding intake` workflow for a ClawSweeper commit report:
-
-```bash
-gh workflow run repair-commit-finding-intake.yml \
-  --repo openclaw/clawsweeper \
-  -f target_repo=openclaw/openclaw \
-  -f commit_sha=<sha> \
-  -f report_repo=openclaw/clawsweeper \
-  -f report_path=records/openclaw-openclaw/commits/<sha>.md
-```
-
-The workflow is idempotent for the commit SHA. It updates the same audit file,
-job file, branch, and PR path on rerun.
-
-If latest `main` no longer needs a fix, the generated artifact allows a clean
-no-PR outcome and the audit file records the skip.
+The hosted commit-review and commit-finding intake workflows were retired in
+July 2026. Do not dispatch `repair-commit-finding-intake.yml`; that workflow no
+longer exists. Existing durable jobs with `job_intent: commit_finding` remain
+executable through the ordinary cluster worker for compatibility. New work
+should start from current issue/PR references or an explicitly prepared manual
+repair job after verifying the finding still applies to current `main`.
 
 ## Security Boundary
 
@@ -306,7 +297,11 @@ Runs for the same job path and mode share a concurrency group. Different cluster
 
 Live preflight hydrates job-provided refs by default and records linked refs without expanding them. Set repo variables `CLAWSWEEPER_MAX_LINKED_REFS` above `0` only for small clusters that need first-hop context and `CLAWSWEEPER_HYDRATE_COMMENTS=1` when comment bodies are necessary evidence; normal scale runs use issue/PR metadata, body excerpts, PR files, and PR checks.
 
-Exact-review producers normally deliver GitHub effects and submit prepared state mutations directly to the dashboard Worker. The legacy exact-review batch publisher remains enabled only to drain already-enqueued and direct-publication fallback items; it is scheduled for removal after that queue stays empty through the migration window.
+Exact-review producers normally deliver GitHub effects and submit prepared state
+mutations directly to the dashboard Worker. Production also keeps batch
+publication enabled for queued and direct-publication fallback items. Treat that
+as an active recovery path: do not remove or bypass it without a separately
+approved retirement plan, an empty-queue observation window, and rollback proof.
 
 ## Maintainer Comment Routing
 

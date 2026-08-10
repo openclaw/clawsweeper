@@ -217,13 +217,15 @@ advance the queue revision, revoke a lease, or count as new work.
 
 Exact-review result publication has a separate adaptive Actions lane. Source
 fallbacks start at 24 and rise in steps of 8 up to 48; production currently
-pins minimum, base, and maximum at 50. GitHub rate limits still lower the
-adaptive ceiling, and admission leaves 16 slots inside
-`WORKER_BUDGET` after active exact reviews. Its checkout, artifact handling,
-comment sync, and result routing are deterministic
-control-plane work: they consume GitHub runners, but not Codex slots. The
-comment router and the singleton lease reconciler follow the same accounting
-rule. Dashboard Codex capacity therefore counts only jobs whose steps execute
+pins minimum, base, and maximum at 50. The controller still records GitHub
+pressure, cooldown, and recovery telemetry, but the equal production minimum
+and maximum keep effective capacity fixed at 50; rate-limit feedback can lower
+the wider source fallback range. Admission leaves 16 slots inside
+`EXACT_REVIEW_ACTIONS_BUDGET` after 128 active exact reviews and 50 publishers.
+Its checkout, artifact handling, comment sync, and result routing are
+deterministic control-plane work: they consume GitHub runners, but not Codex
+slots. The comment router and the singleton lease reconciler follow the same
+accounting rule. Dashboard Codex capacity therefore counts only jobs whose steps execute
 Codex and does not deduct these control-plane workflows from `workers.max`.
 
 Legacy state-repository publication once limited exact-review preparation to
