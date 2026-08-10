@@ -2,7 +2,7 @@ import type { JsonValue, LooseRecord } from "./json-types.js";
 import { DEFAULT_ALLOWED_REPOSITORY_PERMISSIONS } from "./comment-router-core.js";
 import { currentProjectRepo, readMaxLiveWorkers } from "./lib.js";
 import { assertRepo, commaSet, positiveInteger } from "./comment-router-utils.js";
-import { AUTOMATION_LIMITS } from "./limits.js";
+import { AUTOMATION_LIMITS } from "../limits.js";
 import {
   DEFAULT_HEAD_PREFIX,
   DEFAULT_TARGET_REPO,

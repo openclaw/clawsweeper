@@ -18,7 +18,7 @@ import {
 import { ghJson, ghText } from "./github-cli.js";
 import { sleepMs } from "./timing.js";
 import { REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
-import { AUTOMATION_LIMITS } from "./limits.js";
+import { AUTOMATION_LIMITS } from "../limits.js";
 import {
   flushCommandActionEvents,
   recordCommandLifecycleFailure,

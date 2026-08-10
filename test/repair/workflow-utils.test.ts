@@ -33,7 +33,7 @@ import {
   WORKER_CONFIG,
   readWorkerConfig,
   workerLimit,
-} from "../../dist/repair/limits.js";
+} from "../../dist/limits.js";
 
 const APPLY_RUN_PATH = ".github/workflows/sweep.yml";
 const DEFAULT_APPLY_TITLE = "Apply default ClawSweeper closures for openclaw/openclaw";
