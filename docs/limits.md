@@ -291,8 +291,10 @@ Examples with the current config:
 
 - Quiet system: manual normal review can request 89 shards, with 104 background
   slots available after reserving 16 for interactive work and 8 for matrix
-  expansion. Scheduled plans offer up to 20 candidates to the 200/hour durable
-  admission budget instead of starting matrix shards.
+  expansion. When the queue capacity probe is unavailable, a single-target
+  scheduled plan falls back to offering up to 50 candidates to the durable
+  300-review/hour admission target with a 30-item burst instead of starting
+  matrix shards.
 - 4 active repair workers and 96 active background workers: normal review gets
   4 because `128 - 16 interactive reserve - 8 expansion reserve - 4 priority
   - 96 background = 4`.

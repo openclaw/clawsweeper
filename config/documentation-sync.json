@@ -54,6 +54,10 @@
           "text": "durable {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}}-review/hour budget with a {{EXACT_REVIEW_TARGET_BURST}}-item burst"
         },
         {
+          "document": "docs/limits.md",
+          "text": "a single-target scheduled plan falls back to offering up to 50 candidates to the durable {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}}-review/hour admission target with a {{EXACT_REVIEW_TARGET_BURST}}-item burst"
+        },
+        {
           "document": "docs/scheduler.md",
           "text": "total review admission target: {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}} items/hour across the fleet"
         },

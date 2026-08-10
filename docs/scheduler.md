@@ -403,11 +403,17 @@ The producer probes that field before its first enqueue and fails closed while
 an older Worker is still deployed, preventing a workflow-first rollout from
 bypassing the rate limiter.
 
-Each hourly normal-fanout step can offer
-`50 items/target * 12 targets = 600 items/hour`. The direct five-minute hot and
-normal schedules can each offer `50 * 12 = 600 items/hour`, so either lane has
-enough candidates to keep its token bucket fed despite dedupe or uneven fleet
-distribution. The queue admits at most 300 scheduled reviews/hour, which needs
+Normal fanout ordinarily divides one live queue-advertised candidate-capacity
+budget across the selected repositories; it does not grant 50 candidates to
+each target. If that capacity probe is unavailable, the bounded fallback for a
+10-minute cycle is `50 items/target * 12 targets = 600 items/cycle`. Six cycles
+per hour make that fallback's theoretical pre-filter ceiling 3,600 offers/hour
+before due filtering, planner capacity clamping, dedupe, and Worker admission.
+A direct five-minute schedule for one target also uses live advertised capacity;
+its fallback can offer `50 items/cycle * 12 cycles/hour = 600 items/hour` before
+the same bounds. These paths therefore have enough candidates to keep the
+shared token bucket fed despite dedupe or uneven fleet distribution. The queue
+admits at most 300 scheduled reviews/hour, which needs
 about `300 * 4.1 / 60 = 21` concurrent review workers at a 4.1-minute mean
 service time and budgets roughly 9,000 GitHub requests/hour. That leaves about
 6,000 requests in the shared 15,000-request installation allowance for exact
