@@ -61,6 +61,12 @@ function fixture(): string {
       "export const OPERATIONAL_QUEUE_DEGRADED_MS = 30 * 60 * 1000;",
       "export const OPERATIONAL_QUEUE_ZOMBIE_MS = 24 * 60 * 60 * 1000;",
       "export const OPERATIONAL_RUNNING_STALLED_MS = 150 * 60 * 1000;",
+      "export type OperationalHealth = {",
+      "  zombie_queued_runs: number;",
+      "  oldest_zombie_queued_minutes: number;",
+      "  approval_gated_runs: number;",
+      "  oldest_approval_gated_minutes: number;",
+      "};",
     ].join("\n"),
     "config/targets.json": JSON.stringify({ close: { issue: "implemented" } }),
     "config/documentation-sync.json": JSON.stringify({
@@ -135,6 +141,24 @@ test("reports operational health documentation drift", () => {
     );
     const findings = checkDocumentation(root);
     assert.ok(findings.some((finding) => finding.kind === "operational-health-claim"));
+  });
+});
+
+test("reports documented operational health fields missing from the runtime type", () => {
+  withFixture((root) => {
+    const sourcePath = join(root, "dashboard/operational-health.ts");
+    writeFileSync(
+      sourcePath,
+      String(readFileSync(sourcePath)).replace("  oldest_approval_gated_minutes: number;\n", ""),
+    );
+    const findings = checkDocumentation(root);
+    assert.ok(
+      findings.some(
+        (finding) =>
+          finding.kind === "operational-health-source" &&
+          finding.message.includes("oldest_approval_gated_minutes"),
+      ),
+    );
   });
 });
 

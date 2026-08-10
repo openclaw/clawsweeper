@@ -162,14 +162,34 @@ function checkOperationalHealthDocumentation({ root, findings }) {
         .reduce((total, value) => total * value, 1) / 60_000
     );
   };
-  const expected = [
-    `queued runs from ${minutes("OPERATIONAL_QUEUE_DEGRADED_MS")} through ${minutes("OPERATIONAL_QUEUE_ZOMBIE_MS")} minutes old degrade operational health`,
-    `queued runs older than ${minutes("OPERATIONAL_QUEUE_ZOMBIE_MS")} minutes are reported separately as zombies`,
-    `in-progress runs become stalled after ${minutes("OPERATIONAL_RUNNING_STALLED_MS")} minutes`,
+  const documentedFields = [
     "zombie_queued_runs",
     "oldest_zombie_queued_minutes",
     "approval_gated_runs",
     "oldest_approval_gated_minutes",
+  ];
+  const operationalHealthType = source.match(
+    /export type OperationalHealth = \{([\s\S]*?)\n\};/,
+  )?.[1];
+  for (const field of documentedFields) {
+    if (
+      !operationalHealthType ||
+      !new RegExp(`^\\s*${field}\\s*:`, "m").test(operationalHealthType)
+    ) {
+      addFinding(
+        findings,
+        sourcePath,
+        1,
+        "operational-health-source",
+        `documented field is missing from OperationalHealth: ${field}`,
+      );
+    }
+  }
+  const expected = [
+    `queued runs from ${minutes("OPERATIONAL_QUEUE_DEGRADED_MS")} through ${minutes("OPERATIONAL_QUEUE_ZOMBIE_MS")} minutes old degrade operational health`,
+    `queued runs older than ${minutes("OPERATIONAL_QUEUE_ZOMBIE_MS")} minutes are reported separately as zombies`,
+    `in-progress runs become stalled after ${minutes("OPERATIONAL_RUNNING_STALLED_MS")} minutes`,
+    ...documentedFields,
   ];
   for (const claim of expected) {
     if (!document.includes(claim)) {
