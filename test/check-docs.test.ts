@@ -53,7 +53,7 @@ function fixture(): string {
     "docs/README.md": "# Documentation Home\n",
     "docs/API_(legacy).md": "# Legacy API\n",
     "docs/live-dashboard.md":
-      "# Dashboard\n\nqueued runs from 30 through 1440 minutes old degrade operational health. queued runs older than 1440 minutes are reported separately as zombies. in-progress runs become stalled after 150 minutes. `zombie_queued_runs` `oldest_zombie_queued_minutes` `approval_gated_runs`\n",
+      "# Dashboard\n\nqueued runs from 30 through 1440 minutes old degrade operational health. queued runs older than 1440 minutes are reported separately as zombies. in-progress runs become stalled after 150 minutes. `zombie_queued_runs` `oldest_zombie_queued_minutes` `approval_gated_runs` `oldest_approval_gated_minutes`\n",
     "scripts/example.mjs": "export {};\n",
     ".github/workflows/ci.yml": "name: CI\n",
     "dashboard/wrangler.toml": 'CAPACITY = "50"\n',

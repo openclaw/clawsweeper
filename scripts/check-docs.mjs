@@ -169,6 +169,7 @@ function checkOperationalHealthDocumentation({ root, findings }) {
     "zombie_queued_runs",
     "oldest_zombie_queued_minutes",
     "approval_gated_runs",
+    "oldest_approval_gated_minutes",
   ];
   for (const claim of expected) {
     if (!document.includes(claim)) {
