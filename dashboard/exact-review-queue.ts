@@ -3628,9 +3628,12 @@ export class ExactReviewQueue {
     const priorDispatchConsecutiveFailures = Number(
       checkedState.dispatcher?.dispatchConsecutiveFailures || 0,
     );
+    // Parked reconciliation is optional maintenance. Its target-read failure
+    // must not block otherwise healthy pending review admission.
     let globalAdmissionFailure: ExactReviewDispatchFailure | null = null;
     for (const candidate of liveStates) {
       if (
+        candidate.queueState !== "pending" ||
         candidate.state.state !== "unavailable" ||
         !("failure" in candidate) ||
         candidate.failure.scope !== "global"

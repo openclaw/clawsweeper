@@ -16122,6 +16122,59 @@ test("exact-review queue retains open exhausted parked work and schedules anothe
   }
 });
 
+test("failed parked terminal check does not block healthy pending review dispatch", async () => {
+  const originalNow = Date.now;
+  const now = Date.parse("2026-08-10T16:30:00.000Z");
+  Date.now = () => now;
+  const harness = createExactReviewAdmissionHarness((_targetRepo, itemNumber) =>
+    itemNumber === 113_350
+      ? jsonResponse({ message: "temporary GitHub outage" }, { status: 503 })
+      : jsonResponse({ state: "open" }),
+  );
+  try {
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest("unavailable-exhausted-parked", 113_350, "opened"),
+    );
+    await harness.queue.fetch(
+      buildExactReviewQueueRequest("healthy-pending-review", 113_351, "opened"),
+    );
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      dispatcher?: { state?: string; reason?: string; parkedTerminalCheckedAt?: number };
+      items: Record<
+        string,
+        {
+          state: string;
+          attempts: number;
+          parkedReason?: string;
+          parkedRecoveryAttempts?: number;
+          parkedTerminalCheckedAt?: number;
+        }
+      >;
+    };
+    const parked = state.items["openclaw/gogcli#113350"];
+    parked.state = "parked";
+    parked.attempts = 8;
+    parked.parkedReason = "review_retry_exhausted";
+    parked.parkedRecoveryAttempts = 3;
+    await harness.storage.put("exact-review-queue", state);
+
+    await harness.queue.alarm();
+
+    const checked = (await harness.storage.get("exact-review-queue")) as typeof state;
+    assert.equal(checked.dispatcher?.state, "active");
+    assert.equal(checked.dispatcher?.reason, undefined);
+    assert.equal(checked.dispatcher?.parkedTerminalCheckedAt, now);
+    assert.equal(checked.items["openclaw/gogcli#113350"].state, "parked");
+    assert.equal(checked.items["openclaw/gogcli#113350"].attempts, 8);
+    assert.equal(checked.items["openclaw/gogcli#113350"].parkedTerminalCheckedAt, now);
+    assert.equal(checked.items["openclaw/gogcli#113351"].state, "dispatching");
+    assert.equal(harness.dispatched.length, 1);
+  } finally {
+    Date.now = originalNow;
+    harness.restore();
+  }
+});
+
 test("exact-review queue removes a terminal dispatch rejection after parked recovery is exhausted", async () => {
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "closed" }));
   try {
