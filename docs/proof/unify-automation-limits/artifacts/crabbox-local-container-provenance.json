@@ -1,0 +1,38 @@
+{
+  "schema": "clawsweeper-crabbox-proof-provenance/v1",
+  "claim": "docs/proof/unify-automation-limits/run-proof.sh preserves the pre-change limits union on the reviewed PR head inside a Docker-backed Crabbox local-container.",
+  "crabbox": {
+    "cli_version": "0.41.1",
+    "provider": "local-container",
+    "lease_id": "cbx_7f99f448f5d1",
+    "slug": "harbor-barnacle",
+    "run_id": "run_da41fab8ff24",
+    "machine_type": "node_24-bookworm",
+    "image": "node:24-bookworm",
+    "container_engine": "Docker 29.4.0 (OrbStack)",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1104 (clean remote checkout, --no-hydrate)",
+    "workdir": "/work/crabbox/cbx_7f99f448f5d1/fresh-pr-openclaw-clawsweeper-1104",
+    "sync_ms": 8894,
+    "command_ms": 4673,
+    "total_ms": 13592,
+    "end_to_end_ms": 24184,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0"
+  },
+  "reviewed_head": "87a6ae8c4555e6350ff4559086bc2c03e76382b6",
+  "baseline": {
+    "selected_ref": "origin/main",
+    "selected_sha": "3a38d3622a9b9874fe40f813dc7d1235ea4a024b",
+    "merge_base_sha": "35b5f622c968cf3acb2fbe8226ffeef801422a88"
+  },
+  "result": {
+    "proof_rc": 0,
+    "value_diff": "empty",
+    "check_limits": "passed"
+  }
+}

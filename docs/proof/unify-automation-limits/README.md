@@ -44,3 +44,15 @@ This proves deterministic config parsing, limit derivation, and lane-budget beha
 recorded scenarios. It does not dispatch GitHub Actions, exercise production queues, or claim that
 unrelated scheduler behavior is unchanged.
 
+## Crabbox provenance
+
+The same script passed unchanged at reviewed head
+`87a6ae8c4555e6350ff4559086bc2c03e76382b6` inside a Docker-backed Crabbox
+`local-container`, using Crabbox CLI 0.41.1, image `node:24-bookworm`, Docker 29.4.0 via OrbStack,
+and lease `cbx_7f99f448f5d1` (`harbor-barnacle`). The run used a clean
+`--fresh-pr openclaw/clawsweeper#1104 --no-hydrate` checkout, enabled Corepack in the unprivileged
+container user's `~/.local/bin`, produced an empty value diff, completed with `PROOF_RC=0`, and
+stopped the lease automatically.
+
+See the [machine-readable provenance](artifacts/crabbox-local-container-provenance.json) and
+[captured container stdout](artifacts/crabbox-local-container-stdout.log).
