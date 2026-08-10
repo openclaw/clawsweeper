@@ -187,7 +187,7 @@ function checkLinks({ root, relativeFile, text, inventory, findings }) {
     if (target.startsWith("<") && target.includes(">"))
       target = target.slice(1, target.indexOf(">"));
     else target = target.split(/\s+["']/)[0];
-    if (!target || /^(?:[a-z]+:|\/\/)/i.test(target)) return;
+    if (!target || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(target)) return;
 
     const [rawPath, rawAnchor] = target.split("#", 2);
     let decodedPath;

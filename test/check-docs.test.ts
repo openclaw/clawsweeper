@@ -24,6 +24,8 @@ function fixture(): string {
       "[Directory heading](docs/#documentation-home)",
       "[Explicit anchor](docs/guide.md#MixedCase)",
       "[Escaped HTML-like heading](docs/guide.md#inline-span-html)",
+      "[Custom URI scheme](web+clawsweeper://review/123)",
+      "[Hyphenated URI scheme](x-devonthink-item:ABC123)",
       "`[Literal](docs/missing.md)`",
       "``[Literal `tick`](docs/missing.md)``",
       "```markdown",
@@ -88,6 +90,16 @@ function withFixture(run: (root: string) => void): void {
 
 test("accepts synchronized documentation references", () => {
   withFixture((root) => assert.deepEqual(checkDocumentation(root), []));
+});
+
+test("accepts the full URI scheme syntax for external links", () => {
+  withFixture((root) => {
+    writeFileSync(
+      join(root, "README.md"),
+      "[Plus](web+clawsweeper://review/123)\n[Dot](x.dev-item:ABC123)\n[Hyphen](x-devonthink-item:ABC123)\n",
+    );
+    assert.deepEqual(checkDocumentation(root), []);
+  });
 });
 
 test("reports wrong-case links and missing anchors", () => {
