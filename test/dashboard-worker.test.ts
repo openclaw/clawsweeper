@@ -10013,6 +10013,8 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /Pending, dispatching, and leased queue handoffs/);
   assert.match(body, /oldest pending/);
   assert.match(body, /handoff\.message\|\|handoff\.reason/);
+  assert.match(body, /Handoff telemetry is unavailable in this snapshot/);
+  assert.match(body, /\["pending","dispatching","leased"\]\.every/);
   assert.match(body, /api\/health-history\?range="\+encodeURIComponent\(range\)/);
   assert.match(body, /function expandQueue/);
   assert.match(body, /function queueProjectionStage/);
