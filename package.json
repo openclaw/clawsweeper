@@ -39,8 +39,6 @@
     "repair:state-delta-paths": "node dist/repair/state-delta-paths.js",
     "repair:resolve-result-targets": "node dist/repair/resolve-result-targets.js",
     "repair:import-gitcrawl-low-signal": "node dist/repair/import-gitcrawl-low-signal-prs.js",
-    "repair:import-ghcrawl": "node dist/repair/import-gitcrawl-clusters.js",
-    "repair:import-low-signal": "node dist/repair/import-gitcrawl-low-signal-prs.js",
     "repair:worker": "node dist/repair/run-worker.js",
     "repair:action-session": "node dist/repair/action-session.js",
     "repair:collect-codex-debug": "node dist/repair/collect-codex-debug.js",

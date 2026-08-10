@@ -2071,7 +2071,7 @@ test("issue implementation workflow lets job intent choose dispatch capacity", (
     workflow.indexOf("\npermissions:"),
   );
 
-  assert.equal(dispatchInputs.match(/^      [a-z_]+:/gm)?.length, 10);
+  assert.equal(dispatchInputs.match(/^      [a-z_]+:/gm)?.length, 9);
   assert.doesNotMatch(workflow, /^\s+intake_runner:/m);
   assert.match(
     workflow,

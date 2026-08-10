@@ -40,7 +40,6 @@ import {
   readActionEvent,
   readActionEventShard,
   readAllSpooledActionEvents,
-  readSpooledActionEvents,
   validateActionEvent,
   writeActionEvent,
   writeActionEventShard,
@@ -302,7 +301,6 @@ test("spool directories isolate lossy repository slugs and readers verify canoni
   );
   fs.mkdirSync(path.dirname(misplacedPath), { recursive: true });
   fs.copyFileSync(event.path, misplacedPath);
-  assert.throws(() => readSpooledActionEvents(root, secondRepository), /spool repository mismatch/);
   assert.throws(() => readAllSpooledActionEvents(root), /spool path is not canonical/);
 });
 
@@ -714,10 +712,7 @@ test("event readers reject forged confidential event-key scopes", () => {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, `${actionLedgerJson(forged)}\n`, "utf8");
 
-  assert.throws(
-    () => readSpooledActionEvents(root, valid.subject.repository),
-    /confidential identifier/,
-  );
+  assert.throws(() => readAllSpooledActionEvents(root), /confidential identifier/);
 });
 
 test("the standard taxonomy covers six families without orphaned or duplicate types", () => {
@@ -1369,7 +1364,7 @@ test(
     }) as typeof fs.openSync;
     try {
       assert.throws(
-        () => readSpooledActionEvents(root, "openclaw/openclaw"),
+        () => readAllSpooledActionEvents(root),
         /changed action event spool entry file/,
       );
     } finally {
@@ -1402,7 +1397,7 @@ test(
       return originalOpenSync(filePath, flags, mode);
     }) as typeof fs.openSync;
     try {
-      assert.throws(() => readSpooledActionEvents(root, "openclaw/openclaw"), /refusing non-file/);
+      assert.throws(() => readAllSpooledActionEvents(root), /refusing non-file/);
     } finally {
       fs.openSync = originalOpenSync;
       if (fs.existsSync(written.path)) fs.rmSync(written.path);
@@ -1416,10 +1411,7 @@ test("spool readers reject unsafe entry types instead of skipping them", () => {
   const root = tempRoot();
   const written = writeActionEvent(root, reviewInput());
   fs.mkdirSync(path.join(path.dirname(written.path), "poison.json"));
-  assert.throws(
-    () => readSpooledActionEvents(root, "openclaw/openclaw"),
-    /refusing unsafe action event spool entry/,
-  );
+  assert.throws(() => readAllSpooledActionEvents(root), /refusing unsafe action event spool entry/);
 
   fs.rmSync(path.join(path.dirname(written.path), "poison.json"), { recursive: true });
   fs.writeFileSync(path.join(root, ".clawsweeper-repair", "action-events", "poison"), "data");
@@ -1531,16 +1523,13 @@ test("event readers reject duplicate keys and noncanonical durable JSON bytes", 
 
     assert.match(fs.readFileSync(written.path, "utf8"), new RegExp(concealed));
     assert.throws(
-      () => readSpooledActionEvents(root, "openclaw/openclaw"),
+      () => readAllSpooledActionEvents(root),
       /action event JSON contains a duplicate object key/,
     );
   }
 
   fs.writeFileSync(written.path, canonical.replace('{"action":', '{ "action":'));
-  assert.throws(
-    () => readSpooledActionEvents(root, "openclaw/openclaw"),
-    /action event JSON is not canonical/,
-  );
+  assert.throws(() => readAllSpooledActionEvents(root), /action event JSON is not canonical/);
 });
 
 test("direct event and shard reads enforce bounded allocation", () => {
@@ -2201,7 +2190,7 @@ test("spooled events remain independent and read in occurrence order", () => {
 
   assert.notEqual(later.path, earlier.path);
   assert.deepEqual(
-    readSpooledActionEvents(root, "openclaw/openclaw").map((event) => event.event_type),
+    readAllSpooledActionEvents(root).map((event) => event.event_type),
     [ACTION_EVENT_TYPES.reviewStarted, ACTION_EVENT_TYPES.reviewCompleted],
   );
 });
@@ -2670,7 +2659,7 @@ test("checked-in schema rejects values rejected by runtime normalization", () =>
         const event = JSON.parse(fs.readFileSync(written.path, "utf8"));
         event.evidence = [];
         fs.writeFileSync(written.path, `${JSON.stringify(event)}\n`);
-        return readSpooledActionEvents(root, "openclaw/openclaw");
+        return readAllSpooledActionEvents(root);
       },
     },
   ];
@@ -2725,7 +2714,7 @@ test("ledger file reads reject malformed UTF-8 and dot-only path segments", () =
   const content = fs.readFileSync(written.path);
   content[0] = 0xff;
   fs.writeFileSync(written.path, content);
-  assert.throws(() => readSpooledActionEvents(root, "openclaw/openclaw"), /invalid UTF-8/);
+  assert.throws(() => readAllSpooledActionEvents(root), /invalid UTF-8/);
 });
 
 test("event readers reject unknown fields instead of carrying unhashed data into shards", () => {
@@ -2735,10 +2724,7 @@ test("event readers reject unknown fields instead of carrying unhashed data into
   value.prompt = "unhashed private text";
   fs.writeFileSync(written.path, `${JSON.stringify(value)}\n`);
 
-  assert.throws(
-    () => readSpooledActionEvents(root, "openclaw/openclaw"),
-    /unknown or non-canonical fields/,
-  );
+  assert.throws(() => readAllSpooledActionEvents(root), /unknown or non-canonical fields/);
 });
 
 test("run URLs are limited to public GitHub workflow evidence", () => {

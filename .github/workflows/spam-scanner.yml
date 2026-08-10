@@ -40,11 +40,6 @@ on:
         required: false
         default: ""
         type: string
-      model:
-        description: "Internal Codex model alias"
-        required: true
-        default: internal
-        type: string
   schedule:
     - cron: "17 * * * *"
 
