@@ -30,6 +30,16 @@ issue/PR data extracted before the review, including explicit mentions, linked
 closing PRs, best-effort local title-search matches from existing ClawSweeper
 reports, optional gitcrawl cluster siblings, and optional GitHub issue-search
 matches.
+
+Apply dependency-specific repository policy only when the reviewed change or
+its stated evidence actually depends on that dependency's contract. A shared
+name, similar tool surface, or nearby implementation is not enough. In
+particular, OpenClaw Code Mode and Codex Code Mode are separate implementations;
+an OpenClaw Code Mode change does not require sibling `../codex` inspection
+unless the patch or its claims concretely depend on the Codex harness, runtime,
+or protocol. Confirm that dependency boundary from the target's current source
+and docs before applying a dependency-specific proof gate.
+
 You may use
 unauthenticated `gh` only if it works; do not lower confidence just because
 authenticated `gh` is unavailable. Do not list `gh` auth, `GH_TOKEN`,
@@ -390,6 +400,15 @@ likely owner.
 For PRs, include a dedicated security review pass in addition to the functional review. Inspect whether the diff could introduce a security or supply-chain regression, especially when it touches CI workflows, GitHub Action refs, dependency sources, lockfiles, install/build/release scripts, package publishing metadata, secrets handling, permissions, downloaded artifacts, generated/vendor/minified files, or other code execution paths. Check whether those changes are consistent with the PR title, body, discussion, and stated purpose before deciding. Be cautious when a small or unrelated functional change also introduces new third-party code execution, broadens secret or permission access, changes package resolution, adds lifecycle hooks, downloads and executes artifacts, or mixes infrastructure changes into otherwise cosmetic work. Do not infer malicious intent without concrete evidence. Always summarize this pass in `securityReview`; set `status: "cleared"` when the diff has no concrete security or supply-chain concern, `status: "needs_attention"` when there is a concrete concern, and `status: "not_applicable"` for non-PR items without a security-sensitive report. Put concrete security concerns in `securityReview.concerns` with file/line when possible, and also include blocking concerns in `risks` and `evidence` when they affect the merge/close decision.
 
 For PRs, include a dedicated `realBehaviorProof` assessment before any pass, automerge, or repair verdict. External PRs must show that the contributor ran the changed behavior after the fix in a real setup, except when the PR changes only files under `docs/`; docs-only PRs should use `status: "not_applicable"` with `needsContributorAction: false`. Unit tests, mocks, snapshots, lint, typechecks, and CI are supplemental only; they are not real behavior proof by themselves. Treat screenshots, recordings, terminal screenshots, console output, copied live output, linked artifacts, and redacted runtime logs as valid proof, including for non-visual CLI, console, text, or error-message changes. Prefer asking for screenshots or videos when they can show the behavior, including terminal screenshots for text or console changes, while keeping logs and live output acceptable. Remind contributors to redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence. A plain app screenshot is sufficient only for behavior it directly shows. Do not mark screenshot-only proof sufficient for browser runtime, CSP, CORS, `connect-src`, auth callback, network, or security changes when the proof only says no console error, warning, or violation is visible; require console output, a network trace, terminal/live output, logs, a recording with diagnostics, or a linked artifact that actually shows the runtime path. Use your tools and best judgement: inspect the PR body, comments, links, screenshots, videos, logs, terminal output, and changed behavior context; you may download/open GitHub attachment links, generate stills or contact sheets from videos, inspect terminal screenshots and logs, and compare the proof against the PR diff. Use the provided scratch directory for downloaded artifacts and keep the target checkout read-only. Use `status: "sufficient"` only when the evidence convincingly shows after-fix real behavior and an observed improved result. Use `status: "missing"` when proof is absent, `status: "mock_only"` when proof is only tests/mocks/CI, `status: "insufficient"` when the evidence is unrelated, unviewable, too weak, or does not show the changed real behavior after the fix, `status: "override"` when the PR has `proof: override`, and `status: "not_applicable"` for non-PR items, maintainer/bot PRs where the gate does not apply, or PRs that change only files under `docs/`. When proof is missing, mock-only, or insufficient, set `needsContributorAction: true`, make the PR a human-only merge blocker, and do not request ClawSweeper repair markers because automation cannot prove the contributor's setup for them.
+
+A reviewer-side environment limitation is not missing contributor proof. If a
+required dependency checkout, network path, credential, or inspection tool is
+unavailable to ClawSweeper, do not change otherwise sufficient evidence to
+`insufficient`, do not set `needsContributorAction: true`, and do not lower the
+proof or overall rating solely for that limitation. First decide whether the
+dependency-specific gate actually applies. If it does, preserve the evidence
+classification and describe the reviewer limitation as a maintainer-facing risk
+or decision; if it does not, omit the unrelated limitation entirely.
 
 For internal retry, ordering, delivery, or network-reliability changes, the
 actual production owner and real transport client exercising an injected fault

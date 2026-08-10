@@ -100,6 +100,35 @@ test("review prompts treat target AGENTS as optional review policy", () => {
   assert.match(commitPrompt, /keep it out of `result: findings`/);
 });
 
+test("review prompt scopes Codex policy to actual Codex dependency contracts", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /dependency-specific repository policy only when the reviewed change/);
+  assert.match(
+    prompt,
+    /shared\s+name, similar tool surface, or nearby implementation is not enough/,
+  );
+  assert.match(prompt, /OpenClaw Code Mode and Codex Code Mode are separate implementations/);
+  assert.match(prompt, /does not require sibling `\.\.\/codex` inspection/);
+  assert.match(prompt, /concretely depend on the Codex harness, runtime,\s+or protocol/);
+  assert.match(
+    prompt,
+    /Confirm that dependency boundary from the target's current source\s+and docs/,
+  );
+});
+
+test("review prompt keeps reviewer environment gaps out of contributor proof status", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(prompt, /reviewer-side environment limitation is not missing contributor proof/);
+  assert.match(prompt, /do not change otherwise sufficient evidence to\s+`insufficient`/);
+  assert.match(prompt, /do not set `needsContributorAction: true`/);
+  assert.match(prompt, /do not lower the\s+proof or overall rating solely for that limitation/);
+  assert.match(prompt, /preserve the evidence\s+classification/);
+  assert.match(prompt, /maintainer-facing risk\s+or decision/);
+  assert.match(prompt, /omit the unrelated limitation entirely/);
+});
+
 test("review prompt requires a dedicated securityReview section", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
