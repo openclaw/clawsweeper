@@ -104,17 +104,36 @@ test("review prompt scopes Codex policy to actual Codex dependency contracts", (
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
   assert.match(prompt, /dependency-specific repository policy only when the reviewed change/);
+  assert.match(prompt, /at least one\s+affirmative dependency signal/);
   assert.match(
     prompt,
-    /shared\s+name, similar tool surface, or nearby implementation is not enough/,
+    /patch directly imports, executes, generates\s+from, or tests against the dependency's code, schema, harness, runtime, or\s+protocol/,
   );
-  assert.match(prompt, /OpenClaw Code Mode and Codex Code Mode are separate implementations/);
-  assert.match(prompt, /does not require sibling `\.\.\/codex` inspection/);
-  assert.match(prompt, /concretely depend on the Codex harness, runtime,\s+or protocol/);
+  assert.match(prompt, /PR's behavior or proof claims require compatibility with that\s+contract/);
   assert.match(
     prompt,
-    /Confirm that dependency boundary from the target's current source\s+and docs/,
+    /target's current source or docs identify the dependency as the\s+authoritative implementation or test oracle/,
   );
+  assert.match(
+    prompt,
+    /Cite the\s+exact file, symbol, document, or PR claim that establishes the signal in\s+`evidence`/,
+  );
+  assert.match(prompt, /If none can be cited, the dependency-specific gate does not apply/);
+  assert.match(
+    prompt,
+    /shared name, similar tool surface, nearby implementation, optional\s+integration, or unavailable sibling checkout is not an affirmative signal/,
+  );
+  assert.match(prompt, /OpenClaw Code Mode and Codex Code Mode are separate\s+implementations/);
+  assert.match(prompt, /does not require sibling\s+`\.\.\/codex` inspection/);
+  assert.match(
+    prompt,
+    /affirmative signals above establishes\s+that the patch or its claims depend on the Codex harness, runtime, or protocol/,
+  );
+  assert.match(
+    prompt,
+    /Confirm the implementation boundary from the target's current source and docs/,
+  );
+  assert.match(prompt, /do not infer it from naming or tool shape/);
 });
 
 test("review prompt keeps reviewer environment gaps out of contributor proof status", () => {

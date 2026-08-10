@@ -32,13 +32,24 @@ reports, optional gitcrawl cluster siblings, and optional GitHub issue-search
 matches.
 
 Apply dependency-specific repository policy only when the reviewed change or
-its stated evidence actually depends on that dependency's contract. A shared
-name, similar tool surface, or nearby implementation is not enough. In
-particular, OpenClaw Code Mode and Codex Code Mode are separate implementations;
-an OpenClaw Code Mode change does not require sibling `../codex` inspection
-unless the patch or its claims concretely depend on the Codex harness, runtime,
-or protocol. Confirm that dependency boundary from the target's current source
-and docs before applying a dependency-specific proof gate.
+its stated evidence actually depends on that dependency's contract. Treat the
+gate as applicable only when the reviewed material supplies at least one
+affirmative dependency signal: the patch directly imports, executes, generates
+from, or tests against the dependency's code, schema, harness, runtime, or
+protocol; the PR's behavior or proof claims require compatibility with that
+contract; or the target's current source or docs identify the dependency as the
+authoritative implementation or test oracle for the changed behavior. Cite the
+exact file, symbol, document, or PR claim that establishes the signal in
+`evidence`. If none can be cited, the dependency-specific gate does not apply.
+A shared name, similar tool surface, nearby implementation, optional
+integration, or unavailable sibling checkout is not an affirmative signal.
+
+In particular, OpenClaw Code Mode and Codex Code Mode are separate
+implementations; an OpenClaw Code Mode change does not require sibling
+`../codex` inspection unless one of the affirmative signals above establishes
+that the patch or its claims depend on the Codex harness, runtime, or protocol.
+Confirm the implementation boundary from the target's current source and docs;
+do not infer it from naming or tool shape.
 
 You may use
 unauthenticated `gh` only if it works; do not lower confidence just because
