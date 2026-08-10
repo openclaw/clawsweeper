@@ -15,16 +15,17 @@ manual.
 
 ## Start here
 
-| Goal | First page | Next step |
-| --- | --- | --- |
-| Understand the product boundary | [Project vision](../VISION.md) | [Orchestration](orchestration.md) |
-| Set up a development checkout | [Contributing](../CONTRIBUTING.md) | [Local run](../README.md#local-run) |
-| Understand review and scheduling | [Scheduler](scheduler.md) | [Automation limits](limits.md) |
-| Add or operate a target repository | [Target repositories](target-repositories.md) | [Target dispatcher](target-dispatcher.md) |
-| Inspect production without mutation | [Live dashboard](live-dashboard.md) | [OpenClaw Bay](openclaw-bay-demo.md) |
-| Operate repair or automerge | [Repair entry point](repair/README.md) | [Repair operations](repair/operations.md) |
-| Prepare proof for a change | [Contributing](../CONTRIBUTING.md) | [Agent instructions](../AGENTS.md) |
-| Review a local committed range | [Local branch review](commit-sweeper.md) | `pnpm local-review -- --base origin/main` |
+| Goal                                                | First page                                    | Next step                                           |
+| --------------------------------------------------- | --------------------------------------------- | --------------------------------------------------- |
+| Understand the product boundary                     | [Project vision](../VISION.md)                | [Orchestration](orchestration.md)                   |
+| Set up a development checkout                       | [Contributing](../CONTRIBUTING.md)            | [Local run](../README.md#local-run)                 |
+| Understand review and scheduling                    | [Scheduler](scheduler.md)                     | [Automation limits](limits.md)                      |
+| Add or operate a target repository                  | [Target repositories](target-repositories.md) | [Target dispatcher](target-dispatcher.md)           |
+| Inspect production without mutation                 | [Live dashboard](live-dashboard.md)           | [OpenClaw Bay](openclaw-bay-demo.md)                |
+| Inspect observer routes and configuration ownership | [Public observer API](public-api.md)          | [Operator configuration](operator-configuration.md) |
+| Operate repair or automerge                         | [Repair entry point](repair/README.md)        | [Repair operations](repair/operations.md)           |
+| Prepare proof for a change                          | [Contributing](../CONTRIBUTING.md)            | [Agent instructions](../AGENTS.md)                  |
+| Review a local committed range                      | [Local branch review](commit-sweeper.md)      | `pnpm local-review -- --base origin/main`           |
 
 Production mutation commands are intentionally not repeated here. Follow the
 linked runbook, confirm its status and source of truth, and keep all execution,

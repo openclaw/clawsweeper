@@ -23,6 +23,8 @@
       "name": "Operations",
       "pages": [
         "limits.md",
+        "public-api.md",
+        "operator-configuration.md",
         "live-dashboard.md",
         "openclaw-bay-demo.md",
         "openclaw-event-hooks.md",

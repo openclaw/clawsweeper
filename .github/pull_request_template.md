@@ -52,6 +52,24 @@ concrete benefit and use user-facing language. If there is no user-visible
 impact, say so plainly.
 -->
 
+## OpenClaw Bay Impact
+
+<!--
+For lifecycle/review-publication, queue/workflow, status/telemetry, or dashboard
+data-contract changes, name the affected Bay surface and its proof. Otherwise,
+state why Bay is unaffected. See AGENTS.md.
+-->
+
+## Documentation Lifecycle
+
+<!--
+For new or changed documentation, classify it as active, proposed,
+compatibility-only, or historical. Active runbooks and volatile references must
+name their role owner, source of truth, verified scope/revision, and update
+triggers. Otherwise state that no documentation lifecycle changes. See
+CONTRIBUTING.md.
+-->
+
 ## Evidence
 
 <!--

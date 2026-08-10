@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "publicObserverRoutes": [
+    { "path": "/api/health", "method": "ANY" },
+    { "path": "/api/exact-review-queue", "method": "GET" },
+    { "path": "/api/durable-lifecycle-bay", "method": "GET" },
+    { "path": "/api/live-activity-bay", "method": "GET" },
+    { "path": "/api/recent-durable-publication-events", "method": "GET" },
+    { "path": "/api/exact-review-queue/item", "method": "GET" },
+    { "path": "/api/exact-review-queue/reviews", "method": "GET" },
+    { "path": "/api/review-observability", "method": "GET" },
+    { "path": "/api/review-coverage", "method": "GET" },
+    { "path": "/api/apply-observability", "method": "GET" },
+    { "path": "/api/health-history", "method": "GET" },
+    { "path": "/api/automerge-metrics", "method": "GET" },
+    { "path": "/api/status", "method": "ANY" },
+    { "path": "/api/triage", "method": "ANY" },
+    { "path": "/api/pr-proof-triage", "method": "ANY" }
+  ],
+  "auditedDashboardVariables": [
+    "CLAWSWEEPER_REPO",
+    "WORKER_DETAIL_RUN_LIMIT",
+    "WORKER_JOB_FETCH_CONCURRENCY",
+    "WORKER_JOB_CACHE_TTL_SECONDS",
+    "WORKER_HEALTH_CACHE_TTL_SECONDS",
+    "WORKER_HEALTH_FETCH_CONCURRENCY",
+    "AUTOMERGE_CACHE_TTL_SECONDS",
+    "RECENT_CLOSED_CACHE_TTL_SECONDS",
+    "INCLUDE_CI_STATUS",
+    "REVIEW_OBSERVABILITY_REQUIRED",
+    "REVIEW_RECOVERY_ENABLED"
+  ],
+  "auditedWorkflowSecrets": [
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "KIMI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "CLOUDFLARE_ACCESS_CLIENT_ID",
+    "CLOUDFLARE_ACCESS_CLIENT_SECRET",
+    "OPENCLAW_CLOUDFLARE_ACCESS_API_TOKEN",
+    "OPENCLAW_CLOUDFLARE_CONFIG_API_TOKEN",
+    "OPENCLAW_CLOUDFLARE_PAGES_API_TOKEN",
+    "OPENCLAW_REPORTS_ACCESS_CLIENT_ID",
+    "OPENCLAW_REPORTS_ACCESS_CLIENT_SECRET"
+  ]
+}

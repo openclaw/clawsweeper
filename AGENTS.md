@@ -3,6 +3,12 @@
 ClawSweeper is the conservative maintenance bot for OpenClaw repositories.
 Keep changes narrow, evidence-backed, and automation-safe.
 
+`AGENTS.md` is the canonical repository-wide coding-agent policy. Task-specific
+workflows under `.agents/skills/` are opt-in procedures and do not override this
+file. This repository does not currently maintain `AGENT.md`, `CLAUDE.md`, or
+Cursor aliases; agents that do not discover `AGENTS.md` automatically must be
+directed here rather than given a duplicated policy copy.
+
 ## Structure
 
 - Main code: `src/clawsweeper.ts`.
