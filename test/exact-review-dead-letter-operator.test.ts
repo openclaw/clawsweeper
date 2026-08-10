@@ -221,7 +221,7 @@ test("parked review reconciliation plans by default and executes terminal resolv
     assert.equal(mutations.filter((entry) => entry.url?.endsWith("/resolve")).length, 2);
     const recovery = mutations.find((entry) => entry.url?.endsWith("/recover-fresh"));
     assert.deepEqual(recovery.payload.items, [
-      { item_key: "openclaw/repo#1", updated_at_ms: 1_000 },
+      { item_key: "openclaw/repo#1", revision: 1, updated_at_ms: 1_000 },
     ]);
     assert.match(recovery.payload.idempotency_key, /^parked-reconcile:[a-f0-9]{64}$/);
     const artifact = JSON.parse(await readFile(join(directory, "executed.json"), "utf8"));
@@ -2760,6 +2760,7 @@ function row(
 function parkedRow(itemKey, targetRepo, itemNumber, updatedAtMs) {
   return {
     item_key: itemKey,
+    revision: 1,
     target_repo: targetRepo,
     item_number: itemNumber,
     item_kind: "issue",

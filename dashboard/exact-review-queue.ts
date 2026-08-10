@@ -4575,6 +4575,8 @@ export class ExactReviewQueue {
         (item) =>
           item.state === "parked" &&
           !exactReviewQueueIsPublication(item) &&
+          exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) >=
+            EXACT_REVIEW_PARKED_RECOVERY_LIMIT &&
           item.key.localeCompare(cursor) > 0,
       )
       .sort((left, right) => left.key.localeCompare(right.key))
@@ -4584,6 +4586,7 @@ export class ExactReviewQueue {
       ok: true,
       parked_reviews: page.map((item) => ({
         item_key: item.key,
+        revision: item.revision,
         target_repo: item.decision.targetRepo,
         item_number: item.decision.itemNumber,
         item_kind: item.decision.itemKind,
@@ -4621,7 +4624,7 @@ export class ExactReviewQueue {
           !item ||
           item.state !== "parked" ||
           exactReviewQueueIsPublication(item) ||
-          item.updatedAt !== expected.updatedAt
+          item.revision !== expected.revision
         ) {
           skipped += 1;
           continue;
@@ -4681,7 +4684,7 @@ export class ExactReviewQueue {
           !item ||
           item.state !== "parked" ||
           exactReviewQueueIsPublication(item) ||
-          item.updatedAt !== expected.updatedAt ||
+          item.revision !== expected.revision ||
           exactReviewQueueActiveReviewCount(state) >= exactReviewQueueCapacity(this.env)
         ) {
           skipped += 1;
@@ -10391,24 +10394,27 @@ function exactReviewDeadLetterIds(value): string[] | null {
 function exactReviewParkedOperatorItems(
   value: unknown,
   maximum: number,
-): Array<{ itemKey: string; updatedAt: number }> | null {
+): Array<{ itemKey: string; revision: number; updatedAt: number }> | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > maximum) return null;
-  const items: Array<{ itemKey: string; updatedAt: number }> = [];
+  const items: Array<{ itemKey: string; revision: number; updatedAt: number }> = [];
   const keys = new Set<string>();
   for (const raw of value) {
     const item = objectValue(raw);
     const itemKey = String(item.item_key || "").trim();
+    const revision = Number(item.revision);
     const updatedAt = Number(item.updated_at_ms);
     if (
       !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(itemKey) ||
       keys.has(itemKey.toLowerCase()) ||
+      !Number.isSafeInteger(revision) ||
+      revision < 1 ||
       !Number.isSafeInteger(updatedAt) ||
       updatedAt < 1
     ) {
       return null;
     }
     keys.add(itemKey.toLowerCase());
-    items.push({ itemKey, updatedAt });
+    items.push({ itemKey, revision, updatedAt });
   }
   return items;
 }

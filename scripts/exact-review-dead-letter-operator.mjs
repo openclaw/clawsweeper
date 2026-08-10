@@ -761,7 +761,7 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args }) {
       summary.recovered_targets += admitted.length;
     } else if (admitted.length) {
       const identity = admitted
-        .map((row) => `${row.item_key}:${row.updated_at_ms}`)
+        .map((row) => `${row.item_key}:${row.revision}:${row.updated_at_ms}`)
         .sort()
         .join("\n");
       const result = await signedPost({
@@ -819,11 +819,14 @@ async function loadParkedReviewInventory({ queueUrl, secret, maxRows }) {
 function sanitizeParkedReviewRow(row) {
   const value = row && typeof row === "object" ? row : {};
   const itemKey = String(value.item_key || "");
+  const revision = Number(value.revision);
   const targetRepo = String(value.target_repo || "");
   const itemNumber = Number(value.item_number);
   const updatedAtMs = Number(value.updated_at_ms);
   if (
     !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(itemKey) ||
+    !Number.isSafeInteger(revision) ||
+    revision < 1 ||
     !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo) ||
     !Number.isSafeInteger(itemNumber) ||
     itemNumber < 1 ||
@@ -834,6 +837,7 @@ function sanitizeParkedReviewRow(row) {
   }
   return {
     item_key: itemKey,
+    revision,
     target_repo: targetRepo,
     item_number: itemNumber,
     item_kind: String(value.item_kind || ""),
@@ -847,7 +851,7 @@ function sanitizeParkedReviewRow(row) {
 }
 
 function parkedMutationItem(row) {
-  return { item_key: row.item_key, updated_at_ms: row.updated_at_ms };
+  return { item_key: row.item_key, revision: row.revision, updated_at_ms: row.updated_at_ms };
 }
 
 async function inspectParkedReviewTarget(target) {

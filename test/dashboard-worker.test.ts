@@ -3342,7 +3342,7 @@ test("scheduled review feed is lane-paced and exposes its configured target", as
 test("scheduled untracked reviews are ready and claimable within one tick when 122 slots are free", async () => {
   const storage = new MemoryDurableStorage();
   const active = Object.fromEntries(
-    Array.from({ length: 6 }, (_, index) => {
+    Array.from({ length: 7 }, (_, index) => {
       const item = leasedExactReviewQueueItem(120_000 + index, String(120_000 + index));
       return [item.key, item];
     }),
@@ -3788,14 +3788,14 @@ test("parked review inventory and mutations require the operator signature", asy
     {
       path: "resolve",
       payload: {
-        items: [{ item_key: "openclaw/gogcli#1", updated_at_ms: 1 }],
+        items: [{ item_key: "openclaw/gogcli#1", revision: 1, updated_at_ms: 1 }],
         note: "terminal target",
       },
     },
     {
       path: "recover-fresh",
       payload: {
-        items: [{ item_key: "openclaw/gogcli#1", updated_at_ms: 1 }],
+        items: [{ item_key: "openclaw/gogcli#1", revision: 1, updated_at_ms: 1 }],
         idempotency_key: "parked-reconcile:test",
       },
     },
@@ -16274,7 +16274,7 @@ test("parked review operator routes paginate, resolve, and recover idempotently 
       const item = leasedExactReviewQueueItem(114_000 + index, `91400${index}`);
       item.state = "parked";
       item.parkedReason = "review_retry_exhausted";
-      item.parkedRecoveryAttempts = 3;
+      item.parkedRecoveryAttempts = index === 6 ? 2 : 3;
       item.parkedRecoveryAt = undefined;
       item.attempts = 8;
       item.reviewFailureAttempts = 8;
@@ -16298,6 +16298,19 @@ test("parked review operator routes paginate, resolve, and recover idempotently 
     )
   ).json();
   assert.equal(first.parked_reviews.length, 2);
+  const all = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/parked-reviews/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 50 }),
+      }),
+    )
+  ).json();
+  assert.equal(all.parked_reviews.length, 6);
+  assert.equal(
+    all.parked_reviews.some((item) => item.item_key === "openclaw/openclaw#114006"),
+    false,
+  );
   assert.equal(first.parked_reviews[0].item_key, "openclaw/openclaw#114000");
   assert.deepEqual(
     Object.keys(first.parked_reviews[0]).sort(),
@@ -16308,6 +16321,7 @@ test("parked review operator routes paginate, resolve, and recover idempotently 
       "last_failure_reason",
       "parked_reason",
       "parked_recovery_attempts",
+      "revision",
       "target_repo",
       "item_number",
       "updated_at",
@@ -16336,7 +16350,13 @@ test("parked review operator routes paginate, resolve, and recover idempotently 
     new Request("https://clawsweeper-exact-review-queue/parked-reviews/resolve", {
       method: "POST",
       body: JSON.stringify({
-        items: [{ item_key: terminal.item_key, updated_at_ms: terminal.updated_at_ms }],
+        items: [
+          {
+            item_key: terminal.item_key,
+            revision: terminal.revision,
+            updated_at_ms: terminal.updated_at_ms,
+          },
+        ],
         note: "automatic reconciliation: terminal test target",
       }),
     }),
@@ -16345,9 +16365,20 @@ test("parked review operator routes paginate, resolve, and recover idempotently 
 
   const recoverable = first.parked_reviews[1];
   const recoveryPayload = {
-    items: [{ item_key: recoverable.item_key, updated_at_ms: recoverable.updated_at_ms }],
+    items: [
+      {
+        item_key: recoverable.item_key,
+        revision: recoverable.revision,
+        updated_at_ms: recoverable.updated_at_ms,
+      },
+    ],
     idempotency_key: "parked-reconcile:test:114001",
   };
+  const observed = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { updatedAt: number }>;
+  };
+  observed.items[recoverable.item_key].updatedAt += 5 * 60_000;
+  await storage.put("exact-review-queue", observed);
   const recover = () =>
     queue.fetch(
       new Request("https://clawsweeper-exact-review-queue/parked-reviews/recover-fresh", {
@@ -16426,7 +16457,11 @@ test("parked review operator routes paginate, resolve, and recover idempotently 
                   updated_at_ms: now + 7,
                 },
               ])
-              .map((item) => ({ item_key: item.item_key, updated_at_ms: item.updated_at_ms })),
+              .map((item) => ({
+                item_key: item.item_key,
+                revision: item.revision,
+                updated_at_ms: item.updated_at_ms,
+              })),
             idempotency_key: "parked-reconcile:over-cap",
           }),
         }),
