@@ -1405,7 +1405,8 @@ export async function validateCanonicalRecordTupleMutation(
   }
   const inputKey = String(mutation.key || "").trim();
   const keyMatch = /^([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\/([1-9]\d*)$/.exec(inputKey);
-  const repoSlug = validateRepoSlug(keyMatch?.[1])?.toLowerCase() ?? null;
+  const inputRepoSlug = validateRepoSlug(keyMatch?.[1]);
+  const repoSlug = inputRepoSlug?.toLowerCase() ?? null;
   const itemId = Number(keyMatch?.[2]);
   if (!repoSlug || !Number.isSafeInteger(itemId) || itemId < 1) {
     throw new Error("invalid canonical tuple key");
@@ -1421,8 +1422,8 @@ export async function validateCanonicalRecordTupleMutation(
     const operation =
       raw && typeof raw === "object" ? raw : ({} as CanonicalRecordTupleMutationOperation);
     const tuple = canonicalTuplePath(String(operation.path || ""));
-    if (!tuple || tuple.repoSlug !== repoSlug || tuple.itemId !== itemId) {
-      throw new Error(`canonical tuple path is outside ${key}: ${String(operation.path)}`);
+    if (!tuple || !repositoryNamesEqual(tuple.repoSlug, repoSlug) || tuple.itemId !== itemId) {
+      throw new Error(`canonical tuple path is outside ${inputKey}: ${String(operation.path)}`);
     }
     if (sections.has(tuple.section)) {
       throw new Error(`canonical tuple repeats section ${tuple.section}`);
@@ -1545,7 +1546,7 @@ function validateCanonicalTuplePacketReference(
     }
     return;
   }
-  if (digest !== packet.digest || pointer !== packet.path) {
+  if (digest !== packet.digest || !recordPathsEqualIgnoringRepositoryCase(pointer, packet.path)) {
     throw new Error(`canonical tuple decision packet reference is inconsistent: ${key}`);
   }
 }
@@ -1587,7 +1588,7 @@ export async function validateDirectPublicationPlan(
   if (plan.operations.length > EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES) {
     throw new Error("a direct publication plan exceeds the exact-review tuple file limit");
   }
-  const repoSlug = `${itemIdentity[1]}-${itemIdentity[2]}`.toLowerCase();
+  const repoSlug = `${itemIdentity[1]}-${itemIdentity[2]}`;
   const itemId = Number(itemIdentity[3]);
   const paths = new Set<string>();
   let totalBytes = 0;
@@ -1600,7 +1601,7 @@ export async function validateDirectPublicationPlan(
     }
     paths.add(path);
     const tuple = canonicalTuplePath(path);
-    if (!tuple || tuple.repoSlug !== repoSlug || tuple.itemId !== itemId) {
+    if (!tuple || !repositoryNamesEqual(tuple.repoSlug, repoSlug) || tuple.itemId !== itemId) {
       throw new Error(`direct publication path is outside ${repoSlug}#${itemId}: ${path}`);
     }
     if (operation.mode !== "100644") throw new Error(`invalid mutation mode for ${path}`);
@@ -1790,6 +1791,23 @@ function canonicalTuplePath(path: string) {
   const section = match[2] as ExactReviewTupleRecordSection;
   if ((section === "decision-packets") !== (match[4] === "json")) return null;
   return { repoSlug: match[1]!, section, itemId: Number(match[3]) };
+}
+
+function repositoryNamesEqual(left: string, right: string) {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+function recordPathsEqualIgnoringRepositoryCase(left: string | undefined, right: string) {
+  if (left === undefined) return false;
+  const leftTuple = canonicalTuplePath(left);
+  const rightTuple = canonicalTuplePath(right);
+  return Boolean(
+    leftTuple &&
+    rightTuple &&
+    repositoryNamesEqual(leftTuple.repoSlug, rightTuple.repoSlug) &&
+    leftTuple.section === rightTuple.section &&
+    leftTuple.itemId === rightTuple.itemId,
+  );
 }
 
 function boundedItemKey(value: unknown) {

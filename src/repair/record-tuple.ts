@@ -494,7 +494,7 @@ function validatePacketReference(
     }
     return;
   }
-  if (pointer !== tuple.paths.packet) {
+  if (!recordPathsEqualIgnoringRepositoryCase(pointer, tuple.paths.packet)) {
     throw tupleError(tuple.paths, `${label} points to unexpected packet path ${pointer}`);
   }
   if (!/^[a-f0-9]{64}$/.test(digest)) {
@@ -536,12 +536,12 @@ function validatePacketSemantics(
     throw tupleError(tuple.paths, `${label} decision packet has malformed subject identity`);
   }
   if (
-    subject.repo.replace("/", "-") !== tuple.paths.repository ||
+    !repositoryNamesEqual(subject.repo.replace("/", "-"), tuple.paths.repository) ||
     String(subject.number) !== tuple.paths.number
   ) {
     throw tupleError(tuple.paths, `${label} decision packet belongs to another subject`);
   }
-  if (!source || source.reportPath !== primaryPath) {
+  if (!source || !recordPathsEqualIgnoringRepositoryCase(source.reportPath, primaryPath)) {
     throw tupleError(tuple.paths, `${label} decision packet points to another primary record`);
   }
   const primaryNumber = frontMatter.get("number");
@@ -549,9 +549,23 @@ function validatePacketSemantics(
   if (primaryNumber !== undefined && primaryNumber !== tuple.paths.number) {
     throw tupleError(tuple.paths, `${label} primary record has mismatched number`);
   }
-  if (primaryRepository !== undefined && primaryRepository !== subject.repo) {
+  if (primaryRepository !== undefined && !repositoryNamesEqual(primaryRepository, subject.repo)) {
     throw tupleError(tuple.paths, `${label} primary record has mismatched repository`);
   }
+}
+
+function repositoryNamesEqual(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+function recordPathsEqualIgnoringRepositoryCase(left: unknown, right: string): boolean {
+  if (typeof left !== "string") return false;
+  const normalize = (value: string) =>
+    value.replace(
+      /^records\/([^/]+)\//,
+      (_match, repository: string) => `records/${repository.toLowerCase()}/`,
+    );
+  return normalize(left) === normalize(right);
 }
 
 function parseFrontMatter(markdown: string): Map<string, string> {

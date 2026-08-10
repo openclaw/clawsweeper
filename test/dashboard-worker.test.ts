@@ -16603,7 +16603,22 @@ test("fallback tuple publication normalizes mixed-case keys onto existing lowerc
     ...operation,
     path: operation.path.replace("steipete-codexbar", "steipete-CodexBar"),
   }));
-  const rejected = await queue.fetch(stateAppendQueueRequest("/records/tuples", uppercasePaths));
+  const casingQueue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const uppercaseAccepted = await casingQueue.fetch(
+    stateAppendQueueRequest("/records/tuples", uppercasePaths),
+  );
+  assert.equal(uppercaseAccepted.status, 202);
+  assert.equal((await uppercaseAccepted.json()).accepted, true);
+
+  const differentRepository = structuredClone(mutation);
+  differentRepository.deliveryId = "record-tuple:mixed-case:2831:different-repository";
+  differentRepository.operations = differentRepository.operations.map((operation) => ({
+    ...operation,
+    path: operation.path.replace("steipete-codexbar", "steipete-other"),
+  }));
+  const rejected = await casingQueue.fetch(
+    stateAppendQueueRequest("/records/tuples", differentRepository),
+  );
   assert.equal(rejected.status, 400);
   assert.deepEqual(await rejected.json(), { error: "invalid_canonical_record_tuple" });
 });
