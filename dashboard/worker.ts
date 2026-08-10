@@ -9411,9 +9411,9 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   width: calc(100% - 24px);
   margin-left: 8px;
 }
-.review-coverage > summary:hover h2 { color: var(--claw); }
+.review-coverage > summary:hover .coverage-summary-label { color: var(--claw); }
 .review-coverage > summary:focus-visible { outline: 2px solid var(--claw); outline-offset: 4px; }
-.review-coverage > summary h2 { display: inline; margin: 0; }
+.coverage-summary-label { color: var(--ink); font-family: var(--font-heading); font-size: 18px; font-weight: 800; }
 .review-coverage > summary .muted { text-align: right; }
 .review-coverage[open] > summary { margin-bottom: 14px; }
 .coverage-fleets { display: grid; gap: 10px; margin-top: 14px; }
@@ -9582,10 +9582,11 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
     </div>
     <div id="workers"></div>
   </section>
+  <h2 id="review-coverage-title">Fleet Review Coverage</h2>
   <details class="review-coverage">
     <summary>
       <span class="coverage-summary-content">
-        <h2 id="review-coverage-title">Fleet Review Coverage</h2>
+        <span class="coverage-summary-label">Explore repository coverage</span>
         <span class="muted" id="review-coverage-note">Open items reviewed in the trailing 7 days</span>
       </span>
     </summary>

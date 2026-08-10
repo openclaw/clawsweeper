@@ -21629,8 +21629,13 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /<details class="review-coverage">/);
   assert.match(
     html,
-    /<summary>\s*<span class="coverage-summary-content">\s*<h2 id="review-coverage-title">Fleet Review Coverage<\/h2>/,
+    /<h2 id="review-coverage-title">Fleet Review Coverage<\/h2>\s*<details class="review-coverage">/,
   );
+  assert.match(
+    html,
+    /<summary>\s*<span class="coverage-summary-content">\s*<span class="coverage-summary-label">Explore repository coverage<\/span>/,
+  );
+  assert.doesNotMatch(html, /<summary>(?:(?!<\/summary>)[\s\S])*<h2/);
   assert.doesNotMatch(html, /\.review-coverage > summary \{[^}]*display: flex/);
   assert.doesNotMatch(html, /<details class="review-coverage" open>/);
   assert.match(html, /aria-labelledby="review-coverage-title"/);
