@@ -68,6 +68,7 @@ import {
 import { ExactReviewLifecycleTelemetryStore } from "./exact-review-lifecycle-telemetry.ts";
 import { recentDurablePublicationEvents } from "./recent-durable-publication-events.ts";
 import { sanitizedServerError } from "./error-safety.ts";
+import { githubApiUrl } from "./github-api.ts";
 
 const RECENT_DURABLE_PUBLICATION_EVENTS_CACHE_MS = 60_000;
 
@@ -3314,6 +3315,7 @@ export class ExactReviewQueue {
       try {
         const token = await exactReviewDispatchToken(this.env);
         await dispatchExactReviewBatchWorkflow({
+          env: this.env,
           token,
           dispatchId: batchDispatchId,
           dispatchedAt: new Date(batchDispatchRecordedAt).toISOString(),
@@ -3366,7 +3368,11 @@ export class ExactReviewQueue {
     };
     try {
       const token = await exactReviewDispatchToken(this.env);
-      preflight = { ok: true, token, workflowState: await exactReviewWorkflowState(token) };
+      preflight = {
+        ok: true,
+        token,
+        workflowState: await exactReviewWorkflowState(token, this.env),
+      };
     } catch {
       preflight = { ok: false };
     }
@@ -3486,7 +3492,7 @@ export class ExactReviewQueue {
           const token = await targetTokenFor(candidate.decision.targetRepo);
           return {
             ...candidate,
-            state: await exactReviewTargetItemState(token, candidate.decision),
+            state: await exactReviewTargetItemState(token, candidate.decision, this.env),
           };
         } catch (error) {
           const failure = exactReviewAdmissionFailure(error);
@@ -3516,7 +3522,7 @@ export class ExactReviewQueue {
           const token = await targetTokenFor(candidate.decision.targetRepo);
           return {
             ...candidate,
-            state: await exactReviewTargetItemState(token, candidate.decision),
+            state: await exactReviewTargetItemState(token, candidate.decision, this.env),
           };
         } catch (error) {
           // Do not convert a target-read failure into a terminal result or a
@@ -3780,6 +3786,7 @@ export class ExactReviewQueue {
       }
       try {
         await dispatchClawsweeperItem({
+          env: this.env,
           token: preflight.token,
           decision: item.leaseDecision || item.decision,
           itemKey: item.key,
@@ -3908,7 +3915,7 @@ export class ExactReviewQueue {
           const token = await targetTokenFor(candidate.decision.targetRepo);
           return {
             ...candidate,
-            state: await exactReviewTargetItemState(token, candidate.decision),
+            state: await exactReviewTargetItemState(token, candidate.decision, this.env),
           };
         } catch (error) {
           // Keep the established publication behavior on a target-read failure:
@@ -4006,11 +4013,15 @@ export class ExactReviewQueue {
         const publication = candidate.decision.publication;
         if (!publication) return null;
         try {
-          const terminal = await exactReviewTerminalRun(token, {
-            runId: publication.producerRunId,
-            runAttempt: publication.producerRunAttempt,
-            claimGeneration: publication.claimGeneration ?? 0,
-          });
+          const terminal = await exactReviewTerminalRun(
+            token,
+            {
+              runId: publication.producerRunId,
+              runAttempt: publication.producerRunAttempt,
+              claimGeneration: publication.claimGeneration ?? 0,
+            },
+            this.env,
+          );
           // A terminal target makes this ordinary delivery unnecessary, but do
           // not race an in-flight or failed producer lifecycle. A later bounded
           // pass can retry a temporarily unavailable run lookup.
@@ -12507,6 +12518,7 @@ async function exactReviewSourceAuthorityLiveHead(
   if (!credentials) throw new Error("github app is not configured");
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
   const token = await createGithubAppTokenFor({
+    env,
     appJwt,
     installationId: reservation.installationId,
     label: reservation.decision.targetRepo,
@@ -12514,6 +12526,7 @@ async function exactReviewSourceAuthorityLiveHead(
     permissions: { pull_requests: "read" },
   });
   const pull = await githubTokenJson({
+    env,
     token,
     path: `/repos/${reservation.decision.targetRepo}/pulls/${reservation.decision.itemNumber}`,
     method: "GET",
@@ -12529,8 +12542,9 @@ async function exactReviewTargetReadToken(env, targetRepo: string) {
   const credentials = githubAppCredentials(env);
   if (!credentials) throw new Error("github app is not configured");
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
-  const installationId = await githubAppInstallationId(appJwt, targetRepo);
+  const installationId = await githubAppInstallationId(appJwt, targetRepo, env);
   return createGithubAppTokenFor({
+    env,
     appJwt,
     installationId,
     label: targetRepo,
@@ -12547,12 +12561,14 @@ type ExactReviewTargetItemState =
 async function exactReviewTargetItemState(
   token: string,
   decision: ExactReviewDecision,
+  env = {},
 ): Promise<Exclude<ExactReviewTargetItemState, { state: "unavailable" }>> {
   try {
     const isPullRequest = decision.itemKind === "pull_request";
     const queuedHeadSha = String(decision.sourceHeadSha || "").toLowerCase();
     const readPullHead = isPullRequest && /^[0-9a-f]{40}$/.test(queuedHeadSha);
     const item = await githubTokenJson({
+      env,
       token,
       path: `/repos/${decision.targetRepo}/${readPullHead ? "pulls" : "issues"}/${decision.itemNumber}`,
       method: "GET",
@@ -12578,6 +12594,7 @@ async function exactReviewTargetItemState(
       // GitHub masks inaccessible private repositories as 404. Treat the item
       // as missing only when this token can still read its repository.
       await githubTokenJson({
+        env,
         token,
         path: `/repos/${decision.targetRepo}`,
         method: "GET",
@@ -12598,8 +12615,9 @@ async function exactReviewRepositoryToken(env, permissions) {
   const credentials = githubAppCredentials(env);
   if (!credentials) throw new Error("github app is not configured");
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
-  const installationId = await githubAppInstallationId(appJwt, CLAWSWEEPER_REVIEW_REPO);
+  const installationId = await githubAppInstallationId(appJwt, CLAWSWEEPER_REVIEW_REPO, env);
   return createGithubAppTokenFor({
+    env,
     appJwt,
     installationId,
     label: CLAWSWEEPER_REVIEW_REPO,
@@ -12608,8 +12626,9 @@ async function exactReviewRepositoryToken(env, permissions) {
   });
 }
 
-async function exactReviewWorkflowState(token: string) {
+async function exactReviewWorkflowState(token: string, env = {}) {
   const payload = await githubTokenJson({
+    env,
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/actions/workflows/sweep.yml`,
     method: "GET",
@@ -12624,20 +12643,23 @@ async function exactReviewWorkflowState(token: string) {
 export async function exactReviewTerminalRun(
   token: string,
   candidate: ExactReviewClaimedRun & { requestedRunAttempt?: number },
+  env = {},
 ) {
   const latest = await githubTokenJson({
+    env,
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/actions/runs/${candidate.runId}`,
     method: "GET",
     body: undefined,
     errorLabel: "ClawSweeper run status",
   });
-  return exactReviewTerminalRunFromSummary(token, candidate, latest);
+  return exactReviewTerminalRunFromSummary(token, candidate, latest, env);
 }
 
 export async function exactReviewTerminalRunsFromBatch(
   token: string,
   candidates: Array<ExactReviewClaimedRun & { requestedRunAttempt?: number }>,
+  env = {},
 ) {
   const runsById = new Map<string, Record<string, unknown>>();
   const unresolved = new Set(candidates.map((candidate) => candidate.runId));
@@ -12645,6 +12667,7 @@ export async function exactReviewTerminalRunsFromBatch(
     let payload;
     try {
       payload = await githubTokenJson({
+        env,
         token,
         path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/actions/workflows/sweep.yml/runs?event=repository_dispatch&per_page=100&page=${page}`,
         method: "GET",
@@ -12668,8 +12691,8 @@ export async function exactReviewTerminalRunsFromBatch(
     const summary = runsById.get(candidate.runId);
     try {
       return summary
-        ? await exactReviewTerminalRunFromSummary(token, candidate, summary)
-        : await exactReviewTerminalRun(token, candidate);
+        ? await exactReviewTerminalRunFromSummary(token, candidate, summary, env)
+        : await exactReviewTerminalRun(token, candidate, env);
     } catch {
       return undefined;
     }
@@ -12680,6 +12703,7 @@ async function exactReviewTerminalRunFromSummary(
   token: string,
   candidate: ExactReviewClaimedRun & { requestedRunAttempt?: number },
   latest: Record<string, unknown>,
+  env = {},
 ) {
   const expectedRunAttempt = candidate.requestedRunAttempt ?? candidate.runAttempt;
   if (String(latest.id || "") !== candidate.runId) {
@@ -12693,6 +12717,7 @@ async function exactReviewTerminalRunFromSummary(
   if (String(latest.status || "") !== "completed") return null;
 
   const payload = await githubTokenJson({
+    env,
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/actions/runs/${candidate.runId}/attempts/${latestRunAttempt}`,
     method: "GET",
@@ -12725,6 +12750,7 @@ async function exactReviewTerminalRunFromSummary(
 }
 
 export async function createGithubAppTokenFor({
+  env = {},
   appJwt,
   installationId,
   label,
@@ -12742,6 +12768,7 @@ export async function createGithubAppTokenFor({
       }),
       errorLabel: `GitHub App token for ${label}`,
     },
+    env,
   );
   const token = String(payload.token || "");
   if (!token) throw new Error(`GitHub App token response missing token for ${label}`);
@@ -12749,6 +12776,7 @@ export async function createGithubAppTokenFor({
 }
 
 async function dispatchClawsweeperItem({
+  env,
   token,
   decision,
   itemKey,
@@ -12756,6 +12784,7 @@ async function dispatchClawsweeperItem({
   leaseRevision,
   terminalFinalization,
 }: {
+  env: Record<string, unknown>;
   token: string;
   decision: ExactReviewDecision;
   itemKey: string;
@@ -12779,6 +12808,7 @@ async function dispatchClawsweeperItem({
     ...(decision.publication ? { publication: decision.publication } : {}),
   };
   await githubTokenJson({
+    env,
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/dispatches`,
     method: "POST",
@@ -12923,15 +12953,18 @@ function exactReviewDispatchGlobalRetryDelayMs(
 }
 
 async function dispatchExactReviewBatchWorkflow({
+  env,
   token,
   dispatchId,
   dispatchedAt,
 }: {
+  env: Record<string, unknown>;
   token: string;
   dispatchId: string;
   dispatchedAt: string;
 }) {
   await githubTokenJson({
+    env,
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/actions/workflows/exact-review-batch-publish.yml/dispatches`,
     method: "POST",
@@ -12943,7 +12976,7 @@ async function dispatchExactReviewBatchWorkflow({
   });
 }
 
-async function githubTokenJson({ token, path, method = "GET", body, errorLabel }) {
+async function githubTokenJson({ env = {}, token, path, method = "GET", body, errorLabel }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
   const init: RequestInit = {
@@ -12959,7 +12992,7 @@ async function githubTokenJson({ token, path, method = "GET", body, errorLabel }
   if (body !== undefined) init.body = JSON.stringify(body);
   let response: Response;
   try {
-    response = await fetch(`https://api.github.com${path}`, init);
+    response = await fetch(githubApiUrl(env, path), init);
   } catch (error) {
     const timedOut =
       controller.signal.aborted ||
@@ -13442,11 +13475,14 @@ function githubAppCredentials(env) {
   };
 }
 
-async function githubAppInstallationId(appJwt, repo) {
+async function githubAppInstallationId(appJwt, repo, env = {}) {
   if (!repo || !repo.includes("/")) throw new Error("GitHub App installation repo is required");
-  const payload = await githubAppJson(`/repos/${repo}/installation`, appJwt, {
-    errorLabel: "GitHub App installation",
-  });
+  const payload = await githubAppJson(
+    `/repos/${repo}/installation`,
+    appJwt,
+    { errorLabel: "GitHub App installation" },
+    env,
+  );
   const installationId = Number(payload.id);
   if (!Number.isInteger(installationId) || installationId <= 0) {
     throw new Error(`GitHub App installation response missing id for ${repo}`);
@@ -13454,12 +13490,12 @@ async function githubAppInstallationId(appJwt, repo) {
   return String(installationId);
 }
 
-async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}) {
+async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}, env = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(`https://api.github.com${path}`, {
+    response = await fetch(githubApiUrl(env, path), {
       method: options.method || "GET",
       signal: controller.signal,
       headers: {

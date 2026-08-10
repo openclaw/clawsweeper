@@ -24091,7 +24091,7 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
   }
 });
 
-test("dashboard hides stale queue ghosts without suppressing queue health", async () => {
+test("dashboard surfaces stale queue ghosts as zombies without active cards", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
   Object.defineProperty(globalThis, "caches", {
@@ -24156,8 +24156,11 @@ test("dashboard hides stale queue ghosts without suppressing queue health", asyn
     assert.equal(status.fleet.active_workflow_runs, 1);
     assert.equal(status.fleet.queued_workflow_runs, 1);
     assert.equal(status.operational_health.queued_runs, 2);
-    assert.equal(status.operational_health.queued_over_threshold, 1);
-    assert.equal(status.operational_health.status, "degraded");
+    assert.equal(status.operational_health.queued_over_threshold, 0);
+    assert.equal(status.operational_health.oldest_queued_minutes, 10);
+    assert.equal(status.operational_health.zombie_queued_runs, 1);
+    assert.equal(status.operational_health.oldest_zombie_queued_minutes, 7 * 24 * 60);
+    assert.equal(status.operational_health.status, "healthy");
     assert.deepEqual(
       status.pipeline.map((row: { id: number }) => row.id),
       [2],

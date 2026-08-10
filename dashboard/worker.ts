@@ -6,6 +6,7 @@ import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-l
 import { bayHtml } from "./bay-page.ts";
 import { liveActivityBaySnapshot } from "./live-activity.ts";
 import { summarizeDashboardHealth } from "./dashboard-health.ts";
+import { githubApiUrl } from "./github-api.ts";
 import {
   HEALTH_HISTORY_RETENTION_DAYS,
   exactReviewHistorySample,
@@ -1290,8 +1291,9 @@ async function githubWebhook(request, env, ctx) {
   if (!credentials) return json({ error: "github_app_not_configured" }, 503);
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
   const dispatchToken = await createGithubAppTokenFor({
+    env,
     appJwt,
-    installationId: await githubAppInstallationId(appJwt, CLAWSWEEPER_REVIEW_REPO),
+    installationId: await githubAppInstallationId(appJwt, CLAWSWEEPER_REVIEW_REPO, env),
     label: CLAWSWEEPER_REVIEW_REPO,
     repositories: [repoName(CLAWSWEEPER_REVIEW_REPO)],
     permissions: { contents: "write" },
@@ -1299,6 +1301,7 @@ async function githubWebhook(request, env, ctx) {
 
   const commentDecision = decision as any;
   const targetToken = await createGithubAppTokenFor({
+    env,
     appJwt,
     installationId: commentDecision.installationId,
     label: commentDecision.targetRepo,
@@ -1309,24 +1312,28 @@ async function githubWebhook(request, env, ctx) {
     },
   });
   const statusCommentId = await createFastAckCommentOnce({
+    env,
     token: targetToken,
     repo: commentDecision.targetRepo,
     itemNumber: commentDecision.itemNumber,
     sourceCommentId: commentDecision.commentId,
   });
   await addIssueCommentReaction({
+    env,
     token: targetToken,
     repo: commentDecision.targetRepo,
     commentId: commentDecision.commentId,
     content: "eyes",
   });
   await dispatchClawsweeperComment({
+    env,
     token: dispatchToken,
     decision: commentDecision,
     statusCommentId,
     sourceDeliveryId: trigger?.source_delivery_id,
   });
   settleFastAckComments({
+    env,
     token: targetToken,
     repo: commentDecision.targetRepo,
     itemNumber: commentDecision.itemNumber,
@@ -1646,6 +1653,7 @@ async function bindLivePullRequestHeadAuthority({
     }
     const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
     token = await createGithubAppTokenFor({
+      env,
       appJwt,
       installationId: decision.installationId!,
       label: decision.targetRepo,
@@ -1654,6 +1662,7 @@ async function bindLivePullRequestHeadAuthority({
     });
   }
   const pull = await githubTokenJson({
+    env,
     token,
     path: `/repos/${decision.targetRepo}/pulls/${decision.itemNumber}`,
     body: undefined,
@@ -2367,13 +2376,13 @@ async function authenticatedExactReviewReconcile(request, env) {
     return json({ error: "github_run_status_unavailable" }, 502);
   }
   const checked = includeAllClaimed
-    ? await exactReviewTerminalRunsFromBatch(token, candidates)
+    ? await exactReviewTerminalRunsFromBatch(token, candidates, env)
     : await mapWithConcurrency(
         candidates,
         EXACT_REVIEW_RECONCILE_CONCURRENCY,
         async (candidate) => {
           try {
-            return await exactReviewTerminalRun(token, candidate);
+            return await exactReviewTerminalRun(token, candidate, env);
           } catch {
             return undefined;
           }
@@ -2461,6 +2470,7 @@ async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
   }
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
   const token = await createGithubAppTokenFor({
+    env,
     appJwt,
     installationId: decision.installationId,
     label: decision.targetRepo,
@@ -2470,6 +2480,7 @@ async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
   const ackMarker = pullRequestFastAckMarker(decision.itemNumber, decision.sourceAction);
   const ackMatch = pullRequestFastAckMatch(decision.itemNumber);
   const statusCommentId = await createFastAckCommentOnce({
+    env,
     token,
     repo: decision.targetRepo,
     itemNumber: decision.itemNumber,
@@ -2479,6 +2490,7 @@ async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
     ackBody: renderPullRequestFastAckComment(ackMarker),
   });
   settleFastAckComments({
+    env,
     token,
     repo: decision.targetRepo,
     itemNumber: decision.itemNumber,
@@ -2491,6 +2503,7 @@ async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
 }
 
 async function createFastAckComment({
+  env,
   token,
   repo,
   itemNumber,
@@ -2499,9 +2512,17 @@ async function createFastAckComment({
   ackMatch = undefined,
   ackBody = renderFastAckComment(sourceCommentId),
 }) {
-  const existingId = await pruneFastAckComments({ token, repo, itemNumber, ackMarker, ackMatch });
+  const existingId = await pruneFastAckComments({
+    env,
+    token,
+    repo,
+    itemNumber,
+    ackMarker,
+    ackMatch,
+  });
   if (existingId) return existingId;
   const payload = await githubTokenJson({
+    env,
     token,
     path: `/repos/${repo}/issues/${itemNumber}/comments`,
     method: "POST",
@@ -2509,13 +2530,14 @@ async function createFastAckComment({
     errorLabel: "ClawSweeper ack comment",
   });
   return (
-    (await pruneFastAckComments({ token, repo, itemNumber, ackMarker, ackMatch })) ||
+    (await pruneFastAckComments({ env, token, repo, itemNumber, ackMarker, ackMatch })) ||
     Number(payload.id) ||
     null
   );
 }
 
 function settleFastAckComments({
+  env,
   token,
   repo,
   itemNumber,
@@ -2528,7 +2550,7 @@ function settleFastAckComments({
   const cleanup = async () => {
     for (const delayMs of delaysMs) {
       await sleep(delayMs);
-      await pruneFastAckComments({ token, repo, itemNumber, ackMarker, ackMatch });
+      await pruneFastAckComments({ env, token, repo, itemNumber, ackMarker, ackMatch });
     }
   };
   const promise = cleanup().catch((error) => {
@@ -2546,6 +2568,7 @@ function fastAckSettleDelaysMs(value) {
 }
 
 async function createFastAckCommentOnce({
+  env,
   token,
   repo,
   itemNumber,
@@ -2559,6 +2582,7 @@ async function createFastAckCommentOnce({
   const pending = inFlightFastAcks.get(key);
   if (pending) return pending;
   const next = createFastAckComment({
+    env,
     token,
     repo,
     itemNumber,
@@ -2584,6 +2608,7 @@ function sleep(delayMs) {
 }
 
 async function pruneFastAckComments({
+  env,
   token,
   repo,
   itemNumber,
@@ -2591,7 +2616,14 @@ async function pruneFastAckComments({
   ackMarker = fastAckMarker(sourceCommentId),
   ackMatch = undefined,
 }) {
-  const comments = await listFastAckComments({ token, repo, itemNumber, ackMarker, ackMatch });
+  const comments = await listFastAckComments({
+    env,
+    token,
+    repo,
+    itemNumber,
+    ackMarker,
+    ackMatch,
+  });
   if (!comments.length) return null;
   const hasStatusComment = comments.some(isStatusBearingFastAckComment);
   comments.sort(compareFastAckKeepPriority);
@@ -2601,6 +2633,7 @@ async function pruneFastAckComments({
     if (id <= 0 || id === keepId) continue;
     if (hasStatusComment && isStatusBearingFastAckComment(comment)) continue;
     await githubTokenJson({
+      env,
       token,
       path: `/repos/${repo}/issues/comments/${id}`,
       method: "DELETE",
@@ -2648,12 +2681,20 @@ function compareCommentsByCreatedAt(left, right) {
   );
 }
 
-async function listFastAckComments({ token, repo, itemNumber, ackMarker, ackMatch = undefined }) {
+async function listFastAckComments({
+  env,
+  token,
+  repo,
+  itemNumber,
+  ackMarker,
+  ackMatch = undefined,
+}) {
   const comments = [];
   const matchesAckBody = ackMatch || ((body) => body.includes(ackMarker));
   const since = encodeURIComponent(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
   for (let page = 1; page <= 5; page += 1) {
     const payload = await githubTokenJson({
+      env,
       token,
       path: `/repos/${repo}/issues/${itemNumber}/comments?per_page=100&page=${page}&since=${since}`,
       method: "GET",
@@ -2710,8 +2751,9 @@ function renderPullRequestFastAckComment(ackMarker) {
   ].join("\n");
 }
 
-async function addIssueCommentReaction({ token, repo, commentId, content }) {
+async function addIssueCommentReaction({ env, token, repo, commentId, content }) {
   await githubTokenJson({
+    env,
     token,
     path: `/repos/${repo}/issues/comments/${commentId}/reactions`,
     method: "POST",
@@ -2725,7 +2767,13 @@ async function addIssueCommentReaction({ token, repo, commentId, content }) {
   });
 }
 
-async function dispatchClawsweeperComment({ token, decision, statusCommentId, sourceDeliveryId }) {
+async function dispatchClawsweeperComment({
+  env,
+  token,
+  decision,
+  statusCommentId,
+  sourceDeliveryId,
+}) {
   const exactVersion =
     decision.commentUpdatedAt && typeof decision.commentBody === "string"
       ? {
@@ -2735,6 +2783,7 @@ async function dispatchClawsweeperComment({ token, decision, statusCommentId, so
         }
       : {};
   await githubTokenJson({
+    env,
     token,
     path: `/repos/${CLAWSWEEPER_REVIEW_REPO}/dispatches`,
     method: "POST",
@@ -2761,7 +2810,7 @@ async function sha256Text(value) {
   return hexEncode(new Uint8Array(digest));
 }
 
-async function githubTokenJson({ token, path, method = "GET", body, errorLabel }) {
+async function githubTokenJson({ env = {}, token, path, method = "GET", body, errorLabel }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
   const init: RequestInit = {
@@ -2775,9 +2824,7 @@ async function githubTokenJson({ token, path, method = "GET", body, errorLabel }
     },
   };
   if (body !== undefined) init.body = JSON.stringify(body);
-  const response = await fetch(`https://api.github.com${path}`, init).finally(() =>
-    clearTimeout(timeout),
-  );
+  const response = await fetch(githubApiUrl(env, path), init).finally(() => clearTimeout(timeout));
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new Error(
@@ -6765,7 +6812,7 @@ async function githubJson(env, path) {
   const token = await githubAuthToken(env);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
-  const response = await fetch(`https://api.github.com${path}`, {
+  const response = await fetch(githubApiUrl(env, path), {
     signal: controller.signal,
     headers: {
       Accept: "application/vnd.github+json",
@@ -6782,7 +6829,7 @@ async function githubGraphql(env, query, variables) {
   if (!token) throw new Error("GitHub auth is required for GraphQL");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), OPTIONAL_SECTION_TIMEOUT_MS);
-  const response = await fetch("https://api.github.com/graphql", {
+  const response = await fetch(githubApiUrl(env, "/graphql"), {
     method: "POST",
     signal: controller.signal,
     headers: {
@@ -6863,7 +6910,7 @@ function githubAppCredentials(env) {
 async function createGithubAppInstallationToken(env, credentials, repos) {
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
   const installationId =
-    credentials.installationId || (await githubAppInstallationId(appJwt, repos[0]));
+    credentials.installationId || (await githubAppInstallationId(appJwt, repos[0], env));
   const payload = await githubAppJson(
     `/app/installations/${installationId}/access_tokens`,
     appJwt,
@@ -6880,6 +6927,7 @@ async function createGithubAppInstallationToken(env, credentials, repos) {
       }),
       errorLabel: "GitHub App token",
     },
+    env,
   );
   const token = String(payload.token || "");
   if (!token) throw new Error("GitHub App token response missing token");
@@ -6889,11 +6937,14 @@ async function createGithubAppInstallationToken(env, credentials, repos) {
   return { token, expiresAtMs };
 }
 
-async function githubAppInstallationId(appJwt, repo) {
+async function githubAppInstallationId(appJwt, repo, env = {}) {
   if (!repo || !repo.includes("/")) throw new Error("GitHub App installation repo is required");
-  const payload = await githubAppJson(`/repos/${repo}/installation`, appJwt, {
-    errorLabel: "GitHub App installation",
-  });
+  const payload = await githubAppJson(
+    `/repos/${repo}/installation`,
+    appJwt,
+    { errorLabel: "GitHub App installation" },
+    env,
+  );
   const installationId = Number(payload.id);
   if (!Number.isInteger(installationId) || installationId <= 0) {
     throw new Error(`GitHub App installation response missing id for ${repo}`);
@@ -6901,10 +6952,10 @@ async function githubAppInstallationId(appJwt, repo) {
   return String(installationId);
 }
 
-async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}) {
+async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}, env = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
-  const response = await fetch(`https://api.github.com${path}`, {
+  const response = await fetch(githubApiUrl(env, path), {
     method: options.method || "GET",
     signal: controller.signal,
     headers: {

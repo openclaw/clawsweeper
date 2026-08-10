@@ -1,4 +1,5 @@
 export const OPERATIONAL_QUEUE_DEGRADED_MS = 30 * 60 * 1000;
+export const OPERATIONAL_QUEUE_ZOMBIE_MS = 24 * 60 * 60 * 1000;
 export const OPERATIONAL_RUNNING_STALLED_MS = 150 * 60 * 1000;
 export const HEALTH_HISTORY_SAMPLE_MS = 5 * 60 * 1000;
 export const HEALTH_HISTORY_RETENTION_DAYS = 7;
@@ -24,6 +25,8 @@ export type OperationalHealth = {
   queued_over_threshold: number;
   queued_threshold_minutes: number;
   oldest_queued_minutes: number;
+  zombie_queued_runs: number;
+  oldest_zombie_queued_minutes: number;
   approval_gated_runs: number;
   oldest_approval_gated_minutes: number;
   running_runs: number;
@@ -94,11 +97,18 @@ export function summarizeOperationalHealth(
     // the authoritative execution timestamp is present.
     .map((run) => ageMs(run.run_started_at || run.created_at, now));
   const validQueuedAges = queuedAges.filter((age): age is number => age !== null);
+  // Normal queue waits are measured in minutes. Seventeen production runs are
+  // stranded past 24 hours (three from Jul 13/17 and fourteen from one Aug 7
+  // incident), and both cancel and force-cancel return HTTP 500 for every one.
+  // Excluding those unremediable zombies is the only way to keep live queue
+  // pressure observable without pinning operational health indefinitely.
+  const zombieQueuedAges = validQueuedAges.filter((age) => age > OPERATIONAL_QUEUE_ZOMBIE_MS);
+  const liveQueuedAges = validQueuedAges.filter((age) => age <= OPERATIONAL_QUEUE_ZOMBIE_MS);
   const validRunningAges = runningAges.filter((age): age is number => age !== null);
   const hasCompleteAges =
     validQueuedAges.length === queuedRuns.length && validRunningAges.length === runningRuns.length;
   const complete = telemetryComplete && hasCompleteAges;
-  const queuedOverThreshold = validQueuedAges.filter(
+  const queuedOverThreshold = liveQueuedAges.filter(
     (age) => age >= OPERATIONAL_QUEUE_DEGRADED_MS,
   ).length;
   const runningOverThreshold = validRunningAges.filter(
@@ -118,7 +128,9 @@ export function summarizeOperationalHealth(
     queued_runs: queuedRuns.length,
     queued_over_threshold: queuedOverThreshold,
     queued_threshold_minutes: OPERATIONAL_QUEUE_DEGRADED_MS / 60_000,
-    oldest_queued_minutes: oldestMinutes(validQueuedAges),
+    oldest_queued_minutes: oldestMinutes(liveQueuedAges),
+    zombie_queued_runs: zombieQueuedAges.length,
+    oldest_zombie_queued_minutes: oldestMinutes(zombieQueuedAges),
     approval_gated_runs: approvalGatedRuns.length,
     oldest_approval_gated_minutes: oldestMinutes(
       approvalGatedRuns

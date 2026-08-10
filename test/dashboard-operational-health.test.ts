@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  OPERATIONAL_QUEUE_ZOMBIE_MS,
   exactReviewHistorySample,
   mergeHealthHistorySample,
   normalizeHealthHistorySample,
@@ -71,6 +72,44 @@ test("operational health reports approval-gated runs outside queue congestion", 
   assert.equal(health.oldest_queued_minutes, 5);
   assert.equal(health.approval_gated_runs, 1);
   assert.equal(health.oldest_approval_gated_minutes, 7 * 24 * 60);
+});
+
+test("operational health surfaces zombie queue entries without degrading", () => {
+  const health = summarizeOperationalHealth(
+    [run("queued", "2026-07-14T13:00:00Z")],
+    CHECKED_AT,
+    true,
+  );
+  assert.equal(health.status, "healthy");
+  assert.equal(health.queued_runs, 1);
+  assert.equal(health.queued_over_threshold, 0);
+  assert.equal(health.oldest_queued_minutes, 0);
+  assert.equal(health.zombie_queued_runs, 1);
+  assert.equal(health.oldest_zombie_queued_minutes, 25 * 60);
+});
+
+test("operational health keeps fresh queue pressure alongside zombies", () => {
+  const health = summarizeOperationalHealth(
+    [run("queued", "2026-07-14T13:00:00Z"), run("queued", "2026-07-15T13:29:00Z")],
+    CHECKED_AT,
+    true,
+  );
+  assert.equal(health.status, "degraded");
+  assert.equal(health.queued_runs, 2);
+  assert.equal(health.queued_over_threshold, 1);
+  assert.equal(health.oldest_queued_minutes, 31);
+  assert.equal(health.zombie_queued_runs, 1);
+  assert.equal(health.oldest_zombie_queued_minutes, 25 * 60);
+});
+
+test("operational health treats exactly 24 hours as live queue pressure", () => {
+  const boundary = new Date(Date.parse(CHECKED_AT) - OPERATIONAL_QUEUE_ZOMBIE_MS).toISOString();
+  const health = summarizeOperationalHealth([run("queued", boundary)], CHECKED_AT, true);
+  assert.equal(health.status, "degraded");
+  assert.equal(health.queued_over_threshold, 1);
+  assert.equal(health.oldest_queued_minutes, 24 * 60);
+  assert.equal(health.zombie_queued_runs, 0);
+  assert.equal(health.oldest_zombie_queued_minutes, 0);
 });
 
 test("operational health fails closed when active-run telemetry is incomplete", () => {
