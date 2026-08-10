@@ -1,5 +1,13 @@
 # Target Repositories
 
+- Status: active configuration and onboarding reference
+- Owner: ClawSweeper maintainers
+- Source of truth: `config/target-repositories.json`, repository profiles,
+  target inventory, dashboard/apply configuration, and profile tests
+- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Update when: profile policy, supported owners, inventory, dashboard targets,
+  apply membership, or onboarding requirements change
+
 Read when enabling ClawSweeper for another OpenClaw repository, changing
 `config/target-repositories.json`, or debugging `Unsupported target repo`
 failures.

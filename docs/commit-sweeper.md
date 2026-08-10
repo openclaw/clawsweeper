@@ -1,5 +1,14 @@
 # Local Branch Review (`local-review`)
 
+- Status: active local/GitHub-isolated review reference; hosted commit review is
+  retired
+- Owner: ClawSweeper maintainers
+- Source of truth: `src/commit-sweeper.ts`, `prompts/review-commit.md`, package
+  scripts, and local-review tests
+- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Update when: local range selection, network/token isolation, model-service
+  requirements, output artifacts, or the retired hosted boundary changes
+
 The hosted commit-review lane (per-commit main reviews, GitHub Checks, and
 commit-finding dispatch) was retired in July 2026 after producing zero
 successful runs in its final month. What remains is the local, GitHub-isolated

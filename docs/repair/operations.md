@@ -1,5 +1,18 @@
 # Operations
 
+- Status: active canonical repair operator runbook
+- Owner: ClawSweeper maintainers and the authorized repair operator
+- Source of truth: repair workflows/source, current gates, focused tests, and
+  live read-only GitHub state where needed
+- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Update when: commands, trust checks, gates, tokens, runners, routing,
+  publication, recovery, or promotion rules change
+
+This is the canonical live-operations page. Use the
+[repair entry point](README.md) for concepts and the local CLI catalog, the
+[internal feature map](internal-features.md) for implementation structure, and
+[auto-update PRs](auto-update-prs.md) for the trusted PR state contract.
+
 For the internal feature map across job creation, PR generation, comment
 commands, finalizers, self-heal, gates, and ledgers, see
 [`internal-features.md`](internal-features.md).

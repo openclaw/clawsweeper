@@ -1,5 +1,13 @@
 # Issue and PR Scheduler
 
+- Status: active, volatile architecture and operations reference
+- Owner: ClawSweeper maintainers
+- Source of truth: `.github/workflows/sweep.yml`, planner/runtime source,
+  `config/automation-limits.json`, and focused scheduler tests
+- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Update when: cadence, fanout, admission, retry, publication, apply, or
+  state-writing behavior changes
+
 Read when changing `.github/workflows/sweep.yml`, `src/clawsweeper.ts` planner
 selection, review cadence, dashboard capacity fields, or GitHub Actions
 concurrency for issue/PR review and apply.

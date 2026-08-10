@@ -6,6 +6,8 @@
   `dashboard/exact-review-queue.ts`, and the deployed Worker settings
 - Last verified:
   `openclaw/clawsweeper@2cc2c0df8d533677c5ff82cf3b86a148dd869554`
+- Update when: queue bindings, migrations, runtime variables, routes,
+  publication/state writing, verification, rollback, or approval changes
 
 This runbook moves the existing SQLite-backed `ExactReviewQueue` Durable Object
 namespace from the `clawsweeper-status` Worker script to a dedicated Worker

@@ -3,13 +3,14 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-test("docs site emits an early persistent theme switcher", () => {
+test("docs site preserves the landing, documentation hub, and theme controls", () => {
   execFileSync(process.execPath, ["scripts/build-docs-site.mjs"], {
     cwd: process.cwd(),
     stdio: "pipe",
   });
 
   const html = readFileSync("dist/docs-site/index.html", "utf8");
+  const documentationHtml = readFileSync("dist/docs-site/documentation.html", "utf8");
   const themeInit = html.indexOf('const key = "clawsweeper-theme"');
   const styles = html.indexOf("<style>");
 
@@ -29,4 +30,12 @@ test("docs site emits an early persistent theme switcher", () => {
   assert.match(html, /GitHub context stays local while Codex connects/);
   assert.doesNotMatch(html, /Four operational lanes|Four lanes, one engine/);
   assert.doesNotMatch(html, /commit-range review without polling/);
+  assert.match(documentationHtml, /ClawSweeper documentation/);
+  assert.match(documentationHtml, /Start here/);
+  assert.match(documentationHtml, /Document lifecycle/);
+  assert.match(
+    documentationHtml,
+    /github\.com\/openclaw\/clawsweeper\/blob\/main\/CONTRIBUTING\.md/,
+  );
+  assert.doesNotMatch(documentationHtml, /\.\.\/(?:VISION|CONTRIBUTING|AGENTS)\.html/);
 });

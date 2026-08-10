@@ -1,5 +1,13 @@
 # Repair containment validation history
 
+- Status: historical; completed July 2026
+- Owner: ClawSweeper maintainers
+- Source of truth: the linked merged PRs, workflow runs, containment tests, and
+  current repair operations reference
+- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Update when: only to correct this historical record or point to a superseding
+  active containment reference
+
 ## Purpose
 
 This historical handoff records how Linux repair-containment failures were moved

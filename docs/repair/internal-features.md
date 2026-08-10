@@ -1,5 +1,13 @@
 # ClawSweeper Internal Feature Map
 
+- Status: active implementation reference; not an operator runbook
+- Owner: ClawSweeper maintainers
+- Source of truth: `src/repair/**`, repair workflows, job/result schemas, and
+  focused repair tests
+- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Update when: internal objects, execution stages, routing, ledgers, gates, or
+  extension points change
+
 Read when: changing ClawSweeper automation, debugging a generated PR, wiring
 comment commands, or deciding where a new lane belongs.
 

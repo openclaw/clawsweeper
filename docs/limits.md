@@ -1,5 +1,13 @@
 # Automation Limits
 
+- Status: active generated/validated configuration reference
+- Owner: ClawSweeper maintainers
+- Source of truth: `config/automation-limits.json`, Worker overrides, and
+  `scripts/check-limits.ts`
+- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Update when: worker budgets, lane ratios, workflow literals, or production
+  capacity overrides change; run `pnpm run check:limits`
+
 Read when changing ClawSweeper throughput, Codex fan-out,
 or repair dispatch capacity.
 

@@ -11,7 +11,7 @@ const repoEditBase = `${repoUrl}/edit/main/docs`;
 const customDomain = "clawsweeper.bot";
 
 const sections = [
-  ["Start", ["scheduler.md", "work-lane.md"]],
+  ["Start", ["README.md", "scheduler.md", "work-lane.md"]],
   [
     "Lanes",
     [
@@ -173,7 +173,7 @@ function allMarkdown(dir) {
 }
 
 function outPath(rel) {
-  if (rel === "README.md") return "index.html";
+  if (rel === "README.md") return "documentation.html";
   if (rel.endsWith("/README.md")) return rel.replace(/README\.md$/, "index.html");
   return rel.replace(/\.md$/, ".html");
 }
@@ -349,6 +349,10 @@ function rewriteHref(href, currentRel) {
   if (!raw.endsWith(".md")) return href;
   const from = path.posix.dirname(currentRel);
   const target = path.posix.normalize(path.posix.join(from, raw));
+  if (target.startsWith("../")) {
+    const sourcePath = target.replace(/^\.\.\//, "");
+    return `${repoUrl}/blob/main/${sourcePath}${hash ? `#${hash}` : ""}`;
+  }
   let rewritten = outPath(target);
   const currentOut = outPath(currentRel);
   rewritten = path.posix.relative(path.posix.dirname(currentOut), rewritten) || "index.html";

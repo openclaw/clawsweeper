@@ -145,3 +145,6 @@ aligned. Effective exact-review admission, publication, and batching overrides
 live in `dashboard/wrangler.toml`; owning fallback behavior lives in
 `dashboard/exact-review-queue.ts`. Update `.github/workflows/sweep.yml` or
 `src/clawsweeper.ts` only when the changed contract is actually owned there.
+
+Use [`docs/README.md`](docs/README.md) for the documentation map, lifecycle
+states, role ownership, and cross-surface update triggers.

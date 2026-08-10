@@ -1,5 +1,13 @@
 # Auto-Updating ClawSweeper PRs
 
+- Status: active trusted PR repair/automerge contract
+- Owner: ClawSweeper maintainers
+- Source of truth: comment router, repair worker/executor, finalizers, labels,
+  merge gates, and focused automerge tests
+- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Update when: command trust, adoption, repair budgets, labels, validation,
+  exact-head review, merge, or stop/resume behavior changes
+
 Read when: changing ClawSweeper PR repair automation, ClawSweeper review
 integration, comment routing, duplicate dispatch guards, or generated-PR
 marking.

@@ -14,12 +14,17 @@ fanout.
 
 Project vision and boundaries: [`VISION.md`](VISION.md)
 
+Documentation by task and audience: [`docs/README.md`](docs/README.md)
+
 ## Contributing
 
 For local setup, PR scope, main-body proof, and the author-owned review loop,
 read [CONTRIBUTING.md](CONTRIBUTING.md) before opening or updating a pull
-request. The guide explains when to use `@clawsweeper re-review`, why a changed
-head or PR body needs fresh evidence, and why readiness is not merge authority.
+request. Use the [documentation index](docs/README.md) to reach architecture,
+configuration, dashboard, policy, and operator references without scanning this
+entire README. The contributing guide explains when to use
+`@clawsweeper re-review`, why a changed head or PR body needs fresh evidence,
+and why readiness is not merge authority.
 
 The OpenClaw-hosted ClawSweeper instance is not a public review service and does
 not provide free reviews for third-party repositories. If you want ClawSweeper

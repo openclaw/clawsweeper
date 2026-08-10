@@ -1,5 +1,13 @@
 # OpenClaw Bay
 
+- Status: active public observer guide
+- Owner: ClawSweeper maintainers
+- Source of truth: `dashboard/bay-page.ts`, Worker queue projections, Bay tests,
+  and the read-only `/bay-demo` route
+- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Update when: lane names, stage mapping, projection bounds, control cards,
+  routes, or navigation changes
+
 OpenClaw Bay is a public, indexable, read-only visualisation of the live
 ClawSweeper pipeline. It lives at `/bay-demo` on the existing dashboard Worker
 and turns active work into animated crustaceans moving across a shoreline. It

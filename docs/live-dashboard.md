@@ -1,5 +1,13 @@
 # Live Dashboard
 
+- Status: active observer and operator reference
+- Owner: ClawSweeper maintainers and the designated Cloudflare operator
+- Source of truth: `dashboard/worker.ts`, `dashboard/exact-review-queue.ts`,
+  `dashboard/wrangler.toml`, dashboard tests, and deployed read-only endpoints
+- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Update when: routes, public fields, queue projections, capacity, alerts,
+  deployment, or state-writer telemetry changes
+
 Read when changing the Cloudflare status dashboard, status ingest contract, or
 operator-facing ClawSweeper observability.
 

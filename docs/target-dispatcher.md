@@ -1,5 +1,13 @@
 # Target Repository Dispatcher
 
+- Status: active integration reference
+- Owner: ClawSweeper maintainers and target-repository maintainers
+- Source of truth: the embedded dispatcher workflow, receiver workflow,
+  repository profiles, and dispatcher tests
+- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Update when: forwarded events, authentication, payloads, permissions, close
+  authority, or installation steps change
+
 `openclaw/clawsweeper` cannot receive native `issues` or `pull_request` events
 from sibling repositories directly. Target repositories should forward those
 events with `repository_dispatch` so ClawSweeper can run a single-job exact
