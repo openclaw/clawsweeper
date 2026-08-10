@@ -1,0 +1,60 @@
+node=v24.19.0 pnpm=11.10.0
+head=d54d60abf5de708713e0fbedce496cd5a21dd251
+{
+  "ok": true,
+  "assertions": 21,
+  "output_dir": "/work/crabbox/cbx_9797931e8d4d/fresh-pr-openclaw-clawsweeper-1089/docs/proof/csw-1089/artifacts",
+  "state_contention": {
+    "ok": true,
+    "target_repo": "openclaw/openclaw",
+    "item_number": 108901,
+    "items": [
+      {
+        "lane": "publication",
+        "state": "pending",
+        "parked_reason": null,
+        "parked_recovery_attempts": 0,
+        "backoff_reason": "publication_retry",
+        "revision": 1,
+        "attempts": 1,
+        "dispatch_failure_status": null,
+        "dispatch_failure_class": null,
+        "dispatch_failure_at": null,
+        "dispatch_failure_fingerprint": null,
+        "dispatch_failure_detail": null,
+        "created_at": "2026-08-10T02:27:57.174Z",
+        "next_attempt_at": "2026-08-10T02:29:02.030Z",
+        "older_ready_count": 0
+      }
+    ],
+    "dead_letters": [],
+    "position_is_approximate": true
+  },
+  "unknown_failure_attempt_1": {
+    "ok": true,
+    "target_repo": "openclaw/openclaw",
+    "item_number": 108904,
+    "items": [
+      {
+        "lane": "publication",
+        "state": "pending",
+        "parked_reason": null,
+        "parked_recovery_attempts": 0,
+        "backoff_reason": "publication_retry",
+        "revision": 1,
+        "attempts": 1,
+        "dispatch_failure_status": null,
+        "dispatch_failure_class": null,
+        "dispatch_failure_at": null,
+        "dispatch_failure_fingerprint": null,
+        "dispatch_failure_detail": null,
+        "created_at": "2026-08-10T02:27:57.251Z",
+        "next_attempt_at": "2026-08-10T02:29:08.682Z",
+        "older_ready_count": 0
+      }
+    ],
+    "dead_letters": [],
+    "position_is_approximate": true
+  }
+}
+PROOF_EXIT=0

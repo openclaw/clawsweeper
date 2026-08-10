@@ -85,3 +85,37 @@ attempt count. It records the real attempt-one classification and queue result
 for both and leaves the terminal contrast to the unchanged retry-policy code
 and existing focused tests. It does not fake time, edit Durable Object storage,
 stub the Worker/DO, or change a retry constant.
+
+## Crabbox provenance
+
+The proof in this directory was re-run unchanged against the reviewed head inside a
+Docker-backed Crabbox `local-container` lease, from a clean remote checkout of the PR
+(`--fresh-pr openclaw/clawsweeper#1089 --no-hydrate`) rather than from a local working tree.
+
+| Field | Value |
+| --- | --- |
+| Provider | `local-container` (Crabbox CLI 0.39.0) |
+| Container engine | Docker 29.4.0 (OrbStack) |
+| Image | `node:24-bookworm` |
+| Lease | `cbx_9797931e8d4d` (`coral-prawn`), stopped after the run |
+| Reviewed head | `d54d60abf5de708713e0fbedce496cd5a21dd251` |
+| Runtime | Node v24.19.0, pnpm 11.10.0 |
+| Result | `exit 0`, 21 assertions, `run_status: succeeded` |
+| Timings | sync 10.2 s, command 55.6 s, total 65.8 s |
+
+Machine-readable provenance, including the captured queue observations, is in
+[`artifacts/crabbox-local-container-provenance.json`](artifacts/crabbox-local-container-provenance.json).
+The raw container transcript is in
+[`artifacts/crabbox-local-container-stdout.log`](artifacts/crabbox-local-container-stdout.log).
+
+The run needs no elevated privileges. Corepack is enabled into the container user's own
+`~/.local/bin`, because the lease user is unprivileged and cannot write to `/usr/local/bin`.
+
+### What this provenance does and does not add
+
+It establishes that the proof reproduces on the exact reviewed head, in a clean containerized
+environment, with no dependency on this workstation's state. It does not change what the proof
+itself demonstrates; the limits recorded above and in the provenance JSON still apply, in
+particular that both queue observations are at attempt 1 and the retry-budget divergence itself is
+covered by unit tests and by the production dead-letter statistics quoted in the PR body rather
+than by this run.
