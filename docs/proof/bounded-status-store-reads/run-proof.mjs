@@ -40,11 +40,19 @@ const baseRoot = path.join(scratch, "base");
 const archivePath = path.join(scratch, "base.tar");
 const proofToken = "bounded-status-store-proof-token";
 const proofSecret = "bounded-status-store-proof-secret";
-const fixtureNow = Date.now() - 60_000;
+const fixtureNow = process.env.BOUNDED_STATUS_PROOF_NOW
+  ? Date.parse(process.env.BOUNDED_STATUS_PROOF_NOW)
+  : Date.now() - 60_000;
+if (!Number.isFinite(fixtureNow))
+  throw new Error("BOUNDED_STATUS_PROOF_NOW must be an ISO timestamp");
 const workers = [];
 
-await rm(artifactDir, { recursive: true, force: true });
 await mkdir(artifactDir, { recursive: true });
+await Promise.all(
+  ["failure.json", "local-summary.json", "response-comparison.json", "row-counts.json"].map(
+    (name) => rm(path.join(artifactDir, name), { force: true }),
+  ),
+);
 await mkdir(baseRoot, { recursive: true });
 
 const mergeBase = (await command("git", ["merge-base", "HEAD", "origin/main"], repoRoot)).trim();
@@ -407,7 +415,12 @@ async function startWorker(label, cwd, port) {
       "--var",
       "APPLY_OPTIONAL_TARGET_REPOS:openclaw/clawhub",
     ],
-    { cwd, env: { ...process.env, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"] },
+    {
+      cwd,
+      detached: process.platform !== "win32",
+      env: { ...process.env, NO_COLOR: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
   );
   child.stdout.pipe(log);
   child.stderr.pipe(log);
@@ -427,14 +440,26 @@ async function waitForWorker(origin) {
 }
 
 async function stopWorker(worker) {
-  if (!worker?.child || worker.child.exitCode !== null) return;
-  worker.child.kill("SIGTERM");
-  await Promise.race([
-    new Promise((resolve) => worker.child.once("exit", resolve)),
-    new Promise((resolve) => setTimeout(resolve, 5_000)),
-  ]);
-  if (worker.child.exitCode === null) worker.child.kill("SIGKILL");
-  worker.log.end();
+  if (!worker?.child) return;
+  signalProcessTree(worker.child, "SIGTERM");
+  if (worker.child.exitCode === null) {
+    await Promise.race([
+      new Promise((resolve) => worker.child.once("exit", resolve)),
+      new Promise((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  signalProcessTree(worker.child, "SIGKILL");
+  await new Promise((resolve) => worker.log.end(resolve));
+}
+
+function signalProcessTree(child, signal) {
+  try {
+    if (process.platform === "win32") child.kill(signal);
+    else if (child.pid) process.kill(-child.pid, signal);
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
 }
 
 async function getJson(url) {
