@@ -53,6 +53,23 @@ unexpected loopback requests. The two entry points' App JWTs and canonical App-a
 were identical. See [`artifacts/proof-summary.json`](artifacts/proof-summary.json) and the
 [`redacted request trace`](artifacts/github-requests.redacted.json).
 
+## Crabbox container observation
+
+The same proof passed from a clean `--fresh-pr openclaw/clawsweeper#1115 --no-hydrate` checkout at
+head `075bcf0494864fb1d8fd4475d211b5b9f741c173` inside Docker-backed Crabbox
+`provider=local-container`, image `node:24-bookworm`, lease `cbx_585f04f5feea`
+(`violet-prawn-a71c`). Corepack supplied pnpm 11.10.0, and jq 1.8.1 printed
+`jq-linux-amd64: OK` before installation. The runtime proof completed with `PROOF_RC=0` and
+`CONTAINER_PROOF_RC=0`; Crabbox exited 0 and stopped the lease automatically.
+
+The same container first checked current `origin/main` at
+`765644804756d5f6b1dc1e940d62c50711e398d8`. Its targeted baseline produced the three known
+blob-hydration environmental failures. The PR full suite then ran 3,312 tests: 3,301 passed, 8
+skipped, and exactly those same 3 failed. The harness recorded `CONTAINER_DELTA_FAILURES=0`.
+[`artifacts/crabbox-local-container-provenance.json`](artifacts/crabbox-local-container-provenance.json)
+and [`artifacts/crabbox-local-container-summary.log`](artifacts/crabbox-local-container-summary.log)
+retain the provider, lease, timing, baseline, and verbatim result markers.
+
 ## Limits
 
 This proves both production entry points, the local Worker/DO boundary, cryptographic signing, and

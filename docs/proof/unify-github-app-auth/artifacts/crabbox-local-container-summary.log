@@ -1,0 +1,21 @@
+jq-linux-amd64: OK
+v24.19.0
+11.10.0
+jq-1.8.1
+git version 2.39.5
+PR_HEAD=075bcf0494864fb1d8fd4475d211b5b9f741c173
+BASELINE_HEAD=765644804756d5f6b1dc1e940d62c50711e398d8
+ℹ tests 3
+ℹ pass 0
+ℹ fail 3
+ℹ skipped 0
+BASELINE_TEST_RC=1
+PROOF_RC=0
+ℹ tests 3312
+ℹ pass 3301
+ℹ fail 3
+ℹ skipped 8
+PR_FULL_SUITE_RC=1
+CONTAINER_DELTA_FAILURES=0
+CONTAINER_PROOF_RC=0
+{"provider":"local-container","leaseId":"cbx_585f04f5feea","slug":"violet-prawn-a71c","syncMs":10154,"syncPhases":[{"name":"ssh","ms":60},{"name":"git_seed","ms":10094}],"syncSkipped":false,"commandMs":104251,"commandPhases":[{"name":"user-command","ms":1146},{"name":"baseline","ms":4916},{"name":"proof","ms":12515},{"name":"full-suite","ms":85673}],"totalMs":114406,"exitCode":0,"runStatus":"succeeded","machineType":"node_24-bookworm","repoPath":"/Users/steipete/Projects/clawsweeper-unify-github-app-auth","workdir":"/work/crabbox/cbx_585f04f5feea/fresh-pr-openclaw-clawsweeper-1115","stopCommand":"crabbox stop --provider local-container --target linux --id violet-prawn-a71c","idleTimeout":"30m0s","leaseStopped":true}
