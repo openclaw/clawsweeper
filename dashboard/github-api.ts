@@ -1,6 +1,47 @@
 export const DEFAULT_GITHUB_API_URL = "https://api.github.com";
 
+const GITHUB_APP_TIMEOUT_MS = 4500;
+const GITHUB_RATE_LIMIT_FALLBACK_MS = 15 * 60 * 1000;
+const GITHUB_RATE_LIMIT_MAX_RETRY_MS = 2 * 60 * 60 * 1000;
+
 type GithubApiEnv = Record<string, unknown>;
+
+export type GithubAppJsonOptions = { method?: string; body?: BodyInit; errorLabel?: string };
+export type GitHubRequestValidationDetail = {
+  validationFields: string[];
+  validationCodes: string[];
+};
+export type GitHubRateLimitHint = {
+  observedAt: number;
+  retryAt: number;
+  provenance: "retry_after" | "rate_limit_reset" | "rate_limit_status" | "fallback";
+  authoritative: boolean;
+};
+
+export class GitHubRequestError extends Error {
+  readonly status?: number;
+  readonly timedOut: boolean;
+  readonly rateLimited: boolean;
+  readonly validationDetail?: GitHubRequestValidationDetail;
+  readonly rateLimitHint?: GitHubRateLimitHint;
+
+  constructor(
+    message: string,
+    status?: number,
+    timedOut = false,
+    rateLimited = false,
+    validationDetail?: GitHubRequestValidationDetail,
+    rateLimitHint?: GitHubRateLimitHint,
+  ) {
+    super(message);
+    this.name = "GitHubRequestError";
+    this.status = status;
+    this.timedOut = timedOut;
+    this.rateLimited = rateLimited;
+    this.validationDetail = validationDetail;
+    this.rateLimitHint = rateLimitHint;
+  }
+}
 
 export function githubApiBaseUrl(env: GithubApiEnv = {}): string {
   const configured = env.GITHUB_API_URL;
@@ -44,4 +85,279 @@ function invalidGithubApiUrl(): Error {
   return new Error(
     "invalid GITHUB_API_URL: expected https://api.github.com or an http://127.0.0.1:<port> / http://localhost:<port> origin",
   );
+}
+
+export function githubAppCredentials(env) {
+  const issuer = stringEnv(env.CLAWSWEEPER_APP_ID) || stringEnv(env.CLAWSWEEPER_APP_CLIENT_ID);
+  const privateKey = normalizePrivateKey(env.CLAWSWEEPER_APP_PRIVATE_KEY);
+  if (!issuer || !privateKey) return null;
+  return {
+    issuer,
+    privateKey,
+    installationId: stringEnv(env.CLAWSWEEPER_APP_INSTALLATION_ID),
+  };
+}
+
+export async function githubAppInstallationId(appJwt, repo, env = {}) {
+  if (!repo || !repo.includes("/")) throw new Error("GitHub App installation repo is required");
+  const payload = await githubAppJson(
+    `/repos/${repo}/installation`,
+    appJwt,
+    { errorLabel: "GitHub App installation" },
+    env,
+  );
+  const installationId = Number(payload.id);
+  if (!Number.isInteger(installationId) || installationId <= 0) {
+    throw new Error(`GitHub App installation response missing id for ${repo}`);
+  }
+  return String(installationId);
+}
+
+export async function githubAppInstallationIdAsPlainError(appJwt, repo, env = {}) {
+  try {
+    return await githubAppInstallationId(appJwt, repo, env);
+  } catch (error) {
+    throwPlainGitHubRequestError(error);
+  }
+}
+
+export async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}, env = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_APP_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(githubApiUrl(env, path), {
+      method: options.method || "GET",
+      signal: controller.signal,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "User-Agent": "openclaw-clawsweeper-status",
+        Authorization: `Bearer ${appJwt}`,
+      },
+      body: options.body,
+    });
+  } catch (error) {
+    const timedOut =
+      controller.signal.aborted ||
+      (error instanceof Error && (error.name === "AbortError" || error.message === "timeout"));
+    throw new GitHubRequestError(
+      `${options.errorLabel || "GitHub App"} ${timedOut ? "timed out" : "network failure"}`,
+      undefined,
+      timedOut,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    const rateLimited = githubResponseRateLimited(response, text);
+    throw new GitHubRequestError(
+      `${options.errorLabel || "GitHub App"} ${response.status}`,
+      response.status,
+      false,
+      rateLimited,
+      githubResponseValidationDetail(response.status, text),
+      rateLimited ? githubResponseRateLimitHint(response, Date.now()) : undefined,
+    );
+  }
+  return response.json();
+}
+
+export async function githubAppJsonAsPlainError(
+  path,
+  appJwt,
+  options: GithubAppJsonOptions = {},
+  env = {},
+) {
+  try {
+    return await githubAppJson(path, appJwt, options, env);
+  } catch (error) {
+    throwPlainGitHubRequestError(error);
+  }
+}
+
+function throwPlainGitHubRequestError(error: unknown): never {
+  if (error instanceof GitHubRequestError) throw new Error(error.message);
+  throw error;
+}
+
+export function githubResponseRateLimited(response: Response, text: string) {
+  return (
+    response.status === 429 ||
+    response.headers.has("retry-after") ||
+    response.headers.get("x-ratelimit-remaining") === "0" ||
+    /(?:secondary )?rate limit|api rate limit|abuse detection/i.test(text)
+  );
+}
+
+export function githubResponseRateLimitHint(
+  response: Response,
+  observedAt: number,
+): GitHubRateLimitHint {
+  const maxRetryAt = observedAt + GITHUB_RATE_LIMIT_MAX_RETRY_MS;
+  const retryAfter = String(response.headers.get("retry-after") || "").trim();
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    const parsed = Number.isFinite(seconds)
+      ? observedAt + Math.max(0, seconds) * 1_000
+      : Date.parse(retryAfter);
+    if (Number.isFinite(parsed)) {
+      return {
+        observedAt,
+        retryAt: Math.max(observedAt + 1_000, Math.min(maxRetryAt, parsed)),
+        provenance: "retry_after",
+        authoritative: true,
+      };
+    }
+  }
+  const resetSeconds = Number(response.headers.get("x-ratelimit-reset"));
+  if (Number.isFinite(resetSeconds) && resetSeconds > 0) {
+    return {
+      observedAt,
+      retryAt: Math.max(observedAt + 1_000, Math.min(maxRetryAt, resetSeconds * 1_000)),
+      provenance: "rate_limit_reset",
+      authoritative: true,
+    };
+  }
+  return {
+    observedAt,
+    retryAt: observedAt + GITHUB_RATE_LIMIT_FALLBACK_MS,
+    provenance: "fallback",
+    authoritative: false,
+  };
+}
+
+export function githubResponseValidationDetail(status: number, text: string) {
+  if (status !== 422 || text.length > 16_384) return undefined;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const record = objectValue(payload);
+  const errors = Array.isArray(record.errors) ? record.errors : [];
+  const validationFields = new Set<string>();
+  const validationCodes = new Set<string>();
+  for (const error of errors.slice(0, 8)) {
+    const value = objectValue(error);
+    const field = githubValidationToken(value.field);
+    const code = githubValidationToken(value.code);
+    if (field) validationFields.add(field);
+    if (code) validationCodes.add(code);
+  }
+  if (!validationFields.size && !validationCodes.size) return undefined;
+  return {
+    validationFields: [...validationFields].sort().slice(0, 4),
+    validationCodes: [...validationCodes].sort().slice(0, 4),
+  };
+}
+
+function githubValidationToken(value: unknown) {
+  const token =
+    String(value || "")
+      .match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0]
+      ?.toLowerCase() || "";
+  return token.length <= 64 ? token : "";
+}
+
+export async function signGithubAppJwt(issuer, privateKey) {
+  const now = Math.floor(Date.now() / 1000);
+  const header = base64UrlEncode(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const payload = base64UrlEncode(JSON.stringify({ iat: now - 60, exp: now + 540, iss: issuer }));
+  const input = `${header}.${payload}`;
+  const key = await crypto.subtle.importKey(
+    "pkcs8",
+    pemToPkcs8(privateKey),
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    key,
+    new TextEncoder().encode(input),
+  );
+  return `${input}.${base64UrlEncode(new Uint8Array(signature))}`;
+}
+
+export function normalizePrivateKey(value) {
+  return stringEnv(value)?.replace(/\\n/g, "\n") || "";
+}
+
+export function pemToPkcs8(pem) {
+  const pkcs8 = pemBody(pem, "PRIVATE KEY");
+  if (pkcs8) return pkcs8;
+  const pkcs1 = pemBody(pem, "RSA PRIVATE KEY");
+  if (!pkcs1) throw new Error("GitHub App private key must be PEM encoded");
+  return wrapPkcs1PrivateKey(pkcs1);
+}
+
+export function pemBody(pem, label) {
+  const pattern = new RegExp(`-----BEGIN ${label}-----([\\s\\S]+?)-----END ${label}-----`, "m");
+  const match = String(pem).match(pattern);
+  if (!match) return null;
+  const binary = atob(match[1].replace(/\s+/g, ""));
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+export function wrapPkcs1PrivateKey(pkcs1) {
+  const version = new Uint8Array([0x02, 0x01, 0x00]);
+  const algorithm = new Uint8Array([
+    0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
+  ]);
+  const octetString = derElement(0x04, pkcs1);
+  return derElement(0x30, concatBytes(version, algorithm, octetString));
+}
+
+export function derElement(tag, value) {
+  return concatBytes(new Uint8Array([tag]), derLength(value.length), value);
+}
+
+export function derLength(length) {
+  if (length < 0x80) return new Uint8Array([length]);
+  const bytes = [];
+  let value = length;
+  while (value > 0) {
+    bytes.unshift(value & 0xff);
+    value >>= 8;
+  }
+  return new Uint8Array([0x80 | bytes.length, ...bytes]);
+}
+
+export function concatBytes(...parts) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.length;
+  }
+  return output;
+}
+
+export function base64UrlEncode(value) {
+  const bytes =
+    typeof value === "string"
+      ? new TextEncoder().encode(value)
+      : value instanceof Uint8Array
+        ? value
+        : new Uint8Array(value);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 1) {
+    binary += String.fromCharCode(bytes[index]);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringEnv(value) {
+  const text = String(value || "").trim();
+  return text ? text : "";
 }

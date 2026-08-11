@@ -68,11 +68,22 @@ import {
 import { ExactReviewLifecycleTelemetryStore } from "./exact-review-lifecycle-telemetry.ts";
 import { recentDurablePublicationEvents } from "./recent-durable-publication-events.ts";
 import { sanitizedServerError } from "./error-safety.ts";
-import { githubApiUrl } from "./github-api.ts";
+import {
+  GitHubRequestError,
+  githubApiUrl,
+  githubAppCredentials,
+  githubAppInstallationId,
+  githubAppJson,
+  githubResponseRateLimitHint,
+  githubResponseRateLimited,
+  githubResponseValidationDetail,
+  signGithubAppJwt,
+  type GitHubRateLimitHint,
+  type GitHubRequestValidationDetail,
+} from "./github-api.ts";
 
 const RECENT_DURABLE_PUBLICATION_EVENTS_CACHE_MS = 60_000;
 
-type GithubAppJsonOptions = { method?: string; body?: BodyInit; errorLabel?: string };
 const GITHUB_TIMEOUT_MS = 4500;
 const CLAWSWEEPER_REVIEW_REPO = "openclaw/clawsweeper";
 
@@ -13789,42 +13800,7 @@ type ExactReviewDispatchFailure = {
   detail?: ExactReviewDispatchFailureDetail;
 };
 
-type ExactReviewDispatchFailureDetail = {
-  validationFields: string[];
-  validationCodes: string[];
-};
-
-type GitHubRateLimitHint = {
-  observedAt: number;
-  retryAt: number;
-  provenance: ExactReviewGithubRateLimitProvenance;
-  authoritative: boolean;
-};
-
-class GitHubRequestError extends Error {
-  readonly status?: number;
-  readonly timedOut: boolean;
-  readonly rateLimited: boolean;
-  readonly validationDetail?: ExactReviewDispatchFailureDetail;
-  readonly rateLimitHint?: GitHubRateLimitHint;
-
-  constructor(
-    message: string,
-    status?: number,
-    timedOut = false,
-    rateLimited = false,
-    validationDetail?: ExactReviewDispatchFailureDetail,
-    rateLimitHint?: GitHubRateLimitHint,
-  ) {
-    super(message);
-    this.name = "GitHubRequestError";
-    this.status = status;
-    this.timedOut = timedOut;
-    this.rateLimited = rateLimited;
-    this.validationDetail = validationDetail;
-    this.rateLimitHint = rateLimitHint;
-  }
-}
+type ExactReviewDispatchFailureDetail = GitHubRequestValidationDetail;
 
 function exactReviewDispatchFailure(error: unknown): ExactReviewDispatchFailure {
   const requestError = error instanceof GitHubRequestError ? error : null;
@@ -14660,118 +14636,6 @@ async function mapWithConcurrency<Item, Result>(
   return results;
 }
 
-function githubAppCredentials(env) {
-  const issuer = stringEnv(env.CLAWSWEEPER_APP_ID) || stringEnv(env.CLAWSWEEPER_APP_CLIENT_ID);
-  const privateKey = normalizePrivateKey(env.CLAWSWEEPER_APP_PRIVATE_KEY);
-  if (!issuer || !privateKey) return null;
-  return {
-    issuer,
-    privateKey,
-    installationId: stringEnv(env.CLAWSWEEPER_APP_INSTALLATION_ID),
-  };
-}
-
-async function githubAppInstallationId(appJwt, repo, env = {}) {
-  if (!repo || !repo.includes("/")) throw new Error("GitHub App installation repo is required");
-  const payload = await githubAppJson(
-    `/repos/${repo}/installation`,
-    appJwt,
-    { errorLabel: "GitHub App installation" },
-    env,
-  );
-  const installationId = Number(payload.id);
-  if (!Number.isInteger(installationId) || installationId <= 0) {
-    throw new Error(`GitHub App installation response missing id for ${repo}`);
-  }
-  return String(installationId);
-}
-
-async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}, env = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetch(githubApiUrl(env, path), {
-      method: options.method || "GET",
-      signal: controller.signal,
-      headers: {
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        "User-Agent": "openclaw-clawsweeper-status",
-        Authorization: `Bearer ${appJwt}`,
-      },
-      body: options.body,
-    });
-  } catch (error) {
-    const timedOut =
-      controller.signal.aborted ||
-      (error instanceof Error && (error.name === "AbortError" || error.message === "timeout"));
-    throw new GitHubRequestError(
-      `${options.errorLabel || "GitHub App"} ${timedOut ? "timed out" : "network failure"}`,
-      undefined,
-      timedOut,
-    );
-  } finally {
-    clearTimeout(timeout);
-  }
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    const rateLimited = githubResponseRateLimited(response, text);
-    throw new GitHubRequestError(
-      `${options.errorLabel || "GitHub App"} ${response.status}`,
-      response.status,
-      false,
-      rateLimited,
-      githubResponseValidationDetail(response.status, text),
-      rateLimited ? githubResponseRateLimitHint(response, Date.now()) : undefined,
-    );
-  }
-  return response.json();
-}
-
-function githubResponseRateLimited(response: Response, text: string) {
-  return (
-    response.status === 429 ||
-    response.headers.has("retry-after") ||
-    response.headers.get("x-ratelimit-remaining") === "0" ||
-    /(?:secondary )?rate limit|api rate limit|abuse detection/i.test(text)
-  );
-}
-
-function githubResponseRateLimitHint(response: Response, observedAt: number): GitHubRateLimitHint {
-  const maxRetryAt = observedAt + EXACT_REVIEW_COMPLETION_RETRY_MAX_MS;
-  const retryAfter = String(response.headers.get("retry-after") || "").trim();
-  if (retryAfter) {
-    const seconds = Number(retryAfter);
-    const parsed = Number.isFinite(seconds)
-      ? observedAt + Math.max(0, seconds) * 1_000
-      : Date.parse(retryAfter);
-    if (Number.isFinite(parsed)) {
-      return {
-        observedAt,
-        retryAt: Math.max(observedAt + 1_000, Math.min(maxRetryAt, parsed)),
-        provenance: "retry_after",
-        authoritative: true,
-      };
-    }
-  }
-  const resetSeconds = Number(response.headers.get("x-ratelimit-reset"));
-  if (Number.isFinite(resetSeconds) && resetSeconds > 0) {
-    return {
-      observedAt,
-      retryAt: Math.max(observedAt + 1_000, Math.min(maxRetryAt, resetSeconds * 1_000)),
-      provenance: "rate_limit_reset",
-      authoritative: true,
-    };
-  }
-  return {
-    observedAt,
-    retryAt: observedAt + EXACT_REVIEW_GITHUB_THROTTLE_ADMISSION_COOLDOWN_MS,
-    provenance: "fallback",
-    authoritative: false,
-  };
-}
-
 function exactReviewGithubTargetAppObservation(
   error: unknown,
   targetRepo: string,
@@ -14796,133 +14660,6 @@ function exactReviewGithubTargetAppObservation(
     provenance: hint.provenance,
     authoritative: hint.authoritative,
   };
-}
-
-function githubResponseValidationDetail(status: number, text: string) {
-  if (status !== 422 || text.length > 16_384) return undefined;
-  let payload: unknown;
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-  const errors = Array.isArray(objectValue(payload).errors) ? objectValue(payload).errors : [];
-  const validationFields = new Set<string>();
-  const validationCodes = new Set<string>();
-  for (const error of errors.slice(0, 8)) {
-    const value = objectValue(error);
-    const field = githubValidationToken(value.field);
-    const code = githubValidationToken(value.code);
-    if (field) validationFields.add(field);
-    if (code) validationCodes.add(code);
-  }
-  if (!validationFields.size && !validationCodes.size) return undefined;
-  return {
-    validationFields: [...validationFields].sort().slice(0, 4),
-    validationCodes: [...validationCodes].sort().slice(0, 4),
-  };
-}
-
-function githubValidationToken(value: unknown) {
-  const token =
-    String(value || "")
-      .match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0]
-      ?.toLowerCase() || "";
-  return token.length <= 64 ? token : "";
-}
-
-async function signGithubAppJwt(issuer, privateKey) {
-  const now = Math.floor(Date.now() / 1000);
-  const header = base64UrlEncode(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-  const payload = base64UrlEncode(JSON.stringify({ iat: now - 60, exp: now + 540, iss: issuer }));
-  const input = `${header}.${payload}`;
-  const key = await crypto.subtle.importKey(
-    "pkcs8",
-    pemToPkcs8(privateKey),
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signature = await crypto.subtle.sign(
-    "RSASSA-PKCS1-v1_5",
-    key,
-    new TextEncoder().encode(input),
-  );
-  return `${input}.${base64UrlEncode(new Uint8Array(signature))}`;
-}
-
-function normalizePrivateKey(value) {
-  return stringEnv(value)?.replace(/\\n/g, "\n") || "";
-}
-
-function pemToPkcs8(pem) {
-  const pkcs8 = pemBody(pem, "PRIVATE KEY");
-  if (pkcs8) return pkcs8;
-  const pkcs1 = pemBody(pem, "RSA PRIVATE KEY");
-  if (!pkcs1) throw new Error("GitHub App private key must be PEM encoded");
-  return wrapPkcs1PrivateKey(pkcs1);
-}
-
-function pemBody(pem, label) {
-  const pattern = new RegExp(`-----BEGIN ${label}-----([\\s\\S]+?)-----END ${label}-----`, "m");
-  const match = String(pem).match(pattern);
-  if (!match) return null;
-  const binary = atob(match[1].replace(/\s+/g, ""));
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
-}
-
-function wrapPkcs1PrivateKey(pkcs1) {
-  const version = new Uint8Array([0x02, 0x01, 0x00]);
-  const algorithm = new Uint8Array([
-    0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
-  ]);
-  const octetString = derElement(0x04, pkcs1);
-  return derElement(0x30, concatBytes(version, algorithm, octetString));
-}
-
-function derElement(tag, value) {
-  return concatBytes(new Uint8Array([tag]), derLength(value.length), value);
-}
-
-function derLength(length) {
-  if (length < 0x80) return new Uint8Array([length]);
-  const bytes = [];
-  let value = length;
-  while (value > 0) {
-    bytes.unshift(value & 0xff);
-    value >>= 8;
-  }
-  return new Uint8Array([0x80 | bytes.length, ...bytes]);
-}
-
-function concatBytes(...parts) {
-  const total = parts.reduce((sum, part) => sum + part.length, 0);
-  const output = new Uint8Array(total);
-  let offset = 0;
-  for (const part of parts) {
-    output.set(part, offset);
-    offset += part.length;
-  }
-  return output;
-}
-
-function base64UrlEncode(value) {
-  const bytes =
-    typeof value === "string"
-      ? new TextEncoder().encode(value)
-      : value instanceof Uint8Array
-        ? value
-        : new Uint8Array(value);
-  let binary = "";
-  for (let index = 0; index < bytes.length; index += 1) {
-    binary += String.fromCharCode(bytes[index]);
-  }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function stringEnv(value) {
-  const text = String(value || "").trim();
-  return text ? text : "";
 }
 
 function numberFrom(value, fallback) {

@@ -6,7 +6,13 @@ import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-l
 import { bayHtml } from "./bay-page.ts";
 import { liveActivityBaySnapshot } from "./live-activity.ts";
 import { summarizeDashboardHealth } from "./dashboard-health.ts";
-import { githubApiUrl } from "./github-api.ts";
+import {
+  githubApiUrl,
+  githubAppCredentials,
+  githubAppInstallationIdAsPlainError as githubAppInstallationId,
+  githubAppJsonAsPlainError as githubAppJson,
+  signGithubAppJwt,
+} from "./github-api.ts";
 import {
   HEALTH_HISTORY_RETENTION_DAYS,
   exactReviewHistorySample,
@@ -70,7 +76,6 @@ const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "waiting", "reques
 const QUEUED_RUN_STATUSES = new Set(["queued", "waiting", "requested", "pending"]);
 type DashboardEnv = Record<string, unknown>;
 type DashboardContext = { waitUntil?: (promise: Promise<unknown>) => void };
-type GithubAppJsonOptions = { method?: string; body?: BodyInit; errorLabel?: string };
 type GithubJsonReader = (path: string) => ReturnType<typeof githubJson>;
 type StoredValue = { value: string; expires_at?: number };
 type WorkflowRunSummary = {
@@ -6914,17 +6919,6 @@ async function githubAuthToken(env) {
   return promise;
 }
 
-function githubAppCredentials(env) {
-  const issuer = stringEnv(env.CLAWSWEEPER_APP_ID) || stringEnv(env.CLAWSWEEPER_APP_CLIENT_ID);
-  const privateKey = normalizePrivateKey(env.CLAWSWEEPER_APP_PRIVATE_KEY);
-  if (!issuer || !privateKey) return null;
-  return {
-    issuer,
-    privateKey,
-    installationId: stringEnv(env.CLAWSWEEPER_APP_INSTALLATION_ID),
-  };
-}
-
 async function createGithubAppInstallationToken(env, credentials, repos) {
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
   const installationId =
@@ -6953,128 +6947,6 @@ async function createGithubAppInstallationToken(env, credentials, repos) {
     ? Date.parse(payload.expires_at)
     : Date.now() + GITHUB_APP_TOKEN_DEFAULT_TTL_MS;
   return { token, expiresAtMs };
-}
-
-async function githubAppInstallationId(appJwt, repo, env = {}) {
-  if (!repo || !repo.includes("/")) throw new Error("GitHub App installation repo is required");
-  const payload = await githubAppJson(
-    `/repos/${repo}/installation`,
-    appJwt,
-    { errorLabel: "GitHub App installation" },
-    env,
-  );
-  const installationId = Number(payload.id);
-  if (!Number.isInteger(installationId) || installationId <= 0) {
-    throw new Error(`GitHub App installation response missing id for ${repo}`);
-  }
-  return String(installationId);
-}
-
-async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}, env = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
-  const response = await fetch(githubApiUrl(env, path), {
-    method: options.method || "GET",
-    signal: controller.signal,
-    headers: {
-      Accept: "application/vnd.github+json",
-      "Content-Type": "application/json",
-      "User-Agent": "openclaw-clawsweeper-status",
-      Authorization: `Bearer ${appJwt}`,
-    },
-    body: options.body,
-  }).finally(() => clearTimeout(timeout));
-  if (!response.ok) throw new Error(`${options.errorLabel || "GitHub App"} ${response.status}`);
-  return response.json();
-}
-
-async function signGithubAppJwt(issuer, privateKey) {
-  const now = Math.floor(Date.now() / 1000);
-  const header = base64UrlEncode(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-  const payload = base64UrlEncode(JSON.stringify({ iat: now - 60, exp: now + 540, iss: issuer }));
-  const input = `${header}.${payload}`;
-  const key = await crypto.subtle.importKey(
-    "pkcs8",
-    pemToPkcs8(privateKey),
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signature = await crypto.subtle.sign(
-    "RSASSA-PKCS1-v1_5",
-    key,
-    new TextEncoder().encode(input),
-  );
-  return `${input}.${base64UrlEncode(new Uint8Array(signature))}`;
-}
-
-function normalizePrivateKey(value) {
-  return stringEnv(value)?.replace(/\\n/g, "\n") || "";
-}
-
-function pemToPkcs8(pem) {
-  const pkcs8 = pemBody(pem, "PRIVATE KEY");
-  if (pkcs8) return pkcs8;
-  const pkcs1 = pemBody(pem, "RSA PRIVATE KEY");
-  if (!pkcs1) throw new Error("GitHub App private key must be PEM encoded");
-  return wrapPkcs1PrivateKey(pkcs1);
-}
-
-function pemBody(pem, label) {
-  const pattern = new RegExp(`-----BEGIN ${label}-----([\\s\\S]+?)-----END ${label}-----`, "m");
-  const match = String(pem).match(pattern);
-  if (!match) return null;
-  const binary = atob(match[1].replace(/\s+/g, ""));
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
-}
-
-function wrapPkcs1PrivateKey(pkcs1) {
-  const version = new Uint8Array([0x02, 0x01, 0x00]);
-  const algorithm = new Uint8Array([
-    0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
-  ]);
-  const octetString = derElement(0x04, pkcs1);
-  return derElement(0x30, concatBytes(version, algorithm, octetString));
-}
-
-function derElement(tag, value) {
-  return concatBytes(new Uint8Array([tag]), derLength(value.length), value);
-}
-
-function derLength(length) {
-  if (length < 0x80) return new Uint8Array([length]);
-  const bytes = [];
-  let value = length;
-  while (value > 0) {
-    bytes.unshift(value & 0xff);
-    value >>= 8;
-  }
-  return new Uint8Array([0x80 | bytes.length, ...bytes]);
-}
-
-function concatBytes(...parts) {
-  const total = parts.reduce((sum, part) => sum + part.length, 0);
-  const output = new Uint8Array(total);
-  let offset = 0;
-  for (const part of parts) {
-    output.set(part, offset);
-    offset += part.length;
-  }
-  return output;
-}
-
-function base64UrlEncode(value) {
-  const bytes =
-    typeof value === "string"
-      ? new TextEncoder().encode(value)
-      : value instanceof Uint8Array
-        ? value
-        : new Uint8Array(value);
-  let binary = "";
-  for (let index = 0; index < bytes.length; index += 1) {
-    binary += String.fromCharCode(bytes[index]);
-  }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function stringEnv(value) {
