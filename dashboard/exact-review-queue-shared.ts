@@ -18,3 +18,8 @@ export function exactReviewScheduledLane(
 export function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
+
+export function numberFrom(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
