@@ -1,17 +1,23 @@
 {
   "schema": "bounded-status-store-reads-proof/v1",
-  "generated_at": "2026-08-11T08:11:19.933Z",
+  "generated_at": "2026-08-11T08:52:19.016Z",
   "merge_base": "88fbe4aab5614a09d9cf2b2aa8ef46268c946891",
-  "candidate_head": "4045b50cf93ad8b3ba4b1734441948ad6e731366",
+  "candidate_head": "3d227d23ca80d03fcf9a995e47c798e237232eea",
   "fixture": {
-    "automerge_events": 300,
+    "automerge_events": 308,
     "apply_observations": 170,
     "utc_boundary_replays": 2,
     "repositories": [
       "openclaw/openclaw",
       "openclaw/clawhub"
     ],
-    "span_days": 7
+    "span_days": 7,
+    "window_spanning_sessions": [
+      "6h",
+      "24h",
+      "7d"
+    ],
+    "entirely_pre_window_session": "pre-6h"
   },
   "runtime": {
     "node": "v24.19.0",
@@ -33,16 +39,16 @@
   "row_counts": {
     "automerge_metrics": {
       "6h": {
-        "before": 2120,
-        "after": 120
+        "before": 6600,
+        "after": 690
       },
       "24h": {
-        "before": 2120,
-        "after": 216
+        "before": 6600,
+        "after": 744
       },
       "7d": {
-        "before": 2120,
-        "after": 1080
+        "before": 6600,
+        "after": 1176
       }
     },
     "apply_observability": {

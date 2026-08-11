@@ -6,8 +6,9 @@ The public automerge-metrics and apply-observability responses are unchanged whi
 `StatusStore` Durable Object no longer reads and reprocesses the full retained event population on
 every poll.
 
-Automerge reads use the timestamp embedded in the durable key as the storage range, consume the
-result in storage order, and return only the completed summary across the Durable Object boundary.
+Automerge reads use the timestamp embedded in the durable key as the storage range, include a fixed
+eight-day pre-window session-context margin, consume the result in storage order, and return only
+the completed summary across the Durable Object boundary.
 Apply observations are stored in UTC day+repository buckets; reads fetch only overlapping buckets
 plus compatible legacy rows and also return only the summary.
 
@@ -26,6 +27,8 @@ day buckets are returned from storage.
 - Real `/api/events` automerge ingestion and signed `/internal/apply-observability` ingestion.
 - Public 6h, 24h, and 7d queries, both unfiltered and repository-filtered; automerge also exercises
   policy filtering.
+- Automerge sessions spanning every requested-window boundary, plus a session entirely before the
+  6h window, so command-to-merge latency and terminal inclusion match the unbounded implementation.
 - A proof-only counting storage adapter around each revision's actual `StatusStore` class. It counts
   rows returned by `list()` and `get()` without changing production code.
 - A replayed apply observation exactly at a UTC day boundary.
@@ -39,10 +42,16 @@ docs/proof/bounded-status-store-reads/run-proof.sh
 ```
 
 The harness enables Corepack, installs the locked dependencies, extracts merge-base into a
-disposable directory, starts both Wrangler runtimes on loopback, seeds 300 automerge events and 170
+disposable directory, starts both Wrangler runtimes on loopback, seeds 308 automerge events and 170
 apply observations through production routes, and compares 12 normalized responses. Only
 request-time-derived fields are normalized: `generated_at`, `range_start`, and automerge bucket
 `start`/`end` timestamps.
+
+The eight-day automerge margin is derived from the seven-day active-session reconciliation horizon
+in `scripts/dashboard-reconcile-automerge.ts`, plus a 24-hour delayed-delivery cushion. That horizon
+also exceeds the 104.84-hour maximum command-to-terminal span observed in the public seven-day
+metrics response at `2026-08-11T08:49:10.916Z`. The largest query therefore reads at most 15 days
+of the 90-day retained event population.
 
 ## Local result
 
@@ -51,9 +60,9 @@ were:
 
 | Endpoint | Range | Before | After |
 | --- | ---: | ---: | ---: |
-| automerge-metrics | 6h | 2,120 | 120 |
-| automerge-metrics | 24h | 2,120 | 216 |
-| automerge-metrics | 7d | 2,120 | 1,080 |
+| automerge-metrics | 6h | 6,600 | 690 |
+| automerge-metrics | 24h | 6,600 | 744 |
+| automerge-metrics | 7d | 6,600 | 1,176 |
 | apply-observability | 6h | 169 | 2 |
 | apply-observability | 24h | 169 | 4 |
 | apply-observability | 7d | 169 | 16 |

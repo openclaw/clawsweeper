@@ -12167,33 +12167,80 @@ test("automerge metric events use isolated durable keys and aggregate through th
   assert.equal(metrics.summary.merged_sessions, 2);
 });
 
-test("automerge metrics list and parse only the requested time range", async () => {
+test("automerge metrics retain bounded pre-window context for spanning sessions", async () => {
   const storage = new MemoryDurableStorage();
   const store = new StatusStore({ storage });
   const namespace = new MemoryDurableNamespace(store);
   const now = Date.now();
   const prefix = "automerge-product-metrics:v1:time:";
-  const outsideAt = new Date(now - 7 * 60 * 60_000).toISOString();
-  const insideAt = new Date(now - 60 * 60_000).toISOString();
-  const outsideKey = `${prefix}${outsideAt}:outside`;
-  const insideKey = `${prefix}${insideAt}:inside`;
-  storage.rawPut(outsideKey, {
+  const spanningActivationAt = new Date(now - 7 * 60 * 60_000).toISOString();
+  const spanningRepairAt = new Date(now - 5 * 60 * 60_000).toISOString();
+  const spanningTerminalAt = new Date(now - 60 * 60_000).toISOString();
+  const preWindowActivationAt = new Date(now - 9 * 60 * 60_000).toISOString();
+  const preWindowTerminalAt = new Date(now - 7 * 60 * 60_000).toISOString();
+  const outsideContextAt = new Date(now - 9 * 24 * 60 * 60_000).toISOString();
+  const outsideContextKey = `${prefix}${outsideContextAt}:outside-context`;
+  storage.rawPut(outsideContextKey, {
     value: "{not-json",
     expires_at: now + 60_000,
   });
-  storage.rawPut(insideKey, {
-    value: JSON.stringify({
-      event_id: "inside",
-      session_id: "openclaw/openclaw#42:inside",
+  const rows = [
+    {
+      event_id: "spanning-activation",
+      session_id: "openclaw/openclaw#42:spanning",
+      repository: "openclaw/openclaw",
+      item_number: 42,
+      policy_version: "immediate-v1",
+      phase: "activated",
+      occurred_at: spanningActivationAt,
+    },
+    {
+      event_id: "spanning-repair",
+      session_id: "openclaw/openclaw#42:spanning",
+      repository: "openclaw/openclaw",
+      item_number: 42,
+      policy_version: "immediate-v1",
+      phase: "repair_completed",
+      base_sync: true,
+      occurred_at: spanningRepairAt,
+    },
+    {
+      event_id: "spanning-terminal",
+      session_id: "openclaw/openclaw#42:spanning",
       repository: "openclaw/openclaw",
       item_number: 42,
       policy_version: "immediate-v1",
       phase: "terminal",
       outcome: "merged",
-      occurred_at: insideAt,
-    }),
-    expires_at: now + 60_000,
-  });
+      occurred_at: spanningTerminalAt,
+    },
+    {
+      event_id: "pre-window-activation",
+      session_id: "openclaw/openclaw#43:pre-window",
+      repository: "openclaw/openclaw",
+      item_number: 43,
+      policy_version: "immediate-v1",
+      phase: "activated",
+      occurred_at: preWindowActivationAt,
+    },
+    {
+      event_id: "pre-window-terminal",
+      session_id: "openclaw/openclaw#43:pre-window",
+      repository: "openclaw/openclaw",
+      item_number: 43,
+      policy_version: "immediate-v1",
+      phase: "terminal",
+      outcome: "merged",
+      occurred_at: preWindowTerminalAt,
+    },
+  ];
+  const rowKeys = rows.map((event) => `${prefix}${event.occurred_at}:${event.event_id}`);
+  for (const [index, event] of rows.entries()) {
+    storage.rawPut(rowKeys[index]!, {
+      value: JSON.stringify(event),
+      expires_at: now + 60_000,
+    });
+  }
 
   const response = await worker.fetch(
     new Request("https://clawsweeper.openclaw.ai/api/automerge-metrics?range=6h"),
@@ -12202,8 +12249,13 @@ test("automerge metrics list and parse only the requested time range", async () 
   const metrics = await response.json();
   assert.equal(response.status, 200);
   assert.equal(metrics.summary.terminal_sessions, 1);
-  assert.deepEqual(storage.listedKeys(prefix), [insideKey]);
-  assert.equal(storage.listedKeys(prefix).includes(outsideKey), false);
+  assert.equal(metrics.summary.merged_sessions, 1);
+  assert.equal(metrics.summary.command_to_merge_p50_ms, 6 * 60 * 60_000);
+  assert.equal(metrics.summary.base_sync_p50, 1);
+  assert.equal(metrics.sessions[0]?.repairs, 1);
+  assert.equal(metrics.sessions[0]?.activation_missing, false);
+  assert.deepEqual(storage.listedKeys(prefix), [...rowKeys].sort());
+  assert.equal(storage.listedKeys(prefix).includes(outsideContextKey), false);
 });
 
 function applyObservation(options: {

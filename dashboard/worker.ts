@@ -51,6 +51,7 @@ import {
   AUTOMERGE_METRICS_EVENT_KEY_PREFIX,
   AUTOMERGE_METRICS_EVENT_ID_KEY_PREFIX,
   AUTOMERGE_METRICS_EVENT_LIMIT,
+  AUTOMERGE_METRICS_SESSION_CONTEXT_MS,
   AUTOMERGE_METRICS_STORE_KEY,
   AUTOMERGE_METRICS_TTL_SECONDS,
   automergeMetricRange,
@@ -324,10 +325,11 @@ export class StatusStore {
       const now = Date.now();
       const range = automergeMetricRange(url.searchParams.get("range"));
       const rangeStart = automergeMetricRangeStart(range, now);
+      const contextStart = rangeStart - AUTOMERGE_METRICS_SESSION_CONTEXT_MS;
       const upperBound = `${AUTOMERGE_METRICS_EVENT_KEY_PREFIX}${new Date(now).toISOString()}:\uffff`;
       const entries = (await this.storage.list({
         prefix: AUTOMERGE_METRICS_EVENT_KEY_PREFIX,
-        start: `${AUTOMERGE_METRICS_EVENT_KEY_PREFIX}${new Date(rangeStart).toISOString()}`,
+        start: `${AUTOMERGE_METRICS_EVENT_KEY_PREFIX}${new Date(contextStart).toISOString()}`,
         end: upperBound,
         limit: AUTOMERGE_METRICS_EVENT_LIMIT,
         reverse: false,

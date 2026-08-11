@@ -114,6 +114,8 @@ try {
       utc_boundary_replays: 2,
       repositories: ["openclaw/openclaw", "openclaw/clawhub"],
       span_days: 7,
+      window_spanning_sessions: ["6h", "24h", "7d"],
+      entirely_pre_window_session: "pre-6h",
     },
     runtime: {
       node: process.version,
@@ -182,6 +184,38 @@ function makeFixture(now) {
       event_id: `terminal-${index}`,
       phase: "terminal",
       outcome: index % 5 === 0 ? "repair_failed" : "merged",
+      occurred_at: terminalAt,
+    });
+  }
+  const spanningSessions = [
+    { id: "6h", activationHoursAgo: 7, terminalHoursAgo: 1, itemNumber: 11_000 },
+    { id: "24h", activationHoursAgo: 27, terminalHoursAgo: 20, itemNumber: 11_001 },
+    { id: "7d", activationHoursAgo: 8 * 24, terminalHoursAgo: 6 * 24, itemNumber: 11_002 },
+    { id: "pre-6h", activationHoursAgo: 9, terminalHoursAgo: 7, itemNumber: 11_003 },
+  ];
+  for (const session of spanningSessions) {
+    const activatedAt = new Date(now - session.activationHoursAgo * 60 * 60_000).toISOString();
+    const terminalAt = new Date(now - session.terminalHoursAgo * 60 * 60_000).toISOString();
+    const sessionId = `openclaw/openclaw#${session.itemNumber}:boundary-${session.id}:${activatedAt}`;
+    const common = {
+      event_type: "clawsweeper.automerge_metric",
+      session_id: sessionId,
+      repository: "openclaw/openclaw",
+      item_number: session.itemNumber,
+      policy_version: "immediate-v1",
+      pr_url: `https://github.com/openclaw/openclaw/pull/${session.itemNumber}`,
+    };
+    automerge.push({
+      ...common,
+      event_id: `boundary-${session.id}-activation`,
+      phase: "activated",
+      occurred_at: activatedAt,
+    });
+    automerge.push({
+      ...common,
+      event_id: `boundary-${session.id}-terminal`,
+      phase: "terminal",
+      outcome: "merged",
       occurred_at: terminalAt,
     });
   }
@@ -325,8 +359,8 @@ async function measureStorageRows(base, candidate, now) {
 
 function automergeCountingRows(now) {
   const rows = new Map();
-  for (let index = 0; index < 2_000; index += 1) {
-    const occurredAt = new Date(now - (8 * 60 + index * 10) * 60_000).toISOString();
+  for (let index = 0; index < 6_480; index += 1) {
+    const occurredAt = new Date(now - (8 * 60 + index * 20) * 60_000).toISOString();
     addAutomergeRow(rows, index, occurredAt, now);
   }
   for (let index = 0; index < 120; index += 1) {

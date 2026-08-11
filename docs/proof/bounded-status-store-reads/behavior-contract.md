@@ -26,7 +26,8 @@ Durable Object reads scale with the requested time window rather than the full r
 - Automerge ranges, buckets, percentiles, filters, outcomes, and session projections are unchanged.
 - Apply event counts, repository health, queue/lease state, window totals, retry amplification, and
   failure fields are unchanged.
-- Candidate automerge reads return only time-keyed rows inside the requested range.
+- Candidate automerge reads return only time-keyed rows inside the requested range plus a fixed
+  eight-day pre-window session-context margin.
 - Candidate apply reads return only overlapping day+repository buckets plus still-live legacy rows.
 
 ## Anti-cheat probes

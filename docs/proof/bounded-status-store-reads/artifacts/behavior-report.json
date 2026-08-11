@@ -12,7 +12,7 @@
       "severity": null,
       "evidence": "Six filtered and unfiltered automerge queries were byte-identical after normalizing only request-time-derived timestamps.",
       "reproduction_steps": [
-        "Seed 300 automerge events through POST /api/events in both runtimes",
+        "Seed 308 automerge events, including 6h, 24h, and 7d window-spanning sessions, through POST /api/events in both runtimes",
         "Query each range unfiltered and with repository plus policy filters",
         "Compare normalized JSON bytes"
       ],
@@ -31,10 +31,10 @@
       "confidence": 0.99
     },
     {
-      "contract_clause": "Storage reads are bounded by the requested window",
+      "contract_clause": "Storage reads are bounded by the requested window and fixed session-context margin",
       "status": "pass",
       "severity": null,
-      "evidence": "6h storage rows fell from 2,120 to 120 for automerge and from 169 to 2 for apply; 24h and 7d counts scaled with their windows.",
+      "evidence": "Automerge rows fell from 6,600 to 690 for 6h, 744 for 24h, and 1,176 for 7d; apply rows fell from 169 to 2, 4, and 16 respectively.",
       "reproduction_steps": [
         "Run both StatusStore revisions through the proof-only counting storage adapter",
         "Issue identical 6h, 24h, and 7d requests",
@@ -61,12 +61,16 @@
       "result": "All filtered and unfiltered response comparisons remained identical"
     },
     {
-      "probe": "Used real loopback HTTP, Wrangler routing, HMAC verification, and SQLite-backed Durable Objects",
-      "result": "470 logical seed records were accepted through production routes in each runtime"
+      "probe": "Seeded sessions whose activation preceded each requested window while the terminal event landed inside it, plus one session entirely before the 6h window",
+      "result": "All boundary-sensitive latency, repair, terminal inclusion, and session projections remained identical"
     },
     {
-      "probe": "Added 2,000 out-of-window automerge rows to the counting fixture",
-      "result": "Merge-base read all 2,120 rows while the candidate returned only rows in each requested range"
+      "probe": "Used real loopback HTTP, Wrangler routing, HMAC verification, and SQLite-backed Durable Objects",
+      "result": "478 seed records were accepted through production routes in each runtime"
+    },
+    {
+      "probe": "Added 6,480 retained automerge rows spread across 90 days to the counting fixture",
+      "result": "Merge-base read all 6,600 rows while the candidate returned only each requested range plus the fixed eight-day session-context margin"
     }
   ],
   "blockers": []
