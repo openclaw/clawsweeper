@@ -2,7 +2,7 @@
   "schema": "clawsweeper-node-sqlite-equivalence/v1",
   "base_ref": "origin/main",
   "base_sha": "27d0dca681584cb46bc566afd38be71fdf58c949",
-  "current_head": "27d0dca681584cb46bc566afd38be71fdf58c949",
+  "current_head": "c5b65dfa2daf24b7158939b5f7f10fb5803fbbb9",
   "runtime": {
     "node": "v24.19.0",
     "sqlite3": "3.51.0 2025-06-12 13:14:41 f0ca7bba1c5e232e5d279fad6338121ab55af0c8c68c84cdfb18ba5114dcaapl (64-bit)"
