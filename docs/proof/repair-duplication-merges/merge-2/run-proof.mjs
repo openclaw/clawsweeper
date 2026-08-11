@@ -38,14 +38,14 @@ const cases = [
   {
     name: "explicit override wins",
     repo: " OpenClaw/OpenClaw ",
-    explicitDb: " ./explicit.db ",
+    explicitDb: " /proof/explicit.db ",
     env: { CLAWSWEEPER_GITCRAWL_DB: "/ignored.db" },
     existing: [],
   },
   {
     name: "environment override",
     repo: "OpenClaw/OpenClaw",
-    env: { CLAWSWEEPER_GITCRAWL_DB: " ./configured.db " },
+    env: { CLAWSWEEPER_GITCRAWL_DB: " /proof/configured.db " },
     existing: [],
   },
   {

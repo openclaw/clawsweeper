@@ -1,0 +1,25 @@
+{
+  "base_ref": "origin/main",
+  "base_sha": "51ac499c741b7b4b9b2bd1b7d78686055f8f3738",
+  "extracted_source": "src/repair/notify-merge.ts",
+  "extracted_source_sha256": "123375f0a5b6c20cfd49f38620edf781f849fabf31d23bebc9a4cd6bd08a801b",
+  "scenario": "first hook response is transient HTTP 502",
+  "old": {
+    "requests": 1,
+    "outcome": "failed"
+  },
+  "new": {
+    "requests": 2,
+    "idempotency_keys": [
+      "merge:openclaw/openclaw#123:merge_canonical:abc123",
+      "merge:openclaw/openclaw#123:merge_canonical:abc123"
+    ],
+    "outcome": "succeeded",
+    "run_id": "proof-run"
+  },
+  "sibling_notifier_precedent": [
+    "src/repair/notify-events.ts",
+    "src/repair/notify-github-activity.ts",
+    "src/repair/notify-maintainer-report.ts"
+  ]
+}

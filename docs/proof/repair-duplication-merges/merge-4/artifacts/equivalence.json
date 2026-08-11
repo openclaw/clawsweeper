@@ -1,0 +1,136 @@
+{
+  "base_ref": "origin/main",
+  "base_sha": "51ac499c741b7b4b9b2bd1b7d78686055f8f3738",
+  "extractions": [
+    {
+      "name": "update",
+      "sha256": "309ac59e2d664a683771a24ad30f07ed74fc235c1157f1d6aae1b74df51076c9"
+    },
+    {
+      "name": "core",
+      "sha256": "72d2283100a842535c23e16213c9451d696440fc536b726afd3e5ac63d683f4e"
+    },
+    {
+      "name": "router",
+      "sha256": "92beb23aedc35449f30c05f35db9a8749177394c0965470f708a812f0ff90f1b"
+    }
+  ],
+  "representative_inputs": {
+    "markerInputs": [
+      "<!-- clawsweeper-command-ack:456 -->",
+      "prefix <!--   clawsweeper-command-ack:456   --> suffix",
+      "<!-- clawsweeper-command-ack:not-a-number -->",
+      null
+    ],
+    "statusInputs": [
+      "<!-- clawsweeper-command-status:81564:re_review:new -->",
+      "prefix <!-- clawsweeper-command-status:81564:re_review:old --> suffix",
+      "status-free",
+      null
+    ],
+    "comments": [
+      {
+        "id": 101,
+        "created_at": "2026-05-29T10:00:00Z",
+        "updated_at": "2026-05-29T10:01:00Z",
+        "body": "<!-- clawsweeper-command-status:81564:re_review:old -->\n<!-- clawsweeper-command-ack:456 -->"
+      },
+      {
+        "id": 102,
+        "created_at": "2026-05-29T10:02:00Z",
+        "updated_at": "2026-05-29T10:02:00Z",
+        "body": "<!-- clawsweeper-command-ack:456 -->"
+      },
+      {
+        "id": 103,
+        "created_at": "2026-05-29T10:03:00Z",
+        "updated_at": "2026-05-29T10:05:00Z",
+        "body": "<!-- clawsweeper-command-status:81564:re_review:new -->\n<!--   clawsweeper-command-ack:456   -->"
+      },
+      {
+        "id": 104,
+        "created_at": "2026-05-29T10:04:00Z",
+        "updated_at": "2026-05-29T10:04:00Z",
+        "body": "<!-- clawsweeper-command-ack:456 -->"
+      }
+    ],
+    "bareTie": [
+      {
+        "id": 12,
+        "created_at": "2026-05-29T10:00:00Z",
+        "body": "bare"
+      },
+      {
+        "id": 11,
+        "created_at": "2026-05-29T10:00:00Z",
+        "body": "bare"
+      },
+      {
+        "id": 13,
+        "created_at": "2026-05-29T10:01:00Z",
+        "body": "bare"
+      }
+    ]
+  },
+  "old": {
+    "updateAckMarkers": [
+      "<!-- clawsweeper-command-ack:456 -->",
+      "<!--   clawsweeper-command-ack:456   -->",
+      null,
+      null
+    ],
+    "routerAckMarkers": [
+      "<!-- clawsweeper-command-ack:456 -->",
+      "<!--   clawsweeper-command-ack:456   -->",
+      null,
+      null
+    ],
+    "updateStatusMarkers": [
+      "<!-- clawsweeper-command-status:81564:re_review:new -->",
+      "<!-- clawsweeper-command-status:81564:re_review:old -->",
+      null,
+      null
+    ],
+    "coreStatusMarkers": [
+      "<!-- clawsweeper-command-status:81564:re_review:new -->",
+      "<!-- clawsweeper-command-status:81564:re_review:old -->",
+      null,
+      null
+    ],
+    "corePlan": {
+      "keep": 103,
+      "prunable": [
+        102,
+        104
+      ]
+    },
+    "updateStatusKeeper": 103,
+    "coreStatusKeeper": 103,
+    "updateBareKeeper": 11,
+    "coreBareKeeper": 11
+  },
+  "current": {
+    "ackMarkers": [
+      "<!-- clawsweeper-command-ack:456 -->",
+      "<!--   clawsweeper-command-ack:456   -->",
+      null,
+      null
+    ],
+    "statusMarkers": [
+      "<!-- clawsweeper-command-status:81564:re_review:new -->",
+      "<!-- clawsweeper-command-status:81564:re_review:old -->",
+      null,
+      null
+    ],
+    "plan": {
+      "keep": 103,
+      "prunable": [
+        102,
+        104
+      ]
+    },
+    "statusKeeper": 103,
+    "bareKeeper": 11
+  },
+  "identical": true
+}

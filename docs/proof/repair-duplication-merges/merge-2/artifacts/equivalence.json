@@ -1,0 +1,71 @@
+{
+  "base_ref": "origin/main",
+  "base_sha": "51ac499c741b7b4b9b2bd1b7d78686055f8f3738",
+  "extractions": [
+    {
+      "file": "src/repair/import-gitcrawl-clusters.ts",
+      "sha256": "4e79d6ac9cdc0244afbfc544a9a76b7f61bc6b67d61dd5c47161507b31a8a5cc"
+    },
+    {
+      "file": "src/repair/import-gitcrawl-low-signal-prs.ts",
+      "sha256": "4e79d6ac9cdc0244afbfc544a9a76b7f61bc6b67d61dd5c47161507b31a8a5cc"
+    }
+  ],
+  "results": [
+    {
+      "scenario": "explicit override wins",
+      "old": [
+        "/proof/explicit.db",
+        "/proof/explicit.db"
+      ],
+      "current": "/proof/explicit.db",
+      "identical": true
+    },
+    {
+      "scenario": "environment override",
+      "old": [
+        "/proof/configured.db",
+        "/proof/configured.db"
+      ],
+      "current": "/proof/configured.db",
+      "identical": true
+    },
+    {
+      "scenario": "sibling portable store precedes user store",
+      "old": [
+        "/proof/gitcrawl-store/data/openclaw__openclaw.sync.db",
+        "/proof/gitcrawl-store/data/openclaw__openclaw.sync.db"
+      ],
+      "current": "/proof/gitcrawl-store/data/openclaw__openclaw.sync.db",
+      "identical": true
+    },
+    {
+      "scenario": "user portable store precedes legacy store",
+      "old": [
+        "/proof/home/.config/gitcrawl/stores/gitcrawl-store/data/openclaw__openclaw.sync.db",
+        "/proof/home/.config/gitcrawl/stores/gitcrawl-store/data/openclaw__openclaw.sync.db"
+      ],
+      "current": "/proof/home/.config/gitcrawl/stores/gitcrawl-store/data/openclaw__openclaw.sync.db",
+      "identical": true
+    },
+    {
+      "scenario": "missing stores fall back to legacy path",
+      "old": [
+        "/proof/home/.config/gitcrawl/gitcrawl.db",
+        "/proof/home/.config/gitcrawl/gitcrawl.db"
+      ],
+      "current": "/proof/home/.config/gitcrawl/gitcrawl.db",
+      "identical": true
+    }
+  ],
+  "caller_local_sqlite_buffers": [
+    {
+      "file": "src/repair/import-gitcrawl-clusters.ts",
+      "max_buffer_expression": "256 * 1024 * 1024"
+    },
+    {
+      "file": "src/repair/import-gitcrawl-low-signal-prs.ts",
+      "max_buffer_expression": "64 * 1024 * 1024"
+    }
+  ]
+}

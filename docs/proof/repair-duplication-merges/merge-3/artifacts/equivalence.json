@@ -1,0 +1,33 @@
+{
+  "base_ref": "origin/main",
+  "base_sha": "51ac499c741b7b4b9b2bd1b7d78686055f8f3738",
+  "extractions": [
+    {
+      "file": "src/repair/exact-review-batch-cli.ts",
+      "function": "failureFingerprint",
+      "sha256": "f4e334c4170f8b8b3bd5462c63ddecb92e9e0658acf0f7fa7a81252d9dbbd090"
+    },
+    {
+      "file": "src/repair/publish-event-result.ts",
+      "function": "errorFingerprint",
+      "sha256": "c6b354a7ad68128fe9b1fbdf6f8a6ed75f54a441dc6f03b60b7eeece4ff467f2"
+    }
+  ],
+  "inputs": [
+    {
+      "kind": "Error",
+      "text": "Error:boom",
+      "digest": "dd3599487ed91066c703b33178b719dcc9b548de8576047b95b06482bab7eaf6",
+      "failure": "dd3599487ed91066c703b33178b719dcc9b548de8576047b95b06482bab7eaf6",
+      "event": "sha256:dd3599487ed91066c703b33178b719dcc9b548de8576047b95b06482bab7eaf6"
+    },
+    {
+      "kind": "string",
+      "text": "plain failure",
+      "digest": "7cf7a70958727c4bec91d869f22ed253c020dc0e193cd67c432e9a3016777003",
+      "failure": "7cf7a70958727c4bec91d869f22ed253c020dc0e193cd67c432e9a3016777003",
+      "event": "sha256:7cf7a70958727c4bec91d869f22ed253c020dc0e193cd67c432e9a3016777003"
+    }
+  ],
+  "identical": true
+}
