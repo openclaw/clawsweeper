@@ -21,12 +21,15 @@ live populated shoreline, master-sweeper movement between lanes, terminal
 pools, and the contextual crustacean chat behavior. The recording is a
 1280×720 H.264 review artifact with audio and capture metadata removed.
 
-The checked-in `docs/proof/openclaw-bay` package is historical evidence captured
-from behavior source `71b16d208511700bb241ea06276c94f71c977d89`; it is not
-presented as proof of later documentation-only or rebase commits. Current pull
-requests must publish their exact-head proof package and provenance in the PR
-body. The historical run used the real page and artwork with a fully synthetic,
-redacted status sequence and made no live dashboard reads.
+The lightweight records under `docs/proof/openclaw-bay` describe historical
+review-time evidence. The full-resolution trace and storyboard introduced in
+commit `1a5becc69fc1bdbc11e16aa22f5caaa44f05a59d` have been pruned from the docs
+tree and remain available in git history. The package's recorded source
+identifier, `0cf6b147fe86f56e4ec8c77352e3d31433e3a1d2`, is not reachable from current
+repository history, so neither the records nor archived media are current
+proof. Current pull requests must publish exact-head proof and provenance in
+the PR body. The historical run used the real page and artwork with a fully
+synthetic, redacted status sequence and made no live dashboard reads.
 
 Bay is an observer-only surface: it displays bounded public status but never
 triggers or offers queue, workflow, GitHub, DLQ, recovery, deploy, or rollback

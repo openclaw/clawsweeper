@@ -105,6 +105,19 @@ everything else requires human comparison with current main.
 `docs/proof/**` contains inspectable artifacts for specific changes. Those
 files support their recorded claim but do not override current runbooks.
 
+### Proof media retention
+
+Commit lightweight, diffable proof records: the claim and limits, exact source
+or head SHA, reproduction command, provider/image/lease provenance, fixture
+hashes, observable assertions, and compact normalized JSON. Full-resolution
+screenshots, videos, and traces may be committed while a pull request is under
+review, but prune them from `main` after merge once the durable review and proof
+record exist; git history retains the review-time bytes.
+
+Keep a heavy binary only when an active canonical document embeds or links it,
+or when runtime or test tooling consumes it. Prefer one current compressed
+poster or WebP over accumulated before/after sets.
+
 ## Repair and automerge
 
 - [Repair entry point](repair/README.md) — active; concepts, task map, and local

@@ -1,8 +1,9 @@
 # Historical OpenClaw Bay deterministic browser proof
 
-Status: historical evidence for behavior source
-`0cf6b147fe86f56e4ec8c77352e3d31433e3a1d2`. This package is retained for
-auditability and is not the active exact-head proof for later commits.
+Status: historical review-time evidence. The recorded behavior source,
+`0cf6b147fe86f56e4ec8c77352e3d31433e3a1d2`, is not reachable from current
+repository history, so this package must not be treated as current exact-head
+proof.
 
 This proof package exercises the real `/bay` page and its checked-in
 artwork in Chromium. Playwright replaces the dashboard's status, history, and
@@ -41,11 +42,18 @@ The sequence proves:
 
 ## Artifacts
 
-- [`playwright-proof-storyboard.jpg`](playwright-proof-storyboard.jpg) is a
-  labelled 23-state contact sheet that can be inspected without video codecs.
-- [`trace.zip`](trace.zip) is the Playwright action, DOM snapshot, and network
-  trace. Open it with
-  `npx --yes playwright@1.60.0 show-trace docs/proof/openclaw-bay/trace.zip`.
+- The labelled 23-state storyboard and Playwright action, DOM snapshot, and
+  network trace were introduced in commit
+  `1a5becc69fc1bdbc11e16aa22f5caaa44f05a59d`. They were pruned from the docs
+  tree after review and remain available through git history. To inspect the
+  historical trace without restoring it to the working tree:
+
+  ```bash
+  bay_trace_dir="$(mktemp -d)"
+  git show 1a5becc69fc1bdbc11e16aa22f5caaa44f05a59d:docs/proof/openclaw-bay/trace.zip \
+    > "$bay_trace_dir/trace.zip"
+  npx --yes playwright@1.60.0 show-trace "$bay_trace_dir/trace.zip"
+  ```
 - [`proof-summary.json`](proof-summary.json) records all 51 passing assertions
   from its accompanying deterministic proof run,
   sanitized request/response metadata, safe drawer links, the unchanged
@@ -62,8 +70,8 @@ The sequence proves:
   SHA-256 in the summary. It
   fails before launching Chromium if the checked-in sequence drifts.
 
-The compact trace intentionally omits Playwright's continuous screenshot film
-strip; the storyboard supplies the visual milestones while the trace supplies
+The historical compact trace omitted Playwright's continuous screenshot film
+strip; the storyboard supplied the visual milestones while the trace supplied
 the independently inspectable DOM, action, and network record.
 
 From the repository root, reproduce the proof with the known Playwright image:
@@ -83,7 +91,8 @@ crabbox run \
 
 ## Provenance and privacy
 
-- captured behavior source: `0cf6b147fe86f56e4ec8c77352e3d31433e3a1d2`
+- recorded historical behavior source (not reachable from current history):
+  `0cf6b147fe86f56e4ec8c77352e3d31433e3a1d2`
 - provider: direct local Docker under the user-authorized CSW-124 fallback;
   this is not a successful Crabbox lease receipt
 - image: `mcr.microsoft.com/playwright:v1.60.0-noble`
