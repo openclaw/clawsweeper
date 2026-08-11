@@ -1,0 +1,48 @@
+{
+  "overall_behavior": "satisfies_contract",
+  "target": {
+    "type": "CLI JSON output",
+    "access": "read-only parked reconciliation over production run 31449984643 artifact"
+  },
+  "checks": [
+    {
+      "contract_clause": "Recovery-cap skips are classified exactly",
+      "status": "pass",
+      "evidence": "The live-target production replay reports 19 open, 5 recovered, 14 skipped, and recovery_cap=14. A mixed parked fixture contains one additional excluded skip that does not increment recovery_cap."
+    },
+    {
+      "contract_clause": "Non-idle pressure deferrals are classified",
+      "status": "pass",
+      "evidence": "Observable fixture summaries report recovery_deferred_pressure for both parked and standard reconciliation under saturated pressure."
+    },
+    {
+      "contract_clause": "Inspection failure classes remain intact",
+      "status": "pass",
+      "evidence": "The focused CLI fixture still reports http_403=1 and timeout=3 with zero test failures."
+    },
+    {
+      "contract_clause": "Production replay is read-only",
+      "status": "pass",
+      "evidence": "The summary reports dry_run=true; the signed loopback server exposed inventory and pressure reads only and returned 404 for every other route."
+    }
+  ],
+  "anti_cheat_probes": [
+    {
+      "probe": "Mix capped and excluded parked rows",
+      "result": "Two skipped targets produce recovery_cap=1."
+    },
+    {
+      "probe": "Compare active/ineligible and capped standard rows",
+      "result": "Only the capped variant produces recovery_cap=1."
+    },
+    {
+      "probe": "Exercise both reconciliation paths under non-idle pressure",
+      "result": "Both summaries populate recovery_deferred_pressure."
+    },
+    {
+      "probe": "Replay immutable inventory with live target state",
+      "result": "Every open target beyond the five-recovery ceiling is classified as recovery_cap."
+    }
+  ],
+  "blockers": []
+}

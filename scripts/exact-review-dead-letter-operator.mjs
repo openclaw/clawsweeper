@@ -384,10 +384,11 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
       blockedResolutions.flatMap((error) => error.blockedGroups),
     );
   };
-  const accountSkippedTarget = (nodeId) => {
+  const accountSkippedTarget = (nodeId, reasonClass) => {
     if (progress.countedSkippedTargets.has(nodeId)) return;
     progress.countedSkippedTargets.add(nodeId);
     summary.skipped_targets += 1;
+    if (reasonClass) recordSkipReasonCount(summary, reasonClass, 1);
   };
   const canInspectTarget = (nodeId) =>
     progress.inspectedTargetIds.has(nodeId) || summary.inspected_targets < args.maxTargets;
@@ -552,14 +553,21 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
         (!row.fresh_recovery.source_head_sha ||
           row.fresh_recovery.source_head_sha === live.head_sha),
     );
-    if (!primary || summary.recovered_targets + recoveries.length >= args.maxRecoveries) {
+    if (!primary) {
       accountSkippedTarget(live.node_id);
+      continue;
+    }
+    if (summary.recovered_targets + recoveries.length >= args.maxRecoveries) {
+      accountSkippedTarget(live.node_id, "recovery_cap");
       continue;
     }
     const pressure = await readQueuePressure(queueUrl);
     summary.queue_pressure = pressure.status;
     if (pressure.status !== "idle" || pressure.availableSlots <= recoveries.length) {
-      accountSkippedTarget(live.node_id);
+      accountSkippedTarget(
+        live.node_id,
+        pressure.status === "idle" ? undefined : "recovery_deferred_pressure",
+      );
       continue;
     }
     if (!reserveTargetInspection(live.node_id)) {
@@ -669,6 +677,9 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
     summary.queue_pressure = finalPressure.status;
     if (finalPressure.status !== "idle" || finalPressure.availableSlots < 1) {
       summary.skipped_targets += recoveries.length;
+      if (finalPressure.status !== "idle") {
+        recordSkipReasonCount(summary, "recovery_deferred_pressure", recoveries.length);
+      }
       printResult(summary);
       return;
     }
@@ -772,7 +783,10 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args, deadl
     } else if (target.state === "open") {
       summary.open_targets += 1;
       if (recoverable.length < args.maxRecoveries) recoverable.push({ row, target });
-      else summary.skipped_targets += 1;
+      else {
+        summary.skipped_targets += 1;
+        recordSkipReasonCount(summary, "recovery_cap", 1);
+      }
     } else {
       summary.skipped_targets += 1;
     }
@@ -893,6 +907,9 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args, deadl
     }
   } else {
     summary.skipped_targets += recoverable.length;
+    if (pressure.status !== "idle") {
+      recordSkipReasonCount(summary, "recovery_deferred_pressure", recoverable.length);
+    }
   }
   printResult(summary);
 }
@@ -1337,11 +1354,16 @@ function recordInspectionSkips(summary, targets, error) {
   if (targets.length === 0) return;
   const reason = sanitizeSkipReason(error);
   const reasonClass = classifySkipReason(reason);
-  summary.skip_reasons[reasonClass] = (summary.skip_reasons[reasonClass] || 0) + targets.length;
+  recordSkipReasonCount(summary, reasonClass, targets.length);
   for (const target of targets) {
     if (summary.skip_samples.length >= MAX_SKIP_SAMPLES) break;
     summary.skip_samples.push({ target: normalizeRecoveryTargetKey(target), reason });
   }
+}
+
+function recordSkipReasonCount(summary, reasonClass, count) {
+  if (count < 1) return;
+  summary.skip_reasons[reasonClass] = (summary.skip_reasons[reasonClass] || 0) + count;
 }
 
 function recordAbortedInspectionSkips(

@@ -112,6 +112,7 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
 test("parked review reconciliation plans by default and executes terminal resolve plus open recovery", async () => {
   const secret = "test-parked-review-reconcile";
   const mutations = [];
+  let queuePressure = "idle";
   const parkedRows = [
     parkedRow("openclaw/repo#1", "openclaw/repo", 1, 1_000),
     parkedRow("openclaw/repo#2", "openclaw/repo", 2, 2_000),
@@ -120,22 +121,35 @@ test("parked review reconciliation plans by default and executes terminal resolv
       ...parkedRow("openclaw/repo#4", "openclaw/repo", 4, 4_000),
       excluded_reason: "command_context",
     },
+    parkedRow("openclaw/repo#5", "openclaw/repo", 5, 5_000),
   ];
   const server = createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     if (request.url === "/api/exact-review-queue") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ pressure: { status: "idle", active: 0, capacity: 128 } }));
+      response.end(
+        JSON.stringify({
+          pressure: {
+            status: queuePressure,
+            active: queuePressure === "idle" ? 0 : 128,
+            capacity: 128,
+          },
+        }),
+      );
       return;
     }
-    if (request.url === "/repos/openclaw/repo/issues/1") {
+    if (
+      request.url === "/repos/openclaw/repo/issues/1" ||
+      request.url === "/repos/openclaw/repo/issues/5"
+    ) {
+      const number = Number(request.url.split("/").at(-1));
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify({
-          node_id: "ISSUE_1",
+          node_id: `ISSUE_${number}`,
           state: "open",
-          number: 1,
+          number,
           repository_url: "https://api.github.com/repos/openclaw/repo",
         }),
       );
@@ -193,7 +207,7 @@ test("parked review reconciliation plans by default and executes terminal resolv
       "--max-targets",
       "100",
       "--max-recoveries",
-      "5",
+      "1",
     ];
     const planned = await runOperator(
       [...common, "--output", join(directory, "planned.json")],
@@ -206,14 +220,14 @@ test("parked review reconciliation plans by default and executes terminal resolv
       dry_run: true,
       inventory_complete: true,
       queue_pressure: "idle",
-      inspected_targets: 3,
+      inspected_targets: 4,
       terminal_targets: 2,
       repository_gone_targets: 1,
       resolved_targets: 2,
-      open_targets: 1,
+      open_targets: 2,
       recovered_targets: 1,
-      skipped_targets: 1,
-      skip_reasons: {},
+      skipped_targets: 2,
+      skip_reasons: { recovery_cap: 1 },
       skip_samples: [],
     });
     assert.equal(mutations.length, 0);
@@ -229,14 +243,14 @@ test("parked review reconciliation plans by default and executes terminal resolv
       dry_run: false,
       inventory_complete: true,
       queue_pressure: "idle",
-      inspected_targets: 3,
+      inspected_targets: 4,
       terminal_targets: 2,
       repository_gone_targets: 1,
       resolved_targets: 2,
-      open_targets: 1,
+      open_targets: 2,
       recovered_targets: 1,
-      skipped_targets: 1,
-      skip_reasons: {},
+      skipped_targets: 2,
+      skip_reasons: { recovery_cap: 1 },
       skip_samples: [],
     });
     assert.equal(mutations.filter((entry) => entry.url?.endsWith("/resolve")).length, 2);
@@ -245,10 +259,32 @@ test("parked review reconciliation plans by default and executes terminal resolv
       { item_key: "openclaw/repo#1", revision: 1, updated_at_ms: 1_000 },
     ]);
     assert.match(recovery.payload.idempotency_key, /^parked-reconcile:[a-f0-9]{64}$/);
+
+    queuePressure = "saturated";
+    const pressureDeferred = await runOperator(
+      [
+        "--action",
+        "reconcile-parked",
+        "--max-targets",
+        "100",
+        "--max-recoveries",
+        "5",
+        "--output",
+        join(directory, "pressure-deferred.json"),
+      ],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(pressureDeferred.code, 0, pressureDeferred.stderr);
+    assert.deepEqual(JSON.parse(pressureDeferred.stdout).skip_reasons, {
+      recovery_deferred_pressure: 2,
+    });
+    assert.equal(JSON.parse(pressureDeferred.stdout).skipped_targets, 3);
+
     const artifact = JSON.parse(await readFile(join(directory, "executed.json"), "utf8"));
     assert.deepEqual(artifact.summary, {
-      rows: 4,
-      by_reason: { review_retry_exhausted: 4 },
+      rows: 5,
+      by_reason: { review_retry_exhausted: 5 },
     });
     assert.equal(
       artifact.parked_reviews.find((row) => row.item_key === "openclaw/repo#4").excluded_reason,
@@ -636,8 +672,10 @@ test("automatic reconciliation skips fresh recovery under pressure and enforces 
       secret,
     );
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).queue_pressure, "saturated");
-    assert.equal(JSON.parse(result.stdout).recovered_targets, 0);
+    const summary = JSON.parse(result.stdout);
+    assert.equal(summary.queue_pressure, "saturated");
+    assert.equal(summary.recovered_targets, 0);
+    assert.deepEqual(summary.skip_reasons, { recovery_deferred_pressure: 1 });
     assert.equal(recoveries, 0);
     for (const [flag, value] of [
       ["--max-targets", "0"],
@@ -1037,6 +1075,7 @@ test("active and capped targets are counted only once across blocked inventory r
     const summary = JSON.parse(scenario.first.stdout);
     assert.equal(summary.recovered_targets, 1);
     assert.equal(summary.skipped_targets, 2);
+    assert.deepEqual(summary.skip_reasons, active ? {} : { recovery_cap: 1 });
     assert.equal(scenario.inventoryRequests, 2);
   }
 });
