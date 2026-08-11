@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { parseArgs, repoRoot } from "./lib.js";
@@ -10,6 +9,7 @@ import {
   existingGitcrawlClusterIds,
   existingGitcrawlMemberRefs,
 } from "./gitcrawl-cluster-history.js";
+import { resolveGitcrawlDbPath } from "./gitcrawl-store.js";
 
 const args = parseArgs(process.argv.slice(2));
 const repo = String(args.repo ?? "openclaw/openclaw");
@@ -48,33 +48,6 @@ if (clusterIds.length === 0) {
   );
   process.exit(2);
 }
-function gitcrawlStoreDbFileName(repoFullName: string): string {
-  return `${repoFullName
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_.-]+/g, "__")}.sync.db`;
-}
-
-function resolveGitcrawlDbPath(repoFullName: string, explicitDb?: string): string {
-  const configured = explicitDb?.trim() || process.env.CLAWSWEEPER_GITCRAWL_DB?.trim();
-  if (configured) return path.resolve(configured);
-  const storeDbFileName = gitcrawlStoreDbFileName(repoFullName);
-  const candidates = [
-    path.join(repoRoot(), "..", "gitcrawl-store", "data", storeDbFileName),
-    path.join(
-      os.homedir(),
-      ".config",
-      "gitcrawl",
-      "stores",
-      "gitcrawl-store",
-      "data",
-      storeDbFileName,
-    ),
-    path.join(os.homedir(), ".config", "gitcrawl", "gitcrawl.db"),
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates.at(-1)!;
-}
-
 fs.mkdirSync(outDir, { recursive: true });
 
 const historyRoots = [
