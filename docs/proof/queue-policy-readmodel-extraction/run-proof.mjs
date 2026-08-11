@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,6 +17,19 @@ const baseRoot = path.join(scratch, "merge-base");
 const archivePath = path.join(scratch, "merge-base.tar");
 const proofSecret = "queue-policy-readmodel-local-proof-secret";
 const workers = [];
+const githubStubPort = await availablePort();
+const githubStub = createHttpServer((_request, response) => {
+  const body = `${JSON.stringify({ message: "proof GitHub stub" })}\n`;
+  response.writeHead(403, {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(body),
+  });
+  response.end(body);
+});
+await new Promise((resolve, reject) => {
+  githubStub.once("error", reject);
+  githubStub.listen(githubStubPort, "127.0.0.1", resolve);
+});
 
 await mkdir(artifactDir, { recursive: true });
 await Promise.all(
@@ -76,6 +90,7 @@ try {
   throw error;
 } finally {
   await Promise.all(workers.map(stopWorker));
+  await new Promise((resolve) => githubStub.close(resolve));
   await rm(scratch, { recursive: true, force: true });
 }
 
@@ -105,6 +120,8 @@ async function runScenario(label, root) {
       String(port),
       "--var",
       `CLAWSWEEPER_WEBHOOK_SECRET:${proofSecret}`,
+      "--var",
+      `GITHUB_API_URL:http://127.0.0.1:${githubStubPort}`,
       "--var",
       "EXACT_REVIEW_DISPATCH_DEBOUNCE_MS:600000",
       "--var",
