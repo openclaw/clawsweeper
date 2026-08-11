@@ -3547,7 +3547,7 @@ test("urgent records do not falsely wrap a customized comment-sync cursor", () =
       },
     );
 
-    assert.match(output, /^selected=5,21,22,/m);
+    assert.match(output, /^selected=21,5,22,/m);
     assert.match(output, /^continue=true$/m);
     assert.match(output, /^next=__cursor__$/m);
     assert.match(output, /^persisted=59$/m);
@@ -4230,6 +4230,81 @@ test("comment synchronization checkpoints only completed records after a runtime
     assert.match(output, /^missing_prefix_cursor=20$/m);
     assert.doesNotMatch(output, /^missing_prefix_rejected$/m);
     assert.doesNotMatch(output, /^partial=30$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("comment sync advances a completed frontier before a budget-clipped urgent tail", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const cursorPath = join(root, "comment-sync-cursor.json");
+  const reportPath = join(root, "report.json");
+  const tracePath = join(root, "trace.json");
+  writeFileSync(cursorPath, JSON.stringify({ next_after_number: 105854 }));
+  writeFileSync(
+    reportPath,
+    JSON.stringify([
+      { number: 105870, action: "kept_open" },
+      { number: 97566, action: "review_comment_synced" },
+      { number: 95788, action: "skipped_changed_since_review" },
+      { number: 105342, action: "review_comment_synced" },
+      { number: 87267, action: "skipped_stale_review_comment_sync" },
+      { number: 106572, action: "kept_open" },
+      { number: 85937, action: "skipped_runtime_budget" },
+      { number: 0, action: "skipped_runtime_budget" },
+    ]),
+  );
+  writeFileSync(
+    tracePath,
+    JSON.stringify({
+      schema_version: 1,
+      examined_item_numbers: [105870, 97566, 95788, 105342, 87267, 106572],
+    }),
+  );
+
+  try {
+    const output = execFileSync(
+      "bash",
+      [
+        "-lc",
+        [
+          'export PATH="$NODE_BIN_DIR:$PATH"',
+          'pnpm() { while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; [ "$#" -gt 0 ] && shift; node "$WORKFLOW_UTILS_PATH" "$@"; }',
+          'source "$APPLY_HELPER_PATH"',
+          'TARGET_REPO="openclaw/openclaw"',
+          'cursor_path="$CURSOR_PATH"',
+          "sync_open_pr_batch=true",
+          "scheduled_comment_sync=true",
+          "comment_sync_initial_cursor=105854",
+          "item_numbers=105870,97566,95788,105342,87267,106572,85937,120718",
+          "next_cursor=105870",
+          'complete_comment_sync_batch "$REPORT_PATH" "$TRACE_PATH"',
+          'printf "advanced=%s|count=%s\\n" "$(jq -r .next_after_number "$cursor_path")" "$comment_sync_cursor_advance_count"',
+          'pnpm run workflow -- write-comment-sync-cursor --cursor-path "$cursor_path" --next-cursor 105854 --target-repo "$TARGET_REPO"',
+          "item_numbers=105870,97566,95788,105342,87267,106572,85937,120718",
+          "next_cursor=105870",
+          'printf \'{"schema_version":1,"examined_item_numbers":[]}\' > clipped-trace.json',
+          'complete_comment_sync_batch "$REPORT_PATH" clipped-trace.json',
+          'printf "clipped=%s|count=%s|next=%s\\n" "$(jq -r .next_after_number "$cursor_path")" "$comment_sync_cursor_advance_count" "$next_cursor"',
+        ].join("\n"),
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NODE_BIN_DIR: dirname(process.execPath),
+          WORKFLOW_UTILS_PATH: join(process.cwd(), "dist/repair/workflow-utils.js"),
+          APPLY_HELPER_PATH: join(process.cwd(), "scripts/apply-workflow-helpers.sh"),
+          CURSOR_PATH: cursorPath,
+          REPORT_PATH: reportPath,
+          TRACE_PATH: tracePath,
+        },
+      },
+    );
+
+    assert.match(output, /^advanced=105870\|count=1$/m);
+    assert.match(output, /^clipped=105854\|count=0\|next=$/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

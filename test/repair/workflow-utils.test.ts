@@ -2988,7 +2988,7 @@ test("durable all-item sync publishes guarded reviews without selecting terminal
         }),
       ),
       {
-        item_numbers: "160,170,180,30,70,150,10,20,40,50,60,80,90,100,110,190,210",
+        item_numbers: "10,160,170,180,30,70,150,20,40,50,60,80,90,100,110,190,210",
         count: "17",
         cursor: "0",
         next_cursor: "210",
@@ -3163,7 +3163,7 @@ test("checked-only comments and failed durable repairs remain eligible until syn
         .item_numbers.split(",")
         .filter(Boolean)
         .map(Number);
-    assert.deepEqual(select(), [201, 202, 203, 204, 500]);
+    assert.deepEqual(select(), [204, 201, 202, 203, 500]);
     for (const number of [201, 202, 203]) {
       const reportPath = path.join(
         root,
@@ -3236,7 +3236,7 @@ test("refreshed and timestamp-less guarded reviews cross an existing automatic c
     );
     const selected = result.item_numbers.split(",").map(Number);
 
-    assert.deepEqual(selected.slice(0, 3), [5, 7, 6]);
+    assert.deepEqual(selected.slice(0, 4), [101, 5, 7, 6]);
     assert.equal(selected.length, 40);
     assert.equal(result.next_cursor, "137");
     assert.equal(result.wrapped, "false");
@@ -3274,7 +3274,7 @@ test("post-sync guarded action changes return to the durable comment queue", () 
       }),
     );
 
-    assert.equal(result.item_numbers, "10,20,30,40");
+    assert.equal(result.item_numbers, "40,10,20,30");
     assert.equal(result.count, "4");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -3368,7 +3368,7 @@ test("unverified checkouts and timestamp-less comments never monopolize urgent s
   }
 });
 
-test("all-item sync prioritizes a newly reviewed record ahead of fresh PR maintenance", () => {
+test("all-item sync reserves its first slot for cursor progress before urgent maintenance", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
   const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
   const fresh = new Date(Date.now() - 60_000).toISOString();
@@ -3395,9 +3395,47 @@ test("all-item sync prioritizes a newly reviewed record ahead of fresh PR mainte
     const selected = result.item_numbers.split(",").map(Number);
 
     assert.equal(selected.length, 40);
-    assert.equal(selected[0], 9999);
+    assert.deepEqual(selected.slice(0, 2), [1, 9999]);
     assert.equal(selected.includes(40), false);
+    assert.equal(result.next_cursor, "39");
     assert.equal(result.wrapped, "false");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("urgent all-item repair keeps the numeric cursor frontier first", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
+  const cursorPath = path.join(root, "results/comment-sync-cursors/openclaw-openclaw.json");
+  const urgent = [97566, 95788, 105342, 87267, 106572];
+  try {
+    for (const [index, number] of urgent.entries()) {
+      writeCommentSyncRecord(root, number, "issue", "kept_open", {
+        reviewedAt: new Date(Date.UTC(2026, 7, 11, 22, index)).toISOString(),
+      });
+    }
+    const confirmedAt = "2026-08-11T22:00:00.000Z";
+    writeCommentSyncRecord(root, 105870, "pull_request", "kept_open", {
+      reviewCommentId: "9105870",
+      reviewCommentUrl: "https://github.com/openclaw/openclaw/pull/105870#issuecomment-9105870",
+      reviewCommentHash: "a".repeat(64),
+      reviewedAt: confirmedAt,
+      reviewCommentSyncedAt: confirmedAt,
+    });
+    writeCommentSyncCursor(cursorPath, 105854, "openclaw/openclaw");
+
+    const result = withCwd(root, () =>
+      commentSyncBatchOutput({
+        targetRepo: "openclaw/openclaw",
+        applyKind: "all",
+        batchSize: 6,
+        cursorPath,
+      }),
+    );
+
+    assert.equal(result.cursor, "105854");
+    assert.equal(result.next_cursor, "105870");
+    assert.deepEqual(result.item_numbers.split(",").map(Number), [105870, ...urgent.toReversed()]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

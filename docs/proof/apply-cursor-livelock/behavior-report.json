@@ -1,0 +1,73 @@
+{
+  "overall_behavior": "satisfies_contract",
+  "overall_confidence": 0.98,
+  "target": {
+    "type": "CLI fixture",
+    "access": "docs/proof/apply-cursor-livelock/run-proof.sh"
+  },
+  "checks": [
+    {
+      "contract_clause": "User task 1: replay the production urgency-first ordering",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The isolated CLI run reported old_order.persisted_cursor=105854, cursor_advance_count=0, and next_cursor=null.",
+      "reproduction_steps": [
+        "Run run-proof.sh from an isolated directory containing only the behavior contract",
+        "Read old_order in the emitted JSON"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "User task 2: replay the current ordering",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The selector emitted first_item=105870 and selector_next_cursor=105870; completion persisted 105870 with cursor_advance_count=1.",
+      "reproduction_steps": [
+        "Read current_order in the emitted JSON",
+        "Verify first_item, selector_next_cursor, and persisted_cursor are all 105870"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "User task 3: clip the first frontier",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The clipped_frontier result persisted 105854 with cursor_advance_count=0 and next_cursor=null.",
+      "reproduction_steps": [
+        "Read clipped_frontier in the emitted JSON",
+        "Verify no examined frontier was claimed"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "User task 4: preserve wrap and cycle behavior",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The isolated command ran four focused probes; both wrapped cursor tests and both runtime-yield/frontier tests passed with zero failures.",
+      "reproduction_steps": [
+        "Read the Node test summary emitted by run-proof.sh",
+        "Verify tests=4, pass=4, fail=0"
+      ],
+      "confidence": 0.97
+    }
+  ],
+  "anti_cheat_probes": [
+    {
+      "probe": "Use one completion command for old and current selected orders",
+      "result": "Only order changed: the old replay stayed at 105854 and the current replay advanced to 105870."
+    },
+    {
+      "probe": "Remove the frontier from the examined trace",
+      "result": "The cursor remained at 105854 instead of falsely advancing."
+    },
+    {
+      "probe": "Include multiple per-pass-terminal outcome classes",
+      "result": "The fixture included comment-synced, changed-since-review, stale-sync-skip, kept-open, and canonical closed-record completion."
+    },
+    {
+      "probe": "Run without GitHub credentials",
+      "result": "The proof completed from synthetic filesystem records and made no GitHub API request."
+    }
+  ],
+  "blockers": []
+}

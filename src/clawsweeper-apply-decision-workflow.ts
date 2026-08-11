@@ -1220,15 +1220,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       }
       const earlyLeaseState = refreshReviewStartLeaseState();
       existingReviewComment = earlyLeaseState.comment;
-      if (!dryRun && existingReviewComment) {
-        const durableCommentId = commentId(existingReviewComment);
-        cleanupSupersededReviewPlaceholderComments({
-          number,
-          comments: earlyLeaseState.comments,
-          keepCommentIds:
-            durableCommentId === null ? new Set<number>() : new Set([durableCommentId]),
-        });
-      }
       if (state === "open" && earlyLeaseState.blockReason) {
         if (recordReviewLeaseSkip(earlyLeaseState.blockReason)) break;
         continue;

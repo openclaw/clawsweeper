@@ -1794,7 +1794,7 @@ test("recovery cleanup preserves durable-review ordering and exact publication b
   assert.match(source.slice(recoveryCleanup, nextCatch), /removeLabel:\s*removeIssueLabel/);
 });
 
-test("placeholder sweep retries on every apply pass independent of comment body sync", () => {
+test("placeholder sweep waits for an authorized durable-comment mutation", () => {
   const source = readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8");
   const earlyLeaseStart = source.indexOf("const earlyLeaseState = refreshReviewStartLeaseState();");
   assert.ok(earlyLeaseStart >= 0);
@@ -1804,6 +1804,6 @@ test("placeholder sweep retries on every apply pass independent of comment body 
   );
   assert.ok(needsReviewCommentSyncStart > earlyLeaseStart);
   const earlyWindow = source.slice(earlyLeaseStart, needsReviewCommentSyncStart);
-  assert.match(earlyWindow, /cleanupSupersededReviewPlaceholderComments\(\{/);
-  assert.match(earlyWindow, /comments:\s*earlyLeaseState\.comments/);
+  assert.doesNotMatch(earlyWindow, /cleanupSupersededReviewPlaceholderComments\(\{/);
+  assert.match(earlyWindow, /acquireApplyMutationLease\(lateLeaseState\)/);
 });

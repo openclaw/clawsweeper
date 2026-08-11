@@ -1999,7 +1999,10 @@ export function commentSyncBatchOutput(options: CommentSyncBatchOptions): Record
       : candidates
           .filter((number) => number > 0 && !urgentSet.has(number))
           .slice(0, options.batchSize - urgent.length);
-  const selected = [...urgent, ...regular];
+  // The numeric frontier owns cursor progress. Run its first record before
+  // opportunistic urgent repairs so a slow urgent window cannot repeatedly
+  // exhaust the runtime budget without ever reaching the frontier.
+  const selected = regular.length > 0 ? [regular[0]!, ...urgent, ...regular.slice(1)] : urgent;
   const highestUrgent = urgent.length > 0 ? Math.max(...urgent) : cursor;
   const urgentCanAdvanceCursor =
     urgent.length > 0 &&
