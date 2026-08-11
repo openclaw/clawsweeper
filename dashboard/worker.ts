@@ -2996,11 +2996,9 @@ async function sha256Text(value) {
 }
 
 async function githubTokenJson({ env = {}, token, path, method = "GET", body, errorLabel }) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
   const init: RequestInit = {
     method,
-    signal: controller.signal,
+    signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     headers: {
       Accept: "application/vnd.github+json",
       "Content-Type": "application/json",
@@ -3009,7 +3007,7 @@ async function githubTokenJson({ env = {}, token, path, method = "GET", body, er
     },
   };
   if (body !== undefined) init.body = JSON.stringify(body);
-  const response = await fetch(githubApiUrl(env, path), init).finally(() => clearTimeout(timeout));
+  const response = await fetch(githubApiUrl(env, path), init);
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new Error(
@@ -6995,16 +6993,14 @@ function createGithubJsonCache(env): GithubJsonReader {
 
 async function githubJson(env, path) {
   const token = await githubAuthToken(env);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
   const response = await fetch(githubApiUrl(env, path), {
-    signal: controller.signal,
+    signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     headers: {
       Accept: "application/vnd.github+json",
       "User-Agent": "openclaw-clawsweeper-status",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-  }).finally(() => clearTimeout(timeout));
+  });
   if (!response.ok) throw new Error(`GitHub ${response.status} for ${path}`);
   return response.json();
 }
@@ -7012,11 +7008,9 @@ async function githubJson(env, path) {
 async function githubGraphql(env, query, variables) {
   const token = await githubAuthToken(env);
   if (!token) throw new Error("GitHub auth is required for GraphQL");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort("timeout"), OPTIONAL_SECTION_TIMEOUT_MS);
   const response = await fetch(githubApiUrl(env, "/graphql"), {
     method: "POST",
-    signal: controller.signal,
+    signal: AbortSignal.timeout(OPTIONAL_SECTION_TIMEOUT_MS),
     headers: {
       Accept: "application/vnd.github+json",
       "Content-Type": "application/json",
@@ -7024,7 +7018,7 @@ async function githubGraphql(env, query, variables) {
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ query, variables }),
-  }).finally(() => clearTimeout(timeout));
+  });
   if (!response.ok) throw new Error(`GitHub GraphQL ${response.status}`);
   const payload = await response.json();
   if (Array.isArray(payload.errors) && payload.errors.length) {

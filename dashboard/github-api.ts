@@ -123,13 +123,12 @@ export async function githubAppInstallationIdAsPlainError(appJwt, repo, env = {}
 }
 
 export async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}, env = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_APP_TIMEOUT_MS);
+  const signal = AbortSignal.timeout(GITHUB_APP_TIMEOUT_MS);
   let response: Response;
   try {
     response = await fetch(githubApiUrl(env, path), {
       method: options.method || "GET",
-      signal: controller.signal,
+      signal,
       headers: {
         Accept: "application/vnd.github+json",
         "Content-Type": "application/json",
@@ -140,17 +139,15 @@ export async function githubAppJson(path, appJwt, options: GithubAppJsonOptions 
     });
   } catch (error) {
     const timedOut =
-      controller.signal.aborted ||
+      signal.aborted ||
       (error instanceof Error && (error.name === "AbortError" || error.message === "timeout"));
     const requestError = new GitHubRequestError(
       `${options.errorLabel || "GitHub App"} ${timedOut ? "timed out" : "network failure"}`,
       undefined,
       timedOut,
     );
-    if (!controller.signal.aborted) workerTransportErrors.set(requestError, error);
+    if (!signal.aborted) workerTransportErrors.set(requestError, error);
     throw requestError;
-  } finally {
-    clearTimeout(timeout);
   }
   if (!response.ok) {
     const text = await response.text().catch(() => "");

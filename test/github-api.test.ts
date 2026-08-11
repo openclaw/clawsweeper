@@ -71,7 +71,7 @@ test("canonical GitHub App signer converts PKCS1 private keys to PKCS8", async (
 
 test("worker GitHub App call sites preserve plain error messages", async () => {
   const originalFetch = globalThis.fetch;
-  const originalSetTimeout = globalThis.setTimeout;
+  const originalAbortSignalTimeout = AbortSignal.timeout;
   const { privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
@@ -85,10 +85,7 @@ test("worker GitHub App call sites preserve plain error messages", async () => {
         assert.equal(init?.signal?.aborted, true);
         throw new DOMException("request timed out", "AbortError");
       },
-      setTimeout: ((callback: TimerHandler) => {
-        if (typeof callback === "function") callback();
-        return 0;
-      }) as typeof globalThis.setTimeout,
+      abortSignalTimeout: (() => AbortSignal.abort("timeout")) as typeof AbortSignal.timeout,
       message: "GitHub App installation timed out",
       constructor: Error,
     },
@@ -124,7 +121,7 @@ test("worker GitHub App call sites preserve plain error messages", async () => {
   try {
     for (const failure of failures) {
       globalThis.fetch = failure.fetch;
-      globalThis.setTimeout = failure.setTimeout || originalSetTimeout;
+      AbortSignal.timeout = failure.abortSignalTimeout || originalAbortSignalTimeout;
       await assert.rejects(
         worker.fetch(workerGithubWebhookRequest(), {
           CLAWSWEEPER_APP_CLIENT_ID: "Iv23worker-errors",
@@ -141,7 +138,7 @@ test("worker GitHub App call sites preserve plain error messages", async () => {
     }
   } finally {
     globalThis.fetch = originalFetch;
-    globalThis.setTimeout = originalSetTimeout;
+    AbortSignal.timeout = originalAbortSignalTimeout;
   }
 });
 
