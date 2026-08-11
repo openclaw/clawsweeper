@@ -4,6 +4,7 @@ import { createHash, createHmac } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
+import { parseArgs as parseNodeArgs } from "node:util";
 
 const DEFAULT_OUTPUT = ".artifacts/exact-review-dlq/inventory.json";
 const MAX_SELECTED_IDS = 2;
@@ -237,44 +238,57 @@ async function main(argv) {
 }
 
 function parseArgs(argv) {
-  const args = {
-    action: "",
-    ids: [],
-    idempotencyKey: "",
-    note: "",
-    execute: false,
-    maxTargets: MAX_RECONCILE_TARGETS,
-    maxRecoveries: MAX_RECONCILE_RECOVERIES,
-    maxRecoveriesProvided: false,
-    output: DEFAULT_OUTPUT,
-    help: false,
-  };
+  const normalized = [];
+  const stringOptions = new Set([
+    "--action",
+    "--ids",
+    "--idempotency-key",
+    "--note",
+    "--max-targets",
+    "--max-recoveries",
+    "--output",
+  ]);
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
-    if (value === "-h" || value === "--help") args.help = true;
-    else if (value === "--execute") args.execute = true;
-    else if (value === "--action") args.action = String(argv[++index] || "");
-    else if (value === "--ids") {
-      args.ids = String(argv[++index] || "")
-        .split(",")
-        .map((id) => id.trim())
-        .filter(Boolean);
-    } else if (value === "--idempotency-key") {
-      args.idempotencyKey = String(argv[++index] || "").trim();
-    } else if (value === "--note") args.note = String(argv[++index] || "").trim();
-    else if (value === "--max-targets") {
-      args.maxTargets = boundedInteger(argv[++index], "--max-targets", 1, MAX_RECONCILE_TARGETS);
-    } else if (value === "--max-recoveries") {
-      args.maxRecoveriesProvided = true;
-      args.maxRecoveries = boundedInteger(
-        argv[++index],
-        "--max-recoveries",
-        0,
-        MAX_RECONCILE_RECOVERIES,
-      );
-    } else if (value === "--output") args.output = String(argv[++index] || "").trim();
+    if (value === "-h" || value === "--help" || value === "--execute") normalized.push(value);
+    else if (stringOptions.has(value)) normalized.push(`${value}=${String(argv[++index] || "")}`);
     else throw new Error(`unknown option ${value}; use --help`);
   }
+  const { values } = parseNodeArgs({
+    args: normalized,
+    options: {
+      help: { type: "boolean", short: "h" },
+      execute: { type: "boolean" },
+      action: { type: "string" },
+      ids: { type: "string" },
+      "idempotency-key": { type: "string" },
+      note: { type: "string" },
+      "max-targets": { type: "string" },
+      "max-recoveries": { type: "string" },
+      output: { type: "string" },
+    },
+  });
+  const maxRecoveriesProvided = values["max-recoveries"] !== undefined;
+  const args = {
+    action: values.action ?? "",
+    ids: String(values.ids ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean),
+    idempotencyKey: String(values["idempotency-key"] ?? "").trim(),
+    note: String(values.note ?? "").trim(),
+    execute: values.execute ?? false,
+    maxTargets:
+      values["max-targets"] === undefined
+        ? MAX_RECONCILE_TARGETS
+        : boundedInteger(values["max-targets"], "--max-targets", 1, MAX_RECONCILE_TARGETS),
+    maxRecoveries: maxRecoveriesProvided
+      ? boundedInteger(values["max-recoveries"], "--max-recoveries", 0, MAX_RECONCILE_RECOVERIES)
+      : MAX_RECONCILE_RECOVERIES,
+    maxRecoveriesProvided,
+    output: String(values.output ?? DEFAULT_OUTPUT).trim(),
+    help: values.help ?? false,
+  };
   if (args.help) return args;
   if (
     !["inventory", "recover-fresh", "resolve", "reconcile", "reconcile-parked"].includes(
