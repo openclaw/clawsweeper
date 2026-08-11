@@ -277,7 +277,7 @@ test("runMergeNotifier returns a strict failure when the hook rejects", async ()
 
   const summary = await runMergeNotifier(["--run-id", "987", "--strict"], {
     root,
-    fetch: (async () => new Response("bad", { status: 500 })) as typeof fetch,
+    fetch: (async () => new Response("denied", { status: 401 })) as typeof fetch,
     log: () => undefined,
     env: {
       CLAWSWEEPER_OPENCLAW_HOOK_URL: "https://claw.example/hooks/agent",
