@@ -1,0 +1,74 @@
+{
+  "schema": "clawsweeper-real-boundary-proof-provenance/v1",
+  "claim": "The pushed dashboard Worker test split passes the full repository suite from a clean PR checkout inside a Linux Docker container with checksum-verified jq.",
+  "pull_request": "https://github.com/openclaw/clawsweeper/pull/1127",
+  "reviewed_head": "c54565b253df36d03e49f3acd8499e4b29f9d516",
+  "crabbox": {
+    "cli_version": "0.38.3-5-g2a79805d",
+    "provider": "aws",
+    "lease_id": "cbx_891cde76c278",
+    "slug": "silver-barnacle-1a1f",
+    "run_id": "run_496cd5ae7c07",
+    "machine_type": "c7a.8xlarge",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1127 --no-hydrate",
+    "container_image": "node:24-bookworm",
+    "sync_ms": 9375,
+    "command_ms": 144591,
+    "total_ms": 154909,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true,
+    "telemetry_note": "Three coordinator heartbeat/telemetry appends timed out while SSH execution and captured output remained healthy. The command completed and the lease stopped automatically."
+  },
+  "runtime": {
+    "node": "v24.18.1",
+    "pnpm": "11.10.0",
+    "jq": "jq-1.8.2",
+    "jq_asset": "jq-linux-amd64",
+    "jq_checksum_source": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/sha256sum.txt",
+    "jq_checksum_verified": true,
+    "rsync_package": "3.2.7-1+deb12u6"
+  },
+  "result": {
+    "proof_rc": 0,
+    "full_suite": {
+      "tests": 3333,
+      "passed": 3325,
+      "skipped": 8,
+      "failed": 0,
+      "duration_ms": 112152.066907
+    },
+    "stdout": {
+      "bytes": 522784,
+      "sha256": "dca6a28df7bab78ba6e524935b80e7782222f07ba377c55aae6ffb3a1037d1ca",
+      "committed_excerpt": "container-stdout.log",
+      "secret_scan": "container-secret-scan.json"
+    },
+    "stderr": {
+      "bytes": 451,
+      "sha256": "a63eae761de33822bb804442dddbab9c488141b7e387935fb6bbc1aac6953a41"
+    }
+  },
+  "discarded_attempts": [
+    {
+      "run_id": "run_3967f6ca93be",
+      "lease_id": "cbx_444f2f04b612",
+      "reviewed_head": "097ec97f40066397027514d5b59fbe61417feafa",
+      "exit_code": 1,
+      "reason": "Checksum-verified jq was not placed on PATH and rsync was absent; unrelated workflow fixtures took missing-tool branches.",
+      "lease_stopped": true
+    },
+    {
+      "run_id": "run_3f56ddff442a",
+      "lease_id": "cbx_bfa511cacfcb",
+      "reviewed_head": "a1f198c0caf25419aaab9522a32b2e87b0db6a08",
+      "exit_code": 1,
+      "reason": "Login-shell fixtures reset the temporary jq PATH and the container still lacked rsync.",
+      "lease_stopped": true
+    }
+  ],
+  "limits": [
+    "This proof exercises repository build and test behavior only; it does not deploy the Worker or mutate GitHub, queue, or production state.",
+    "The successful container used Linux, so one test skipped on macOS ran and one macOS-only test skipped; the total and test-name inventory remained 3333."
+  ]
+}

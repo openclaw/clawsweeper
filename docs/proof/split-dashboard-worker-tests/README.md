@@ -54,7 +54,21 @@ Corepack/pnpm toolchain, downloads jq 1.8.2 for the container architecture, veri
 against jq's official published SHA-256 manifest, installs dependencies from the frozen lockfile,
 and runs the full suite.
 
-The committed container receipt is added after the required Crabbox `--fresh-pr` run.
+The required clean `--fresh-pr openclaw/clawsweeper#1127 --no-hydrate` run passed at pushed head
+`c54565b253df36d03e49f3acd8499e4b29f9d516`. Crabbox resolved `provider=aws` and executed the
+proof inside `node:24-bookworm` on lease `cbx_891cde76c278` (`silver-barnacle-1a1f`), run
+`run_496cd5ae7c07`, machine type `c7a.8xlarge`. The full suite passed 3,333 tests with 3,325
+passed, 8 Linux-inapplicable skips, and 0 failures. Crabbox reported exit 0 and
+`leaseStopped=true`.
+
+The official jq checksum passed, Node was 24.18.1, pnpm was 11.10.0, jq was 1.8.2, and the
+container installed Debian rsync 3.2.7. `container-provenance.json` is the committed receipt;
+`container-stdout.log` retains the proof-bearing transcript. TruffleHog 3.96.0 found no verified
+or unknown secrets in the exact 522,784-byte stdout capture.
+
+Two earlier harness-only attempts are disclosed in the receipt. The first left verified jq outside
+the test login-shell path; the second still lacked rsync and exposed jq only through a temporary
+parent-shell path. Both failed unrelated workflow fixtures and both report automatic lease cleanup.
 
 ## Limits and OpenClaw Bay impact
 

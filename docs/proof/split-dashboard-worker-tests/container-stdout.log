@@ -1,0 +1,20 @@
+jq-linux-amd64: OK
+PROOF_HEAD=c54565b253df36d03e49f3acd8499e4b29f9d516
+PROOF_NODE=v24.18.1
+PROOF_PNPM=11.10.0
+PROOF_JQ=jq-1.8.2
+PROOF_JQ_ASSET=jq-linux-amd64
+CRABBOX_PHASE:test
+[run-node-tests] target=all concurrency=16 files=246
+ℹ tests 3333
+ℹ suites 0
+ℹ pass 3325
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 8
+ℹ todo 0
+ℹ duration_ms 112152.066907
+SPLIT_DASHBOARD_WORKER_CONTAINER_PROOF_RC=0
+
+Crabbox provider=aws lease=cbx_891cde76c278 slug=silver-barnacle-1a1f run=run_496cd5ae7c07 machine_type=c7a.8xlarge
+Crabbox sync_ms=9375 command_ms=144591 total_ms=154909 exit_code=0 run_status=succeeded lease_stopped=true
