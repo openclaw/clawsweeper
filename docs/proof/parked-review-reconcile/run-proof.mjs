@@ -22,7 +22,8 @@ if (phase === "exhaust") await exhaustRecoveryBudget();
 else await reconcileParkedReviews();
 
 async function exhaustRecoveryBudget() {
-  for (const number of [114100, 114101]) {
+  for (const number of [114100, 114101, 114102]) {
+    const commandContext = number === 114102;
     const result = await signedPost(
       "/internal/exact-review/enqueue",
       {
@@ -31,10 +32,18 @@ async function exhaustRecoveryBudget() {
           targetRepo: "openclaw/openclaw",
           targetBranch: "main",
           itemNumber: number,
-          itemKind: "issue",
+          itemKind: commandContext ? "pull_request" : "issue",
           sourceEvent: "issues",
-          sourceAction: "opened",
+          sourceAction: commandContext ? "legacy_dispatch" : "opened",
           supersedesInProgress: false,
+          ...(commandContext
+            ? {
+                commandStatusMarker:
+                  "<!-- clawsweeper-command-status:114102:re_review:0123456789abcdef0123456789abcdef01234567 -->",
+                statusCommentId: 114102,
+                additionalPrompt: "Check the maintainer-requested regression path.",
+              }
+            : {}),
         },
       },
       webhookSecret,
@@ -64,10 +73,12 @@ async function exhaustRecoveryBudget() {
       prior = progress;
     }
     if (
-      rows.length === 2 &&
+      rows.length === 3 &&
       rows.every(
         (row) => row.parked_reason === "dispatch_rejected" && row.parked_recovery_attempts === 3,
-      )
+      ) &&
+      rows.find((row) => row.item_key === "openclaw/openclaw#114102")?.excluded_reason ===
+        "command_context"
     ) {
       await writeJson("parked-inventory-exhausted.json", inventory.body);
       await writeJson("exhaustion-summary.json", {
@@ -89,7 +100,11 @@ async function reconcileParkedReviews() {
   const control = await fetch(`${githubOrigin}/__proof/control`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ reject_dispatch: false, issue_114101_state: "closed" }),
+    body: JSON.stringify({
+      reject_dispatch: false,
+      issue_114101_state: "closed",
+      issue_114102_state: "closed",
+    }),
   });
   assert.equal(control.status, 200);
 
@@ -117,7 +132,7 @@ async function reconcileParkedReviews() {
       resolved_targets: 1,
       open_targets: 1,
       recovered_targets: 1,
-      skipped_targets: 0,
+      skipped_targets: 1,
     },
   );
 
@@ -127,6 +142,9 @@ async function reconcileParkedReviews() {
   const terminal = await getJson(
     "/api/exact-review-queue/item?target_repo=openclaw%2Fopenclaw&item_number=114101",
   );
+  const commandContext = await getJson(
+    "/api/exact-review-queue/item?target_repo=openclaw%2Fopenclaw&item_number=114102",
+  );
   const finalInventory = await signedPost(
     "/internal/exact-review/parked-reviews/list",
     { limit: 50 },
@@ -134,6 +152,7 @@ async function reconcileParkedReviews() {
   );
   await writeJson("open-target-after.json", open.body);
   await writeJson("terminal-target-after.json", terminal.body);
+  await writeJson("command-context-target-after.json", commandContext.body);
   await writeJson("parked-inventory-final.json", finalInventory.body);
   assert.equal(open.status, 200);
   assert.equal(open.body.items.length, 1);
@@ -142,8 +161,52 @@ async function reconcileParkedReviews() {
   assert.equal(open.body.items[0].parked_recovery_attempts, 0);
   assert.equal(terminal.status, 200);
   assert.equal(terminal.body.items.length, 0);
+  assert.equal(commandContext.status, 200);
+  assert.equal(commandContext.body.items.length, 1);
+  assert.equal(commandContext.body.items[0].state, "parked");
+  assert.equal(commandContext.body.items[0].attempts, 0);
+  assert.equal(commandContext.body.items[0].parked_recovery_attempts, 3);
   assert.equal(finalInventory.status, 200);
-  assert.deepEqual(finalInventory.body.parked_reviews, []);
+  assert.equal(finalInventory.body.parked_reviews.length, 1);
+  const commandRow = finalInventory.body.parked_reviews[0];
+  assert.equal(commandRow.item_key, "openclaw/openclaw#114102");
+  assert.equal(commandRow.excluded_reason, "command_context");
+  const commandMutation = {
+    item_key: commandRow.item_key,
+    revision: commandRow.revision,
+    updated_at_ms: commandRow.updated_at_ms,
+  };
+  const refusedResolve = await signedPost(
+    "/internal/exact-review/parked-reviews/resolve",
+    {
+      items: [commandMutation],
+      note: "proof: command-context record must retain its acknowledgement obligation",
+    },
+    operatorSecret,
+  );
+  const refusedRecover = await signedPost(
+    "/internal/exact-review/parked-reviews/recover-fresh",
+    {
+      items: [commandMutation],
+      idempotency_key: "parked-proof:command-context-refusal",
+    },
+    operatorSecret,
+  );
+  await writeJson("command-context-resolve-refusal.json", refusedResolve.body);
+  await writeJson("command-context-recover-refusal.json", refusedRecover.body);
+  assert.equal(refusedResolve.status, 200);
+  assert.deepEqual(refusedResolve.body, { ok: true, resolved: 0, skipped: 1 });
+  assert.equal(refusedRecover.status, 200);
+  assert.deepEqual(refusedRecover.body, {
+    ok: true,
+    recovered: 0,
+    deduped: 0,
+    skipped: 1,
+  });
+  const commandAfterRefusals = await getJson(
+    "/api/exact-review-queue/item?target_repo=openclaw%2Fopenclaw&item_number=114102",
+  );
+  assert.deepEqual(commandAfterRefusals.body, commandContext.body);
 
   const proofSummary = {
     proof: "parked review inventory and reconcile",
@@ -154,7 +217,9 @@ async function reconcileParkedReviews() {
       automatic_recovery_attempts_exhausted: 3,
       terminal_target_resolved: true,
       open_target_recovered_pending: true,
-      final_parked_inventory_rows: 0,
+      command_context_target_untouched: true,
+      command_context_mutations_refused: true,
+      final_parked_inventory_rows: 1,
     },
     operator: result,
   };

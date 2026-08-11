@@ -115,6 +115,10 @@ test("parked review reconciliation plans by default and executes terminal resolv
     parkedRow("openclaw/repo#1", "openclaw/repo", 1, 1_000),
     parkedRow("openclaw/repo#2", "openclaw/repo", 2, 2_000),
     parkedRow("gone/repo#3", "gone/repo", 3, 3_000),
+    {
+      ...parkedRow("openclaw/repo#4", "openclaw/repo", 4, 4_000),
+      excluded_reason: "command_context",
+    },
   ];
   const server = createServer(async (request, response) => {
     const chunks = [];
@@ -207,7 +211,7 @@ test("parked review reconciliation plans by default and executes terminal resolv
       resolved_targets: 2,
       open_targets: 1,
       recovered_targets: 1,
-      skipped_targets: 0,
+      skipped_targets: 1,
     });
     assert.equal(mutations.length, 0);
 
@@ -228,7 +232,7 @@ test("parked review reconciliation plans by default and executes terminal resolv
       resolved_targets: 2,
       open_targets: 1,
       recovered_targets: 1,
-      skipped_targets: 0,
+      skipped_targets: 1,
     });
     assert.equal(mutations.filter((entry) => entry.url?.endsWith("/resolve")).length, 2);
     const recovery = mutations.find((entry) => entry.url?.endsWith("/recover-fresh"));
@@ -238,9 +242,13 @@ test("parked review reconciliation plans by default and executes terminal resolv
     assert.match(recovery.payload.idempotency_key, /^parked-reconcile:[a-f0-9]{64}$/);
     const artifact = JSON.parse(await readFile(join(directory, "executed.json"), "utf8"));
     assert.deepEqual(artifact.summary, {
-      rows: 3,
-      by_reason: { review_retry_exhausted: 3 },
+      rows: 4,
+      by_reason: { review_retry_exhausted: 4 },
     });
+    assert.equal(
+      artifact.parked_reviews.find((row) => row.item_key === "openclaw/repo#4").excluded_reason,
+      "command_context",
+    );
     assert.equal(JSON.stringify(artifact).includes("test-parked-review-reconcile"), false);
 
     const overCap = await runOperator(

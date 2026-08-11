@@ -168,5 +168,8 @@ node docs/proof/parked-review-reconcile/run-proof.mjs reconcile \
 test -s "${output_dir}/proof-summary.json"
 test -s "${output_dir}/parked-inventory-exhausted.json"
 test -s "${output_dir}/parked-operator-inventory.json"
+test -s "${output_dir}/command-context-target-after.json"
+test -s "${output_dir}/command-context-resolve-refusal.json"
+test -s "${output_dir}/command-context-recover-refusal.json"
 test -s "${output_dir}/durable-object-assertion.txt"
 echo "PROOF_RC=0"

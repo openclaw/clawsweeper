@@ -16513,6 +16513,135 @@ test("parked review operator routes paginate, resolve, and recover idempotently 
   );
 });
 
+test("parked review operator routes flag and refuse both command-context variants", async () => {
+  const storage = new MemoryDurableStorage();
+  const now = Date.parse("2026-08-10T12:30:00.000Z");
+  const ordinary = leasedExactReviewQueueItem(114_020, "914020");
+  const markerOnly = leasedExactReviewQueueItem(114_021, "914021");
+  const commentOnly = leasedExactReviewQueueItem(114_022, "914022");
+  for (const item of [ordinary, markerOnly, commentOnly]) {
+    item.state = "parked";
+    item.parkedReason = "review_retry_exhausted";
+    item.parkedRecoveryAttempts = 3;
+    item.parkedRecoveryAt = undefined;
+    item.attempts = 8;
+    item.reviewFailureAttempts = 8;
+    item.updatedAt = now;
+  }
+  markerOnly.decision.commandStatusMarker =
+    "<!-- clawsweeper-command-status:114021:re_review:parked -->";
+  commentOnly.decision.statusCommentId = 914_022;
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: {
+      [ordinary.key]: ordinary,
+      [markerOnly.key]: markerOnly,
+      [commentOnly.key]: commentOnly,
+    },
+  });
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });
+
+  const inventory = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/parked-reviews/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 50 }),
+      }),
+    )
+  ).json();
+  assert.equal(inventory.parked_reviews.length, 3);
+  const ordinaryRow = inventory.parked_reviews.find((row) => row.item_key === ordinary.key);
+  const commandRows = [markerOnly, commentOnly].map((command) =>
+    inventory.parked_reviews.find((row) => row.item_key === command.key),
+  );
+  assert.equal(ordinaryRow.excluded_reason, undefined);
+  assert.deepEqual(
+    commandRows.map((row) => row.excluded_reason),
+    ["command_context", "command_context"],
+  );
+  const commandMutations = commandRows.map((row) => ({
+    item_key: row.item_key,
+    revision: row.revision,
+    updated_at_ms: row.updated_at_ms,
+  }));
+
+  const resolve = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/parked-reviews/resolve", {
+      method: "POST",
+      body: JSON.stringify({
+        items: commandMutations,
+        note: "must remain parked for command acknowledgement",
+      }),
+    }),
+  );
+  assert.deepEqual(await resolve.json(), { ok: true, resolved: 0, skipped: 2 });
+  const recover = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/parked-reviews/recover-fresh", {
+      method: "POST",
+      body: JSON.stringify({
+        items: commandMutations,
+        idempotency_key: "parked-reconcile:command-context",
+      }),
+    }),
+  );
+  assert.deepEqual(await recover.json(), {
+    ok: true,
+    recovered: 0,
+    deduped: 0,
+    skipped: 2,
+  });
+
+  const ordinaryRecover = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/parked-reviews/recover-fresh", {
+      method: "POST",
+      body: JSON.stringify({
+        items: [
+          {
+            item_key: ordinaryRow.item_key,
+            revision: ordinaryRow.revision,
+            updated_at_ms: ordinaryRow.updated_at_ms,
+          },
+        ],
+        idempotency_key: "parked-reconcile:ordinary",
+      }),
+    }),
+  );
+  assert.deepEqual(await ordinaryRecover.json(), {
+    ok: true,
+    recovered: 1,
+    deduped: 0,
+    skipped: 0,
+  });
+
+  const after = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      {
+        state: string;
+        revision: number;
+        attempts: number;
+        parkedReason?: string;
+        parkedRecoveryAttempts?: number;
+        decision: { commandStatusMarker?: string; statusCommentId?: number };
+      }
+    >;
+  };
+  assert.equal(after.items[ordinary.key].state, "pending");
+  assert.equal(after.items[ordinary.key].parkedRecoveryAttempts, 0);
+  for (const [index, command] of [markerOnly, commentOnly].entries()) {
+    assert.equal(after.items[command.key].state, "parked");
+    assert.equal(after.items[command.key].revision, commandRows[index].revision);
+    assert.equal(after.items[command.key].attempts, 8);
+    assert.equal(after.items[command.key].parkedReason, "review_retry_exhausted");
+    assert.equal(after.items[command.key].parkedRecoveryAttempts, 3);
+  }
+  assert.equal(
+    after.items[markerOnly.key].decision.commandStatusMarker,
+    "<!-- clawsweeper-command-status:114021:re_review:parked -->",
+  );
+  assert.equal(after.items[commentOnly.key].decision.statusCommentId, 914_022);
+});
+
 test("exact-review admission requeue_latest resets failures instead of parking at the review ceiling", async () => {
   const storage = new MemoryDurableStorage();
   const review = leasedExactReviewQueueItem(113_342, "9130");

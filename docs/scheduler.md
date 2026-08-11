@@ -83,6 +83,9 @@ resolves terminal or repository-gone targets with an audit note, and can queue
 at most five fresh reviews with replay-safe recovery keys. Manual runs remain
 read-only unless `execute` is enabled; scheduled runs execute. Their sanitized
 parked inventory is uploaded beside the publication dead-letter inventory.
+Parked records carrying maintainer-command context remain visible with an
+exclusion reason but cannot be resolved or fresh-recovered by this background
+reconciliation path.
 This drains the existing queue state and does not add a dashboard health input
 or an OpenClaw Bay action: Bay remains observer-only.
 GitHub throttle deferrals use the same per-item jitter band when the queue turns

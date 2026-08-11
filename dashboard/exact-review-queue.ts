@@ -4585,6 +4585,7 @@ export class ExactReviewQueue {
         target_repo: item.decision.targetRepo,
         item_number: item.decision.itemNumber,
         item_kind: item.decision.itemKind,
+        ...(exactReviewQueueHasCommandContext(item) ? { excluded_reason: "command_context" } : {}),
         parked_reason: item.parkedReason || null,
         parked_recovery_attempts: exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts),
         first_failed_at: item.firstFailureAt
@@ -4618,6 +4619,7 @@ export class ExactReviewQueue {
         if (
           !item ||
           !exactReviewParkedOperatorEligible(item) ||
+          exactReviewQueueHasCommandContext(item) ||
           item.revision !== expected.revision
         ) {
           skipped += 1;
@@ -4677,6 +4679,7 @@ export class ExactReviewQueue {
         if (
           !item ||
           !exactReviewParkedOperatorEligible(item) ||
+          exactReviewQueueHasCommandContext(item) ||
           item.revision !== expected.revision ||
           exactReviewQueueActiveReviewCount(state) >= exactReviewQueueCapacity(this.env)
         ) {

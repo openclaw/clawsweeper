@@ -702,6 +702,10 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args, deadl
     return;
   }
   for (const [index, row] of selectedRows.entries()) {
+    if (row.excluded_reason) {
+      summary.skipped_targets += 1;
+      continue;
+    }
     if (parkedReconcileDeadlineReached(deadlineAt)) {
       stopForDeadline(selectedRows.length - index + terminal.length + recoverable.length);
       return;
@@ -902,6 +906,8 @@ function sanitizeParkedReviewRow(row) {
   const targetRepo = String(value.target_repo || "");
   const itemNumber = Number(value.item_number);
   const updatedAtMs = Number(value.updated_at_ms);
+  const excludedReason =
+    value.excluded_reason === undefined ? null : String(value.excluded_reason || "");
   if (
     !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(itemKey) ||
     !Number.isSafeInteger(revision) ||
@@ -910,7 +916,8 @@ function sanitizeParkedReviewRow(row) {
     !Number.isSafeInteger(itemNumber) ||
     itemNumber < 1 ||
     !Number.isSafeInteger(updatedAtMs) ||
-    updatedAtMs < 1
+    updatedAtMs < 1 ||
+    (excludedReason !== null && excludedReason !== "command_context")
   ) {
     throw new Error("parked review inventory returned an invalid row");
   }
@@ -920,6 +927,7 @@ function sanitizeParkedReviewRow(row) {
     target_repo: targetRepo,
     item_number: itemNumber,
     item_kind: String(value.item_kind || ""),
+    excluded_reason: excludedReason,
     parked_reason: String(value.parked_reason || "") || null,
     parked_recovery_attempts: Number(value.parked_recovery_attempts || 0),
     first_failed_at: value.first_failed_at ? String(value.first_failed_at) : null,

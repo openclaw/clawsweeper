@@ -16,6 +16,7 @@ await writeFile(tracePath, "");
 const issueStates = new Map([
   [114100, "open"],
   [114101, "open"],
+  [114102, "open"],
 ]);
 let rejectDispatch = true;
 let dispatches = 0;
@@ -47,6 +48,9 @@ const server = http.createServer(async (request, response) => {
     if (command.issue_114101_state) {
       issueStates.set(114101, String(command.issue_114101_state));
     }
+    if (command.issue_114102_state) {
+      issueStates.set(114102, String(command.issue_114102_state));
+    }
     return json(response, 200, { ok: true });
   }
   if (/^\/repos\/openclaw\/(?:openclaw|clawsweeper)\/installation$/.test(url.pathname)) {
@@ -58,7 +62,7 @@ const server = http.createServer(async (request, response) => {
   if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml") {
     return json(response, 200, { state: "active" });
   }
-  const issueMatch = /^\/repos\/openclaw\/openclaw\/issues\/(11410[01])$/.exec(url.pathname);
+  const issueMatch = /^\/repos\/openclaw\/openclaw\/issues\/(11410[0-2])$/.exec(url.pathname);
   if (issueMatch) {
     const number = Number(issueMatch[1]);
     return json(response, 200, {
