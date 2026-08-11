@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
+import { errorFingerprint } from "./error-fingerprint.js";
 import {
   applyEventSnapshot,
   applyEventSnapshotIfCurrent,
@@ -796,11 +796,6 @@ function writePublicationCompletionOutputs(
     ].join("\n"),
     "utf8",
   );
-}
-
-function errorFingerprint(error: unknown): string {
-  const message = error instanceof Error ? `${error.name}:${error.message}` : String(error);
-  return `sha256:${createHash("sha256").update(message).digest("hex")}`;
 }
 
 function validateTargetRepo(targetRepo: string): void {

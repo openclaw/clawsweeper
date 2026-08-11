@@ -13,6 +13,7 @@ import {
 } from "./exact-review-batch-queue-client.js";
 import { exactReviewBatchStateWriterProgressReporter } from "./exact-review-batch-state-writer-progress.js";
 import { postDirectPublicationResult } from "./exact-review-direct-publication.js";
+import { failureFingerprint } from "./error-fingerprint.js";
 import { StateWriterTelemetryRecorder } from "./state-writer-telemetry-recorder.js";
 import { normalizeRepo, slugForRepo } from "../repository-profiles.js";
 import type { StateWriterOperation } from "../state-writer-telemetry.js";
@@ -1121,11 +1122,6 @@ function output(name: string, value: string) {
   const path = process.env.GITHUB_OUTPUT;
   if (path) writeFileSync(path, `${name}=${value}\n`, { encoding: "utf8", flag: "a" });
   else console.log(`${name}=${value}`);
-}
-
-function failureFingerprint(error: unknown): string {
-  const detail = error instanceof Error ? `${error.name}:${error.message}` : String(error);
-  return createHash("sha256").update(detail).digest("hex");
 }
 
 function env(name: string): string {
