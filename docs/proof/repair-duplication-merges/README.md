@@ -7,18 +7,23 @@ loopback HTTP socket with an unchanged idempotency key. Merge 2 proves resolver
 equivalence with real SQLite files and both production importer entry points.
 Merges 3–4 prove byte-identical behavior.
 
-Docker proof used Crabbox `0.38.3-5-g2a79805d`, `provider=local-container`,
-lease `cbx_182ee21fa80c` (`quick-krill-f6cc`), `node:24-bookworm`, and Docker
+Docker proof used Crabbox 0.41.1, `provider=local-container`, lease
+`cbx_5b0de8cbba98` (`silver-barnacle-695f`), `node:24-bookworm`, and Docker
 29.4.0. A clean `--fresh-pr openclaw/clawsweeper#1114` checkout at
-`1b53811246d6bf5a001f8db6d1de81db280c2015` reported 3,307 tests: 3,296 passed,
-8 skipped, and only the three known blob-hydration failures. Exact merge-base
-`51ac499c741b7b4b9b2bd1b7d78686055f8f3738` reproduced those same three and no
-others: 3,304 tests, 3,293 passed, 8 skipped. The focused baseline verifier
-exited zero with `BASELINE_RESULT=known_environmental_3`.
+`e94c0fbfe043545bebae5c3bf11fb961ef98a72a` built all targets, ran all four
+proof scripts with `PROOF_RC=0`, and passed `format:check`. The final
+provenance-only follow-up changes this README and its machine-readable
+provenance artifact, not the exercised harnesses.
 
 Corepack installed pinned pnpm 11.10.0. jq 1.8.1 was installed under
-`$HOME/.local/bin` and verified against SHA-256
-`020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d`.
-Fresh-PR timings were 9,217 ms sync, 83,295 ms command, 92,512 ms total. The
-lease was deleted. OpenClaw Bay is unaffected because no lifecycle, queue,
-telemetry, or dashboard contract changed.
+`$HOME/.local/bin`; its `jq-linux-arm64` SHA-256
+`6bc62f25981328edd3cfcfe6fe51b073f2d7e7710d7ef7fcdac28d4e384fc3d4` was
+verified against the release's published checksum file before execution.
+Fresh-PR timings were 14,128 ms sync, 9,870 ms command, and 24,023 ms total.
+The lease stopped automatically. The full `test:no-build` gate ran locally on
+Node 24.19.0: 3,307 tests, 3,298 passed, 9 skipped, and 0 failed. The container
+run did not repeat the full suite, so no blob-hydration baseline was needed.
+
+Machine-readable provenance is in `container-provenance.json`. OpenClaw Bay is
+unaffected because no lifecycle, queue, telemetry, or dashboard contract
+changed.

@@ -1,0 +1,59 @@
+{
+  "schema": "clawsweeper-real-boundary-proof-provenance/v1",
+  "claim": "The committed repair-duplication proof harnesses pass over real loopback HTTP sockets and real SQLite files in a clean Docker-backed Crabbox checkout of PR 1114.",
+  "reviewed_head": "e94c0fbfe043545bebae5c3bf11fb961ef98a72a",
+  "crabbox": {
+    "cli_version": "0.41.1",
+    "provider": "local-container",
+    "lease_id": "cbx_5b0de8cbba98",
+    "slug": "silver-barnacle-695f",
+    "run_id": "run_535154e728dc",
+    "machine_type": "node_24-bookworm",
+    "image": "node:24-bookworm",
+    "container_engine": "Docker 29.4.0",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1114 --no-hydrate",
+    "sync_ms": 14128,
+    "command_ms": 9870,
+    "total_ms": 24023,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0",
+    "jq": "jq-1.8.1",
+    "jq_asset": "jq-linux-arm64",
+    "jq_sha256": "6bc62f25981328edd3cfcfe6fe51b073f2d7e7710d7ef7fcdac28d4e384fc3d4",
+    "jq_checksum_source": "https://github.com/jqlang/jq/releases/download/jq-1.8.1/sha256sum.txt",
+    "jq_checksum_verified": true
+  },
+  "result": {
+    "proof_rc": 0,
+    "proof_scripts": 4,
+    "build_all": "passed",
+    "format_check": "passed"
+  },
+  "local_gate": {
+    "proof_rc": 0,
+    "test_no_build": {
+      "tests": 3307,
+      "passed": 3298,
+      "skipped": 9,
+      "failed": 0
+    }
+  },
+  "discarded_attempt": {
+    "lease_id": "cbx_862ce6fd7912",
+    "slug": "amber-crab-c0bb",
+    "image": "ubuntu:26.04",
+    "exit_code": 127,
+    "reason": "generic image had no Node/Corepack; no proof command ran",
+    "lease_stopped": true
+  },
+  "limits": [
+    "The loopback hook listener uses a disposable local token and does not contact OpenClaw or Discord.",
+    "The SQLite fixtures and node:sqlite CLI adapter are disposable local files and do not contact Gitcrawl or production storage.",
+    "The container run did not repeat the full test:no-build suite; that gate passed locally with zero failures."
+  ]
+}
