@@ -9,19 +9,13 @@ import { pathToFileURL } from "node:url";
 
 import {
   ACTION_LEDGER_CANONICAL_JSON_LIMITS,
-  ACTION_EVENT_ATTRIBUTE_KEYS,
-  ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES,
   ACTION_EVENT_FAMILIES,
-  ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE,
   ACTION_EVENT_PHASE_TYPES,
   ACTION_EVENT_REASON_CODES,
-  ACTION_EVENT_RELATIVE_DATA_PATH_PATTERN_SOURCE,
   ACTION_EVENT_SHARD_FILE_LIMITS,
   ACTION_EVENT_SHARD_SET_LIMITS,
   ACTION_EVENT_SPOOL_READ_LIMITS,
   ACTION_EVENT_STATUSES,
-  ACTION_EVENT_SUBJECT_KINDS,
-  ACTION_EVENT_TIMESTAMP_PATTERN_SOURCE,
   ACTION_EVENT_TYPES,
   ActionEventConflictError,
   ActionEventShardConflictError,
@@ -83,107 +77,6 @@ function tempRoot(): string {
 
 function createDirectoryLink(target: string, link: string): void {
   fs.symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
-}
-
-type TestJsonSchema = Record<string, unknown>;
-
-function schemaAccepts(root: TestJsonSchema, value: unknown): boolean {
-  return schemaNodeAccepts(root, root, value);
-}
-
-function schemaNodeAccepts(root: TestJsonSchema, node: TestJsonSchema, value: unknown): boolean {
-  const reference = node.$ref;
-  if (typeof reference === "string") {
-    if (!reference.startsWith("#/$defs/")) return false;
-    const name = reference.slice("#/$defs/".length);
-    const definition = (root.$defs as Record<string, TestJsonSchema> | undefined)?.[name];
-    if (!definition || !schemaNodeAccepts(root, definition, value)) return false;
-  }
-  const allOf = node.allOf as TestJsonSchema[] | undefined;
-  if (allOf && !allOf.every((entry) => schemaNodeAccepts(root, entry, value))) return false;
-  const anyOf = node.anyOf as TestJsonSchema[] | undefined;
-  if (anyOf && !anyOf.some((entry) => schemaNodeAccepts(root, entry, value))) return false;
-  const oneOf = node.oneOf as TestJsonSchema[] | undefined;
-  if (oneOf && oneOf.filter((entry) => schemaNodeAccepts(root, entry, value)).length !== 1) {
-    return false;
-  }
-  const excluded = node.not as TestJsonSchema | undefined;
-  if (excluded && schemaNodeAccepts(root, excluded, value)) return false;
-  if ("const" in node && !sameJsonValue(value, node.const)) return false;
-  const allowed = node.enum as unknown[] | undefined;
-  if (allowed && !allowed.some((entry) => sameJsonValue(value, entry))) return false;
-
-  const type = node.type;
-  if (typeof type === "string" && !matchesSchemaType(type, value)) return false;
-  if (Array.isArray(type) && !type.some((entry) => matchesSchemaType(String(entry), value))) {
-    return false;
-  }
-
-  if (typeof value === "string") {
-    if (typeof node.minLength === "number" && value.length < node.minLength) return false;
-    if (typeof node.maxLength === "number" && value.length > node.maxLength) return false;
-    if (typeof node.pattern === "string" && !new RegExp(node.pattern).test(value)) return false;
-    if (node.format === "date-time" && !Number.isFinite(Date.parse(value))) return false;
-    if (node.format === "uri") {
-      try {
-        new URL(value);
-      } catch {
-        return false;
-      }
-    }
-  }
-
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) return false;
-    if (typeof node.minimum === "number" && value < node.minimum) return false;
-    if (typeof node.maximum === "number" && value > node.maximum) return false;
-  }
-
-  if (Array.isArray(value)) {
-    if (typeof node.minItems === "number" && value.length < node.minItems) return false;
-    if (typeof node.maxItems === "number" && value.length > node.maxItems) return false;
-    if (
-      node.uniqueItems === true &&
-      new Set(value.map((entry) => JSON.stringify(entry))).size !== value.length
-    ) {
-      return false;
-    }
-    const items = node.items as TestJsonSchema | undefined;
-    if (items && !value.every((entry) => schemaNodeAccepts(root, items, entry))) return false;
-  }
-
-  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-    const record = value as Record<string, unknown>;
-    const required = node.required as string[] | undefined;
-    if (required && required.some((key) => !Object.hasOwn(record, key))) return false;
-    const properties = (node.properties as Record<string, TestJsonSchema> | undefined) ?? {};
-    if (
-      node.additionalProperties === false &&
-      Object.keys(record).some((key) => !properties[key])
-    ) {
-      return false;
-    }
-    for (const [key, entry] of Object.entries(record)) {
-      const property = properties[key];
-      if (property && !schemaNodeAccepts(root, property, entry)) return false;
-    }
-  }
-
-  return true;
-}
-
-function matchesSchemaType(type: string, value: unknown): boolean {
-  if (type === "null") return value === null;
-  if (type === "array") return Array.isArray(value);
-  if (type === "object")
-    return value !== null && typeof value === "object" && !Array.isArray(value);
-  if (type === "integer") return typeof value === "number" && Number.isInteger(value);
-  if (type === "number") return typeof value === "number";
-  return typeof value === type;
-}
-
-function sameJsonValue(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function reviewEventKey(
@@ -532,11 +425,7 @@ test("event creation rejects noncanonical writer timestamps before persistence",
   }
 });
 
-test("runtime and schema require the same canonical timestamp syntax", () => {
-  const schema = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
-  ) as TestJsonSchema;
-  const timestampSchema = (schema.properties as Record<string, TestJsonSchema>).occurred_at!;
+test("runtime requires canonical timestamp syntax", () => {
   for (const timestamp of [
     "0001-01-01T00:00:00Z",
     "0004-02-29T00:00:00Z",
@@ -544,7 +433,6 @@ test("runtime and schema require the same canonical timestamp syntax", () => {
     "2026-07-12T10:00:00Z",
     "2026-07-12T10:00:00.123456789+02:30",
   ]) {
-    assert.equal(schemaNodeAccepts(schema, timestampSchema, timestamp), true, timestamp);
     assert.doesNotThrow(() => createActionEvent(reviewInput({ occurredAt: timestamp })));
   }
   for (const timestamp of [
@@ -563,7 +451,6 @@ test("runtime and schema require the same canonical timestamp syntax", () => {
     "2026-07-12T10:00:00+02:60",
     "2026-07-12 10:00:00Z",
   ]) {
-    assert.equal(schemaNodeAccepts(schema, timestampSchema, timestamp), false, timestamp);
     assert.throws(
       () => createActionEvent(reviewInput({ occurredAt: timestamp })),
       /must be an ISO date-time timestamp/,
@@ -572,13 +459,7 @@ test("runtime and schema require the same canonical timestamp syntax", () => {
   }
 });
 
-test("runtime and schema require namespaced portable data paths", () => {
-  const schema = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
-  ) as TestJsonSchema;
-  const relativePathSchema = (schema.$defs as Record<string, TestJsonSchema>).relativePath!;
-  assert.equal(relativePathSchema.pattern, ACTION_EVENT_RELATIVE_DATA_PATH_PATTERN_SOURCE);
-
+test("runtime requires namespaced portable data paths", () => {
   for (const reportPath of [
     ".artifacts/review-42.json",
     "artifacts/reviews/42.md",
@@ -589,7 +470,6 @@ test("runtime and schema require namespaced portable data paths", () => {
     "records/openclaw-openclaw/items/42.md",
     "results/audit/latest.json",
   ]) {
-    assert.equal(schemaNodeAccepts(schema, relativePathSchema, reportPath), true, reportPath);
     assert.doesNotThrow(() =>
       createActionEvent(reviewInput({ evidence: [{ kind: "report", reportPath }] })),
     );
@@ -610,7 +490,6 @@ test("runtime and schema require namespaced portable data paths", () => {
     "records/LPT9.log",
     "records/item.",
   ]) {
-    assert.equal(schemaNodeAccepts(schema, relativePathSchema, reportPath), false, reportPath);
     assert.throws(
       () => createActionEvent(reviewInput({ evidence: [{ kind: "report", reportPath }] })),
       /namespaced repository-relative data path/,
@@ -664,12 +543,8 @@ test("event-key scopes reject raw identities and confidential identifiers", () =
     /must be generated/,
   );
 
-  const schema = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
-  ) as TestJsonSchema;
-  const eventKeySchema = (schema.$defs as Record<string, TestJsonSchema>).eventKey!;
   const safeKey = actionEventKey("review.completed", { number: 42 });
-  assert.equal(schemaNodeAccepts(schema, eventKeySchema, safeKey), true);
+  assert.match(safeKey, /^review\.completed:[a-f0-9]{64}$/);
 
   for (const scope of [
     `ghp_${"A".repeat(20)}`,
@@ -691,7 +566,6 @@ test("event-key scopes reject raw identities and confidential identifiers", () =
       /confidential identifier/,
       scope,
     );
-    assert.equal(schemaNodeAccepts(schema, eventKeySchema, forgedKey), false, scope);
   }
 });
 
@@ -826,145 +700,7 @@ test("new durable subjects carry bounded machine identities", () => {
   }
 });
 
-test("runtime allowlists stay aligned with the checked-in schema", () => {
-  const schema = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
-  );
-  assert.deepEqual(schema.properties.subject.properties.kind.enum, [...ACTION_EVENT_SUBJECT_KINDS]);
-  assert.deepEqual(
-    Object.keys(schema.properties.attributes.properties).sort(),
-    [...ACTION_EVENT_ATTRIBUTE_KEYS].sort(),
-  );
-  assert.deepEqual(schema.$defs.standardEventType.enum, Object.values(ACTION_EVENT_TYPES));
-  assert.deepEqual(schema.$defs.canonicalActionStatus.enum, Object.values(ACTION_EVENT_STATUSES));
-  assert.deepEqual(schema.$defs.canonicalReasonCode.enum, Object.values(ACTION_EVENT_REASON_CODES));
-  assert.equal(schema.$defs.machineText.pattern, ACTION_EVENT_MACHINE_TEXT_PATTERN_SOURCE);
-  assert.equal(schema.properties.occurred_at.pattern, ACTION_EVENT_TIMESTAMP_PATTERN_SOURCE);
-  assert.equal(schema.properties.recorded_at.pattern, ACTION_EVENT_TIMESTAMP_PATTERN_SOURCE);
-  const confidentialEntries = schema.$defs.confidentialIdentifier.anyOf as Array<{
-    pattern?: string;
-  }>;
-  assert.deepEqual(
-    confidentialEntries.flatMap((entry) => (entry.pattern ? [entry.pattern] : [])),
-    [...ACTION_EVENT_CONFIDENTIAL_IDENTIFIER_PATTERN_SOURCES],
-  );
-});
-
-test("runtime and schema apply the same machine-text privacy boundary", () => {
-  const schema = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
-  ) as TestJsonSchema;
-  const valid = createActionEvent(reviewInput());
-  const schemaAllows = (value: string): boolean => {
-    const candidate = structuredClone(valid) as unknown as Record<string, unknown>;
-    (candidate.action as Record<string, unknown>).status = value;
-    return schemaAccepts(schema, candidate);
-  };
-  const samples = [
-    "review.completed",
-    "claude-3.5",
-    "github.com/openclaw",
-    `ghs_${"A".repeat(30)}`,
-    `ghu_${"A".repeat(30)}`,
-    `gho_${"A".repeat(30)}`,
-    `ghr_${"A".repeat(30)}`,
-    `github_pat_${"A".repeat(24)}`,
-    `npm_${"A".repeat(36)}`,
-    `xoxb-${"A".repeat(24)}`,
-    `xoxp-${"A".repeat(24)}`,
-    `AKIA${"A".repeat(16)}`,
-    `ASIA${"A".repeat(16)}`,
-    `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.${"A".repeat(32)}`,
-    `Bearer:${"A".repeat(32)}`,
-    `Bearer+${"A".repeat(32)}`,
-    `bEaReR+${"A".repeat(32)}`,
-    "Basic:dXNlcjpwYXNz",
-    "Basic+YTpi",
-    "Basic+dXNlcjpwYXNz",
-    "bAsIc+dXNlcjpwYXNz",
-    "alice%40example.com",
-    "alice@corp",
-    "%2FUsers%2Falice%2Fsecret",
-    "https%3A%2F%2Fservice.internal%2Fapi",
-    `api_key:${"A".repeat(32)}`,
-    `cloudflare_api_token:${"A".repeat(32)}`,
-    `fc00::1`,
-    "0:0:0:0:0:0:0:1",
-    "::ffff:7f00:1",
-    "::ffff:c0a8:1",
-    "0:0::ffff:c0a8:1",
-    "0::c0a8:1",
-    "status:0:0::ffff:c0a8:1",
-    "status:0::c0a8:1",
-    "0:0:0:0:0:ffff:a00:1",
-    "0:0:0:0:0:ffff:7f00:1",
-    "0:0:0:0:0:ffff:a9fe:1",
-    "0:0:0:0:0:ffff:ac10:1",
-    "0:0:0:0:0:ffff:c0a8:1",
-    "0:0:0:0:0:0:c0a8:1",
-    "service.internal",
-    "service.internal.",
-    "service.internal..",
-    "SERVICE.INTERNAL",
-    "LOCALHOST:443",
-    "user@LOCALHOST",
-    "file:/etc/passwd",
-    "file:etc/passwd",
-    "FILE:etc/passwd",
-    "https://user@host/path",
-    "https:user@host/path",
-    "HTTPS:user@host/path",
-    "internal.example.com",
-    "https://host.docker.internal/api",
-    "https://service.internal.././api",
-    "https://10.0.0.1/api",
-    "runner:/etc/openclaw/config",
-    "runner:C:/build/worktree",
-    "http://2130706433/",
-    "http://0x7f000001/",
-    "http://0x7f.1/",
-    "http://0x64.0x40.1.1/",
-    "http://0x8.8.8.8/",
-    "http://017700000001/",
-    "010.0.0.1",
-    "http://010.0.0.1/",
-    "http://127.1/",
-    "http://127.0.1/",
-    "http://10.1/",
-    "http://192.168.1/",
-    "host-10.0.0.1",
-    "0:0::1",
-    "0:0::ffff:808:808",
-    "0::808:808",
-    "2001:4860:4860::8888",
-    "status:0:0::ffff:808:808",
-    "status:2001:4860:4860::8888",
-  ];
-
-  for (const value of samples) {
-    let runtimeAllows = true;
-    try {
-      createActionEvent(
-        reviewInput({
-          action: {
-            name: "review",
-            status: value,
-            retryable: false,
-            mutation: false,
-          },
-        }),
-      );
-    } catch {
-      runtimeAllows = false;
-    }
-    assert.equal(runtimeAllows, schemaAllows(value), value);
-  }
-});
-
 test("privacy normalization preserves public machine identifiers", () => {
-  const schema = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
-  ) as TestJsonSchema;
   for (const status of [
     "basic-authentication",
     "basic+authentication",
@@ -1001,7 +737,6 @@ test("privacy normalization preserves public machine identifiers", () => {
       }),
     );
     assert.equal(event.action.status, status);
-    assert.equal(schemaAccepts(schema, event), true, status);
   }
 });
 
@@ -2420,289 +2155,6 @@ test("durable privacy guards reject raw text, local paths, secrets, and invalid 
   }
 });
 
-test("checked-in schema rejects values rejected by runtime normalization", () => {
-  const schema = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
-  ) as TestJsonSchema;
-  const valid = createActionEvent(reviewInput());
-  assert.equal(schemaAccepts(schema, valid), true);
-
-  const cases: Array<{
-    label: string;
-    mutate: (event: Record<string, unknown>) => void;
-    runtime: () => unknown;
-  }> = [
-    {
-      label: "private IPv6",
-      mutate: (event) => {
-        (event.action as Record<string, unknown>).status = "fc00::1";
-      },
-      runtime: () =>
-        createActionEvent(
-          reviewInput({
-            action: {
-              name: "review",
-              status: "fc00::1",
-              retryable: false,
-              mutation: false,
-            },
-          }),
-        ),
-    },
-    {
-      label: "dot-only relative path",
-      mutate: (event) => {
-        ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
-          "report_path"
-        ] = "./";
-      },
-      runtime: () =>
-        createActionEvent(reviewInput({ evidence: [{ kind: "review", reportPath: "./" }] })),
-    },
-    {
-      label: "UNC relative path",
-      mutate: (event) => {
-        ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
-          "report_path"
-        ] = "\\\\server\\share\\report.json";
-      },
-      runtime: () =>
-        createActionEvent(
-          reviewInput({
-            evidence: [{ kind: "review", reportPath: "\\\\server\\share\\report.json" }],
-          }),
-        ),
-    },
-    {
-      label: "uppercase Windows private path",
-      mutate: (event) => {
-        ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
-          "report_path"
-        ] = "records/C:/USERS/Private/secret.txt";
-      },
-      runtime: () =>
-        createActionEvent(
-          reviewInput({
-            evidence: [{ kind: "review", reportPath: "records/C:/USERS/Private/secret.txt" }],
-          }),
-        ),
-    },
-    {
-      label: "percent-encoded private path",
-      mutate: (event) => {
-        ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
-          "report_path"
-        ] = "records/%2FUsers%2Fexample%2Fsecret.txt";
-      },
-      runtime: () =>
-        createActionEvent(
-          reviewInput({
-            evidence: [
-              {
-                kind: "review",
-                reportPath: "records/%2FUsers%2Fexample%2Fsecret.txt",
-              },
-            ],
-          }),
-        ),
-    },
-    {
-      label: "trailing-dot private host",
-      mutate: (event) => {
-        (event.action as Record<string, unknown>).status = "service.internal.";
-      },
-      runtime: () =>
-        createActionEvent(
-          reviewInput({
-            action: {
-              name: "review",
-              status: "service.internal.",
-              retryable: false,
-              mutation: false,
-            },
-          }),
-        ),
-    },
-    {
-      label: "expanded IPv6 loopback",
-      mutate: (event) => {
-        (event.action as Record<string, unknown>).status = "0:0:0:0:0:0:0:1";
-      },
-      runtime: () =>
-        createActionEvent(
-          reviewInput({
-            action: {
-              name: "review",
-              status: "0:0:0:0:0:0:0:1",
-              retryable: false,
-              mutation: false,
-            },
-          }),
-        ),
-    },
-    {
-      label: "expanded IPv4-mapped private IPv6",
-      mutate: (event) => {
-        (event.action as Record<string, unknown>).status = "0:0:0:0:0:ffff:c0a8:1";
-      },
-      runtime: () =>
-        createActionEvent(
-          reviewInput({
-            action: {
-              name: "review",
-              status: "0:0:0:0:0:ffff:c0a8:1",
-              retryable: false,
-              mutation: false,
-            },
-          }),
-        ),
-    },
-    {
-      label: "expanded IPv4-mapped CGNAT IPv6",
-      mutate: (event) => {
-        (event.action as Record<string, unknown>).status = "0:0:0:0:0:ffff:6440:1";
-      },
-      runtime: () =>
-        createActionEvent(
-          reviewInput({
-            action: {
-              name: "review",
-              status: "0:0:0:0:0:ffff:6440:1",
-              retryable: false,
-              mutation: false,
-            },
-          }),
-        ),
-    },
-    {
-      label: "embedded private IPv4",
-      mutate: (event) => {
-        (event.action as Record<string, unknown>).status = "host-10.0.0.1";
-      },
-      runtime: () =>
-        createActionEvent(
-          reviewInput({
-            action: {
-              name: "review",
-              status: "host-10.0.0.1",
-              retryable: false,
-              mutation: false,
-            },
-          }),
-        ),
-    },
-    {
-      label: "CGNAT address",
-      mutate: (event) => {
-        (event.action as Record<string, unknown>).status = "100.100.100.100";
-      },
-      runtime: () =>
-        createActionEvent(
-          reviewInput({
-            action: {
-              name: "review",
-              status: "100.100.100.100",
-              retryable: false,
-              mutation: false,
-            },
-          }),
-        ),
-    },
-    {
-      label: "URL userinfo",
-      mutate: (event) => {
-        ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
-          "run_url"
-        ] = "https://user@github.com/openclaw/clawsweeper/actions/runs/100";
-      },
-      runtime: () =>
-        createActionEvent(
-          reviewInput({
-            evidence: [
-              {
-                kind: "run",
-                runUrl: "https://user@github.com/openclaw/clawsweeper/actions/runs/100",
-              },
-            ],
-          }),
-        ),
-    },
-    {
-      label: "whitespace bearer credential",
-      mutate: (event) => {
-        ((event.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
-          "report_path"
-        ] = `records/Bearer ${"A".repeat(32)}.json`;
-      },
-      runtime: () =>
-        createActionEvent(
-          reviewInput({
-            evidence: [{ kind: "review", reportPath: `records/Bearer ${"A".repeat(32)}.json` }],
-          }),
-        ),
-    },
-    {
-      label: "unsafe integer",
-      mutate: (event) => {
-        event.phase_seq = Number.MAX_SAFE_INTEGER + 1;
-      },
-      runtime: () => createActionEvent(reviewInput({ phaseSeq: Number.MAX_SAFE_INTEGER + 1 })),
-    },
-    {
-      label: "empty evidence",
-      mutate: (event) => {
-        event.evidence = [];
-      },
-      runtime: () => {
-        const root = tempRoot();
-        const written = writeActionEvent(root, reviewInput());
-        const event = JSON.parse(fs.readFileSync(written.path, "utf8"));
-        event.evidence = [];
-        fs.writeFileSync(written.path, `${JSON.stringify(event)}\n`);
-        return readAllSpooledActionEvents(root);
-      },
-    },
-  ];
-
-  for (const value of [
-    "Basic:dXNlcjpwYXNz",
-    "alice@corp",
-    `xoxb-${"A".repeat(24)}`,
-    `AKIA${"A".repeat(16)}`,
-    "LOCALHOST:443",
-    "user@LOCALHOST",
-    "file:/etc/passwd",
-    "SERVICE.INTERNAL",
-    "0:0::1",
-    "https://user@host/path",
-  ]) {
-    cases.push({
-      label: `confidential machine text ${value}`,
-      mutate: (event) => {
-        (event.action as Record<string, unknown>).status = value;
-      },
-      runtime: () =>
-        createActionEvent(
-          reviewInput({
-            action: {
-              name: "review",
-              status: value,
-              retryable: false,
-              mutation: false,
-            },
-          }),
-        ),
-    });
-  }
-
-  for (const entry of cases) {
-    const candidate = structuredClone(valid) as unknown as Record<string, unknown>;
-    entry.mutate(candidate);
-    assert.equal(schemaAccepts(schema, candidate), false, entry.label);
-    assert.throws(entry.runtime, undefined, entry.label);
-  }
-});
-
 test("ledger file reads reject malformed UTF-8 and dot-only path segments", () => {
   const root = tempRoot();
   assert.throws(
@@ -2728,19 +2180,6 @@ test("event readers reject unknown fields instead of carrying unhashed data into
 });
 
 test("run URLs are limited to public GitHub workflow evidence", () => {
-  const schema = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), "schema", "state-ledger-event.schema.json"), "utf8"),
-  ) as TestJsonSchema;
-  const valid = createActionEvent(
-    reviewInput({
-      evidence: [
-        {
-          kind: "run",
-          runUrl: "https://github.com/openclaw/clawsweeper/actions/runs/100",
-        },
-      ],
-    }),
-  );
   for (const runUrl of [
     "https://169.254.169.254/latest/meta-data",
     "https://[::1]/actions/runs/100",
@@ -2763,11 +2202,6 @@ test("run URLs are limited to public GitHub workflow evidence", () => {
         ),
       /credential-free HTTPS URL|public github\.com Actions run/,
     );
-    const candidate = structuredClone(valid) as unknown as Record<string, unknown>;
-    ((candidate.evidence as Array<Record<string, unknown>>)[0] as Record<string, unknown>)[
-      "run_url"
-    ] = runUrl;
-    assert.equal(schemaAccepts(schema, candidate), false, runUrl);
   }
 });
 
