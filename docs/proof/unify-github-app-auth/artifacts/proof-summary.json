@@ -1,0 +1,31 @@
+{
+  "schema": "clawsweeper-unified-github-app-auth-proof/v1",
+  "generated_at": "2026-08-11T01:12:25.139Z",
+  "source_sha": "007544716b06d9b9189ac846c903bac2df7e155c",
+  "source_tree_sha": "908b5ec6daa8370f7605bacf6fa7e0922200ce511232027fbe49cf3af69b0598",
+  "runtime": "wrangler dev --local with SQLite-backed ExactReviewQueue",
+  "transport": "real loopback HTTP sockets (Worker 51507, GitHub 51508)",
+  "routes": {
+    "worker": "/github/webhook (signed issue_comment)",
+    "queue": "/internal/exact-review/branch-authority (signed request forwarded to Durable Object)"
+  },
+  "observations": {
+    "worker_status": 202,
+    "worker_status_comment_id": 777,
+    "queue_status": 202,
+    "queue_item_resolved": true,
+    "jwt_byte_identical": true,
+    "canonical_app_auth_headers_byte_identical": true,
+    "app_jwt_sha256": "009141f7b93e6b042d98e5884386d880f473db0ef90db8ec281cdf07a131d62c",
+    "canonical_app_auth_headers_sha256": "097756715c5629ced5dc6ec0e70aa455f317d5dc0e7dc8e811671f833074ac90",
+    "queue_token_request_body_sha256": "0b74cbb0206b276baf033ece187e7608c7cfd90fe4eccbc12f0fa0e7cd441de8",
+    "unexpected_loopback_requests": 0
+  },
+  "redactions": [
+    "App private key",
+    "App JWT",
+    "installation tokens"
+  ],
+  "production_mutations": 0,
+  "run_status": "succeeded"
+}

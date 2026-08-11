@@ -44,6 +44,15 @@ docs/proof/unify-github-app-auth/run-proof.sh
 Artifacts are written under `docs/proof/unify-github-app-auth/artifacts/` by default. Set
 `UNIFY_GITHUB_APP_AUTH_PROOF_OUTPUT` to use another directory.
 
+## Local observation
+
+The committed local run exercised code commit `007544716b06d9b9189ac846c903bac2df7e155c` on
+Node 24.19.0 and completed with `PROOF_RC=0`. The real Worker returned `202` with status comment
+`777`; the real queue Durable Object returned `202`, resolved `openclaw/gogcli#598`, and made no
+unexpected loopback requests. The two entry points' App JWTs and canonical App-auth header bytes
+were identical. See [`artifacts/proof-summary.json`](artifacts/proof-summary.json) and the
+[`redacted request trace`](artifacts/github-requests.redacted.json).
+
 ## Limits
 
 This proves both production entry points, the local Worker/DO boundary, cryptographic signing, and
