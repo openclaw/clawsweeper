@@ -23,14 +23,17 @@ curl -fsSL "https://github.com/jqlang/jq/releases/download/jq-${jq_version}/${jq
   sha256sum --ignore-missing --strict -c sha256sum.txt
 )
 chmod 0755 "$proof_tmp/$jq_asset"
+mkdir -p "$proof_tmp/bin"
+install -m 0755 "$proof_tmp/$jq_asset" "$proof_tmp/bin/jq"
+export PATH="$proof_tmp/bin:$PATH"
 
 corepack enable
 pnpm install --frozen-lockfile
 
-printf 'PROOF_HEAD=%s\n' "$(git rev-parse HEAD)"
+printf 'PROOF_HEAD=%s\n' "$(git -c safe.directory="$PWD" rev-parse HEAD)"
 printf 'PROOF_NODE=%s\n' "$(node --version)"
 printf 'PROOF_PNPM=%s\n' "$(pnpm --version)"
-printf 'PROOF_JQ=%s\n' "$("$proof_tmp/$jq_asset" --version)"
+printf 'PROOF_JQ=%s\n' "$(jq --version)"
 printf 'PROOF_JQ_ASSET=%s\n' "$jq_asset"
 printf 'CRABBOX_PHASE:test\n'
 pnpm test
