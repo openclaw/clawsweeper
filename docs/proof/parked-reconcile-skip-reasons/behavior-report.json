@@ -34,12 +34,24 @@
       "contract_clause": "Bounded sanitized failure diagnostics",
       "status": "pass",
       "severity": null,
-      "evidence": "Focused operator fixtures passed for reason classes, three-sample bounding, credential/control-byte sanitization, and 240-character truncation.",
+      "evidence": "Focused operator fixtures passed for per-target standard-reconcile attribution, reason classes, three-sample bounding, credential/control-byte sanitization, and 240-character truncation.",
       "reproduction_steps": [
         "Run the focused exact-review dead-letter operator tests",
         "Observe zero failures"
       ],
       "confidence": 0.9
+    },
+    {
+      "contract_clause": "User task 3: real HTTP error-path attribution",
+      "status": "pass",
+      "severity": null,
+      "evidence": "A current-source operator process using GITHUB_API_URL against a real 127.0.0.1 listener reported http_403=20 for the all-403 scenario and two open targets plus http_403=18 for the mixed scenario.",
+      "reproduction_steps": [
+        "Download artifact 9085971968 from run 31449984643",
+        "Run run-error-trace.mjs with its parked-reviews.json path",
+        "Inspect all-403-summary.json, mixed-summary.json, and after-fix-error-trace.jsonl"
+      ],
+      "confidence": 0.99
     }
   ],
   "anti_cheat_probes": [
@@ -54,6 +66,10 @@
     {
       "probe": "Exercise invalid and sensitive failure text",
       "result": "Focused fixtures passed for HTTP classes, credentials, control bytes, whitespace collapse, sample count, and maximum length."
+    },
+    {
+      "probe": "Mix successful and failed real HTTP responses for one production inventory",
+      "result": "Two unique targets remained open and recoverable while only the remaining 18 contributed to skip_reasons.http_403."
     }
   ],
   "blockers": []

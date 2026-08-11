@@ -2317,6 +2317,50 @@ test("inaccessible canonical targets cannot starve independently invalid dead le
   assert.equal(JSON.parse(scenario.first.stdout).invalid_rows, 1);
 });
 
+test("serial canonical discovery attributes a failure only to the target that threw", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/first#1"),
+      row(
+        "second",
+        "publication:second",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/second#2",
+      ),
+      row("third", "publication:third", 3, "retry_exhausted", true, "eligible", "openclaw/third#3"),
+    ],
+    failedRepository: "first",
+    failedStatus: 403,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { http_403: 1, not_inspected_abort: 2 });
+  assert.deepEqual(summary.skip_samples, [
+    {
+      target: "openclaw/first#1",
+      reason: "live target check failed for openclaw/first#1 (403)",
+    },
+    {
+      target: "openclaw/second#2",
+      reason:
+        "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
+    },
+    {
+      target: "openclaw/third#3",
+      reason:
+        "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
+    },
+  ]);
+  assert.equal(summary.skipped_targets, 3);
+  assert.equal(scenario.restRequests, 1);
+  assert.equal(scenario.recoveries.length, 0);
+  assert.equal(scenario.resolutions.length, 0);
+});
+
 test("automatic recovery refuses a pull request whose current head has advanced", async () => {
   const item = row(
     "stale",
@@ -2462,7 +2506,7 @@ async function automaticReconcileScenario(options) {
           request.url.includes(`/${options.failedRepository}/issues/`)) ||
         (options.failTargetAfterCleanup === number && resolutions.length >= 2)
       ) {
-        response.writeHead(503, { "content-type": "application/json" });
+        response.writeHead(options.failedStatus ?? 503, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: "temporary" }));
         return;
       }

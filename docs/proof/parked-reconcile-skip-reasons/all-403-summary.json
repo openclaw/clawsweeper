@@ -1,0 +1,30 @@
+{
+  "action": "reconcile-parked",
+  "dry_run": true,
+  "inventory_complete": true,
+  "queue_pressure": "idle",
+  "inspected_targets": 20,
+  "terminal_targets": 0,
+  "repository_gone_targets": 0,
+  "resolved_targets": 0,
+  "open_targets": 0,
+  "recovered_targets": 0,
+  "skipped_targets": 20,
+  "skip_reasons": {
+    "http_403": 20
+  },
+  "skip_samples": [
+    {
+      "target": "steipete/codexbar#2367",
+      "reason": "parked review target check failed for steipete/codexbar#2367 with 403"
+    },
+    {
+      "target": "steipete/codexbar#2407",
+      "reason": "parked review target check failed for steipete/codexbar#2407 with 403"
+    },
+    {
+      "target": "steipete/codexbar#2469",
+      "reason": "parked review target check failed for steipete/codexbar#2469 with 403"
+    }
+  ]
+}

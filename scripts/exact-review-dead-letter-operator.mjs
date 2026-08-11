@@ -35,6 +35,16 @@ class DeadLetterInventoryChangedError extends Error {
   }
 }
 
+class CanonicalTargetInspectionError extends Error {
+  constructor(error, { inspectedTargets = [], failedTargets = [], notInspectedTargets = [] }) {
+    super(error instanceof Error ? error.message : String(error), { cause: error });
+    this.name = "CanonicalTargetInspectionError";
+    this.inspectedTargets = inspectedTargets;
+    this.failedTargets = failedTargets;
+    this.notInspectedTargets = notInspectedTargets;
+  }
+}
+
 const HELP = `Usage:
   node scripts/exact-review-dead-letter-operator.mjs --action <inventory|recover-fresh|resolve|reconcile|reconcile-parked> [options]
 
@@ -411,15 +421,34 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
     return;
   }
 
+  const selectedGroups = [...groups.values()];
   let identities;
   try {
-    identities = await inspectCanonicalTargets([...groups.values()], args.maxTargets);
+    identities = await inspectCanonicalTargets(selectedGroups, args.maxTargets);
   } catch (error) {
-    recordInspectionSkips(
-      summary,
-      [...groups.values()].map((group) => group.target),
-      error,
-    );
+    if (error instanceof CanonicalTargetInspectionError) {
+      recordInspectionSkips(summary, error.failedTargets, error.cause ?? error);
+      recordInspectionSkips(
+        summary,
+        error.inspectedTargets,
+        new Error(
+          "canonical target was inspected but reconciliation aborted after another target inspection failed",
+        ),
+      );
+      recordInspectionSkips(
+        summary,
+        error.notInspectedTargets,
+        new Error(
+          "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
+        ),
+      );
+    } else {
+      recordInspectionSkips(
+        summary,
+        selectedGroups.map((group) => group.target),
+        error,
+      );
+    }
     if (invalidRows.length) {
       const resolution = await resolveForReconciliation({
         queueUrl,
@@ -1184,11 +1213,21 @@ async function loadInventory(options) {
 async function inspectCanonicalTargets(groups, maxTargets) {
   const identities = new Map();
   if (groups.length <= Math.min(maxTargets, MAX_RECONCILE_RECOVERIES)) {
-    for (const group of groups) {
-      identities.set(
-        normalizeRecoveryTargetKey(group.target),
-        await inspectRecoveryTarget(group.target),
-      );
+    const inspectedTargets = [];
+    for (const [index, group] of groups.entries()) {
+      try {
+        identities.set(
+          normalizeRecoveryTargetKey(group.target),
+          await inspectRecoveryTarget(group.target),
+        );
+        inspectedTargets.push(group.target);
+      } catch (error) {
+        throw new CanonicalTargetInspectionError(error, {
+          inspectedTargets,
+          failedTargets: [group.target],
+          notInspectedTargets: groups.slice(index + 1).map((candidate) => candidate.target),
+        });
+      }
     }
     return identities;
   }
@@ -1299,6 +1338,7 @@ function countBy(rows, keyFor) {
 }
 
 function recordInspectionSkips(summary, targets, error) {
+  if (targets.length === 0) return;
   const reason = sanitizeSkipReason(error);
   const reasonClass = classifySkipReason(reason);
   summary.skip_reasons[reasonClass] = (summary.skip_reasons[reasonClass] || 0) + targets.length;
@@ -1327,6 +1367,12 @@ function sanitizeSkipReason(error) {
 
 function classifySkipReason(reason) {
   const normalized = reason.toLowerCase();
+  if (normalized.includes("not inspected because canonical discovery aborted")) {
+    return "not_inspected_abort";
+  }
+  if (normalized.includes("inspected but reconciliation aborted")) {
+    return "inspected_before_abort";
+  }
   if (normalized.includes("missing from an existing repository")) {
     return "missing_from_existing_repository";
   }
