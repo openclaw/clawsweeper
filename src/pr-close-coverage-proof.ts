@@ -198,27 +198,10 @@ export function formatPrCloseCoverageProofDetailList(values: readonly string[]):
   return values.map((value) => `  - ${value}`).join("\n");
 }
 
-export function prCloseCoverageProofStateText(
-  covering: Pick<PrCloseCoverageProofPullRequestView, "mergedAt">,
-): string {
-  return covering.mergedAt ? `merged at ${covering.mergedAt}` : "still open as the covering PR";
-}
-
 export function prCloseCoverageProofCandidateCanClose(
   covering: Pick<PrCloseCoverageProofPullRequestView, "state" | "mergedAt">,
 ): boolean {
   return covering.state === "open" || Boolean(covering.mergedAt);
-}
-
-export function summarizePrCloseCoverageProofPullRequest(
-  pull: PrCloseCoverageProofPullRequestView,
-): string {
-  const body = compactPrCloseCoverageProofText(pull.body);
-  const bodyText = body ? ` Body: ${body}` : "";
-  const commentText = pull.comments.length
-    ? ` Comments hydrated: ${pull.comments.length}${pull.commentsTruncated ? " (truncated)" : ""}.`
-    : "";
-  return `#${pull.number} ${pull.title}.${bodyText}${commentText}`;
 }
 
 function stringifyPrCloseCoverageProofPromptJson(value: unknown, space?: number): string {

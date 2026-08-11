@@ -9413,23 +9413,13 @@ export class ExactReviewQueue {
         now,
       );
       if (circuitRetryAt > now) {
-        this.recordAuthorityGithubOutcomeSync(
-          reservation.decision.targetRepo,
-          reservation.attempts > 0,
-          "skipped_by_circuit",
-          now,
-        );
+        this.recordAuthorityGithubOutcomeSync(reservation.attempts > 0, "skipped_by_circuit", now);
         this.deferSourceAuthorityReservationSync(reservation, now, circuitRetryAt, false);
         continue;
       }
       try {
         const liveHeadSha = await exactReviewSourceAuthorityLiveHead(this.env, reservation);
-        this.recordAuthorityGithubOutcomeSync(
-          reservation.decision.targetRepo,
-          reservation.attempts > 0,
-          "success",
-          Date.now(),
-        );
+        this.recordAuthorityGithubOutcomeSync(reservation.attempts > 0, "success", Date.now());
         const reservedHeadSha = String(reservation.decision.sourceHeadSha || "").toLowerCase();
         if (liveHeadSha !== reservedHeadSha) {
           this.completeSourceAuthorityReservationSync(reservation, "mismatch");
@@ -9459,7 +9449,6 @@ export class ExactReviewQueue {
           observedAt,
         );
         this.recordAuthorityGithubOutcomeSync(
-          reservation.decision.targetRepo,
           reservation.attempts > 0,
           observation ? "throttle" : "error",
           observedAt,
@@ -9490,12 +9479,7 @@ export class ExactReviewQueue {
         now,
       );
       if (circuitRetryAt > now) {
-        this.recordAuthorityGithubOutcomeSync(
-          reservation.decision.targetRepo,
-          reservation.attempts > 0,
-          "skipped_by_circuit",
-          now,
-        );
+        this.recordAuthorityGithubOutcomeSync(reservation.attempts > 0, "skipped_by_circuit", now);
         this.deferBranchAuthorityReservationSync(reservation, now, circuitRetryAt, false);
         continue;
       }
@@ -9505,12 +9489,7 @@ export class ExactReviewQueue {
           reservation.decision.targetRepo,
           reservation.installationId,
         );
-        this.recordAuthorityGithubOutcomeSync(
-          reservation.decision.targetRepo,
-          reservation.attempts > 0,
-          "success",
-          Date.now(),
-        );
+        this.recordAuthorityGithubOutcomeSync(reservation.attempts > 0, "success", Date.now());
         const forwardPath = reservation.sourceAuthorityRequired ? "/source-authority" : "/enqueue";
         const response = await this.fetch(
           new Request(`https://clawsweeper-exact-review-queue${forwardPath}`, {
@@ -9536,7 +9515,6 @@ export class ExactReviewQueue {
           observedAt,
         );
         this.recordAuthorityGithubOutcomeSync(
-          reservation.decision.targetRepo,
           reservation.attempts > 0,
           observation ? "throttle" : "error",
           observedAt,
@@ -9552,7 +9530,6 @@ export class ExactReviewQueue {
   }
 
   private recordAuthorityGithubOutcomeSync(
-    targetRepo: string,
     repeatRevision: boolean,
     outcome: ExactReviewGithubRequestMetric["outcome"],
     now: number,

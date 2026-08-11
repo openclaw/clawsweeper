@@ -47,7 +47,6 @@ export class StateWriterTelemetryRecorder {
   private gitProcesses = 0;
   private commitCount: 0 | 1 = 0;
   private materializedItems = 0;
-  private outcome: StateWriterOutcome | null = null;
   private sequence = 0;
   private lastProgressPhase: StateWriterPhase | null = null;
   private lastProgressAtMs = 0;
@@ -138,7 +137,6 @@ export class StateWriterTelemetryRecorder {
       (this.acquired && outcome === "contention_timeout")
         ? "failed"
         : outcome;
-    this.outcome = safeOutcome;
     this.emit("finished");
     const candidate = {
       schema_version: STATE_WRITER_SCHEMA_VERSION,

@@ -186,11 +186,6 @@ export function syncPublishPaths(paths: readonly string[]): void {
   }
 }
 
-export function captureStatePublishBaseline(): string | null {
-  if (!publishRoot()) return null;
-  return runGit(["rev-parse", "HEAD"], { quiet: true }).trim() || null;
-}
-
 export function refreshSourceAfterStatePublish(
   paths: readonly string[],
   _baselineCommit: string | null,

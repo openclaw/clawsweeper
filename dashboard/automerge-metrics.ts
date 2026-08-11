@@ -98,27 +98,6 @@ export function normalizeAutomergeMetricEvent(value: unknown): AutomergeMetricEv
   };
 }
 
-export function mergeAutomergeMetricLedger(
-  current: unknown,
-  incoming: AutomergeMetricEvent,
-  now = Date.now(),
-): AutomergeMetricLedger {
-  const currentEvents = Array.isArray((current as AutomergeMetricLedger | null)?.events)
-    ? (current as AutomergeMetricLedger).events
-    : [];
-  const cutoff = now - AUTOMERGE_METRICS_TTL_SECONDS * 1000;
-  const byId = new Map<string, AutomergeMetricEvent>();
-  for (const event of [...currentEvents, incoming]) {
-    const normalized = normalizeAutomergeMetricEvent(event);
-    if (normalized && Date.parse(normalized.occurred_at) >= cutoff)
-      byId.set(normalized.event_id, normalized);
-  }
-  const events = [...byId.values()]
-    .sort((a, b) => Date.parse(a.occurred_at) - Date.parse(b.occurred_at))
-    .slice(-20_000);
-  return { version: 1, telemetry_since: events[0]?.occurred_at ?? null, events };
-}
-
 export function summarizeAutomergeMetrics(
   ledger: unknown,
   options: {

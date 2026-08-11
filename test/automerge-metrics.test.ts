@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
-  mergeAutomergeMetricLedger,
   percentile,
   summarizeAutomergeMetrics,
   type AutomergeMetricEvent,
@@ -65,10 +64,7 @@ function event(
 }
 
 function ledger(events: AutomergeMetricEvent[]) {
-  return events.reduce(
-    (current, row) => mergeAutomergeMetricLedger(current, row, Date.parse(now)),
-    null as unknown,
-  );
+  return { version: 1, telemetry_since: events[0]?.occurred_at ?? null, events };
 }
 
 test("success denominator includes only terminal sessions", () => {
@@ -90,17 +86,6 @@ test("success denominator includes only terminal sessions", () => {
   assert.equal(data.summary.merged_sessions, 1);
   assert.equal(data.summary.merge_success_rate_percent, 50);
   assert.equal(data.summary.active_sessions, 2);
-});
-
-test("duplicate and out-of-order events remain idempotent", () => {
-  const terminal = event("s5", "terminal", "2026-07-17T11:00:00Z", { outcome: "merged" });
-  const activation = event("s5", "activated", "2026-07-17T10:00:00Z");
-  let current = mergeAutomergeMetricLedger(null, terminal, Date.parse(now));
-  current = mergeAutomergeMetricLedger(current, activation, Date.parse(now));
-  current = mergeAutomergeMetricLedger(current, terminal, Date.parse(now));
-  const data = summarizeAutomergeMetrics(current, { range: "6h", now });
-  assert.equal(current.events.length, 2);
-  assert.equal(data.summary.command_to_merge_p50_ms, 60 * 60 * 1000);
 });
 
 test("the first terminal outcome remains authoritative", () => {
