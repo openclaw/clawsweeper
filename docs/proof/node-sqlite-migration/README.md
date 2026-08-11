@@ -58,7 +58,24 @@ published checksum, runs the focused real-database fixtures through only the
 new path, and then runs the full `pnpm check` gate.
 
 Container provenance and secret-scanned stdout are committed alongside this
-proof after the required `--fresh-pr` run.
+proof after the required `--fresh-pr` run. Crabbox resolved `provider=aws` and
+ran pushed head `31386dccd6ee9f77fe480ab6c705253647f4aaf2` in lease
+`cbx_3ddd8eadc1bb` (`amber-barnacle-28b5`), run `run_61e78be4ed53`. The
+`node:24-bookworm` command exited 0 after 187,543 ms: all 6 focused fixtures
+passed, then full `pnpm check` passed 3,333 tests with 3,325 passed, 8 skipped,
+and 0 failed at 81.60% line, 74.06% branch, and 87.40% function coverage.
+`sqlite3` was absent before and after the rsync-only system dependency setup.
+
+The full 571,547-byte stdout capture has SHA-256
+`28669d632e2d5387d901c76504611ab37a19bd23de0c29453767e2bf5efe5c76`.
+TruffleHog 3.96.0 scanned that exact file with zero verified or unverified
+secrets; `container-stdout.log` retains the proof-bearing stdout lines. Full
+machine-readable details, including the three discarded harness attempts, are
+in `container-provenance.json` and `container-secret-scan.json`.
+
+The run's project-local Crabbox 0.38.3-5 wrapper timed out while releasing the
+otherwise successful lease. Crabbox 0.41.1 then explicitly released
+`cbx_3ddd8eadc1bb`; a provider-specific lease listing returned empty.
 
 ## Limits and Bay impact
 
