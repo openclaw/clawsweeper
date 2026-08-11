@@ -42,7 +42,6 @@ import {
   buildAutomergeSquashMessage,
   commandHasAction,
   commandResponseMarker,
-  commandStatusMarkerFromBody,
   createCachedIssueCommentsLookup,
   createCachedIssueCommentsLookupAsync,
   createCachedLabelNumberLookup,
@@ -65,7 +64,6 @@ import {
   maintainerAutomergeOptInApprovesNeedsHuman as maintainerAutomergeOptInApprovesNeedsHumanReason,
   latestRepairLoopResumeTime,
   parseRoutedCommentCommand,
-  planCommandAckConvergence,
   pausedModeStatusBlocksReplay,
   parseTrustedAutomation,
   repairableCheckBlockers,
@@ -91,6 +89,11 @@ import {
   trustedCloseBlockReason,
   usesSharedAutomergeStatus,
 } from "./comment-router-core.js";
+import {
+  commandAckMarkerFromBody,
+  commandStatusMarkerFromBody,
+  planCommandAckConvergence,
+} from "./command-ack-convergence.js";
 import { mergeAutomergeTimelineSection } from "./automerge-status-timeline.js";
 import {
   automergeSessionId,
@@ -5048,10 +5051,6 @@ function convergePrecreatedCommandAckCommentsInner(command: LooseRecord) {
 
 function commandAckMarkerForCommentId(commentId: JsonValue) {
   return `<!-- clawsweeper-command-ack:${commentId} -->`;
-}
-
-function commandAckMarkerFromBody(body: JsonValue) {
-  return String(body ?? "").match(/<!--\s*clawsweeper-command-ack:\d+\s*-->/)?.[0] ?? null;
 }
 
 function automergeTimelineEvents(command: LooseRecord, body: string) {

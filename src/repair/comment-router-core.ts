@@ -20,6 +20,10 @@ export {
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
 } from "./exact-review-guard-labels.js";
+export {
+  commandStatusMarkerFromBody,
+  planCommandAckConvergence,
+} from "./command-ack-convergence.js";
 import {
   isAutoCloseAllowed,
   repositoryProfileFor,
@@ -2932,68 +2936,6 @@ export function commandStatusMarker(command: LooseRecord) {
 
 export function commandStatusMarkerPrefix(command: LooseRecord) {
   return `<!-- clawsweeper-command-status:${command.issue_number ?? "unknown"}:${command.intent}:`;
-}
-
-export function commandStatusMarkerFromBody(body: JsonValue) {
-  return (
-    String(body ?? "").match(new RegExp("<!--\\s*clawsweeper-command-status:[^>]+-->"))?.[0] ?? null
-  );
-}
-
-export function planCommandAckConvergence(
-  comments: LooseRecord[],
-  requestedStatusMarker: string,
-): { keep: LooseRecord | null; prunable: LooseRecord[] } {
-  const scoped = comments.filter((comment) => {
-    const statusMarker = commandStatusMarkerFromBody(comment.body);
-    return !statusMarker || statusMarker === requestedStatusMarker;
-  });
-  const keep = selectCommandAckKeeper(scoped);
-  if (!keep) return { keep: null, prunable: [] };
-  const keepId = Number(keep.id ?? 0) || 0;
-  return {
-    keep,
-    prunable: scoped.filter((comment) => {
-      const id = Number(comment.id ?? 0) || 0;
-      return id > 0 && id !== keepId;
-    }),
-  };
-}
-
-function selectCommandAckKeeper(comments: LooseRecord[]) {
-  return [...comments].sort(compareCommandAckKeepPriority)[0] ?? null;
-}
-
-function compareCommandAckKeepPriority(left: LooseRecord, right: LooseRecord) {
-  const leftStatus = commandAckStatusScore(left);
-  const rightStatus = commandAckStatusScore(right);
-  if (leftStatus !== rightStatus) return rightStatus - leftStatus;
-  if (leftStatus > 0) return compareCommentsByUpdatedAtDesc(left, right);
-  return compareCommentsByCreatedAt(left, right);
-}
-
-function commandAckStatusScore(comment: LooseRecord) {
-  const body = String(comment.body ?? "");
-  return body.includes("clawsweeper-command-status:") ||
-    body.includes("<!-- clawsweeper-command-progress:start -->")
-    ? 1
-    : 0;
-}
-
-function compareCommentsByUpdatedAtDesc(left: LooseRecord, right: LooseRecord) {
-  const leftUpdated = String(left.updated_at ?? left.created_at ?? "");
-  const rightUpdated = String(right.updated_at ?? right.created_at ?? "");
-  return (
-    rightUpdated.localeCompare(leftUpdated) || (Number(right.id) || 0) - (Number(left.id) || 0)
-  );
-}
-
-function compareCommentsByCreatedAt(left: LooseRecord, right: LooseRecord) {
-  const leftCreated = String(left.created_at ?? "");
-  const rightCreated = String(right.created_at ?? "");
-  return (
-    leftCreated.localeCompare(rightCreated) || (Number(left.id) || 0) - (Number(right.id) || 0)
-  );
 }
 
 export function commandResponseMarker({ commentId, intent, headSha = "na" }: LooseRecord): string {
