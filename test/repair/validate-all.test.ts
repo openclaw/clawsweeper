@@ -14,6 +14,8 @@ test("validate-all discovers jobs in stable order without closed or symlinked en
       "a-first.md",
       "nested/z-last.md",
       "nested/a-first.md",
+      ".hidden/job.md",
+      ".hidden/.deeper/job.md",
       "closed/root-ignored.md",
       "nested/closed/nested-ignored.md",
     ]) {
@@ -26,8 +28,36 @@ test("validate-all discovers jobs in stable order without closed or symlinked en
 
     assert.deepEqual(
       discoverJobFiles(jobsDir).map((file) => path.relative(jobsDir, file)),
-      ["a-first.md", "nested/a-first.md", "nested/z-last.md", "z-last.md"],
+      [
+        ".hidden/.deeper/job.md",
+        ".hidden/job.md",
+        "a-first.md",
+        "nested/a-first.md",
+        "nested/z-last.md",
+        "z-last.md",
+      ],
     );
+  } finally {
+    fs.rmSync(jobsDir, { recursive: true, force: true });
+  }
+});
+
+test("validate-all propagates directory read failures instead of silently skipping jobs", (t) => {
+  const jobsDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-validate-all-error-"));
+  const blocked = path.join(jobsDir, "blocked");
+  fs.mkdirSync(blocked);
+  const readdirSync = fs.readdirSync;
+  t.mock.method(fs, "readdirSync", (directory, options) => {
+    if (path.resolve(String(directory)) === blocked) {
+      throw Object.assign(new Error(`EACCES: permission denied, scandir '${blocked}'`), {
+        code: "EACCES",
+      });
+    }
+    return readdirSync(directory, options as never);
+  });
+
+  try {
+    assert.throws(() => discoverJobFiles(jobsDir), { code: "EACCES" });
   } finally {
     fs.rmSync(jobsDir, { recursive: true, force: true });
   }

@@ -17,14 +17,19 @@ test("glob file discovery preserves recursive readdir ordering and symlink trave
     fs.mkdirSync(path.join(root, "linked-file"));
     fs.symlinkSync(path.join(root, "result.json"), path.join(root, "linked-file", "result.json"));
     fs.symlinkSync(nested, path.join(root, "linked-directory"));
+    fs.mkdirSync(path.join(root, ".hidden", ".deeper"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".hidden", "result.json"), "hidden");
+    fs.writeFileSync(path.join(root, ".hidden", ".deeper", "result.json"), "deeper hidden");
 
     assert.deepEqual(
       findFilesByBasenameSync(root, "result.json").map((file) => path.relative(root, file)),
       [
         "result.json",
+        ".hidden/result.json",
         "linked-directory/result.json",
         "linked-file/result.json",
         "nested/result.json",
+        ".hidden/.deeper/result.json",
         "linked-directory/deeper/result.json",
         "nested/deeper/result.json",
       ],

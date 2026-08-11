@@ -997,7 +997,7 @@ export function importActionEventShards(
   } catch (error) {
     if (isNotFoundError(error) && expectedEventPaths === null) return emptyResult();
     if (isNotFoundError(error)) {
-      throw new Error("action event shard manifest source root is missing");
+      throw new Error("action event shard manifest source root is missing", { cause: error });
     }
     throw error;
   }
@@ -1409,7 +1409,9 @@ function readImportedActionEventShards(
       content = readUtf8FileNoFollow(target, ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes);
     } catch (error) {
       if (options.requireManifestPaths && isNotFoundError(error)) {
-        throw new Error(`action event shard manifest path is missing: ${relativePath}`);
+        throw new Error(`action event shard manifest path is missing: ${relativePath}`, {
+          cause: error,
+        });
       }
       throw error;
     }

@@ -75,7 +75,7 @@ run_case() {
     printf 'EOF\n'
     printf 'stderr_contract<<EOF\n'
     sed -n '/Error: / { s/^.*Error: /Error: /; p; q; }' "$stderr_file"
-    printf 'EOF\n\n'
+    printf 'EOF\n'
   } >>"$output"
 }
 

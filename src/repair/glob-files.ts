@@ -8,16 +8,22 @@ type SearchRoot = {
 
 export function findFilesByBasenameSync(root: string, basename: string): string[] {
   const absoluteRoot = path.resolve(root);
-  const roots: SearchRoot[] = [
+  const directories: SearchRoot[] = [
     { path: absoluteRoot, ancestorRealPaths: new Set([fs.realpathSync(absoluteRoot)]) },
   ];
   const matches: string[] = [];
 
-  for (const searchRoot of roots) {
-    for (const entry of fs.globSync("**", { cwd: searchRoot.path, withFileTypes: true })) {
+  for (const directory of directories) {
+    // globSync treats unreadable directories as empty, unlike recursive readdir.
+    fs.readdirSync(directory.path);
+    for (const entry of fs.globSync(["*", ".*"], {
+      cwd: directory.path,
+      withFileTypes: true,
+    })) {
       const candidate = path.join(entry.parentPath, entry.name);
       if (entry.name === basename && fs.statSync(candidate).isFile()) matches.push(candidate);
-      if (!entry.isSymbolicLink()) continue;
+      // Direct globbing exposes symlink Dirents without following them; stat
+      // preserves recursive readdir's directory-link traversal contract.
       let target: fs.Stats;
       try {
         target = fs.statSync(candidate);
@@ -27,13 +33,11 @@ export function findFilesByBasenameSync(root: string, basename: string): string[
       }
       if (!target.isDirectory()) continue;
 
-      // Recursive readdir followed directory symlinks; glob does not, so queue
-      // each logical link while preventing cycles through its current ancestry.
       const realPath = fs.realpathSync(candidate);
-      if (searchRoot.ancestorRealPaths.has(realPath)) continue;
-      roots.push({
+      if (directory.ancestorRealPaths.has(realPath)) continue;
+      directories.push({
         path: candidate,
-        ancestorRealPaths: new Set([...searchRoot.ancestorRealPaths, realPath]),
+        ancestorRealPaths: new Set([...directory.ancestorRealPaths, realPath]),
       });
     }
   }

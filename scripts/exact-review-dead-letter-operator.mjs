@@ -126,6 +126,7 @@ async function main(argv) {
           error.summary.unparked !== 0 ||
           error.summary.skipped !== error.rowIds.length
         ) {
+          // oxlint-disable-next-line preserve-caught-error -- Keep the guarded mutation invariant stable and bounded.
           throw new Error("guarded dead-letter cleanup was not atomic; refusing stale recovery");
         }
         if (

@@ -3234,6 +3234,7 @@ function runCodexReview({
   } catch (error) {
     throw new Error(
       `Codex /review failed: invalid structured output in ${path.basename(outputPath)}: ${error.message}`,
+      { cause: error },
     );
   }
 }

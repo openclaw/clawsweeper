@@ -162,14 +162,17 @@ function pageUrl(origin, outRel) {
 }
 
 function allMarkdown(dir) {
-  return (
-    fs
-      .globSync("**/*.md", { cwd: dir, withFileTypes: true })
-      // The old Dirent walker ignored both file and directory symlinks.
-      .filter((entry) => entry.isFile())
-      .map((entry) => path.join(entry.parentPath, entry.name))
-      .sort()
-  );
+  const directories = [path.resolve(dir)];
+  const files = [];
+  for (const directory of directories) {
+    fs.readdirSync(directory);
+    for (const entry of fs.globSync(["*", ".*"], { cwd: directory, withFileTypes: true })) {
+      const candidate = path.join(entry.parentPath, entry.name);
+      if (entry.isDirectory()) directories.push(candidate);
+      else if (entry.isFile() && entry.name.endsWith(".md")) files.push(candidate);
+    }
+  }
+  return files.sort();
 }
 
 function outPath(rel) {

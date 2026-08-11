@@ -5,18 +5,18 @@ import { pathToFileURL } from "node:url";
 import { parseJob, repoRoot, validateJob } from "./lib.js";
 
 export function discoverJobFiles(jobsDir: string): string[] {
-  return (
-    fs
-      .globSync("**/*.md", {
-        cwd: jobsDir,
-        withFileTypes: true,
-        exclude: (entry) => entry.isDirectory() && entry.name === "closed",
-      })
-      // Preserve the old Dirent walker's refusal to follow or return symlinks.
-      .filter((entry) => entry.isFile())
-      .map((entry) => path.join(entry.parentPath, entry.name))
-      .sort()
-  );
+  const directories = [path.resolve(jobsDir)];
+  const files: string[] = [];
+  for (const directory of directories) {
+    // Preserve readdir's fail-closed behavior before globbing direct children.
+    fs.readdirSync(directory);
+    for (const entry of fs.globSync(["*", ".*"], { cwd: directory, withFileTypes: true })) {
+      const candidate = path.join(entry.parentPath, entry.name);
+      if (entry.isDirectory() && entry.name !== "closed") directories.push(candidate);
+      else if (entry.isFile() && entry.name.endsWith(".md")) files.push(candidate);
+    }
+  }
+  return files.sort();
 }
 
 function main() {
