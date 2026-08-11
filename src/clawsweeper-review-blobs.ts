@@ -77,6 +77,7 @@ export function hydratePullRequestReviewBlobs({
 
   if (objectIds.size === 0) return { hydrated: true, blobs: 0 };
   // Git before 2.45 exits without batch output when GIT_NO_LAZY_FETCH blocks a promisor fetch.
+  // Traverse only the two commit trees: this emits their blobs without walking either history.
   // rev-list's missing-object mode suppresses lazy fetches and reports them on older clients too.
   const objectAvailability = spawnSync(
     "git",
@@ -85,9 +86,8 @@ export function hydratePullRequestReviewBlobs({
       "rev-list",
       "--objects",
       "--missing=print",
-      "--no-walk=unsorted",
-      baseSha,
-      headSha,
+      `${baseSha}^{tree}`,
+      `${headSha}^{tree}`,
       "--",
       ...new Set([...basePaths, ...headPaths]),
     ],

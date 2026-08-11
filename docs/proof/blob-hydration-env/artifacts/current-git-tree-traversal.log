@@ -1,0 +1,18 @@
+git=git version 2.55.0
+clone_filter=blob:none
+probe_form=git rev-list --objects --missing=print <base>^{tree} <head>^{tree} -- <bounded-paths>
+base_tree=6a5196dc8edf30d42048cf566da0a7fa31a60535
+head_tree=2d6015cbc21622dea89021ef0a191435adaae224
+expected.size=4
+observed.size=4
+observed.complete=true
+missing.size=2
+history_commit_objects_observed=false
+unrelated_history_blob_observed=false
+unrelated_ref_blob_observed=false
+probe_nested_fetches=0
+bounded_fetches=1
+bounded_fetch_uses_stdin=true
+hydrated=true
+hydrated_blobs=4
+offline_objects_complete=true

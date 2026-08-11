@@ -179,16 +179,35 @@ test("missing partial-clone objects are fetched in one bounded network request",
   const previousTrace = process.env.GIT_TRACE2_EVENT;
   const trace = join(fixture.root, "git-trace.jsonl");
   try {
+    const paths = Array.from({ length: 12 }, (_, index) => `additional-${index}.txt`);
+    const expectedBlobIds = paths.map((path) => git(fixture.source, "rev-parse", `HEAD:${path}`));
+    const probeOutput = git(
+      fixture.target,
+      "--literal-pathspecs",
+      "rev-list",
+      "--objects",
+      "--missing=print",
+      `${fixture.baseSha}^{tree}`,
+      `${fixture.headSha}^{tree}`,
+      "--",
+      ...paths,
+    );
+    const probedObjectIds = new Set(
+      probeOutput.split("\n").map((entry) => entry.match(/^\??([0-9a-f]{40,64})(?: |$)/i)?.[1]),
+    );
+    assert.deepEqual(
+      expectedBlobIds.filter((objectId) => !probedObjectIds.has(objectId)),
+      [],
+      "availability probe must emit every blob ID reached from the bounded commit trees",
+    );
+
     process.env.GIT_TRACE2_EVENT = trace;
     const result = hydratePullRequestReviewBlobs({
       targetDir: fixture.target,
       baseSha: fixture.baseSha,
       headSha: fixture.headSha,
       resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
-      files: Array.from({ length: 12 }, (_, index) => ({
-        filename: `additional-${index}.txt`,
-        status: "added",
-      })),
+      files: paths.map((filename) => ({ filename, status: "added" })),
     });
     if (previousTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
     else process.env.GIT_TRACE2_EVENT = previousTrace;
@@ -197,11 +216,26 @@ test("missing partial-clone objects are fetched in one bounded network request",
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as { event: string; argv?: string[] });
-    const fetches = traceEvents.filter(
+    const revLists = traceEvents.filter(
+      (event) => event.event === "start" && event.argv?.includes("rev-list"),
+    );
+    const nestedFetches = traceEvents.filter(
+      (event) => event.event === "child_start" && event.argv?.includes("fetch"),
+    );
+    const explicitFetches = traceEvents.filter(
       (event) => event.event === "start" && event.argv?.includes("fetch"),
     );
     assert.deepEqual(result, { hydrated: true, blobs: 12 });
-    assert.equal(fetches.length, 1);
+    assert.equal(revLists.length, 1);
+    assert.ok(revLists[0]!.argv?.includes(`${fixture.baseSha}^{tree}`));
+    assert.ok(revLists[0]!.argv?.includes(`${fixture.headSha}^{tree}`));
+    assert.equal(
+      revLists[0]!.argv?.some((argument) => argument.startsWith("--no-walk")),
+      false,
+    );
+    assert.equal(nestedFetches.length, 0, "availability probe must not lazy-fetch blobs");
+    assert.equal(explicitFetches.length, 1, "hydration must perform one explicit bounded fetch");
+    assert.ok(explicitFetches[0]!.argv?.includes("--stdin"));
   } finally {
     if (previousTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
     else process.env.GIT_TRACE2_EVENT = previousTrace;
