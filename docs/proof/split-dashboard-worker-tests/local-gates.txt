@@ -1,0 +1,15 @@
+Node: v24.19.0
+pnpm: 11.10.0
+
+1. Test registration byte identity: passed (336 blocks, 337 runtime tests)
+2. Full-suite before/after name multiset: passed (3,333 tests; empty diff)
+3. pnpm run build:all: passed
+4. pnpm run test:no-build: passed (3,333 tests; 3,324 passed; 9 skipped; 0 failed)
+5. pnpm run lint: passed
+6. pnpm run format:check: passed
+7. pnpm run check:static: passed
+
+Repository aggregate: pnpm run check: passed
+Focused coverage: 12 tests; 12 passed; 0 failed; 100.00% lines; 88.61% branches; 100.00% functions
+Full coverage: 3,333 tests; 3,324 passed; 9 skipped; 0 failed; 81.58% lines; 74.03% branches; 87.39% functions
+Aggregate log SHA-256: c82d7c3d2fbdeec64b2a75e3524ad502be6a014a205428213edfa7f83b1abb80
