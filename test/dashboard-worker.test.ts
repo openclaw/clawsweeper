@@ -11199,6 +11199,8 @@ class MemorySqlStorage {
 class MemoryDurableStorage {
   private values = new Map<string, unknown>();
   private putCounts = new Map<string, number>();
+  private getHistory: string[] = [];
+  private listHistory: Array<{ options: Record<string, unknown>; keys: string[] }> = [];
   private putFailure: { key: string; error: Error } | undefined;
   private deleteFailure: { key: string; error: Error } | undefined;
   private alarmAt: number | null = null;
@@ -11224,6 +11226,7 @@ class MemoryDurableStorage {
   }
 
   async get(key: string, options?: { noCache?: boolean }) {
+    this.getHistory.push(key);
     if (key === "exact-review-queue" && this.sql.hasNormalizedQueue() && !options?.noCache) {
       return this.sql.readNormalizedQueue();
     }
@@ -11275,8 +11278,26 @@ class MemoryDurableStorage {
     return this.deleteRawSync(key);
   }
 
-  async list() {
-    return new Map(this.values);
+  async list(
+    options: {
+      prefix?: string;
+      start?: string;
+      startAfter?: string;
+      end?: string;
+      limit?: number;
+      reverse?: boolean;
+    } = {},
+  ) {
+    let entries = [...this.values.entries()]
+      .filter(([key]) => !options.prefix || key.startsWith(options.prefix))
+      .filter(([key]) => !options.start || key >= options.start)
+      .filter(([key]) => !options.startAfter || key > options.startAfter)
+      .filter(([key]) => !options.end || key < options.end)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    if (options.reverse) entries.reverse();
+    if (options.limit !== undefined) entries = entries.slice(0, options.limit);
+    this.listHistory.push({ options: { ...options }, keys: entries.map(([key]) => key) });
+    return new Map(entries);
   }
 
   async getAlarm() {
@@ -11309,6 +11330,20 @@ class MemoryDurableStorage {
 
   rawPut(key: string, value: unknown) {
     this.values.set(key, structuredClone(value));
+  }
+
+  listedKeys(prefix: string) {
+    return this.listHistory
+      .filter((call) => call.options.prefix === prefix)
+      .flatMap((call) => call.keys);
+  }
+
+  fetchedKeys(prefix: string) {
+    return this.getHistory.filter((key) => key.startsWith(prefix));
+  }
+
+  resetGetHistory() {
+    this.getHistory = [];
   }
 
   private throwPutFailure(key: string) {
@@ -12132,6 +12167,87 @@ test("automerge metric events use isolated durable keys and aggregate through th
   assert.equal(metrics.summary.merged_sessions, 2);
 });
 
+test("automerge metrics list and parse only the requested time range", async () => {
+  const storage = new MemoryDurableStorage();
+  const store = new StatusStore({ storage });
+  const namespace = new MemoryDurableNamespace(store);
+  const now = Date.now();
+  const prefix = "automerge-product-metrics:v1:time:";
+  const outsideAt = new Date(now - 7 * 60 * 60_000).toISOString();
+  const insideAt = new Date(now - 60 * 60_000).toISOString();
+  const outsideKey = `${prefix}${outsideAt}:outside`;
+  const insideKey = `${prefix}${insideAt}:inside`;
+  storage.rawPut(outsideKey, {
+    value: "{not-json",
+    expires_at: now + 60_000,
+  });
+  storage.rawPut(insideKey, {
+    value: JSON.stringify({
+      event_id: "inside",
+      session_id: "openclaw/openclaw#42:inside",
+      repository: "openclaw/openclaw",
+      item_number: 42,
+      policy_version: "immediate-v1",
+      phase: "terminal",
+      outcome: "merged",
+      occurred_at: insideAt,
+    }),
+    expires_at: now + 60_000,
+  });
+
+  const response = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/automerge-metrics?range=6h"),
+    { STATUS_STORE: namespace },
+  );
+  const metrics = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(metrics.summary.terminal_sessions, 1);
+  assert.deepEqual(storage.listedKeys(prefix), [insideKey]);
+  assert.equal(storage.listedKeys(prefix).includes(outsideKey), false);
+});
+
+function applyObservation(options: {
+  repo?: string;
+  runId: string;
+  occurredAt: string;
+  outcome?: "in_progress" | "success";
+  closed?: number | null;
+}) {
+  return {
+    schema_version: 1,
+    repo: options.repo ?? "openclaw/openclaw",
+    run_id: options.runId,
+    run_attempt: 1,
+    occurred_at: options.occurredAt,
+    started_at: options.occurredAt,
+    lifecycle_started: true,
+    outcome: options.outcome ?? "success",
+    run_url: `https://github.com/openclaw/clawsweeper/actions/runs/${options.runId}`,
+    queue: {
+      active: 0,
+      capacity: 1,
+      ready: 0,
+      backoff: 0,
+      dispatching: 0,
+      leased: 0,
+      oldest_ready_age_seconds: null,
+      oldest_backoff_age_seconds: null,
+      oldest_lease_age_seconds: null,
+    },
+    arrivals: 1,
+    results: {
+      applied: options.closed ?? 0,
+      closed: options.closed ?? 0,
+      superseded: 0,
+      retried: 0,
+      dead_lettered: 0,
+    },
+    lease: { wait_ms: 0, hold_ms: 0 },
+    observed_failure_kinds: [],
+    failures: [],
+  };
+}
+
 test("apply observability accepts signed durable events and exposes the API summary", async () => {
   const storage = new MemoryDurableStorage();
   const store = new StatusStore({ storage });
@@ -12299,6 +12415,74 @@ test("apply observability accepts signed durable events and exposes the API summ
     ["openclaw/openclaw", "openclaw/clawhub"],
   );
   assert.equal(withClawhub.telemetry_complete, true);
+});
+
+test("apply observability merges bucketed writes with legacy rows without double counting", async () => {
+  const storage = new MemoryDurableStorage();
+  const store = new StatusStore({ storage });
+  const namespace = new MemoryDurableNamespace(store);
+  const now = Date.now();
+  const legacyAt = new Date(now - 2 * 60 * 60_000).toISOString();
+  const replacementAt = new Date(now - 60 * 60_000).toISOString();
+  const secondAt = new Date(now - 30 * 60_000).toISOString();
+  storage.rawPut("apply-observability:openclaw%2Fopenclaw:100:1", {
+    value: JSON.stringify(
+      applyObservation({ runId: "100", occurredAt: legacyAt, outcome: "in_progress" }),
+    ),
+    expires_at: now + 60_000,
+  });
+  for (const event of [
+    applyObservation({ runId: "100", occurredAt: replacementAt, closed: 3 }),
+    applyObservation({ runId: "101", occurredAt: secondAt, closed: 2 }),
+  ]) {
+    const accepted = await store.fetch(
+      new Request("https://clawsweeper-status-store/apply-observability", {
+        method: "POST",
+        body: JSON.stringify({ event }),
+      }),
+    );
+    assert.equal(accepted.status, 200);
+  }
+
+  const response = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/apply-observability?range=24h"),
+    { STATUS_STORE: namespace, APPLY_TARGET_REPOS: "openclaw/openclaw" },
+  );
+  const summary = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(summary.event_count, 2);
+  assert.equal(summary.totals.closed, 5);
+});
+
+test("apply observability stores a UTC-boundary replay exactly once", async () => {
+  const storage = new MemoryDurableStorage();
+  const store = new StatusStore({ storage });
+  const namespace = new MemoryDurableNamespace(store);
+  const midnight = new Date();
+  midnight.setUTCHours(0, 0, 0, 0);
+  const event = applyObservation({ runId: "102", occurredAt: midnight.toISOString(), closed: 1 });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const accepted = await store.fetch(
+      new Request("https://clawsweeper-status-store/apply-observability", {
+        method: "POST",
+        body: JSON.stringify({ event }),
+      }),
+    );
+    assert.equal(accepted.status, 200);
+  }
+  storage.resetGetHistory();
+
+  const response = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/apply-observability?range=24h"),
+    { STATUS_STORE: namespace, APPLY_TARGET_REPOS: "openclaw/openclaw" },
+  );
+  const summary = await response.json();
+  assert.equal(summary.event_count, 1);
+  assert.equal(summary.totals.closed, 1);
+  assert.ok(storage.fetchedKeys("apply-observability:day:").length <= 2);
+  const bucketKey = `apply-observability:day:${midnight.toISOString().slice(0, 10)}:openclaw%2Fopenclaw`;
+  const bucket = storage.rawGet(bucketKey) as { value: string };
+  assert.equal(JSON.parse(bucket.value).length, 1);
 });
 
 test("dashboard durable status store persists, expires, and prepends events", async () => {

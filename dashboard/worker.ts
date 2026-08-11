@@ -53,10 +53,14 @@ import {
   AUTOMERGE_METRICS_EVENT_LIMIT,
   AUTOMERGE_METRICS_STORE_KEY,
   AUTOMERGE_METRICS_TTL_SECONDS,
+  automergeMetricRange,
+  automergeMetricRangeStart,
   normalizeAutomergeMetricEvent,
   summarizeAutomergeMetrics,
 } from "./automerge-metrics.ts";
 import {
+  APPLY_OBSERVABILITY_IN_PROGRESS_MAX_SILENCE_MS,
+  APPLY_OBSERVABILITY_RANGES,
   APPLY_OBSERVABILITY_RETENTION_MS,
   isCurrentApplyObservabilityEvent,
   normalizeApplyObservabilityEvent,
@@ -124,6 +128,8 @@ const DEFAULT_STALE_QUEUED_WORKFLOW_MS = 6 * 60 * 60 * 1000;
 const HEALTH_HISTORY_TTL_SECONDS = (HEALTH_HISTORY_RETENTION_DAYS + 1) * 24 * 60 * 60;
 const HEALTH_HISTORY_KEY_PREFIX = "health-history:";
 const APPLY_OBSERVABILITY_KEY_PREFIX = "apply-observability:";
+const APPLY_OBSERVABILITY_BUCKET_KEY_PREFIX = `${APPLY_OBSERVABILITY_KEY_PREFIX}day:`;
+const APPLY_OBSERVABILITY_LEGACY_LIMIT = 5_000;
 const CLAWSWEEPER_REVIEW_REPO = "openclaw/clawsweeper";
 const CLAWSWEEPER_STATE_REPO = "openclaw/clawsweeper-state";
 const CLAWSWEEPER_STATE_REF = "state";
@@ -315,10 +321,16 @@ export class StatusStore {
     if (!key) return new Response("missing key", { status: 400 });
 
     if (request.method === "GET" && key === AUTOMERGE_METRICS_STORE_KEY) {
+      const now = Date.now();
+      const range = automergeMetricRange(url.searchParams.get("range"));
+      const rangeStart = automergeMetricRangeStart(range, now);
+      const upperBound = `${AUTOMERGE_METRICS_EVENT_KEY_PREFIX}${new Date(now).toISOString()}:\uffff`;
       const entries = (await this.storage.list({
         prefix: AUTOMERGE_METRICS_EVENT_KEY_PREFIX,
+        start: `${AUTOMERGE_METRICS_EVENT_KEY_PREFIX}${new Date(rangeStart).toISOString()}`,
+        end: upperBound,
         limit: AUTOMERGE_METRICS_EVENT_LIMIT,
-        reverse: true,
+        reverse: false,
       })) as Map<string, StoredValue>;
       const events = [];
       for (const [entryKey, stored] of entries) {
@@ -331,28 +343,24 @@ export class StatusStore {
           // A malformed isolated event must not hide the rest of the metric history.
         }
       }
-      events.sort((a, b) => Date.parse(a.occurred_at) - Date.parse(b.occurred_at));
-      return json({ version: 1, telemetry_since: events[0]?.occurred_at ?? null, events });
+      return json(
+        summarizeAutomergeMetrics(
+          { version: 1, telemetry_since: events[0]?.occurred_at ?? null, events },
+          {
+            range,
+            repo: url.searchParams.get("repo"),
+            policyVersion: url.searchParams.get("policy_version"),
+            sessionId: url.searchParams.get("session_id"),
+            activeOnly: url.searchParams.get("active_only") === "true",
+            sessionLimit: Number(url.searchParams.get("session_limit")),
+            now: new Date(now).toISOString(),
+          },
+        ),
+      );
     }
 
     if (request.method === "GET" && key === "apply-observability") {
-      const entries = (await this.storage.list({
-        prefix: APPLY_OBSERVABILITY_KEY_PREFIX,
-        limit: 5_000,
-        reverse: true,
-      })) as Map<string, StoredValue>;
-      const events = [];
-      for (const stored of entries.values()) {
-        if (stored.expires_at && stored.expires_at <= Date.now()) continue;
-        try {
-          const event = normalizeApplyObservabilityEvent(JSON.parse(stored.value));
-          if (event) events.push(event);
-        } catch {
-          // A malformed isolated event must not hide healthy durable observations.
-        }
-      }
-      events.sort((left, right) => Date.parse(left.occurred_at) - Date.parse(right.occurred_at));
-      return json({ schema_version: 1, events });
+      return json(await this.summarizeApplyObservability(url));
     }
 
     if (request.method === "GET") {
@@ -480,9 +488,19 @@ export class StatusStore {
       if (!event) return new Response("invalid apply observability event", { status: 400 });
       const expiresAt = Date.parse(event.occurred_at) + APPLY_OBSERVABILITY_RETENTION_MS;
       if (expiresAt <= Date.now()) return json({ ok: true, expired: true });
-      const key = `${APPLY_OBSERVABILITY_KEY_PREFIX}${encodeURIComponent(event.repo)}:${event.run_id}:${event.run_attempt}`;
-      await this.storage.put(key, { value: JSON.stringify(event), expires_at: expiresAt });
-      await this.scheduleCleanup(expiresAt);
+      const bucketKey = applyObservabilityBucketKey(event);
+      const current = (await this.storage.get(bucketKey)) as StoredValue | undefined;
+      const events = mergeApplyObservabilityBucket(current, event);
+      const bucketExpiresAt = Math.max(
+        ...events.map(
+          (storedEvent) => Date.parse(storedEvent.occurred_at) + APPLY_OBSERVABILITY_RETENTION_MS,
+        ),
+      );
+      await this.storage.put(bucketKey, {
+        value: JSON.stringify(events),
+        expires_at: bucketExpiresAt,
+      });
+      await this.scheduleCleanup(bucketExpiresAt);
       return json({ ok: true });
     }
 
@@ -529,6 +547,63 @@ export class StatusStore {
   private async scheduleCleanup(expiresAt: number) {
     const scheduled = await this.storage.getAlarm();
     if (scheduled === null || expiresAt < scheduled) await this.storage.setAlarm(expiresAt);
+  }
+
+  private async summarizeApplyObservability(url: URL) {
+    const now = Date.now();
+    const rangeValue = url.searchParams.get("range");
+    const range = rangeValue === "6h" || rangeValue === "7d" ? rangeValue : "24h";
+    const requestedRepo = url.searchParams.get("repo");
+    const requiredRepositories = url.searchParams.getAll("required_repo");
+    const optionalRepositories = url.searchParams.getAll("optional_repo");
+    const readRepositories = requestedRepo
+      ? [requestedRepo]
+      : [...new Set([...requiredRepositories, ...optionalRepositories])];
+    const bucketLookback = Math.max(
+      APPLY_OBSERVABILITY_RANGES[range],
+      APPLY_OBSERVABILITY_IN_PROGRESS_MAX_SILENCE_MS,
+    );
+    const bucketGroups = await Promise.all(
+      healthHistoryDates(now - bucketLookback, now).flatMap((day) =>
+        readRepositories.map(async (repo) => {
+          const key = `${APPLY_OBSERVABILITY_BUCKET_KEY_PREFIX}${day}:${encodeURIComponent(repo)}`;
+          const stored = (await this.storage.get(key)) as StoredValue | undefined;
+          return stored ? new Map([[key, stored]]) : new Map<string, StoredValue>();
+        }),
+      ),
+    );
+    const legacyGroups = (await Promise.all(
+      readRepositories.map((repo) =>
+        this.storage.list({
+          prefix: `${APPLY_OBSERVABILITY_KEY_PREFIX}${encodeURIComponent(repo)}:`,
+          limit: APPLY_OBSERVABILITY_LEGACY_LIMIT,
+          reverse: true,
+        }),
+      ),
+    )) as Array<Map<string, StoredValue>>;
+    const events = mergeStoredApplyObservabilityEvents(
+      legacyGroups,
+      bucketGroups as Array<Map<string, StoredValue>>,
+      now,
+    );
+    const observedRepositories = new Set(
+      events
+        .filter((event) => isCurrentApplyObservabilityEvent(event, now))
+        .map((event) => event.repo),
+    );
+    const repositories = [
+      ...new Set([
+        ...requiredRepositories,
+        ...optionalRepositories.filter((repo) => observedRepositories.has(repo)),
+      ]),
+    ];
+    return summarizeApplyObservability({
+      events,
+      range,
+      repo: requestedRepo,
+      repositories,
+      now,
+    });
   }
 }
 
@@ -866,6 +941,87 @@ function healthHistoryDates(fromMs: number, toMs: number) {
   return dates;
 }
 
+function applyObservabilityBucketKey(event) {
+  return `${APPLY_OBSERVABILITY_BUCKET_KEY_PREFIX}${event.occurred_at.slice(0, 10)}:${encodeURIComponent(event.repo)}`;
+}
+
+function applyObservabilityEventKey(event) {
+  return `${event.repo}:${event.run_id}:${event.run_attempt}`;
+}
+
+function mergeApplyObservabilityBucket(
+  current: StoredValue | undefined,
+  incoming,
+  now = Date.now(),
+) {
+  let parsed = [];
+  try {
+    parsed =
+      current?.value && (!current.expires_at || current.expires_at > now)
+        ? JSON.parse(current.value)
+        : [];
+  } catch {
+    parsed = [];
+  }
+  const events = new Map();
+  for (const value of Array.isArray(parsed) ? parsed : []) {
+    const event = normalizeApplyObservabilityEvent(value, now);
+    if (
+      event &&
+      event.repo === incoming.repo &&
+      event.occurred_at.slice(0, 10) === incoming.occurred_at.slice(0, 10) &&
+      Date.parse(event.occurred_at) + APPLY_OBSERVABILITY_RETENTION_MS > now
+    ) {
+      events.set(applyObservabilityEventKey(event), event);
+    }
+  }
+  events.set(applyObservabilityEventKey(incoming), incoming);
+  return [...events.values()].sort(
+    (left, right) => Date.parse(left.occurred_at) - Date.parse(right.occurred_at),
+  );
+}
+
+function mergeStoredApplyObservabilityEvents(
+  legacyGroups: Array<Map<string, StoredValue>>,
+  bucketGroups: Array<Map<string, StoredValue>>,
+  now: number,
+) {
+  const events = new Map();
+  const add = (value) => {
+    const event = normalizeApplyObservabilityEvent(value, now);
+    if (!event || Date.parse(event.occurred_at) + APPLY_OBSERVABILITY_RETENTION_MS <= now) return;
+    const key = applyObservabilityEventKey(event);
+    const current = events.get(key);
+    if (!current || Date.parse(event.occurred_at) >= Date.parse(current.occurred_at)) {
+      events.set(key, event);
+    }
+  };
+  for (const group of legacyGroups) {
+    for (const stored of group.values()) {
+      if (stored.expires_at && stored.expires_at <= now) continue;
+      try {
+        add(JSON.parse(stored.value));
+      } catch {
+        // A malformed legacy observation must not hide healthy bucketed observations.
+      }
+    }
+  }
+  for (const group of bucketGroups) {
+    for (const stored of group.values()) {
+      if (stored.expires_at && stored.expires_at <= now) continue;
+      try {
+        const parsed = JSON.parse(stored.value);
+        if (Array.isArray(parsed)) parsed.forEach(add);
+      } catch {
+        // A malformed isolated bucket must not hide the remaining observation history.
+      }
+    }
+  }
+  return [...events.values()].sort(
+    (left, right) => Date.parse(left.occurred_at) - Date.parse(right.occurred_at),
+  );
+}
+
 async function recordScheduledHealthSample(env) {
   const queueSnapshot = exactReviewQueueStatusSnapshot(env).catch(() => null);
   if (!env.STATUS_STORE) {
@@ -1139,17 +1295,24 @@ async function ingestEvent(request, env) {
 
 async function automergeMetricsJson(request, env) {
   const url = new URL(request.url);
-  const ledger = await readStoredJson(env, AUTOMERGE_METRICS_STORE_KEY);
-  return json(
-    summarizeAutomergeMetrics(ledger, {
-      range: url.searchParams.get("range") ?? "7d",
-      repo: url.searchParams.get("repo"),
-      policyVersion: url.searchParams.get("policy_version"),
-      sessionId: url.searchParams.get("session_id"),
-      activeOnly: url.searchParams.get("active_only") === "true",
-      sessionLimit: Number(url.searchParams.get("session_limit")),
-    }),
-  );
+  if (!isDurableStatusStore(env.STATUS_STORE)) {
+    return json({ error: "automerge_metrics_store_unavailable" }, 503);
+  }
+  const storeUrl = new URL(statusStoreRequest(AUTOMERGE_METRICS_STORE_KEY).url);
+  for (const name of [
+    "range",
+    "repo",
+    "policy_version",
+    "session_id",
+    "active_only",
+    "session_limit",
+  ]) {
+    const value = url.searchParams.get(name);
+    if (value !== null) storeUrl.searchParams.set(name, value);
+  }
+  const response = await durableStatusStoreStub(env.STATUS_STORE).fetch(new Request(storeUrl));
+  if (!response.ok) return json({ error: "automerge_metrics_unavailable" }, 503);
+  return json(await response.json());
 }
 
 async function storeAutomergeMetricEvent(env, event) {
@@ -2293,30 +2456,22 @@ async function applyObservabilityJson(request: Request, env: DashboardEnv) {
   if (!isDurableStatusStore(env.STATUS_STORE)) {
     return json({ error: "apply_observability_not_configured" }, 503);
   }
-  const response = await durableStatusStoreStub(env.STATUS_STORE).fetch(
-    statusStoreRequest("apply-observability"),
-  );
-  if (!response.ok) return json({ error: "apply_observability_unavailable" }, 503);
-  const body = objectValue(await response.json().catch(() => null));
-  const events = Array.isArray(body.events)
-    ? body.events.map((event) => normalizeApplyObservabilityEvent(event)).filter(Boolean)
-    : [];
   const requiredRepositories = String(env.APPLY_TARGET_REPOS || "openclaw/openclaw")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
-  const now = Date.now();
-  const observedRepositories = new Set(
-    events
-      .filter((event) => isCurrentApplyObservabilityEvent(event, now))
-      .map((event) => event.repo),
-  );
   const optionalRepositories = String(env.APPLY_OPTIONAL_TARGET_REPOS || "")
     .split(",")
     .map((value) => value.trim())
-    .filter((value) => value && observedRepositories.has(value));
-  const repositories = [...new Set([...requiredRepositories, ...optionalRepositories])];
-  return json(summarizeApplyObservability({ events, range, repo, repositories }));
+    .filter(Boolean);
+  const storeUrl = new URL(statusStoreRequest("apply-observability").url);
+  storeUrl.searchParams.set("range", range);
+  if (repo) storeUrl.searchParams.set("repo", repo);
+  requiredRepositories.forEach((value) => storeUrl.searchParams.append("required_repo", value));
+  optionalRepositories.forEach((value) => storeUrl.searchParams.append("optional_repo", value));
+  const response = await durableStatusStoreStub(env.STATUS_STORE).fetch(new Request(storeUrl));
+  if (!response.ok) return json({ error: "apply_observability_unavailable" }, 503);
+  return json(await response.json());
 }
 
 async function authenticatedExactReviewReconcile(request, env) {

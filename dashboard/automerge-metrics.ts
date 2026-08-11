@@ -12,6 +12,14 @@ const RANGE_CONFIG = {
 } as const;
 
 export type AutomergeMetricRange = keyof typeof RANGE_CONFIG;
+
+export function automergeMetricRange(value: unknown): AutomergeMetricRange {
+  return isRange(value) ? value : "7d";
+}
+
+export function automergeMetricRangeStart(range: AutomergeMetricRange, nowMs: number) {
+  return nowMs - RANGE_CONFIG[range].durationMs;
+}
 export type AutomergeMetricPhase =
   | "activated"
   | "repair_dispatched"
@@ -120,7 +128,7 @@ export function summarizeAutomergeMetrics(
     sessionLimit?: number;
   } = {},
 ) {
-  const range = isRange(options.range) ? options.range : "7d";
+  const range = automergeMetricRange(options.range);
   const nowMs = Date.parse(options.now ?? new Date().toISOString());
   const config = RANGE_CONFIG[range];
   const rangeStart = nowMs - config.durationMs;
