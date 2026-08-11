@@ -26,6 +26,7 @@ curl --fail --show-error --silent --location \
   --output "${jq_dir}/sha256sum.txt"
 (cd "$jq_dir" && grep " ${jq_asset}$" sha256sum.txt | sha256sum --check -)
 install -m 0755 "${jq_dir}/${jq_asset}" "${jq_dir}/jq"
+export PATH="${jq_dir}:${PATH}"
 "${jq_dir}/jq" --version
 
 echo "CONTAINER_PHASE=install"
