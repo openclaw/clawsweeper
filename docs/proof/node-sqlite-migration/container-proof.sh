@@ -10,7 +10,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
 fi
 echo "SQLITE3_BINARY=absent"
 
-jq_version="1.8.1"
+jq_version="1.8.2"
 case "$(uname -m)" in
   x86_64) jq_asset="jq-linux-amd64" ;;
   aarch64|arm64) jq_asset="jq-linux-arm64" ;;
@@ -25,9 +25,8 @@ curl --fail --show-error --silent --location \
   "https://github.com/jqlang/jq/releases/download/jq-${jq_version}/sha256sum.txt" \
   --output "${jq_dir}/sha256sum.txt"
 (cd "$jq_dir" && grep " ${jq_asset}$" sha256sum.txt | sha256sum --check -)
-install -m 0755 "${jq_dir}/${jq_asset}" "${jq_dir}/jq"
-export PATH="${jq_dir}:${PATH}"
-"${jq_dir}/jq" --version
+install -m 0755 "${jq_dir}/${jq_asset}" /usr/local/bin/jq
+jq --version
 
 echo "CONTAINER_PHASE=install"
 corepack enable
