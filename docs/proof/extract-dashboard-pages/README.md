@@ -32,6 +32,14 @@ docs/proof/extract-dashboard-pages/run-proof.sh
 
 The script prints `PROOF_RC=0` on success.
 
+## Local observation
+
+The committed local run compared merge base `5a964dadc8131e6e6dc33e9be3536b8141d1d107` with head
+`22d7808c136a10503fc9929fd9ba5904e005542f` on macOS arm64, Node 24.19.0, pnpm 11.10.0,
+and Wrangler 4.107.0. All three raw response hashes and byte counts matched before normalization;
+the normalized diff was empty, the source-blind behavior contract passed, and the harness completed
+with `PROOF_RC=0`.
+
 ## Limits
 
 This proves page-shell rendering and route-level HTTP behavior. It does not exercise JSON API data,
