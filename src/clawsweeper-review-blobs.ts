@@ -76,30 +76,65 @@ export function hydratePullRequestReviewBlobs({
   }
 
   if (objectIds.size === 0) return { hydrated: true, blobs: 0 };
-  const objectInput = `${[...objectIds].join("\n")}\n`;
-  const localObjects = spawnSync(
+  // Git before 2.45 exits without batch output when GIT_NO_LAZY_FETCH blocks a promisor fetch.
+  // rev-list's missing-object mode suppresses lazy fetches and reports them on older clients too.
+  const objectAvailability = spawnSync(
     "git",
-    ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+    [
+      "--literal-pathspecs",
+      "rev-list",
+      "--objects",
+      "--missing=print",
+      "--no-walk=unsorted",
+      baseSha,
+      headSha,
+      "--",
+      ...new Set([...basePaths, ...headPaths]),
+    ],
     {
       cwd: targetDir,
       encoding: "utf8",
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1" },
-      input: objectInput,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
       maxBuffer: MAX_GIT_OUTPUT_BYTES,
     },
   );
-  if (localObjects.error || localObjects.status !== 0) return { hydrated: false, blobs: 0 };
-  const found = localObjects.stdout.trim().split("\n");
-  if (found.length !== objectIds.size) return { hydrated: false, blobs: 0 };
-  const sizes = new Map<string, number>();
+  if (objectAvailability.error || objectAvailability.status !== 0) {
+    return { hydrated: false, blobs: 0 };
+  }
+  const observed = new Set<string>();
   const missing = new Set<string>();
-  for (const entry of found) {
-    const [objectId, type, size] = entry.split(" ");
-    if (!objectId || !objectIds.has(objectId) || (type !== "blob" && type !== "missing")) {
-      return { hydrated: false, blobs: 0 };
+  for (const entry of objectAvailability.stdout.split("\n")) {
+    const match = entry.match(/^(\??)([0-9a-f]{40,64})(?: |$)/i);
+    if (!match || !objectIds.has(match[2]!)) continue;
+    observed.add(match[2]!);
+    if (match[1] === "?") missing.add(match[2]!);
+  }
+  if (observed.size !== objectIds.size) return { hydrated: false, blobs: 0 };
+
+  const sizes = new Map<string, number>();
+  const localObjectIds = [...objectIds].filter((objectId) => !missing.has(objectId));
+  if (localObjectIds.length > 0) {
+    const localObjects = spawnSync(
+      "git",
+      ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+      {
+        cwd: targetDir,
+        encoding: "utf8",
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1" },
+        input: `${localObjectIds.join("\n")}\n`,
+        maxBuffer: MAX_GIT_OUTPUT_BYTES,
+      },
+    );
+    if (localObjects.error || localObjects.status !== 0) return { hydrated: false, blobs: 0 };
+    const found = localObjects.stdout.trim().split("\n");
+    if (found.length !== localObjectIds.length) return { hydrated: false, blobs: 0 };
+    for (const entry of found) {
+      const [objectId, type, size] = entry.split(" ");
+      if (!objectId || !objectIds.has(objectId) || type !== "blob") {
+        return { hydrated: false, blobs: 0 };
+      }
+      sizes.set(objectId, Number(size));
     }
-    if (type === "missing") missing.add(objectId);
-    else sizes.set(objectId, Number(size));
   }
   if (missing.size > 0) {
     if (!resolveBlobSizes) return { hydrated: false, blobs: 0 };
