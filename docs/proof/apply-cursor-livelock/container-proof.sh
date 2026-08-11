@@ -2,6 +2,7 @@
 set -euo pipefail
 
 proof_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$proof_dir/../../.." && pwd)"
 jq_version="1.8.2"
 jq_asset="jq-linux-amd64"
 tool_dir="$(mktemp -d /tmp/apply-cursor-proof-tools.XXXXXX)"
@@ -19,6 +20,7 @@ test -n "$expected"
 test "$actual" = "$expected"
 chmod +x "$tool_dir/jq"
 export PATH="$tool_dir:$PATH"
+git config --global --add safe.directory "$repo_root"
 
 echo "JQ_ASSET=$jq_asset"
 echo "JQ_SHA256=$actual"

@@ -141,7 +141,7 @@ function completeSelection(selected, examined, includeClosedRecord) {
       'complete_comment_sync_batch "$REPORT_PATH" "$TRACE_PATH"',
       'printf "RESULT cursor=%s count=%s next=%s\\n" "$(jq -r .next_after_number "$cursor_path")" "$comment_sync_cursor_advance_count" "$next_cursor"',
     ].join("\n");
-    const stdout = execFileSync("bash", ["-lc", script], {
+    const stdout = execFileSync("bash", ["-c", script], {
       cwd: root,
       encoding: "utf8",
       env: {
