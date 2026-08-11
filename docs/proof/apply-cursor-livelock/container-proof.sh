@@ -18,11 +18,12 @@ expected="$(awk -v asset="$jq_asset" '$2 == asset { print $1 }' "$tool_dir/sha25
 actual="$(sha256sum "$tool_dir/jq" | awk '{ print $1 }')"
 test -n "$expected"
 test "$actual" = "$expected"
-chmod +x "$tool_dir/jq"
-export PATH="$tool_dir:$PATH"
+install -m 0755 "$tool_dir/jq" /usr/local/bin/jq
+export PATH="/usr/local/bin:$PATH"
 git config --global --add safe.directory "$repo_root"
 
 echo "JQ_ASSET=$jq_asset"
 echo "JQ_SHA256=$actual"
 echo "JQ_CHECKSUM_VERIFIED=true"
+echo "JQ_INSTALL_PATH=/usr/local/bin/jq"
 "$proof_dir/run-proof.sh"
