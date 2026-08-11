@@ -1415,7 +1415,6 @@ jobs:
         env:
           EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED: ${{ vars.EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED || '1' }}
           EXACT_REVIEW_DIRECT_MUTATION_OUTPUT: .artifacts/direct-publication-outcome.json
-          EXACT_REVIEW_DIRECT_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
           EXACT_REVIEW_DIRECT_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           EXACT_REVIEW_DIRECT_SOURCE_ACTION: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction }}
           EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -3553,21 +3552,12 @@ jobs:
       codex_timeout_ms: ${{ steps.mode.outputs.codex_timeout_ms }}
       hot_intake: ${{ steps.mode.outputs.hot_intake }}
       queue_feed: ${{ steps.mode.outputs.queue_feed }}
-      queue_offered: ${{ steps.enqueue-scheduled.outputs.offered || '0' }}
-      queue_attempted: ${{ steps.enqueue-scheduled.outputs.attempted || '0' }}
-      queue_enqueued: ${{ steps.enqueue-scheduled.outputs.queued || '0' }}
-      queue_deduped: ${{ steps.enqueue-scheduled.outputs.deduped || '0' }}
-      queue_shed: ${{ steps.enqueue-scheduled.outputs.shed || '0' }}
-      queue_deferred: ${{ steps.enqueue-scheduled.outputs.deferred || '0' }}
       matrix: ${{ steps.select.outputs.matrix }}
       max_pages: ${{ steps.mode.outputs.max_pages }}
-      min_active_shards: ${{ steps.mode.outputs.min_active_shards }}
-      min_backfill_review_age_minutes: ${{ steps.mode.outputs.min_backfill_review_age_minutes }}
       planned_count: ${{ steps.select.outputs.planned_count }}
       planned_capacity: ${{ steps.select.outputs.planned_capacity }}
       planned_item_numbers: ${{ steps.select.outputs.planned_item_numbers }}
       planned_shards: ${{ steps.select.outputs.planned_shards }}
-      active_codex_target: ${{ steps.select.outputs.active_codex_target }}
       due_backlog: ${{ steps.select.outputs.due_backlog }}
       oldest_unreviewed_at: ${{ steps.select.outputs.oldest_unreviewed_at }}
       capacity_reason: ${{ steps.select.outputs.capacity_reason }}
@@ -4010,14 +4000,6 @@ jobs:
             --queue-url "$QUEUE_URL" \
             --delivery-prefix "scheduled:${{ github.run_id }}:${{ github.run_attempt }}")"
           jq -e '.offered >= .attempted and .attempted >= (.queued + .deduped + .shed + .rejected)' <<<"$result" >/dev/null
-          {
-            echo "offered=$(jq -r .offered <<<"$result")"
-            echo "attempted=$(jq -r .attempted <<<"$result")"
-            echo "queued=$(jq -r .queued <<<"$result")"
-            echo "deduped=$(jq -r .deduped <<<"$result")"
-            echo "shed=$(jq -r .shed <<<"$result")"
-            echo "deferred=$(jq -r .deferred <<<"$result")"
-          } >> "$GITHUB_OUTPUT"
           {
             echo "### Scheduled review funnel"
             echo

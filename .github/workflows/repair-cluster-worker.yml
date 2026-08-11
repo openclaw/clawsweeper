@@ -109,7 +109,6 @@ env:
   CLUSTER_EXECUTION_RUNNER: ${{ inputs.execution_runner }}
   CLUSTER_PLANNER_SANDBOX: ${{ inputs.planner_sandbox }}
   CLUSTER_REQUEUE_DEPTH: ${{ inputs.requeue_depth }}
-  CLUSTER_AUTOMERGE_SESSION_ID: ${{ inputs.automerge_session_id }}
   CLUSTER_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 concurrency:

@@ -73,11 +73,6 @@ EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"
 # takes effect. Interactive exact-event reviews keep their independent lane.
 EXACT_REVIEW_TARGET_RATE_PER_HOUR = "300"
 EXACT_REVIEW_TARGET_BURST = "30"
-# Keep each mutation lease at 8 while allowing eight isolated workflows to prepare
-# concurrently. Final commits still cross the single state-writer coordinator.
-# A full-window publish moves ~2k paths and observed ~40 min; the drain lease
-# must outlive it or the ack lands after expiry and the cycle makes no progress.
-STATE_APPEND_DRAIN_LEASE_MS = "5400000"
 EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED = "1"
 EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED = "1"
 EXACT_REVIEW_STATE_REPO = "openclaw/clawsweeper-state"
