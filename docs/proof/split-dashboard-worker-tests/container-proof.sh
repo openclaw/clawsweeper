@@ -23,9 +23,9 @@ curl -fsSL "https://github.com/jqlang/jq/releases/download/jq-${jq_version}/${jq
   sha256sum --ignore-missing --strict -c sha256sum.txt
 )
 chmod 0755 "$proof_tmp/$jq_asset"
-mkdir -p "$proof_tmp/bin"
-install -m 0755 "$proof_tmp/$jq_asset" "$proof_tmp/bin/jq"
-export PATH="$proof_tmp/bin:$PATH"
+install -m 0755 "$proof_tmp/$jq_asset" /usr/local/bin/jq
+apt-get update
+apt-get install -y --no-install-recommends rsync
 
 corepack enable
 pnpm install --frozen-lockfile
