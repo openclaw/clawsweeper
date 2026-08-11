@@ -2361,6 +2361,50 @@ test("serial canonical discovery attributes a failure only to the target that th
   assert.equal(scenario.resolutions.length, 0);
 });
 
+test("serial recovery revalidation attributes a failure only to the target that threw", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/repo#1"),
+      row(
+        "second",
+        "publication:second",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+      row("third", "publication:third", 3, "retry_exhausted", true, "eligible", "openclaw/repo#3"),
+    ],
+    failTargetOnInspection: 1,
+    failedStatus: 403,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { http_403: 1, not_inspected_abort: 2 });
+  assert.deepEqual(summary.skip_samples, [
+    {
+      target: "openclaw/repo#1",
+      reason: "live target check failed for openclaw/repo#1 (403)",
+    },
+    {
+      target: "openclaw/repo#2",
+      reason:
+        "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
+    },
+    {
+      target: "openclaw/repo#3",
+      reason:
+        "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
+    },
+  ]);
+  assert.equal(summary.skipped_targets, 3);
+  assert.equal(scenario.restRequests, 4);
+  assert.equal(scenario.recoveries.length, 0);
+  assert.equal(scenario.resolutions.length, 0);
+});
+
 test("automatic recovery refuses a pull request whose current head has advanced", async () => {
   const item = row(
     "stale",
@@ -2419,6 +2463,7 @@ async function automaticReconcileScenario(options) {
   let inventoryRequests = 0;
   let graphqlRequests = 0;
   let restRequests = 0;
+  const restRequestsByNumber = new Map();
   let duplicateFailurePending = options.failFirstDuplicateCleanup === true;
   let duplicateSkipsRemaining =
     options.skipDuplicateCleanupCount ?? Number(options.skipFirstDuplicateCleanup === true);
@@ -2486,6 +2531,7 @@ async function automaticReconcileScenario(options) {
     if (request.url?.startsWith("/repos/")) {
       restRequests += 1;
       const number = Number(request.url.split("/").at(-1));
+      restRequestsByNumber.set(number, (restRequestsByNumber.get(number) || 0) + 1);
       if (request.url.includes("/pulls/")) {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(
@@ -2504,6 +2550,7 @@ async function automaticReconcileScenario(options) {
       if (
         (options.failedRepository &&
           request.url.includes(`/${options.failedRepository}/issues/`)) ||
+        (options.failTargetOnInspection === number && restRequestsByNumber.get(number) >= 2) ||
         (options.failTargetAfterCleanup === number && resolutions.length >= 2)
       ) {
         response.writeHead(options.failedStatus ?? 503, { "content-type": "application/json" });

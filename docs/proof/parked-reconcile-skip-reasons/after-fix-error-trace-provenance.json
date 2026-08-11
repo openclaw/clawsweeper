@@ -1,7 +1,7 @@
 {
   "schema": "clawsweeper-real-boundary-proof-provenance/v1",
   "claim": "The current source-tree operator attributes loopback GitHub issue lookup failures per parked target while replaying the immutable 20-row production inventory read-only.",
-  "generated_at": "2026-08-11T03:04:21.562Z",
+  "generated_at": "2026-08-11T03:36:07.839Z",
   "source": {
     "run_id": 31449984643,
     "run_url": "https://github.com/openclaw/clawsweeper/actions/runs/31449984643",
@@ -13,7 +13,7 @@
   },
   "execution": {
     "operator": "scripts/exact-review-dead-letter-operator.mjs",
-    "operator_sha256": "481e1fe8e8a1fa2eb9c7b46dc0e23e501ab5b4c80d45c10d64b690d763a2e683",
+    "operator_sha256": "65142cf590de47947dd9dd6c6086f51883f7cc68c6b7397141e6afcbe7957930",
     "command": "node scripts/exact-review-dead-letter-operator.mjs --action reconcile-parked --max-targets 100 --max-recoveries 5 --output <temporary-path>",
     "execute": false,
     "transport": "real Node HTTP listener bound to 127.0.0.1 on an ephemeral port",

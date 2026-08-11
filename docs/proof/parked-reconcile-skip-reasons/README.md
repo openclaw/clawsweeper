@@ -73,7 +73,7 @@ command, transport, response mix, and proof limits.
 ## Gates
 
 - `pnpm run build:all`: passed
-- `pnpm run test:no-build`: 3,317 tests; 3,308 passed, 9 skipped, 0 failed
+- `pnpm run test:no-build`: 3,318 tests; 3,309 passed, 9 skipped, 0 failed
 - `pnpm run lint`: passed
 - `pnpm run format:check`: passed
 - `pnpm run check:active-surface`: passed
@@ -91,10 +91,10 @@ after-fix head receives a separate fresh-PR container run after push.
 ## Limits and Bay impact
 
 This production observation proves the token-boundary diagnosis and the successful-target summary.
-The focused operator tests cover per-target standard-reconcile attribution, reason classification,
-bounded samples, credential and control-byte sanitization, and output truncation. The replay did not
-mutate production queue state and cannot prove the production Worker's signed list route beyond the
-immutable uploaded artifact.
+The focused operator tests cover per-target standard-reconcile discovery and recovery-revalidation
+attribution, reason classification, bounded samples, credential and control-byte sanitization, and
+output truncation. The replay did not mutate production queue state and cannot prove the production
+Worker's signed list route beyond the immutable uploaded artifact.
 
 OpenClaw Bay is unaffected. The change adds diagnostic fields to an operator-only JSON summary; it
 does not change lifecycle publication, dashboard data, or the observer-only Bay surface.

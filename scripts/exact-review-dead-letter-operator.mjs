@@ -427,21 +427,12 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
     identities = await inspectCanonicalTargets(selectedGroups, args.maxTargets);
   } catch (error) {
     if (error instanceof CanonicalTargetInspectionError) {
-      recordInspectionSkips(summary, error.failedTargets, error.cause ?? error);
-      recordInspectionSkips(
-        summary,
-        error.inspectedTargets,
-        new Error(
-          "canonical target was inspected but reconciliation aborted after another target inspection failed",
-        ),
-      );
-      recordInspectionSkips(
-        summary,
-        error.notInspectedTargets,
-        new Error(
-          "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
-        ),
-      );
+      recordAbortedInspectionSkips(summary, {
+        inspectedTargets: error.inspectedTargets,
+        failedTargets: error.failedTargets,
+        notInspectedTargets: error.notInspectedTargets,
+        error: error.cause ?? error,
+      });
     } else {
       recordInspectionSkips(
         summary,
@@ -634,16 +625,21 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
 
   refreshBlockedInventory();
   if (recoveries.length) {
-    for (const recovery of recoveries) {
+    for (const [index, recovery] of recoveries.entries()) {
       let current;
       try {
         current = await inspectRecoveryTarget(recovery.canonicalTarget);
       } catch (error) {
-        recordInspectionSkips(
-          summary,
-          recoveries.map((candidate) => candidate.canonicalTarget),
+        recordAbortedInspectionSkips(summary, {
+          inspectedTargets: recoveries
+            .slice(0, index)
+            .map((candidate) => candidate.canonicalTarget),
+          failedTargets: [recovery.canonicalTarget],
+          notInspectedTargets: recoveries
+            .slice(index + 1)
+            .map((candidate) => candidate.canonicalTarget),
           error,
-        );
+        });
         summary.skipped_targets += recoveries.length;
         printResult(summary);
         return;
@@ -1346,6 +1342,27 @@ function recordInspectionSkips(summary, targets, error) {
     if (summary.skip_samples.length >= MAX_SKIP_SAMPLES) break;
     summary.skip_samples.push({ target: normalizeRecoveryTargetKey(target), reason });
   }
+}
+
+function recordAbortedInspectionSkips(
+  summary,
+  { inspectedTargets, failedTargets, notInspectedTargets, error },
+) {
+  recordInspectionSkips(summary, failedTargets, error);
+  recordInspectionSkips(
+    summary,
+    inspectedTargets,
+    new Error(
+      "canonical target was inspected but reconciliation aborted after another target inspection failed",
+    ),
+  );
+  recordInspectionSkips(
+    summary,
+    notInspectedTargets,
+    new Error(
+      "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
+    ),
+  );
 }
 
 function sanitizeSkipReason(error) {
