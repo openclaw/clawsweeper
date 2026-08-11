@@ -44,6 +44,15 @@ remaining 14 were skipped only by the recovery budget. There were no inspection 
 - `pnpm run format:check`: passed
 - `pnpm run check:active-surface`: passed
 
+Fresh-PR container proof used Crabbox `provider=aws`, lease `cbx_0fc9d2f49c92`
+(`pearl-prawn-4739`), and run `run_2f53d8d972e6`. The clean PR 1117 checkout at
+`8dd3a55bb774ec30fdc5a39fbf7957f53810863f` ran inside `node:24-bookworm` on Docker 29.7.1.
+Corepack installed pinned pnpm 11.10.0. jq 1.8.1 was installed under `$HOME/.local/bin` only after
+`jq-linux-amd64` verified against the official release checksum
+`020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d`. All 57 focused operator
+tests passed in 11.2 seconds; Crabbox reported exit 0 and stopped the lease automatically. Full
+machine-readable details are in `container-provenance.json`.
+
 ## Limits and Bay impact
 
 This production observation proves the token-boundary diagnosis and the successful-target summary.

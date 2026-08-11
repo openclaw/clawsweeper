@@ -1,0 +1,46 @@
+{
+  "schema": "clawsweeper-real-boundary-proof-provenance/v1",
+  "claim": "The focused parked reconciliation operator tests pass inside a clean node:24-bookworm container over a fresh checkout of PR 1117.",
+  "reviewed_head": "8dd3a55bb774ec30fdc5a39fbf7957f53810863f",
+  "crabbox": {
+    "cli_version": "0.38.3-5-g2a79805d",
+    "provider": "aws",
+    "lease_id": "cbx_0fc9d2f49c92",
+    "slug": "pearl-prawn-4739",
+    "run_id": "run_2f53d8d972e6",
+    "machine_type": "c7a.8xlarge",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1117",
+    "sync_ms": 19206,
+    "command_ms": 49735,
+    "total_ms": 72548,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "container": {
+    "image": "node:24-bookworm",
+    "engine": "Docker 29.7.1",
+    "corepack": "enabled",
+    "pnpm": "11.10.0",
+    "jq": "jq-1.8.1",
+    "jq_asset": "jq-linux-amd64",
+    "jq_sha256": "020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d",
+    "jq_checksum_source": "https://github.com/jqlang/jq/releases/download/jq-1.8.1/sha256sum.txt",
+    "jq_checksum_verified": true,
+    "jq_install_path": "$HOME/.local/bin/jq"
+  },
+  "result": {
+    "command": "node --test test/exact-review-dead-letter-operator.test.ts",
+    "tests": 57,
+    "passed": 57,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "duration_ms": 11203.395117
+  },
+  "limits": [
+    "The container run exercised the focused operator test file, not the full test:no-build suite.",
+    "The full five-gate validation ran locally on Node 24.19.0 before the PR was opened.",
+    "No production credentials or queue mutation paths were present in the container."
+  ]
+}
