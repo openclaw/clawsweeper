@@ -1,8 +1,8 @@
 {
   "schema": "bounded-status-store-reads-proof/v1",
-  "generated_at": "2026-08-11T07:44:05.695Z",
+  "generated_at": "2026-08-11T08:11:19.933Z",
   "merge_base": "88fbe4aab5614a09d9cf2b2aa8ef46268c946891",
-  "candidate_head": "7d25c1eb3f715086de8db4a09cc193a66b51acd0",
+  "candidate_head": "4045b50cf93ad8b3ba4b1734441948ad6e731366",
   "fixture": {
     "automerge_events": 300,
     "apply_observations": 170,
