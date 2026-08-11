@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import YAML from "yaml";
 import { readFileSync } from "node:fs";
@@ -212,6 +213,8 @@ test("parked review reconciliation plans by default and executes terminal resolv
       open_targets: 1,
       recovered_targets: 1,
       skipped_targets: 1,
+      skip_reasons: {},
+      skip_samples: [],
     });
     assert.equal(mutations.length, 0);
 
@@ -233,6 +236,8 @@ test("parked review reconciliation plans by default and executes terminal resolv
       open_targets: 1,
       recovered_targets: 1,
       skipped_targets: 1,
+      skip_reasons: {},
+      skip_samples: [],
     });
     assert.equal(mutations.filter((entry) => entry.url?.endsWith("/resolve")).length, 2);
     const recovery = mutations.find((entry) => entry.url?.endsWith("/recover-fresh"));
@@ -258,6 +263,86 @@ test("parked review reconciliation plans by default and executes terminal resolv
     );
     assert.equal(overCap.code, 1);
     assert.match(overCap.stderr, /between 0 and 5 for reconcile-parked/);
+  } finally {
+    server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("parked review reconciliation reports bounded HTTP and timeout skip diagnostics", async () => {
+  const secret = "test-parked-review-skip-reasons";
+  const parkedRows = [
+    parkedRow("openclaw/repo#1", "openclaw/repo", 1, 1_000),
+    parkedRow("openclaw/repo#2", "openclaw/repo", 2, 2_000),
+    parkedRow("openclaw/repo#3", "openclaw/repo", 3, 3_000),
+    parkedRow("openclaw/repo#4", "openclaw/repo", 4, 4_000),
+  ];
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    if (request.url === "/api/exact-review-queue") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ pressure: { status: "idle", active: 0, capacity: 128 } }));
+      return;
+    }
+    if (request.url === "/repos/openclaw/repo/issues/1") {
+      response.writeHead(403, { "content-type": "application/json" });
+      response.end(JSON.stringify({ message: "Resource not accessible by integration" }));
+      return;
+    }
+    const body = Buffer.concat(chunks).toString("utf8");
+    const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+    assert.equal(request.headers["x-clawsweeper-exact-review-signature"], expected);
+    assert.ok(request.url?.endsWith("/parked-reviews/list"));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true, parked_reviews: parkedRows, next_cursor: null }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const directory = await mkdtemp(join(tmpdir(), "clawsweeper-parked-skip-reasons-"));
+  try {
+    const preloadPath = join(directory, "timeout-fetch.mjs");
+    await writeFile(
+      preloadPath,
+      `const nativeFetch = globalThis.fetch;\n` +
+        `globalThis.fetch = (input, init) => /\\/issues\\/[2-4]$/.test(String(input))\n` +
+        `  ? Promise.reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"))\n` +
+        `  : nativeFetch(input, init);\n`,
+      "utf8",
+    );
+    const result = await runOperator(
+      [
+        "--action",
+        "reconcile-parked",
+        "--max-targets",
+        "100",
+        "--output",
+        join(directory, "inventory.json"),
+      ],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+      { NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}` },
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const summary = JSON.parse(result.stdout);
+    assert.deepEqual(summary.skip_reasons, { http_403: 1, timeout: 3 });
+    assert.deepEqual(summary.skip_samples, [
+      {
+        target: "openclaw/repo#1",
+        reason: "parked review target check failed for openclaw/repo#1 with 403",
+      },
+      {
+        target: "openclaw/repo#2",
+        reason: "The operation was aborted due to timeout",
+      },
+      {
+        target: "openclaw/repo#3",
+        reason: "The operation was aborted due to timeout",
+      },
+    ]);
+    assert.equal(summary.inspected_targets, 4);
+    assert.equal(summary.skipped_targets, 4);
   } finally {
     server.close();
     await rm(directory, { recursive: true, force: true });
@@ -334,6 +419,8 @@ test("parked review reconciliation stops safely at the workflow deadline", async
       open_targets: 0,
       recovered_targets: 0,
       skipped_targets: 3,
+      skip_reasons: {},
+      skip_samples: [],
       deadline_reached: true,
     });
     assert.equal(mutations, 0);
@@ -473,6 +560,8 @@ test("automatic reconciliation resolves terminal rows and recovers one fresh rev
       duplicate_rows: 1,
       active_review_rows: 0,
       skipped_targets: 1,
+      skip_reasons: {},
+      skip_samples: [],
     });
     const recovery = mutations.filter((entry) => entry.url?.endsWith("/recover-fresh"));
     assert.equal(recovery.length, 1);

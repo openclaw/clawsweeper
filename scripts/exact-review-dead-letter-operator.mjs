@@ -21,6 +21,8 @@ const ACTIVE_RECOVERY_REASONS = new Set(["fresh_review_already_active", "publica
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9:._-]{1,200}$/;
 const OPERATOR_REQUEST_TIMEOUT_MS = 20_000;
 const OPERATOR_DEADLINE_SETTLE_MS = 25;
+const MAX_SKIP_SAMPLES = 3;
+const MAX_SKIP_REASON_LENGTH = 240;
 
 class DeadLetterInventoryChangedError extends Error {
   constructor(summary, rowIds, targetKeys, blockedGroups) {
@@ -323,6 +325,8 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
     duplicate_rows: 0,
     active_review_rows: 0,
     skipped_targets: 0,
+    skip_reasons: {},
+    skip_samples: [],
   });
   summary.inventory_complete = inventory.complete;
   summary.queue_pressure = initialPressure.status;
@@ -410,7 +414,12 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
   let identities;
   try {
     identities = await inspectCanonicalTargets([...groups.values()], args.maxTargets);
-  } catch {
+  } catch (error) {
+    recordInspectionSkips(
+      summary,
+      [...groups.values()].map((group) => group.target),
+      error,
+    );
     if (invalidRows.length) {
       const resolution = await resolveForReconciliation({
         queueUrl,
@@ -486,7 +495,8 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
       let current;
       try {
         current = await inspectRecoveryTarget(canonicalTarget);
-      } catch {
+      } catch (error) {
+        recordInspectionSkips(summary, [canonicalTarget], error);
         accountSkippedTarget(live.node_id);
         continue;
       }
@@ -599,7 +609,12 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
       let current;
       try {
         current = await inspectRecoveryTarget(recovery.canonicalTarget);
-      } catch {
+      } catch (error) {
+        recordInspectionSkips(
+          summary,
+          recoveries.map((candidate) => candidate.canonicalTarget),
+          error,
+        );
         summary.skipped_targets += recoveries.length;
         printResult(summary);
         return;
@@ -688,6 +703,8 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args, deadl
     open_targets: 0,
     recovered_targets: 0,
     skipped_targets: 0,
+    skip_reasons: {},
+    skip_samples: [],
   };
   const stopForDeadline = (skippedTargets) => {
     summary.deadline_reached = true;
@@ -714,11 +731,12 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args, deadl
     let target;
     try {
       target = await inspectParkedReviewTarget(`${row.target_repo}#${row.item_number}`, deadlineAt);
-    } catch {
+    } catch (error) {
       if (parkedReconcileDeadlineReached(deadlineAt)) {
         stopForDeadline(selectedRows.length - index + terminal.length + recoverable.length);
         return;
       }
+      recordInspectionSkips(summary, [`${row.target_repo}#${row.item_number}`], error);
       summary.skipped_targets += 1;
       continue;
     }
@@ -747,11 +765,12 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args, deadl
     let current;
     try {
       current = await inspectParkedReviewTarget(candidate.target.requested_target, deadlineAt);
-    } catch {
+    } catch (error) {
       if (parkedReconcileDeadlineReached(deadlineAt)) {
         stopForDeadline(terminal.length - index + recoverable.length);
         return;
       }
+      recordInspectionSkips(summary, [candidate.target.requested_target], error);
       summary.skipped_targets += 1;
       continue;
     }
@@ -798,11 +817,12 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args, deadl
       let current;
       try {
         current = await inspectParkedReviewTarget(candidate.target.requested_target, deadlineAt);
-      } catch {
+      } catch (error) {
         if (parkedReconcileDeadlineReached(deadlineAt)) {
           stopForDeadline(admitted.length + selectedRecoveries.length - index);
           return;
         }
+        recordInspectionSkips(summary, [candidate.target.requested_target], error);
         summary.skipped_targets += 1;
         continue;
       }
@@ -995,7 +1015,9 @@ async function inspectParkedReviewTarget(target, deadlineAt = Number.POSITIVE_IN
     }
     throw new Error(`parked review target is missing from an existing repository: ${target}`);
   }
-  if (!response.ok) throw new Error(`parked review target check failed for ${target}`);
+  if (!response.ok) {
+    throw new Error(`parked review target check failed for ${target} with ${response.status}`);
+  }
   const item = await response.json();
   if (
     typeof item?.node_id !== "string" ||
@@ -1274,6 +1296,54 @@ function countBy(rows, keyFor) {
       }, new Map()),
     ].sort(([left], [right]) => left.localeCompare(right)),
   );
+}
+
+function recordInspectionSkips(summary, targets, error) {
+  const reason = sanitizeSkipReason(error);
+  const reasonClass = classifySkipReason(reason);
+  summary.skip_reasons[reasonClass] = (summary.skip_reasons[reasonClass] || 0) + targets.length;
+  for (const target of targets) {
+    if (summary.skip_samples.length >= MAX_SKIP_SAMPLES) break;
+    summary.skip_samples.push({ target: normalizeRecoveryTargetKey(target), reason });
+  }
+}
+
+function sanitizeSkipReason(error) {
+  const raw = error instanceof Error ? error.message : String(error);
+  const redacted = raw
+    .replace(/\b(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9]+)\b/g, "[redacted]")
+    .replace(/\b(authorization|password|secret|token)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .replace(/([?&](?:access_token|auth|key|secret|token)=)[^&\s]+/gi, "$1[redacted]");
+  const sanitized = [...redacted]
+    .map((character) => {
+      const code = character.charCodeAt(0);
+      return code < 0x20 || code === 0x7f ? " " : character;
+    })
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (sanitized || "unknown inspection failure").slice(0, MAX_SKIP_REASON_LENGTH);
+}
+
+function classifySkipReason(reason) {
+  const normalized = reason.toLowerCase();
+  if (normalized.includes("missing from an existing repository")) {
+    return "missing_from_existing_repository";
+  }
+  if (
+    normalized.includes("invalid identity") ||
+    normalized.includes("invalid canonical identity")
+  ) {
+    return "invalid_identity";
+  }
+  if (/\b(timeout|timed out|aborterror|timeouterror)\b/.test(normalized)) return "timeout";
+  const status = /(?:\bwith|\breturned|\()\s*([1-5]\d{2})\)?\b/.exec(normalized)?.[1];
+  if (status === "403") return "http_403";
+  if (status === "429") return "http_429";
+  if (status?.startsWith("5")) return "http_5xx";
+  if (status?.startsWith("4")) return "http_4xx";
+  if (status?.startsWith("3")) return "http_3xx";
+  return "other";
 }
 
 async function signedPost({
