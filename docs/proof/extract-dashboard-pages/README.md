@@ -40,6 +40,19 @@ and Wrangler 4.107.0. All three raw response hashes and byte counts matched befo
 the normalized diff was empty, the source-blind behavior contract passed, and the harness completed
 with `PROOF_RC=0`.
 
+## Crabbox container observation
+
+The same proof passed from a clean `--fresh-pr openclaw/clawsweeper#1116 --no-hydrate`
+checkout at pushed head `a00e31c5ae40e33ab8718facac74d39d198dd994` inside Docker-backed Crabbox
+`provider=local-container`, image `node:24-bookworm`, lease `cbx_36172f52e311`
+(`golden-crayfish-3c9c`). Corepack supplied pnpm 11.10.0, and the upstream jq 1.8.1 checksum
+manifest verified `jq-linux-amd64: OK` before execution. The real Worker comparison completed with
+`PROOF_RC=0` and `CONTAINER_PROOF_RC=0`; the normalized diff was empty, and Crabbox stopped the
+lease automatically. The container run exercised the exact proof rather than the full suite, so the
+known three-failure blob-hydration baseline was not applicable.
+
+See the [machine-readable Crabbox provenance](artifacts/crabbox-local-container-provenance.json).
+
 ## Limits
 
 This proves page-shell rendering and route-level HTTP behavior. It does not exercise JSON API data,
