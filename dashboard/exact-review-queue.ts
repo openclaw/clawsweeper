@@ -138,7 +138,6 @@ export type {
 } from "./exact-review-decision.ts";
 
 import {
-  DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET,
   DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS,
   DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS,
   DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
@@ -165,7 +164,7 @@ import {
   exactReviewQueueBackoffReason,
   exactReviewQueueBayProjection,
   exactReviewQueueBayPriorityKeys,
-  exactReviewQueueCapacity,
+  exactReviewQueueCapacity as exactReviewQueueCapacityFromReadModel,
   exactReviewQueueLane,
   exactReviewQueueNextWakeAt,
   exactReviewQueueStats,
@@ -178,7 +177,6 @@ import {
 export {
   exactReviewEffectiveLeaseExpiresAt,
   exactReviewQueueAdmittedItems,
-  exactReviewQueueCapacity,
   exactReviewQueueNextWakeAt,
 } from "./exact-review-read-model.ts";
 
@@ -494,6 +492,7 @@ export type DurableObjectNamespace = {
 };
 
 const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 120;
+const DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET = 194;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT = 4;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT = 24;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT = 48;
@@ -625,6 +624,10 @@ const RECORD_EXPORT_SECTIONS: readonly RecordSection[] = [
   "decision-packets",
   "commits",
 ];
+
+export function exactReviewQueueCapacity(env) {
+  return exactReviewQueueCapacityFromReadModel(env, DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET);
+}
 
 export class ExactReviewQueue {
   private state;

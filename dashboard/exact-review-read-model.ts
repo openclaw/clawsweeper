@@ -17,7 +17,6 @@ import type {
 } from "./exact-review-queue.ts";
 
 const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 128;
-export const DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET = 194;
 export const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 6 * 60 * 1000;
 export const DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS = 15 * 60 * 1000;
 export const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
@@ -850,7 +849,7 @@ export function exactReviewQueueNextWakeAt(
   return Math.max(now + 1_000, Math.min(...times));
 }
 
-export function exactReviewQueueCapacity(env) {
+export function exactReviewQueueCapacity(env, DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET: number) {
   return Math.max(
     1,
     Math.min(
