@@ -14358,6 +14358,40 @@ test("exact-review batch terminal probe resets for a later departure", async () 
   }
 });
 
+test("exact-review batch alarm avoids redundant full queue hydrations", async () => {
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    publicationBatching: true,
+    captureBatchDispatch: true,
+  });
+  try {
+    const enqueue = buildExactReviewQueueRequest(
+      "hydration-count",
+      9232,
+      "exact_review_artifact_publish",
+      "issue",
+      "openclaw/gogcli",
+      exactReviewPublicationOverrides(9232, "92320"),
+    );
+    assert.equal((await harness.queue.fetch(enqueue)).status, 202);
+
+    const exec = harness.storage.sql.exec.bind(harness.storage.sql);
+    let fullStateReads = 0;
+    harness.storage.sql.exec = (query: string, ...bindings: unknown[]) => {
+      if (/\bSELECT item_key, item_json FROM exact_review_queue_items\b/.test(query)) {
+        fullStateReads += 1;
+      }
+      return exec(query, ...bindings);
+    };
+
+    await harness.queue.alarm();
+
+    assert.equal(harness.batchDispatches, 1);
+    assert.equal(fullStateReads, 5);
+  } finally {
+    harness.restore();
+  }
+});
+
 test("exact-review batch claims keep a newer departure fence when an older workflow arrives", async () => {
   const originalNow = Date.now;
   let now = Date.parse("2026-07-25T13:00:00.000Z");

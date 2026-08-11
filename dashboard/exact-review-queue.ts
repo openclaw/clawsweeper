@@ -3323,12 +3323,13 @@ export class ExactReviewQueue {
     await this.storage.deleteAlarm();
     await this.processBranchAuthorityReservations(startedAt);
     await this.processSourceAuthorityReservations(startedAt);
-    this.storage.transactionSync(() => {
+    let snapshot = this.storage.transactionSync(() => {
       this.pruneDeliveryReceiptsSync(startedAt);
       this.directPublicationStore.pruneTerminalSync(startedAt);
-      this.syncLegacyCompatibilitySync(this.readStateSync());
+      const current = this.readStateSync();
+      this.syncLegacyCompatibilitySync(current);
+      return current;
     });
-    let snapshot = this.readStateSync();
     let snapshotBatchOwnership = this.batchStore.activeLeaseSnapshot(startedAt);
     const reclaimedSnapshot = reclaimExpiredExactReviewLeases(
       snapshot,
@@ -3477,7 +3478,7 @@ export class ExactReviewQueue {
       batchDispatchAttempted = true;
       batchDispatchRecordedAt = Date.now();
       batchDispatchId = `publication-batch-dispatch:${crypto.randomUUID()}`;
-      const reserved = this.readStateSync();
+      const reserved = snapshot;
       const reservedDispatcher = reserved.dispatcher ?? {
         state: "unknown",
         checkedAt: startedAt,
