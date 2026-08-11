@@ -71,18 +71,42 @@ test("canonical GitHub App signer converts PKCS1 private keys to PKCS8", async (
 
 test("worker GitHub App call sites preserve plain error messages", async () => {
   const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
   const { privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
+  const fetchFailure = new TypeError("fetch failed");
+  const abortFailure = new DOMException("request aborted", "AbortError");
   const failures = [
     {
-      fetch: async () => {
-        throw new DOMException("request aborted", "AbortError");
+      fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
+        assert.equal(init?.signal?.aborted, true);
+        throw new DOMException("request timed out", "AbortError");
       },
+      setTimeout: ((callback: TimerHandler) => {
+        if (typeof callback === "function") callback();
+        return 0;
+      }) as typeof globalThis.setTimeout,
       message: "GitHub App installation timed out",
       constructor: Error,
+    },
+    {
+      fetch: async () => {
+        throw fetchFailure;
+      },
+      message: "fetch failed",
+      constructor: TypeError,
+      original: fetchFailure,
+    },
+    {
+      fetch: async () => {
+        throw abortFailure;
+      },
+      message: "request aborted",
+      constructor: DOMException,
+      original: abortFailure,
     },
     {
       fetch: async () =>
@@ -100,6 +124,7 @@ test("worker GitHub App call sites preserve plain error messages", async () => {
   try {
     for (const failure of failures) {
       globalThis.fetch = failure.fetch;
+      globalThis.setTimeout = failure.setTimeout || originalSetTimeout;
       await assert.rejects(
         worker.fetch(workerGithubWebhookRequest(), {
           CLAWSWEEPER_APP_CLIENT_ID: "Iv23worker-errors",
@@ -109,12 +134,14 @@ test("worker GitHub App call sites preserve plain error messages", async () => {
         (error: Error) => {
           assert.equal(error.constructor, failure.constructor);
           assert.equal(error.message, failure.message);
+          if (failure.original) assert.equal(error, failure.original);
           return true;
         },
       );
     }
   } finally {
     globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
   }
 });
 

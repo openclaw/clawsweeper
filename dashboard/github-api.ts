@@ -3,6 +3,7 @@ export const DEFAULT_GITHUB_API_URL = "https://api.github.com";
 const GITHUB_APP_TIMEOUT_MS = 4500;
 const GITHUB_RATE_LIMIT_FALLBACK_MS = 15 * 60 * 1000;
 const GITHUB_RATE_LIMIT_MAX_RETRY_MS = 2 * 60 * 60 * 1000;
+const workerTransportErrors = new WeakMap<GitHubRequestError, unknown>();
 
 type GithubApiEnv = Record<string, unknown>;
 
@@ -141,11 +142,13 @@ export async function githubAppJson(path, appJwt, options: GithubAppJsonOptions 
     const timedOut =
       controller.signal.aborted ||
       (error instanceof Error && (error.name === "AbortError" || error.message === "timeout"));
-    throw new GitHubRequestError(
+    const requestError = new GitHubRequestError(
       `${options.errorLabel || "GitHub App"} ${timedOut ? "timed out" : "network failure"}`,
       undefined,
       timedOut,
     );
+    if (!controller.signal.aborted) workerTransportErrors.set(requestError, error);
+    throw requestError;
   } finally {
     clearTimeout(timeout);
   }
@@ -178,7 +181,10 @@ export async function githubAppJsonAsPlainError(
 }
 
 function throwPlainGitHubRequestError(error: unknown): never {
-  if (error instanceof GitHubRequestError) throw new Error(error.message);
+  if (error instanceof GitHubRequestError) {
+    if (workerTransportErrors.has(error)) throw workerTransportErrors.get(error);
+    throw new Error(error.message);
+  }
   throw error;
 }
 
