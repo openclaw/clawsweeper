@@ -6,18 +6,23 @@ trap 'rm -rf "$proof_tmp"' EXIT
 
 jq_version="1.8.2"
 case "$(uname -m)" in
-  x86_64) jq_asset="jq-linux-amd64" ;;
-  aarch64 | arm64) jq_asset="jq-linux-arm64" ;;
+  x86_64)
+    jq_asset="jq-linux-amd64"
+    jq_sha256="b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f"
+    ;;
+  aarch64 | arm64)
+    jq_asset="jq-linux-arm64"
+    jq_sha256="8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309"
+    ;;
   *)
     echo "unsupported container architecture: $(uname -m)" >&2
     exit 1
     ;;
 esac
 
-curl -fsSL "https://github.com/jqlang/jq/releases/download/jq-${jq_version}/sha256sum.txt" \
-  -o "$proof_tmp/sha256sum.txt"
 curl -fsSL "https://github.com/jqlang/jq/releases/download/jq-${jq_version}/${jq_asset}" \
   -o "$proof_tmp/$jq_asset"
+printf '%s  %s\n' "$jq_sha256" "$jq_asset" > "$proof_tmp/sha256sum.txt"
 (
   cd "$proof_tmp"
   sha256sum --ignore-missing --strict -c sha256sum.txt
