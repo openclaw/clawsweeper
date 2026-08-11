@@ -28,6 +28,15 @@ curl --fail --show-error --silent --location \
 install -m 0755 "${jq_dir}/${jq_asset}" /usr/local/bin/jq
 jq --version
 
+echo "CONTAINER_PHASE=system-dependencies"
+apt-get update
+apt-get install --yes --no-install-recommends rsync
+if command -v sqlite3 >/dev/null 2>&1; then
+  echo "sqlite3 appeared after system dependency setup: $(command -v sqlite3)" >&2
+  exit 1
+fi
+echo "SQLITE3_BINARY_AFTER_SETUP=absent"
+
 echo "CONTAINER_PHASE=install"
 corepack enable
 pnpm install --frozen-lockfile
