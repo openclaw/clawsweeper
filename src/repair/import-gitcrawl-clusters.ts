@@ -2,7 +2,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { querySqliteRows, querySqliteScalar } from "../sqlite-readonly.js";
 import { parseArgs, repoRoot } from "./lib.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
 import {
@@ -315,22 +315,12 @@ function memberSqlForClusterIds(clusterIds: JsonValue[]) {
   `;
 }
 
-function sqliteJson(sql: JsonValue) {
-  const output = execFileSync("sqlite3", ["-json", dbPath, sql], {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    maxBuffer: 256 * 1024 * 1024,
-  }).trim();
-  return JSON.parse(output || "[]");
+function sqliteJson(sql: JsonValue): JsonValue {
+  return querySqliteRows(dbPath, String(sql));
 }
 
 function sqliteScalar(sql: string) {
-  const output = execFileSync("sqlite3", [dbPath, sql], {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    maxBuffer: 1024 * 1024,
-  }).trim();
-  return output;
+  return querySqliteScalar(dbPath, sql);
 }
 
 function detectClusterSource() {

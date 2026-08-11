@@ -1,0 +1,114 @@
+{
+  "schema": "clawsweeper-node-sqlite-equivalence/v1",
+  "base_ref": "origin/main",
+  "base_sha": "27d0dca681584cb46bc566afd38be71fdf58c949",
+  "current_head": "27d0dca681584cb46bc566afd38be71fdf58c949",
+  "runtime": {
+    "node": "v24.19.0",
+    "sqlite3": "3.51.0 2025-06-12 13:14:41 f0ca7bba1c5e232e5d279fad6338121ab55af0c8c68c84cdfb18ba5114dcaapl (64-bit)"
+  },
+  "old_path_extraction": [
+    {
+      "file": "src/clawsweeper-related-context.ts",
+      "source_sha256": "fccfb23406cf1436b184a62cd0f6001c100e15f84fd864294a5495f1cdabd028",
+      "sqlite3_invocations": 2
+    },
+    {
+      "file": "src/repair/import-gitcrawl-clusters.ts",
+      "source_sha256": "bbe63ba34ccac7f6ce97f83b95af44a827d394acddc9af8ba3ccc2b615895d94",
+      "sqlite3_invocations": 2
+    },
+    {
+      "file": "src/repair/import-gitcrawl-low-signal-prs.ts",
+      "source_sha256": "51ec00242ccb767262ad34f514ba497ad73d0cb8fd2d6cbfb560d7cc0c9a55af",
+      "sqlite3_invocations": 1
+    }
+  ],
+  "fixture": {
+    "kind": "real node:sqlite portable gitcrawl store",
+    "journal_mode": "wal",
+    "wal_sidecar_present_during_reads": true
+  },
+  "equivalence": {
+    "scalar": [
+      {
+        "sql_sha256": "ba1ab8b2a5f3327d0f3d3bf1119ac652c9ccf97446493c13806e0b1c19908eb5",
+        "old": "1",
+        "new": "1",
+        "byte_identical": true
+      },
+      {
+        "sql_sha256": "e328946aa69d0f7880d5fde58bbae2ea7aa3316b614184cbfb65cfa7d8cd6406",
+        "old": "1",
+        "new": "1",
+        "byte_identical": true
+      },
+      {
+        "sql_sha256": "2da2bb9ff3d473f17209583671af15387481711b38addfa740e97237c27dd25e",
+        "old": "9007199254740993",
+        "new": "9007199254740993",
+        "byte_identical": true
+      }
+    ],
+    "json": [
+      {
+        "site": "src/clawsweeper-related-context.ts sqliteJsonProbe",
+        "sql_sha256": "e4b68ca4a44fd179038494c92b109580ad15c85696b171130aab342fd152856a",
+        "rows": 1,
+        "parsed_sha256": "f0e3af68fb09cd84b35bdcca751f903d2c44234d2d1fec0b95aab25d6bafbe74",
+        "byte_identical": true
+      },
+      {
+        "site": "src/repair/import-gitcrawl-clusters.ts sqliteJson",
+        "sql_sha256": "606ecab885ce0cd5036a90c6fc57b26443acc4feeab4836886101cc29736d65c",
+        "rows": 2,
+        "parsed_sha256": "0cff9beff8071654a1f9f0bf3085404f8e469e46f5078d62f07af1ef05897de0",
+        "byte_identical": true
+      },
+      {
+        "site": "src/repair/import-gitcrawl-low-signal-prs.ts sqliteJson",
+        "sql_sha256": "bf3ad3badf087836e988a476fd53fef235dfa313622c3905b265de3baa1fa3ea",
+        "rows": 1,
+        "parsed_sha256": "8d2e8233e1d126ab695fe6bb3ad54f72a6c6afe7f24599906076dcf86b2f1398",
+        "byte_identical": true
+      }
+    ]
+  },
+  "integer_contract": {
+    "sqlite_integer": "9007199254740993",
+    "scalar_string": "9007199254740993",
+    "json_number": 9007199254740992,
+    "decision": "JSON rows preserve sqlite3 -json plus JSON.parse number coercion; scalar reads preserve exact decimal text until callers apply Number()."
+  },
+  "error_mapping": {
+    "missing": {
+      "old_failed": true,
+      "old_status": 1,
+      "old_error_class": "missing_table",
+      "old_created_file": true,
+      "new_failed": true,
+      "new_error_code": "ERR_SQLITE_ERROR",
+      "new_error_class": "cantopen",
+      "new_created_file": false,
+      "related_context_mapping": "[] / false before query because path is absent",
+      "importer_mapping": "uncaught query failure and nonzero process exit"
+    },
+    "corrupt": {
+      "old_failed": true,
+      "old_status": 26,
+      "old_error_class": "notadb",
+      "old_created_file": true,
+      "new_failed": true,
+      "new_error_code": "ERR_SQLITE_ERROR",
+      "new_error_class": "notadb",
+      "new_created_file": true,
+      "related_context_mapping": "[] / null after caught query failure",
+      "importer_mapping": "uncaught query failure and nonzero process exit"
+    }
+  },
+  "limits": [
+    "The host proof requires sqlite3 only for the extracted old-path side of the comparison.",
+    "Fixtures are disposable local files and do not contact GitHub, Gitcrawl, Worker storage, or any production service.",
+    "Read-only node:sqlite no longer creates a missing database file; importer caller-visible failure remains nonzero while related-context maps query errors to its existing empty/null fallbacks."
+  ]
+}

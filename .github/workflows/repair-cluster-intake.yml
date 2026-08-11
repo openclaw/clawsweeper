@@ -193,13 +193,6 @@ jobs:
           path: gitcrawl-store
           fetch-depth: 1
 
-      - name: Ensure SQLite CLI
-        run: |
-          if ! command -v sqlite3 >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y sqlite3
-          fi
-
       - name: Prepare intake
         id: prepare
         env:
