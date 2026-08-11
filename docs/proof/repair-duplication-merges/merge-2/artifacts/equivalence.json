@@ -1,6 +1,11 @@
 {
   "base_ref": "origin/main",
-  "base_sha": "51ac499c741b7b4b9b2bd1b7d78686055f8f3738",
+  "base_sha": "765644804756d5f6b1dc1e940d62c50711e398d8",
+  "fixtures": {
+    "storage": "real SQLite files created with node:sqlite DatabaseSync",
+    "query_boundary": "both built importer entry points spawn a proof-local sqlite3-compatible CLI backed by node:sqlite",
+    "path_observation": "the SQLite CLI trace records the database path opened by each importer"
+  },
   "extractions": [
     {
       "file": "src/repair/import-gitcrawl-clusters.ts",
@@ -13,49 +18,173 @@
   ],
   "results": [
     {
-      "scenario": "explicit override wins",
-      "old": [
-        "/proof/explicit.db",
-        "/proof/explicit.db"
+      "scenario": "portable-store present",
+      "resolved_store_path": "$FIXTURE_ROOT/gitcrawl-store/data/openclaw__openclaw.sync.db",
+      "old_resolver_paths": [
+        "$FIXTURE_ROOT/gitcrawl-store/data/openclaw__openclaw.sync.db",
+        "$FIXTURE_ROOT/gitcrawl-store/data/openclaw__openclaw.sync.db"
       ],
-      "current": "/proof/explicit.db",
-      "identical": true
+      "identical": true,
+      "real_file": {
+        "exists": true,
+        "sha256": "f960d92f768f33598c9ee038b717561d431164d6c25341b44496a678adb05f3a"
+      },
+      "importer_entry_points": [
+        {
+          "cli": "dist/repair/import-gitcrawl-clusters.js",
+          "exit_code": 0,
+          "opened_store_paths": [
+            "$FIXTURE_ROOT/gitcrawl-store/data/openclaw__openclaw.sync.db"
+          ],
+          "observed_fixture_marker": "portable-store"
+        },
+        {
+          "cli": "dist/repair/import-gitcrawl-low-signal-prs.js",
+          "exit_code": 0,
+          "opened_store_paths": [
+            "$FIXTURE_ROOT/gitcrawl-store/data/openclaw__openclaw.sync.db"
+          ],
+          "observed_fixture_marker": "portable-store"
+        }
+      ],
+      "sqlite_queries": [
+        {
+          "json": false,
+          "db_path": "$FIXTURE_ROOT/gitcrawl-store/data/openclaw__openclaw.sync.db",
+          "sql_sha256": "65c2784b0b87e91c8f4d94b6edd2aea215d91d1c94700cceb7bfa0802eaecdf4"
+        },
+        {
+          "json": false,
+          "db_path": "$FIXTURE_ROOT/gitcrawl-store/data/openclaw__openclaw.sync.db",
+          "sql_sha256": "ba1ab8b2a5f3327d0f3d3bf1119ac652c9ccf97446493c13806e0b1c19908eb5"
+        },
+        {
+          "json": false,
+          "db_path": "$FIXTURE_ROOT/gitcrawl-store/data/openclaw__openclaw.sync.db",
+          "sql_sha256": "e328946aa69d0f7880d5fde58bbae2ea7aa3316b614184cbfb65cfa7d8cd6406"
+        },
+        {
+          "json": true,
+          "db_path": "$FIXTURE_ROOT/gitcrawl-store/data/openclaw__openclaw.sync.db",
+          "sql_sha256": "8d21b6a2e7d30e76df0864c345fe39008dcc4c4aa21f31d90702f0e4c0efecd3"
+        },
+        {
+          "json": true,
+          "db_path": "$FIXTURE_ROOT/gitcrawl-store/data/openclaw__openclaw.sync.db",
+          "sql_sha256": "8ea6cf3705e94d0aa6019a5c91ba967db6ae4020d9c6b821433135c3d4248dad"
+        }
+      ]
     },
     {
-      "scenario": "environment override",
-      "old": [
-        "/proof/configured.db",
-        "/proof/configured.db"
+      "scenario": "portable absent -> legacy fallback",
+      "resolved_store_path": "$FIXTURE_ROOT/home/.config/gitcrawl/gitcrawl.db",
+      "old_resolver_paths": [
+        "$FIXTURE_ROOT/home/.config/gitcrawl/gitcrawl.db",
+        "$FIXTURE_ROOT/home/.config/gitcrawl/gitcrawl.db"
       ],
-      "current": "/proof/configured.db",
-      "identical": true
+      "identical": true,
+      "real_file": {
+        "exists": true,
+        "sha256": "3cc19212a3b669375d62f0b442981d020377920ec9a79b237216c964098a180c"
+      },
+      "importer_entry_points": [
+        {
+          "cli": "dist/repair/import-gitcrawl-clusters.js",
+          "exit_code": 0,
+          "opened_store_paths": [
+            "$FIXTURE_ROOT/home/.config/gitcrawl/gitcrawl.db"
+          ],
+          "observed_fixture_marker": "legacy-fallback"
+        },
+        {
+          "cli": "dist/repair/import-gitcrawl-low-signal-prs.js",
+          "exit_code": 0,
+          "opened_store_paths": [
+            "$FIXTURE_ROOT/home/.config/gitcrawl/gitcrawl.db"
+          ],
+          "observed_fixture_marker": "legacy-fallback"
+        }
+      ],
+      "sqlite_queries": [
+        {
+          "json": false,
+          "db_path": "$FIXTURE_ROOT/home/.config/gitcrawl/gitcrawl.db",
+          "sql_sha256": "65c2784b0b87e91c8f4d94b6edd2aea215d91d1c94700cceb7bfa0802eaecdf4"
+        },
+        {
+          "json": false,
+          "db_path": "$FIXTURE_ROOT/home/.config/gitcrawl/gitcrawl.db",
+          "sql_sha256": "223a7c70eb993ab6d0ee2510f541ab8051b384a06ea9704b43e7c7181aa76297"
+        },
+        {
+          "json": true,
+          "db_path": "$FIXTURE_ROOT/home/.config/gitcrawl/gitcrawl.db",
+          "sql_sha256": "8dbfcc0a807ca6a57ae14b8bcf02b00569e384ac28d0aa22fb688d936fd4d79b"
+        },
+        {
+          "json": true,
+          "db_path": "$FIXTURE_ROOT/home/.config/gitcrawl/gitcrawl.db",
+          "sql_sha256": "8ea6cf3705e94d0aa6019a5c91ba967db6ae4020d9c6b821433135c3d4248dad"
+        }
+      ]
     },
     {
-      "scenario": "sibling portable store precedes user store",
-      "old": [
-        "/proof/gitcrawl-store/data/openclaw__openclaw.sync.db",
-        "/proof/gitcrawl-store/data/openclaw__openclaw.sync.db"
+      "scenario": "env override set",
+      "resolved_store_path": "$FIXTURE_ROOT/override/configured.db",
+      "old_resolver_paths": [
+        "$FIXTURE_ROOT/override/configured.db",
+        "$FIXTURE_ROOT/override/configured.db"
       ],
-      "current": "/proof/gitcrawl-store/data/openclaw__openclaw.sync.db",
-      "identical": true
-    },
-    {
-      "scenario": "user portable store precedes legacy store",
-      "old": [
-        "/proof/home/.config/gitcrawl/stores/gitcrawl-store/data/openclaw__openclaw.sync.db",
-        "/proof/home/.config/gitcrawl/stores/gitcrawl-store/data/openclaw__openclaw.sync.db"
+      "identical": true,
+      "real_file": {
+        "exists": true,
+        "sha256": "f7c60943afba268dda999fbc5c2e1d73c5abfba61944cbc7fce8446922e4c5b4"
+      },
+      "importer_entry_points": [
+        {
+          "cli": "dist/repair/import-gitcrawl-clusters.js",
+          "exit_code": 0,
+          "opened_store_paths": [
+            "$FIXTURE_ROOT/override/configured.db"
+          ],
+          "observed_fixture_marker": "env-override"
+        },
+        {
+          "cli": "dist/repair/import-gitcrawl-low-signal-prs.js",
+          "exit_code": 0,
+          "opened_store_paths": [
+            "$FIXTURE_ROOT/override/configured.db"
+          ],
+          "observed_fixture_marker": "env-override"
+        }
       ],
-      "current": "/proof/home/.config/gitcrawl/stores/gitcrawl-store/data/openclaw__openclaw.sync.db",
-      "identical": true
-    },
-    {
-      "scenario": "missing stores fall back to legacy path",
-      "old": [
-        "/proof/home/.config/gitcrawl/gitcrawl.db",
-        "/proof/home/.config/gitcrawl/gitcrawl.db"
-      ],
-      "current": "/proof/home/.config/gitcrawl/gitcrawl.db",
-      "identical": true
+      "sqlite_queries": [
+        {
+          "json": false,
+          "db_path": "$FIXTURE_ROOT/override/configured.db",
+          "sql_sha256": "65c2784b0b87e91c8f4d94b6edd2aea215d91d1c94700cceb7bfa0802eaecdf4"
+        },
+        {
+          "json": false,
+          "db_path": "$FIXTURE_ROOT/override/configured.db",
+          "sql_sha256": "ba1ab8b2a5f3327d0f3d3bf1119ac652c9ccf97446493c13806e0b1c19908eb5"
+        },
+        {
+          "json": false,
+          "db_path": "$FIXTURE_ROOT/override/configured.db",
+          "sql_sha256": "e328946aa69d0f7880d5fde58bbae2ea7aa3316b614184cbfb65cfa7d8cd6406"
+        },
+        {
+          "json": true,
+          "db_path": "$FIXTURE_ROOT/override/configured.db",
+          "sql_sha256": "8d21b6a2e7d30e76df0864c345fe39008dcc4c4aa21f31d90702f0e4c0efecd3"
+        },
+        {
+          "json": true,
+          "db_path": "$FIXTURE_ROOT/override/configured.db",
+          "sql_sha256": "8ea6cf3705e94d0aa6019a5c91ba967db6ae4020d9c6b821433135c3d4248dad"
+        }
+      ]
     }
   ],
   "caller_local_sqlite_buffers": [

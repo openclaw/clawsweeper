@@ -1,8 +1,11 @@
 # Repair duplication merges proof
 
 The four numbered directories contain the old-versus-new equivalence harnesses
-and JSON artifacts. Merge 1 proves the intentional one-shot-to-retry change
-with an unchanged idempotency key; merges 2–4 prove byte-identical behavior.
+and JSON artifacts. Merge 1 proves the intentional one-shot-to-retry change by
+running the old CLI and current production notifier function over a real
+loopback HTTP socket with an unchanged idempotency key. Merge 2 proves resolver
+equivalence with real SQLite files and both production importer entry points.
+Merges 3–4 prove byte-identical behavior.
 
 Docker proof used Crabbox `0.38.3-5-g2a79805d`, `provider=local-container`,
 lease `cbx_182ee21fa80c` (`quick-krill-f6cc`), `node:24-bookworm`, and Docker
