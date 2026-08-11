@@ -7,7 +7,7 @@ artifact_dir="${EXTRACT_DASHBOARD_PAGES_PROOF_OUTPUT:-$proof_dir/artifacts}"
 temp_dir="$(mktemp -d /tmp/extract-dashboard-pages-proof.XXXXXX)"
 base_root="$temp_dir/base"
 capture_root="$temp_dir/captures"
-port=18790
+port="$(node -e 'const server=require("node:net").createServer(); server.listen(0,"127.0.0.1",()=>{ console.log(server.address().port); server.close(); });')"
 worker_pid=""
 
 cleanup() {
