@@ -37,7 +37,13 @@ const actionCycle = [
   "kept_open",
 ];
 
-function writeCandidate(root, number, reviewedAt, regular = false) {
+function writeCandidate(
+  root,
+  number,
+  reviewedAt,
+  regular = false,
+  localCheckoutAccess = "verified",
+) {
   const recordDir = path.join(root, "records/openclaw-openclaw/items");
   fs.mkdirSync(recordDir, { recursive: true });
   const lines = [
@@ -45,7 +51,7 @@ function writeCandidate(root, number, reviewedAt, regular = false) {
     "repository: openclaw/openclaw",
     `type: ${regular ? "pull_request" : "issue"}`,
     "review_status: complete",
-    "local_checkout_access: verified",
+    `local_checkout_access: ${localCheckoutAccess}`,
     "item_snapshot_hash: synthetic-proof",
     "action_taken: kept_open",
     `reviewed_at: ${reviewedAt}`,
@@ -116,6 +122,7 @@ function applyAdversarialOrder() {
         number,
         new Date(Date.UTC(2026, 7, 11, 23, 59, 59) - index * 1000).toISOString(),
         false,
+        "unverified",
       );
     });
     const recordDir = path.join(root, "records/openclaw-openclaw/items");
@@ -149,7 +156,10 @@ function applyAdversarialOrder() {
         "--comment-sync-cursor",
         String(initialCursor),
       ],
-      { encoding: "utf8" },
+      {
+        encoding: "utf8",
+        env: { ...process.env, GH_BIN: path.join(root, "missing-gh") },
+      },
     );
 
     const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
