@@ -67,12 +67,33 @@ export function createRecordMetadata({
   markdownFiles,
   numberForMarkdownFile,
 }: RecordMetadataDependencies) {
+  // A report body is model-authored review text, so `key:` at the start of a line
+  // is ordinary prose (a quoted PR field, a fenced YAML sample, a findings row) far
+  // more often than a competing record. Only a *second front matter block* makes a
+  // field genuinely ambiguous: a leading run of `key: value` lines closed by a `---`
+  // delimiter. Prose stops the scan, so it can no longer mask a valid value.
+  function competingFrontMatterBlock(remainder: string): string | null {
+    const lines = remainder.split(/\r?\n/);
+    let index = lines[0] === "---" ? 1 : 0;
+    const block: string[] = [];
+    for (; index < lines.length; index += 1) {
+      const line = lines[index] ?? "";
+      if (line === "---") return block.join("\n");
+      if (!/^[A-Za-z0-9_.-]+:/.test(line)) return null;
+      block.push(line);
+    }
+    return null;
+  }
+
   function frontMatterField(markdown: string, key: string): FrontMatterField {
     const frontMatterMatch = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
     if (!frontMatterMatch) return { status: "absent" };
     const frontMatter = frontMatterMatch[1] ?? "";
     const remainder = markdown.slice(frontMatterMatch[0].length);
-    if (new RegExp(`^${key}:`, "m").test(remainder)) return { status: "ambiguous" };
+    const competing = competingFrontMatterBlock(remainder);
+    if (competing !== null && new RegExp(`^${key}:`, "m").test(competing)) {
+      return { status: "ambiguous" };
+    }
     const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.*)$`, "gm"))];
     if (matches.length === 0) return { status: "absent" };
     if (matches.length !== 1) return { status: "ambiguous" };
