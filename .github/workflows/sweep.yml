@@ -1405,7 +1405,7 @@ jobs:
           repeat-revision: ${{ steps.claim-exact-review-queue.outputs.repeat_revision }}
 
       - name: Record direct-publication member
-        if: ${{ steps.direct-github-egress-observer.outcome == 'success' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-github-egress-observer.outcome == 'success' }}
         continue-on-error: true
         env:
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -1917,7 +1917,7 @@ jobs:
           exit 1
 
       - name: Submit direct GitHub egress telemetry
-        if: ${{ always() && steps.direct-github-egress-observer.outcome == 'success' }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-github-egress-observer.outcome == 'success' }}
         continue-on-error: true
         env:
           EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -2324,7 +2324,7 @@ jobs:
           repeat-revision: ${{ steps.publication-context.outputs.repeat_revision }}
 
       - name: Record artifact-publication member
-        if: ${{ steps.artifact-github-egress-observer.outcome == 'success' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.artifact-github-egress-observer.outcome == 'success' }}
         continue-on-error: true
         env:
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
@@ -2343,7 +2343,7 @@ jobs:
           path: .artifacts/exact-review-bundle
 
       - name: Record artifact download transport boundary
-        if: ${{ always() && steps.artifact-github-egress-observer.outcome == 'success' && steps.download-exact-review-bundle.outcome != 'skipped' }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.artifact-github-egress-observer.outcome == 'success' && steps.download-exact-review-bundle.outcome != 'skipped' }}
         continue-on-error: true
         env:
           CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions
@@ -3139,7 +3139,7 @@ jobs:
             --run-url "$RUN_URL"
 
       - name: Submit artifact-publication GitHub egress telemetry
-        if: ${{ always() && steps.artifact-github-egress-observer.outcome == 'success' }}
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.artifact-github-egress-observer.outcome == 'success' }}
         continue-on-error: true
         env:
           EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
