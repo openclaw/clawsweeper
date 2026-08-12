@@ -1,0 +1,43 @@
+{
+  "schema": "dashboard-strict-slice-1-container-proof/v1",
+  "receipt": "COMMITTED",
+  "source_head": "973a64020e7523607bc838d8d2ddeddc2ee2d5b6",
+  "merge_base": "ac340908bf694c902f5a673374be1639ef9f220f",
+  "provider": "aws",
+  "lease_id": "cbx_50e9bc495d9e",
+  "lease_slug": "golden-prawn-ca64",
+  "run_id": "run_df67add74e75",
+  "machine_type": "c7a.8xlarge",
+  "container_image": "node:24-bookworm",
+  "container_image_digest": "sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584",
+  "command": "focused environment shards, pnpm run check, then committed real-Worker equivalence proof",
+  "result": {
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true,
+    "focused_tests_passed": 123,
+    "strict_check_passed": true,
+    "full_check_passed": true,
+    "proof_rc": 0,
+    "normalized_responses_byte_identical": true,
+    "production_mutations": 0
+  },
+  "responses": [
+    {
+      "route": "/api/exact-review-queue",
+      "normalized_bytes": 11182,
+      "normalized_sha256": "c4e7a44913eba76959cf4e77a7013280f8ab8a8c44cfb363de43f0935680e1fe"
+    },
+    {
+      "route": "/api/status",
+      "normalized_bytes": 24633,
+      "normalized_sha256": "314392ffddd90227440036562863ec4a69bd2b1636f9f5930724cec2f6f6ade8"
+    }
+  ],
+  "timing_ms": {
+    "sync": 30631,
+    "command": 206998,
+    "total": 244281
+  },
+  "limits": "Synthetic pending issue reviews and a loopback GitHub error stub; no live GitHub call, deployment, lease acquisition by the Worker, publication, or production mutation."
+}
