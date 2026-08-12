@@ -1,0 +1,3 @@
+# The pre-fix module staged by stage-before.sh. It is a verbatim copy of a file
+# already in git history, regenerated on demand, so it is not committed.
+before/
