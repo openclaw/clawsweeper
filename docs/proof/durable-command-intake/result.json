@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-12T17:32:05.572Z",
+  "generated_at": "2026-08-12T17:57:28.290Z",
   "base_sha": "bd869542a3a820c4d3d5fb44bcf2fc553f8f3468",
-  "candidate_sha": "10f574b39c62cbc99a972967bda4e529cb15784e",
+  "candidate_sha": "ee949363f5c4cf755a431020b738f1bf06ae49b5",
   "provider_environment": "Crabbox-selected provider; see receipt.md",
   "comparison_pass": true,
   "baseline": {

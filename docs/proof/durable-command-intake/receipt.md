@@ -3,17 +3,16 @@
 The pinned-main/candidate comparison passed on the repository-resolved Crabbox
 backend.
 
-- Tested candidate: `10f574b39c62cbc99a972967bda4e529cb15784e`
+- Tested candidate: `ee949363f5c4cf755a431020b738f1bf06ae49b5`
 - Baseline: `bd869542a3a820c4d3d5fb44bcf2fc553f8f3468`
 - Provider: `aws`
-- Lease: `cbx_63aaf1aeefab` (`golden-shrimp-4f6a`)
-- Run: `run_ebdd0e751613`
+- Lease: `cbx_6b30d164d7dc` (`jade-barnacle-c01a`)
+- Run: `run_7cfa46ca99f9`
 - Machine: `c7a.8xlarge`, Linux (`ubuntu:26.04` resolved target)
 - Result: `comparison_pass=true`; exit code 0
 - Cleanup: both inner Wrangler process groups confirmed SIGTERM completion
-  before persistence inspection. Crabbox heartbeat trouble left the outer lease
-  visible after the successful command, so it was explicitly released and
-  verified absent from the owned-lease inventory.
+  before persistence inspection. Crabbox reported `leaseStopped=true`, and a
+  final provider list showed no owned live lease.
 
 The baseline wrote one optimistic acknowledgement and reaction, then returned
 HTTP 500 when its repository dispatch was throttled. It had no durable command
@@ -26,7 +25,7 @@ Command:
 
 ```sh
 PROOF_BASE_SHA=bd869542a3a820c4d3d5fb44bcf2fc553f8f3468 \
-PROOF_CANDIDATE_SHA=10f574b39c62cbc99a972967bda4e529cb15784e \
+PROOF_CANDIDATE_SHA=ee949363f5c4cf755a431020b738f1bf06ae49b5 \
 PROOF_OUTPUT=.artifacts/durable-command-intake \
 node docs/proof/durable-command-intake/run-proof.mjs
 ```
