@@ -39,9 +39,11 @@ docs/proof/github-egress-telemetry/run-proof.sh
 
 The script uses pinned Wrangler 4.107.0 and a disposable self-signed loopback
 certificate. If `gh` is unavailable, it downloads GitHub CLI 2.88.1 into the
-disposable proof directory. It uses only synthetic credentials and loopback
-application endpoints. It does not call GitHub APIs, mutate production, or
-touch queue, schedule, gate, deployment, or credential state.
+disposable proof directory and verifies the Linux AMD64 archive against the
+committed SHA-256 from the official release checksum manifest before
+extraction. It uses only synthetic credentials and loopback application
+endpoints. It does not call GitHub APIs, mutate production, or touch queue,
+schedule, gate, deployment, or credential state.
 
 ## Required result
 

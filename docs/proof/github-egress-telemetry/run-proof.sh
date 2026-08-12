@@ -26,10 +26,12 @@ pnpm run build:all >"$output_dir/build.log" 2>&1
 real_gh="$(command -v gh || true)"
 if test -z "$real_gh"; then
   gh_version="2.88.1"
+  gh_linux_amd64_sha256="36352a993b97e9758793cdb87f9ba674bd6d88c914488e122be78a1962203803"
   gh_archive="$scratch/gh.tar.gz"
   curl --fail --silent --show-error --location \
     "https://github.com/cli/cli/releases/download/v${gh_version}/gh_${gh_version}_linux_amd64.tar.gz" \
     --output "$gh_archive"
+  printf '%s  %s\n' "$gh_linux_amd64_sha256" "$gh_archive" | sha256sum --check --status
   tar -xzf "$gh_archive" -C "$scratch"
   real_gh="$scratch/gh_${gh_version}_linux_amd64/bin/gh"
 fi
