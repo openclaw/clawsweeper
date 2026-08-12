@@ -2739,6 +2739,11 @@ test("apply workflow bounds checkpoints and requeues with a fresh token", () => 
     commentSyncBranch,
     /--cursor-trace "\.artifacts\/comment-sync-trace-\$checkpoint\.json"/,
   );
+  assert.match(commentSyncBranch, /"\$\{comment_sync_cursor_arg\[@\]\}"/);
+  assert.match(
+    applyHelper,
+    /comment_sync_cursor_arg=\(--comment-sync-cursor "\$\{comment_sync_initial_cursor:-0\}"\)/,
+  );
   assert.match(commentSyncBranch, /write_comment_sync_health/);
   assert.match(applyHelper, /"\$comment_sync_cursor_advance_count"/);
   const applyFlagInit = applyStep.indexOf('explicit_item_numbers="$item_numbers"');
@@ -4245,12 +4250,7 @@ test("comment sync advances a completed frontier before a budget-clipped urgent 
     reportPath,
     JSON.stringify([
       { number: 105870, action: "kept_open" },
-      { number: 97566, action: "review_comment_synced" },
-      { number: 95788, action: "skipped_changed_since_review" },
-      { number: 105342, action: "review_comment_synced" },
-      { number: 87267, action: "skipped_stale_review_comment_sync" },
-      { number: 106572, action: "kept_open" },
-      { number: 85937, action: "skipped_runtime_budget" },
+      { number: 87267, action: "skipped_runtime_budget" },
       { number: 0, action: "skipped_runtime_budget" },
     ]),
   );
@@ -4258,7 +4258,7 @@ test("comment sync advances a completed frontier before a budget-clipped urgent 
     tracePath,
     JSON.stringify({
       schema_version: 1,
-      examined_item_numbers: [105870, 97566, 95788, 105342, 87267, 106572],
+      examined_item_numbers: [105870],
     }),
   );
 
@@ -4276,12 +4276,12 @@ test("comment sync advances a completed frontier before a budget-clipped urgent 
           "sync_open_pr_batch=true",
           "scheduled_comment_sync=true",
           "comment_sync_initial_cursor=105854",
-          "item_numbers=105870,97566,95788,105342,87267,106572,85937,120718",
+          "item_numbers=87267,95788,97566,105342,105870",
           "next_cursor=105870",
           'complete_comment_sync_batch "$REPORT_PATH" "$TRACE_PATH"',
           'printf "advanced=%s|count=%s\\n" "$(jq -r .next_after_number "$cursor_path")" "$comment_sync_cursor_advance_count"',
           'pnpm run workflow -- write-comment-sync-cursor --cursor-path "$cursor_path" --next-cursor 105854 --target-repo "$TARGET_REPO"',
-          "item_numbers=105870,97566,95788,105342,87267,106572,85937,120718",
+          "item_numbers=87267,95788,97566,105342,105870",
           "next_cursor=105870",
           'printf \'{"schema_version":1,"examined_item_numbers":[]}\' > clipped-trace.json',
           'complete_comment_sync_batch "$REPORT_PATH" clipped-trace.json',

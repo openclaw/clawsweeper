@@ -24,6 +24,7 @@ const frontier = 105870;
 const initialCursor = 105854;
 const clippedItem = 85937;
 const closedItem = 92460;
+const adversarialSelection = [87267, 95788, 97566, 105342, frontier];
 const examinedUrgentPrefix = productionSelection
   .slice(0, productionSelection.indexOf(clippedItem))
   .filter((number) => number !== closedItem);
@@ -98,6 +99,71 @@ async function currentSelection() {
 
 function pathToFileUrl(filePath) {
   return new URL(`file://${filePath}`).href;
+}
+
+function applyAdversarialOrder() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "apply-cursor-adversarial-"));
+  try {
+    const itemsDir = path.join(root, "items");
+    const closedDir = path.join(root, "closed");
+    const plansDir = path.join(root, "plans");
+    const reportPath = path.join(root, "apply-report.json");
+    const tracePath = path.join(root, "trace.json");
+    fs.mkdirSync(plansDir, { recursive: true });
+    adversarialSelection.forEach((number, index) => {
+      writeCandidate(
+        root,
+        number,
+        new Date(Date.UTC(2026, 7, 11, 23, 59, 59) - index * 1000).toISOString(),
+        false,
+      );
+    });
+    const recordDir = path.join(root, "records/openclaw-openclaw/items");
+    fs.renameSync(recordDir, itemsDir);
+
+    execFileSync(
+      process.execPath,
+      [
+        path.join(repoRoot, "dist/clawsweeper.js"),
+        "apply-decisions",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--items-dir",
+        itemsDir,
+        "--closed-dir",
+        closedDir,
+        "--plans-dir",
+        plansDir,
+        "--report-path",
+        reportPath,
+        "--item-numbers",
+        adversarialSelection.join(","),
+        "--processed-limit",
+        "1",
+        "--limit",
+        "0",
+        "--close-delay-ms",
+        "0",
+        "--cursor-trace",
+        tracePath,
+        "--comment-sync-cursor",
+        String(initialCursor),
+      ],
+      { encoding: "utf8" },
+    );
+
+    const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+    const trace = JSON.parse(fs.readFileSync(tracePath, "utf8"));
+    return {
+      input_order: adversarialSelection,
+      frontier_input_index: adversarialSelection.indexOf(frontier),
+      first_executed: report[0]?.number ?? null,
+      examined_item_numbers: trace.examined_item_numbers,
+      completion: completeSelection(adversarialSelection, trace.examined_item_numbers, false),
+    };
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 }
 
 function completeSelection(selected, examined, includeClosedRecord) {
@@ -177,6 +243,7 @@ if (missingCurrentItems.length > 0) {
 }
 const currentOrderResult = completeSelection(currentOrder, currentExamined, true);
 const clippedFrontierResult = completeSelection(currentOrder, [], false);
+const adversarialOrderResult = applyAdversarialOrder();
 
 const summary = {
   schema: "clawsweeper-apply-cursor-livelock-proof/v1",
@@ -199,6 +266,7 @@ const summary = {
     selector_next_cursor: Number(batch.next_cursor),
     ...currentOrderResult,
   },
+  adversarial_order: adversarialOrderResult,
   clipped_frontier: clippedFrontierResult,
   assertions: {
     old_order_livelocks:
@@ -211,6 +279,13 @@ const summary = {
     clipped_frontier_blocks:
       clippedFrontierResult.persisted_cursor === initialCursor &&
       clippedFrontierResult.cursor_advance_count === 0,
+    apply_loop_executes_frontier_first:
+      adversarialOrderResult.frontier_input_index === adversarialSelection.length - 1 &&
+      adversarialOrderResult.first_executed === frontier &&
+      adversarialOrderResult.examined_item_numbers[0] === frontier,
+    adversarial_order_advances_terminal_frontier:
+      adversarialOrderResult.completion.persisted_cursor === frontier &&
+      adversarialOrderResult.completion.cursor_advance_count > 0,
   },
   limits: [
     "Synthetic filesystem records; no GitHub API calls or credentials.",

@@ -28,7 +28,7 @@ pnpm install --frozen-lockfile
 pnpm run build:all
 node "$proof_dir/run-proof.mjs"
 node --test \
-  --test-name-pattern='urgent all-item repair|comment sync advances a completed frontier|wrapped cursor synchronization|wrapped urgent comment-sync batches' \
-  test/repair/workflow-utils.test.ts test/sweep-workflow.test.ts
+  --test-name-pattern='numeric comment-sync frontier|urgent all-item repair|comment sync advances a completed frontier|wrapped cursor synchronization|wrapped urgent comment-sync batches' \
+  test/apply-cursor-trace.test.ts test/repair/workflow-utils.test.ts test/sweep-workflow.test.ts
 
 echo "APPLY_CURSOR_PROOF_OK"

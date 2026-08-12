@@ -5952,6 +5952,7 @@ jobs:
           if [ "$sync_comments_only" = "true" ]; then
             sync_comments_arg=(--sync-comments-only)
           fi
+          prepare_comment_sync_cursor_arg
           min_age_minutes_arg=()
           if [ -n "$min_age_minutes" ]; then
             min_age_minutes_arg=(--min-age-minutes "$min_age_minutes")
@@ -6052,6 +6053,7 @@ jobs:
               --processed-limit "$comment_sync_processed_limit" \
               --max-runtime-ms 300000 \
               --cursor-trace ".artifacts/comment-sync-trace-$checkpoint.json" \
+              "${comment_sync_cursor_arg[@]}" \
               --comment-sync-min-age-days "$comment_sync_min_age_days" \
               "${item_numbers_arg[@]}" \
               "${sync_comments_arg[@]}"

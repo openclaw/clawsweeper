@@ -31,6 +31,29 @@
       "RESULT cursor=105870 count=1 next=105870"
     ]
   },
+  "adversarial_order": {
+    "input_order": [
+      87267,
+      95788,
+      97566,
+      105342,
+      105870
+    ],
+    "frontier_input_index": 4,
+    "first_executed": 105870,
+    "examined_item_numbers": [
+      105870
+    ],
+    "completion": {
+      "persisted_cursor": 105870,
+      "cursor_advance_count": 1,
+      "next_cursor": 105870,
+      "stdout": [
+        "Comment synchronization yielded its bounded cursor window to scheduled maintenance.",
+        "RESULT cursor=105870 count=1 next=105870"
+      ]
+    }
+  },
   "clipped_frontier": {
     "persisted_cursor": 105854,
     "cursor_advance_count": 0,
@@ -43,7 +66,9 @@
   "assertions": {
     "old_order_livelocks": true,
     "current_order_advances_terminal_frontier": true,
-    "clipped_frontier_blocks": true
+    "clipped_frontier_blocks": true,
+    "apply_loop_executes_frontier_first": true,
+    "adversarial_order_advances_terminal_frontier": true
   },
   "limits": [
     "Synthetic filesystem records; no GitHub API calls or credentials.",

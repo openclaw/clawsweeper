@@ -212,6 +212,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     const artifactDir = resolve(stringArg(args.artifact_dir, join(ROOT, "artifacts", "apply")));
     const cursorTraceArg = stringArg(args.cursor_trace, "").trim();
     const cursorTracePath = cursorTraceArg ? resolve(cursorTraceArg) : null;
+    const commentSyncCursor = optionalNumberArg(args.comment_sync_cursor);
+    if (
+      commentSyncCursor !== undefined &&
+      (!Number.isSafeInteger(commentSyncCursor) || commentSyncCursor < 0)
+    ) {
+      throw new Error("Invalid --comment-sync-cursor");
+    }
     const prCloseCoverageProofRuntime: PrCloseCoverageProofRuntime = {
       model: stringArg(args.codex_model, DEFAULT_CODEX_MODEL),
       reasoningEffort: stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT),
@@ -241,6 +248,18 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     const requestedItemOrderIndex = new Map(
       requestedItemOrder.map((number, index) => [number, index]),
     );
+    const advancingCommentSyncNumbers =
+      commentSyncCursor === undefined
+        ? []
+        : requestedItemNumbers.filter((number) => number > commentSyncCursor);
+    const commentSyncFrontier =
+      commentSyncCursor === undefined || requestedItemNumbers.length === 0
+        ? undefined
+        : Math.min(
+            ...(advancingCommentSyncNumbers.length > 0
+              ? advancingCommentSyncNumbers
+              : requestedItemNumbers),
+          );
     const results: ApplyResult[] = [];
     const examinedItemNumbers: number[] = [];
     let closedCount = 0;
@@ -283,15 +302,22 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     });
 
     const fileEntries = applyReportEntriesForDir(itemsDir, "items").sort(
-      cursorTracePath
+      commentSyncFrontier !== undefined
         ? (left, right) =>
+            Number(right.number === commentSyncFrontier) -
+              Number(left.number === commentSyncFrontier) ||
             (requestedItemOrderIndex.get(left.number) ?? Number.MAX_SAFE_INTEGER) -
               (requestedItemOrderIndex.get(right.number) ?? Number.MAX_SAFE_INTEGER) ||
             left.number - right.number
-        : (left, right) =>
-            left.priority - right.priority ||
-            left.applyCheckedAt - right.applyCheckedAt ||
-            left.number - right.number,
+        : cursorTracePath
+          ? (left, right) =>
+              (requestedItemOrderIndex.get(left.number) ?? Number.MAX_SAFE_INTEGER) -
+                (requestedItemOrderIndex.get(right.number) ?? Number.MAX_SAFE_INTEGER) ||
+              left.number - right.number
+          : (left, right) =>
+              left.priority - right.priority ||
+              left.applyCheckedAt - right.applyCheckedAt ||
+              left.number - right.number,
     );
     const files = fileEntries.map((entry) => entry.name);
     const boundedExactSelection = exactEventPublication && requestedItemNumberSet.size > 0;
@@ -452,7 +478,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       return;
     }
     logProgress(
-      `starting apply: files=${files.length} dry_run=${dryRun} apply_kind=${applyKind} min_age=${minAgeDescription} apply_close_reasons=${closeReasonFilterText(applyCloseReasons)} stale_min_age_days=${staleMinAgeDays} close_delay_ms=${closeDelayMs} sync_comments_only=${syncCommentsOnly} suppress_automation_markers=${suppressAutomationMarkers} comment_sync_min_age_days=${commentSyncMinAgeDays} max_runtime_ms=${maxRuntimeMs} item_numbers=${requestedItemNumbers.join(",") || "all"} reconciliation_deferred=${[...reconciliationDeferredItemNumbers].join(",") || "none"}`,
+      `starting apply: files=${files.length} dry_run=${dryRun} apply_kind=${applyKind} min_age=${minAgeDescription} apply_close_reasons=${closeReasonFilterText(applyCloseReasons)} stale_min_age_days=${staleMinAgeDays} close_delay_ms=${closeDelayMs} sync_comments_only=${syncCommentsOnly} suppress_automation_markers=${suppressAutomationMarkers} comment_sync_min_age_days=${commentSyncMinAgeDays} comment_sync_cursor=${commentSyncCursor ?? "none"} max_runtime_ms=${maxRuntimeMs} item_numbers=${requestedItemNumbers.join(",") || "all"} reconciliation_deferred=${[...reconciliationDeferredItemNumbers].join(",") || "none"}`,
     );
     // oxfmt-ignore
     for (const entry of fileEntries) {

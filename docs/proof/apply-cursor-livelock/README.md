@@ -2,10 +2,12 @@
 
 ## Claim
 
-The automatic `openclaw/openclaw` comment-sync batch always executes its numeric cursor frontier
-before opportunistic urgent repairs. Per-pass-terminal outcomes can therefore advance the durable
-cursor, while a runtime yield on the frontier itself leaves the cursor unchanged for a truthful
-retry.
+The automatic `openclaw/openclaw` apply loop always executes its numeric cursor frontier before
+opportunistic urgent repairs, regardless of the order in which `item_numbers` arrives. The loop
+chooses the smallest number strictly greater than the active cursor and wraps to the smallest
+selected number only when no greater number exists. Per-pass-terminal outcomes can therefore
+advance the durable cursor, while a runtime yield on the frontier itself leaves the cursor
+unchanged for a truthful retry.
 
 This fixes the livelock observed in production run
 https://github.com/openclaw/clawsweeper/actions/runs/31544381133. That run selected 39 urgency-ranked
@@ -18,17 +20,21 @@ never reached the only record that could advance cursor `#105854`.
 mix matching its terminal classes: durable comment sync, changed-since-review, stale-sync skip,
 kept-open, an already-closed canonical record, and a runtime-clipped record.
 
-The same unchanged cursor-completion helper is exercised three ways:
+The selector, apply loop, and cursor-completion helper are exercised four ways:
 
 1. The old urgency-first order examines the terminal urgent prefix but not frontier `#105870`; it
    reports `cursor_count=0` and leaves the cursor at `#105854`.
 2. The new batch selector places `#105870` first. After that frontier and the same terminal urgent
    prefix complete, a yield at `#85937` advances the cursor exactly to `#105870`.
 3. A yield on the first frontier records no examined item and leaves the cursor at `#105854`.
+4. An ascending-sorted request places `#105870` last after four lower urgent records. The apply
+   loop nevertheless examines `#105870` first, and completion consumes that trusted execution
+   trace to persist `#105870` while every other record remains unexamined.
 
-The proof also runs the repository's focused wrap/cycle tests. The implementation changes only
-execution order inside the selected batch; it does not change `cycle_start_after_number`,
-`cycle_wrapped`, their reset rules, or the special automatic-policy branch.
+The proof also runs the repository's focused wrap/cycle tests. The selector reorder remains useful
+for non-apply consumers, but the TypeScript apply-loop selection is the load-bearing guarantee.
+The implementation does not change `cycle_start_after_number`, `cycle_wrapped`, their reset rules,
+or the special automatic-policy branch.
 
 ## Run
 
@@ -51,7 +57,7 @@ records the source-blind behavior validation.
 The final fresh-PR proof ran pushed head `e6e534fc39eec471a447d8b956a0c24dd3ee97ca`
 inside `node:24-bookworm` through Crabbox `provider=aws`, lease `cbx_20b3853d5df2`
 (`quick-krill-bd9c`), run `run_dbbae04e9b37`. jq 1.8.2 was installed only after its
-`jq-linux-amd64` digest matched the repository-pinned value. All four focused fixture/wrap tests
+`jq-linux-amd64` digest matched the repository-pinned value. All five focused fixture/wrap tests
 passed, Crabbox exited 0, and the lease stopped automatically. `container-provenance.json` records
 the complete receipt and the earlier proof-harness runs.
 

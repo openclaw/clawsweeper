@@ -29,7 +29,18 @@
       "confidence": 0.99
     },
     {
-      "contract_clause": "User task 3: clip the first frontier",
+      "contract_clause": "User task 3: execute adversarial ascending input",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The ascending input placed 105870 at index 4, while the apply report and trusted trace both recorded 105870 first; completion persisted 105870 with cursor_advance_count=1.",
+      "reproduction_steps": [
+        "Read adversarial_order in the emitted JSON",
+        "Verify frontier_input_index=4, first_executed=105870, examined_item_numbers[0]=105870, and completion.persisted_cursor=105870"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "User task 4: clip the first frontier",
       "status": "pass",
       "severity": null,
       "evidence": "The clipped_frontier result persisted 105854 with cursor_advance_count=0 and next_cursor=null.",
@@ -40,13 +51,13 @@
       "confidence": 0.99
     },
     {
-      "contract_clause": "User task 4: preserve wrap and cycle behavior",
+      "contract_clause": "User task 5: preserve wrap and cycle behavior",
       "status": "pass",
       "severity": null,
-      "evidence": "The isolated command ran four focused probes; both wrapped cursor tests and both runtime-yield/frontier tests passed with zero failures.",
+      "evidence": "The isolated command ran five focused probes covering the apply loop, selector, completion, and wrapped cursor behavior with zero failures.",
       "reproduction_steps": [
         "Read the Node test summary emitted by run-proof.sh",
-        "Verify tests=4, pass=4, fail=0"
+        "Verify tests=5, pass=5, fail=0"
       ],
       "confidence": 0.97
     }
@@ -59,6 +70,10 @@
     {
       "probe": "Remove the frontier from the examined trace",
       "result": "The cursor remained at 105854 instead of falsely advancing."
+    },
+    {
+      "probe": "Sort incoming item numbers with the frontier last",
+      "result": "The TypeScript apply loop executed 105870 first and the trace-ordered completion advanced to 105870."
     },
     {
       "probe": "Include multiple per-pass-terminal outcome classes",
