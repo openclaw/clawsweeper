@@ -34,14 +34,17 @@ Docker-backed Crabbox `local-container` run against the committed implementation
 
 ## Result
 
-The committed comparison covers merge-base `408c28329c188c15e2d3dbefe98a2393cbca4989`
-and implementation head `896513f31ce3279a69f34dff9425809d55f9d782`. All four status/body
-pairs are identical; see `behavior-report.json`.
+The frozen committed comparison covers merge-base `408c28329c188c15e2d3dbefe98a2393cbca4989`
+and implementation head `896513f31ce3279a69f34dff9425809d55f9d782`; all four status/body
+pairs are identical. The current-head container receipt separately covers source and launcher head
+`a7e4e37adb18c939bd3b57e9d9f6ffc4610a9bd6` without replacing that review-time report.
 
-Docker-backed Crabbox `provider=local-container` ran the same proof in `node:24-bookworm` on
-lease `cbx_ceccf5f1e95d` (`crimson-crayfish-21d5`). The dashboard build and all four Worker
-comparisons passed, Crabbox exited 0, and the lease stopped automatically. Full provenance and
-three disclosed setup-only attempts are in `container-receipt.json`.
+Docker-backed Crabbox `provider=local-container` used `--fresh-pr openclaw/clawsweeper#1132` in
+`node:24-bookworm` on lease `cbx_dda9e37f1731` (`crimson-hermit-cceb`), run
+`run_686d05277f14`. Two consecutive dashboard builds and Worker comparisons passed with all four
+outcomes identical in each run. The generated report stayed under `.artifacts/`, and
+`git status --porcelain` was empty before, between, and after the runs. Crabbox exited 0 and stopped
+the lease automatically; full provenance is in `container-receipt.json`.
 
 ## OpenClaw Bay impact
 
