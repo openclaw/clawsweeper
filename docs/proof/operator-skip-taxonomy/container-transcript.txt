@@ -1,0 +1,142 @@
+PROOF_PHASE=environment
+provider=local-container
+image=node:24-bookworm
+head=a53a16105b26241023068947440f4e554a034a48
+v24.19.0
+11.17.0
+PROOF_PHASE=corepack
+
+added 1 package in 266ms
+11.10.0
+PROOF_PHASE=install
+? Verifying lockfile against supply-chain policies (79 entries)...
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +19
++++++++++++++++++++
+
+   ╭───────────────────────────────────────────────╮
+   │                                               │
+   │     Update available! 11.10.0 → 11.21.0.      │
+   │     Changelog: https://pnpm.io/v/11.21.0      │
+   │   To update, run: corepack use pnpm@11.21.0   │
+   │                                               │
+   ╰───────────────────────────────────────────────╯
+
+✓ Lockfile passes supply-chain policies (79 entries in 556ms)
+Progress: resolved 19, reused 0, downloaded 16, added 16
+Progress: resolved 19, reused 0, downloaded 19, added 19, done
+
+dependencies:
++ typescript 7.0.2
++ yaml 2.9.0
+
+devDependencies:
++ @types/node 24.13.3
++ markdown-it 15.0.0
++ oxfmt 0.58.0
++ oxlint 1.73.0
++ oxlint-tsgolint 0.24.0
+
+Done in 2.1s using pnpm v11.10.0
+PROOF_PHASE=operator
+✔ dead-letter workflow is manual, serialized, and bounded to safe actions (1.405591ms)
+✔ automatic dead-letter reconciliation is scheduled, bounded, and least privileged (2.8986ms)
+✔ target-read App mode fails at startup for every incomplete credential pair (340.705573ms)
+✔ parked review reconciliation plans by default and executes terminal resolve plus open recovery (379.486707ms)
+✔ parked review reconciliation reports bounded HTTP and timeout skip diagnostics (104.56571ms)
+✔ parked review reconciliation stops safely at the workflow deadline (1020.193419ms)
+✔ automatic reconciliation resolves terminal rows and recovers one fresh review per target (142.71609ms)
+✔ automatic reconciliation skips fresh recovery under pressure and enforces hard caps (303.984743ms)
+✔ automatic recovery rechecks authoritative pressure and deduplicates canonical GitHub identities (317.074942ms)
+✔ duplicate cleanup finishes before target-scoped recovery and safely resumes after failure (395.620465ms)
+✔ concurrent duplicate cleanup refreshes inventory before safe recovery (204.718562ms)
+✔ an unchanged blocked cleanup cannot starve independent fresh recovery (115.947066ms)
+✔ a blocked targetless legacy row cannot starve independent fresh recovery (115.158311ms)
+✔ many blocked targetless legacy rows cannot exhaust the inventory refresh budget (111.140789ms)
+✔ multiple independently blocked groups share one authoritative refresh (136.331263ms)
+✔ blocked canonical targets are counted only once across inventory refreshes (131.471778ms)
+✔ active and capped targets are counted only once across blocked inventory refreshes (250.991404ms)
+✔ staged recovery retains its original target budget across a blocked refresh (125.840829ms)
+✔ blocked duplicate cleanup fences its primary without starving another target (115.000435ms)
+✔ only unchanged blocked groups fence aliases after an aggregated refresh (132.579326ms)
+✔ a blocked transferred alias fences its whole target without starving another (137.916105ms)
+✔ reconciliation rejects a non-atomic guarded cleanup response (103.690538ms)
+✔ reconciliation rejects a malformed zero-mutation guarded cleanup response (98.830053ms)
+✔ independent cleanup races refresh once before recovering current aliases (167.819689ms)
+✔ inventory refreshes preserve the original per-run target budget (106.054844ms)
+✔ inventory refreshes preserve cleanup counters when later target discovery fails (134.734588ms)
+✔ automatic recovery rechecks pressure immediately after duplicate cleanup (101.890987ms)
+✔ renamed aliases are grouped before recovery and active siblings block every alias (315.544308ms)
+✔ active publication siblings block recovery beyond the first resolution page (107.621936ms)
+✔ automatic recovery refuses aliases omitted by caps or failed GitHub checks (324.802109ms)
+✔ bounded canonical discovery deduplicates transferred eligible aliases (107.658811ms)
+✔ incomplete bounded inventories drain invalid rows without recovering unknown aliases (1234.639618ms)
+✔ automatic recovery defers after cleanup unparks previously hidden aliases (98.352134ms)
+✔ terminal cleanup stops immediately when it unparks new inventory (99.19843ms)
+✔ automatic recovery stops after a successful recovery unparks hidden aliases (101.182399ms)
+✔ automatic recovery stops when a skipped recovery unparks a hidden active alias (99.872893ms)
+✔ automatic reconciliation preserves every independently active review fence (199.147114ms)
+✔ singleton active sentinels cannot starve actionable canonical targets (121.871057ms)
+✔ permanently ineligible targets cannot starve bounded recoveries (103.503121ms)
+✔ distinct active publication and review fences survive transferred aliases (110.070074ms)
+✔ every independently active transferred alias remains fenced (104.144416ms)
+✔ reconciliation fully inventories more than 2,000 supported dead letters (759.638793ms)
+✔ 100-target reconciliation batches canonical lookups within the GitHub token budget (156.531835ms)
+✔ batched canonical discovery skips a throttled batch and inspects later targets (151.996726ms)
+✔ batched canonical discovery aborts on an authorization 403 (98.638094ms)
+✔ terminal target rechecks stay bounded for closed issues and pull requests (334.241663ms)
+✔ mid-sized closed pull-request inventories use GraphQL identity batching (336.20434ms)
+✔ direct reconciliation defaults match the 100-target, ten-recovery schedule (159.03239ms)
+✔ merged GraphQL pull requests are terminal and do not block other targets (211.303474ms)
+✔ automatic recovery respects current and shrinking queue capacity (317.119108ms)
+✔ capacity-blocked open targets cannot starve later closed-target cleanup (103.880956ms)
+✔ automatic recovery includes the authoritative transferred GitHub target alias (146.590612ms)
+✔ automatic recovery preserves the only duplicate matching the current pull-request head (159.797936ms)
+✔ duplicate resolution fences every transferred canonical sibling alias (141.337874ms)
+✔ automatic reconciliation does not resolve a target that has reopened (137.887021ms)
+✔ inaccessible canonical targets cannot starve independently invalid dead letters (145.850691ms)
+✔ serial canonical discovery skips one throttle and recovers later targets (160.915817ms)
+✔ multi-owner reconciliation recovers installed targets and reports missing installations (242.723192ms)
+✔ a missing selected repository does not hide an accessible repository under the same owner (205.348775ms)
+✔ throttled owner token mint 429 skips that owner's targets and recovers another owner (250.143816ms)
+✔ throttled owner token mint 403 skips that owner's targets and recovers another owner (174.348934ms)
+✔ throttled installation lookup skips that owner's targets and recovers another owner (285.201971ms)
+✔ an installation removed before token mint remains a bounded missing-installation skip (157.034212ms)
+✔ batched discovery skips a throttled owner setup and continues with another owner (249.049811ms)
+✔ a cached setup throttle spanning three batches counts once and later owners continue (127.257337ms)
+✔ ordinary installation_lookup 401 remains fail-closed (151.692849ms)
+✔ ordinary installation_lookup 403 remains fail-closed (159.693186ms)
+✔ ordinary token_mint 401 remains fail-closed (137.174976ms)
+✔ ordinary token_mint 403 remains fail-closed (124.535655ms)
+✔ persistent setup throttling trips the shared fuse before another owner is attempted (138.905902ms)
+✔ authorization 403 with a valid owner installation remains fail-closed (111.660417ms)
+✔ serial canonical discovery aborts on an authorization 403 (105.912676ms)
+✔ serial canonical discovery aborts after three consecutive throttles (106.697055ms)
+✔ serial recovery revalidation skips one throttle and recovers later targets (117.526866ms)
+✔ serial recovery revalidation aborts on an authorization 403 (117.043197ms)
+✔ serial recovery revalidation aborts after three consecutive throttles (116.770653ms)
+✔ automatic recovery refuses a pull request whose current head has advanced (107.829603ms)
+✔ automatic recovery revalidates the live GitHub target after cleanup (106.669514ms)
+✔ automatic reconciliation classifies every deterministic skip path (776.72443ms)
+✔ automatic reconciliation explains every skipped target in a mixed scenario (122.701478ms)
+✔ operator inventories every page, signs requests, and reports unique targets (104.962046ms)
+✔ operator previews by default and caps mutations at two audited ids (1002.174609ms)
+ℹ tests 82
+ℹ suites 0
+ℹ pass 82
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 17343.005233
+PROOF_PHASE=content
+3f38a21543861f4da16d78162363a7afbdc51d5ea8603b5129fbab6fee1583b4  docs/proof/operator-skip-taxonomy/behavior-contract.md
+b9d10e221d8e5ff7426cd1d04e8b0c251e04a4650d3d5da730856e33daba9fc0  docs/proof/operator-skip-taxonomy/run-proof.sh
+7d81d564b2d5cfaa60440953295b4cd73048feab623bd07879b80c4def64244d  scripts/exact-review-dead-letter-operator.mjs
+3b6747397b8a8522a780c2a79656e10abb6cd04630fde1986f3c941d287d8db1  test/exact-review-dead-letter-operator.test.ts
+Checking formatting...
+
+All matched files use the correct format.
+Finished in 127ms on 4 files using 32 threads.
+PROOF_RESULT=pass

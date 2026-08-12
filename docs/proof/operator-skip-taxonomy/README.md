@@ -6,6 +6,6 @@ This change makes the existing accounting honest without changing reconciliation
 
 The runtime now emits a non-throwing `reconcile_skip_accounting_inconsistent` marker if the reason-count sum ever differs from `skipped_targets`. The loopback harness checks that marker across every successful reconcile scenario, while the mixed invariant fixture directly asserts four reason counts for four skipped targets.
 
-The behavior contract is in `behavior-contract.md`; the red/green record is in `red-green.md`. The final Docker-backed Crabbox lease, content hashes, transcript scan, and cleanup state are recorded in `receipt.json` after execution.
+The behavior contract is in `behavior-contract.md`; the red/green record is in `red-green.md`. The final Docker-backed Crabbox run used `provider=local-container`, lease `cbx_b97d6feb5c2e` (`coral-lobster-1f54`), and image `node:24-bookworm` against committed head `a53a16105b26241023068947440f4e554a034a48`. It passed all 82 operator scenarios and stopped automatically. `receipt.json` binds that head, every executable proof input, the sanitized transcripts, the zero-finding secret scan, and cleanup state.
 
 OpenClaw Bay needs no change: it already consumes the dynamic observer-only `skip_reasons` map, and this work adds neither a new transport shape nor an action surface.
