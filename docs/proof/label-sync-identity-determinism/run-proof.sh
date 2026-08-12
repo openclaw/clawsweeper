@@ -13,6 +13,34 @@ PROOF_DIR="docs/proof/label-sync-identity-determinism"
 ARTIFACT_DIR=".artifacts/label-sync-identity-determinism-proof"
 mkdir -p "$ARTIFACT_DIR"
 
+echo "== tracked state at sync =="
+# A proof is only evidence about the submitted head if the tree still *is* the
+# submitted head when the assertions run. Record the tracked state up front and
+# re-check it at every stage that could disturb it.
+TRACKED_BASELINE="$ARTIFACT_DIR/tracked-state-before.txt"
+capture_tracked_state() {
+  {
+    echo "head: $(git rev-parse HEAD 2>/dev/null || echo unavailable)"
+    echo "package.json sha256: $(sha256sum package.json | cut -d' ' -f1)"
+    echo "pnpm-lock.yaml sha256: $(sha256sum pnpm-lock.yaml | cut -d' ' -f1)"
+    echo "porcelain:"
+    git status --porcelain 2>/dev/null | grep -v '^?? ' || true
+  }
+}
+assert_tracked_state_clean() {
+  local stage="$1" current="$ARTIFACT_DIR/tracked-state-current.txt"
+  capture_tracked_state >"$current"
+  if ! diff -u "$TRACKED_BASELINE" "$current" >"$ARTIFACT_DIR/tracked-state-diff.txt"; then
+    echo "FAIL: the checkout's tracked state changed ($stage)."
+    echo "      The recorded result would describe a tree other than the submitted head."
+    cat "$ARTIFACT_DIR/tracked-state-diff.txt"
+    exit 1
+  fi
+  echo "tracked state unchanged ($stage)"
+}
+capture_tracked_state | tee "$TRACKED_BASELINE"
+echo
+
 echo "== environment =="
 uname -a
 node --version
@@ -49,10 +77,25 @@ pnpm install --frozen-lockfile >"$ARTIFACT_DIR/install.log" 2>&1 \
 node -e "require.resolve('typescript/package.json')" >/dev/null 2>&1 || {
   echo "FAIL: typescript missing after install"; exit 1;
 }
-if ! node -e "require('typescript')" >/dev/null 2>&1; then
-  echo "typescript platform binary missing; fetching"
-  pnpm install --frozen-lockfile --force >>"$ARTIFACT_DIR/install.log" 2>&1 || true
+# Any fallback must stay out of the checkout's tracked dependency metadata: a proof
+# that edits package.json or pnpm-lock.yaml before it builds describes a tree that no
+# longer matches the submitted head. Install into a disposable prefix outside the
+# workspace and copy into node_modules/, which is untracked build state.
+TS_PLATFORM_PKG="@typescript/typescript-$(node -p 'process.platform')-$(node -p 'process.arch')"
+if [ ! -d "node_modules/$TS_PLATFORM_PKG" ]; then
+  echo "NOTE: $TS_PLATFORM_PKG missing after install; fetching it into a disposable prefix"
+  TS_FALLBACK_DIR="$(mktemp -d)"
+  TS_VERSION="$(node -p "require('./node_modules/typescript/package.json').version")"
+  npm install --prefix "$TS_FALLBACK_DIR" --no-save --no-audit --no-fund --ignore-scripts \
+    "$TS_PLATFORM_PKG@$TS_VERSION" >>"$ARTIFACT_DIR/install.log" 2>&1 || true
+  if [ -d "$TS_FALLBACK_DIR/node_modules/$TS_PLATFORM_PKG" ]; then
+    mkdir -p "node_modules/$(dirname "$TS_PLATFORM_PKG")"
+    cp -R "$TS_FALLBACK_DIR/node_modules/$TS_PLATFORM_PKG" "node_modules/$TS_PLATFORM_PKG"
+    echo "fallback source: $TS_FALLBACK_DIR (outside the workspace)"
+  fi
+  rm -rf "$TS_FALLBACK_DIR"
 fi
+assert_tracked_state_clean "after dependency install"
 pnpm run build:node >"$ARTIFACT_DIR/build.log" 2>&1 \
   || { echo "FAIL: pnpm run build:node"; tail -30 "$ARTIFACT_DIR/build.log"; exit 1; }
 test -f dist/clawsweeper-label-mutations.js \
@@ -119,5 +162,11 @@ echo "== focused regression suite =="
 node --test test/label-mutation-batch.test.ts 2>&1 | tail -12 \
   | tee "$ARTIFACT_DIR/focused-tests.txt"
 
+echo
+echo "== tracked state after proof =="
+# The closing check is what matters for review: it says the tree that produced
+# every result above is still byte-for-byte the submitted head.
+assert_tracked_state_clean "end of run"
+cat "$TRACKED_BASELINE"
 echo
 echo "artifacts written to $ARTIFACT_DIR"

@@ -2,9 +2,23 @@
 
 ## Claim
 
-The `issue_labels_sync:<number>:add=…:remove=…` identity stamped on a published
-label mutation depends only on the label set, not on the order the labels were
-queued or on the ICU locale of the machine that produced it.
+The `issue_labels_sync:<number>:add=…:remove=…` identity recorded for a published
+label mutation depends only on the label set — not on the order the labels were
+queued, and not on the ICU locale of the machine that produced it.
+
+### What this does *not* claim
+
+This change does **not** prevent a duplicate GitHub label edit, and the proof does
+not assert that it does. `src/clawsweeper-apply-decision-workflow.ts` records the
+mutation attempt and then calls `options.operation()` unconditionally; nothing
+consults the identity beforehand to suppress an edit. What the identity feeds is
+`applyMutationBusinessIdempotencyIdentity` in `src/clawsweeper-apply-ledger.ts:274`,
+which hashes it into the recorded ledger event.
+
+So the property being fixed is that the recorded key is **canonical**: one label set
+produces one key on every runner. An idempotency identity that varies by collation
+cannot serve as a key for anything — audit correlation today, or an enforcement gate
+later. Building that gate is a separate change; see the linked issue.
 
 ## Exercised surface
 
@@ -47,8 +61,8 @@ Recorded run:
 |---|---|
 | provider | `local-container` (runtime `docker`) |
 | image | `node:24` → `v24.19.0`, `Linux aarch64` |
-| lease | `cbx_22f9e117ae32` (`swift-hermit`) |
-| run | `run_16ab137d00ec` |
+| lease | `cbx_2372328bd375` (`golden-barnacle`) |
+| run | `run_43d124d11e64` |
 | base staged | `5439582b` · `src/clawsweeper-label-mutations.ts` · sha256 `f2fee8cc…f846` |
 | exit | `0` |
 
@@ -78,15 +92,33 @@ change only affects ordering; the script fails the proof if that ever stops hold
 
 ## Artifact / trace
 
-`.crabbox/runs/run_16ab137d00ec/run_16ab137d00ec-artifacts.tgz` holds
+`.crabbox/runs/run_43d124d11e64/run_43d124d11e64-artifacts.tgz` holds
 `.artifacts/label-sync-identity-determinism-proof/` with `before-output.txt`,
 `proof-output.txt`, `focused-tests.txt`, and the install/build logs.
+
+## The run cannot alter the head it is proving
+
+The script records `package.json` and `pnpm-lock.yaml` digests plus
+`git status --porcelain` at sync, then re-checks them after dependency installation
+and at the end of the run; any drift aborts with a diff. The platform-native
+TypeScript fallback installs into a disposable prefix outside the workspace rather
+than writing tracked dependency metadata, so the recorded result does not disturb
+the head it is describing.
 
 ## Limits
 
 This proves the identity string and the ordering that feeds it. It does not call
-GitHub and does not exercise the ledger's dedupe path end to end — it establishes
-that the key handed to the ledger is stable, not what the ledger then does with it.
+GitHub, and it deliberately does not claim ledger enforcement: the mutation boundary
+is stubbed because there is no pre-execution dedupe path in current source to
+exercise. Read this as evidence that the key handed to the ledger is stable, not
+that anything yet acts on it.
+
+**Compatibility.** Records written before this change carry locale-sorted
+identities, so their key differs from the one the same label set produces now. No
+behavior depends on matching them today — nothing looks the identity up — but any
+future dedupe gate has to treat pre-change identities as non-matching rather than
+assume continuity.
+
 The order of names inside the `--add-label` / `--remove-label` arguments changes as a
 side effect; GitHub treats those as sets, so the resulting label state is unchanged,
 but three existing assertions in `test/label-mutation-batch.test.ts` that pinned the
