@@ -1,16 +1,16 @@
 # CSW-127 Phase 0.5 executed proof
 
 The controlled runtime proof succeeded on Docker-backed Crabbox
-`local-container` lease `cbx_7a017f5153b2` (`swift-hermit-9598`) using
+`local-container` lease `cbx_1df4ca79b0b1` (`blue-krill-5534`) using
 `mcr.microsoft.com/playwright:v1.60.0-noble`. The lease stopped automatically
 after the run. It exercised source head
-`05eaf24a317d217dbedc32ee1c9e53296d3778a1` on base
-`9a257905e50be2dff9bb99afecb6cde50f8417f9`; the follow-up commit that records
+`3a95d75996e654d9a97294d55a3235998fc3cd43` on base
+`ae36d608d01701af7e06c313be96689068b5c890`; the follow-up commit that records
 this refreshed receipt changes evidence files only.
 
 ## Observed result
 
-- All 323 focused queue, command-intake, publication, health, Bay, and egress
+- All 324 focused queue, command-intake, publication, health, Bay, and egress
   telemetry tests passed.
 - A real local Worker and Durable Object accepted signed v2 egress telemetry,
   deduplicated its receipt, and created exactly one attributable

@@ -47,14 +47,23 @@ npx --yes wrangler@4.107.0 dev \
   --var "EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS:0" \
   >"${proof_log}" 2>&1 &
 worker_pid=$!
-cleanup() {
+finish() {
+  status=$?
+  trap - EXIT
+  if [ "${status}" -ne 0 ]; then
+    echo CRABBOX_PROOF_FAILURE:worker_log >&2
+    tail -n 120 "${proof_log}" >&2 || true
+    echo CRABBOX_PROOF_FAILURE:mock_log >&2
+    tail -n 80 "${mock_log}" >&2 || true
+  fi
   kill "${worker_pid}" >/dev/null 2>&1 || true
   wait "${worker_pid}" >/dev/null 2>&1 || true
   kill "${mock_pid}" >/dev/null 2>&1 || true
   wait "${mock_pid}" >/dev/null 2>&1 || true
   rm -f "${proof_key}" "${mock_log}" "${proof_log}"
+  exit "${status}"
 }
-trap cleanup EXIT
+trap finish EXIT
 
 for _ in $(seq 1 30); do
   if curl --fail --silent "${PROOF_GITHUB_MOCK_URL}/health" >/dev/null; then

@@ -1,25 +1,25 @@
 {
   "contract": "CSW-127 Phase 0.5 quota recovery",
   "provider": "local-container",
-  "lease_id": "cbx_7a017f5153b2",
-  "slug": "swift-hermit-9598",
+  "lease_id": "cbx_1df4ca79b0b1",
+  "slug": "blue-krill-5534",
   "image": "mcr.microsoft.com/playwright:v1.60.0-noble",
-  "source_head": "05eaf24a317d217dbedc32ee1c9e53296d3778a1",
-  "base_head": "9a257905e50be2dff9bb99afecb6cde50f8417f9",
+  "source_head": "3a95d75996e654d9a97294d55a3235998fc3cd43",
+  "base_head": "ae36d608d01701af7e06c313be96689068b5c890",
   "sync_mode": "read-only host bind mount copied into an isolated container workdir",
   "run_status": "succeeded",
   "exit_code": 0,
   "timing_ms": {
-    "total": 55279,
-    "command": 55077,
-    "build": 3505,
-    "focused_tests": 6051,
-    "worker_do_proof": 29879,
-    "bay_render_proof": 6122,
-    "scoped_lint": 1499
+    "total": 57153,
+    "command": 56936,
+    "build": 4508,
+    "focused_tests": 6343,
+    "worker_do_proof": 29818,
+    "bay_render_proof": 5875,
+    "scoped_lint": 1490
   },
   "focused_tests": {
-    "passed": 323,
+    "passed": 324,
     "failed": 0
   },
   "observed": {
