@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { parseArgs as parseNodeArgs } from "node:util";
+import { isGitHubThrottleFailure } from "./operator-skip-reasons.mjs";
 
 export const STALE_QUEUED_AGE_MS = 90 * 60 * 1000;
 export const STARTED_AROUND_EVIDENCE_COUNT = 3;
@@ -21,6 +22,8 @@ const DEFAULT_ZOMBIE_SEED = "config/stuck-queued-run-zombies.json";
 const MAX_LIST_PAGES = 10;
 const PER_PAGE = 100;
 const REQUEST_TIMEOUT_MS = 20_000;
+const GET_MAX_ATTEMPTS = 3;
+const GET_RETRY_DELAY_MS = 100;
 const DEADLINE_SETTLE_MS = 25;
 const RUN_ID = /^[1-9]\d*$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -271,14 +274,23 @@ Options:
     ? await readZombieState(args.zombieState, { required: false })
     : { schema_version: 1, zombies: [] };
   const zombieState = mergeZombieRecords(seedState, priorState);
+  const skipReasons = {};
+  const skipSamples = [];
+  let githubThrottleSkipped = false;
   let deadlineReached = remediationDeadlineReached(deadline.deadline_ms);
   let queuedInventory = { runs: [], complete: false };
   if (!deadlineReached) {
     try {
       queuedInventory = await api.listQueuedRuns();
     } catch (error) {
-      if (!remediationDeadlineReached(deadline.deadline_ms)) throw error;
-      deadlineReached = true;
+      if (isGitHubThrottleFailure(error)) {
+        recordGitHubThrottleSkip({ error, phase: "discovery", skipReasons, skipSamples });
+        githubThrottleSkipped = true;
+      } else if (remediationDeadlineReached(deadline.deadline_ms)) {
+        deadlineReached = true;
+      } else {
+        throw error;
+      }
     }
   }
   const staleWorkflows = new Map();
@@ -317,7 +329,11 @@ Options:
       historyByWorkflow.set(workflowId, history.runs);
       historyCompleteByWorkflow.set(workflowId, history.complete);
     } catch (error) {
-      if (remediationDeadlineReached(deadline.deadline_ms)) {
+      if (isGitHubThrottleFailure(error)) {
+        recordGitHubThrottleSkip({ error, phase: "discovery", skipReasons, skipSamples });
+        githubThrottleSkipped = true;
+        break;
+      } else if (remediationDeadlineReached(deadline.deadline_ms)) {
         deadlineReached = true;
         historyErrors.push({
           workflow_id: workflowId,
@@ -325,7 +341,7 @@ Options:
         });
         break;
       }
-      historyErrors.push({ workflow_id: workflowId, error: errorMessage(error) });
+      throw error;
     }
   }
 
@@ -337,7 +353,7 @@ Options:
     nowMs,
   });
   const actions = [];
-  if (args.execute) {
+  if (args.execute && !githubThrottleSkipped) {
     for (const candidate of plan.selected) {
       if (remediationDeadlineReached(deadline.deadline_ms)) {
         deadlineReached = true;
@@ -347,8 +363,14 @@ Options:
       try {
         current = await api.getRun(candidate.run_id);
       } catch (error) {
-        if (!remediationDeadlineReached(deadline.deadline_ms)) throw error;
-        deadlineReached = true;
+        if (isGitHubThrottleFailure(error)) {
+          recordGitHubThrottleSkip({ error, phase: "remediation", skipReasons, skipSamples });
+          githubThrottleSkipped = true;
+        } else if (remediationDeadlineReached(deadline.deadline_ms)) {
+          deadlineReached = true;
+        } else {
+          throw error;
+        }
         break;
       }
       if (String(current.status || "") !== "queued") {
@@ -371,8 +393,14 @@ Options:
           now: generatedAt,
         });
       } catch (error) {
-        if (!remediationDeadlineReached(deadline.deadline_ms)) throw error;
-        deadlineReached = true;
+        if (isGitHubThrottleFailure(error)) {
+          recordGitHubThrottleSkip({ error, phase: "remediation", skipReasons, skipSamples });
+          githubThrottleSkipped = true;
+        } else if (remediationDeadlineReached(deadline.deadline_ms)) {
+          deadlineReached = true;
+        } else {
+          throw error;
+        }
         break;
       }
       actions.push(action);
@@ -411,6 +439,8 @@ Options:
       skipped_by_deadline: skippedByDeadline,
     },
     history_errors: historyErrors,
+    skip_reasons: skipReasons,
+    skip_samples: skipSamples,
     selected_count: plan.selected.length,
     selected: plan.selected,
     candidates: plan.candidates,
@@ -450,11 +480,17 @@ function githubApi({ repository, token, deadlineAtMs }) {
     return response;
   };
   const getJson = async (path) => {
-    const response = await request(path);
-    if (!response.ok) {
-      throw new Error(`GET ${path} returned ${response.status}: ${await response.text()}`);
+    for (let attempt = 1; attempt <= GET_MAX_ATTEMPTS; attempt += 1) {
+      const response = await request(path);
+      if (response.ok) return response.json();
+      const body = await response.text();
+      if (response.status >= 500 && attempt < GET_MAX_ATTEMPTS) {
+        await new Promise((resolveRetry) => setTimeout(resolveRetry, GET_RETRY_DELAY_MS * attempt));
+        continue;
+      }
+      throw new GitHubRequestError("GET", path, response.status, body);
     }
-    return response.json();
+    throw new Error(`GET ${path} exhausted retries`);
   };
   const listRuns = async (pathForPage) => {
     const runs = [];
@@ -483,7 +519,11 @@ function githubApi({ repository, token, deadlineAtMs }) {
     },
     getRun: (runId) => getJson(`/actions/runs/${runId}`),
     postCancellation: async (runId, endpoint) => {
-      const response = await request(`/actions/runs/${runId}/${endpoint}`, { method: "POST" });
+      const path = `/actions/runs/${runId}/${endpoint}`;
+      const response = await request(path, { method: "POST" });
+      if ([401, 403, 429].includes(response.status)) {
+        throw new GitHubRequestError("POST", path, response.status, await response.text());
+      }
       return { ok: response.ok, status: response.status };
     },
   };
@@ -545,6 +585,32 @@ function logAction(action, candidate) {
   );
 }
 
+function recordGitHubThrottleSkip({ error, phase, skipReasons, skipSamples }) {
+  const requestPath =
+    error && typeof error === "object" && typeof error.requestPath === "string"
+      ? error.requestPath
+      : "unknown";
+  skipReasons.github_throttled = (skipReasons.github_throttled || 0) + 1;
+  skipSamples.push({ phase, request_path: requestPath });
+  process.stdout.write(
+    `${JSON.stringify({
+      event: "stuck_queued_remediation_skipped",
+      skip_reasons: { github_throttled: 1 },
+      phase,
+      request_path: requestPath,
+    })}\n`,
+  );
+}
+
+class GitHubRequestError extends Error {
+  constructor(method, requestPath, status, body) {
+    super(`${method} ${requestPath} returned ${status}: ${body}`);
+    this.name = "GitHubRequestError";
+    this.requestPath = requestPath;
+    this.status = status;
+  }
+}
+
 async function appendStepSummary(summary) {
   if (!process.env.GITHUB_STEP_SUMMARY) return;
   const lines = [
@@ -558,6 +624,7 @@ async function appendStepSummary(summary) {
     `- Selected: ${summary.selected_count}`,
     `- Actions: ${summary.actions.length}`,
     `- Permanent zombies: ${summary.permanent_zombie_count}`,
+    `- Skip reasons: ${JSON.stringify(summary.skip_reasons)}`,
     "",
   ];
   await writeFile(process.env.GITHUB_STEP_SUMMARY, `${lines.join("\n")}\n`, { flag: "a" });

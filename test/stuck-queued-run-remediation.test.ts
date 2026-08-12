@@ -193,6 +193,252 @@ test("does not force-cancel when regular cancellation fails with a non-500 statu
   assert.equal(action.outcome, "cancel_failed");
 });
 
+test("discovery GitHub throttling exits successfully with a structured skip reason", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "clawsweeper-stuck-throttle-"));
+  const output = join(scratch, "summary.json");
+  const zombieOutput = join(scratch, "zombies.json");
+  const zombieSeed = join(scratch, "seed.json");
+  await writeFile(zombieSeed, '{"schema_version":1,"zombies":[]}\n', "utf8");
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(403, { "content-type": "application/json" });
+    response.end(JSON.stringify({ message: "API rate limit exceeded for installation" }));
+  });
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  try {
+    const result = await runProduction({
+      apiUrl: `http://127.0.0.1:${address.port}`,
+      sharedDeadlineMs: Date.now() + DEAD_LETTER_RESERVED_MS + 30_000,
+      output,
+      zombieOutput,
+      zombieSeed,
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+    const skipLine = result.stdout
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .find((line) => line?.event === "stuck_queued_remediation_skipped");
+    assert.deepEqual(skipLine, {
+      event: "stuck_queued_remediation_skipped",
+      skip_reasons: { github_throttled: 1 },
+      phase: "discovery",
+      request_path: "/actions/runs?status=queued&per_page=100&page=1",
+    });
+    const summary = JSON.parse(await readFile(output, "utf8"));
+    assert.deepEqual(summary.skip_reasons, { github_throttled: 1 });
+    assert.deepEqual(summary.skip_samples, [
+      {
+        phase: "discovery",
+        request_path: "/actions/runs?status=queued&per_page=100&page=1",
+      },
+    ]);
+    assert.equal(requests, 1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("persistent discovery 5xx still exits unsuccessfully after bounded retry", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "clawsweeper-stuck-5xx-"));
+  const output = join(scratch, "summary.json");
+  const zombieOutput = join(scratch, "zombies.json");
+  const zombieSeed = join(scratch, "seed.json");
+  await writeFile(zombieSeed, '{"schema_version":1,"zombies":[]}\n', "utf8");
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(503, { "content-type": "application/json" });
+    response.end(JSON.stringify({ message: "Service Unavailable" }));
+  });
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  try {
+    const result = await runProduction({
+      apiUrl: `http://127.0.0.1:${address.port}`,
+      sharedDeadlineMs: Date.now() + DEAD_LETTER_RESERVED_MS + 30_000,
+      output,
+      zombieOutput,
+      zombieSeed,
+    });
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /returned 503/);
+    assert.equal(requests, 3);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("a non-throttle discovery 403 remains a hard failure", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "clawsweeper-stuck-auth-"));
+  const output = join(scratch, "summary.json");
+  const zombieOutput = join(scratch, "zombies.json");
+  const zombieSeed = join(scratch, "seed.json");
+  await writeFile(zombieSeed, '{"schema_version":1,"zombies":[]}\n', "utf8");
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(403, { "content-type": "application/json" });
+    response.end(JSON.stringify({ message: "Resource not accessible by integration" }));
+  });
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  try {
+    const result = await runProduction({
+      apiUrl: `http://127.0.0.1:${address.port}`,
+      sharedDeadlineMs: Date.now() + DEAD_LETTER_RESERVED_MS + 30_000,
+      output,
+      zombieOutput,
+      zombieSeed,
+    });
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /returned 403/);
+    assert.equal(requests, 1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("an unexpected discovery response shape remains a hard failure", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "clawsweeper-stuck-shape-"));
+  const output = join(scratch, "summary.json");
+  const zombieOutput = join(scratch, "zombies.json");
+  const zombieSeed = join(scratch, "seed.json");
+  await writeFile(zombieSeed, '{"schema_version":1,"zombies":[]}\n', "utf8");
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ total_count: 1, workflow_runs: {} }));
+  });
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  try {
+    const result = await runProduction({
+      apiUrl: `http://127.0.0.1:${address.port}`,
+      sharedDeadlineMs: Date.now() + DEAD_LETTER_RESERVED_MS + 30_000,
+      output,
+      zombieOutput,
+      zombieSeed,
+    });
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /invalid run inventory/);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("mid-remediation throttling stops after completed actions and exits successfully", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "clawsweeper-stuck-mid-throttle-"));
+  const output = join(scratch, "summary.json");
+  const zombieOutput = join(scratch, "zombies.json");
+  const zombieSeed = join(scratch, "seed.json");
+  await writeFile(zombieSeed, '{"schema_version":1,"zombies":[]}\n', "utf8");
+  const first = queuedRun(100, 180);
+  const second = queuedRun(101, 170);
+  const history = [
+    newerRun(1, second, "completed"),
+    newerRun(2, second, "in_progress"),
+    newerRun(3, second, "completed"),
+  ];
+  const requests: string[] = [];
+  const server = createServer((request, response) => {
+    const url = new URL(request.url || "/", "http://loopback.invalid");
+    requests.push(`${request.method} ${url.pathname}`);
+    const base = "/repos/openclaw/clawsweeper";
+    if (request.method === "GET" && url.pathname === `${base}/actions/runs`) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ total_count: 2, workflow_runs: [first, second] }));
+      return;
+    }
+    if (request.method === "GET" && url.pathname === `${base}/actions/workflows/42/runs`) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ total_count: history.length, workflow_runs: history }));
+      return;
+    }
+    if (request.method === "GET" && url.pathname === `${base}/actions/runs/100`) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(first));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === `${base}/actions/runs/100/cancel`) {
+      response.writeHead(202).end();
+      return;
+    }
+    if (request.method === "GET" && url.pathname === `${base}/actions/runs/101`) {
+      response.writeHead(429, { "content-type": "application/json" });
+      response.end(JSON.stringify({ message: "You have exceeded a secondary rate limit." }));
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  try {
+    const result = await runProduction({
+      apiUrl: `http://127.0.0.1:${address.port}`,
+      sharedDeadlineMs: Date.now() + DEAD_LETTER_RESERVED_MS + 30_000,
+      output,
+      zombieOutput,
+      zombieSeed,
+      execute: true,
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+    const summary = JSON.parse(await readFile(output, "utf8"));
+    assert.deepEqual(summary.actions, [
+      {
+        run_id: "100",
+        outcome: "cancel_requested",
+        cancel_status: 202,
+        force_cancel_status: null,
+      },
+    ]);
+    assert.deepEqual(summary.skip_reasons, { github_throttled: 1 });
+    assert.deepEqual(summary.skip_samples, [
+      { phase: "remediation", request_path: "/actions/runs/101" },
+    ]);
+    assert.equal(requests.at(-1), "GET /repos/openclaw/clawsweeper/actions/runs/101");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
 test("slow workflow discovery stops at the shared deadline with dead-letter headroom intact", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "clawsweeper-stuck-deadline-"));
   const output = join(scratch, "summary.json");
@@ -271,41 +517,43 @@ async function runProduction({
   output,
   zombieOutput,
   zombieSeed,
+  execute = false,
 }: {
   apiUrl: string;
   sharedDeadlineMs: number;
   output: string;
   zombieOutput: string;
   zombieSeed: string;
+  execute?: boolean;
 }) {
-  const child = spawn(
-    process.execPath,
-    [
-      "scripts/stuck-queued-run-remediation.mjs",
-      "--repository",
-      "openclaw/clawsweeper",
-      "--output",
-      output,
-      "--zombie-output",
-      zombieOutput,
-      "--zombie-seed",
-      zombieSeed,
-    ],
-    {
-      env: {
-        ...process.env,
-        GITHUB_API_URL: apiUrl,
-        GITHUB_TOKEN: "deadline-test-token",
-        EXACT_REVIEW_RECONCILE_DEADLINE_MS: String(sharedDeadlineMs),
-      },
-      stdio: ["ignore", "ignore", "pipe"],
+  const args = [
+    "scripts/stuck-queued-run-remediation.mjs",
+    "--repository",
+    "openclaw/clawsweeper",
+    "--output",
+    output,
+    "--zombie-output",
+    zombieOutput,
+    "--zombie-seed",
+    zombieSeed,
+  ];
+  if (execute) args.push("--execute");
+  const child = spawn(process.execPath, args, {
+    env: {
+      ...process.env,
+      GITHUB_API_URL: apiUrl,
+      GITHUB_TOKEN: "deadline-test-token",
+      EXACT_REVIEW_RECONCILE_DEADLINE_MS: String(sharedDeadlineMs),
     },
-  );
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
   let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
   child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
   const exitCode = await new Promise<number | null>((resolveExit, reject) => {
     child.once("error", reject);
     child.once("close", resolveExit);
   });
-  return { exitCode, stderr };
+  return { exitCode, stdout, stderr };
 }

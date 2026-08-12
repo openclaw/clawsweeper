@@ -73,6 +73,8 @@ test("queued workflow remediation shares the guarded dead-letter cadence", () =>
   const remediate = workflow.jobs.reconcile.steps.find(
     (step: Record<string, unknown>) => step.name === "Remediate demonstrably stuck queued runs",
   );
+  assert.equal(remediate.id, "remediate");
+  assert.equal(remediate["continue-on-error"], true);
   assert.equal(remediate.env.GITHUB_TOKEN, "${{ github.token }}");
   assert.equal(
     remediate.env.EXECUTE,
@@ -80,11 +82,29 @@ test("queued workflow remediation shares the guarded dead-letter cadence", () =>
   );
   assert.match(String(remediate.run), /stuck-queued-run-remediation\.mjs/);
   assert.match(String(remediate.run), /--execute/);
+  const steps = workflow.jobs.reconcile.steps as Array<Record<string, unknown>>;
+  const reconcileIndex = steps.findIndex(
+    (step) => step.name === "Reconcile closed, duplicate, and recoverable dead letters",
+  );
+  const parkedIndex = steps.findIndex(
+    (step) => step.name === "Reconcile terminal and open parked reviews",
+  );
+  const remediationFailureIndex = steps.findIndex(
+    (step) => step.name === "Fail if queued-run remediation failed",
+  );
+  assert.ok(reconcileIndex > steps.indexOf(remediate));
+  assert.ok(parkedIndex > reconcileIndex);
+  assert.ok(remediationFailureIndex > parkedIndex);
+  assert.match(
+    String(steps[remediationFailureIndex]?.if),
+    /steps\.remediate\.outcome == 'failure'/,
+  );
   const upload = workflow.jobs.reconcile.steps.find(
     (step: Record<string, unknown>) => step.name === "Upload sanitized inventory",
   );
   assert.match(String(upload.with.path), /stuck-queued-runs\.json/);
   assert.match(String(upload.with.path), /stuck-queued-zombies\.json/);
+  assert.equal(upload.with["if-no-files-found"], "ignore");
 });
 
 test("exact review generation enters finalization before state hydration", () => {

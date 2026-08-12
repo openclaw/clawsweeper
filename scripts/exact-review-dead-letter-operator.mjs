@@ -5,6 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { parseArgs as parseNodeArgs } from "node:util";
+import { classifyOperatorSkipReason } from "./operator-skip-reasons.mjs";
 
 const DEFAULT_OUTPUT = ".artifacts/exact-review-dlq/inventory.json";
 const MAX_SELECTED_IDS = 2;
@@ -1368,7 +1369,7 @@ function countBy(rows, keyFor) {
 function recordInspectionSkips(summary, targets, error) {
   if (targets.length === 0) return;
   const reason = sanitizeSkipReason(error);
-  const reasonClass = classifySkipReason(reason);
+  const reasonClass = classifyOperatorSkipReason(reason);
   recordSkipReasonCount(summary, reasonClass, targets.length);
   for (const target of targets) {
     if (summary.skip_samples.length >= MAX_SKIP_SAMPLES) break;
@@ -1417,33 +1418,6 @@ function sanitizeSkipReason(error) {
     .replace(/\s+/g, " ")
     .trim();
   return (sanitized || "unknown inspection failure").slice(0, MAX_SKIP_REASON_LENGTH);
-}
-
-function classifySkipReason(reason) {
-  const normalized = reason.toLowerCase();
-  if (normalized.includes("not inspected because canonical discovery aborted")) {
-    return "not_inspected_abort";
-  }
-  if (normalized.includes("inspected but reconciliation aborted")) {
-    return "inspected_before_abort";
-  }
-  if (normalized.includes("missing from an existing repository")) {
-    return "missing_from_existing_repository";
-  }
-  if (
-    normalized.includes("invalid identity") ||
-    normalized.includes("invalid canonical identity")
-  ) {
-    return "invalid_identity";
-  }
-  if (/\b(timeout|timed out|aborterror|timeouterror)\b/.test(normalized)) return "timeout";
-  const status = /(?:\bwith|\breturned|\()\s*([1-5]\d{2})\)?\b/.exec(normalized)?.[1];
-  if (status === "403") return "http_403";
-  if (status === "429") return "http_429";
-  if (status?.startsWith("5")) return "http_5xx";
-  if (status?.startsWith("4")) return "http_4xx";
-  if (status?.startsWith("3")) return "http_3xx";
-  return "other";
 }
 
 async function signedPost({

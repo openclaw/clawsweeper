@@ -1,0 +1,26 @@
+Remediation throttle skip red/green transcript
+Base: openclaw/clawsweeper@e0dc54438e6562f144623fcde2263b3b839fe28d
+Environment: Node v24.19.0, macOS, loopback HTTP via GITHUB_API_URL
+
+RED (test-only patch; production script still at base behavior)
+$ node --test --test-name-pattern='discovery GitHub throttling' test/stuck-queued-run-remediation.test.ts
+exit_code=1
+not ok - discovery GitHub throttling exits successfully with a structured skip reason
+AssertionError [ERR_ASSERTION]: GET /actions/runs?status=queued&per_page=100&page=1 returned 403: {"message":"API rate limit exceeded for installation"}
+1 !== 0
+tests 1
+pass 0
+fail 1
+
+GREEN (implementation plus workflow isolation)
+$ node --test --test-name-pattern='discovery GitHub throttling|persistent discovery 5xx|non-throttle discovery 403|unexpected discovery response shape|mid-remediation throttling|queued workflow remediation' test/stuck-queued-run-remediation.test.ts test/review-reliability-workflow.test.ts
+exit_code=0
+ok - queued workflow remediation shares the guarded dead-letter cadence
+ok - discovery GitHub throttling exits successfully with a structured skip reason
+ok - persistent discovery 5xx still exits unsuccessfully after bounded retry
+ok - a non-throttle discovery 403 remains a hard failure
+ok - an unexpected discovery response shape remains a hard failure
+ok - mid-remediation throttling stops after completed actions and exits successfully
+tests 6
+pass 6
+fail 0

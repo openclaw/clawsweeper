@@ -79,6 +79,8 @@ jobs:
           echo "restored queued-run zombie state from artifact ${artifact_id}"
 
       - name: Remediate demonstrably stuck queued runs
+        id: remediate
+        continue-on-error: true
         env:
           EXECUTE: ${{ github.event_name == 'schedule' && 'true' || github.event.inputs.execute }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -153,6 +155,12 @@ jobs:
           fi
           node scripts/exact-review-dead-letter-operator.mjs "${args[@]}"
 
+      - name: Fail if queued-run remediation failed
+        if: ${{ always() && steps.remediate.outcome == 'failure' }}
+        run: |
+          echo "Queued-run remediation failed after dead-letter reconciliation completed" >&2
+          exit 1
+
       - name: Upload sanitized inventory
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -164,5 +172,5 @@ jobs:
             .artifacts/exact-review-dlq/stuck-queued-runs.json
             .artifacts/exact-review-dlq/stuck-queued-zombies.json
           include-hidden-files: true
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 14
