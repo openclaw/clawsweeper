@@ -25,12 +25,15 @@ this refreshed receipt changes evidence files only.
   deduplicated and could not introduce or extend a circuit.
 - The public queue response contained no `pool_identity`; the bounded recovery
   reason counters were present.
+- The same real Worker/Durable Object state requeued one controlled cancelled
+  review and rendered `1 recovering after workflow cancelled` on OpenClaw Bay;
+  the redacted current-head screenshot is `bay-recovery.png`.
 - Builds and scoped dashboard/script lint completed cleanly in the container.
 - No GitHub workflow, queue, DLQ, gate, credential, deployment, or production
   state was touched.
 
 The structured receipt is in `container-receipt.json`. The exact executable
-fixtures are `run-proof.sh` and `run-proof.mjs`.
+fixtures are `run-proof.sh`, `run-proof.mjs`, and `github-mock.mjs`.
 
 ## Transport and formatting limits
 

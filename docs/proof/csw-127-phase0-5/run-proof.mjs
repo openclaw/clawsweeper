@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 
 const baseUrl = process.env.PROOF_BASE_URL || "http://127.0.0.1:8787";
 const secret = process.env.PROOF_WEBHOOK_SECRET || "phase0-5-proof-secret";
+const githubMockUrl = process.env.PROOF_GITHUB_MOCK_URL || "http://127.0.0.1:8790";
 
 function signature(body) {
   return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
@@ -60,6 +61,21 @@ function rateLimitObservation({ poolClass, observedAt, retryAfterSeconds, resetA
 async function waitUntil(timestamp) {
   const delay = timestamp - Date.now();
   if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+async function waitForJson(url, attempts = 80) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const response = await fetch(url);
+    if (response.ok) return response.json();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const diagnosticResponse = await fetch(`${githubMockUrl}/proof/requests`);
+  const diagnostic = diagnosticResponse.ok ? await diagnosticResponse.json() : null;
+  const queueResponse = await fetch(`${baseUrl}/api/exact-review-queue`);
+  const queue = queueResponse.ok ? await queueResponse.json() : null;
+  throw new Error(
+    `timed out waiting for ${url}: ${JSON.stringify({ diagnostic, dispatcher: queue?.dispatcher, review: queue?.lanes?.review })}`,
+  );
 }
 
 const producerRunId = "9990001";
@@ -206,6 +222,55 @@ const recovered = await claim("proof-after-jitter");
 assert.equal(recovered.claimed, true, JSON.stringify(recovered));
 assert.equal(recovered.batch.items.length, 1);
 
+const reviewItemNumber = 990002;
+const reviewEnqueue = await signedPost("/internal/exact-review/enqueue", {
+  delivery_id: "phase0-5-proof-review-recovery",
+  decision: {
+    targetRepo,
+    targetBranch: "main",
+    itemNumber: reviewItemNumber,
+    itemKind: "issue",
+    sourceEvent: "issues",
+    sourceAction: "opened",
+    supersedesInProgress: false,
+  },
+});
+assert.equal(reviewEnqueue.queued, true, JSON.stringify(reviewEnqueue));
+
+const dispatch = await waitForJson(`${githubMockUrl}/proof/latest-dispatch`);
+assert.equal(dispatch.target_repo, targetRepo);
+assert.equal(dispatch.item_number, reviewItemNumber);
+assert.equal(dispatch.queue_claim.item_key, `${targetRepo}#${reviewItemNumber}`);
+const reviewRunId = "9900020";
+const reviewClaim = await signedPost("/internal/exact-review/claim", {
+  lease_id: dispatch.queue_lease_id,
+  item_key: dispatch.queue_claim.item_key,
+  lease_revision: dispatch.queue_claim.lease_revision,
+  run_id: reviewRunId,
+  run_attempt: 1,
+});
+assert.equal(reviewClaim.claimed, true, JSON.stringify(reviewClaim));
+const reviewComplete = await signedPost("/internal/exact-review/complete", {
+  lease_id: dispatch.queue_lease_id,
+  item_key: dispatch.queue_claim.item_key,
+  lease_revision: dispatch.queue_claim.lease_revision,
+  claim_generation: reviewClaim.claim_generation,
+  run_id: reviewRunId,
+  run_attempt: 1,
+  outcome: "cancelled",
+});
+assert.deepEqual(reviewComplete, { ok: true, requeued: true });
+
+const recoveryStatsResponse = await fetch(`${baseUrl}/api/exact-review-queue`);
+assert.equal(recoveryStatsResponse.ok, true, `recovery stats HTTP ${recoveryStatsResponse.status}`);
+const recoveryStats = await recoveryStatsResponse.json();
+assert.equal(recoveryStats.handoff_health.recovery_reasons.workflow_cancelled, 1);
+const statusResponse = await fetch(`${baseUrl}/api/status`);
+assert.equal(statusResponse.ok, true, `status HTTP ${statusResponse.status}`);
+const status = await statusResponse.json();
+assert.equal(status.exact_review_queue.handoff_health.recovery_reasons.workflow_cancelled, 1);
+assert.equal(JSON.stringify(status.exact_review_queue).includes("pool_identity"), false);
+
 console.log(
   JSON.stringify({
     ok: true,
@@ -216,6 +281,8 @@ console.log(
     recovery_until: circuits[0].recovery_until,
     raw_reset_claimed: false,
     jitter_recovery_claimed: true,
+    bay_recovery_reason: "workflow_cancelled",
+    bay_recovery_count: 1,
     privacy_clean: true,
   }),
 );

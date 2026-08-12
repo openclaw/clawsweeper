@@ -58,14 +58,16 @@ credential, deployment, or production state will be mutated for proof.
   failures still fail.
 - Queue/status output names cancellation or claim-stall causes and contains no
   raw repository/item identifiers, command bodies, request IDs, or credentials.
+- OpenClaw Bay renders the bounded recovery-reason count from the same local
+  Worker/Durable Object snapshot without exposing private identifiers.
 - No write/apply stage runs in any throttled proof scenario.
 
 ## Artifact or trace
 
 The executed proof package will be committed under this directory with the
 current head, provider/image/run identity, red/green transcript, sanitized
-container transcript, and secret scan. The PR body will carry the same current
-proof summary and exact commands.
+container transcript, redacted Bay screenshot, and secret scan. The PR body
+will carry the same current proof summary and exact commands.
 
 ## Limits
 
