@@ -26,9 +26,11 @@ From the repository root on Node 24 or newer:
 docs/proof/typed-webhook-ingress/run-proof.sh
 ```
 
-A successful run writes `behavior-report.json` with the merge-base/head comparison. The final
-evidence commit also records the required Docker-backed Crabbox `local-container` run against the
-committed implementation head in `container-receipt.json`.
+A successful re-run writes the merge-base/head comparison to
+`.artifacts/typed-webhook-ingress/behavior-report.json`. The committed `behavior-report.json`
+remains the frozen review-time copy. The final evidence commit also records the required
+Docker-backed Crabbox `local-container` run against the committed implementation head in
+`container-receipt.json`.
 
 ## Result
 

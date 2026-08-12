@@ -16,7 +16,8 @@ const repoRoot = (await git(["rev-parse", "--show-toplevel"], proofDir)).trim();
 const head = (await git(["rev-parse", "HEAD"], repoRoot)).trim();
 const mergeBase = (await git(["merge-base", "HEAD", "origin/main"], repoRoot)).trim();
 const outputPath = path.resolve(
-  process.env.TYPED_WEBHOOK_INGRESS_PROOF_OUTPUT || path.join(proofDir, "behavior-report.json"),
+  process.env.TYPED_WEBHOOK_INGRESS_PROOF_OUTPUT ||
+    path.join(repoRoot, ".artifacts/typed-webhook-ingress/behavior-report.json"),
 );
 const scratch = await mkdtemp(path.join(os.tmpdir(), "clawsweeper-typed-webhook-ingress-"));
 const baseRoot = path.join(scratch, "merge-base");
