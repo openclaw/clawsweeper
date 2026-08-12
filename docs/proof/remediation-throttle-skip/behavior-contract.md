@@ -35,6 +35,7 @@ Opportunistic stuck-run remediation must yield to GitHub throttling without prev
 
 - Red/green Node test transcript showing exit status and named scenarios.
 - Focused workflow-shape assertion in the green run.
+- Docker-backed Crabbox `local-container` provenance for the reviewed source head.
 - Secret scan of the committed transcript.
 
 ## Out Of Scope

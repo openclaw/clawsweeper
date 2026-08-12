@@ -1,0 +1,99 @@
+Remediation throttle skip Docker-backed proof
+provider=local-container
+image=node:24-bookworm
+checkout_head=98fae30ad6336f525b654e90f961e6909b5f61e7
+expected_head=98fae30ad6336f525b654e90f961e6909b5f61e7
+base_head=e0dc54438e5e346f573af5e6d2cb07c6c1620a8f
+node=v24.19.0
+Installing pnpm@11.10.0...
+pnpm=11.10.0
+docker=host-backed local-container
+
+CRABBOX_PHASE:install
+? Verifying lockfile against supply-chain policies (79 entries)...
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +19
++++++++++++++++++++
+
+   ╭───────────────────────────────────────────────╮
+   │                                               │
+   │     Update available! 11.10.0 → 11.21.0.      │
+   │     Changelog: https://pnpm.io/v/11.21.0      │
+   │   To update, run: corepack use pnpm@11.21.0   │
+   │                                               │
+   ╰───────────────────────────────────────────────╯
+
+✓ Lockfile passes supply-chain policies (79 entries in 716ms)
+Progress: resolved 19, reused 0, downloaded 16, added 16
+Progress: resolved 19, reused 0, downloaded 19, added 19, done
+
+dependencies:
++ typescript 7.0.2
++ yaml 2.9.0
+
+devDependencies:
++ @types/node 24.13.3
++ markdown-it 15.0.0
++ oxfmt 0.58.0
++ oxlint 1.73.0
++ oxlint-tsgolint 0.24.0
+
+Done in 2s using pnpm v11.10.0
+
+CRABBOX_PHASE:red
+RED: PR test fixture against merge-base production script
+command=node --test --test-name-pattern=discovery_GitHub_throttling test/stuck-queued-run-remediation.test.ts
+✖ discovery GitHub throttling exits successfully with a structured skip reason (58.77242ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 130.638469
+✖ discovery GitHub throttling exits successfully with a structured skip reason (58.77242ms)
+  AssertionError [ERR_ASSERTION]: GET /actions/runs?status=queued&per_page=100&page=1 returned 403: {"message":"API rate limit exceeded for installation"}
+  
+  
+  1 !== 0
+  
+      at TestContext.<anonymous> (file:///work/crabbox/cbx_efa770db5e6d/fresh-pr-openclaw-clawsweeper-1144/test/stuck-queued-run-remediation.test.ts:222:12)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+red_test_exit=1
+old_production_child_exit=1 (reported by the failed assertion above)
+
+CRABBOX_PHASE:green
+GREEN: PR implementation plus workflow isolation
+command=node --test --test-name-pattern=discovery GitHub throttling|persistent discovery 5xx|non-throttle discovery 403|unexpected discovery response shape|mid-remediation throttling|queued workflow remediation test/stuck-queued-run-remediation.test.ts test/review-reliability-workflow.test.ts
+✔ queued workflow remediation shares the guarded dead-letter cadence (8.372814ms)
+✔ discovery GitHub throttling exits successfully with a structured skip reason (55.655359ms)
+✔ persistent discovery 5xx still exits unsuccessfully after bounded retry (400.823133ms)
+✔ a non-throttle discovery 403 remains a hard failure (55.087567ms)
+✔ an unexpected discovery response shape remains a hard failure (46.30671ms)
+✔ mid-remediation throttling stops after completed actions and exits successfully (81.621181ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 716.575159
+green_test_exit=0
+new_production_throttled_child_exit=0 (asserted by passing scenario)
+asserted_skip_line={"event":"stuck_queued_remediation_skipped","skip_reasons":{"github_throttled":1},"phase":"discovery","request_path":"/actions/runs?status=queued&per_page=100&page=1"}
+persistent_5xx_child_exit=1 (asserted after three bounded attempts)
+workflow_shape=pass (remediation isolated; both reconcile stages precede deferred failure; absent artifacts ignored)
+production_script_restored=true
+PROOF_EXIT=0

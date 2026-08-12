@@ -1,5 +1,5 @@
 Remediation throttle skip red/green transcript
-Base: openclaw/clawsweeper@e0dc54438e6562f144623fcde2263b3b839fe28d
+Base: openclaw/clawsweeper@e0dc54438e5e346f573af5e6d2cb07c6c1620a8f
 Environment: Node v24.19.0, macOS, loopback HTTP via GITHUB_API_URL
 
 RED (test-only patch; production script still at base behavior)
