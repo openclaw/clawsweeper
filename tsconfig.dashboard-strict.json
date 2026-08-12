@@ -5,7 +5,7 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true
   },
-  // This allowlist is a monotonic strictness ratchet: files must never be removed.
+  // Monotonic ratchet: never remove files; add each new root to the checker's baseline in the same PR.
   "files": [
     "dashboard/apply-observability.ts",
     "dashboard/automerge-metrics.ts",
