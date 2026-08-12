@@ -71,6 +71,41 @@ test("command intake migrations, watermarks, receipts, and revisions stay idempo
   );
 });
 
+test("a verified same-timestamp edit fences an older receipt before enqueue effects", () => {
+  const storage = new MemoryDurableStorage();
+  const store = new ExactReviewCommandIntakeStore(storage);
+  store.ensureSchemaSync();
+  const now = Date.parse("2026-08-12T16:30:00Z");
+  const first = intakeFixture({ updatedAt: COMMAND_UPDATED_AT, body: COMMAND_BODY });
+  const edited = intakeFixture({
+    updatedAt: COMMAND_UPDATED_AT,
+    body: `${COMMAND_BODY}\nEdited in the same timestamp tick.`,
+  });
+  assert.equal(store.admit(first, now)?.accepted, true);
+  const firstRecord = store.due(now)[0]!;
+  assert.equal(store.markVerified(firstRecord, now + 1), true);
+  const verifiedFirst = {
+    ...first.decision,
+    sourceCommentVerified: true as const,
+    sourceHeadSha: HEAD_SHA,
+    sourceHeadVerified: true as const,
+    sourceAuthoritySeq: 1,
+  };
+  store.advance(first.commandVersionId, "enqueue_pending", now + 1, verifiedFirst);
+  assert.equal(store.admit(edited, now + 2)?.accepted, true);
+  const editedRecord = store
+    .due(now + 2)
+    .find((record) => record.intake.commandVersionId === edited.commandVersionId)!;
+  assert.equal(store.markVerified(editedRecord, now + 3), true);
+
+  assert.equal(receiptOutcome(storage, first.commandVersionId), "superseded");
+  assert.equal(store.isCurrent({ ...firstRecord, stage: "enqueue_pending" }), false);
+  assert.deepEqual(
+    store.due(now + 3).map((record) => record.intake.commandVersionId),
+    [edited.commandVersionId],
+  );
+});
+
 test("durable command intake survives target throttling before queue admission", async (t) => {
   const fixture = await startGithubLoopback();
   t.after(() => fixture.close());

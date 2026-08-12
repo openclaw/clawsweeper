@@ -174,9 +174,15 @@ export class ExactReviewCommandIntakeStore {
            (source_comment_key, source_updated_at, command_version_id, body_digest)
          VALUES (?, ?, ?, ?)
          ON CONFLICT(source_comment_key) DO UPDATE SET
-           source_updated_at = excluded.source_updated_at,
-           command_version_id = excluded.command_version_id,
-           body_digest = excluded.body_digest`,
+           source_updated_at = CASE
+             WHEN excluded.source_updated_at > source_updated_at
+             THEN excluded.source_updated_at ELSE source_updated_at END,
+           command_version_id = CASE
+             WHEN excluded.source_updated_at > source_updated_at
+             THEN excluded.command_version_id ELSE command_version_id END,
+           body_digest = CASE
+             WHEN excluded.source_updated_at > source_updated_at
+             THEN excluded.body_digest ELSE body_digest END`,
         sourceCommentKey,
         sourceUpdatedAt,
         intake.commandVersionId,
@@ -224,9 +230,52 @@ export class ExactReviewCommandIntakeStore {
         commandSourceCommentKey(record.intake),
       ),
     );
+    const timestampMatches =
+      Number(watermark?.source_updated_at) === Date.parse(record.intake.sourceCommentUpdatedAt);
     return (
-      Number(watermark?.source_updated_at) === Date.parse(record.intake.sourceCommentUpdatedAt)
+      timestampMatches &&
+      (record.stage === "verify_pending" ||
+        watermark?.command_version_id === record.intake.commandVersionId)
     );
+  }
+
+  markVerified(record: ExactReviewCommandIntakeRecord, now: number) {
+    const sourceCommentKey = commandSourceCommentKey(record.intake);
+    const sourceUpdatedAt = Date.parse(record.intake.sourceCommentUpdatedAt);
+    return this.storage.transactionSync(() => {
+      const watermark = firstRow(
+        this.storage.sql.exec(
+          `SELECT source_updated_at FROM ${COMMAND_WATERMARK_TABLE}
+            WHERE source_comment_key = ?`,
+          sourceCommentKey,
+        ),
+      );
+      if (Number(watermark?.source_updated_at) > sourceUpdatedAt) return false;
+      this.storage.sql.exec(
+        `UPDATE ${COMMAND_WATERMARK_TABLE}
+            SET command_version_id = ?, body_digest = ?
+          WHERE source_comment_key = ? AND source_updated_at = ?`,
+        record.intake.commandVersionId,
+        record.intake.commandBodyDigest,
+        sourceCommentKey,
+        sourceUpdatedAt,
+      );
+      this.storage.sql.exec(
+        `UPDATE ${COMMAND_RECEIPT_TABLE}
+            SET outcome = 'superseded', observed_at = ?, detail = 'verified_sibling_version'
+          WHERE source_comment_key = ? AND command_version_id != ? AND outcome = 'pending'`,
+        now,
+        sourceCommentKey,
+        record.intake.commandVersionId,
+      );
+      this.storage.sql.exec(
+        `DELETE FROM ${COMMAND_INTAKE_TABLE}
+          WHERE source_comment_key = ? AND command_version_id != ?`,
+        sourceCommentKey,
+        record.intake.commandVersionId,
+      );
+      return true;
+    });
   }
 
   advance(

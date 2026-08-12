@@ -9606,6 +9606,15 @@ export class ExactReviewQueue {
         if (current.stage === "verify_pending") {
           const decision = await this.verifyCommandIntake(current, token());
           if (!decision) continue;
+          if (!this.commandIntakeStore.markVerified(current, Date.now())) {
+            this.commandIntakeStore.finish(
+              current.intake.commandVersionId,
+              "superseded",
+              Date.now(),
+              "newer_comment_version",
+            );
+            continue;
+          }
           this.commandIntakeStore.advance(
             current.intake.commandVersionId,
             "enqueue_pending",
@@ -9615,6 +9624,15 @@ export class ExactReviewQueue {
           current = { ...current, stage: "enqueue_pending", verifiedDecision: decision };
         }
         if (current.stage === "enqueue_pending") {
+          if (!this.commandIntakeStore.isCurrent(current)) {
+            this.commandIntakeStore.finish(
+              current.intake.commandVersionId,
+              "superseded",
+              Date.now(),
+              "newer_comment_version",
+            );
+            continue;
+          }
           const decision = current.verifiedDecision;
           if (!decision) throw new Error("verified command decision is missing");
           const response = await this.fetch(
@@ -9657,6 +9675,15 @@ export class ExactReviewQueue {
           current = { ...current, stage: "effects_pending" };
         }
         if (current.stage === "effects_pending") {
+          if (!this.commandIntakeStore.isCurrent(current)) {
+            this.commandIntakeStore.finish(
+              current.intake.commandVersionId,
+              "superseded",
+              Date.now(),
+              "newer_comment_version",
+            );
+            continue;
+          }
           const decision = current.verifiedDecision;
           if (!decision) throw new Error("command effects decision is missing");
           await Promise.all([
