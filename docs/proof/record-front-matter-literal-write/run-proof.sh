@@ -20,7 +20,7 @@ echo "== tracked state at sync =="
 TRACKED_BASELINE="$ARTIFACT_DIR/tracked-state-before.txt"
 capture_tracked_state() {
   {
-    echo "head: $(git rev-parse HEAD 2>/dev/null || echo unavailable)"
+    echo "head: ${PROOF_HEAD:-$(git rev-parse HEAD 2>/dev/null || echo unavailable)}"
     echo "package.json sha256: $(sha256sum package.json | cut -d' ' -f1)"
     echo "pnpm-lock.yaml sha256: $(sha256sum pnpm-lock.yaml | cut -d' ' -f1)"
     echo "porcelain:"
@@ -49,7 +49,11 @@ if [ "$NODE_MAJOR" -lt 24 ]; then
   echo "FAIL: repository requires Node >= 24, got $(node --version)"
   exit 1
 fi
-echo "head: $(git rev-parse HEAD 2>/dev/null || echo 'unavailable')"
+# A container image carries no .git, so `git rev-parse` cannot name the commit under
+# test from inside the lease. PROOF_HEAD is computed on the host and forwarded with
+# --allow-env so the recorded output states which head it describes; the host must
+# verify the tree is clean before the run for that to mean anything.
+echo "head: ${PROOF_HEAD:-$(git rev-parse HEAD 2>/dev/null || echo 'unavailable (pass PROOF_HEAD)')}"
 echo
 
 echo "== build =="
