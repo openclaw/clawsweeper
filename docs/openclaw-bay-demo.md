@@ -72,10 +72,13 @@ links exposed by the source worker data.
 
 The exact-review control board above the shoreline separates review admission
 from result publication. It shows current lane totals, bounded 6-hour, 24-hour,
-or 7-day history, and the durable handoff between them. A separate state-writer
-card reports the coordinator that serializes remaining Git-backed operational
-writes. These cards are observational: they expose no queue, recovery, deploy,
-or rollback controls.
+or 7-day history, and the durable handoff between them. When the handoff is
+recovering, Bay renders the bounded observed cause counts for claim timeout,
+execution timeout, workflow cancellation, and workflow failure. It does not
+infer the upstream reason for a cancellation or failure. A separate
+state-writer card reports the coordinator that serializes remaining Git-backed
+operational writes. These cards are observational: they expose no queue,
+recovery, deploy, or rollback controls.
 
 Lane totals may exceed the individually rendered crustaceans. The public queue
 projection intentionally bounds its item-reference sample; the overflow drawer
