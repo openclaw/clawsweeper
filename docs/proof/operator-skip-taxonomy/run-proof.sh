@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+expected_head=${1:?expected committed head argument is required}
+
 export PATH="$HOME/.local/bin:$PATH"
 mkdir -p "$HOME/.local/bin"
 
 echo "PROOF_PHASE=environment"
 echo "provider=local-container"
 echo "image=node:24-bookworm"
-echo "head=$(git rev-parse HEAD)"
+echo "head=$expected_head"
 node --version
 npm --version
 
