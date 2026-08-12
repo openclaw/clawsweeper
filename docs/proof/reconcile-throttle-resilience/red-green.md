@@ -56,3 +56,20 @@ The first pre-commit review found that repeatedly awaiting one cached rejected o
 The final implementation honors the shared `GitHubRequestError.rateLimited` marker, wraps setup throttles as `github_throttled scope=app_setup` with stage/owner/status, and keeps the rejected promise as the owner-level negative cache. Error-identity tracking counts that cached rejection once toward the existing fuse while three distinct throttled owners still stop before a fourth call. The token-mint 404 race again reports `installation_missing`; 401 and non-throttle 403 setup failures remain fail-closed.
 
 The final setup-focused selection passed 11/11, the complete operator file passed 78/78, and `pnpm run check` passed. The fresh pre-commit Codex autoreview reported no accepted/actionable findings. The Docker-backed Crabbox receipt passed all 25 selected workflow, owner, setup, authorization, and throttle scenarios.
+
+## Round 4: no silent Actions-token fallback
+
+The round-4 red phase added the App credential matrix and workflow-mode assertions before changing production code. The old operator ignored the requested mode, accepted the first private-key-only case, reached the queue with the repository token, and exited successfully; both workflows also lacked an explicit target-token mode:
+
+```text
+tests 3
+pass 0
+fail 3
+
+private key only: expected exit 1, actual exit 0
+workflow target-token mode: expected github-app, actual undefined
+```
+
+The green path makes `github-app` the default target-token mode, validates the App ID/private-key pair synchronously at startup, and returns the repository token only when `EXACT_REVIEW_TARGET_TOKEN_MODE=actions` is explicit. Key-only fails naming the missing App ID, ID-only fails naming the missing private key, neither fails naming both, and both proceeds. The scheduled and manual workflows now select `github-app`; repository settings expose the referenced private-key secret, so the inspected scheduled lane was fully configured, while any future missing secret will fail the cycle visibly instead of recreating the throttle.
+
+The focused workflow/matrix selection passed 3/3 and the complete operator file passed 79/79 on Node 24. The final Docker receipt and full gate results are recorded in `receipt.json` and the PR body.

@@ -68,6 +68,7 @@ jobs:
           NOTE: ${{ inputs.note }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}
           CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          EXACT_REVIEW_TARGET_TOKEN_MODE: github-app
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail

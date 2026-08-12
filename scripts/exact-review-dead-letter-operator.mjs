@@ -33,6 +33,7 @@ const OPERATOR_REQUEST_TIMEOUT_MS = 20_000;
 const OPERATOR_DEADLINE_SETTLE_MS = 25;
 const MAX_SKIP_SAMPLES = 3;
 const MAX_SKIP_REASON_LENGTH = 240;
+const TARGET_READ_TOKEN_MODE_ENV = "EXACT_REVIEW_TARGET_TOKEN_MODE";
 
 class DeadLetterInventoryChangedError extends Error {
   constructor(summary, rowIds, targetKeys, blockedGroups) {
@@ -88,20 +89,50 @@ class TargetAppSetupThrottleError extends Error {
 class TargetReadTokenCache {
   constructor(env) {
     this.env = env;
-    this.credentials = githubAppCredentials(env);
-    this.fallbackToken = String(env.GH_TOKEN || env.GITHUB_TOKEN || "").trim();
+    this.mode = String(env[TARGET_READ_TOKEN_MODE_ENV] || "github-app").trim();
+    if (this.mode !== "github-app" && this.mode !== "actions") {
+      throw new Error(`${TARGET_READ_TOKEN_MODE_ENV} must be github-app or actions`);
+    }
+    this.fallbackToken = String(env.GH_TOKEN || "").trim() || String(env.GITHUB_TOKEN || "").trim();
     this.tokensByOwner = new Map();
-    this.appJwt = this.credentials
-      ? signGithubAppJwt(this.credentials.issuer, this.credentials.privateKey)
-      : null;
+    if (this.mode === "actions") {
+      if (!this.fallbackToken) {
+        throw new Error(
+          `GH_TOKEN or GITHUB_TOKEN is required when ${TARGET_READ_TOKEN_MODE_ENV}=actions`,
+        );
+      }
+      this.credentials = null;
+      this.appJwt = null;
+      return;
+    }
+
+    const missing = [];
+    if (
+      !String(env.CLAWSWEEPER_APP_ID || "").trim() &&
+      !String(env.CLAWSWEEPER_APP_CLIENT_ID || "").trim()
+    ) {
+      missing.push("CLAWSWEEPER_APP_CLIENT_ID or CLAWSWEEPER_APP_ID");
+    }
+    if (!String(env.CLAWSWEEPER_APP_PRIVATE_KEY || "").trim()) {
+      missing.push("CLAWSWEEPER_APP_PRIVATE_KEY");
+    }
+    if (missing.length) {
+      throw new Error(
+        `${TARGET_READ_TOKEN_MODE_ENV}=github-app requires complete GitHub App credentials; missing ${missing.join(" and ")}`,
+      );
+    }
+    this.credentials = githubAppCredentials(env);
+    if (!this.credentials) {
+      throw new Error(
+        `${TARGET_READ_TOKEN_MODE_ENV}=github-app requires complete GitHub App credentials`,
+      );
+    }
+    this.appJwt = signGithubAppJwt(this.credentials.issuer, this.credentials.privateKey);
   }
 
   async tokenFor(target) {
     const { owner, repo } = parseTargetRepository(target);
-    if (!this.credentials || !this.appJwt) {
-      if (!this.fallbackToken) {
-        throw new Error("GitHub App credentials or GH_TOKEN are required for target reads");
-      }
+    if (this.mode === "actions") {
       return this.fallbackToken;
     }
     const ownerKey = owner.toLowerCase();
@@ -164,6 +195,8 @@ Options:
   -h, --help                    Show this help
 
 The operator always inventories open dead letters first. It never exposes raw replay.
+Target reads use GitHub App credentials by default. Set EXACT_REVIEW_TARGET_TOKEN_MODE=actions
+only to opt explicitly into GH_TOKEN or GITHUB_TOKEN for target reads.
 `;
 
 async function main(argv) {

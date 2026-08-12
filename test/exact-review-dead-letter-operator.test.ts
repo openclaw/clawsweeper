@@ -49,6 +49,7 @@ test("dead-letter workflow is manual, serialized, and bounded to safe actions", 
     operatorStep.env.CLAWSWEEPER_APP_PRIVATE_KEY,
     "${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}",
   );
+  assert.equal(operatorStep.env.EXACT_REVIEW_TARGET_TOKEN_MODE, "github-app");
   assert.equal(operatorStep.env.GH_TOKEN, undefined);
   assert.equal(operatorStep.env.GITHUB_TOKEN, "${{ github.token }}");
   assert.match(operatorStep.run, /operator:\$\{GITHUB_RUN_ID\}/);
@@ -89,6 +90,7 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
   assert.match(step.run, /--max-targets "\$MAX_TARGETS"/);
   assert.match(step.run, /--max-recoveries "\$MAX_RECOVERIES"/);
   assert.equal(step.env.CLAWSWEEPER_APP_PRIVATE_KEY, "${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}");
+  assert.equal(step.env.EXACT_REVIEW_TARGET_TOKEN_MODE, "github-app");
   assert.equal(step.env.GH_TOKEN, undefined);
   assert.equal(step.env.GITHUB_TOKEN, "${{ github.token }}");
   const guard = scheduled.jobs.reconcile.steps.find(
@@ -111,6 +113,7 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
     parked.env.CLAWSWEEPER_APP_PRIVATE_KEY,
     "${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}",
   );
+  assert.equal(parked.env.EXACT_REVIEW_TARGET_TOKEN_MODE, "github-app");
   assert.equal(parked.env.GH_TOKEN, undefined);
   assert.equal(parked.env.GITHUB_TOKEN, "${{ github.token }}");
   assert.match(parked.run, /--action reconcile-parked/);
@@ -123,6 +126,98 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
   assert.match(upload.with.path, /inventory\.json/);
   assert.match(upload.with.path, /parked-reviews\.json/);
   assert.doesNotMatch(source, /dead-letters\/replay/);
+});
+
+test("target-read App mode fails at startup for every incomplete credential pair", async () => {
+  const secret = "test-target-read-credential-validation";
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  let inventoryRequests = 0;
+  const server = createServer(async (request, response) => {
+    for await (const _chunk of request) {
+      // Drain the signed request body before replying.
+    }
+    inventoryRequests += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true, dead_letters: [], next_cursor: null }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const queueUrl = `http://127.0.0.1:${address.port}`;
+  const directory = await mkdtemp(join(tmpdir(), "clawsweeper-target-read-credentials-"));
+  const commonEnv = {
+    EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+    CLAWSWEEPER_APP_ID: "",
+    CLAWSWEEPER_APP_CLIENT_ID: "",
+    CLAWSWEEPER_APP_PRIVATE_KEY: "",
+  };
+  try {
+    const matrix = [
+      {
+        name: "private key only",
+        env: { ...commonEnv, CLAWSWEEPER_APP_PRIVATE_KEY: privateKey },
+        missing: /missing CLAWSWEEPER_APP_CLIENT_ID or CLAWSWEEPER_APP_ID\n/,
+      },
+      {
+        name: "App id only",
+        env: { ...commonEnv, CLAWSWEEPER_APP_CLIENT_ID: "Iv23partial" },
+        missing: /missing CLAWSWEEPER_APP_PRIVATE_KEY\n/,
+      },
+      {
+        name: "neither credential",
+        env: commonEnv,
+        missing:
+          /missing CLAWSWEEPER_APP_CLIENT_ID or CLAWSWEEPER_APP_ID and CLAWSWEEPER_APP_PRIVATE_KEY\n/,
+      },
+    ];
+    const incompleteResults = [];
+    for (const scenario of matrix) {
+      incompleteResults.push({
+        scenario,
+        result: await runOperator(
+          ["--action", "inventory", "--output", join(directory, `${scenario.name}.json`)],
+          queueUrl,
+          secret,
+          scenario.env,
+        ),
+      });
+    }
+    assert.deepEqual(
+      incompleteResults.map(({ scenario, result }) => ({ name: scenario.name, code: result.code })),
+      matrix.map(({ name }) => ({ name, code: 1 })),
+    );
+    for (const { scenario, result } of incompleteResults) {
+      assert.match(result.stderr, scenario.missing, scenario.name);
+    }
+
+    const complete = await runOperator(
+      ["--action", "inventory", "--output", join(directory, "complete.json")],
+      queueUrl,
+      secret,
+      {
+        ...commonEnv,
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23complete",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+      },
+    );
+    assert.equal(complete.code, 0, complete.stderr);
+
+    const actionsOptIn = await runOperator(
+      ["--action", "inventory", "--output", join(directory, "actions.json")],
+      queueUrl,
+      secret,
+      { ...commonEnv, EXACT_REVIEW_TARGET_TOKEN_MODE: "actions" },
+    );
+    assert.equal(actionsOptIn.code, 0, actionsOptIn.stderr);
+    assert.equal(inventoryRequests, 2);
+  } finally {
+    server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("parked review reconciliation plans by default and executes terminal resolve plus open recovery", async () => {
@@ -2507,6 +2602,7 @@ test("multi-owner reconciliation recovers installed targets and reports missing 
     ]),
     operatorEnv: {
       GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
       CLAWSWEEPER_APP_CLIENT_ID: "Iv23multiowner",
       CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
     },
@@ -2588,6 +2684,7 @@ for (const failedStatus of [429, 403]) {
       tokenMintFailures: new Map([[201, { status: failedStatus, throttle: true }]]),
       operatorEnv: {
         GH_TOKEN: "",
+        EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
         CLAWSWEEPER_APP_CLIENT_ID: "Iv23mintthrottle",
         CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
       },
@@ -2656,6 +2753,7 @@ test("throttled installation lookup skips that owner's targets and recovers anot
     installationFailures: new Map([["owner-a", { status: 403, throttle: true }]]),
     operatorEnv: {
       GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
       CLAWSWEEPER_APP_CLIENT_ID: "Iv23lookupthrottle",
       CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
     },
@@ -2714,6 +2812,7 @@ test("an installation removed before token mint remains a bounded missing-instal
     tokenMintFailures: new Map([[351, { status: 404, throttle: false }]]),
     operatorEnv: {
       GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
       CLAWSWEEPER_APP_CLIENT_ID: "Iv23mintmissing",
       CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
     },
@@ -2770,6 +2869,7 @@ test("batched discovery skips a throttled owner setup and continues with another
     tokenMintFailures: new Map([[601, { status: 403, throttle: true }]]),
     operatorEnv: {
       GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
       CLAWSWEEPER_APP_CLIENT_ID: "Iv23batchsetupthrottle",
       CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
     },
@@ -2824,6 +2924,7 @@ test("a cached setup throttle spanning three batches counts once and later owner
     tokenMintFailures: new Map([[701, { status: 429, throttle: true }]]),
     operatorEnv: {
       GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
       CLAWSWEEPER_APP_CLIENT_ID: "Iv23cachedsetupthrottle",
       CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
     },
@@ -2887,6 +2988,7 @@ for (const stage of ["installation_lookup", "token_mint"]) {
             }),
         operatorEnv: {
           GH_TOKEN: "",
+          EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
           CLAWSWEEPER_APP_CLIENT_ID: "Iv23setupauth",
           CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
         },
@@ -2935,6 +3037,7 @@ test("persistent setup throttling trips the shared fuse before another owner is 
     ),
     operatorEnv: {
       GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
       CLAWSWEEPER_APP_CLIENT_ID: "Iv23setupfuse",
       CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
     },
@@ -2964,6 +3067,7 @@ test("authorization 403 with a valid owner installation remains fail-closed", as
     targetInstallations: new Map([["owner", { id: 456, token: "owner-token" }]]),
     operatorEnv: {
       GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
       CLAWSWEEPER_APP_CLIENT_ID: "Iv23authorization",
       CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
     },
@@ -3878,6 +3982,7 @@ function runOperator(args, queueUrl, secret, extraEnv = {}) {
           EXACT_REVIEW_QUEUE_URL: queueUrl,
           CLAWSWEEPER_WEBHOOK_SECRET: secret,
           GITHUB_API_URL: queueUrl,
+          EXACT_REVIEW_TARGET_TOKEN_MODE: "actions",
           GH_TOKEN: "test-target-app-token",
           GITHUB_TOKEN: "test-github-token",
           ...extraEnv,

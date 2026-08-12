@@ -121,6 +121,7 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}
           CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          EXACT_REVIEW_TARGET_TOKEN_MODE: github-app
           GITHUB_TOKEN: ${{ github.token }}
           MAX_TARGETS: ${{ github.event.inputs.max_targets || '100' }}
           MAX_RECOVERIES: ${{ github.event.inputs.max_recoveries || '10' }}
@@ -142,6 +143,7 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}
           CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          EXACT_REVIEW_TARGET_TOKEN_MODE: github-app
           GITHUB_TOKEN: ${{ github.token }}
           MAX_TARGETS: ${{ github.event.inputs.max_targets || '100' }}
           EXECUTE: ${{ github.event_name == 'schedule' && 'true' || github.event.inputs.execute }}

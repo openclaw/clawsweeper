@@ -2,7 +2,9 @@
 
 ## Claim
 
-Exact-review dead-letter reconciliation mints target-read credentials from each target owner's GitHub App installation, caches both successful tokens and rejected setup promises per owner for the cycle, and uses successful tokens for public target REST and owner-homogeneous GraphQL reads. A missing or revoked installation becomes an `installation_missing` skip for that target while other owners continue. One isolated GitHub-confirmed rate-limit or abuse 403, or any 429, during installation lookup, token minting, or a target read skips only the affected target, owner, or GraphQL batch, so later owners and targets can still be inspected and recovered. A cached setup rejection contributes only one actual call to the shared three-consecutive-throttle fuse. Three distinct consecutive confirmed throttles stop further inspection in that phase, preserving a bounded per-cycle request budget. App-setup skips are structured as `github_throttled scope=app_setup`; genuine 401 and non-throttle 403 setup failures retain the conservative abort behavior.
+Exact-review dead-letter reconciliation in `github-app` target-token mode requires a complete App ID/private-key pair at process startup. Key-only, ID-only, and entirely absent App credentials fail before any queue or GitHub request and name the missing field; complete credentials proceed. The repository Actions token can never become an implicit fallback and remains available only through the explicit `actions` mode.
+
+With complete App credentials, reconciliation mints target-read credentials from each target owner's GitHub App installation, caches both successful tokens and rejected setup promises per owner for the cycle, and uses successful tokens for public target REST and owner-homogeneous GraphQL reads. A missing or revoked installation becomes an `installation_missing` skip for that target while other owners continue. One isolated GitHub-confirmed rate-limit or abuse 403, or any 429, during installation lookup, token minting, or a target read skips only the affected target, owner, or GraphQL batch, so later owners and targets can still be inspected and recovered. A cached setup rejection contributes only one actual call to the shared three-consecutive-throttle fuse. Three distinct consecutive confirmed throttles stop further inspection in that phase, preserving a bounded per-cycle request budget. App-setup skips are structured as `github_throttled scope=app_setup`; genuine 401 and non-throttle 403 setup failures retain the conservative abort behavior.
 
 ## Exercised surface
 
@@ -25,6 +27,7 @@ Exact-review dead-letter reconciliation mints target-read credentials from each 
 11. One throttled owner spans three owner-homogeneous GraphQL batches. The cached rejection skips all 81 owner targets but counts once toward the fuse; the later healthy owner is inspected and recovered.
 12. Three distinct owners return setup throttles. The shared fuse stops before a fourth owner's lookup or mint, bounding setup traffic to three calls.
 13. Installation lookup and token minting each return genuine 401 and non-throttle 403 responses. Every variant keeps the fail-closed abort, while a 404 race between lookup and mint retains the prior bounded `installation_missing` behavior.
+14. The real operator process runs the App-credential startup matrix: private-key only fails naming the App ID, App ID only fails naming the private key, neither fails naming both, and both proceed. The same credential-less fixture succeeds only after explicitly selecting `actions` mode. The scheduled and manual workflow YAML both select `github-app` and pass the private-key secret while retaining `${{ github.token }}` solely for repository-owned work.
 
 ## Command and environment
 
