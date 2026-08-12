@@ -118,3 +118,77 @@ test("an unterminated key-shaped run in the body is prose, not a competing block
     value: "pull_request",
   });
 });
+
+test("a complete competing block after review prose is still ambiguous", () => {
+  // The guard exists to stop a second record impersonating the first. A block
+  // appended after paragraphs of prose impersonates just as well as one pasted
+  // directly onto the leading block, so the scan must cover the whole body.
+  const shapes = {
+    "after one prose line": ["Codex review: ready.", ""],
+    "after several paragraphs": ["Codex review: ready.", "", "Looks good to me.", ""],
+    "after a findings row": ["Codex review: ready.", "", "url: see the linked run", ""],
+    "after a fenced sample": ["Codex review: ready.", "", "```yaml", "type: bug", "```", ""],
+    "after a thematic break": ["Codex review: ready.", "", "---", "", "More prose.", ""],
+  };
+
+  for (const [name, body] of Object.entries(shapes)) {
+    const report = [
+      "---",
+      "type: pull_request",
+      "number: 42",
+      "---",
+      "",
+      ...body,
+      "---",
+      "type: issue",
+      "---",
+      "",
+    ].join("\n");
+
+    assert.deepEqual(
+      metadata.frontMatterField(report, "type"),
+      { status: "ambiguous" },
+      `${name}: a complete competing block must fail closed`,
+    );
+    // A key the competing block does not claim stays readable.
+    assert.deepEqual(
+      metadata.frontMatterField(report, "number"),
+      { status: "value", value: "42" },
+      `${name}: an unclaimed key stays readable`,
+    );
+  }
+});
+
+test("a fenced metadata sample is illustration, not a competing record", () => {
+  // A complete block inside a code fence is quoted text. Failing closed on it would
+  // take a record offline for showing an example, which is the defect being fixed.
+  const report = [
+    "---",
+    "type: pull_request",
+    "---",
+    "",
+    "A record looks like this:",
+    "",
+    "```markdown",
+    "---",
+    "type: issue",
+    "---",
+    "```",
+    "",
+    "That is all.",
+    "",
+  ].join("\n");
+
+  assert.deepEqual(metadata.frontMatterField(report, "type"), {
+    status: "value",
+    value: "pull_request",
+  });
+
+  // The fence must be closed for that to hold: an unterminated fence leaves the
+  // rest of the body quoted, so a later block is not reachable as a record either.
+  const tildeFenced = report.replace(/```markdown/, "~~~markdown").replace(/```/, "~~~");
+  assert.deepEqual(metadata.frontMatterField(tildeFenced, "type"), {
+    status: "value",
+    value: "pull_request",
+  });
+});

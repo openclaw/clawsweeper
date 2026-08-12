@@ -13,6 +13,34 @@ PROOF_DIR="docs/proof/record-front-matter-body-scope"
 ARTIFACT_DIR=".artifacts/record-front-matter-body-scope-proof"
 mkdir -p "$ARTIFACT_DIR"
 
+echo "== tracked state at sync =="
+# A proof is only evidence about the submitted head if the tree still *is* the
+# submitted head when the assertions run. Record the tracked state up front and
+# re-check it at every stage that could disturb it.
+TRACKED_BASELINE="$ARTIFACT_DIR/tracked-state-before.txt"
+capture_tracked_state() {
+  {
+    echo "head: $(git rev-parse HEAD 2>/dev/null || echo unavailable)"
+    echo "package.json sha256: $(sha256sum package.json | cut -d' ' -f1)"
+    echo "pnpm-lock.yaml sha256: $(sha256sum pnpm-lock.yaml | cut -d' ' -f1)"
+    echo "porcelain:"
+    git status --porcelain 2>/dev/null | grep -v '^?? ' || true
+  }
+}
+assert_tracked_state_clean() {
+  local stage="$1" current="$ARTIFACT_DIR/tracked-state-current.txt"
+  capture_tracked_state >"$current"
+  if ! diff -u "$TRACKED_BASELINE" "$current" >"$ARTIFACT_DIR/tracked-state-diff.txt"; then
+    echo "FAIL: the checkout's tracked state changed ($stage)."
+    echo "      The recorded result would describe a tree other than the submitted head."
+    cat "$ARTIFACT_DIR/tracked-state-diff.txt"
+    exit 1
+  fi
+  echo "tracked state unchanged ($stage)"
+}
+capture_tracked_state | tee "$TRACKED_BASELINE"
+echo
+
 echo "== environment =="
 uname -a
 node --version
@@ -49,15 +77,30 @@ pnpm install --frozen-lockfile >"$ARTIFACT_DIR/install.log" 2>&1 \
 node -e "require.resolve('typescript/package.json')" >/dev/null 2>&1 || {
   echo "FAIL: typescript missing after install"; exit 1;
 }
-if ! node -e "require('typescript')" >/dev/null 2>&1; then
-  echo "typescript platform binary missing; fetching"
-  pnpm install --frozen-lockfile --force >>"$ARTIFACT_DIR/install.log" 2>&1 || true
+# Any fallback must stay out of the checkout's tracked dependency metadata: a proof
+# that edits package.json or pnpm-lock.yaml before it builds describes a tree that no
+# longer matches the submitted head. Install into a disposable prefix outside the
+# workspace and copy into node_modules/, which is untracked build state.
+TS_PLATFORM_PKG="@typescript/typescript-$(node -p 'process.platform')-$(node -p 'process.arch')"
+if [ ! -d "node_modules/$TS_PLATFORM_PKG" ]; then
+  echo "NOTE: $TS_PLATFORM_PKG missing after install; fetching it into a disposable prefix"
+  TS_FALLBACK_DIR="$(mktemp -d)"
+  TS_VERSION="$(node -p "require('./node_modules/typescript/package.json').version")"
+  npm install --prefix "$TS_FALLBACK_DIR" --no-save --no-audit --no-fund --ignore-scripts \
+    "$TS_PLATFORM_PKG@$TS_VERSION" >>"$ARTIFACT_DIR/install.log" 2>&1 || true
+  if [ -d "$TS_FALLBACK_DIR/node_modules/$TS_PLATFORM_PKG" ]; then
+    mkdir -p "node_modules/$(dirname "$TS_PLATFORM_PKG")"
+    cp -R "$TS_FALLBACK_DIR/node_modules/$TS_PLATFORM_PKG" "node_modules/$TS_PLATFORM_PKG"
+    echo "fallback source: $TS_FALLBACK_DIR (outside the workspace)"
+  fi
+  rm -rf "$TS_FALLBACK_DIR"
 fi
+assert_tracked_state_clean "after dependency install"
 pnpm run build:node >"$ARTIFACT_DIR/build.log" 2>&1 \
   || { echo "FAIL: pnpm run build:node"; tail -30 "$ARTIFACT_DIR/build.log"; exit 1; }
 test -f dist/clawsweeper-record-metadata.js \
   || { echo "FAIL: build did not produce dist/clawsweeper-record-metadata.js"; exit 1; }
-echo "shipped guard: $(node -p "/competingFrontMatterBlock/.test(require('fs').readFileSync('dist/clawsweeper-record-metadata.js','utf8'))")"
+echo "shipped guard: $(node -p "/competingFrontMatterBlocks/.test(require('fs').readFileSync('dist/clawsweeper-record-metadata.js','utf8'))")"
 echo
 
 echo "== before / after on the shipped parser =="
@@ -93,13 +136,16 @@ if [ -f dist/record-metadata-before.js ]; then
   set -e
   echo "pre-fix exit: $BEFORE_STATUS (non-zero is the bug this PR fixes)"
   grep "^  FAIL" "$ARTIFACT_DIR/before-output.txt" || true
-  # The competing-record guards must already pass before the fix; that is what
-  # proves the change narrows the ambiguity check without removing it.
-  if grep -q "^  FAIL  bare second block\|^  FAIL  delimited second block\|^  FAIL  competing key only" \
+  # Every fail-closed assertion must ALREADY pass before the fix. main is
+  # conservative everywhere, so if any of these regress it means this change
+  # narrowed the guard too far - the failure mode a reviewer cares about most.
+  if grep -qE "^  FAIL  (bare second block|delimited second block|competing key only|after .*: ambiguous)" \
       "$ARTIFACT_DIR/before-output.txt"; then
-    echo "FAIL: a competing-record guard did not hold before the fix"
+    echo "FAIL: a fail-closed guard did not hold before the fix, so this change weakens it"
+    grep -E "^  FAIL  (bare|delimited|competing|after )" "$ARTIFACT_DIR/before-output.txt"
     exit 1
   fi
+  echo "fail-closed guards intact before the fix: $(grep -cE "^  PASS  (bare second block|delimited second block|competing key only|after .*: ambiguous)" "$ARTIFACT_DIR/before-output.txt") assertions"
   if [ "$BEFORE_STATUS" -eq 0 ]; then
     echo "FAIL: the pre-fix module passed, so this proof does not demonstrate the fix"
     exit 1
@@ -119,5 +165,11 @@ echo "== focused regression suite =="
 node --test test/clawsweeper-record-metadata.test.ts 2>&1 | tail -12 \
   | tee "$ARTIFACT_DIR/focused-tests.txt"
 
+echo
+echo "== tracked state after proof =="
+# The closing check is what matters for review: it says the tree that produced
+# every result above is still byte-for-byte the submitted head.
+assert_tracked_state_clean "end of run"
+cat "$TRACKED_BASELINE"
 echo
 echo "artifacts written to $ARTIFACT_DIR"

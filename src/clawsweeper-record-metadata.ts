@@ -67,22 +67,67 @@ export function createRecordMetadata({
   markdownFiles,
   numberForMarkdownFile,
 }: RecordMetadataDependencies) {
-  // A report body is model-authored review text, so `key:` at the start of a line
-  // is ordinary prose (a quoted PR field, a fenced YAML sample, a findings row) far
-  // more often than a competing record. Only a *second front matter block* makes a
-  // field genuinely ambiguous: a leading run of `key: value` lines closed by a `---`
-  // delimiter. Prose stops the scan, so it can no longer mask a valid value.
-  function competingFrontMatterBlock(remainder: string): string | null {
+  const FRONT_MATTER_KEY_LINE = /^[A-Za-z0-9_.-]+:/;
+  const CODE_FENCE = /^\s*(`{3,}|~{3,})/;
+
+  // A report body is model-authored review text, so `key:` at the start of a line is
+  // ordinary prose (a quoted PR field, a findings row) far more often than a competing
+  // record. What makes a field genuinely ambiguous is a *complete* second metadata
+  // block: a run of `key: value` lines closed by a `---` delimiter.
+  //
+  // The scan must cover the whole body, not just its opening lines. A block appended
+  // after paragraphs of prose is exactly as capable of impersonating a record as one
+  // concatenated directly onto the leading block, so stopping at the first prose line
+  // would reopen the spoofing gap this guard exists to close. Fenced code is skipped:
+  // a ```yaml sample is quoted illustration, and no reader treats it as record state.
+  function competingFrontMatterBlocks(remainder: string): string[] {
     const lines = remainder.split(/\r?\n/);
-    let index = lines[0] === "---" ? 1 : 0;
-    const block: string[] = [];
+    const blocks: string[] = [];
+
+    // Returns the block starting at `start`, or null when the run is interrupted by
+    // prose or never reaches a closing delimiter — an unterminated run is not a record.
+    const readBlock = (start: number): { body: string; end: number } | null => {
+      const body: string[] = [];
+      let index = start;
+      for (; index < lines.length; index += 1) {
+        const line = lines[index] ?? "";
+        if (line === "---") break;
+        if (!FRONT_MATTER_KEY_LINE.test(line)) return null;
+        body.push(line);
+      }
+      if (index >= lines.length || body.length === 0) return null;
+      return { body: body.join("\n"), end: index };
+    };
+
+    // The leading block's closing `---` doubles as the opener of a record pasted
+    // straight onto it, so the remainder can begin part-way through one.
+    let index = 0;
+    const leading = readBlock(0);
+    if (leading) {
+      blocks.push(leading.body);
+      index = leading.end;
+    }
+
+    let fence: string | null = null;
     for (; index < lines.length; index += 1) {
       const line = lines[index] ?? "";
-      if (line === "---") return block.join("\n");
-      if (!/^[A-Za-z0-9_.-]+:/.test(line)) return null;
-      block.push(line);
+      const fenceMatch = CODE_FENCE.exec(line);
+      if (fence !== null) {
+        if (fenceMatch && (fenceMatch[1] ?? "").startsWith(fence)) fence = null;
+        continue;
+      }
+      if (fenceMatch) {
+        fence = fenceMatch[1] ?? "";
+        continue;
+      }
+      if (line !== "---") continue;
+      const block = readBlock(index + 1);
+      if (block) {
+        blocks.push(block.body);
+        index = block.end;
+      }
     }
-    return null;
+    return blocks;
   }
 
   function frontMatterField(markdown: string, key: string): FrontMatterField {
@@ -90,8 +135,8 @@ export function createRecordMetadata({
     if (!frontMatterMatch) return { status: "absent" };
     const frontMatter = frontMatterMatch[1] ?? "";
     const remainder = markdown.slice(frontMatterMatch[0].length);
-    const competing = competingFrontMatterBlock(remainder);
-    if (competing !== null && new RegExp(`^${key}:`, "m").test(competing)) {
+    const keyLine = new RegExp(`^${key}:`, "m");
+    if (competingFrontMatterBlocks(remainder).some((block) => keyLine.test(block))) {
       return { status: "ambiguous" };
     }
     const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.*)$`, "gm"))];

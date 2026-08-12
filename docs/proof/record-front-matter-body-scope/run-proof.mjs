@@ -93,5 +93,60 @@ check(
   "no closing delimiter -> leading value stands",
 );
 
+console.log("\n== 4. a complete competing block after prose still fails closed ==");
+// A block appended after paragraphs of review text impersonates a record exactly as
+// well as one concatenated onto the leading block, so the scan covers the whole body.
+for (const [name, body] of Object.entries({
+  "after one prose line": ["Codex review: ready.", ""],
+  "after several paragraphs": ["Codex review: ready.", "", "Looks good to me.", ""],
+  "after a findings row": ["Codex review: ready.", "", "url: see the linked run", ""],
+  "after a fenced sample": ["Codex review: ready.", "", "```yaml", "type: bug", "```", ""],
+  "after a thematic break": ["Codex review: ready.", "", "---", "", "More prose.", ""],
+})) {
+  const report = [
+    "---",
+    "type: pull_request",
+    "number: 42",
+    "---",
+    "",
+    ...body,
+    "---",
+    "type: issue",
+    "---",
+    "",
+  ].join("\n");
+  check(metadata.frontMatterField(report, "type").status === "ambiguous", `${name}: ambiguous`);
+  check(
+    metadata.frontMatterValue(report, "number") === "42",
+    `${name}: an unclaimed key stays readable`,
+  );
+}
+
+console.log("\n== 5. a fenced metadata sample is illustration, not a record ==");
+const fencedSample = [
+  "---",
+  "type: pull_request",
+  "---",
+  "",
+  "A record looks like this:",
+  "",
+  "```markdown",
+  "---",
+  "type: issue",
+  "---",
+  "```",
+  "",
+  "That is all.",
+  "",
+].join("\n");
+check(
+  metadata.frontMatterValue(fencedSample, "type") === "pull_request",
+  "a fenced example does not take the record offline",
+);
+check(
+  metadata.frontMatterValue(fencedSample.replaceAll("```", "~~~"), "type") === "pull_request",
+  "the same holds for tilde fences",
+);
+
 console.log(`\n${failures === 0 ? "PROOF PASSED" : `PROOF FAILED (${failures})`}`);
 process.exit(failures === 0 ? 0 : 1);
