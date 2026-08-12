@@ -47,10 +47,19 @@ class DeadLetterInventoryChangedError extends Error {
 }
 
 class CanonicalTargetInspectionError extends Error {
-  constructor(error, { inspectedTargets = [], failedTargets = [], notInspectedTargets = [] }) {
+  constructor(
+    error,
+    {
+      inspectedTargets = [],
+      classifiedFailures = [],
+      failedTargets = [],
+      notInspectedTargets = [],
+    },
+  ) {
     super(error instanceof Error ? error.message : String(error), { cause: error });
     this.name = "CanonicalTargetInspectionError";
     this.inspectedTargets = inspectedTargets;
+    this.classifiedFailures = classifiedFailures;
     this.failedTargets = failedTargets;
     this.notInspectedTargets = notInspectedTargets;
   }
@@ -306,7 +315,7 @@ async function main(argv) {
           // Never recover against stale aliases if producers keep changing the
           // inventory faster than this bounded operator can inspect it. Keep
           // the original target cap and accumulated counters across refreshes.
-          printResult({
+          printReconcileResult({
             ...progress.summary,
             inventory_changed: true,
             skipped_rows: error.summary.skipped,
@@ -575,11 +584,11 @@ async function reconcileDeadLetters({
       blockedResolutions.flatMap((error) => error.blockedGroups),
     );
   };
-  const accountSkippedTarget = (nodeId, reasonClass) => {
+  const accountSkippedTarget = (nodeId, target, reasonClass, reason) => {
     if (progress.countedSkippedTargets.has(nodeId)) return;
     progress.countedSkippedTargets.add(nodeId);
     summary.skipped_targets += 1;
-    if (reasonClass) recordSkipReasonCount(summary, reasonClass, 1);
+    if (reasonClass) recordClassifiedSkips(summary, [target], reasonClass, reason);
   };
   const canInspectTarget = (nodeId) =>
     progress.inspectedTargetIds.has(nodeId) || summary.inspected_targets < args.maxTargets;
@@ -608,8 +617,13 @@ async function reconcileDeadLetters({
       summary.invalid_rows += resolution.resolved;
     }
     refreshBlockedInventory();
-    summary.skipped_targets += groups.size;
-    printResult(summary);
+    accountClassifiedSkips(
+      summary,
+      selectedRecoveryTargets(groups),
+      "inventory_incomplete",
+      new Error("dead-letter inventory is incomplete"),
+    );
+    printReconcileResult(summary);
     return;
   }
 
@@ -638,6 +652,9 @@ async function reconcileDeadLetters({
       inspection.failedTargets.length + inspection.notInspectedTargets.length;
   } catch (error) {
     if (error instanceof CanonicalTargetInspectionError) {
+      for (const failure of error.classifiedFailures) {
+        recordInspectionSkips(summary, [failure.target], failure.error);
+      }
       recordAbortedInspectionSkips(summary, {
         inspectedTargets: error.inspectedTargets,
         failedTargets: error.failedTargets,
@@ -645,9 +662,10 @@ async function reconcileDeadLetters({
         error: error.cause ?? error,
       });
     } else {
-      recordInspectionSkips(
+      recordClassifiedSkips(
         summary,
         selectedGroups.map((group) => group.target),
+        "discovery_failed",
         error,
       );
     }
@@ -665,7 +683,7 @@ async function reconcileDeadLetters({
     }
     refreshBlockedInventory();
     summary.skipped_targets += groups.size;
-    printResult(summary);
+    printReconcileResult(summary);
     return;
   }
   const canonicalGroups = new Map();
@@ -673,8 +691,13 @@ async function reconcileDeadLetters({
     const live = identities.get(normalizeRecoveryTargetKey(group.target));
     if (!live) continue;
     if (!["open", "closed"].includes(live.state)) {
-      summary.skipped_targets += groups.size;
-      printResult(summary);
+      accountClassifiedSkips(
+        summary,
+        selectedRecoveryTargets(groups),
+        "identity_not_actionable",
+        new Error("canonical target identity is not open or closed"),
+      );
+      printReconcileResult(summary);
       return;
     }
     const canonical = canonicalGroups.get(live.node_id) ?? {
@@ -704,23 +727,49 @@ async function reconcileDeadLetters({
       ]),
     ];
     if (groupAliases.some((alias) => progress.blockedTargets.has(alias))) {
-      accountSkippedTarget(live.node_id);
+      accountSkippedTarget(
+        live.node_id,
+        canonicalTarget,
+        "blocked_alias",
+        new Error("canonical target is blocked by an unchanged alias"),
+      );
       continue;
     }
-    if (
-      hasActiveWork ||
-      (live.state === "open" && !rows.some((row) => row.fresh_recovery.eligible))
-    ) {
-      accountSkippedTarget(live.node_id);
+    if (hasActiveWork) {
+      accountSkippedTarget(
+        live.node_id,
+        canonicalTarget,
+        "active_work",
+        new Error("canonical target has active review or publication work"),
+      );
+      continue;
+    }
+    if (live.state === "open" && !rows.some((row) => row.fresh_recovery.eligible)) {
+      accountSkippedTarget(
+        live.node_id,
+        canonicalTarget,
+        "no_eligible_rows",
+        new Error("canonical target has no eligible dead-letter rows"),
+      );
       continue;
     }
     if (live.state === "closed") {
       if (!canInspectTarget(live.node_id)) {
-        accountSkippedTarget(live.node_id);
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "inspection_cap",
+          new Error("reconciliation target inspection cap reached"),
+        );
         continue;
       }
       if (progress.terminalTargetRechecks >= MAX_TERMINAL_TARGET_RECHECKS) {
-        accountSkippedTarget(live.node_id);
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "terminal_recheck_cap",
+          new Error("terminal target recheck cap reached"),
+        );
         continue;
       }
       progress.terminalTargetRechecks += 1;
@@ -728,12 +777,21 @@ async function reconcileDeadLetters({
       try {
         current = await inspectRecoveryTarget(canonicalTarget, targetReadTokens);
       } catch (error) {
-        recordInspectionSkips(summary, [canonicalTarget], error);
-        accountSkippedTarget(live.node_id);
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          classifyOperatorSkipReason(error),
+          error,
+        );
         continue;
       }
       if (current.state !== "closed" || current.node_id !== live.node_id) {
-        accountSkippedTarget(live.node_id);
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "closed_state_changed",
+          new Error("live target state or canonical identity changed during terminal recheck"),
+        );
         continue;
       }
       reserveTargetInspection(live.node_id);
@@ -753,7 +811,7 @@ async function reconcileDeadLetters({
       summary.resolved_rows += resolution.resolved;
       summary.closed_rows += resolution.resolved;
       if (resolution.unparked) {
-        printResult(summary);
+        printReconcileResult(summary);
         return;
       }
       continue;
@@ -765,11 +823,16 @@ async function reconcileDeadLetters({
           row.fresh_recovery.source_head_sha === live.head_sha),
     );
     if (!primary) {
-      accountSkippedTarget(live.node_id);
+      accountSkippedTarget(
+        live.node_id,
+        canonicalTarget,
+        "head_mismatch",
+        new Error("eligible dead-letter source head does not match the live pull-request head"),
+      );
       continue;
     }
     if (summary.recovered_targets + recoveries.length >= args.maxRecoveries) {
-      accountSkippedTarget(live.node_id, "recovery_cap");
+      accountSkippedTarget(live.node_id, canonicalTarget, "recovery_cap");
       continue;
     }
     const pressure = await readQueuePressure(queueUrl);
@@ -777,12 +840,19 @@ async function reconcileDeadLetters({
     if (pressure.status !== "idle" || pressure.availableSlots <= recoveries.length) {
       accountSkippedTarget(
         live.node_id,
-        pressure.status === "idle" ? undefined : "recovery_deferred_pressure",
+        canonicalTarget,
+        pressure.status === "idle" ? "recovery_capacity" : "recovery_deferred_pressure",
+        pressure.status === "idle" ? new Error("no queue recovery slot is available") : undefined,
       );
       continue;
     }
     if (!reserveTargetInspection(live.node_id)) {
-      accountSkippedTarget(live.node_id);
+      accountSkippedTarget(
+        live.node_id,
+        canonicalTarget,
+        "inspection_cap",
+        new Error("reconciliation target inspection cap reached"),
+      );
       continue;
     }
     const duplicates = rows.filter((row) => row.dead_letter_id !== primary.dead_letter_id);
@@ -808,9 +878,14 @@ async function reconcileDeadLetters({
         resolution.resolved !== selectedDuplicates.length ||
         duplicates.length > MAX_RESOLUTION_IDS
       ) {
-        accountSkippedTarget(live.node_id);
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "duplicate_resolution_partial",
+          new Error("duplicate resolution did not fully drain the canonical target"),
+        );
         if (resolution.unparked) {
-          printResult(summary);
+          printReconcileResult(summary);
           return;
         }
         continue;
@@ -837,7 +912,7 @@ async function reconcileDeadLetters({
     summary.resolved_rows += resolution.resolved;
     summary.invalid_rows += resolution.resolved;
     if (resolution.unparked) {
-      printResult(summary);
+      printReconcileResult(summary);
       return;
     }
   }
@@ -853,28 +928,25 @@ async function reconcileDeadLetters({
         current = await inspectRecoveryTarget(recovery.canonicalTarget, targetReadTokens);
       } catch (error) {
         if (error instanceof TargetInstallationMissingError) {
-          recordInspectionSkips(summary, [recovery.canonicalTarget], error);
-          summary.skipped_targets += 1;
+          accountInspectionSkips(summary, [recovery.canonicalTarget], error);
           individuallySkipped += 1;
           continue;
         }
         if (isThrottleInspectionError(error)) {
-          recordInspectionSkips(summary, [recovery.canonicalTarget], error);
-          summary.skipped_targets += 1;
+          accountInspectionSkips(summary, [recovery.canonicalTarget], error);
           individuallySkipped += 1;
           consecutiveThrottles += 1;
           if (consecutiveThrottles >= MAX_CONSECUTIVE_GITHUB_THROTTLES) {
             const notInspectedTargets = recoveries
               .slice(index + 1)
               .map((candidate) => candidate.canonicalTarget);
-            recordInspectionSkips(
+            accountInspectionSkips(
               summary,
               notInspectedTargets,
               new Error(
                 "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
               ),
             );
-            summary.skipped_targets += notInspectedTargets.length;
             individuallySkipped += notInspectedTargets.length;
             break;
           }
@@ -889,21 +961,37 @@ async function reconcileDeadLetters({
           error,
         });
         summary.skipped_targets += recoveries.length - individuallySkipped;
-        printResult(summary);
+        printReconcileResult(summary);
         return;
       }
       consecutiveThrottles = 0;
       if (current.state !== "open" || current.node_id !== recovery.live.node_id) {
+        recordRecoveryRevalidationAbort(
+          summary,
+          revalidatedRecoveries,
+          recovery,
+          recoveries.slice(index + 1),
+          "closed_state_changed",
+          new Error("live target state or canonical identity changed during recovery recheck"),
+        );
         summary.skipped_targets += recoveries.length - individuallySkipped;
-        printResult(summary);
+        printReconcileResult(summary);
         return;
       }
       if (
         recovery.primary.fresh_recovery.source_head_sha &&
         recovery.primary.fresh_recovery.source_head_sha !== current.head_sha
       ) {
+        recordRecoveryRevalidationAbort(
+          summary,
+          revalidatedRecoveries,
+          recovery,
+          recoveries.slice(index + 1),
+          "head_mismatch",
+          new Error("eligible dead-letter source head does not match the live pull-request head"),
+        );
         summary.skipped_targets += recoveries.length - individuallySkipped;
-        printResult(summary);
+        printReconcileResult(summary);
         return;
       }
       if (current.canonical_target) {
@@ -916,7 +1004,7 @@ async function reconcileDeadLetters({
       revalidatedRecoveries.push(recovery);
     }
     if (!revalidatedRecoveries.length) {
-      printResult(summary);
+      printReconcileResult(summary);
       return;
     }
     const finalPressure = await readQueuePressure(queueUrl);
@@ -925,12 +1013,24 @@ async function reconcileDeadLetters({
       summary.skipped_targets += revalidatedRecoveries.length;
       if (finalPressure.status !== "idle") {
         recordSkipReasonCount(summary, "recovery_deferred_pressure", revalidatedRecoveries.length);
+      } else {
+        recordClassifiedSkips(
+          summary,
+          revalidatedRecoveries.map((recovery) => recovery.canonicalTarget),
+          "recovery_capacity",
+          new Error("no queue recovery slot is available"),
+        );
       }
-      printResult(summary);
+      printReconcileResult(summary);
       return;
     }
     const admitted = revalidatedRecoveries.slice(0, finalPressure.availableSlots);
-    summary.skipped_targets += revalidatedRecoveries.length - admitted.length;
+    accountClassifiedSkips(
+      summary,
+      revalidatedRecoveries.slice(admitted.length).map((recovery) => recovery.canonicalTarget),
+      "recovery_capacity",
+      new Error("no queue recovery slot is available"),
+    );
     const ids = admitted.map(({ primary }) => primary.dead_letter_id);
     if (args.execute) {
       const identity = admitted
@@ -960,13 +1060,19 @@ async function reconcileDeadLetters({
       const recovered = mutationSummary("recover-fresh", result);
       summary.recovered_targets += recovered.recovered + recovered.deduped;
       summary.resolved_rows += recovered.recovered + recovered.deduped;
-      summary.skipped_targets += recovered.skipped;
+      accountClassifiedSkips(
+        summary,
+        admitted.slice(0, recovered.skipped).map((recovery) => recovery.canonicalTarget),
+        "recovery_mutation_skipped",
+        new Error("recovery mutation skipped an admitted target"),
+        recovered.skipped,
+      );
     } else {
       summary.recovered_targets += ids.length;
       summary.resolved_rows += ids.length;
     }
   }
-  printResult(summary);
+  printReconcileResult(summary);
 }
 
 async function reconcileParkedReviews({
@@ -1536,6 +1642,7 @@ async function inspectCanonicalTargets(groups, maxTargets, targetReadTokens) {
         }
         throw new CanonicalTargetInspectionError(error, {
           inspectedTargets,
+          classifiedFailures: failedTargets,
           failedTargets: [group.target],
           notInspectedTargets: groups.slice(index + 1).map((candidate) => candidate.target),
         });
@@ -1586,6 +1693,7 @@ async function inspectCanonicalTargets(groups, maxTargets, targetReadTokens) {
       }
       throw new CanonicalTargetInspectionError(error, {
         inspectedTargets,
+        classifiedFailures: failedTargets,
         failedTargets: selected.map((group) => group.target),
         notInspectedTargets: remainingTargets,
       });
@@ -1625,6 +1733,7 @@ async function inspectCanonicalTargets(groups, maxTargets, targetReadTokens) {
       }
       throw new CanonicalTargetInspectionError(error, {
         inspectedTargets,
+        classifiedFailures: failedTargets,
         failedTargets: selected.map((group) => group.target),
         notInspectedTargets: remainingTargets,
       });
@@ -1636,6 +1745,7 @@ async function inspectCanonicalTargets(groups, maxTargets, targetReadTokens) {
         new Error("canonical target discovery returned incomplete GitHub identities"),
         {
           inspectedTargets,
+          classifiedFailures: failedTargets,
           failedTargets: selected.map((group) => group.target),
           notInspectedTargets: remainingTargets,
         },
@@ -1726,11 +1836,32 @@ function countBy(rows, keyFor) {
   );
 }
 
+function selectedRecoveryTargets(groups) {
+  return [...groups.values()].map((group) => group.target);
+}
+
+function accountClassifiedSkips(summary, targets, reasonClass, reason, count = targets.length) {
+  if (count < 1) return;
+  summary.skipped_targets += count;
+  recordClassifiedSkips(summary, targets, reasonClass, reason, count);
+}
+
+function accountInspectionSkips(summary, targets, error) {
+  if (targets.length === 0) return;
+  summary.skipped_targets += targets.length;
+  recordInspectionSkips(summary, targets, error);
+}
+
 function recordInspectionSkips(summary, targets, error) {
   if (targets.length === 0) return;
-  const reason = sanitizeSkipReason(error);
   const reasonClass = classifyOperatorSkipReason(error);
-  recordSkipReasonCount(summary, reasonClass, targets.length);
+  recordClassifiedSkips(summary, targets, reasonClass, error);
+}
+
+function recordClassifiedSkips(summary, targets, reasonClass, error, count = targets.length) {
+  recordSkipReasonCount(summary, reasonClass, count);
+  if (error === undefined) return;
+  const reason = sanitizeSkipReason(error);
   for (const target of targets) {
     if (summary.skip_samples.length >= MAX_SKIP_SAMPLES) break;
     summary.skip_samples.push({ target: normalizeRecoveryTargetKey(target), reason });
@@ -1777,6 +1908,31 @@ function recordAbortedInspectionSkips(
   recordInspectionSkips(
     summary,
     notInspectedTargets,
+    new Error(
+      "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
+    ),
+  );
+}
+
+function recordRecoveryRevalidationAbort(
+  summary,
+  inspectedRecoveries,
+  failedRecovery,
+  notInspectedRecoveries,
+  reasonClass,
+  error,
+) {
+  recordInspectionSkips(
+    summary,
+    inspectedRecoveries.map((recovery) => recovery.canonicalTarget),
+    new Error(
+      "canonical target was inspected but reconciliation aborted after another target inspection failed",
+    ),
+  );
+  recordClassifiedSkips(summary, [failedRecovery.canonicalTarget], reasonClass, error);
+  recordInspectionSkips(
+    summary,
+    notInspectedRecoveries.map((recovery) => recovery.canonicalTarget),
     new Error(
       "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
     ),
@@ -1944,6 +2100,23 @@ function requiredCount(result, key) {
 
 function printResult(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+function printReconcileResult(summary) {
+  const accountedSkips = Object.values(summary.skip_reasons).reduce(
+    (total, count) => total + count,
+    0,
+  );
+  if (accountedSkips !== summary.skipped_targets) {
+    process.stderr.write(
+      `${JSON.stringify({
+        event: "reconcile_skip_accounting_inconsistent",
+        skipped_targets: summary.skipped_targets,
+        accounted_skips: accountedSkips,
+      })}\n`,
+    );
+  }
+  printResult(summary);
 }
 
 main(process.argv.slice(2)).catch((error) => {

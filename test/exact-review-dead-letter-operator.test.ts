@@ -708,8 +708,13 @@ test("automatic reconciliation resolves terminal rows and recovers one fresh rev
       duplicate_rows: 1,
       active_review_rows: 0,
       skipped_targets: 1,
-      skip_reasons: {},
-      skip_samples: [],
+      skip_reasons: { active_work: 1 },
+      skip_samples: [
+        {
+          target: "openclaw/repo#3",
+          reason: "canonical target has active review or publication work",
+        },
+      ],
     });
     const recovery = mutations.filter((entry) => entry.url?.endsWith("/recover-fresh"));
     assert.equal(recovery.length, 1);
@@ -963,6 +968,7 @@ test("an unchanged blocked cleanup cannot starve independent fresh recovery", as
   });
 
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.doesNotMatch(scenario.first.stderr, /reconcile_skip_accounting_inconsistent/);
   const summary = JSON.parse(scenario.first.stdout);
   assert.equal(summary.inspected_targets, 2);
   assert.equal(summary.recovered_targets, 1);
@@ -1187,7 +1193,10 @@ test("active and capped targets are counted only once across blocked inventory r
     const summary = JSON.parse(scenario.first.stdout);
     assert.equal(summary.recovered_targets, 1);
     assert.equal(summary.skipped_targets, 2);
-    assert.deepEqual(summary.skip_reasons, active ? {} : { recovery_cap: 1 });
+    assert.deepEqual(
+      summary.skip_reasons,
+      active ? { blocked_alias: 1, active_work: 1 } : { blocked_alias: 1, recovery_cap: 1 },
+    );
     assert.equal(scenario.inventoryRequests, 2);
   }
 });
@@ -1825,7 +1834,10 @@ test("incomplete bounded inventories drain invalid rows without recovering unkno
     pageSize: 20,
   });
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
-  assert.equal(JSON.parse(scenario.first.stdout).inventory_complete, false);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.inventory_complete, false);
+  assert.deepEqual(summary.skip_reasons, { inventory_incomplete: 4_999 });
+  assertSkipAccountingComplete(summary);
   assert.equal(scenario.inventoryRequests, 250);
   assert.deepEqual(scenario.resolutions[0]?.ids, ["invalid"]);
   assert.equal(scenario.recoveries.length, 0);
@@ -3310,6 +3322,14 @@ test("automatic recovery refuses a pull request whose current head has advanced"
   });
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
   assert.equal(scenario.recoveries.length, 0);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { head_mismatch: 1 });
+  assert.deepEqual(summary.skip_samples, [
+    {
+      target: "openclaw/repo#7",
+      reason: "eligible dead-letter source head does not match the live pull-request head",
+    },
+  ]);
 });
 
 test("automatic recovery revalidates the live GitHub target after cleanup", async () => {
@@ -3339,6 +3359,228 @@ test("automatic recovery revalidates the live GitHub target after cleanup", asyn
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
   assert.equal(scenario.resolutions.length, 1);
   assert.equal(scenario.recoveries.length, 0);
+  assert.deepEqual(JSON.parse(scenario.first.stdout).skip_reasons, {
+    closed_state_changed: 1,
+  });
+});
+
+test("automatic reconciliation classifies every deterministic skip path", async () => {
+  const blockedAlias = await automaticReconcileScenario({
+    rows: [
+      row(
+        "blocked",
+        "publication:blocked",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+    ],
+    closedNumbers: [1],
+    blockedCleanupIds: ["blocked"],
+  });
+  assert.equal(blockedAlias.first.code, 0, blockedAlias.first.stderr);
+  assert.deepEqual(JSON.parse(blockedAlias.first.stdout).skip_reasons, { blocked_alias: 1 });
+
+  const terminalCap = await automaticReconcileScenario({
+    rows: Array.from({ length: 11 }, (_, index) =>
+      row(
+        `closed-${index + 1}`,
+        `publication:closed-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${index + 1}`,
+      ),
+    ),
+    closedNumbers: Array.from({ length: 11 }, (_, index) => index + 1),
+    maxTargets: 20,
+  });
+  assert.equal(terminalCap.first.code, 0, terminalCap.first.stderr);
+  assert.deepEqual(JSON.parse(terminalCap.first.stdout).skip_reasons, {
+    terminal_recheck_cap: 1,
+  });
+
+  const inspectionCap = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/repo#1"),
+      row(
+        "second",
+        "publication:second",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    closedNumbers: [1, 2],
+    maxTargets: 1,
+  });
+  assert.equal(inspectionCap.first.code, 0, inspectionCap.first.stderr);
+  assert.deepEqual(JSON.parse(inspectionCap.first.stdout).skip_reasons, { inspection_cap: 1 });
+
+  const duplicatePartial = await automaticReconcileScenario({
+    rows: Array.from({ length: 22 }, (_, index) =>
+      row(
+        `duplicate-${index + 1}`,
+        `publication:duplicate-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#7",
+      ),
+    ),
+  });
+  assert.equal(duplicatePartial.first.code, 0, duplicatePartial.first.stderr);
+  assert.deepEqual(JSON.parse(duplicatePartial.first.stdout).skip_reasons, {
+    duplicate_resolution_partial: 1,
+  });
+
+  const identityNotActionable = await automaticReconcileScenario({
+    rows: [
+      row(
+        "identity",
+        "publication:identity",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+    ],
+    identityState: () => "unknown",
+  });
+  assert.equal(identityNotActionable.first.code, 0, identityNotActionable.first.stderr);
+  assert.deepEqual(JSON.parse(identityNotActionable.first.stdout).skip_reasons, {
+    identity_not_actionable: 1,
+  });
+
+  const discoveryFailed = await automaticReconcileScenario({
+    rows: Array.from({ length: 11 }, (_, index) =>
+      row(
+        `discovery-${index + 1}`,
+        `publication:discovery-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${index + 1}`,
+      ),
+    ),
+    invalidGraphqlIdentity: 1,
+    maxTargets: 20,
+  });
+  assert.equal(discoveryFailed.first.code, 0, discoveryFailed.first.stderr);
+  assert.deepEqual(JSON.parse(discoveryFailed.first.stdout).skip_reasons, {
+    discovery_failed: 11,
+  });
+
+  const mutationSkipped = await automaticReconcileScenario({
+    rows: [
+      row(
+        "mutation",
+        "publication:mutation",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+    ],
+    skippedFirstRecovery: true,
+  });
+  assert.equal(mutationSkipped.first.code, 0, mutationSkipped.first.stderr);
+  assert.deepEqual(JSON.parse(mutationSkipped.first.stdout).skip_reasons, {
+    recovery_mutation_skipped: 1,
+  });
+});
+
+test("automatic reconciliation explains every skipped target in a mixed scenario", async () => {
+  const stale = row(
+    "stale",
+    "publication:stale",
+    3,
+    "retry_exhausted",
+    true,
+    "eligible",
+    "openclaw/repo#3",
+  );
+  stale.item = {
+    decision: { publication: { producerDecision: { sourceHeadSha: "a".repeat(40) } } },
+  };
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "active",
+        "publication:active",
+        1,
+        "retry_exhausted",
+        false,
+        "fresh_review_already_active",
+        "openclaw/repo#1",
+      ),
+      row(
+        "ineligible",
+        "publication:ineligible",
+        2,
+        "retry_exhausted",
+        false,
+        "target_not_enabled",
+        "openclaw/repo#2",
+      ),
+      stale,
+      row(
+        "recover",
+        "publication:recover",
+        4,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#4",
+      ),
+      row(
+        "capacity",
+        "publication:capacity",
+        5,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#5",
+      ),
+    ],
+    pullRequestHeads: new Map([[3, "b".repeat(40)]]),
+    pressureDetails: () => ({ active: 127, capacity: 128 }),
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, {
+    active_work: 1,
+    no_eligible_rows: 1,
+    head_mismatch: 1,
+    recovery_capacity: 1,
+  });
+  assert.equal(summary.skipped_targets, 4);
+  assertSkipAccountingComplete(summary);
+  assert.ok(
+    summary.skip_samples.some(
+      (sample) =>
+        sample.target === "openclaw/repo#2" &&
+        sample.reason === "canonical target has no eligible dead-letter rows",
+    ),
+  );
+  assert.ok(
+    summary.skip_samples.some(
+      (sample) =>
+        sample.target === "openclaw/repo#3" &&
+        sample.reason ===
+          "eligible dead-letter source head does not match the live pull-request head",
+    ),
+  );
 });
 
 async function automaticReconcileScenario(options) {
@@ -3467,7 +3709,10 @@ async function automaticReconcileScenario(options) {
         const number = Number(value);
         data[`target${index}`] = {
           item: {
-            id: options.nodeId?.(number) ?? `ISSUE_${number}`,
+            id:
+              options.invalidGraphqlIdentity === number
+                ? null
+                : (options.nodeId?.(number) ?? `ISSUE_${number}`),
             state: options.reopenedNumbers?.includes(number)
               ? "CLOSED"
               : options.mergedNumbers?.includes(number)
@@ -3537,13 +3782,15 @@ async function automaticReconcileScenario(options) {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify({
-          state: options.reopenedNumbers?.includes(number)
-            ? "open"
-            : (options.closeAfterCleanup && resolutions.length) ||
-                options.mergedNumbers?.includes(number) ||
-                options.closedNumbers?.includes(number)
-              ? "closed"
-              : "open",
+          state:
+            options.identityState?.(number) ??
+            (options.reopenedNumbers?.includes(number)
+              ? "open"
+              : (options.closeAfterCleanup && resolutions.length) ||
+                  options.mergedNumbers?.includes(number) ||
+                  options.closedNumbers?.includes(number)
+                ? "closed"
+                : "open"),
           node_id: options.nodeId?.(number) ?? `ISSUE_${number}`,
           ...(options.canonicalTarget?.(number)
             ? {
@@ -3669,6 +3916,12 @@ async function automaticReconcileScenario(options) {
           options.operatorEnv,
         )
       : null;
+    if (first.code === 0) {
+      assert.doesNotMatch(first.stderr, /reconcile_skip_accounting_inconsistent/);
+    }
+    if (second?.code === 0) {
+      assert.doesNotMatch(second.stderr, /reconcile_skip_accounting_inconsistent/);
+    }
     return {
       first,
       second,
@@ -4016,6 +4269,13 @@ function row(
       item_key: recoveryItemKey,
     },
   };
+}
+
+function assertSkipAccountingComplete(summary) {
+  assert.equal(
+    Object.values(summary.skip_reasons).reduce((total, count) => total + count, 0),
+    summary.skipped_targets,
+  );
 }
 
 function parkedRow(itemKey, targetRepo, itemNumber, updatedAtMs) {
