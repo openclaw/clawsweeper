@@ -2582,11 +2582,23 @@ async function authenticatedLifecycleCommandAcknowledgement(request, env, ctx) {
 }
 
 async function authenticatedExactReviewQueueRead(request, env, path: string) {
-  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
-  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  const webhookSecret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  const operatorSecret = stringEnv(env.EXACT_REVIEW_OPERATOR_SECRET);
+  if (!webhookSecret && !operatorSecret) return json({ error: "webhook_not_configured" }, 503);
   const body = await request.text();
   const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
-  if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {
+  let authenticated = webhookSecret
+    ? await verifyGithubWebhookSignature({ secret: webhookSecret, signature, bodyText: body })
+    : false;
+  // This read-only route may accept the operator credential because it already authorizes queue mutations.
+  if (!authenticated && operatorSecret) {
+    authenticated = await verifyGithubWebhookSignature({
+      secret: operatorSecret,
+      signature,
+      bodyText: body,
+    });
+  }
+  if (!authenticated) {
     return json({ error: "invalid_signature" }, 401);
   }
   return exactReviewQueueRequest(
