@@ -15,6 +15,7 @@ The exact-review dead-letter operator drains stale publication artifacts only wh
 1. Reconcile a `retry_exhausted` publication whose recorded source head differs from the live pull-request head and whose signed canonical `items/<number>` record identifies the same repository, item number, pull-request type, `review_status: complete`, and live `pull_head_sha`.
    - Resolve the stale row with `resolution_outcome: superseded`.
    - Record an audit note naming the full newer head and exact canonical-record endpoint.
+   - Re-read GitHub immediately before resolution and require the same open node identity and head used by the canonical evidence.
    - Do not enqueue or recover a review.
    - Increment the queue publication completed and superseded totals without incrementing published.
 2. Reconcile the same mismatch when the canonical record is missing, malformed, incomplete, for another target, failed, or at another head.
@@ -34,6 +35,7 @@ The exact-review dead-letter operator drains stale publication artifacts only wh
 ## Anti-cheat probes
 
 - Change the canonical record head away from the live GitHub head; resolution must stop.
+- Advance the live pull-request head after canonical evidence is read but before resolution; resolution must stop.
 - Remove the canonical record; resolution must stop.
 - Cross the ten-target and 20-row boundaries; only the bounded prefix may resolve.
 - Repeat the positive fixture without `--execute`; the output may plan resolution but the stub must observe zero mutations.

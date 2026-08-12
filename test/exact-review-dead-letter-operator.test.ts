@@ -3391,6 +3391,43 @@ test("automatic reconciliation resolves a stale publication only with canonical 
   assert.deepEqual(summary.skip_reasons, {});
 });
 
+test("head-mismatch supersession revalidates the live head immediately before resolution", async () => {
+  const staleHead = "a".repeat(40);
+  const provenHead = "b".repeat(40);
+  const advancedHead = "c".repeat(40);
+  const item = row(
+    "stale-race",
+    "publication:stale-race",
+    1,
+    "retry_exhausted",
+    true,
+    "eligible",
+    "openclaw/repo#8",
+  );
+  item.item = {
+    decision: { publication: { producerDecision: { sourceHeadSha: staleHead } } },
+  };
+  const scenario = await automaticReconcileScenario({
+    rows: [item],
+    pullRequestHeads: new Map([[8, provenHead]]),
+    pullRequestHeadsAfterEvidence: new Map([[8, advancedHead]]),
+    canonicalRecords: new Map([[8, canonicalRecordEnvelope("openclaw/repo", 8, provenHead)]]),
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.resolutions.length, 0);
+  assert.equal(scenario.recoveries.length, 0);
+  assert.equal(scenario.restRequests, 4);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { head_mismatch_revalidation_changed: 1 });
+  assert.deepEqual(summary.skip_samples, [
+    {
+      target: "openclaw/repo#8",
+      reason: "live pull-request identity or head changed after canonical supersession evidence",
+    },
+  ]);
+});
+
 test("head-mismatch supersession enforces target and row caps", async () => {
   const staleHead = "a".repeat(40);
   const liveHead = "b".repeat(40);
@@ -3971,7 +4008,13 @@ async function automaticReconcileScenario(options) {
               (options.closedNumbers?.includes(number) || options.mergedNumbers?.includes(number))
                 ? "closed"
                 : "open",
-            head: { sha: options.pullRequestHeads?.get(number) },
+            head: {
+              sha:
+                canonicalRecordRequests.length > 0 &&
+                options.pullRequestHeadsAfterEvidence?.has(number)
+                  ? options.pullRequestHeadsAfterEvidence.get(number)
+                  : options.pullRequestHeads?.get(number),
+            },
           }),
         );
         return;

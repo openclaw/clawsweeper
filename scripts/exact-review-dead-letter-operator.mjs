@@ -884,6 +884,44 @@ async function reconcileDeadLetters({
         );
         continue;
       }
+      let current;
+      try {
+        current = await inspectRecoveryTarget(
+          live.canonical_target || canonicalTarget,
+          targetReadTokens,
+        );
+      } catch (error) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          classifyOperatorSkipReason(error),
+          error,
+        );
+        continue;
+      }
+      if (
+        current.state !== "open" ||
+        current.node_id !== live.node_id ||
+        current.head_sha !== live.head_sha
+      ) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "head_mismatch_revalidation_changed",
+          new Error(
+            "live pull-request identity or head changed after canonical supersession evidence",
+          ),
+        );
+        continue;
+      }
+      const resolutionAliases = [
+        ...new Set([
+          ...groupAliases,
+          ...(current.canonical_target
+            ? [normalizeRecoveryTargetKey(current.canonical_target)]
+            : []),
+        ]),
+      ];
       const selectedRows = supersedeRows.slice(0, MAX_RESOLUTION_IDS);
       const resolution = await resolveForReconciliation({
         queueUrl,
@@ -893,8 +931,8 @@ async function reconcileDeadLetters({
         outcome: "superseded",
         execute: args.execute,
         openIds,
-        canonicalTarget: live.canonical_target,
-        aliases: groupAliases,
+        canonicalTarget: current.canonical_target || live.canonical_target,
+        aliases: resolutionAliases,
       });
       if (resolution.blocked) continue;
       summary.resolved_rows += resolution.resolved;

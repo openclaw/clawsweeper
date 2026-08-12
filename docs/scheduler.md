@@ -90,7 +90,8 @@ Publication dead letters whose recorded pull-request head no longer matches the
 live head are never replayed or resolved from head drift alone. The reconciler
 may resolve them as superseded only when the existing HMAC-authenticated
 canonical-record read for the same target contains a complete review at that
-live head. Each cycle checks at most ten such targets and resolves at most 20
+live head, then rechecks the same open GitHub node and head immediately before
+the guarded resolution. Each cycle checks at most ten such targets and resolves at most 20
 rows per target; missing or mismatched evidence remains open as
 `head_mismatch_unproven`. `tuple_protocol_invalid` and `workflow_cancelled`
 rows are excluded from this path. Executed resolutions retain an audit note
