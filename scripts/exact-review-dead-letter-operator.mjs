@@ -95,6 +95,7 @@ class TargetReadTokenCache {
     }
     this.fallbackToken = String(env.GH_TOKEN || "").trim() || String(env.GITHUB_TOKEN || "").trim();
     this.tokensByOwner = new Map();
+    this.mintsByRepository = new Map();
     if (this.mode === "actions") {
       if (!this.fallbackToken) {
         throw new Error(
@@ -136,12 +137,29 @@ class TargetReadTokenCache {
       return this.fallbackToken;
     }
     const ownerKey = owner.toLowerCase();
+    const repositoryKey = `${owner}/${repo}`.toLowerCase();
+    // Successful tokens and setup throttles are installation-scoped, so they remain owner-cached.
+    // Selected-repository installations still authorize each repo on its own REST/GraphQL read,
+    // whose 403/404 handling fails closed. An installation-missing 404 is repository-specific,
+    // so keep the in-flight/rejected mint under the repository key until its outcome is known.
     let token = this.tokensByOwner.get(ownerKey);
+    if (token) return token;
+
+    token = this.mintsByRepository.get(repositoryKey);
     if (!token) {
       token = this.mintForOwner(`${owner}/${repo}`);
-      this.tokensByOwner.set(ownerKey, token);
+      this.mintsByRepository.set(repositoryKey, token);
     }
-    return token;
+    try {
+      const mintedToken = await token;
+      this.tokensByOwner.set(ownerKey, Promise.resolve(mintedToken));
+      return mintedToken;
+    } catch (error) {
+      if (error instanceof TargetAppSetupThrottleError) {
+        this.tokensByOwner.set(ownerKey, token);
+      }
+      throw error;
+    }
   }
 
   async mintForOwner(targetRepo) {

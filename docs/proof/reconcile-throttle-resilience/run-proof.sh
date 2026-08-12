@@ -20,7 +20,7 @@ corepack pnpm install --frozen-lockfile
 
 echo "PROOF_PHASE=loopback"
 node --experimental-strip-types --test \
-  --test-name-pattern='dead-letter workflow is manual|scheduled, bounded|target-read App mode|serial canonical discovery|serial recovery revalidation|100-target reconciliation|batched canonical discovery|multi-owner reconciliation|throttled owner token mint|throttled installation lookup|installation removed before token mint|batched discovery skips a throttled owner setup|cached setup throttle spanning three batches|ordinary installation_lookup|ordinary token_mint|persistent setup throttling|valid owner installation|operator previews' \
+  --test-name-pattern='dead-letter workflow is manual|scheduled, bounded|target-read App mode|serial canonical discovery|serial recovery revalidation|100-target reconciliation|batched canonical discovery|multi-owner reconciliation|missing selected repository|throttled owner token mint|throttled installation lookup|installation removed before token mint|batched discovery skips a throttled owner setup|cached setup throttle spanning three batches|ordinary installation_lookup|ordinary token_mint|persistent setup throttling|valid owner installation|operator previews' \
   test/exact-review-dead-letter-operator.test.ts
 
 echo "PROOF_PHASE=content"

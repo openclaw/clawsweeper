@@ -73,3 +73,17 @@ workflow target-token mode: expected github-app, actual undefined
 The green path makes `github-app` the default target-token mode, validates the App ID/private-key pair synchronously at startup, and returns the repository token only when `EXACT_REVIEW_TARGET_TOKEN_MODE=actions` is explicit. Key-only fails naming the missing App ID, ID-only fails naming the missing private key, neither fails naming both, and both proceeds. The scheduled and manual workflows now select `github-app`; repository settings expose the referenced private-key secret, so the inspected scheduled lane was fully configured, while any future missing secret will fail the cycle visibly instead of recreating the throttle.
 
 The focused workflow/matrix selection passed 3/3 and the complete operator file passed 79/79 on Node 24. The final Docker receipt and full gate results are recorded in `receipt.json` and the PR body.
+
+## Round 5: repository-scoped installation-missing cache
+
+The round-5 red phase taught the loopback fixture to resolve installations by full `owner/repo` when supplied, then added one cycle containing a missing repository followed by an accessible repository under the same owner. Against the owner-level rejected-promise cache, the new regression failed while both existing owner-throttle cases remained green:
+
+```text
+tests 3
+pass 2
+fail 1
+
+AssertionError: expected recovered_targets 1, actual 0
+```
+
+The green implementation keeps in-flight and rejected installation-missing mints under a normalized repository key. Only a successful installation token or a confirmed setup throttle is promoted to the owner cache. The same selection passed 3/3, including both 429 and confirmed-403 owner-throttle cases, and the complete operator file passed 80/80 on Node 24.

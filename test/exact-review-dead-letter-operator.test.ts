@@ -2631,6 +2631,65 @@ test("multi-owner reconciliation recovers installed targets and reports missing 
   );
 });
 
+test("a missing selected repository does not hide an accessible repository under the same owner", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "missing",
+        "publication:missing",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "selected-owner/missing#1",
+      ),
+      row(
+        "accessible",
+        "publication:accessible",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "selected-owner/accessible#2",
+      ),
+    ],
+    targetInstallations: new Map([
+      ["selected-owner/missing", null],
+      ["selected-owner/accessible", { id: 124, token: "selected-owner-token" }],
+    ]),
+    operatorEnv: {
+      GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23selectedrepos",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.skipped_targets, 1);
+  assert.deepEqual(summary.skip_reasons, { installation_missing: 1 });
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["accessible"]],
+  );
+  assert.deepEqual(scenario.installationRequests, [
+    "selected-owner/missing",
+    "selected-owner/accessible",
+  ]);
+  assert.deepEqual(scenario.tokenMintRequests, [124]);
+  assert.deepEqual(
+    new Set(scenario.targetReadAuthorizations),
+    new Set(["Bearer selected-owner-token"]),
+  );
+});
+
 for (const failedStatus of [429, 403]) {
   test(`throttled owner token mint ${failedStatus} skips that owner's targets and recovers another owner`, async () => {
     const { privateKey } = generateKeyPairSync("rsa", {
@@ -3336,7 +3395,11 @@ async function automaticReconcileScenario(options) {
         );
         return;
       }
-      const installation = options.targetInstallations.get(owner.toLowerCase());
+      const repositoryKey = `${owner}/${repo}`.toLowerCase();
+      const installationKey = options.targetInstallations.has(repositoryKey)
+        ? repositoryKey
+        : owner.toLowerCase();
+      const installation = options.targetInstallations.get(installationKey);
       if (!installation) {
         response.writeHead(404, { "content-type": "application/json" });
         response.end(JSON.stringify({ message: "Not Found" }));
