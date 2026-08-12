@@ -1,20 +1,21 @@
 {
   "contract": "CSW-127 Phase 0.5 quota recovery",
   "provider": "local-container",
-  "lease_id": "cbx_6580d0b07770",
-  "slug": "quick-lobster",
+  "lease_id": "cbx_a1b3b467847d",
+  "slug": "tidal-shrimp",
   "image": "mcr.microsoft.com/playwright:v1.60.0-noble",
-  "base_head": "c8a9737486",
+  "source_head": "ea44161235652dca3a22f7250319ec06df22fdbc",
+  "base_head": "9a257905e50be2dff9bb99afecb6cde50f8417f9",
   "sync_mode": "read-only host bind mount copied into an isolated container workdir",
   "run_status": "succeeded",
   "exit_code": 0,
   "timing_ms": {
-    "total": 47154,
-    "command": 47059,
-    "build": 3395,
-    "focused_tests": 6243,
-    "worker_do_proof": 27695,
-    "scoped_lint": 1368
+    "total": 49228,
+    "command": 49131,
+    "build": 4245,
+    "focused_tests": 6382,
+    "worker_do_proof": 29371,
+    "scoped_lint": 1384
   },
   "focused_tests": {
     "passed": 323,

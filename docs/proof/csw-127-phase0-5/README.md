@@ -1,9 +1,12 @@
 # CSW-127 Phase 0.5 executed proof
 
 The controlled runtime proof succeeded on Docker-backed Crabbox
-`local-container` lease `cbx_6580d0b07770` (`quick-lobster`) using
+`local-container` lease `cbx_a1b3b467847d` (`tidal-shrimp`) using
 `mcr.microsoft.com/playwright:v1.60.0-noble`. The lease stopped automatically
-after the run.
+after the run. It exercised source head
+`ea44161235652dca3a22f7250319ec06df22fdbc` on base
+`9a257905e50be2dff9bb99afecb6cde50f8417f9`; the follow-up commit that records
+this refreshed receipt changes evidence files only.
 
 ## Observed result
 
@@ -33,8 +36,9 @@ fixtures are `run-proof.sh` and `run-proof.mjs`.
 
 Normal Crabbox rsync failed before execution on two local-container leases with
 rsync protocol error 12. The successful run used Crabbox's supported read-only
-host bind mount, copied the exact worktree (excluding `.git`, `node_modules`,
-and `.crabbox`) into an isolated container directory, and ran there.
+host bind mount, copied the worktree (excluding `.git`, `node_modules`, and
+`.crabbox`) into an isolated container directory, normalized only the copied
+proof shell script's Windows line endings, and ran there.
 
 The first complete behavior run passed its build, 321 tests, and Worker/DO
 scenario, then the repository-wide format check rejected the Windows checkout's
