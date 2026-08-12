@@ -67,16 +67,19 @@ crabbox run --provider local-container --local-container-image node:24 --no-hydr
   bash docs/proof/record-front-matter-body-scope/run-proof.sh
 ```
 
-Recorded run:
+Proof contract — what a passing run must show. The **observed run for the current
+head (lease, run id, artifact, redacted output) lives in the PR body**, which is
+where AGENTS.md requires current proof to sit. No lease id is pinned here on
+purpose: editing this file changes the head, which would immediately make a pinned
+run describe a different commit than the one under review.
 
 | | |
 |---|---|
-| provider | `local-container` (runtime `docker`) |
-| image | `node:24` → `v24.19.0`, `Linux aarch64` |
-| lease | `cbx_4cc800adeaa2` (`coral-barnacle`) |
-| run | `run_cae9b50152dd` |
-| base staged | `5439582b` · `src/clawsweeper-record-metadata.ts` · sha256 `df480a1e…83f1` |
-| exit | `0` |
+| provider | Crabbox `local-container` (runtime `docker`) |
+| image | `node:24`; the script refuses to run below Node 24 |
+| result | **PROOF PASSED** (all fixtures); focused suite `7/7`; exit `0` |
+| head | echoed from `PROOF_HEAD`, forwarded with `--allow-env` |
+| tracked state | unchanged at every checkpoint; identical `package.json` and `pnpm-lock.yaml` digests at sync and at end of run |
 
 `stage-before.sh` exists because container images carry no `.git`: it writes the
 base version of the changed file into `before/` on the host, where rsync picks it up
