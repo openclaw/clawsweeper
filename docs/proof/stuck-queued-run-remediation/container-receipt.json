@@ -1,20 +1,26 @@
 {
   "schema_version": 1,
-  "tested_commit": "5091608743e1e82a3fc9050c700e66603241684f",
-  "provider": "aws",
-  "lease_id": "cbx_ce4df34fd731",
-  "lease_slug": "blue-crayfish-6280",
-  "run_id": "run_ad000b26448d",
-  "machine_type": "c7a.8xlarge",
+  "tested_commit": "b46b579b6d12d940cb068b32da20a23e8c39b000",
+  "provider": "local-container",
+  "lease_id": "cbx_821f20930574",
+  "lease_slug": "amber-shrimp-5247",
+  "run_id": null,
+  "machine_type": "node_24-bookworm",
   "container_image": "node:24-bookworm",
-  "command": "corepack enable && pnpm install --frozen-lockfile && node --test test/stuck-queued-run-remediation.test.ts test/review-reliability-workflow.test.ts test/exact-review-dead-letter-operator.test.ts && pnpm run check:static && pnpm run build:all && pnpm run lint",
+  "fresh_pr": "https://github.com/openclaw/clawsweeper/pull/1131",
+  "command": "verify pushed HEAD; install with the pinned pnpm; run 71 focused tests; run the loopback production-script scenarios; run check:static, build:all, and lint",
   "result": {
     "status": "succeeded",
     "exit_code": 0,
     "focused_tests": {
-      "total": 69,
-      "passed": 69,
+      "total": 71,
+      "passed": 71,
       "failed": 0
+    },
+    "loopback_assertions": {
+      "stranded_cancelled_exactly_once": true,
+      "young_run_untouched": true,
+      "zombie_500_500_persisted": true
     },
     "gates": [
       "dependency lockfile and supply-chain policy",
@@ -24,14 +30,19 @@
     ]
   },
   "timing_ms": {
-    "sync": 23992,
-    "command": 40345,
-    "container_phase": 28825,
-    "total": 65525
+    "sync": 12395,
+    "command": 18323,
+    "total": 30800,
+    "phases": {
+      "install": 3571,
+      "focused_tests": 10656,
+      "loopback_proof": 251,
+      "static_build_lint_gates": 3634
+    }
   },
   "lease_stopped": true,
   "limits": [
-    "Crabbox raw-workspace sync intentionally does not copy .git; the receipt binds the synced content to the clean local tested_commit.",
-    "The full pnpm run check gate was run in the real Git checkout, where all 3343 tests completed with 3334 passes, 9 platform skips, and 0 failures. A diagnostic full-suite attempt inside the raw Docker workspace was not accepted as proof because 37 unrelated sweep-workflow tests require Git metadata."
+    "The GitHub API was a loopback fixture; no production run was cancelled.",
+    "The full pnpm run check gate ran in the clean host checkout: 3345 tests, 3336 passes, 9 platform skips, 0 failures."
   ]
 }

@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-12T04:33:21.696Z",
+  "production_script": "scripts/stuck-queued-run-remediation.mjs",
+  "transport": "loopback HTTP listener via GITHUB_API_URL",
+  "assertions": {
+    "stranded_cancelled_exactly_once": true,
+    "young_run_untouched": true,
+    "zombie_500_500_persisted": true
+  },
+  "scenarios": {
+    "cancel": {
+      "stranded_run_id": "910001",
+      "young_run_id": "910002",
+      "selected_run_ids": [
+        "910001"
+      ],
+      "actions": [
+        {
+          "run_id": "910001",
+          "outcome": "cancel_requested",
+          "cancel_status": 202,
+          "force_cancel_status": null
+        }
+      ],
+      "deadline_reached": false,
+      "request_trace": [
+        {
+          "method": "GET",
+          "path": "/repos/openclaw/clawsweeper/actions/runs"
+        },
+        {
+          "method": "GET",
+          "path": "/repos/openclaw/clawsweeper/actions/workflows/7001/runs"
+        },
+        {
+          "method": "GET",
+          "path": "/repos/openclaw/clawsweeper/actions/runs/910001"
+        },
+        {
+          "method": "POST",
+          "path": "/repos/openclaw/clawsweeper/actions/runs/910001/cancel"
+        }
+      ],
+      "persisted_zombie_run_ids": []
+    },
+    "zombie_500_500": {
+      "stranded_run_id": "920001",
+      "young_run_id": "920002",
+      "selected_run_ids": [
+        "920001"
+      ],
+      "actions": [
+        {
+          "run_id": "920001",
+          "outcome": "permanent_zombie_recorded",
+          "cancel_status": 500,
+          "force_cancel_status": 500
+        }
+      ],
+      "deadline_reached": false,
+      "request_trace": [
+        {
+          "method": "GET",
+          "path": "/repos/openclaw/clawsweeper/actions/runs"
+        },
+        {
+          "method": "GET",
+          "path": "/repos/openclaw/clawsweeper/actions/workflows/7002/runs"
+        },
+        {
+          "method": "GET",
+          "path": "/repos/openclaw/clawsweeper/actions/runs/920001"
+        },
+        {
+          "method": "POST",
+          "path": "/repos/openclaw/clawsweeper/actions/runs/920001/cancel"
+        },
+        {
+          "method": "POST",
+          "path": "/repos/openclaw/clawsweeper/actions/runs/920001/force-cancel"
+        }
+      ],
+      "persisted_zombie_run_ids": [
+        "920001"
+      ],
+      "persisted_state_replay": {
+        "actions": [],
+        "stranded_reason": "permanent_zombie",
+        "request_trace": [
+          {
+            "method": "GET",
+            "path": "/repos/openclaw/clawsweeper/actions/runs"
+          }
+        ]
+      }
+    }
+  }
+}

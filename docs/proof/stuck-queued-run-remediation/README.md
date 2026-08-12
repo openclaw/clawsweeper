@@ -1,18 +1,15 @@
 # Stuck queued-run remediation proof
 
-This proof covers the read-only planning surface for the scheduled stuck-run remediation lane. The claim is intentionally narrow: a queued run is selected only after it is older than 90 minutes and at least three newer runs of the same GitHub Actions workflow have reached `in_progress` or `completed`. Known permanent zombies and the intentionally serialized repair-cluster workflow are excluded before history is fetched.
+The scheduled remediation lane now inspects at most eight distinct stale workflows per pass, oldest queued run first. It also has a two-minute total runtime cap. When the shared `EXACT_REVIEW_RECONCILE_DEADLINE_MS` is present, the effective remediation deadline is the earlier of that cap and the shared deadline minus eight minutes, preserving 480,000 ms for guard verification and both dead-letter stages. Every GitHub request uses the remaining total budget. A partial pass writes `deadline_reached` plus distinct, inspected, and skipped workflow counts to its artifact and step summary.
 
-`live-dry-run.json` was captured against `openclaw/clawsweeper` with:
+The timeout regression starts the production script against a loopback history provider that takes 20 seconds per call and exposes 20 distinct stale workflows. With the shared deadline constrained, the script stops after one attempted history request in about 1.5 seconds, reports one inspected and 19 skipped workflows (12 by the eight-workflow cap and seven by deadline), and retains the full eight-minute dead-letter reserve.
 
-```bash
-GH_TOKEN="$(gh auth token)" node scripts/stuck-queued-run-remediation.mjs \
-  --repository openclaw/clawsweeper \
-  --output docs/proof/stuck-queued-run-remediation/live-dry-run.json \
-  --zombie-output .artifacts/exact-review-dlq/stuck-queued-zombies.json
-```
+`loopback-proof-receipt.json` records the production script's after-fix summary from the Docker-backed Crabbox proof. The loopback GitHub API exposed one two-hour-old queued run with three later same-workflow starts and one ten-minute-old queued run. The script selected and revalidated only the stranded run, posted exactly one regular cancellation, recorded `cancel_requested` with HTTP 202, and left the young run untouched.
 
-The 2026-08-12T03:39:23.031Z snapshot inspected all 18 queued runs returned by GitHub. One current run was younger than the threshold, the other 17 were the already-proven permanent zombies from the July and August incidents, and the cancellation plan was empty. The command made no mutation requests.
+The second scenario is recorded in the same receipt. Regular and force cancellation both returned HTTP 500, so the script persisted the run as a permanent zombie. A second production-script pass restored that state, classified the old run as `permanent_zombie`, made no cancellation request, and left the young run untouched. The receipt contains the redacted request traces and all three behavior assertions.
 
-Unit tests exercise the positive stale-plus-three-starts case, a global capacity crunch with no newer starts, the strict age boundary, the expected-long-queue exclusion, the ten-run cap, and the 500→500 permanent-zombie path. `container-receipt.json` records the exit-zero Docker proof for committed revision `5091608743e1e82a3fc9050c700e66603241684f`: Crabbox provider `aws`, lease `cbx_ce4df34fd731`, run `run_ad000b26448d`, and image `node:24-bookworm`. All 69 focused tests, static checks, TypeScript builds, and lint lanes passed, and the lease stopped.
+`container-receipt.json` records the current-pushed-head Crabbox run for revision `b46b579b6d12d940cb068b32da20a23e8c39b000`: provider `local-container`, lease `cbx_821f20930574`, slug `amber-shrimp-5247`, and Docker image `node:24-bookworm`. All 71 focused tests, the loopback production-script proof, static policy and documentation checks, formatting, all TypeScript builds, and every lint lane passed. Crabbox stopped the lease automatically.
 
-Limits: this proof uses GitHub's live workflow-run inventory but deliberately does not manufacture or cancel a production candidate. The cancellation API behavior is covered with injected responses in the pure remediation tests; the two production incidents are the real-world evidence that regular cancellation is safe for this queue because `workflow_cancelled` is retryable and cleanly re-dispatched. Crabbox raw sync does not copy `.git`, so the full 3,343-test `pnpm run check` proof remains the clean host-checkout run; the Docker receipt covers the changed behavior plus every container-valid static, build, and lint gate.
+The earlier live read-only inventory remains in `live-dry-run.json`. It inspected all 18 queued runs returned by GitHub at 2026-08-12T03:39:23.031Z, found one young run plus the 17 seeded permanent zombies, selected nothing, and made no mutation request.
+
+Limits: the after-fix transport is a loopback HTTP fixture rather than live GitHub mutation. It exercises the production CLI, request routing through `GITHUB_API_URL`, selection, live-status revalidation, regular and force cancellation endpoints, summary writing, and restored zombie-state behavior. The host Node 24 `pnpm run check` remains the broad repository gate: 3,345 tests, 3,336 passes, nine platform skips, and zero failures.
