@@ -8,6 +8,9 @@ import { parseArgs as parseNodeArgs } from "node:util";
 export const STALE_QUEUED_AGE_MS = 90 * 60 * 1000;
 export const STARTED_AROUND_EVIDENCE_COUNT = 3;
 export const MAX_CANCELLATIONS_PER_PASS = 10;
+export const MAX_WORKFLOW_HISTORIES_PER_PASS = 8;
+export const REMEDIATION_MAX_RUNTIME_MS = 2 * 60 * 1000;
+export const DEAD_LETTER_RESERVED_MS = 8 * 60 * 1000;
 export const EXPECTED_LONG_QUEUE_WORKFLOWS = new Set([
   ".github/workflows/repair-cluster-worker.yml",
 ]);
@@ -18,6 +21,7 @@ const DEFAULT_ZOMBIE_SEED = "config/stuck-queued-run-zombies.json";
 const MAX_LIST_PAGES = 10;
 const PER_PAGE = 100;
 const REQUEST_TIMEOUT_MS = 20_000;
+const DEADLINE_SETTLE_MS = 25;
 const RUN_ID = /^[1-9]\d*$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const STARTED_STATUSES = new Set(["in_progress", "completed"]);
@@ -193,6 +197,48 @@ export function mergeZombieRecords(...states) {
   return merged;
 }
 
+export function remediationDeadlineAt({
+  nowMs = Date.now(),
+  sharedDeadlineMs = process.env.EXACT_REVIEW_RECONCILE_DEADLINE_MS,
+} = {}) {
+  const ownDeadlineMs = nowMs + REMEDIATION_MAX_RUNTIME_MS;
+  const raw = String(sharedDeadlineMs || "").trim();
+  if (!raw) {
+    return {
+      deadline_ms: ownDeadlineMs,
+      own_deadline_ms: ownDeadlineMs,
+      shared_deadline_ms: null,
+      dead_letter_reserved_ms: DEAD_LETTER_RESERVED_MS,
+    };
+  }
+  const sharedDeadlineAtMs = Number(raw);
+  if (!Number.isSafeInteger(sharedDeadlineAtMs) || sharedDeadlineAtMs < 1) {
+    throw new Error("EXACT_REVIEW_RECONCILE_DEADLINE_MS must be a positive epoch millisecond");
+  }
+  return {
+    deadline_ms: Math.min(ownDeadlineMs, sharedDeadlineAtMs - DEAD_LETTER_RESERVED_MS),
+    own_deadline_ms: ownDeadlineMs,
+    shared_deadline_ms: sharedDeadlineAtMs,
+    dead_letter_reserved_ms: DEAD_LETTER_RESERVED_MS,
+  };
+}
+
+export function remediationDeadlineReached(deadlineAtMs) {
+  return Date.now() + DEADLINE_SETTLE_MS >= deadlineAtMs;
+}
+
+export function selectWorkflowHistoriesForInspection(
+  staleWorkflows,
+  maxWorkflows = MAX_WORKFLOW_HISTORIES_PER_PASS,
+) {
+  return [...staleWorkflows.entries()]
+    .sort(
+      ([leftId, leftCreatedAt], [rightId, rightCreatedAt]) =>
+        leftCreatedAt - rightCreatedAt || Number(leftId) - Number(rightId),
+    )
+    .slice(0, maxWorkflows);
+}
+
 async function main(argv) {
   const args = parseArgs(argv);
   if (args.help) {
@@ -215,7 +261,8 @@ Options:
   if (!REPOSITORY.test(repository)) throw new Error("--repository must be owner/repo");
   const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
   if (!token) throw new Error("GITHUB_TOKEN or GH_TOKEN is required");
-  const api = githubApi({ repository, token });
+  const deadline = remediationDeadlineAt();
+  const api = githubApi({ repository, token, deadlineAtMs: deadline.deadline_ms });
   const generatedAt = new Date().toISOString();
   const nowMs = Date.parse(generatedAt);
 
@@ -224,7 +271,16 @@ Options:
     ? await readZombieState(args.zombieState, { required: false })
     : { schema_version: 1, zombies: [] };
   const zombieState = mergeZombieRecords(seedState, priorState);
-  const queuedInventory = await api.listQueuedRuns();
+  let deadlineReached = remediationDeadlineReached(deadline.deadline_ms);
+  let queuedInventory = { runs: [], complete: false };
+  if (!deadlineReached) {
+    try {
+      queuedInventory = await api.listQueuedRuns();
+    } catch (error) {
+      if (!remediationDeadlineReached(deadline.deadline_ms)) throw error;
+      deadlineReached = true;
+    }
+  }
   const staleWorkflows = new Map();
   for (const run of queuedInventory.runs) {
     const workflowId = normalizeRunId(run.workflow_id);
@@ -244,12 +300,31 @@ Options:
   const historyByWorkflow = new Map();
   const historyCompleteByWorkflow = new Map();
   const historyErrors = [];
-  for (const [workflowId, earliestCreatedAtMs] of staleWorkflows) {
+  const orderedStaleWorkflows = selectWorkflowHistoriesForInspection(
+    staleWorkflows,
+    Number.POSITIVE_INFINITY,
+  );
+  const boundedStaleWorkflows = selectWorkflowHistoriesForInspection(staleWorkflows);
+  let inspectedWorkflowCount = 0;
+  for (const [workflowId, earliestCreatedAtMs] of boundedStaleWorkflows) {
+    if (remediationDeadlineReached(deadline.deadline_ms)) {
+      deadlineReached = true;
+      break;
+    }
+    inspectedWorkflowCount += 1;
     try {
       const history = await api.listWorkflowRuns({ workflowId, earliestCreatedAtMs });
       historyByWorkflow.set(workflowId, history.runs);
       historyCompleteByWorkflow.set(workflowId, history.complete);
     } catch (error) {
+      if (remediationDeadlineReached(deadline.deadline_ms)) {
+        deadlineReached = true;
+        historyErrors.push({
+          workflow_id: workflowId,
+          error: "remediation deadline reached during workflow history request",
+        });
+        break;
+      }
       historyErrors.push({ workflow_id: workflowId, error: errorMessage(error) });
     }
   }
@@ -264,7 +339,18 @@ Options:
   const actions = [];
   if (args.execute) {
     for (const candidate of plan.selected) {
-      const current = await api.getRun(candidate.run_id);
+      if (remediationDeadlineReached(deadline.deadline_ms)) {
+        deadlineReached = true;
+        break;
+      }
+      let current;
+      try {
+        current = await api.getRun(candidate.run_id);
+      } catch (error) {
+        if (!remediationDeadlineReached(deadline.deadline_ms)) throw error;
+        deadlineReached = true;
+        break;
+      }
       if (String(current.status || "") !== "queued") {
         const action = {
           run_id: candidate.run_id,
@@ -276,16 +362,28 @@ Options:
         logAction(action, candidate);
         continue;
       }
-      const action = await remediateCandidate({
-        candidate,
-        postCancellation: api.postCancellation,
-        zombieState,
-        now: generatedAt,
-      });
+      let action;
+      try {
+        action = await remediateCandidate({
+          candidate,
+          postCancellation: api.postCancellation,
+          zombieState,
+          now: generatedAt,
+        });
+      } catch (error) {
+        if (!remediationDeadlineReached(deadline.deadline_ms)) throw error;
+        deadlineReached = true;
+        break;
+      }
       actions.push(action);
       logAction(action, candidate);
     }
   }
+
+  const skippedByBound = Math.max(0, orderedStaleWorkflows.length - boundedStaleWorkflows.length);
+  const skippedByDeadline = deadlineReached
+    ? Math.max(0, boundedStaleWorkflows.length - inspectedWorkflowCount)
+    : 0;
 
   const summary = {
     schema_version: 1,
@@ -296,10 +394,22 @@ Options:
       stale_age_minutes: STALE_QUEUED_AGE_MS / 60_000,
       required_newer_started_runs: STARTED_AROUND_EVIDENCE_COUNT,
       max_cancellations: MAX_CANCELLATIONS_PER_PASS,
+      max_workflow_histories: MAX_WORKFLOW_HISTORIES_PER_PASS,
+      max_runtime_ms: REMEDIATION_MAX_RUNTIME_MS,
+      dead_letter_reserved_ms: DEAD_LETTER_RESERVED_MS,
       expected_long_queue_workflows: [...EXPECTED_LONG_QUEUE_WORKFLOWS],
     },
+    deadline: deadline,
+    deadline_reached: deadlineReached,
     queued_inventory_complete: queuedInventory.complete,
     queued_runs_inspected: queuedInventory.runs.length,
+    workflow_discovery: {
+      distinct_stale_workflows: orderedStaleWorkflows.length,
+      inspected_workflows: inspectedWorkflowCount,
+      skipped_workflows: Math.max(0, orderedStaleWorkflows.length - inspectedWorkflowCount),
+      skipped_by_bound: skippedByBound,
+      skipped_by_deadline: skippedByDeadline,
+    },
     history_errors: historyErrors,
     selected_count: plan.selected.length,
     selected: plan.selected,
@@ -320,12 +430,16 @@ Options:
   await appendStepSummary(summary);
 }
 
-function githubApi({ repository, token }) {
+function githubApi({ repository, token, deadlineAtMs }) {
   const root = `${process.env.GITHUB_API_URL || "https://api.github.com"}/repos/${repository}`;
   const request = async (path, options = {}) => {
+    if (remediationDeadlineReached(deadlineAtMs)) {
+      throw new Error("stuck queued-run remediation deadline reached");
+    }
+    const remainingMs = Math.max(1, deadlineAtMs - Date.now());
     const response = await fetch(`${root}${path}`, {
       ...options,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remainingMs)),
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${token}`,
@@ -438,6 +552,9 @@ async function appendStepSummary(summary) {
     "",
     `- Mode: ${summary.dry_run ? "dry run" : "execute"}`,
     `- Queued runs inspected: ${summary.queued_runs_inspected}`,
+    `- Workflow histories inspected: ${summary.workflow_discovery.inspected_workflows}`,
+    `- Workflow histories skipped: ${summary.workflow_discovery.skipped_workflows}`,
+    `- Deadline reached: ${summary.deadline_reached ? "yes" : "no"}`,
     `- Selected: ${summary.selected_count}`,
     `- Actions: ${summary.actions.length}`,
     `- Permanent zombies: ${summary.permanent_zombie_count}`,

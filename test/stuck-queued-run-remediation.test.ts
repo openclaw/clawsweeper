@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
+  DEAD_LETTER_RESERVED_MS,
   MAX_CANCELLATIONS_PER_PASS,
+  MAX_WORKFLOW_HISTORIES_PER_PASS,
   remediateCandidate,
   selectStuckQueuedRuns,
+  selectWorkflowHistoriesForInspection,
   STALE_QUEUED_AGE_MS,
 } from "../scripts/stuck-queued-run-remediation.mjs";
 
@@ -115,6 +123,19 @@ test("caps each pass at ten cancellation candidates", () => {
   );
 });
 
+test("inspects at most eight distinct workflows in oldest-first order", () => {
+  const staleWorkflows = new Map(
+    Array.from({ length: MAX_WORKFLOW_HISTORIES_PER_PASS + 3 }, (_, index) => [
+      String(100 + index),
+      nowMs - index * 60_000,
+    ]),
+  );
+  assert.deepEqual(
+    selectWorkflowHistoriesForInspection(staleWorkflows).map(([workflow]) => workflow),
+    ["110", "109", "108", "107", "106", "105", "104", "103"],
+  );
+});
+
 test("records 500-500 as a permanent zombie and never selects it again", async () => {
   const candidate = queuedRun(100, 180);
   const plan = selection(candidate ? [candidate] : [], [
@@ -171,3 +192,120 @@ test("does not force-cancel when regular cancellation fails with a non-500 statu
   assert.deepEqual(calls, ["cancel"]);
   assert.equal(action.outcome, "cancel_failed");
 });
+
+test("slow workflow discovery stops at the shared deadline with dead-letter headroom intact", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "clawsweeper-stuck-deadline-"));
+  const output = join(scratch, "summary.json");
+  const zombieOutput = join(scratch, "zombies.json");
+  const zombieSeed = join(scratch, "seed.json");
+  await writeFile(zombieSeed, '{"schema_version":1,"zombies":[]}\n', "utf8");
+  const historyRequests: string[] = [];
+  const runs = Array.from({ length: 20 }, (_, index) => ({
+    ...queuedRun(10_000 + index, 100 + index),
+    workflow_id: 1000 + index,
+  }));
+  const server = createServer((request, response) => {
+    const url = new URL(request.url || "/", "http://loopback.invalid");
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ total_count: runs.length, workflow_runs: runs }));
+      return;
+    }
+    if (url.pathname.includes("/actions/workflows/")) {
+      historyRequests.push(url.pathname);
+      setTimeout(() => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ total_count: 0, workflow_runs: [] }));
+      }, 20_000).unref();
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const sharedDeadlineMs = Date.now() + DEAD_LETTER_RESERVED_MS + 1500;
+  const startedAt = Date.now();
+  try {
+    const result = await runProduction({
+      apiUrl: `http://127.0.0.1:${address.port}`,
+      sharedDeadlineMs,
+      output,
+      zombieOutput,
+      zombieSeed,
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.ok(Date.now() - startedAt < 5000, "the 20-second history request must be cut short");
+    const summary = JSON.parse(await readFile(output, "utf8"));
+    assert.equal(summary.deadline_reached, true);
+    assert.equal(summary.workflow_discovery.distinct_stale_workflows, runs.length);
+    assert.equal(summary.workflow_discovery.inspected_workflows, 1);
+    assert.equal(summary.workflow_discovery.skipped_workflows, runs.length - 1);
+    assert.equal(
+      summary.workflow_discovery.skipped_by_bound,
+      runs.length - MAX_WORKFLOW_HISTORIES_PER_PASS,
+    );
+    assert.equal(
+      summary.workflow_discovery.skipped_by_deadline,
+      MAX_WORKFLOW_HISTORIES_PER_PASS - 1,
+    );
+    assert.equal(historyRequests.length, 1);
+    assert.match(historyRequests[0]!, /\/actions\/workflows\/1019\/runs$/);
+    assert.equal(
+      summary.deadline.shared_deadline_ms - summary.deadline.deadline_ms,
+      DEAD_LETTER_RESERVED_MS,
+    );
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+async function runProduction({
+  apiUrl,
+  sharedDeadlineMs,
+  output,
+  zombieOutput,
+  zombieSeed,
+}: {
+  apiUrl: string;
+  sharedDeadlineMs: number;
+  output: string;
+  zombieOutput: string;
+  zombieSeed: string;
+}) {
+  const child = spawn(
+    process.execPath,
+    [
+      "scripts/stuck-queued-run-remediation.mjs",
+      "--repository",
+      "openclaw/clawsweeper",
+      "--output",
+      output,
+      "--zombie-output",
+      zombieOutput,
+      "--zombie-seed",
+      zombieSeed,
+    ],
+    {
+      env: {
+        ...process.env,
+        GITHUB_API_URL: apiUrl,
+        GITHUB_TOKEN: "deadline-test-token",
+        EXACT_REVIEW_RECONCILE_DEADLINE_MS: String(sharedDeadlineMs),
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+  const exitCode = await new Promise<number | null>((resolveExit, reject) => {
+    child.once("error", reject);
+    child.once("close", resolveExit);
+  });
+  return { exitCode, stderr };
+}
