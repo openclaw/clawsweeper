@@ -156,7 +156,7 @@ import {
   exactReviewQueueActiveReviewCount,
   exactReviewQueueAdmittedItems,
   exactReviewQueueBackoffReason,
-  exactReviewQueueBayProjection,
+  exactReviewQueueBayProjectionFromStats,
   exactReviewQueueBayPriorityKeys,
   exactReviewQueueCapacity as exactReviewQueueCapacityFromReadModel,
   exactReviewQueueLane,
@@ -3092,13 +3092,14 @@ export class ExactReviewQueue {
         legacyStateRepoBatchEnabled: exactReviewPublicationBatchingEnabled(this.env),
         maxConcurrentBatches: exactReviewPublicationBatchMaxConcurrent(this.env),
       });
+      const bayProjection = exactReviewQueueBayProjectionFromStats(
+        stats,
+        bayPriorityKeys,
+        batchByItemKey,
+      );
       return json({
         ...stats,
-        bay_projection: exactReviewQueueBayProjection(
-          Object.values(state.items),
-          bayPriorityKeys,
-          batchByItemKey,
-        ),
+        bay_projection: bayProjection,
         lanes: {
           review: {
             ...stats.lanes.review,

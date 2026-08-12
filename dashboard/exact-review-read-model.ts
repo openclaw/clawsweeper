@@ -1,7 +1,4 @@
-import {
-  summarizeExactReviewHandoff,
-  summarizeExactReviewPressure,
-} from "./exact-review-health.ts";
+import { summarizeExactReviewPressure } from "./exact-review-health.ts";
 import {
   exactReviewQueueHasCommandContext,
   exactReviewQueueIsBatchablePublication,
@@ -188,6 +185,78 @@ type ExactReviewBayProjectionItem = {
   batch_created_at?: string;
 };
 
+type ExactReviewQueueLaneCensus = {
+  pending: number;
+  ready: number;
+  backoff: number;
+  dispatching: number;
+  leased: number;
+  parked: number;
+  oldestPendingAt: number | null;
+  oldestPendingKey: string | null;
+  oldestReadyAt: number | null;
+  oldestBackoffAt: number | null;
+  nextAttemptAt: number | null;
+  backoffReasons: Record<string, number>;
+  parkedReasons: Record<string, number>;
+};
+
+type ExactReviewHandoffPhaseCensus = {
+  count: number;
+  oldestAt: number | null;
+  oldestKey: string | null;
+};
+
+type ExactReviewBayCensusCandidate = {
+  item: ExactReviewQueueItem;
+  itemKey: string;
+  repository: string;
+  itemNumber: number;
+  updatedAt: number;
+};
+
+type ExactReviewQueueCensus = {
+  items: ExactReviewQueueItem[];
+  review: ExactReviewQueueLaneCensus;
+  publication: ExactReviewQueueLaneCensus;
+  all: ExactReviewQueueLaneCensus;
+  activeReviews: number;
+  activePublishers: number;
+  activeReviewWakeAt: number[];
+  activePublisherWakeAt: number[];
+  activeTargetCounts: Map<string, number>;
+  activeTargetWakeAt: Map<string, number>;
+  activeWithoutLeaseOrExpired: boolean;
+  dispatcherAdmissionPaused: boolean;
+  pendingReviews: ExactReviewQueueItem[];
+  pendingPublications: ExactReviewQueueItem[];
+  readyReviews: ExactReviewQueueItem[];
+  readyPublications: ExactReviewQueueItem[];
+  parkedWakeCandidates: Array<{ recoveryAt: number | null; terminalCheckAt: number | null }>;
+  parkedTerminalLastCheckedAt: number;
+  targetAppRetryAtByOwner: Map<string, number>;
+  targets: Map<
+    string,
+    {
+      target_repo: string;
+      pending: number;
+      dispatching: number;
+      leased: number;
+      parked: number;
+      oldest_pending_at: number | null;
+    }
+  >;
+  handoffItemCount: number;
+  handoffPhases: Record<"pending" | "dispatching" | "leased", ExactReviewHandoffPhaseCensus>;
+  bayCandidates: Map<string, ExactReviewBayCensusCandidate[]>;
+};
+
+const EXACT_REVIEW_STATS_CENSUS = Symbol("exact-review-stats-census");
+
+type ExactReviewQueueStatsWithCensus = ReturnType<typeof exactReviewQueueStats> & {
+  [EXACT_REVIEW_STATS_CENSUS]?: ExactReviewQueueCensus;
+};
+
 export type ExactReviewBayBatchOwner = {
   batchId: string;
 };
@@ -225,67 +294,347 @@ export function exactReviewQueueBayPriorityKeys(values: string[]) {
   return [...unique];
 }
 
+function emptyExactReviewQueueLaneCensus(): ExactReviewQueueLaneCensus {
+  return {
+    pending: 0,
+    ready: 0,
+    backoff: 0,
+    dispatching: 0,
+    leased: 0,
+    parked: 0,
+    oldestPendingAt: null,
+    oldestPendingKey: null,
+    oldestReadyAt: null,
+    oldestBackoffAt: null,
+    nextAttemptAt: null,
+    backoffReasons: {},
+    parkedReasons: {},
+  };
+}
+
+function observeExactReviewQueueLane(
+  lane: ExactReviewQueueLaneCensus,
+  item: ExactReviewQueueItem,
+  state: ExactReviewQueueState,
+  now: number,
+) {
+  if (item.state === "pending") {
+    lane.pending += 1;
+    if (
+      lane.oldestPendingAt === null ||
+      item.createdAt < lane.oldestPendingAt ||
+      (item.createdAt === lane.oldestPendingAt &&
+        (lane.oldestPendingKey === null || item.key.localeCompare(lane.oldestPendingKey) < 0))
+    ) {
+      lane.oldestPendingAt = item.createdAt;
+      lane.oldestPendingKey = item.key;
+    }
+    lane.nextAttemptAt =
+      lane.nextAttemptAt === null
+        ? item.nextAttemptAt
+        : Math.min(lane.nextAttemptAt, item.nextAttemptAt);
+    if (item.nextAttemptAt <= now) {
+      lane.ready += 1;
+      lane.oldestReadyAt =
+        lane.oldestReadyAt === null ? item.createdAt : Math.min(lane.oldestReadyAt, item.createdAt);
+    } else {
+      lane.backoff += 1;
+      lane.oldestBackoffAt =
+        lane.oldestBackoffAt === null
+          ? item.createdAt
+          : Math.min(lane.oldestBackoffAt, item.createdAt);
+      incrementExactReviewReason(
+        lane.backoffReasons,
+        exactReviewQueueBackoffReason(item, state, now),
+      );
+    }
+    return;
+  }
+  if (item.state === "dispatching") {
+    lane.dispatching += 1;
+    return;
+  }
+  if (item.state === "leased") {
+    lane.leased += 1;
+    return;
+  }
+  lane.parked += 1;
+  incrementExactReviewReason(lane.parkedReasons, item.parkedReason || "unknown");
+}
+
+function incrementExactReviewReason(counts: Record<string, number>, reason: string) {
+  counts[reason] = (counts[reason] || 0) + 1;
+}
+
+function exactReviewQueueItemOrder(left: ExactReviewQueueItem, right: ExactReviewQueueItem) {
+  return left.createdAt - right.createdAt || left.key.localeCompare(right.key);
+}
+
+function exactReviewTargetAppRetryAtByOwner(state: ExactReviewQueueState, now: number) {
+  const retryAtByOwner = new Map<string, number>();
+  for (const circuit of exactReviewGithubCredentialCircuits(state)) {
+    if (circuit.scope !== "target_app" || circuit.retryAt <= now) continue;
+    const current = retryAtByOwner.get(circuit.targetOwner) || 0;
+    retryAtByOwner.set(circuit.targetOwner, Math.max(current, circuit.retryAt));
+  }
+  return retryAtByOwner;
+}
+
+function exactReviewTargetAppRetryAt(census: ExactReviewQueueCensus, targetRepo: string) {
+  return census.targetAppRetryAtByOwner.get(targetRepo.split("/", 1)[0]?.toLowerCase()) || 0;
+}
+
+function buildExactReviewQueueCensus(
+  items: ExactReviewQueueItem[],
+  {
+    state,
+    now,
+    dispatchLeaseMs = DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS,
+    executionLeaseMs = DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS,
+    publicationDispatchLeaseMs = DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
+    heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
+    excludedItemKeys = new Set<string>(),
+    collectBay = true,
+  }: {
+    state: ExactReviewQueueState;
+    now: number;
+    dispatchLeaseMs?: number;
+    executionLeaseMs?: number;
+    publicationDispatchLeaseMs?: number;
+    heartbeatGraceMs?: number;
+    excludedItemKeys?: ReadonlySet<string>;
+    collectBay?: boolean;
+  },
+): ExactReviewQueueCensus {
+  const review = emptyExactReviewQueueLaneCensus();
+  const publication = emptyExactReviewQueueLaneCensus();
+  const all = emptyExactReviewQueueLaneCensus();
+  const census: ExactReviewQueueCensus = {
+    items,
+    review,
+    publication,
+    all,
+    activeReviews: 0,
+    activePublishers: 0,
+    activeReviewWakeAt: [],
+    activePublisherWakeAt: [],
+    activeTargetCounts: new Map(),
+    activeTargetWakeAt: new Map(),
+    activeWithoutLeaseOrExpired: false,
+    dispatcherAdmissionPaused:
+      (state.dispatcher?.state === "paused" || state.dispatcher?.state === "blocked") &&
+      Number(state.dispatcher?.retryAt || 0) > now,
+    pendingReviews: [],
+    pendingPublications: [],
+    readyReviews: [],
+    readyPublications: [],
+    parkedWakeCandidates: [],
+    parkedTerminalLastCheckedAt: Number(state.dispatcher?.parkedTerminalCheckedAt || 0),
+    targetAppRetryAtByOwner: exactReviewTargetAppRetryAtByOwner(state, now),
+    targets: new Map(),
+    handoffItemCount: 0,
+    handoffPhases: {
+      pending: { count: 0, oldestAt: null, oldestKey: null },
+      dispatching: { count: 0, oldestAt: null, oldestKey: null },
+      leased: { count: 0, oldestAt: null, oldestKey: null },
+    },
+    bayCandidates: new Map(),
+  };
+
+  const handoffNow = finiteExactReviewTimestamp(now, Date.now());
+  const safeDispatchLeaseMs = Math.max(
+    1_000,
+    finiteExactReviewNumber(dispatchLeaseMs, 10 * 60_000),
+  );
+  const safeExecutionLeaseMs = Math.max(
+    1_000,
+    finiteExactReviewNumber(executionLeaseMs, 130 * 60_000),
+  );
+
+  for (const item of items) {
+    const isPublication = exactReviewQueueIsPublication(item);
+    const lane = isPublication ? publication : review;
+    observeExactReviewQueueLane(lane, item, state, now);
+    observeExactReviewQueueLane(all, item, state, now);
+
+    const targetRepo = item.decision.targetRepo;
+    const target = census.targets.get(targetRepo) ?? {
+      target_repo: targetRepo,
+      pending: 0,
+      dispatching: 0,
+      leased: 0,
+      parked: 0,
+      oldest_pending_at: null,
+    };
+    if (item.state === "pending") {
+      target.pending += 1;
+      target.oldest_pending_at =
+        target.oldest_pending_at === null
+          ? item.createdAt
+          : Math.min(target.oldest_pending_at, item.createdAt);
+      if (!excludedItemKeys.has(item.key)) {
+        const pendingItems = isPublication ? census.pendingPublications : census.pendingReviews;
+        pendingItems.push(item);
+        if (item.nextAttemptAt <= now) {
+          const readyItems = isPublication ? census.readyPublications : census.readyReviews;
+          readyItems.push(item);
+        }
+      }
+    } else if (item.state === "dispatching") {
+      target.dispatching += 1;
+    } else if (item.state === "leased") {
+      target.leased += 1;
+    } else {
+      target.parked += 1;
+      census.parkedWakeCandidates.push({
+        recoveryAt: exactReviewParkedRecoveryAt(item),
+        terminalCheckAt: exactReviewParkedTerminalCheckAt(item),
+      });
+    }
+    census.targets.set(targetRepo, target);
+    census.parkedTerminalLastCheckedAt = Math.max(
+      census.parkedTerminalLastCheckedAt,
+      Number(item.parkedTerminalCheckedAt || 0),
+    );
+
+    if (item.state === "dispatching" || item.state === "leased") {
+      const leaseExpiresAt = exactReviewEffectiveLeaseExpiresAt(
+        item,
+        publicationDispatchLeaseMs,
+        heartbeatGraceMs,
+      );
+      if (!item.leaseExpiresAt || leaseExpiresAt <= now) census.activeWithoutLeaseOrExpired = true;
+      if (isPublication) {
+        census.activePublishers += 1;
+        if (leaseExpiresAt && leaseExpiresAt > now) {
+          census.activePublisherWakeAt.push(leaseExpiresAt);
+        }
+      } else {
+        census.activeReviews += 1;
+        if (leaseExpiresAt && leaseExpiresAt > now) census.activeReviewWakeAt.push(leaseExpiresAt);
+        const targetCount = census.activeTargetCounts.get(targetRepo) || 0;
+        census.activeTargetCounts.set(targetRepo, targetCount + 1);
+        if (leaseExpiresAt > now) {
+          const targetWakeAt = census.activeTargetWakeAt.get(targetRepo);
+          census.activeTargetWakeAt.set(
+            targetRepo,
+            targetWakeAt === undefined ? leaseExpiresAt : Math.min(targetWakeAt, leaseExpiresAt),
+          );
+        }
+      }
+    }
+
+    if (!isPublication && item.state !== "parked") {
+      census.handoffItemCount += 1;
+      const phase = census.handoffPhases[item.state];
+      const startedAt = exactReviewHandoffPhaseStartedAt(
+        item,
+        handoffNow,
+        safeDispatchLeaseMs,
+        safeExecutionLeaseMs,
+      );
+      const key = item.key?.trim() || null;
+      phase.count += 1;
+      if (
+        phase.oldestAt === null ||
+        startedAt < phase.oldestAt ||
+        (startedAt === phase.oldestAt &&
+          key !== null &&
+          (phase.oldestKey === null || key < phase.oldestKey))
+      ) {
+        phase.oldestAt = startedAt;
+        phase.oldestKey = key;
+      }
+    }
+
+    if (collectBay) observeExactReviewBayCandidate(census.bayCandidates, item);
+  }
+
+  census.pendingReviews.sort(exactReviewQueueItemOrder);
+  census.pendingPublications.sort(exactReviewQueueItemOrder);
+  census.readyReviews.sort(exactReviewQueueItemOrder);
+  census.readyPublications.sort(exactReviewQueueItemOrder);
+  return census;
+}
+
+function observeExactReviewBayCandidate(
+  projected: Map<string, ExactReviewBayCensusCandidate[]>,
+  item: ExactReviewQueueItem,
+) {
+  const repository = String(item.decision.targetRepo || "").trim();
+  const itemNumber = Number(item.decision.itemNumber);
+  if (!repository || !Number.isSafeInteger(itemNumber) || itemNumber <= 0) return;
+  const itemKey = `${repository}#${itemNumber}`;
+  const updatedAt = Date.parse(new Date(item.updatedAt).toISOString());
+  const candidate = { item, itemKey, repository, itemNumber, updatedAt };
+  const previous = projected.get(itemKey);
+  if (!previous || updatedAt > previous[0].updatedAt) {
+    projected.set(itemKey, [candidate]);
+  } else if (updatedAt === previous[0].updatedAt) {
+    previous.push(candidate);
+  }
+}
+
 export function exactReviewQueueBayProjection(
   items: ExactReviewQueueItem[],
   priorityItemKeys: string[] = [],
   batchByItemKey: ReadonlyMap<string, ExactReviewBayBatchOwner> = new Map(),
 ) {
+  const census = buildExactReviewQueueCensus(items, {
+    state: { items: {} },
+    now: 0,
+  });
+  return exactReviewQueueBayProjectionFromCensus(census, priorityItemKeys, batchByItemKey);
+}
+
+function exactReviewQueueBayProjectionFromCensus(
+  census: ExactReviewQueueCensus,
+  priorityItemKeys: string[] = [],
+  batchByItemKey: ReadonlyMap<string, ExactReviewBayBatchOwner> = new Map(),
+) {
   const projected = new Map<string, ExactReviewBayProjectionItem>();
-  for (const item of items) {
-    // Parked records are not terminal outcomes: they remain bounded durable
-    // queue work that needs recovery. Keep their already-scrubbed identity in
-    // the projection so Bay shows the exception rather than a false empty lane.
-    const repository = String(item.decision.targetRepo || "").trim();
-    const itemNumber = Number(item.decision.itemNumber);
-    if (!repository || !Number.isSafeInteger(itemNumber) || itemNumber <= 0) continue;
-    const batch = batchByItemKey.get(item.key);
-    const candidate: ExactReviewBayProjectionItem = {
-      item_key: `${repository}#${itemNumber}`,
-      repository,
-      item_number: itemNumber,
-      stage: exactReviewQueueBayStage(item, batchByItemKey),
-      queue_state: item.state,
-      created_at: new Date(item.createdAt).toISOString(),
-      updated_at: new Date(item.updatedAt).toISOString(),
-      next_attempt_at: new Date(item.nextAttemptAt).toISOString(),
-      ...(batch
-        ? {
-            batch_id: batch.batchId,
-          }
-        : {}),
-    };
-    const previous = projected.get(candidate.item_key);
-    const candidateUpdatedAt = Date.parse(candidate.updated_at);
-    const previousUpdatedAt = previous ? Date.parse(previous.updated_at) : Number.NEGATIVE_INFINITY;
-    if (
-      !previous ||
-      candidateUpdatedAt > previousUpdatedAt ||
-      (candidateUpdatedAt === previousUpdatedAt &&
-        exactReviewQueueBayStagePriority(candidate.stage) >
-          exactReviewQueueBayStagePriority(previous.stage))
-    ) {
-      projected.set(candidate.item_key, candidate);
-    }
-  }
-  const rows = [...projected.values()];
-  const stages = Object.fromEntries(
-    EXACT_REVIEW_BAY_STAGES.map((stage) => [
-      stage,
-      rows.filter((item) => item.stage === stage).length,
-    ]),
-  ) as Record<ExactReviewBayStage, number>;
+  const stages = Object.fromEntries(EXACT_REVIEW_BAY_STAGES.map((stage) => [stage, 0])) as Record<
+    ExactReviewBayStage,
+    number
+  >;
   const rowsByStage = Object.fromEntries(
-    EXACT_REVIEW_BAY_STAGES.map((stage) => [
-      stage,
-      rows
-        .filter((item) => item.stage === stage)
-        .sort(
-          (left, right) =>
-            Date.parse(left.created_at) - Date.parse(right.created_at) ||
-            left.item_key.localeCompare(right.item_key),
-        ),
-    ]),
+    EXACT_REVIEW_BAY_STAGES.map((stage) => [stage, []]),
   ) as Record<ExactReviewBayStage, ExactReviewBayProjectionItem[]>;
+  for (const candidates of census.bayCandidates.values()) {
+    let selected = candidates[0];
+    let selectedStage = exactReviewQueueBayStage(selected.item, batchByItemKey);
+    for (const candidate of candidates.slice(1)) {
+      const stage = exactReviewQueueBayStage(candidate.item, batchByItemKey);
+      if (
+        exactReviewQueueBayStagePriority(stage) > exactReviewQueueBayStagePriority(selectedStage)
+      ) {
+        selected = candidate;
+        selectedStage = stage;
+      }
+    }
+    const batch = batchByItemKey.get(selected.item.key);
+    const row: ExactReviewBayProjectionItem = {
+      item_key: selected.itemKey,
+      repository: selected.repository,
+      item_number: selected.itemNumber,
+      stage: selectedStage,
+      queue_state: selected.item.state,
+      created_at: new Date(selected.item.createdAt).toISOString(),
+      updated_at: new Date(selected.item.updatedAt).toISOString(),
+      next_attempt_at: new Date(selected.item.nextAttemptAt).toISOString(),
+      ...(batch ? { batch_id: batch.batchId } : {}),
+    };
+    projected.set(row.item_key, row);
+    stages[row.stage] += 1;
+    rowsByStage[row.stage].push(row);
+  }
+  for (const stage of EXACT_REVIEW_BAY_STAGES) {
+    rowsByStage[stage].sort(
+      (left, right) =>
+        Date.parse(left.created_at) - Date.parse(right.created_at) ||
+        left.item_key.localeCompare(right.item_key),
+    );
+  }
   const priorityRows = exactReviewQueueBayPriorityKeys(priorityItemKeys)
     .map((itemKey) => projected.get(itemKey))
     .filter((item): item is ExactReviewBayProjectionItem => Boolean(item))
@@ -309,26 +658,29 @@ export function exactReviewQueueBayProjection(
   }
   return {
     sample_limit: EXACT_REVIEW_BAY_SAMPLE_LIMIT,
-    total: rows.length,
+    total: projected.size,
     stages,
     items: sample,
   };
 }
 
 export function exactReviewQueueActiveReviewCount(state: ExactReviewQueueState) {
-  return Object.values(state.items).filter(
-    (item) =>
-      !exactReviewQueueIsPublication(item) &&
-      (item.state === "dispatching" || item.state === "leased"),
-  ).length;
+  return exactReviewQueueActiveCounts(state).review;
 }
 
 export function exactReviewQueueActivePublicationCount(state: ExactReviewQueueState) {
-  return Object.values(state.items).filter(
-    (item) =>
-      exactReviewQueueIsPublication(item) &&
-      (item.state === "dispatching" || item.state === "leased"),
-  ).length;
+  return exactReviewQueueActiveCounts(state).publication;
+}
+
+function exactReviewQueueActiveCounts(state: ExactReviewQueueState) {
+  let review = 0;
+  let publication = 0;
+  for (const item of Object.values(state.items)) {
+    if (item.state !== "dispatching" && item.state !== "leased") continue;
+    if (exactReviewQueueIsPublication(item)) publication += 1;
+    else review += 1;
+  }
+  return { review, publication };
 }
 
 export function exactReviewPrioritizePublicationItems(
@@ -337,9 +689,12 @@ export function exactReviewPrioritizePublicationItems(
   freshReserve: number,
 ) {
   if (!freshReserve || !freshItemKeys.size) return items;
-  const fresh = items.filter((item) => freshItemKeys.has(item.key));
+  const fresh: ExactReviewQueueItem[] = [];
+  const historical: ExactReviewQueueItem[] = [];
+  for (const item of items) {
+    (freshItemKeys.has(item.key) ? fresh : historical).push(item);
+  }
   if (!fresh.length) return items;
-  const historical = items.filter((item) => !freshItemKeys.has(item.key));
   if (!historical.length) return items;
   const reservedFresh = fresh.slice(0, freshReserve);
   return [...reservedFresh, ...historical, ...fresh.slice(reservedFresh.length)];
@@ -364,35 +719,50 @@ export function exactReviewQueueAdmittedItems(
   ) {
     return [];
   }
-  const reviewSlots = Math.max(0, capacity - exactReviewQueueActiveReviewCount(state));
-  const activeTargets = new Map<string, number>();
-  let activePublishers = 0;
-  for (const item of Object.values(state.items)) {
-    if (item.state !== "dispatching" && item.state !== "leased") continue;
-    if (exactReviewQueueIsPublication(item)) {
-      activePublishers += 1;
-      continue;
-    }
-    const target = item.decision.targetRepo;
-    activeTargets.set(target, (activeTargets.get(target) || 0) + 1);
-  }
-  const pending = Object.values(state.items)
-    .filter(
-      (item) =>
-        item.state === "pending" && item.nextAttemptAt <= now && !excludedItemKeys.has(item.key),
-    )
-    .sort((left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key));
-  const pendingReviews = pending.filter((item) => !exactReviewQueueIsPublication(item));
+  const census = buildExactReviewQueueCensus(Object.values(state.items), {
+    state,
+    now,
+    excludedItemKeys,
+    collectBay: false,
+  });
+  return exactReviewQueueAdmittedItemsFromCensus(
+    census,
+    now,
+    capacity,
+    targetCapacity,
+    publicationCapacity,
+    publicationAdmissionBlocked,
+    uniquePublicationItems,
+    freshPublicationItemKeys,
+    freshPublicationReserve,
+  );
+}
+
+function exactReviewQueueAdmittedItemsFromCensus(
+  census: ExactReviewQueueCensus,
+  now: number,
+  capacity: number,
+  targetCapacity: number,
+  publicationCapacity: number,
+  publicationAdmissionBlocked: boolean,
+  uniquePublicationItems: boolean,
+  freshPublicationItemKeys: ReadonlySet<string>,
+  freshPublicationReserve: number,
+) {
+  if (census.dispatcherAdmissionPaused) return [];
+  const reviewSlots = Math.max(0, capacity - census.activeReviews);
+  const activeTargets = new Map(census.activeTargetCounts);
+  let activePublishers = census.activePublishers;
   const pendingPublications = exactReviewPrioritizePublicationItems(
-    pending.filter(exactReviewQueueIsPublication),
+    census.readyPublications,
     freshPublicationItemKeys,
     freshPublicationReserve,
   );
   const admittedReviews: ExactReviewQueueItem[] = [];
-  for (const item of pendingReviews) {
+  for (const item of census.readyReviews) {
     if (admittedReviews.length >= reviewSlots) break;
     const target = item.decision.targetRepo;
-    if (exactReviewGithubTargetAppCircuitRetryAt(state, target, now) > now) continue;
+    if (exactReviewTargetAppRetryAt(census, target) > now) continue;
     const active = activeTargets.get(target) || 0;
     if (active >= targetCapacity) continue;
     activeTargets.set(target, active + 1);
@@ -449,6 +819,111 @@ export function percentileFor(rows: Array<Record<string, number | string | null>
   return { p50: at(0.5), p95: at(0.95), samples: values.length };
 }
 
+function exactReviewHandoffFromCensus(
+  census: ExactReviewQueueCensus,
+  state: ExactReviewQueueState,
+  now: number,
+  capacity: number,
+  dispatchLeaseMs: number,
+) {
+  const safeNow = finiteExactReviewTimestamp(now, Date.now());
+  const safeCapacity = Math.max(0, Math.floor(finiteExactReviewNumber(capacity, 0)));
+  const safeShedSinceReset = Math.max(
+    0,
+    Math.floor(finiteExactReviewNumber(exactReviewShedSinceReset(state), 0)),
+  );
+  const safeLeaseMs = Math.max(1_000, finiteExactReviewNumber(dispatchLeaseMs, 10 * 60_000));
+  const warningMs = Math.min(2 * 60_000, Math.max(30_000, Math.floor(safeLeaseMs / 3)));
+  const stalledMs = Math.min(
+    5 * 60_000,
+    Math.max(warningMs + 1_000, Math.floor((safeLeaseMs * 2) / 3)),
+  );
+  const phases = Object.fromEntries(
+    (["pending", "dispatching", "leased"] as const).map((phaseName) => {
+      const phase = census.handoffPhases[phaseName];
+      return [
+        phaseName,
+        {
+          count: phase.count,
+          oldest_at: phase.oldestAt === null ? null : new Date(phase.oldestAt).toISOString(),
+          oldest_age_seconds:
+            phase.oldestAt === null
+              ? null
+              : Math.max(0, Math.floor((safeNow - phase.oldestAt) / 1_000)),
+          oldest_key: phase.oldestKey,
+        },
+      ];
+    }),
+  ) as Record<
+    "pending" | "dispatching" | "leased",
+    {
+      count: number;
+      oldest_at: string | null;
+      oldest_age_seconds: number | null;
+      oldest_key: string | null;
+    }
+  >;
+  const active = phases.dispatching.count + phases.leased.count;
+  const common = {
+    observed_at: new Date(safeNow).toISOString(),
+    warning_after_seconds: Math.floor(warningMs / 1_000),
+    stalled_after_seconds: Math.floor(stalledMs / 1_000),
+    capacity: safeCapacity,
+    active,
+    available_slots: Math.max(0, safeCapacity - active),
+    pending_depth: phases.pending.count,
+    shed_since_reset: safeShedSinceReset,
+    phases,
+  };
+  if (census.handoffItemCount === 0) {
+    return {
+      status: "idle" as const,
+      reason: "queue_empty" as const,
+      message: "No exact-review work is queued or active.",
+      ...common,
+    };
+  }
+  const dispatchingAgeMs = (phases.dispatching.oldest_age_seconds || 0) * 1_000;
+  if (dispatchingAgeMs >= stalledMs) {
+    return {
+      status: "stalled" as const,
+      reason: "claim_stalled" as const,
+      message: "A dispatched review has not been claimed within the expected handoff window.",
+      ...common,
+    };
+  }
+  if (state.dispatcher?.state === "blocked" && phases.pending.count > 0) {
+    return {
+      status: "stalled" as const,
+      reason: "dispatcher_blocked" as const,
+      message: "The dispatcher cannot verify workflow availability while reviews are pending.",
+      ...common,
+    };
+  }
+  if (state.dispatcher?.state === "paused" && phases.pending.count > 0) {
+    return {
+      status: "degraded" as const,
+      reason: "dispatcher_paused" as const,
+      message: "The exact-review workflow is paused while reviews are pending.",
+      ...common,
+    };
+  }
+  if (dispatchingAgeMs >= warningMs) {
+    return {
+      status: "degraded" as const,
+      reason: "claim_delayed" as const,
+      message: "A dispatched review is taking longer than expected to claim.",
+      ...common,
+    };
+  }
+  return {
+    status: "healthy" as const,
+    reason: "handoff_current" as const,
+    message: "Dispatch-to-claim handoffs are within the expected window.",
+    ...common,
+  };
+}
+
 export function exactReviewQueueStats(
   state: ExactReviewQueueState,
   now = Date.now(),
@@ -463,58 +938,17 @@ export function exactReviewQueueStats(
   publicationBlockedUntil: number | null = null,
 ) {
   const items = Object.values(state.items);
-  const handoffItems = items.filter(
-    (item): item is ExactReviewQueueItem & { state: "pending" | "dispatching" | "leased" } =>
-      item.state !== "parked" && !exactReviewQueueIsPublication(item),
-  );
-  const handoffHealth = summarizeExactReviewHandoff({
-    // Parked poison items are reported by publication health and cannot take a
-    // handoff lease, so they must not be mislabeled as an unknown handoff phase.
-    items: handoffItems,
-    dispatcher: state.dispatcher,
-    shedSinceReset: exactReviewShedSinceReset(state),
+  const census = buildExactReviewQueueCensus(items, {
+    state,
     now,
-    capacity,
     dispatchLeaseMs,
     executionLeaseMs,
+    publicationDispatchLeaseMs,
+    heartbeatGraceMs,
+    excludedItemKeys,
   });
-  const targets = new Map<
-    string,
-    {
-      target_repo: string;
-      pending: number;
-      dispatching: number;
-      leased: number;
-      parked: number;
-      oldest_pending_at: number | null;
-    }
-  >();
-  for (const item of items) {
-    const targetRepo = item.decision.targetRepo;
-    const current = targets.get(targetRepo) ?? {
-      target_repo: targetRepo,
-      pending: 0,
-      dispatching: 0,
-      leased: 0,
-      parked: 0,
-      oldest_pending_at: null,
-    };
-    if (item.state === "pending") {
-      current.pending += 1;
-      current.oldest_pending_at =
-        current.oldest_pending_at === null
-          ? item.createdAt
-          : Math.min(current.oldest_pending_at, item.createdAt);
-    } else if (item.state === "dispatching") {
-      current.dispatching += 1;
-    } else if (item.state === "leased") {
-      current.leased += 1;
-    } else {
-      current.parked += 1;
-    }
-    targets.set(targetRepo, current);
-  }
-  const targetStats = [...targets.values()]
+  const handoffHealth = exactReviewHandoffFromCensus(census, state, now, capacity, dispatchLeaseMs);
+  const targetStats = [...census.targets.values()]
     .map((target) => ({
       target_repo: target.target_repo,
       pending: target.pending,
@@ -529,48 +963,47 @@ export function exactReviewQueueStats(
         right.dispatching + right.leased - (left.dispatching + left.leased) ||
         left.target_repo.localeCompare(right.target_repo),
     );
-  const nextWakeAt = exactReviewQueueNextWakeAt(
+  const nextWakeAt = exactReviewQueueNextWakeAtFromCensus(
+    census,
     state,
     now,
     capacity,
     targetCapacity,
     publicationCapacity,
-    publicationDispatchLeaseMs,
-    heartbeatGraceMs,
-    excludedItemKeys,
     publicationBlockedUntil,
     Number(state.dispatcher?.reviewAdmissionNextAt || 0) > now
       ? Number(state.dispatcher?.reviewAdmissionNextAt)
       : null,
   );
   const lanes = {
-    review: exactReviewQueueLaneStats(
-      items.filter((item) => !exactReviewQueueIsPublication(item)),
+    review: exactReviewQueueLaneStatsFromCensus(
+      census.review,
       now,
       capacity,
       exactReviewShedSinceReset(state),
-      state,
     ),
-    publication: exactReviewQueueLaneStats(
-      items.filter(exactReviewQueueIsPublication),
+    publication: exactReviewQueueLaneStatsFromCensus(
+      census.publication,
       now,
       publicationCapacity,
       0,
-      state,
     ),
   };
-  const admissibleItems = exactReviewQueueAdmittedItems(
-    state,
+  const admissibleItems = exactReviewQueueAdmittedItemsFromCensus(
+    census,
     now,
     Number.MAX_SAFE_INTEGER,
     targetCapacity,
     publicationCapacity,
-    excludedItemKeys,
     publicationBlockedUntil !== null && publicationBlockedUntil > now,
+    false,
+    new Set(),
+    0,
   );
-  const reviewAdmissiblePending = admissibleItems.filter(
-    (item) => !exactReviewQueueIsPublication(item),
-  ).length;
+  let reviewAdmissiblePending = 0;
+  for (const item of admissibleItems) {
+    if (!exactReviewQueueIsPublication(item)) reviewAdmissiblePending += 1;
+  }
   const pressure = summarizeExactReviewPressure({
     pending: lanes.review.pending,
     readyPending: lanes.review.ready,
@@ -581,7 +1014,7 @@ export function exactReviewQueueStats(
     dispatcherState: state.dispatcher?.state,
     handoffStatus: handoffHealth.status,
   });
-  return {
+  const stats = {
     generated_at: handoffHealth.observed_at,
     pending: lanes.review.pending,
     ready_pending: lanes.review.ready,
@@ -599,7 +1032,9 @@ export function exactReviewQueueStats(
     handoff_health: handoffHealth,
     lanes,
     pressure,
-    bay_projection: exactReviewQueueBayProjection(items),
+    bay_projection: undefined as unknown as ReturnType<
+      typeof exactReviewQueueBayProjectionFromCensus
+    >,
     next_wake_at: nextWakeAt === null ? null : new Date(nextWakeAt).toISOString(),
     dispatcher: {
       state: state.dispatcher?.state || "unknown",
@@ -622,6 +1057,37 @@ export function exactReviewQueueStats(
     },
     target_stats: targetStats,
   };
+  let bayProjection: ReturnType<typeof exactReviewQueueBayProjectionFromCensus> | undefined;
+  Object.defineProperty(stats, "bay_projection", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      bayProjection ??= exactReviewQueueBayProjectionFromCensus(census);
+      return bayProjection;
+    },
+  });
+  Object.defineProperty(stats, EXACT_REVIEW_STATS_CENSUS, { value: census });
+  return stats;
+}
+
+export function exactReviewQueueBayProjectionFromStats(
+  stats: ExactReviewQueueStatsWithCensus,
+  priorityItemKeys: string[] = [],
+  batchByItemKey: ReadonlyMap<string, ExactReviewBayBatchOwner> = new Map(),
+) {
+  const census = stats[EXACT_REVIEW_STATS_CENSUS];
+  if (!census) throw new Error("exact-review queue stats are missing their census");
+  const projection = exactReviewQueueBayProjectionFromCensus(
+    census,
+    priorityItemKeys,
+    batchByItemKey,
+  );
+  Object.defineProperty(stats, "bay_projection", {
+    value: projection,
+    enumerable: true,
+    configurable: true,
+  });
+  return projection;
 }
 
 export function exactReviewQueueLaneStats(
@@ -631,63 +1097,52 @@ export function exactReviewQueueLaneStats(
   shedSinceReset = 0,
   state: ExactReviewQueueState = { items: {} },
 ) {
-  const pendingItems = items.filter((item) => item.state === "pending");
-  const readyItems = pendingItems.filter((item) => item.nextAttemptAt <= now);
-  const backoffItems = pendingItems.filter((item) => item.nextAttemptAt > now);
-  const dispatchingItems = items.filter((item) => item.state === "dispatching");
-  const leasedItems = items.filter((item) => item.state === "leased");
-  const parkedItems = items.filter((item) => item.state === "parked");
-  const active = dispatchingItems.length + leasedItems.length;
-  const oldestPendingAt = pendingItems.reduce<number | null>(
-    (oldest, item) => (oldest === null ? item.createdAt : Math.min(oldest, item.createdAt)),
-    null,
-  );
-  const oldestPendingKey = pendingItems
-    .slice()
-    .sort(
-      (left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key),
-    )[0]?.key;
-  const oldestReadyAt = readyItems.reduce<number | null>(
-    (oldest, item) => (oldest === null ? item.createdAt : Math.min(oldest, item.createdAt)),
-    null,
-  );
-  const oldestBackoffAt = backoffItems.reduce<number | null>(
-    (oldest, item) => (oldest === null ? item.createdAt : Math.min(oldest, item.createdAt)),
-    null,
-  );
-  const nextAttemptAt = pendingItems.reduce<number | null>(
-    (next, item) => (next === null ? item.nextAttemptAt : Math.min(next, item.nextAttemptAt)),
-    null,
-  );
+  const census = buildExactReviewQueueCensus(items, { state, now, collectBay: false });
+  return exactReviewQueueLaneStatsFromCensus(census.all, now, capacity, shedSinceReset);
+}
+
+function exactReviewQueueLaneStatsFromCensus(
+  lane: ExactReviewQueueLaneCensus,
+  now: number,
+  capacity: number,
+  shedSinceReset = 0,
+) {
+  const active = lane.dispatching + lane.leased;
   return {
-    pending: pendingItems.length,
-    pending_depth: pendingItems.length,
+    pending: lane.pending,
+    pending_depth: lane.pending,
     shed_since_reset: shedSinceReset,
-    ready: readyItems.length,
-    backoff: backoffItems.length,
-    backoff_reasons: exactReviewQueueReasonCounts(
-      backoffItems.map((item) => exactReviewQueueBackoffReason(item, state, now)),
-    ),
-    dispatching: dispatchingItems.length,
-    leased: leasedItems.length,
-    parked: parkedItems.length,
-    parked_reasons: exactReviewQueueReasonCounts(
-      parkedItems.map((item) => item.parkedReason || "unknown"),
-    ),
+    ready: lane.ready,
+    backoff: lane.backoff,
+    backoff_reasons: lane.backoffReasons,
+    dispatching: lane.dispatching,
+    leased: lane.leased,
+    parked: lane.parked,
+    parked_reasons: lane.parkedReasons,
     capacity,
     active,
     available_slots: Math.max(0, capacity - active),
-    oldest_pending_at: oldestPendingAt === null ? null : new Date(oldestPendingAt).toISOString(),
+    oldest_pending_at:
+      lane.oldestPendingAt === null ? null : new Date(lane.oldestPendingAt).toISOString(),
     oldest_pending_age_seconds:
-      oldestPendingAt === null ? null : Math.max(0, Math.floor((now - oldestPendingAt) / 1_000)),
-    oldest_pending_key: oldestPendingKey ?? null,
-    oldest_ready_at: oldestReadyAt === null ? null : new Date(oldestReadyAt).toISOString(),
+      lane.oldestPendingAt === null
+        ? null
+        : Math.max(0, Math.floor((now - lane.oldestPendingAt) / 1_000)),
+    oldest_pending_key: lane.oldestPendingKey,
+    oldest_ready_at:
+      lane.oldestReadyAt === null ? null : new Date(lane.oldestReadyAt).toISOString(),
     oldest_ready_age_seconds:
-      oldestReadyAt === null ? null : Math.max(0, Math.floor((now - oldestReadyAt) / 1_000)),
-    oldest_backoff_at: oldestBackoffAt === null ? null : new Date(oldestBackoffAt).toISOString(),
+      lane.oldestReadyAt === null
+        ? null
+        : Math.max(0, Math.floor((now - lane.oldestReadyAt) / 1_000)),
+    oldest_backoff_at:
+      lane.oldestBackoffAt === null ? null : new Date(lane.oldestBackoffAt).toISOString(),
     oldest_backoff_age_seconds:
-      oldestBackoffAt === null ? null : Math.max(0, Math.floor((now - oldestBackoffAt) / 1_000)),
-    next_attempt_at: nextAttemptAt === null ? null : new Date(nextAttemptAt).toISOString(),
+      lane.oldestBackoffAt === null
+        ? null
+        : Math.max(0, Math.floor((now - lane.oldestBackoffAt) / 1_000)),
+    next_attempt_at:
+      lane.nextAttemptAt === null ? null : new Date(lane.nextAttemptAt).toISOString(),
   };
 }
 
@@ -732,121 +1187,171 @@ export function exactReviewQueueNextWakeAt(
   reviewAdmissionBlockedUntil: number | null = null,
 ) {
   const items = Object.values(state.items);
-  if (!items.length) return null;
-  const dispatcherRetryAt = Number(state.dispatcher?.retryAt || 0);
-  const dispatcherPaused =
-    (state.dispatcher?.state === "paused" || state.dispatcher?.state === "blocked") &&
-    dispatcherRetryAt > now;
-  const activeItems = items.filter(
-    (item) => item.state === "dispatching" || item.state === "leased",
+  const census = buildExactReviewQueueCensus(items, {
+    state,
+    now,
+    publicationDispatchLeaseMs,
+    heartbeatGraceMs,
+    excludedItemKeys,
+    collectBay: false,
+  });
+  return exactReviewQueueNextWakeAtFromCensus(
+    census,
+    state,
+    now,
+    capacity,
+    targetCapacity,
+    publicationCapacity,
+    publicationBlockedUntil,
+    reviewAdmissionBlockedUntil,
   );
-  if (
-    activeItems.some(
-      (item) =>
-        !item.leaseExpiresAt ||
-        exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs, heartbeatGraceMs) <=
-          now,
-    )
-  ) {
-    return now + 1_000;
-  }
-  const activeReviews = activeItems.filter((item) => !exactReviewQueueIsPublication(item));
-  const activePublishers = activeItems.filter(exactReviewQueueIsPublication);
-  const activeReviewWakeAt = activeReviews
-    .map((item) =>
-      exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs, heartbeatGraceMs),
-    )
-    .filter((value): value is number => Boolean(value && value > now));
-  const activePublisherWakeAt = activePublishers
-    .map((item) =>
-      exactReviewEffectiveLeaseExpiresAt(item, publicationDispatchLeaseMs, heartbeatGraceMs),
-    )
-    .filter((value): value is number => Boolean(value && value > now));
-  const activeTargetWakeAt = new Map<string, number>();
-  const activeTargetCounts = new Map<string, number>();
-  for (const item of activeReviews) {
-    const leaseExpiresAt = exactReviewEffectiveLeaseExpiresAt(
-      item,
-      publicationDispatchLeaseMs,
-      heartbeatGraceMs,
-    );
-    if (leaseExpiresAt > now) {
-      const target = item.decision.targetRepo;
-      activeTargetCounts.set(target, (activeTargetCounts.get(target) || 0) + 1);
-      const current = activeTargetWakeAt.get(item.decision.targetRepo);
-      activeTargetWakeAt.set(
-        target,
-        current === undefined ? leaseExpiresAt : Math.min(current, leaseExpiresAt),
-      );
+}
+
+function exactReviewQueueNextWakeAtFromCensus(
+  census: ExactReviewQueueCensus,
+  state: ExactReviewQueueState,
+  now: number,
+  capacity: number,
+  targetCapacity: number,
+  publicationCapacity: number,
+  publicationBlockedUntil: number | null,
+  reviewAdmissionBlockedUntil: number | null,
+) {
+  if (!census.items.length) return null;
+  const dispatcherRetryAt = Number(state.dispatcher?.retryAt || 0);
+  if (census.activeWithoutLeaseOrExpired) return now + 1_000;
+  let earliest: number | null = null;
+  const include = (candidate: number) => {
+    earliest = earliest === null ? candidate : Math.min(earliest, candidate);
+  };
+
+  if (census.dispatcherAdmissionPaused) {
+    if (census.pendingReviews.length || census.pendingPublications.length)
+      include(dispatcherRetryAt);
+  } else {
+    let publicationCapacityWakeAt: number | null = null;
+    if (census.activePublishers >= publicationCapacity) {
+      const capacityWakeAt =
+        publicationCapacity <= 0
+          ? [...census.activePublisherWakeAt, ...census.activeReviewWakeAt]
+          : census.activePublisherWakeAt;
+      publicationCapacityWakeAt = capacityWakeAt.length
+        ? Math.min(...capacityWakeAt)
+        : now + DEFAULT_EXACT_REVIEW_RETRY_MS;
     }
-  }
-  const parkedTerminalGlobalCheckAt = exactReviewParkedTerminalGlobalCheckAt(state);
-  const times = items.flatMap((item) => {
-    if (item.state === "pending") {
-      if (excludedItemKeys.has(item.key)) return [];
-      if (dispatcherPaused) return [dispatcherRetryAt];
-      if (exactReviewQueueIsPublication(item)) {
-        if (publicationBlockedUntil !== null && publicationBlockedUntil > now) {
-          return [Math.max(item.nextAttemptAt, publicationBlockedUntil)];
-        }
-        let blockedUntil = item.nextAttemptAt;
-        if (activePublishers.length >= publicationCapacity) {
-          const capacityWakeAt = [...activePublisherWakeAt];
-          if (publicationCapacity <= 0) {
-            // A zero publication budget is normally caused by active reviews
-            // consuming the shared worker budget. Their leases, rather than a
-            // one-second alarm loop, determine when a slot can become available.
-            capacityWakeAt.push(...activeReviewWakeAt);
-          }
-          blockedUntil = capacityWakeAt.length
-            ? Math.min(...capacityWakeAt)
-            : now + DEFAULT_EXACT_REVIEW_RETRY_MS;
-        }
-        return [Math.max(item.nextAttemptAt, blockedUntil)];
+    for (const item of census.pendingPublications) {
+      if (publicationBlockedUntil !== null && publicationBlockedUntil > now) {
+        include(Math.max(item.nextAttemptAt, publicationBlockedUntil));
+      } else {
+        include(
+          Math.max(
+            item.nextAttemptAt,
+            publicationCapacityWakeAt === null ? item.nextAttemptAt : publicationCapacityWakeAt,
+          ),
+        );
       }
+    }
+
+    const reviewCapacityWakeAt =
+      census.activeReviews >= capacity && census.activeReviewWakeAt.length
+        ? Math.min(...census.activeReviewWakeAt)
+        : null;
+    for (const item of census.pendingReviews) {
       const target = item.decision.targetRepo;
-      const credentialBlockedUntil = exactReviewGithubTargetAppCircuitRetryAt(state, target, now);
-      const capacityBlockedUntil = [
-        ...(activeReviews.length >= capacity && activeReviewWakeAt.length
-          ? [Math.min(...activeReviewWakeAt)]
-          : []),
-        ...((activeTargetCounts.get(target) || 0) >= targetCapacity &&
-        activeTargetWakeAt.has(target)
-          ? [activeTargetWakeAt.get(target) as number]
-          : []),
-      ];
-      return [
+      const targetCapacityWakeAt =
+        (census.activeTargetCounts.get(target) || 0) >= targetCapacity &&
+        census.activeTargetWakeAt.has(target)
+          ? (census.activeTargetWakeAt.get(target) as number)
+          : null;
+      const capacityWakeAt =
+        reviewCapacityWakeAt === null
+          ? targetCapacityWakeAt
+          : targetCapacityWakeAt === null
+            ? reviewCapacityWakeAt
+            : Math.min(reviewCapacityWakeAt, targetCapacityWakeAt);
+      include(
         Math.max(
           item.nextAttemptAt,
           reviewAdmissionBlockedUntil ?? item.nextAttemptAt,
-          credentialBlockedUntil,
-          capacityBlockedUntil.length ? Math.min(...capacityBlockedUntil) : item.nextAttemptAt,
+          exactReviewTargetAppRetryAt(census, target),
+          capacityWakeAt ?? item.nextAttemptAt,
         ),
-      ];
+      );
     }
-    if (item.state === "parked") {
-      const recoveryAt = exactReviewParkedRecoveryAt(item);
-      const terminalCheckAt = exactReviewParkedTerminalCheckAt(item);
-      return [
-        recoveryAt,
-        terminalCheckAt === null
-          ? null
-          : Math.max(
-              terminalCheckAt,
-              parkedTerminalGlobalCheckAt,
-              dispatcherPaused ? dispatcherRetryAt : 0,
-            ),
-      ].filter((value): value is number => value !== null);
+  }
+
+  const parkedTerminalGlobalCheckAt =
+    census.parkedTerminalLastCheckedAt + EXACT_REVIEW_PARKED_TERMINAL_CHECK_INTERVAL_MS;
+  for (const candidate of census.parkedWakeCandidates) {
+    if (candidate.recoveryAt !== null) include(candidate.recoveryAt);
+    if (candidate.terminalCheckAt !== null) {
+      include(
+        Math.max(
+          candidate.terminalCheckAt,
+          parkedTerminalGlobalCheckAt,
+          census.dispatcherAdmissionPaused ? dispatcherRetryAt : 0,
+        ),
+      );
     }
-    const leaseExpiresAt = exactReviewEffectiveLeaseExpiresAt(
-      item,
-      publicationDispatchLeaseMs,
-      heartbeatGraceMs,
-    );
-    return leaseExpiresAt ? [leaseExpiresAt] : [];
-  });
-  if (!times.length) return null;
-  return Math.max(now + 1_000, Math.min(...times));
+  }
+  for (const candidate of census.activeReviewWakeAt) include(candidate);
+  for (const candidate of census.activePublisherWakeAt) include(candidate);
+  return earliest === null ? null : Math.max(now + 1_000, earliest);
+}
+
+function exactReviewHandoffPhaseStartedAt(
+  item: ExactReviewQueueItem,
+  now: number,
+  dispatchLeaseMs: number,
+  executionLeaseMs: number,
+) {
+  if (item.state === "dispatching") {
+    const dispatchedAt = validExactReviewTimestamp(item.dispatchedAt);
+    const leaseExpiresAt = validExactReviewTimestamp(item.leaseExpiresAt);
+    const leaseStartedAt =
+      leaseExpiresAt === null ? null : timestampAtOrBefore(leaseExpiresAt - dispatchLeaseMs, now);
+    return newestExactReviewTimestamp(dispatchedAt, leaseStartedAt) ?? now;
+  }
+  if (item.state === "leased") {
+    const claimedAt = validExactReviewTimestamp(item.claimedAt);
+    const leaseExpiresAt = validExactReviewTimestamp(item.leaseExpiresAt);
+    const leaseStartedAt =
+      leaseExpiresAt === null ? null : validExactReviewTimestamp(leaseExpiresAt - executionLeaseMs);
+    return newestExactReviewTimestamp(claimedAt, leaseStartedAt) ?? now;
+  }
+  return finiteExactReviewTimestamp(
+    item.createdAt,
+    finiteExactReviewTimestamp(item.updatedAt, now),
+  );
+}
+
+function newestExactReviewTimestamp(...values: Array<number | null>) {
+  let newest: number | null = null;
+  for (const value of values) {
+    if (value === null) continue;
+    newest = newest === null ? value : Math.max(newest, value);
+  }
+  return newest;
+}
+
+function validExactReviewTimestamp(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 && number <= 8_640_000_000_000_000 ? number : null;
+}
+
+function timestampAtOrBefore(value: unknown, maximum: number): number | null {
+  const timestamp = validExactReviewTimestamp(value);
+  return timestamp !== null && timestamp <= maximum ? timestamp : null;
+}
+
+function finiteExactReviewTimestamp(value: unknown, fallback: number) {
+  return validExactReviewTimestamp(value) ?? fallback;
+}
+
+function finiteExactReviewNumber(value: unknown, fallback: number) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }
 
 export function exactReviewQueueCapacity(env, DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET: number) {
