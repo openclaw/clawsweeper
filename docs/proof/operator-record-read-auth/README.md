@@ -9,7 +9,9 @@ The executable [behavior contract](behavior-contract.md) and [RED/GREEN record](
 Run the real-Worker comparison from a committed head with:
 
 ```bash
-node docs/proof/operator-record-read-auth/run-proof.mjs "$(git rev-parse HEAD)"
+node docs/proof/operator-record-read-auth/run-proof.mjs \
+  "$(git rev-parse HEAD)" \
+  "$(git merge-base HEAD origin/main)"
 ```
 
 The final Docker-backed Crabbox `local-container` receipt, captured transcript, behavior report, content hashes, and cleanup result are recorded beside this file after the implementation commit is frozen.

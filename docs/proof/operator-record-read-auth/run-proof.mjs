@@ -11,11 +11,22 @@ import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
 const proofDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = (await git(["rev-parse", "--show-toplevel"], proofDir)).trim();
-const head = (await git(["rev-parse", "HEAD"], repoRoot)).trim();
+const repoRoot = path.resolve(proofDir, "../../..");
+const observedHead = (await optionalGit(["rev-parse", "HEAD"], repoRoot)).trim();
 const expectedHead = process.argv[2] || "";
-if (expectedHead) assert.equal(head, expectedHead, "proof must run at the expected committed head");
-const mergeBase = (await git(["merge-base", "HEAD", "origin/main"], repoRoot)).trim();
+if (!observedHead && !expectedHead) {
+  throw new Error("expected committed head is required when synced source omits Git metadata");
+}
+if (expectedHead) {
+  assert.match(expectedHead, /^[0-9a-f]{40}$/);
+  if (observedHead)
+    assert.equal(observedHead, expectedHead, "proof must run at the expected committed head");
+}
+const head = observedHead || expectedHead;
+const expectedBase = process.argv[3] || "";
+if (expectedBase) assert.match(expectedBase, /^[0-9a-f]{40}$/);
+const mergeBase =
+  expectedBase || (await git(["merge-base", "HEAD", "origin/main"], repoRoot)).trim();
 const outputPath = path.resolve(
   process.env.OPERATOR_RECORD_READ_AUTH_PROOF_OUTPUT ||
     path.join(repoRoot, ".artifacts/operator-record-read-auth/behavior-report.json"),
@@ -42,8 +53,12 @@ const recordDigest = createHash("sha256").update(recordContent).digest("hex");
 const recordPath = "/internal/state/records/openclaw-openclaw/items/1148";
 const shutdowns = [];
 
-await mkdir(baseRoot, { recursive: true });
-await extractRevision(mergeBase, baseRoot);
+if (observedHead) {
+  await mkdir(baseRoot, { recursive: true });
+  await extractRevision(mergeBase, baseRoot);
+} else {
+  await cloneRevision(mergeBase, baseRoot);
+}
 
 let worker;
 try {
@@ -78,6 +93,9 @@ try {
       secrets_distinct: webhookSecret !== operatorSecret,
       shared_secret_fixture: false,
       persisted_state_shared_between_boots: false,
+      candidate_git_metadata: Boolean(observedHead),
+      candidate_head_source: observedHead ? "local git checkout" : "explicit Crabbox argument",
+      baseline_source: observedHead ? "local git archive" : "exact public GitHub commit",
     },
     before: sanitizeMatrix(before),
     after: sanitizeMatrix(after),
@@ -340,6 +358,24 @@ async function extractRevision(revision, destination) {
   });
 }
 
+async function cloneRevision(revision, destination) {
+  await mkdir(destination, { recursive: true });
+  await execFile("git", ["init", "--quiet"], { cwd: destination });
+  await execFile(
+    "git",
+    ["remote", "add", "origin", "https://github.com/openclaw/clawsweeper.git"],
+    { cwd: destination },
+  );
+  await execFile("git", ["fetch", "--quiet", "--depth", "1", "origin", revision], {
+    cwd: destination,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  await execFile("git", ["checkout", "--quiet", "--detach", "FETCH_HEAD"], {
+    cwd: destination,
+  });
+  assert.equal((await git(["rev-parse", "HEAD"], destination)).trim(), revision);
+}
+
 function signature(secret, body) {
   return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
 }
@@ -358,4 +394,12 @@ async function availablePort() {
 
 async function git(args, cwd) {
   return (await execFile("git", args, { cwd, maxBuffer: 10 * 1024 * 1024 })).stdout;
+}
+
+async function optionalGit(args, cwd) {
+  try {
+    return await git(args, cwd);
+  } catch {
+    return "";
+  }
 }
