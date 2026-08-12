@@ -492,6 +492,7 @@ test("signed upload, SQLite restart, retention, cardinality, and public privacy 
     );
     assert.equal(windowStore.publicObservability(1, NOW)?.completeness.observed, false);
     assert.equal(windowStore.publicObservability(6, NOW)?.completeness.observed, true);
+    assert.equal(windowStore.publicObservability(0.5, NOW), null);
 
     const unalignedNow = NOW + 2 * 60 * 1_000;
     const firstPartialBucket = unalignedNow - 60 * 60 * 1_000 + 30 * 1_000;
@@ -503,6 +504,18 @@ test("signed upload, SQLite restart, retention, cardinality, and public privacy 
     assert.equal(oneHourView?.completeness.observed, true);
     assert.equal(oneHourView?.units.wire_attempt, 1);
 
+    const fifteenMinutesAgo = unalignedNow - 15 * 60 * 1_000 + 30 * 1_000;
+    assert.equal(
+      windowStore.ingest(telemetryBody("6".repeat(64), fifteenMinutesAgo), fifteenMinutesAgo).ok,
+      true,
+    );
+    const fifteenMinuteView = windowStore.publicObservability(0.25, unalignedNow);
+    assert.equal(fifteenMinuteView?.window.hours, 0.25);
+    assert.equal(fifteenMinuteView?.window.bucket_minutes, 5);
+    assert.equal(fifteenMinuteView?.completeness.observed, true);
+    assert.equal(fifteenMinuteView?.completeness.query_complete, true);
+    assert.equal(fifteenMinuteView?.units.wire_attempt, 1);
+
     const unalignedDayNow = NOW + 30 * 60 * 1_000;
     const firstPartialHour = unalignedDayNow - 24 * 60 * 60 * 1_000 + 5 * 60 * 1_000;
     assert.equal(
@@ -511,7 +524,55 @@ test("signed upload, SQLite restart, retention, cardinality, and public privacy 
     );
     const oneDayView = windowStore.publicObservability(24, unalignedDayNow);
     assert.equal(oneDayView?.completeness.observed, true);
-    assert.equal(oneDayView?.units.wire_attempt, 3);
+    assert.equal(oneDayView?.units.wire_attempt, 4);
+
+    const highCardinalityStorage = new MemoryDurableStorage();
+    const highCardinalityStore = new GithubEgressTelemetryStore(highCardinalityStorage);
+    highCardinalityStore.ensureSchemaSync();
+    const insertRollup = (bucketStart: number, configRevision: string) =>
+      highCardinalityStorage.sql.exec(
+        `INSERT INTO exact_review_github_egress_rollups_v2 (
+           bucket_kind, bucket_start, deployment_revision, config_revision,
+           pool_class, pool_identity, stage, source_action, operation, method,
+           route_template, page_bucket, unit, outcome, status_bucket,
+           latency_bucket, claim_generation_bucket, first_repeat, attempted,
+           telemetry_complete, count
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        "five_minute",
+        bucketStart,
+        "a".repeat(16),
+        configRevision,
+        "repository_actions",
+        "private-pool",
+        "publication_apply",
+        "scheduled_normal",
+        "item_metadata",
+        "GET",
+        "issue_metadata",
+        "none",
+        "invocation",
+        "success",
+        "2xx",
+        "100_249ms",
+        "1",
+        "first",
+        1,
+        1,
+        1,
+      );
+    for (let index = 0; index < 2_001; index += 1) {
+      insertRollup(NOW - 50 * 60 * 1_000, index.toString(16).padStart(16, "0"));
+    }
+    insertRollup(NOW - 10 * 60 * 1_000, "f".repeat(16));
+    const truncatedHour = highCardinalityStore.publicObservability(1, NOW);
+    assert.equal(truncatedHour?.rows.length, 2_000);
+    assert.equal(truncatedHour?.completeness.rows_truncated, true);
+    assert.equal(truncatedHour?.completeness.query_complete, false);
+    const completeQuarterHour = highCardinalityStore.publicObservability(0.25, NOW);
+    assert.equal(completeQuarterHour?.rows.length, 1);
+    assert.equal(completeQuarterHour?.units.invocation, 1);
+    assert.equal(completeQuarterHour?.completeness.rows_truncated, false);
+    assert.equal(completeQuarterHour?.completeness.query_complete, true);
 
     const future = NOW + 8 * 24 * 60 * 60 * 1_000;
     const futureBody = telemetryBody("f".repeat(64), future);

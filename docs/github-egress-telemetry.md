@@ -25,7 +25,9 @@ curl --fail --silent --show-error \
   'https://clawsweeper.openclaw.ai/api/github-egress-observability?hours=6'
 ```
 
-`hours` accepts only `1`, `6`, or `24`. The response contains closed aggregate
+`hours` accepts only `0.25` (15 minutes), `1`, `6`, or `24`. Use the 15-minute
+view for periodic collection when a high-cardinality one-hour detail response
+would reach the public row cap. The response contains closed aggregate
 dimensions and sanitized rate-limit observations. It never contains private
 pool identities, repository or item identifiers, branches, raw SHAs, paths,
 queries, cursors, URLs, request IDs, ETags, bodies, tokens, or installation IDs.
@@ -140,9 +142,9 @@ class, durable claim generation, first/repeat fact, safe route template, parsed
 method/status, and response receive time. Unsafe parsing emits or uploads an
 incomplete bounded marker. It never uploads a partially parsed raw frame.
 
-Completeness is computed independently for each requested one-, six-, or
-24-hour window. Rollup queries include the complete five-minute or hourly
-bucket that overlaps the window's lower boundary, so totals can include at
+Completeness is computed independently for each requested 15-minute, one-,
+six-, or 24-hour window. Rollup queries include the complete five-minute or
+hourly bucket that overlaps the window's lower boundary, so totals can include at
 most one bucket of observations immediately before the exact cutoff. Raw
 rate-limit observations use the exact cutoff. `rows_truncated` and
 `rate_limit_rows_truncated` identify a bounded public response, while
@@ -197,6 +199,10 @@ numeric header, count, and chunk limit before committing a receipt. It stores
 both five-minute and hourly rollups transactionally and deduplicates upload
 retries by producer-run-scoped, content-derived receipt ID. Cap evictions are
 cumulative diagnostics and mark affected public windows incomplete.
+
+The 15-minute view does not raise or bypass the public row cap. A collector
+must preserve `rows_truncated` and `query_complete` and record a gap if even the
+smaller view exceeds the bound.
 
 ## Rollback and Phase 1 boundary
 

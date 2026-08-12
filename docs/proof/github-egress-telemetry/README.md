@@ -23,6 +23,7 @@ rows survive a Worker restart and an identical producer receipt is deduplicated.
 - `repository_actions`, `target_app`, and `public_read_fallback` call-site
   attribution
 - A real signed telemetry upload and public query through `wrangler dev --local`
+- The 15-minute public detail query through the same Worker and Durable Object
 - The real SQLite Durable Object storage, receipt deduplication, and restart
   persistence
 - Sentinel scans across workflow JSONL and public output
@@ -58,6 +59,7 @@ schedule, gate, deployment, or credential state.
 - A missing observer parser preserves the original throttled command's stderr,
   stdout, and exit status while stripping unsafe debug frames.
 - Public output withholds pool identity and all raw sentinels.
+- The 15-minute view returns `window.hours=0.25` with a complete query.
 - Worker restart preserves rows and replaying the same receipt is deduplicated.
 - Median loopback observer overhead remains below the proof's one-second safety
   ceiling; the measured value is reported, not treated as a production latency

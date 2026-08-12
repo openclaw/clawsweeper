@@ -24,7 +24,7 @@ branch, not a promise that every method will remain supported.
 | `/api/exact-review-queue/item`           | `GET`  | One queue item's status; forwards query parameters.                                         |
 | `/api/exact-review-queue/reviews`        | `GET`  | Per-item review lookup used by observer surfaces.                                           |
 | `/api/review-observability`              | `GET`  | Review observability from the queue Durable Object; forwards query parameters.              |
-| `/api/github-egress-observability`        | `GET`  | Sanitized publication GitHub egress rollups for `hours=1`, `6`, or `24`.                     |
+| `/api/github-egress-observability`        | `GET`  | Sanitized publication GitHub egress rollups for `hours=0.25`, `1`, `6`, or `24`.              |
 | `/api/review-coverage`                   | `GET`  | Review coverage from the queue Durable Object.                                              |
 | `/api/apply-observability`               | `GET`  | Apply-lane observability from `applyObservabilityJson`.                                     |
 | `/api/health-history`                    | `GET`  | Historical health from `healthHistoryJson`.                                                 |

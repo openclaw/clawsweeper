@@ -296,7 +296,8 @@ export class GithubEgressTelemetryStore {
   }
 
   publicObservability(hours: number, now = Date.now()) {
-    const boundedHours = hours === 1 || hours === 6 || hours === 24 ? hours : null;
+    const boundedHours =
+      hours === 0.25 || hours === 1 || hours === 6 || hours === 24 ? hours : null;
     if (!boundedHours) return null;
     const bucketKind = boundedHours <= 6 ? "five_minute" : "hour";
     const windowStart = now - boundedHours * 60 * 60 * 1000;

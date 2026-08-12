@@ -31,9 +31,12 @@ const candidateHead = process.env.GITHUB_EGRESS_PROOF_SOURCE_SHA || (await gitHe
 
 await mkdir(outputDir, { recursive: true });
 await Promise.all(
-  ["proof-summary.json", "public-observability.json", "wrangler.log"].map((name) =>
-    rm(path.join(outputDir, name), { force: true }),
-  ),
+  [
+    "proof-summary.json",
+    "public-observability.json",
+    "public-observability-15m.json",
+    "wrangler.log",
+  ].map((name) => rm(path.join(outputDir, name), { force: true })),
 );
 
 const github = createHttpsServer(
@@ -283,8 +286,14 @@ exit 73
   assert.deepEqual(duplicateUpload, { accepted: false, deduped: true });
   const afterDuplicate = await getJson(`${worker.origin}/api/github-egress-observability?hours=1`);
   assert.deepEqual(afterDuplicate.rows, beforeRestart.rows);
+  const fifteenMinuteView = await getJson(
+    `${worker.origin}/api/github-egress-observability?hours=0.25`,
+  );
+  assert.equal(fifteenMinuteView.window.hours, 0.25);
+  assertPublicView(fifteenMinuteView);
 
   privacyScan(JSON.stringify(afterDuplicate));
+  privacyScan(JSON.stringify(fifteenMinuteView));
   const baselineMedianMs = median(baselineSamples);
   const observedMedianMs = median(observedSamples);
   const addedMedianMs = observedMedianMs - baselineMedianMs;
@@ -318,6 +327,7 @@ exit 73
       empty_sink_incomplete_invocations: 1,
       restart_rows_preserved: true,
       duplicate_upload_deduped: true,
+      fifteen_minute_public_query_complete: fifteenMinuteView.completeness.query_complete,
       output_and_exit_preserved: true,
       parser_failure_error_preserved: true,
       sentinel_privacy_scan_passed: true,
@@ -342,6 +352,10 @@ exit 73
   await writeFile(
     path.join(outputDir, "public-observability.json"),
     `${JSON.stringify(afterDuplicate, null, 2)}\n`,
+  );
+  await writeFile(
+    path.join(outputDir, "public-observability-15m.json"),
+    `${JSON.stringify(fifteenMinuteView, null, 2)}\n`,
   );
   await writeFile(
     path.join(outputDir, "proof-summary.json"),
