@@ -68,6 +68,7 @@ the predicate as it shipped at the base commit:
 ## Artifact and command
 
 ```bash
+bash docs/proof/trusted-status-comment-fail-open/stage-before.sh
 crabbox run \
   --provider local-container \
   --local-container-image node:24 \
@@ -81,8 +82,9 @@ Host-only quick check:
 
 ```bash
 pnpm run build:node
-git show 0588bda9:src/repair/comment-router.ts > /tmp/pre.ts
-node docs/proof/trusted-status-comment-fail-open/run-proof.mjs /tmp/pre.ts
+bash docs/proof/trusted-status-comment-fail-open/stage-before.sh
+node docs/proof/trusted-status-comment-fail-open/run-proof.mjs \
+  docs/proof/trusted-status-comment-fail-open/before/comment-router.ts
 ```
 
 Focused tests:
@@ -91,18 +93,52 @@ Focused tests:
 node --test test/repair/comment-router-core.test.ts
 ```
 
+## The run cannot alter the head it is proving
+
+An earlier revision of this script installed the platform-native TypeScript
+package with `pnpm add -D`, which writes `package.json` and `pnpm-lock.yaml`, and
+recovered the pre-fix source with `git show` — which cannot work in a container
+image that carries no `.git`. Both are fixed:
+
+- The fallback installs into a disposable prefix outside the workspace
+  (`npm install --prefix "$(mktemp -d)" --no-save`) and copies the result into
+  `node_modules/`, which is untracked build state. This mirrors how
+  `docs/proof/openclaw-bay/run-proof.sh` provisions Playwright under `/tmp`.
+- `stage-before.sh` writes the base-commit copy of `comment-router.ts` to
+  `before/` on the host, where rsync picks it up as an untracked file. It is not
+  committed: it is a 5,400-line verbatim copy of a blob git already stores, and
+  the retention rule asks proof records to stay lightweight. Where git *is*
+  reachable the script re-derives it, so a stale copy cannot weaken the contrast,
+  and it aborts with the exact staging command if the copy is missing.
+- The script records `package.json` and `pnpm-lock.yaml` digests plus
+  `git status --porcelain` at sync, then re-checks them after the fixture step,
+  after dependency installation, and at the end of the run. Any drift aborts with
+  a diff instead of reporting a result.
+
+Untracked paths are excluded from that comparison, so build output and artifacts
+do not trip it — only a change to the committed tree does.
+
 ## Provenance
 
-- provider: Crabbox `local-container` (Docker/OrbStack)
-- crabbox: `0.15.0`
-- image: `node:24` @ `sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584`
-- container node: `v24.19.0` (satisfies `engines.node >= 24`)
-- lease: `cbx_e2edc1ce3159` (`golden-prawn`)
-- run: `run_975c6edae62f`
-- artifact: `.crabbox/runs/run_975c6edae62f/run_975c6edae62f-artifacts.tgz`
-- result: exit `0`; 28/28 proof checks PASS; focused suites `201/201`
-- privacy: synthetic fixtures only. The proof makes no network call, contacts no
-  GitHub API, and performs no queue, GitHub, or production mutation.
+- provider: Crabbox `local-container` (runtime `docker`, OrbStack)
+- image: `node:24` → container node `v24.19.0`, `Linux aarch64`
+  (satisfies `engines.node >= 24`)
+- lease: `cbx_00a7a03160d1` (`coral-shrimp`)
+- run: `run_1b77309b80dd`
+- base ref: `0588bda9` · `src/repair/comment-router.ts` · sha256 `a0f53eca…ba14`
+- artifact: `.crabbox/runs/run_1b77309b80dd/run_1b77309b80dd-artifacts.tgz`
+- result: exit `0`; **28/28** proof checks PASS; focused suites `201/201`
+- tracked state: identical at sync and at end of run —
+  `package.json` sha256 `db731331…0c67`, `pnpm-lock.yaml` sha256 `845314ce…16e3`,
+  `git status --porcelain` empty of tracked entries at all three checkpoints
+- the fallback path was exercised, not skipped: the lease reported
+  `@typescript/typescript-linux-arm64 missing after install`, provisioned it at
+  `/tmp/tmp.QwpzyABdog`, and the tracked-state check immediately afterwards passed
+- privacy and network access: synthetic fixtures only. The **assertions** contact
+  nothing — no GitHub API, no queue, and no production mutation of any kind. The
+  lease **setup** around them reaches the public package registry to obtain pnpm
+  and the platform-native TypeScript binary, and nothing else. No credential is
+  present in the lease.
 
 ## Reachability — read this before rating severity
 
