@@ -693,7 +693,7 @@ async function reconcileDeadLetters({
     if (!["open", "closed"].includes(live.state)) {
       accountClassifiedSkips(
         summary,
-        selectedRecoveryTargets(groups),
+        selectedInspectedRecoveryTargets(groups, identities),
         "identity_not_actionable",
         new Error("canonical target identity is not open or closed"),
       );
@@ -1838,6 +1838,12 @@ function countBy(rows, keyFor) {
 
 function selectedRecoveryTargets(groups) {
   return [...groups.values()].map((group) => group.target);
+}
+
+function selectedInspectedRecoveryTargets(groups, identities) {
+  return [...groups.values()]
+    .filter((group) => identities.has(normalizeRecoveryTargetKey(group.target)))
+    .map((group) => group.target);
 }
 
 function accountClassifiedSkips(summary, targets, reasonClass, reason, count = targets.length) {

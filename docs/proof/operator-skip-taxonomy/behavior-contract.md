@@ -14,7 +14,7 @@ Deterministic skip decisions use stable, snake-case, low-cardinality classes. Sa
 
 ## Scenarios and observable results
 
-1. Blocked aliases, active work, ineligible rows, head mismatches, terminal-recheck and inspection caps, changed closed state, partial duplicate resolution, incomplete inventory, failed discovery, and non-actionable identities each emit their dedicated class.
+1. Blocked aliases, active work, ineligible rows, head mismatches, terminal-recheck and inspection caps, changed closed state, partial duplicate resolution, incomplete inventory, failed discovery, and non-actionable identities each emit their dedicated class. A mixed missing-installation plus non-actionable-identity cycle counts each target once and preserves both classes.
 2. Idle queue-capacity deferral and a Worker recovery mutation skip emit `recovery_capacity` and `recovery_mutation_skipped` respectively; existing `recovery_cap` and `recovery_deferred_pressure` remain unchanged.
 3. Head mismatch and no-eligible-row skips emit sanitized bounded samples in the established shape.
 4. A mixed cycle combines active work, an ineligible row, a stale pull-request head, one admitted recovery, and one capacity skip. Its four reason counts sum to four skipped targets.

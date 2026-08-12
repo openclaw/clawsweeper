@@ -3459,6 +3459,50 @@ test("automatic reconciliation classifies every deterministic skip path", async 
     identity_not_actionable: 1,
   });
 
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const mixedIdentityFailure = await automaticReconcileScenario({
+    rows: [
+      row(
+        "missing-installation",
+        "publication:missing-installation",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "owner-a/repo#1",
+      ),
+      row(
+        "identity",
+        "publication:identity",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "owner-b/repo#2",
+      ),
+    ],
+    targetInstallations: new Map([["owner-b", { id: 8147, token: "owner-b-token" }]]),
+    identityState: (number) => (number === 2 ? "unknown" : "open"),
+    operatorEnv: {
+      GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23mixedidentity",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+  });
+  assert.equal(mixedIdentityFailure.first.code, 0, mixedIdentityFailure.first.stderr);
+  const mixedIdentitySummary = JSON.parse(mixedIdentityFailure.first.stdout);
+  assert.equal(mixedIdentitySummary.skipped_targets, 2);
+  assert.deepEqual(mixedIdentitySummary.skip_reasons, {
+    installation_missing: 1,
+    identity_not_actionable: 1,
+  });
+  assertSkipAccountingComplete(mixedIdentitySummary);
+
   const discoveryFailed = await automaticReconcileScenario({
     rows: Array.from({ length: 11 }, (_, index) =>
       row(
