@@ -6,7 +6,10 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { parseArgs } from "../dist/clawsweeper-args.js";
-import { createReviewCommandWorkflow } from "../dist/clawsweeper-review-command-workflow.js";
+import {
+  createReviewCommandWorkflow,
+  localExactBootstrapReviewCommentBody,
+} from "../dist/clawsweeper-review-command-workflow.js";
 import {
   isSuppliedReviewStartLease,
   suppliedReviewStartLeaseFromArgs,
@@ -61,6 +64,53 @@ function structuralRecord(activityUpdatedAt: string) {
   assert.ok(record);
   return record;
 }
+
+test("exact local bootstrap rejects a same-number report from another repository", () => {
+  const report = [
+    "---",
+    `number: ${ITEM_NUMBER}`,
+    "repository: openclaw/clawsweeper",
+    "review_status: complete",
+    "---",
+    "Foreign report",
+  ].join("\n");
+  const frontMatterValue = (markdown: string, key: string): string | undefined =>
+    markdown.match(new RegExp(`^${key}:\\s*(.+)$`, "m"))?.[1]?.trim();
+  let renderCalls = 0;
+  const render = () => {
+    renderCalls += 1;
+    return "rendered review history";
+  };
+
+  assert.equal(
+    localExactBootstrapReviewCommentBody(
+      report,
+      { repo: "openclaw/clawsweeper", number: ITEM_NUMBER },
+      frontMatterValue,
+      render,
+    ),
+    "rendered review history",
+  );
+  assert.equal(
+    localExactBootstrapReviewCommentBody(
+      report,
+      { repo: "openclaw/openclaw", number: ITEM_NUMBER },
+      frontMatterValue,
+      render,
+    ),
+    "",
+  );
+  assert.equal(
+    localExactBootstrapReviewCommentBody(
+      report,
+      { repo: "openclaw/clawsweeper", number: ITEM_NUMBER + 1 },
+      frontMatterValue,
+      render,
+    ),
+    "",
+  );
+  assert.equal(renderCalls, 1);
+});
 
 test("scheduled delivery serves an unchanged item from the structural cache", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-scheduled-cache-"));

@@ -53,6 +53,21 @@ function reviewStartLeaseCommentUpdatedAt(
   return undefined;
 }
 
+export function localExactBootstrapReviewCommentBody(
+  markdown: string,
+  item: Pick<Item, "repo" | "number">,
+  frontMatterValue: (markdown: string, key: string) => string | undefined,
+  renderReviewCommentFromReport: (markdown: string, reason: "none") => string,
+): string {
+  if (
+    frontMatterValue(markdown, "repository")?.toLowerCase() !== item.repo.toLowerCase() ||
+    frontMatterValue(markdown, "number") !== String(item.number)
+  ) {
+    return "";
+  }
+  return renderReviewCommentFromReport(markdown, "none");
+}
+
 export function restoreVerifiedMaintainerPullRequestAuthorAssociation(
   item: Pick<Item, "kind" | "author" | "authorAssociation" | "labels">,
   repositoryPermission: (author: string) => string | null,
@@ -369,9 +384,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           !localRangeData &&
           existsSync(join(artifactDir, reportFileName(item.repo, item.number)))
         ) {
-          previousLocalReviewCommentBody = renderReviewCommentFromReport(
-            readFileSync(join(artifactDir, reportFileName(item.repo, item.number)), "utf8"),
-            "none",
+          const bootstrapReport = readFileSync(
+            join(artifactDir, reportFileName(item.repo, item.number)),
+            "utf8",
+          );
+          previousLocalReviewCommentBody = localExactBootstrapReviewCommentBody(
+            bootstrapReport,
+            item,
+            frontMatterValue,
+            renderReviewCommentFromReport,
           );
         }
         const existingPriorReview = localRangeData ? null : existingReview(item, itemsDir);
