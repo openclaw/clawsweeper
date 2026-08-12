@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-08-12T22:33:37Z",
+  "recorded_at": "2026-08-12T22:45:49Z",
   "provider": "local-container",
-  "lease_id": "cbx_b97d6feb5c2e",
-  "slug": "coral-lobster-1f54",
+  "lease_id": "cbx_d053a32ae64d",
+  "slug": "coral-crayfish-d152",
   "container_runtime": "docker",
   "image": "node:24-bookworm",
   "machine_type": "node_24-bookworm",
-  "tested_head": "a53a16105b26241023068947440f4e554a034a48",
-  "command": "/Users/steipete/Projects/crabbox/bin/crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --timing-json --capture-stdout docs/proof/operator-skip-taxonomy/container-transcript.txt --capture-stderr docs/proof/operator-skip-taxonomy/container-stderr.txt --script docs/proof/operator-skip-taxonomy/run-proof.sh -- a53a16105b26241023068947440f4e554a034a48",
+  "tested_head": "2d10e57a57b61dae2caf776c3f0004844366dca1",
+  "command": "/Users/steipete/Projects/crabbox/bin/crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --timing-json --capture-stdout docs/proof/operator-skip-taxonomy/container-transcript.txt --capture-stderr docs/proof/operator-skip-taxonomy/container-stderr.txt --script docs/proof/operator-skip-taxonomy/run-proof.sh -- 2d10e57a57b61dae2caf776c3f0004844366dca1",
   "exit_code": 0,
   "lease_stopped": true,
-  "sync_ms": 1467,
-  "command_ms": 21897,
-  "total_ms": 23381,
+  "sync_ms": 854,
+  "command_ms": 20614,
+  "total_ms": 21483,
   "node_version": "v24.19.0",
   "pnpm_version": "11.10.0",
   "focused_tests": {
@@ -30,19 +30,19 @@
     "skipped": 9
   },
   "content_sha256": {
-    "docs/proof/operator-skip-taxonomy/behavior-contract.md": "3f38a21543861f4da16d78162363a7afbdc51d5ea8603b5129fbab6fee1583b4",
+    "docs/proof/operator-skip-taxonomy/behavior-contract.md": "7d5059dfb656ed9ea450d319af4a7b14fb69fe7a3dd82100cb055c945d0e2fde",
     "docs/proof/operator-skip-taxonomy/run-proof.sh": "b9d10e221d8e5ff7426cd1d04e8b0c251e04a4650d3d5da730856e33daba9fc0",
-    "scripts/exact-review-dead-letter-operator.mjs": "7d81d564b2d5cfaa60440953295b4cd73048feab623bd07879b80c4def64244d",
-    "test/exact-review-dead-letter-operator.test.ts": "3b6747397b8a8522a780c2a79656e10abb6cd04630fde1986f3c941d287d8db1"
+    "scripts/exact-review-dead-letter-operator.mjs": "e54ca6d87a0c6e5c172315ec5ab232498046e4ee29771f3c4dcccd978ccf3bce",
+    "test/exact-review-dead-letter-operator.test.ts": "4fd111ee8fdcf0cf47cd76ede33cf99bdbe3f176c6e9eb3fe31e240c3c6a9962"
   },
-  "transcript_sha256": "4e399246f3c7b494c911a84fb31215b9d09a98c92dcd1c7acfc4c4a687ebbd5b",
+  "transcript_sha256": "75c500cca305dbaeaa88a1e0136009d1455c4aae80136dec26e4de83b82f0b16",
   "stderr_sha256": "39ad07334ee0b3da51ab7f5232e274dfb5588dc1380a557f3f4d886a7173a9dd",
   "secret_scan": {
     "tool": "trufflehog 3.96.0",
     "command": "trufflehog filesystem --no-update --results=verified,unknown --fail --fail-on-scan-errors docs/proof/operator-skip-taxonomy/container-transcript.txt docs/proof/operator-skip-taxonomy/container-stderr.txt",
     "exit_code": 0,
     "chunks": 2,
-    "bytes": 9963,
+    "bytes": 9955,
     "verified_secrets": 0,
     "unknown_secrets": 0
   },
