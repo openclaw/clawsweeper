@@ -159,8 +159,10 @@ per-route breakdown.
 
 The `gh` wrapper preserves the command's stdout, cleaned non-debug stderr, and
 exit status. Observation and upload failures do not fail publication. This
-fail-open rule means a completely missing upload cannot report its own absence;
-use stage conservation against durable publication starts and workflow results
+fail-open rule means an uploader that finds no readable metric records sends
+one bounded, incomplete, unattempted invocation marker; it never invents a wire
+attempt or member count. A completely missing uploader still cannot report its
+own absence, so use stage conservation against durable publication starts and workflow results
 to detect that case.
 
 Known incomplete boundaries are explicit:

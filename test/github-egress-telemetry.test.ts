@@ -396,6 +396,31 @@ test("signed upload, SQLite restart, retention, cardinality, and public privacy 
     });
     assert.notEqual(otherRun[0]?.receiptId, submissions[0]?.receiptId);
 
+    const emptySink = githubEgressTelemetrySubmissions({
+      metricsPath: join(root, "missing-metrics.jsonl"),
+      rateLimitPath: join(root, "missing-rate-limits.jsonl"),
+      receiptScope: "test-run:3:missing-sink",
+    });
+    assert.equal(emptySink.length, 1);
+    assert.deepEqual(
+      emptySink[0]?.metrics.map((metric) => ({
+        unit: metric.unit,
+        attempted: metric.attempted,
+        outcome: metric.outcome,
+        telemetryComplete: metric.telemetryComplete,
+        count: metric.count,
+      })),
+      [
+        {
+          unit: "invocation",
+          attempted: false,
+          outcome: "ambiguous",
+          telemetryComplete: false,
+          count: 1,
+        },
+      ],
+    );
+
     const storage = new MemoryDurableStorage();
     const store = new GithubEgressTelemetryStore(storage);
     store.ensureSchemaSync();

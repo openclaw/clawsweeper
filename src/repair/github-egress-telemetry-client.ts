@@ -66,6 +66,7 @@ export function githubEgressTelemetrySubmissions(options: {
       count: Math.min(MAX_COUNT, invalid),
     });
   }
+  if (metrics.length === 0) metrics.push(incompleteMetric("missing-input"));
   const submissions: GitHubEgressTelemetrySubmission[] = [];
   const receiptScope =
     options.receiptScope ||
@@ -187,7 +188,7 @@ function aggregateMetrics(values: readonly unknown[]): {
   return { metrics: [...metrics.values()], invalid };
 }
 
-function incompleteMetric(nowMs = Date.now()): GitHubEgressMetricV2 {
+function incompleteMetric(reason = "invalid-input", nowMs = Date.now()): GitHubEgressMetricV2 {
   const digest = (value: string, length: number) =>
     createHash("sha256").update(value).digest("hex").slice(0, length);
   return {
@@ -197,7 +198,7 @@ function incompleteMetric(nowMs = Date.now()): GitHubEgressMetricV2 {
       `deployment:v1:${process.env.CLAWSWEEPER_DEPLOYMENT_REVISION || process.env.GITHUB_SHA || "unknown"}`,
       16,
     ),
-    configRevision: digest("config:v1:invalid-input", 16),
+    configRevision: digest(`config:v1:${reason}`, 16),
     poolClass: "other",
     poolIdentity: digest("pool:v1:other", 24),
     stage: "unknown",

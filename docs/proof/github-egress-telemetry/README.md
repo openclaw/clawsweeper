@@ -47,8 +47,10 @@ schedule, gate, deployment, or credential state.
 
 ## Required result
 
-- 18 invocations conserve to 19 observed wire attempts and one durable member;
-  one artifact invocation is explicitly opaque and invents no wire count.
+- 18 transport invocations conserve to 19 observed wire attempts and one
+  durable member; one artifact invocation is explicitly opaque and invents no
+  wire count. A separate missing-sink fixture contributes exactly one
+  incomplete, unattempted invocation marker and no invented wire/member count.
 - The paginated invocation accounts for exactly three page attempts.
 - The authoritative 403 produces exactly one sanitized reset observation.
 - Public-read fallback and target-App each retain their actual selected pool.

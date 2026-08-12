@@ -234,6 +234,16 @@ exit 73
     receiptScope: "github-egress-proof:1:loopback",
   });
   assert.equal(submissions.length, 1);
+  const emptySinkSubmissions = githubEgressTelemetrySubmissions({
+    metricsPath: path.join(scratch, "missing-egress.jsonl"),
+    rateLimitPath: path.join(scratch, "missing-rate-limits.jsonl"),
+    receiptScope: "github-egress-proof:1:missing-sink",
+  });
+  assert.equal(emptySinkSubmissions.length, 1);
+  assert.equal(emptySinkSubmissions[0].metrics.length, 1);
+  assert.equal(emptySinkSubmissions[0].metrics[0].unit, "invocation");
+  assert.equal(emptySinkSubmissions[0].metrics[0].attempted, false);
+  assert.equal(emptySinkSubmissions[0].metrics[0].telemetryComplete, false);
 
   const workerPort = await availablePort();
   let worker = await startWorker(workerPort, persistPath, workerLogPath);
@@ -246,6 +256,13 @@ exit 73
     fetch: rewriteFetch(worker.origin),
   });
   assert.deepEqual(firstUpload, { accepted: true, deduped: false });
+  const emptySinkUpload = await submitGitHubEgressTelemetry({
+    baseUrl: "https://proof.invalid",
+    webhookSecret: proofSecret,
+    submission: emptySinkSubmissions[0],
+    fetch: rewriteFetch(worker.origin),
+  });
+  assert.deepEqual(emptySinkUpload, { accepted: true, deduped: false });
   const beforeRestart = await getJson(`${worker.origin}/api/github-egress-observability?hours=1`);
   assertPublicView(beforeRestart);
 
@@ -298,6 +315,7 @@ exit 73
       public_read_fallback_wire_attempts: 1,
       target_app_wire_attempts: 1,
       incomplete_unknown_route_wire_attempts: 1,
+      empty_sink_incomplete_invocations: 1,
       restart_rows_preserved: true,
       duplicate_upload_deduped: true,
       output_and_exit_preserved: true,
@@ -559,7 +577,7 @@ function assertPublicView(view) {
   assert.equal(view.rate_limit_observations.length, 1);
   assert.equal(view.privacy.pool_identity, "withheld");
   const totals = countBy(view.rows, "unit");
-  assert.deepEqual(totals, { invocation: 18, member: 1, wire_attempt: 19 });
+  assert.deepEqual(totals, { invocation: 19, member: 1, wire_attempt: 19 });
 }
 
 function privacyScan(serialized) {
