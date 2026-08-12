@@ -28,6 +28,11 @@ const MAX_METRICS_PER_SUBMISSION = 128;
 const MAX_RATE_LIMITS_PER_SUBMISSION = 16;
 const MAX_RATE_LIMIT_INTEGER = 10_000_000_000;
 
+function alignedBucketStart(bucketKind: "five_minute" | "hour", timestamp: number) {
+  const bucketMs = bucketKind === "five_minute" ? 300_000 : 3_600_000;
+  return Math.floor(timestamp / bucketMs) * bucketMs;
+}
+
 export class GithubEgressTelemetryStore {
   private readonly storage;
 
@@ -233,8 +238,9 @@ export class GithubEgressTelemetryStore {
   }
 
   publicSummary(now = Date.now()) {
-    const start = now - 6 * 60 * 60 * 1000;
-    const completeness = this.completenessSince("five_minute", start);
+    const windowStart = now - 6 * 60 * 60 * 1000;
+    const bucketStart = alignedBucketStart("five_minute", windowStart);
+    const completeness = this.completenessSince("five_minute", bucketStart);
     const diagnostics = this.diagnostics();
     return {
       version: 2,
@@ -248,8 +254,9 @@ export class GithubEgressTelemetryStore {
         hourly_days: 30,
         evicted_rollup_rows_total: Number(diagnostics.evicted_rollup_rows || 0),
         evicted_rate_limit_rows_total: Number(diagnostics.evicted_rate_limit_rows || 0),
-        rollup_window_complete: Number(diagnostics.last_rollup_evicted_at || 0) < start,
-        rate_limit_window_complete: Number(diagnostics.last_rate_limit_evicted_at || 0) < start,
+        rollup_window_complete: Number(diagnostics.last_rollup_evicted_at || 0) < bucketStart,
+        rate_limit_window_complete:
+          Number(diagnostics.last_rate_limit_evicted_at || 0) < windowStart,
       },
     };
   }
@@ -292,7 +299,8 @@ export class GithubEgressTelemetryStore {
     const boundedHours = hours === 1 || hours === 6 || hours === 24 ? hours : null;
     if (!boundedHours) return null;
     const bucketKind = boundedHours <= 6 ? "five_minute" : "hour";
-    const start = now - boundedHours * 60 * 60 * 1000;
+    const windowStart = now - boundedHours * 60 * 60 * 1000;
+    const bucketStart = alignedBucketStart(bucketKind, windowStart);
     const rows = Array.from(
       this.storage.sql.exec(
         `SELECT bucket_start, deployment_revision, config_revision, pool_class,
@@ -310,7 +318,7 @@ export class GithubEgressTelemetryStore {
           ORDER BY bucket_start ASC, pool_class, stage, operation, unit
           LIMIT ?`,
         bucketKind,
-        start,
+        bucketStart,
         MAX_PUBLIC_ROWS + 1,
       ),
     ) as Array<Record<string, unknown>>;
@@ -349,15 +357,16 @@ export class GithubEgressTelemetryStore {
           WHERE observed_at >= ?
           ORDER BY observed_at DESC
           LIMIT 257`,
-        Math.max(start, now - RATE_LIMIT_RETENTION_MS),
+        Math.max(windowStart, now - RATE_LIMIT_RETENTION_MS),
       ),
     ) as Array<Record<string, unknown>>;
     const rateLimitTruncated = rateLimitRows.length > 256;
     const rateLimits = rateLimitRows.slice(0, 256).map(publicRateLimitRow);
-    const completeness = this.completenessSince(bucketKind, start);
+    const completeness = this.completenessSince(bucketKind, bucketStart);
     const diagnostics = this.diagnostics();
-    const rollupWindowComplete = Number(diagnostics.last_rollup_evicted_at || 0) < start;
-    const rateLimitWindowComplete = Number(diagnostics.last_rate_limit_evicted_at || 0) < start;
+    const rollupWindowComplete = Number(diagnostics.last_rollup_evicted_at || 0) < bucketStart;
+    const rateLimitWindowComplete =
+      Number(diagnostics.last_rate_limit_evicted_at || 0) < windowStart;
     return {
       version: 2,
       generated_at: new Date(now).toISOString(),

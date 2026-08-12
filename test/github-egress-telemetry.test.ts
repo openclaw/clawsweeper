@@ -468,6 +468,26 @@ test("signed upload, SQLite restart, retention, cardinality, and public privacy 
     assert.equal(windowStore.publicObservability(1, NOW)?.completeness.observed, false);
     assert.equal(windowStore.publicObservability(6, NOW)?.completeness.observed, true);
 
+    const unalignedNow = NOW + 2 * 60 * 1_000;
+    const firstPartialBucket = unalignedNow - 60 * 60 * 1_000 + 30 * 1_000;
+    assert.equal(
+      windowStore.ingest(telemetryBody("8".repeat(64), firstPartialBucket), firstPartialBucket).ok,
+      true,
+    );
+    const oneHourView = windowStore.publicObservability(1, unalignedNow);
+    assert.equal(oneHourView?.completeness.observed, true);
+    assert.equal(oneHourView?.units.wire_attempt, 1);
+
+    const unalignedDayNow = NOW + 30 * 60 * 1_000;
+    const firstPartialHour = unalignedDayNow - 24 * 60 * 60 * 1_000 + 5 * 60 * 1_000;
+    assert.equal(
+      windowStore.ingest(telemetryBody("7".repeat(64), firstPartialHour), firstPartialHour).ok,
+      true,
+    );
+    const oneDayView = windowStore.publicObservability(24, unalignedDayNow);
+    assert.equal(oneDayView?.completeness.observed, true);
+    assert.equal(oneDayView?.units.wire_attempt, 3);
+
     const future = NOW + 8 * 24 * 60 * 60 * 1_000;
     const futureBody = telemetryBody("f".repeat(64), future);
     assert.equal(restarted.ingest(futureBody, future).ok, true);

@@ -141,8 +141,12 @@ method/status, and response receive time. Unsafe parsing emits or uploads an
 incomplete bounded marker. It never uploads a partially parsed raw frame.
 
 Completeness is computed independently for each requested one-, six-, or
-24-hour window. `rows_truncated` and `rate_limit_rows_truncated` identify a
-bounded public response, while `rollup_window_complete` and
+24-hour window. Rollup queries include the complete five-minute or hourly
+bucket that overlaps the window's lower boundary, so totals can include at
+most one bucket of observations immediately before the exact cutoff. Raw
+rate-limit observations use the exact cutoff. `rows_truncated` and
+`rate_limit_rows_truncated` identify a bounded public response, while
+`rollup_window_complete` and
 `rate_limit_window_complete` identify any cap eviction during the requested
 window. `query_complete` is true only when neither condition applies. These
 query bounds are separate from transport `telemetry_complete`.
