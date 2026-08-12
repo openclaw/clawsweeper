@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import { createLabelMutationOperations } from "../dist/clawsweeper-label-mutations.js";
 
@@ -62,9 +65,9 @@ test("an exact-publication label batch emits one combined deterministic issue ed
         "edit",
         "321",
         "--add-label",
-        "impact:message-loss,maturity:stable,P2",
+        "P2,impact:message-loss,maturity:stable",
         "--remove-label",
-        "impact:data-loss,P1,status:stale",
+        "P1,impact:data-loss,status:stale",
       ],
     ],
   );
@@ -115,7 +118,7 @@ test("label definition discovery is cached across item batches", () => {
         "--description",
         "Important but bounded work with a practical workaround or moderate scope.",
       ],
-      ["issue", "edit", "321", "--add-label", "impact:message-loss,P2"],
+      ["issue", "edit", "321", "--add-label", "P2,impact:message-loss"],
       ["issue", "edit", "322", "--add-label", "P2"],
     ],
   );
@@ -286,24 +289,26 @@ test("optional batch failures retain successful final operations and report skip
   assert.deepEqual(
     mutations.map(({ args }) => args),
     [
-      ["issue", "edit", "321", "--add-label", "impact:message-loss,P2", "--remove-label", "P1"],
+      ["issue", "edit", "321", "--add-label", "P2,impact:message-loss", "--remove-label", "P1"],
       ["issue", "edit", "321", "--remove-label", "P1"],
-      ["issue", "edit", "321", "--add-label", "impact:message-loss"],
       ["issue", "edit", "321", "--add-label", "P2"],
+      ["issue", "edit", "321", "--add-label", "impact:message-loss"],
     ],
   );
   assert.deepEqual(events, [
     "freshness",
-    "issue edit 321 --add-label impact:message-loss,P2 --remove-label P1",
+    "issue edit 321 --add-label P2,impact:message-loss --remove-label P1",
     "possible mutation",
     "freshness",
     "issue edit 321 --remove-label P1",
     "receipt",
     "freshness",
+    // The optional P2 retry is the one the fixture rejects, so it draws no receipt;
+    // code unit order simply makes it the first per-label retry instead of the second.
+    "issue edit 321 --add-label P2",
+    "freshness",
     "issue edit 321 --add-label impact:message-loss",
     "receipt",
-    "freshness",
-    "issue edit 321 --add-label P2",
   ]);
 });
 
@@ -453,4 +458,72 @@ test("a failed combined mutation has no same-attempt per-label fallback", () => 
   operations.removeIssueLabel(321, "P1");
   operations.flushIssueLabelMutationBatch(321);
   assert.deepEqual(mutations.at(-1)?.args, ["issue", "edit", "321", "--remove-label", "P1"]);
+});
+
+test("the issue label sync identity does not depend on insertion order or runner locale", () => {
+  // `identity` is the idempotency key the action ledger dedupes mutations on, and it is
+  // built by joining the sorted addition and removal lists. Sorting with `localeCompare`
+  // reads the runner's ICU locale and returns 0 for strings the collator treats as
+  // equivalent but that are not equal, so the same label set could serialize two ways.
+  const additions = ["P2", "impact:message-loss", "maturity:stable", "proof: sufficient"];
+  const removals = ["P1", "impact:data-loss", "status:stale"];
+
+  const identityFor = (addOrder: string[], removeOrder: string[]): string => {
+    const { mutations, operations } = createOperations();
+    operations.beginIssueLabelMutationBatch(321);
+    for (const label of addOrder) operations.addIssueLabel(321, label);
+    for (const label of removeOrder) operations.removeIssueLabel(321, label);
+    operations.flushIssueLabelMutationBatch(321);
+    const identity = mutations.find((mutation) =>
+      mutation.identity.startsWith("issue_labels_sync:"),
+    )?.identity;
+    assert.ok(identity, "the batch must publish an issue_labels_sync mutation");
+    return identity;
+  };
+
+  const baseline = identityFor(additions, removals);
+  assert.equal(identityFor([...additions].reverse(), [...removals].reverse()), baseline);
+  assert.equal(identityFor([...additions].sort(), [...removals].sort()), baseline);
+
+  // Labels a collator calls equal but that are distinct strings must still get a total
+  // order, otherwise `Array.prototype.sort` may leave them in input order.
+  const tied = ["status: \u{1F440}‍ ready", "status: \u{1F440} ready"];
+  assert.notEqual(tied[0], tied[1]);
+  assert.equal(tied[0]?.localeCompare(tied[1] ?? "") ?? 1, 0, "precondition: collator ties these");
+  const tiedIdentity = identityFor(tied, []);
+  assert.equal(identityFor([...tied].reverse(), []), tiedIdentity);
+
+  // And the whole key must be reproducible on a differently configured runner. sv-SE
+  // sorts "a" after "z" while en-US sorts it right after "a".
+  const moduleUrl = pathToFileURL(
+    path.join(process.cwd(), "dist", "clawsweeper-label-mutations.js"),
+  ).href;
+  const script = `import { createLabelMutationOperations } from ${JSON.stringify(moduleUrl)};
+const mutations = [];
+const operations = createLabelMutationOperations({
+  ghJson: () => [],
+  ghObservedMutationCommand: (mutation) => { mutations.push(mutation); mutation.onMutation?.(); },
+  normalizeLabelName: (label) => label.trim().toLowerCase(),
+  prStatusLabelForKind: () => ({ name: "status:ready", color: "1F883D", description: "d" }),
+});
+operations.beginIssueLabelMutationBatch(321);
+for (const label of ["zulu", "Alpha", "\\u00e4pple", "apple"]) operations.addIssueLabel(321, label);
+operations.flushIssueLabelMutationBatch(321);
+process.stdout.write(
+  mutations.find((m) => m.identity.startsWith("issue_labels_sync:"))?.identity ?? "",
+);`;
+  const identities = ["en_US.UTF-8", "sv_SE.UTF-8"].map((locale) => {
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      encoding: "utf8",
+      env: { ...process.env, LANG: locale, LC_ALL: locale },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    return child.stdout;
+  });
+  assert.equal(
+    identities[0],
+    "issue_labels_sync:321:add=Alpha|apple|zulu|äpple:remove=",
+    "code unit order puts uppercase first and non-ASCII last",
+  );
+  assert.deepEqual(identities[1], identities[0]);
 });
