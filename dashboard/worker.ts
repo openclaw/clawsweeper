@@ -89,6 +89,111 @@ const QUEUED_RUN_STATUSES = new Set(["queued", "waiting", "requested", "pending"
 type DashboardContext = { waitUntil?: (promise: Promise<unknown>) => void };
 type GithubJsonReader = (path: string) => ReturnType<typeof githubJson>;
 type StoredValue = { value: string; expires_at?: number };
+type GithubWebhookDeliveryHeaders = {
+  readonly event: string;
+  readonly deliveryId: string | null;
+  readonly signature: string;
+};
+type GithubWebhookRepositoryPayload = {
+  readonly full_name?: unknown;
+  readonly default_branch?: unknown;
+  readonly private?: unknown;
+  readonly archived?: unknown;
+  readonly fork?: unknown;
+  readonly has_issues?: unknown;
+};
+type GithubWebhookInstallationPayload = { readonly id?: unknown };
+type GithubWebhookLabelPayload = { readonly name?: unknown };
+type GithubWebhookUserPayload = { readonly login?: unknown };
+type GithubWebhookIssuePayload = {
+  readonly number?: unknown;
+  readonly user?: GithubWebhookUserPayload | null;
+};
+type GithubWebhookCommentPayload = {
+  readonly id?: unknown;
+  readonly body?: unknown;
+  readonly author_association?: unknown;
+  readonly user?: GithubWebhookUserPayload | null;
+  readonly created_at?: unknown;
+  readonly updated_at?: unknown;
+};
+type GithubWebhookPullRequestPayload = {
+  readonly number?: unknown;
+  readonly head?: { readonly sha?: unknown } | null;
+  readonly base?: { readonly sha?: unknown } | null;
+  readonly draft?: unknown;
+  readonly title?: unknown;
+  readonly body?: unknown;
+  readonly updated_at?: unknown;
+};
+type GithubWebhookBasePayload = {
+  readonly action?: unknown;
+  readonly repository?: GithubWebhookRepositoryPayload | null;
+  readonly installation?: GithubWebhookInstallationPayload | null;
+  readonly label?: GithubWebhookLabelPayload | null;
+};
+type GithubIssueCommentWebhookPayload = GithubWebhookBasePayload & {
+  readonly comment?: GithubWebhookCommentPayload | null;
+  readonly issue?: GithubWebhookIssuePayload | null;
+};
+type GithubIssueWebhookPayload = GithubWebhookBasePayload & {
+  readonly issue?: GithubWebhookIssuePayload | null;
+};
+type GithubPullRequestWebhookPayload = GithubWebhookBasePayload & {
+  readonly pull_request?: GithubWebhookPullRequestPayload | null;
+};
+type GithubWebhookPayload = GithubIssueCommentWebhookPayload &
+  GithubIssueWebhookPayload &
+  GithubPullRequestWebhookPayload;
+type GithubWebhookClassifierRuntimeInput = {
+  readonly event: string;
+  readonly payload: GithubWebhookPayload;
+};
+
+export type GithubWebhookClassifierInput<Event extends string = string> =
+  Event extends "issue_comment"
+    ? { readonly event: Event; readonly payload: GithubIssueCommentWebhookPayload }
+    : Event extends "issues"
+      ? { readonly event: Event; readonly payload: GithubIssueWebhookPayload }
+      : Event extends "pull_request"
+        ? { readonly event: Event; readonly payload: GithubPullRequestWebhookPayload }
+        : { readonly event: Event; readonly payload: GithubWebhookBasePayload };
+
+type GithubWebhookRejectedClassification = {
+  readonly accepted: false;
+  readonly reason: string;
+};
+export type GithubWebhookIssueCommentClassification = {
+  readonly accepted: true;
+  readonly type: "issue_comment";
+  readonly targetRepo: string;
+  readonly targetBranch: string;
+  readonly itemNumber: number;
+  readonly commentId: number;
+  readonly installationId: number;
+  readonly sourceAction: string;
+  readonly commentUpdatedAt?: string;
+  readonly commentBody?: string;
+};
+type GithubWebhookIssueClassification = ExactReviewDecision & {
+  readonly accepted: true;
+  readonly type: "item";
+  readonly installationId: number;
+  readonly itemKind: "issue";
+  readonly sourceEvent: "issues";
+};
+type GithubWebhookPullRequestClassification = ExactReviewDecision & {
+  readonly accepted: true;
+  readonly type: "item";
+  readonly installationId: number;
+  readonly itemKind: "pull_request";
+  readonly sourceEvent: "pull_request";
+};
+export type GithubWebhookClassification =
+  | GithubWebhookRejectedClassification
+  | GithubWebhookIssueCommentClassification
+  | GithubWebhookIssueClassification
+  | GithubWebhookPullRequestClassification;
 type WorkflowRunSummary = {
   id: number | string;
   name?: string;
@@ -1332,11 +1437,19 @@ async function githubWebhook(request, env, ctx) {
   if (!secret) return json({ error: "webhook_not_configured" }, 503);
 
   const bodyText = await request.text();
-  const signature = request.headers.get("x-hub-signature-256") || "";
-  const signatureOk = await verifyGithubWebhookSignature({ secret, signature, bodyText });
+  const deliveryHeaders: GithubWebhookDeliveryHeaders = {
+    event: request.headers.get("x-github-event") || "",
+    deliveryId: request.headers.get("x-github-delivery"),
+    signature: request.headers.get("x-hub-signature-256") || "",
+  };
+  const signatureOk = await verifyGithubWebhookSignature({
+    secret,
+    signature: deliveryHeaders.signature,
+    bodyText,
+  });
   if (!signatureOk) return json({ error: "invalid_signature" }, 401);
 
-  const event = request.headers.get("x-github-event") || "";
+  const event = deliveryHeaders.event;
   const payload = parseJsonObject(bodyText);
   if (!payload) return json({ error: "invalid_json" }, 400);
   if (event === "ping") {
@@ -1344,7 +1457,7 @@ async function githubWebhook(request, env, ctx) {
       {
         ok: true,
         event: "ping",
-        delivery: request.headers.get("x-github-delivery") || null,
+        delivery: deliveryHeaders.deliveryId || null,
       },
       202,
     );
@@ -1383,13 +1496,13 @@ async function githubWebhook(request, env, ctx) {
   }
 
   const decision = classifyGithubWebhook({ event, payload });
-  if (!decision.accepted) {
+  if (decision.accepted === false) {
     return json({ ok: true, accepted: false, reason: decision.reason }, 202);
   }
 
   if ("type" in decision && decision.type === "item") {
-    const deliveryId = request.headers.get("x-github-delivery") || "";
-    let itemDecision = decision as ExactReviewDecision & { installationId?: number };
+    const deliveryId = deliveryHeaders.deliveryId || "";
+    let itemDecision: ExactReviewDecision & { installationId: number } = decision;
     if (itemDecision.itemKind === "pull_request") {
       await acknowledgePullRequestReceipt({ env, ctx, decision: itemDecision }).catch((error) => {
         console.error(`ClawSweeper pull request fast ack failed: ${error?.message || error}`);
@@ -1476,7 +1589,7 @@ async function githubWebhook(request, env, ctx) {
   const trigger = bayJourneyTriggerFromGithubWebhook({
     decision,
     payload,
-    deliveryId: request.headers.get("x-github-delivery"),
+    deliveryId: deliveryHeaders.deliveryId,
   });
   if (trigger) await recordBayJourneyTelemetry(env, ctx, [trigger], []);
 
@@ -1492,7 +1605,7 @@ async function githubWebhook(request, env, ctx) {
     permissions: { contents: "write" },
   });
 
-  const commentDecision = decision as any;
+  const commentDecision = decision;
   const targetToken = await createGithubAppTokenFor({
     env,
     appJwt,
@@ -1549,7 +1662,15 @@ async function recordBayJourneyTelemetry(env, ctx, triggers, completions) {
   await write;
 }
 
-function bayJourneyTriggerFromGithubWebhook({ decision, payload, deliveryId }) {
+function bayJourneyTriggerFromGithubWebhook({
+  decision,
+  payload,
+  deliveryId,
+}: {
+  readonly decision: GithubWebhookClassification;
+  readonly payload: GithubIssueCommentWebhookPayload;
+  readonly deliveryId: string | null;
+}) {
   if (!decision?.accepted || decision?.type !== "issue_comment") return null;
   const comment = objectValue(payload?.comment);
   const commandText = commandTextForClawSweeperFastAck(String(comment.body || ""));
@@ -1643,13 +1764,26 @@ function lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env 
   };
 }
 
-function classifyGithubWebhook({ event, payload }) {
+function classifyGithubWebhook<const Event extends string>(
+  input: GithubWebhookClassifierInput<Event>,
+): GithubWebhookClassification;
+function classifyGithubWebhook({
+  event,
+  payload,
+}: GithubWebhookClassifierRuntimeInput): GithubWebhookClassification {
   const comment = classifyGithubIssueCommentWebhook({ event, payload });
-  if (comment.accepted || comment.reason !== "not issue_comment") return comment;
+  if (comment.accepted === true) return comment;
+  if (comment.reason !== "not issue_comment") return comment;
   return classifyGithubItemWebhook({ event, payload });
 }
+export type GithubWebhookClassifier = typeof classifyGithubWebhook;
 
-function classifyGithubIssueCommentWebhook({ event, payload }) {
+function classifyGithubIssueCommentWebhook({
+  event,
+  payload,
+}: GithubWebhookClassifierRuntimeInput):
+  | GithubWebhookRejectedClassification
+  | GithubWebhookIssueCommentClassification {
   if (event !== "issue_comment") return { accepted: false, reason: "not issue_comment" };
   const action = String(payload.action || "");
   if (!["created", "edited"].includes(action))
@@ -1705,12 +1839,20 @@ function classifyGithubIssueCommentWebhook({ event, payload }) {
   };
 }
 
-function exactWebhookTimestamp(value) {
+function exactWebhookTimestamp(value: unknown): string | null {
   const text = String(value || "").trim();
   return text && Number.isFinite(Date.parse(text)) ? text : null;
 }
 
-async function withPullRequestEditContentRevision({ event, payload, decision }) {
+async function withPullRequestEditContentRevision({
+  event,
+  payload,
+  decision,
+}: {
+  readonly event: string;
+  readonly payload: GithubPullRequestWebhookPayload;
+  readonly decision: ExactReviewDecision & { readonly installationId: number };
+}): Promise<ExactReviewDecision & { installationId: number }> {
   if (
     event !== "pull_request" ||
     decision.itemKind !== "pull_request" ||
@@ -1733,7 +1875,13 @@ async function withPullRequestEditContentRevision({ event, payload, decision }) 
   };
 }
 
-function classifyGithubItemWebhook({ event, payload }) {
+function classifyGithubItemWebhook({
+  event,
+  payload,
+}: GithubWebhookClassifierRuntimeInput):
+  | GithubWebhookRejectedClassification
+  | GithubWebhookIssueClassification
+  | GithubWebhookPullRequestClassification {
   const action = String(payload.action || "");
   const repo = objectValue(payload.repository);
   if (!isEligibleGithubWebhookRepository(repo)) {
@@ -1869,7 +2017,15 @@ async function bindLivePullRequestHeadAuthority({
     : null;
 }
 
-async function exactReviewPullRequestIngress({ event, payload, decision }) {
+async function exactReviewPullRequestIngress({
+  event,
+  payload,
+  decision,
+}: {
+  readonly event: string;
+  readonly payload: GithubPullRequestWebhookPayload;
+  readonly decision: ExactReviewDecision;
+}): Promise<ExactReviewIngress | undefined> {
   if (event !== "pull_request" || decision.itemKind !== "pull_request") return undefined;
   const pullRequest = objectValue(payload.pull_request);
   const headSha = String(objectValue(pullRequest.head).sha || "")
@@ -2958,6 +3114,12 @@ async function dispatchClawsweeperComment({
   decision,
   statusCommentId,
   sourceDeliveryId,
+}: {
+  readonly env: DashboardEnv;
+  readonly token: string;
+  readonly decision: GithubWebhookIssueCommentClassification;
+  readonly statusCommentId: number | null;
+  readonly sourceDeliveryId?: string;
 }) {
   const exactVersion =
     decision.commentUpdatedAt && typeof decision.commentBody === "string"
