@@ -77,15 +77,35 @@ the no-loss claim against an obsolete revision. Resolution order:
 
 1. `MARKER_PROOF_BASE`, computed on the host and passed in with `--allow-env`
    (the pattern `docs/proof/openclaw-bay` uses for `BAY_PROOF_SOURCE_SHA`);
-2. `git merge-base HEAD origin/main`, falling back to `main`, inside the lease;
-3. otherwise **fail** with git's actual stderr and the exact re-run command.
+2. `git merge-base HEAD main`, falling back to `origin/main`, inside the lease;
+3. otherwise the committed `before/` fixture, whose sha256 is printed.
 
-Step 1 is preferred because step 2 depends on lease-side git succeeding, and that
-was observed to fail transiently when a full test suite was saturating the host —
-the guard correctly refused to proceed rather than measure the wrong base, but the
-run was lost. Passing the value in makes a lease run deterministic. The script also
-verifies the resolved ref actually contains `src/review-comment-markers.ts` before
-relying on it, and prints which source it used.
+A container image carries no `.git`, so the pre-fix source cannot be recovered
+inside the lease. `before/review-comment-markers.ts` is therefore committed as a
+verbatim copy of the base-commit blob, and `stage-before.sh` regenerates it on the
+host. Wherever git *is* reachable the script rewrites that file from the base blob
+before anything is built — so a stale fixture cannot quietly weaken the contrast.
+The tracked-state guard below runs immediately after that rewrite, which turns a
+stale fixture into a hard failure.
+
+### The run cannot alter the head it is proving
+
+An earlier revision of this script installed the platform-native TypeScript
+package with `pnpm add -D`, which writes `package.json` and `pnpm-lock.yaml`. That
+made the recorded result describe a tree that no longer matched the submitted head.
+Two changes fix it:
+
+- The fallback now installs into a disposable prefix outside the workspace
+  (`npm install --prefix "$(mktemp -d)" --no-save`) and copies the result into
+  `node_modules/`, which is untracked build state. This mirrors how
+  `docs/proof/openclaw-bay/run-proof.sh` provisions Playwright under `/tmp`.
+- The script records `package.json` and `pnpm-lock.yaml` digests plus
+  `git status --porcelain` at sync, then re-checks them after the fixture step,
+  after dependency installation, and at the end of the run. Any drift aborts with
+  a diff instead of reporting a result.
+
+Untracked paths are excluded from that comparison, so build output and artifacts
+do not trip it — only a change to the committed tree does.
 
 Host-only quick check (supply a pre-fix build for claim 3):
 
@@ -104,21 +124,28 @@ node --test test/review-comment-markers.test.ts \
 
 ## Provenance
 
-- provider: Crabbox `local-container` (Docker/OrbStack)
-- crabbox: `0.15.0`
-- image: `node:24` @ `sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584`
-- container node: `v24.19.0` (satisfies `engines.node >= 24`)
-- lease: `cbx_d2bf27707297` (`brisk-prawn`)
-- run: `run_bdbd555376e7`
-- artifact: `.crabbox/runs/run_bdbd555376e7/run_bdbd555376e7-artifacts.tgz`
+- provider: Crabbox `local-container` (runtime `docker`, OrbStack)
+- image: `node:24` → container node `v24.19.0`, `Linux aarch64`
+  (satisfies `engines.node >= 24`)
+- lease: `cbx_23dc3b4da489` (`silver-crab`)
+- run: `run_84923c2ac419`
+- base ref: `0588bda9` · `src/review-comment-markers.ts` · sha256 `0f4ca5a5…1fc0`
+- artifact: `.crabbox/runs/run_84923c2ac419/run_84923c2ac419-artifacts.tgz`
 - result: exit `0`; 19/19 proof checks PASS; focused suites `40/40`
+- tracked state: identical at sync and at end of run —
+  `package.json` sha256 `db731331…0c67`, `pnpm-lock.yaml` sha256 `845314ce…16e3`,
+  `git status --porcelain` empty of tracked entries at all three checkpoints
+- the fallback path was exercised, not skipped: the lease reported
+  `@typescript/typescript-linux-arm64 missing after install`, provisioned it at
+  `/tmp/tmp.9ywi1eEiZu`, and the tracked-state check immediately afterwards passed
 - privacy and network access: synthetic fixtures only. The **assertions** contact
   nothing — no GitHub API, no queue, and no production mutation of any kind. The
   lease **setup** around them is not network-free: `run-proof.sh` runs
   `pnpm install --frozen-lockfile`, and may run `corepack`, `npm install -g`, and
-  `pnpm add` against the public package registry to obtain pnpm and the
-  platform-native TypeScript binary. That traffic goes to the registry only.
-  Nothing reads or writes GitHub state, and no credential is present in the lease.
+  an out-of-tree `npm install --prefix` against the public package registry to
+  obtain pnpm and the platform-native TypeScript binary. That traffic goes to the
+  registry only. Nothing reads or writes GitHub state, and no credential is
+  present in the lease.
 
 ## Reachability — read this before rating severity
 
