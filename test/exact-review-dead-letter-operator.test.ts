@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac, generateKeyPairSync } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -703,6 +703,9 @@ test("automatic reconciliation resolves terminal rows and recovers one fresh rev
       inspected_targets: 2,
       recovered_targets: 1,
       resolved_rows: 5,
+      supersession_checked_targets: 0,
+      superseded_targets: 0,
+      superseded_rows: 0,
       invalid_rows: 1,
       closed_rows: 2,
       duplicate_rows: 1,
@@ -3303,7 +3306,7 @@ test("serial recovery revalidation aborts after three consecutive throttles", as
   assert.equal(scenario.recoveries.length, 0);
 });
 
-test("automatic recovery refuses a pull request whose current head has advanced", async () => {
+test("automatic reconciliation leaves an advanced pull-request head open without canonical proof", async () => {
   const item = row(
     "stale",
     "publication:stale",
@@ -3322,14 +3325,173 @@ test("automatic recovery refuses a pull request whose current head has advanced"
   });
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
   assert.equal(scenario.recoveries.length, 0);
+  assert.equal(scenario.resolutions.length, 0);
   const summary = JSON.parse(scenario.first.stdout);
-  assert.deepEqual(summary.skip_reasons, { head_mismatch: 1 });
+  assert.deepEqual(summary.skip_reasons, { head_mismatch_unproven: 1 });
   assert.deepEqual(summary.skip_samples, [
     {
       target: "openclaw/repo#7",
-      reason: "eligible dead-letter source head does not match the live pull-request head",
+      reason: "canonical completed review record was not found for the live pull-request head",
     },
   ]);
+
+  const staleCanonical = await automaticReconcileScenario({
+    rows: [item],
+    pullRequestHeads: new Map([[7, "b".repeat(40)]]),
+    canonicalRecords: new Map([[7, canonicalRecordEnvelope("openclaw/repo", 7, "c".repeat(40))]]),
+  });
+  assert.equal(staleCanonical.first.code, 0, staleCanonical.first.stderr);
+  assert.equal(staleCanonical.resolutions.length, 0);
+  assert.deepEqual(JSON.parse(staleCanonical.first.stdout).skip_reasons, {
+    head_mismatch_unproven: 1,
+  });
+  assert.equal(
+    JSON.parse(staleCanonical.first.stdout).skip_samples[0].reason,
+    "canonical completed review record does not prove the live pull-request head",
+  );
+});
+
+test("automatic reconciliation resolves a stale publication only with canonical newer-head proof", async () => {
+  const staleHead = "a".repeat(40);
+  const liveHead = "b".repeat(40);
+  const item = row(
+    "stale",
+    "publication:stale",
+    1,
+    "retry_exhausted",
+    true,
+    "eligible",
+    "openclaw/repo#7",
+  );
+  item.item = {
+    decision: { publication: { producerDecision: { sourceHeadSha: staleHead } } },
+  };
+  const scenario = await automaticReconcileScenario({
+    rows: [item],
+    pullRequestHeads: new Map([[7, liveHead]]),
+    canonicalRecords: new Map([[7, canonicalRecordEnvelope("openclaw/repo", 7, liveHead)]]),
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.recoveries.length, 0);
+  assert.equal(scenario.resolutions.length, 1);
+  assert.deepEqual(scenario.resolutions[0].ids, ["stale"]);
+  assert.equal(scenario.resolutions[0].resolution_outcome, "superseded");
+  assert.equal(
+    scenario.resolutions[0].note,
+    `automatic reconciliation: stale publication superseded by completed canonical record at newer head ${liveHead}; evidence=/internal/state/records/openclaw-repo/items/7`,
+  );
+  assert.deepEqual(scenario.canonicalRecordRequests, [
+    "/internal/state/records/openclaw-repo/items/7",
+  ]);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.superseded_targets, 1);
+  assert.equal(summary.superseded_rows, 1);
+  assert.equal(summary.skipped_targets, 0);
+  assert.deepEqual(summary.skip_reasons, {});
+});
+
+test("head-mismatch supersession enforces target and row caps", async () => {
+  const staleHead = "a".repeat(40);
+  const liveHead = "b".repeat(40);
+  const targetRows = Array.from({ length: 11 }, (_, index) => {
+    const number = index + 1;
+    const item = row(
+      `stale-${number}`,
+      `publication:stale-${number}`,
+      number,
+      "retry_exhausted",
+      true,
+      "eligible",
+      `openclaw/repo#${number}`,
+    );
+    item.item = {
+      decision: { publication: { producerDecision: { sourceHeadSha: staleHead } } },
+    };
+    return item;
+  });
+  const targetCap = await automaticReconcileScenario({
+    rows: targetRows,
+    maxTargets: 20,
+    pullRequestHeads: new Map(targetRows.map((_, index) => [index + 1, liveHead])),
+    canonicalRecords: new Map(
+      targetRows.map((_, index) => [
+        index + 1,
+        canonicalRecordEnvelope("openclaw/repo", index + 1, liveHead),
+      ]),
+    ),
+  });
+  assert.equal(targetCap.first.code, 0, targetCap.first.stderr);
+  const targetSummary = JSON.parse(targetCap.first.stdout);
+  assert.equal(targetSummary.superseded_targets, 10);
+  assert.equal(targetSummary.superseded_rows, 10);
+  assert.equal(targetCap.resolutions.length, 10);
+  assert.equal(targetCap.canonicalRecordRequests.length, 10);
+  assert.deepEqual(targetSummary.skip_reasons, { head_mismatch_resolution_cap: 1 });
+
+  const rowCapRows = Array.from({ length: 21 }, (_, index) => {
+    const item = row(
+      `duplicate-${index + 1}`,
+      `publication:duplicate-${index + 1}`,
+      index + 1,
+      "retry_exhausted",
+      true,
+      "eligible",
+      "openclaw/repo#77",
+    );
+    item.item = {
+      decision: { publication: { producerDecision: { sourceHeadSha: staleHead } } },
+    };
+    return item;
+  });
+  const rowCap = await automaticReconcileScenario({
+    rows: rowCapRows,
+    pullRequestHeads: new Map([[77, liveHead]]),
+    canonicalRecords: new Map([[77, canonicalRecordEnvelope("openclaw/repo", 77, liveHead)]]),
+  });
+  assert.equal(rowCap.first.code, 0, rowCap.first.stderr);
+  const rowSummary = JSON.parse(rowCap.first.stdout);
+  assert.equal(rowSummary.superseded_targets, 1);
+  assert.equal(rowSummary.superseded_rows, 20);
+  assert.deepEqual(
+    rowCap.resolutions.map((resolution) => resolution.ids.length),
+    [20],
+  );
+  assert.deepEqual(rowSummary.skip_reasons, { head_mismatch_resolution_partial: 1 });
+});
+
+test("head-mismatch supersession is mutation-free in dry-run and excludes unrelated reasons", async () => {
+  const staleHead = "a".repeat(40);
+  const liveHead = "b".repeat(40);
+  const stale = (id, reason) => {
+    const item = row(id, `publication:${id}`, 1, reason, true, "eligible", "openclaw/repo#7");
+    item.item = {
+      decision: { publication: { producerDecision: { sourceHeadSha: staleHead } } },
+    };
+    return item;
+  };
+  const planned = await automaticReconcileScenario({
+    rows: [stale("retry", "retry_exhausted")],
+    execute: false,
+    pullRequestHeads: new Map([[7, liveHead]]),
+    canonicalRecords: new Map([[7, canonicalRecordEnvelope("openclaw/repo", 7, liveHead)]]),
+  });
+  assert.equal(planned.first.code, 0, planned.first.stderr);
+  assert.equal(planned.resolutions.length, 0);
+  assert.equal(JSON.parse(planned.first.stdout).dry_run, true);
+  assert.equal(JSON.parse(planned.first.stdout).superseded_rows, 1);
+
+  const excluded = await automaticReconcileScenario({
+    rows: [stale("cancelled", "workflow_cancelled"), stale("tuple", "tuple_protocol_invalid")],
+    pullRequestHeads: new Map([[7, liveHead]]),
+    canonicalRecords: new Map([[7, canonicalRecordEnvelope("openclaw/repo", 7, liveHead)]]),
+  });
+  assert.equal(excluded.first.code, 0, excluded.first.stderr);
+  assert.equal(excluded.resolutions.length, 0);
+  assert.equal(excluded.canonicalRecordRequests.length, 0);
+  assert.deepEqual(JSON.parse(excluded.first.stdout).skip_reasons, {
+    head_mismatch_out_of_scope: 1,
+  });
 });
 
 test("automatic recovery revalidates the live GitHub target after cleanup", async () => {
@@ -3605,7 +3767,7 @@ test("automatic reconciliation explains every skipped target in a mixed scenario
   assert.deepEqual(summary.skip_reasons, {
     active_work: 1,
     no_eligible_rows: 1,
-    head_mismatch: 1,
+    head_mismatch_unproven: 1,
     recovery_capacity: 1,
   });
   assert.equal(summary.skipped_targets, 4);
@@ -3622,7 +3784,7 @@ test("automatic reconciliation explains every skipped target in a mixed scenario
       (sample) =>
         sample.target === "openclaw/repo#3" &&
         sample.reason ===
-          "eligible dead-letter source head does not match the live pull-request head",
+          "canonical completed review record was not found for the live pull-request head",
     ),
   );
 });
@@ -3635,6 +3797,7 @@ async function automaticReconcileScenario(options) {
   let inventoryRequests = 0;
   let graphqlRequests = 0;
   let restRequests = 0;
+  const canonicalRecordRequests = [];
   const targetReadAuthorizations = [];
   const installationRequests = [];
   const tokenMintRequests = [];
@@ -3660,6 +3823,18 @@ async function automaticReconcileScenario(options) {
           },
         }),
       );
+      return;
+    }
+    const canonicalRecordMatch =
+      /^\/internal\/state\/records\/openclaw-repo\/items\/([1-9]\d*)$/.exec(request.url ?? "");
+    if (canonicalRecordMatch) {
+      const expected = `sha256=${createHmac("sha256", secret).update("").digest("hex")}`;
+      assert.equal(request.method, "GET");
+      assert.equal(request.headers["x-clawsweeper-exact-review-signature"], expected);
+      canonicalRecordRequests.push(request.url);
+      const record = options.canonicalRecords?.get(Number(canonicalRecordMatch[1]));
+      response.writeHead(record ? 200 : 404, { "content-type": "application/json" });
+      response.end(JSON.stringify(record ?? { error: "record_not_found" }));
       return;
     }
     const installationMatch = /^\/repos\/([^/]+)\/([^/]+)\/installation$/.exec(request.url ?? "");
@@ -3936,7 +4111,8 @@ async function automaticReconcileScenario(options) {
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const directory = await mkdtemp(join(tmpdir(), "clawsweeper-dlq-scenario-"));
-  const args = ["--action", "reconcile", "--execute"];
+  const args = ["--action", "reconcile"];
+  if (options.execute !== false) args.push("--execute");
   if (!options.omitLimits) {
     args.push(
       "--max-targets",
@@ -3974,6 +4150,7 @@ async function automaticReconcileScenario(options) {
       inventoryRequests,
       graphqlRequests,
       restRequests,
+      canonicalRecordRequests,
       targetReadAuthorizations,
       installationRequests,
       tokenMintRequests,
@@ -3982,6 +4159,26 @@ async function automaticReconcileScenario(options) {
     server.close();
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+function canonicalRecordEnvelope(repository, number, headSha, overrides = {}) {
+  const fields = {
+    number: String(number),
+    repository,
+    type: "pull_request",
+    pull_head_sha: headSha,
+    review_status: "complete",
+    ...overrides,
+  };
+  const content = `---\n${Object.entries(fields)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("\n")}\n---\n\nCanonical review.\n`;
+  return {
+    content,
+    digest: createHash("sha256").update(content).digest("hex"),
+    revision: 2,
+    updatedAt: "2026-08-12T23:00:00.000Z",
+  };
 }
 
 test("operator inventories every page, signs requests, and reports unique targets", async () => {

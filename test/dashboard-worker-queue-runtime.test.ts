@@ -7431,6 +7431,65 @@ test("guarded dead-letter resolution preserves a concurrently active transferred
   assert.equal(state.items["openclaw/new#19"].state, "pending");
 });
 
+test("superseded dead-letter resolution records its note and queue metrics honestly", async () => {
+  const { queue, id } = await guardedDeadLetterFixture(17950);
+  const before = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  const note = `automatic reconciliation: stale publication superseded by completed canonical record at newer head ${"b".repeat(40)}; evidence=/internal/state/records/openclaw-openclaw/items/17950`;
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/dead-letters/resolve", {
+      method: "POST",
+      body: JSON.stringify({
+        ids: [id],
+        note,
+        resolution_outcome: "superseded",
+        resolution_aliases: [{ id, aliases: ["openclaw/openclaw#17950"] }],
+      }),
+    }),
+  );
+  assert.deepEqual(await response.json(), { ok: true, resolved: 1, skipped: 0, unparked: 0 });
+  const after = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(
+    after.lanes.publication.completed_total,
+    before.lanes.publication.completed_total + 1,
+  );
+  assert.equal(
+    after.lanes.publication.superseded_total,
+    before.lanes.publication.superseded_total + 1,
+  );
+  assert.equal(after.lanes.publication.published_total, before.lanes.publication.published_total);
+  const listed = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/dead-letters/list", {
+        method: "POST",
+        body: JSON.stringify({ status: "all", limit: 10 }),
+      }),
+    )
+  ).json();
+  assert.equal(listed.dead_letters[0].resolution_note, note);
+
+  const invalid = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/dead-letters/resolve", {
+      method: "POST",
+      body: JSON.stringify({ ids: [id], note: "invalid", resolution_outcome: "published" }),
+    }),
+  );
+  assert.equal(invalid.status, 400);
+  assert.deepEqual(await invalid.json(), { error: "invalid_resolution_outcome" });
+
+  const unguarded = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/dead-letters/resolve", {
+      method: "POST",
+      body: JSON.stringify({ ids: [id], note: "unguarded", resolution_outcome: "superseded" }),
+    }),
+  );
+  assert.equal(unguarded.status, 400);
+  assert.deepEqual(await unguarded.json(), { error: "invalid_resolution_guard" });
+});
+
 test("guarded dead-letter resolution rejects an entire mixed-safe batch atomically", async () => {
   const { storage, queue, id: safeId } = await guardedDeadLetterFixture(17951);
   const unsafe = leasedExactReviewPublicationItem(17952, "179520");

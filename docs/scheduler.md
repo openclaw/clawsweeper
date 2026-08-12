@@ -86,6 +86,16 @@ parked inventory is uploaded beside the publication dead-letter inventory.
 Parked records carrying maintainer-command context remain visible with an
 exclusion reason but cannot be resolved or fresh-recovered by this background
 reconciliation path.
+Publication dead letters whose recorded pull-request head no longer matches the
+live head are never replayed or resolved from head drift alone. The reconciler
+may resolve them as superseded only when the existing HMAC-authenticated
+canonical-record read for the same target contains a complete review at that
+live head. Each cycle checks at most ten such targets and resolves at most 20
+rows per target; missing or mismatched evidence remains open as
+`head_mismatch_unproven`. `tuple_protocol_invalid` and `workflow_cancelled`
+rows are excluded from this path. Executed resolutions retain an audit note
+with the newer head and canonical endpoint and increment the publication
+completed and superseded totals; dry runs perform no mutation.
 This drains the existing queue state and does not add a dashboard health input
 or an OpenClaw Bay action: Bay remains observer-only.
 GitHub throttle deferrals use the same per-item jitter band when the queue turns

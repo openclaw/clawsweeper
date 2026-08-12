@@ -4678,9 +4678,17 @@ export class ExactReviewQueue {
     const body = objectValue(value);
     const ids = exactReviewDeadLetterIds(body.ids);
     const note = String(body.note || "").trim();
+    const resolutionOutcome =
+      body.resolution_outcome === undefined ? null : String(body.resolution_outcome || "");
     if (!ids) return json({ error: "invalid_dead_letter_ids" }, 400);
     if (!note || note.length > 500) return json({ error: "invalid_resolution_note" }, 400);
+    if (resolutionOutcome !== null && resolutionOutcome !== "superseded") {
+      return json({ error: "invalid_resolution_outcome" }, 400);
+    }
     const guarded = body.resolution_aliases !== undefined;
+    if (resolutionOutcome === "superseded" && !guarded) {
+      return json({ error: "invalid_resolution_guard" }, 400);
+    }
     const resolutionAliases = exactReviewRecoveryAliases(body.resolution_aliases, ids, {
       maxIds: 20,
       allowEmpty: true,
@@ -4734,6 +4742,12 @@ export class ExactReviewQueue {
       if (resolved) {
         const state = this.readStateSync();
         unparked = this.drainParkedDeadLettersSync(state, now);
+        if (resolutionOutcome === "superseded") {
+          this.incrementQueueMetricsSync({
+            publicationCompleted: resolved,
+            publicationSuperseded: resolved,
+          });
+        }
         if (unparked) {
           this.writeStateSync(state);
           this.incrementQueueMetricsSync({

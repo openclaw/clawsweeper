@@ -22,12 +22,17 @@ const MAX_PARKED_RECONCILE_RECOVERIES = 5;
 const MAX_PARKED_INVENTORY_PAGE_SIZE = 50;
 const MAX_TERMINAL_TARGET_RECHECKS = 10;
 const MAX_RESOLUTION_IDS = 20;
+const MAX_HEAD_MISMATCH_SUPERSEDE_TARGETS = 10;
 const MAX_INVENTORY_ROWS = 10_000;
 const MAX_RECONCILE_INVENTORY_PAGES = 250;
 const MAX_RECONCILE_INVENTORY_REFRESHES = 2;
 const GRAPHQL_IDENTITY_BATCH_SIZE = 40;
 const MAX_CONSECUTIVE_GITHUB_THROTTLES = 3;
 const ACTIVE_RECOVERY_REASONS = new Set(["fresh_review_already_active", "publication_item_active"]);
+const HEAD_MISMATCH_SUPERSEDE_EXCLUDED_REASONS = new Set([
+  "tuple_protocol_invalid",
+  "workflow_cancelled",
+]);
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9:._-]{1,200}$/;
 const OPERATOR_REQUEST_TIMEOUT_MS = 20_000;
 const OPERATOR_DEADLINE_SETTLE_MS = 25;
@@ -282,6 +287,7 @@ async function main(argv) {
       countedSkippedTargets: new Set(),
       inspectedTargetIds: new Set(),
       pendingRecoveryTargetIds: new Set(),
+      supersessionTargetIds: new Set(),
       terminalTargetRechecks: 0,
     };
     for (let refreshes = 0; refreshes <= MAX_RECONCILE_INVENTORY_REFRESHES; refreshes += 1) {
@@ -530,6 +536,9 @@ async function reconcileDeadLetters({
     inspected_targets: 0,
     recovered_targets: 0,
     resolved_rows: 0,
+    supersession_checked_targets: 0,
+    superseded_targets: 0,
+    superseded_rows: 0,
     invalid_rows: 0,
     closed_rows: 0,
     duplicate_rows: 0,
@@ -823,12 +832,93 @@ async function reconcileDeadLetters({
           row.fresh_recovery.source_head_sha === live.head_sha),
     );
     if (!primary) {
-      accountSkippedTarget(
-        live.node_id,
-        canonicalTarget,
-        "head_mismatch",
-        new Error("eligible dead-letter source head does not match the live pull-request head"),
+      const eligibleStaleRows = rows.filter(
+        (row) =>
+          row.fresh_recovery.eligible &&
+          row.fresh_recovery.source_head_sha &&
+          row.fresh_recovery.source_head_sha !== live.head_sha,
       );
+      const supersedeRows = eligibleStaleRows.filter(
+        (row) => !HEAD_MISMATCH_SUPERSEDE_EXCLUDED_REASONS.has(row.reason_code),
+      );
+      const excludedRows = eligibleStaleRows.filter((row) =>
+        HEAD_MISMATCH_SUPERSEDE_EXCLUDED_REASONS.has(row.reason_code),
+      );
+      if (!supersedeRows.length) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "head_mismatch_out_of_scope",
+          new Error("head-mismatched dead letters have only excluded resolution reasons"),
+        );
+        continue;
+      }
+      if (
+        !progress.supersessionTargetIds.has(live.node_id) &&
+        progress.supersessionTargetIds.size >= MAX_HEAD_MISMATCH_SUPERSEDE_TARGETS
+      ) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "head_mismatch_resolution_cap",
+          new Error("head-mismatch supersession target cap reached"),
+        );
+        continue;
+      }
+      if (!progress.supersessionTargetIds.has(live.node_id)) {
+        progress.supersessionTargetIds.add(live.node_id);
+        summary.supersession_checked_targets += 1;
+      }
+      const evidence = await inspectCanonicalSupersessionEvidence({
+        queueUrl,
+        secret,
+        target: live.canonical_target || canonicalTarget,
+        liveHeadSha: live.head_sha,
+      });
+      if (!evidence.proven) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "head_mismatch_unproven",
+          new Error(evidence.reason),
+        );
+        continue;
+      }
+      const selectedRows = supersedeRows.slice(0, MAX_RESOLUTION_IDS);
+      const resolution = await resolveForReconciliation({
+        queueUrl,
+        secret,
+        rows: selectedRows,
+        note: `automatic reconciliation: stale publication superseded by completed canonical record at newer head ${live.head_sha}; evidence=${evidence.source}`,
+        outcome: "superseded",
+        execute: args.execute,
+        openIds,
+        canonicalTarget: live.canonical_target,
+        aliases: groupAliases,
+      });
+      if (resolution.blocked) continue;
+      summary.resolved_rows += resolution.resolved;
+      summary.superseded_rows += resolution.resolved;
+      if (resolution.resolved) summary.superseded_targets += 1;
+      if (resolution.unparked) {
+        printReconcileResult(summary);
+        return;
+      }
+      if (supersedeRows.length > selectedRows.length) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "head_mismatch_resolution_partial",
+          new Error("head-mismatch supersession row cap reached"),
+        );
+      } else if (excludedRows.length) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "head_mismatch_out_of_scope",
+          new Error("excluded head-mismatched dead letters remain open"),
+        );
+      }
       continue;
     }
     if (summary.recovered_targets + recoveries.length >= args.maxRecoveries) {
@@ -1491,6 +1581,7 @@ async function reconcileResolve({
   openIds,
   canonicalTarget,
   aliases = [],
+  outcome,
 }) {
   if (!execute) {
     for (const row of rows) openIds?.delete(row.dead_letter_id);
@@ -1503,6 +1594,7 @@ async function reconcileResolve({
     payload: {
       ids: rows.map((row) => row.dead_letter_id),
       note,
+      ...(outcome ? { resolution_outcome: outcome } : {}),
       resolution_aliases: rows.map((row) => ({
         id: row.dead_letter_id,
         aliases: [
@@ -1531,6 +1623,89 @@ async function reconcileResolve({
   }
   for (const row of rows) openIds?.delete(row.dead_letter_id);
   return summary;
+}
+
+async function inspectCanonicalSupersessionEvidence({ queueUrl, secret, target, liveHeadSha }) {
+  const match = /^([^/]+)\/([^#]+)#([1-9]\d*)$/.exec(target);
+  if (!match || !/^[0-9a-f]{40}$/.test(String(liveHeadSha || ""))) {
+    return {
+      proven: false,
+      reason: "canonical target or live pull-request head is invalid",
+    };
+  }
+  const [, owner, repo, number] = match;
+  const repoSlug = `${owner}-${repo}`.toLowerCase();
+  const source = `/internal/state/records/${repoSlug}/items/${number}`;
+  let response;
+  try {
+    response = await signedGet({ queueUrl, secret, path: source });
+  } catch {
+    return {
+      proven: false,
+      reason: "canonical completed review record lookup was unavailable",
+    };
+  }
+  if (response.status === 404) {
+    await response.body?.cancel().catch(() => {});
+    return {
+      proven: false,
+      reason: "canonical completed review record was not found for the live pull-request head",
+    };
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    return {
+      proven: false,
+      reason: `canonical completed review record lookup returned ${response.status}`,
+    };
+  }
+  let envelope;
+  try {
+    envelope = await response.json();
+  } catch {
+    return { proven: false, reason: "canonical completed review record returned invalid JSON" };
+  }
+  const content = typeof envelope?.content === "string" ? envelope.content : "";
+  const digest = String(envelope?.digest || "").toLowerCase();
+  const revision = Number(envelope?.revision);
+  if (
+    !content ||
+    !/^[0-9a-f]{64}$/.test(digest) ||
+    createHash("sha256").update(content).digest("hex") !== digest ||
+    !Number.isSafeInteger(revision) ||
+    revision < 1
+  ) {
+    return { proven: false, reason: "canonical completed review record envelope is invalid" };
+  }
+  const frontMatter = canonicalRecordFrontMatter(content);
+  const expectedRepository = `${owner}/${repo}`.toLowerCase();
+  if (
+    !frontMatter ||
+    String(frontMatter.get("repository") || "").toLowerCase() !== expectedRepository ||
+    frontMatter.get("number") !== number ||
+    frontMatter.get("type") !== "pull_request" ||
+    frontMatter.get("review_status") !== "complete" ||
+    String(frontMatter.get("pull_head_sha") || "").toLowerCase() !== liveHeadSha
+  ) {
+    return {
+      proven: false,
+      reason: "canonical completed review record does not prove the live pull-request head",
+    };
+  }
+  return { proven: true, source };
+}
+
+function canonicalRecordFrontMatter(markdown) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(markdown);
+  if (!match) return null;
+  const fields = new Map();
+  for (const line of match[1].split(/\r?\n/)) {
+    const field = /^([a-z][a-z0-9_]*):[ \t]*(.*)$/.exec(line);
+    if (!field) continue;
+    if (fields.has(field[1])) return null;
+    fields.set(field[1], field[2].trim());
+  }
+  return fields;
 }
 
 function deadLetterInventoryFingerprint(ids) {
@@ -1990,6 +2165,15 @@ async function signedPost({
   }
   if (!result?.ok) throw new Error(`${path} returned an invalid response`);
   return result;
+}
+
+function signedGet({ queueUrl, secret, path }) {
+  const signature = `sha256=${createHmac("sha256", secret).update("").digest("hex")}`;
+  return fetch(`${queueUrl}${path}`, {
+    method: "GET",
+    headers: { "x-clawsweeper-exact-review-signature": signature },
+    signal: operatorRequestSignal(),
+  });
 }
 
 async function assertOpenRecoveryTargets(targets, targetReadTokens) {
