@@ -2,18 +2,18 @@
   "schema": "clawsweeper-real-boundary-proof-provenance/v1",
   "claim": "The pushed apply-cursor livelock fix passes its production-shaped fixture and wrap/cycle probes inside a fresh PR checkout mounted into node:24-bookworm.",
   "pull_request": "https://github.com/openclaw/clawsweeper/pull/1129",
-  "reviewed_head": "c87bd96db0bc34a0f7dcad95067973fe1853951a",
+  "reviewed_head": "e6e534fc39eec471a447d8b956a0c24dd3ee97ca",
   "crabbox": {
     "cli_version": "0.38.3-5-g2a79805d",
     "provider": "aws",
-    "lease_id": "cbx_b2223e33b8a4",
-    "slug": "brisk-hermit-0fc9",
-    "run_id": "run_1623fae6fdec",
+    "lease_id": "cbx_20b3853d5df2",
+    "slug": "quick-krill-bd9c",
+    "run_id": "run_dbbae04e9b37",
     "machine_type": "c7a.8xlarge",
     "checkout": "--fresh-pr openclaw/clawsweeper#1129 --no-hydrate",
-    "sync_ms": 8027,
-    "command_ms": 21356,
-    "total_ms": 29567,
+    "sync_ms": 7566,
+    "command_ms": 32631,
+    "total_ms": 45392,
     "exit_code": 0,
     "run_status": "succeeded",
     "lease_stopped": true
@@ -27,7 +27,7 @@
     "jq": "jq-1.8.2",
     "jq_asset": "jq-linux-amd64",
     "jq_sha256": "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
-    "jq_checksum_source": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/sha256sum.txt",
+    "jq_checksum_source": "Repository-pinned jq_sha256 in container-proof.sh, sourced from the official jq 1.8.2 release manifest",
     "jq_checksum_verified": true,
     "jq_install_path": "/usr/local/bin/jq"
   },
@@ -45,7 +45,7 @@
     "skipped": 0,
     "proof_rc": 0
   },
-  "prior_harness_attempts": [
+  "prior_runs": [
     {
       "run_id": "run_5af9ddacd3db",
       "lease_id": "cbx_32c86f65b7c1",
@@ -75,6 +75,15 @@
       "reviewed_head": "33badc338a04f4bb30c2a09ad2c701f7c60e4fe6",
       "reason": "Two wrap/helper tests launched their own login shells and could not resolve jq from a temporary directory.",
       "fixture_assertions_passed": true,
+      "lease_released": true
+    },
+    {
+      "run_id": "run_1623fae6fdec",
+      "lease_id": "cbx_b2223e33b8a4",
+      "reviewed_head": "c87bd96db0bc34a0f7dcad95067973fe1853951a",
+      "result": "succeeded",
+      "reason_superseded": "A fresh ClawSweeper review requested a repository-controlled checksum trust root.",
+      "tests_passed": 4,
       "lease_released": true
     }
   ],
