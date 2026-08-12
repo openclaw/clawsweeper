@@ -1468,20 +1468,22 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                   reviewLeaseCommentId: acquiredReviewLease.commentId,
                 }
               : {}),
-          });
+        });
         writeFileSync(reportPath, reportMarkdown, "utf8");
         if (itemLocalReviewHistoryPath) {
-          writeFileSync(
-            itemLocalReviewHistoryPath,
-            renderReviewCommentFromReport(
-              reportMarkdown,
-              "none",
-              previousLocalReviewCommentBody
-                ? { previousReviewCommentBody: previousLocalReviewCommentBody }
-                : undefined,
-            ),
-            "utf8",
-          );
+          const nextLocalReviewCommentBody =
+            frontMatterValue(reportMarkdown, "review_status") === "complete"
+              ? renderReviewCommentFromReport(
+                  reportMarkdown,
+                  "none",
+                  previousLocalReviewCommentBody
+                    ? { previousReviewCommentBody: previousLocalReviewCommentBody }
+                    : undefined,
+                )
+              : previousLocalReviewCommentBody;
+          if (nextLocalReviewCommentBody) {
+            writeFileSync(itemLocalReviewHistoryPath, nextLocalReviewCommentBody, "utf8");
+          }
         }
         recordReviewLogPublication({
           ledger: reviewLedger,

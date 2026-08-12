@@ -502,8 +502,13 @@ const captures = fs.existsSync(process.env.LOCAL_REVIEW_CAPTURE)
 captures.push({
   hasPreviousReview: prompt.includes('"previousClawSweeperReview"'),
   hasPriorFinding: prompt.includes(${JSON.stringify(priorFindingTitle)}),
+  previousReviewedSha: prompt.match(/"reviewedSha":\\s*"([0-9a-f]{40})"/)?.[1] ?? null,
 });
 fs.writeFileSync(process.env.LOCAL_REVIEW_CAPTURE, JSON.stringify(captures));
+if (process.env.LOCAL_REVIEW_FAIL === "1") {
+  process.stderr.write("deterministic local review failure\\n");
+  process.exit(1);
+}
 fs.writeFileSync(outputPath, fs.readFileSync(process.env.LOCAL_REVIEW_DECISION));
 process.stdout.write(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } }) + "\\n");
 `,
@@ -516,7 +521,7 @@ process.stdout.write(JSON.stringify({ type: "turn.completed", usage: { input_tok
     });
   }
 
-  function runReview(artifactDir: string, base = "base-ref"): void {
+  function runReview(artifactDir: string, base = "base-ref", shouldFail = false): void {
     const result = spawnSync(
       process.execPath,
       [
@@ -542,11 +547,16 @@ process.stdout.write(JSON.stringify({ type: "turn.completed", usage: { input_tok
           CODEX_BIN: fakeCodex,
           LOCAL_REVIEW_CAPTURE: capturePath,
           LOCAL_REVIEW_DECISION: decisionPath,
+          LOCAL_REVIEW_FAIL: shouldFail ? "1" : "0",
         },
         timeout: 60000,
       },
     );
-    assert.equal(result.status, 0, `${result.stderr ?? ""}${result.stdout ?? ""}`);
+    if (shouldFail) {
+      assert.notEqual(result.status, 0, "deterministic Codex failure must fail the review run");
+    } else {
+      assert.equal(result.status, 0, `${result.stderr ?? ""}${result.stdout ?? ""}`);
+    }
   }
 
   try {
@@ -564,7 +574,9 @@ process.stdout.write(JSON.stringify({ type: "turn.completed", usage: { input_tok
     writeFileSync(join(dir, "feature.txt"), "first\nsecond\n");
     git(dir, "add", "feature.txt");
     git(dir, "commit", "-q", "-m", "fix: follow up on local review");
-    runReview(join(harness, "run-2"));
+    const failedHead = git(dir, "rev-parse", "HEAD");
+    runReview(join(harness, "run-2-failed"), "base-ref", true);
+    runReview(join(harness, "run-3"));
 
     const historyPath = resolve(
       dir,
@@ -576,24 +588,27 @@ process.stdout.write(JSON.stringify({ type: "turn.completed", usage: { input_tok
     assert.match(relatedHistory, new RegExp(firstHead));
 
     git(dir, "branch", "alternate-base", firstHead);
-    runReview(join(harness, "run-3"), "alternate-base");
+    runReview(join(harness, "run-4"), "alternate-base");
 
     git(dir, "checkout", "-q", "-b", "unrelated", "base-ref");
     writeFileSync(join(dir, "unrelated.txt"), "different branch\n");
     git(dir, "add", "unrelated.txt");
     git(dir, "commit", "-q", "-m", "feat: unrelated local range");
-    runReview(join(harness, "run-4"));
+    runReview(join(harness, "run-5"));
 
     const captures = JSON.parse(readFileSync(capturePath, "utf8")) as Array<{
       hasPreviousReview: boolean;
       hasPriorFinding: boolean;
+      previousReviewedSha: string | null;
     }>;
     assert.deepEqual(captures, [
-      { hasPreviousReview: false, hasPriorFinding: false },
-      { hasPreviousReview: true, hasPriorFinding: true },
-      { hasPreviousReview: false, hasPriorFinding: false },
-      { hasPreviousReview: false, hasPriorFinding: false },
+      { hasPreviousReview: false, hasPriorFinding: false, previousReviewedSha: null },
+      { hasPreviousReview: true, hasPriorFinding: true, previousReviewedSha: firstHead },
+      { hasPreviousReview: true, hasPriorFinding: true, previousReviewedSha: firstHead },
+      { hasPreviousReview: false, hasPriorFinding: false, previousReviewedSha: null },
+      { hasPreviousReview: false, hasPriorFinding: false, previousReviewedSha: null },
     ]);
+    assert.doesNotMatch(JSON.stringify(captures[2]), new RegExp(failedHead));
     assert.doesNotMatch(readFileSync(historyPath, "utf8"), /Review history \(/);
     assert.equal(git(dir, "status", "--porcelain"), "");
   } finally {
