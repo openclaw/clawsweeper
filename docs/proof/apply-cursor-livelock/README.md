@@ -36,8 +36,8 @@ execution order inside the selected batch; it does not change `cycle_start_after
 docs/proof/apply-cursor-livelock/run-proof.sh
 ```
 
-The container entrypoint additionally installs jq 1.8.2 only after verifying the official release
-checksum:
+The container entrypoint additionally installs jq 1.8.2 only after verifying the
+repository-pinned official release digest:
 
 ```bash
 docs/proof/apply-cursor-livelock/container-proof.sh
