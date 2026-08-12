@@ -22,6 +22,11 @@ else
 fi
 node --version
 npm --version
+if ! command -v jq >/dev/null 2>&1; then
+  sudo apt-get update >/dev/null
+  sudo apt-get install --yes jq >/dev/null
+fi
+jq --version
 
 echo "PROOF_PHASE=corepack"
 npm install --global --prefix "$HOME/.local" corepack@0.35.0
@@ -47,7 +52,13 @@ echo "PROOF_PHASE=dashboard-strict"
 corepack pnpm run check:dashboard-strict
 
 echo "PROOF_PHASE=full-gate"
-corepack pnpm run check
+proof_full_gate_log="$(mktemp)"
+if ! corepack pnpm run check >"$proof_full_gate_log" 2>&1; then
+  tail -n 240 "$proof_full_gate_log"
+  exit 1
+fi
+grep -E '^(ℹ (tests|pass|fail|skipped)|.*(dashboard queue boundary check passed|Documentation checks passed|All matched files use the correct format))' \
+  "$proof_full_gate_log" | tail -n 24
 
 echo "PROOF_PHASE=content"
 sha256sum \
