@@ -1,10 +1,10 @@
 # CSW-127 Phase 0.5 executed proof
 
 The controlled runtime proof succeeded on Docker-backed Crabbox
-`local-container` lease `cbx_a1b3b467847d` (`tidal-shrimp`) using
+`local-container` lease `cbx_7a017f5153b2` (`swift-hermit-9598`) using
 `mcr.microsoft.com/playwright:v1.60.0-noble`. The lease stopped automatically
 after the run. It exercised source head
-`ea44161235652dca3a22f7250319ec06df22fdbc` on base
+`05eaf24a317d217dbedc32ee1c9e53296d3778a1` on base
 `9a257905e50be2dff9bb99afecb6cde50f8417f9`; the follow-up commit that records
 this refreshed receipt changes evidence files only.
 

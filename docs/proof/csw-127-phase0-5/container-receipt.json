@@ -1,21 +1,22 @@
 {
   "contract": "CSW-127 Phase 0.5 quota recovery",
   "provider": "local-container",
-  "lease_id": "cbx_a1b3b467847d",
-  "slug": "tidal-shrimp",
+  "lease_id": "cbx_7a017f5153b2",
+  "slug": "swift-hermit-9598",
   "image": "mcr.microsoft.com/playwright:v1.60.0-noble",
-  "source_head": "ea44161235652dca3a22f7250319ec06df22fdbc",
+  "source_head": "05eaf24a317d217dbedc32ee1c9e53296d3778a1",
   "base_head": "9a257905e50be2dff9bb99afecb6cde50f8417f9",
   "sync_mode": "read-only host bind mount copied into an isolated container workdir",
   "run_status": "succeeded",
   "exit_code": 0,
   "timing_ms": {
-    "total": 49228,
-    "command": 49131,
-    "build": 4245,
-    "focused_tests": 6382,
-    "worker_do_proof": 29371,
-    "scoped_lint": 1384
+    "total": 55279,
+    "command": 55077,
+    "build": 3505,
+    "focused_tests": 6051,
+    "worker_do_proof": 29879,
+    "bay_render_proof": 6122,
+    "scoped_lint": 1499
   },
   "focused_tests": {
     "passed": 323,
@@ -27,6 +28,9 @@
     "attributable_circuit_count": 1,
     "raw_reset_claimed": false,
     "jitter_recovery_claimed": true,
+    "bay_recovery_reason": "workflow_cancelled",
+    "bay_recovery_count": 1,
+    "bay_rendered": true,
     "privacy_clean": true
   },
   "production_mutation": false
