@@ -7,8 +7,13 @@ cd "$repo_root"
 
 export CI=1
 export WRANGLER_SEND_METRICS=false
+export PNPM_HOME="${PNPM_HOME:-$HOME/.local/bin}"
+mkdir -p "$PNPM_HOME"
+export PATH="$PNPM_HOME:$PATH"
 
-corepack enable
+if ! command -v pnpm >/dev/null 2>&1; then
+  corepack enable --install-directory "$PNPM_HOME"
+fi
 pnpm install --frozen-lockfile
 printf 'PROOF_HEAD=%s\n' "$(git rev-parse HEAD)"
 printf 'PROOF_NODE=%s\n' "$(node --version)"
