@@ -8,6 +8,7 @@ function failureStatus(value, text) {
 }
 
 export function isGitHubThrottleFailure(value) {
+  if (value?.rateLimited === true) return true;
   const text = failureText(value);
   const status = failureStatus(value, text);
   if (status === "429") return true;

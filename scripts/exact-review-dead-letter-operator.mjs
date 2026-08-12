@@ -72,6 +72,19 @@ class TargetInstallationMissingError extends Error {
   }
 }
 
+class TargetAppSetupThrottleError extends Error {
+  constructor(error, { owner, stage }) {
+    const status = Number.isInteger(error?.status) ? error.status : "unknown";
+    super(
+      `github_throttled scope=app_setup stage=${stage} owner=${owner.toLowerCase()} status=${status}`,
+      { cause: error },
+    );
+    this.name = "TargetAppSetupThrottleError";
+    this.status = error?.status;
+    this.rateLimited = true;
+  }
+}
+
 class TargetReadTokenCache {
   constructor(env) {
     this.env = env;
@@ -101,9 +114,22 @@ class TargetReadTokenCache {
   }
 
   async mintForOwner(targetRepo) {
+    const [owner] = targetRepo.split("/");
+    let installationId;
     try {
       const appJwt = await this.appJwt;
-      const installationId = await githubAppInstallationId(appJwt, targetRepo, this.env);
+      installationId = await githubAppInstallationId(appJwt, targetRepo, this.env);
+    } catch (error) {
+      if (error instanceof GitHubRequestError && error.status === 404) {
+        throw new TargetInstallationMissingError(targetRepo, { cause: error });
+      }
+      if (error instanceof GitHubRequestError && error.rateLimited) {
+        throw new TargetAppSetupThrottleError(error, { owner, stage: "installation_lookup" });
+      }
+      throw error;
+    }
+    try {
+      const appJwt = await this.appJwt;
       return await createGithubAppTokenFor({
         env: this.env,
         appJwt,
@@ -114,6 +140,9 @@ class TargetReadTokenCache {
     } catch (error) {
       if (error instanceof GitHubRequestError && error.status === 404) {
         throw new TargetInstallationMissingError(targetRepo, { cause: error });
+      }
+      if (error instanceof GitHubRequestError && error.rateLimited) {
+        throw new TargetAppSetupThrottleError(error, { owner, stage: "token_mint" });
       }
       throw error;
     }
@@ -1419,6 +1448,15 @@ async function inspectCanonicalTargets(groups, maxTargets, targetReadTokens) {
   const identities = new Map();
   const failedTargets = [];
   let consecutiveThrottles = 0;
+  const countedSetupThrottles = new WeakSet();
+  const throttleFuseReached = (error) => {
+    if (error instanceof TargetAppSetupThrottleError) {
+      if (countedSetupThrottles.has(error)) return false;
+      countedSetupThrottles.add(error);
+    }
+    consecutiveThrottles += 1;
+    return consecutiveThrottles >= MAX_CONSECUTIVE_GITHUB_THROTTLES;
+  };
   if (groups.length <= Math.min(maxTargets, MAX_RECONCILE_RECOVERIES)) {
     const inspectedTargets = [];
     for (const [index, group] of groups.entries()) {
@@ -1436,8 +1474,7 @@ async function inspectCanonicalTargets(groups, maxTargets, targetReadTokens) {
         }
         if (isThrottleInspectionError(error)) {
           failedTargets.push({ target: group.target, error });
-          consecutiveThrottles += 1;
-          if (consecutiveThrottles >= MAX_CONSECUTIVE_GITHUB_THROTTLES) {
+          if (throttleFuseReached(error)) {
             return {
               identities,
               failedTargets,
@@ -1485,6 +1522,17 @@ async function inspectCanonicalTargets(groups, maxTargets, targetReadTokens) {
         for (const group of selected) failedTargets.push({ target: group.target, error });
         continue;
       }
+      if (isThrottleInspectionError(error)) {
+        for (const group of selected) failedTargets.push({ target: group.target, error });
+        if (throttleFuseReached(error)) {
+          return {
+            identities,
+            failedTargets,
+            notInspectedTargets: remainingTargets,
+          };
+        }
+        continue;
+      }
       throw new CanonicalTargetInspectionError(error, {
         inspectedTargets,
         failedTargets: selected.map((group) => group.target),
@@ -1515,8 +1563,7 @@ async function inspectCanonicalTargets(groups, maxTargets, targetReadTokens) {
       );
       if (isThrottleInspectionError(error)) {
         for (const group of selected) failedTargets.push({ target: group.target, error });
-        consecutiveThrottles += 1;
-        if (consecutiveThrottles >= MAX_CONSECUTIVE_GITHUB_THROTTLES) {
+        if (throttleFuseReached(error)) {
           return {
             identities,
             failedTargets,
