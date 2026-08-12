@@ -1,0 +1,78 @@
+{
+  "schema": "clawsweeper-real-worker-proof-provenance/v1",
+  "tested_commit": "896513f31ce3279a69f34dff9425809d55f9d782",
+  "merge_base": "408c28329c188c15e2d3dbefe98a2393cbca4989",
+  "crabbox": {
+    "cli_version": "0.38.3-5-g2a79805d",
+    "provider": "local-container",
+    "lease_id": "cbx_ceccf5f1e95d",
+    "lease_slug": "crimson-crayfish-21d5",
+    "run_id": null,
+    "machine_type": "node_24-bookworm",
+    "container_image": "node:24-bookworm",
+    "checkout": "fresh single-branch clone of origin/steipete/typed-webhook-ingress with explicit origin/main remote-tracking fetch",
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0",
+    "wrangler": "4.107.0"
+  },
+  "timing_ms": {
+    "sync": 24313,
+    "command": 28493,
+    "total": 52820,
+    "phases": {
+      "user_command": 13732,
+      "build": 569,
+      "worker_proof": 14192
+    }
+  },
+  "result": {
+    "dashboard_build": "passed",
+    "worker_fixtures_compared": 4,
+    "worker_fixtures_identical": 4,
+    "worker_fixture_differences": 0,
+    "proof_marker": "TYPED_WEBHOOK_INGRESS_PROOF_RC=0",
+    "stdout": {
+      "bytes": 3396,
+      "sha256": "bafb9cb9243bbf72f05a0fcab4f3dbbdfcd276ddc83d53ef277ea9fb081ff03b"
+    },
+    "stderr": {
+      "bytes": 3510,
+      "sha256": "655d7525d9dd882506a09b26ac88a4c22d9f85449e05079d86fc020151e83bd0"
+    }
+  },
+  "discarded_setup_attempts": [
+    {
+      "lease_id": "cbx_b6a661e59ce4",
+      "lease_slug": "brisk-lobster-9d4d",
+      "exit_code": 128,
+      "reason": "Raw linked-worktree sync intentionally omitted Git metadata, so the proof could not resolve the repository root.",
+      "lease_stopped": true
+    },
+    {
+      "lease_id": "cbx_2fed7ec8325c",
+      "lease_slug": "silver-prawn-b49b",
+      "tested_commit": "623cfae508573d2927539008b65bfaebd46d405a",
+      "exit_code": 1,
+      "reason": "The initial proof wrapper asked unprivileged Corepack to create /usr/local/bin/pnpm; the wrapper now uses a user-local PNPM_HOME.",
+      "lease_stopped": true
+    },
+    {
+      "lease_id": "cbx_547b3d225d57",
+      "lease_slug": "violet-shrimp-d152",
+      "tested_commit": "896513f31ce3279a69f34dff9425809d55f9d782",
+      "exit_code": 1,
+      "reason": "The single-branch launcher's main fetch populated FETCH_HEAD but not refs/remotes/origin/main; the successful launcher fetched the explicit remote-tracking ref.",
+      "lease_stopped": true
+    }
+  ],
+  "limits": [
+    "Fixtures and webhook credentials were synthetic.",
+    "The proof exercised real local Worker routing, signature verification, classification, and local Durable Objects without live GitHub API calls or production mutation.",
+    "The evidence commit containing this receipt was not part of the tested source commit; it changes proof artifacts only."
+  ]
+}

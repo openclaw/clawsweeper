@@ -30,6 +30,17 @@ A successful run writes `behavior-report.json` with the merge-base/head comparis
 evidence commit also records the required Docker-backed Crabbox `local-container` run against the
 committed implementation head in `container-receipt.json`.
 
+## Result
+
+The committed comparison covers merge-base `408c28329c188c15e2d3dbefe98a2393cbca4989`
+and implementation head `896513f31ce3279a69f34dff9425809d55f9d782`. All four status/body
+pairs are identical; see `behavior-report.json`.
+
+Docker-backed Crabbox `provider=local-container` ran the same proof in `node:24-bookworm` on
+lease `cbx_ceccf5f1e95d` (`crimson-crayfish-21d5`). The dashboard build and all four Worker
+comparisons passed, Crabbox exited 0, and the lease stopped automatically. Full provenance and
+three disclosed setup-only attempts are in `container-receipt.json`.
+
 ## OpenClaw Bay impact
 
 None. The classifier's runtime objects, lifecycle calls, Bay journey inputs, queue decisions, and
