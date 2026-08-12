@@ -42,3 +42,10 @@ For egress field interpretation, use
 [GitHub publication egress telemetry](github-egress-telemetry.md). For other
 fields, use [Live dashboard](live-dashboard.md). For the rendered lane model,
 use [OpenClaw Bay](openclaw-bay-demo.md).
+
+`/api/exact-review-queue` keeps raw credential reset time in
+`lanes.publication.credential_circuits[].blocked_until` and reports the latest
+per-member jitter boundary as `recovery_until`. Its `handoff_health` includes
+bounded `recovery_reasons` counts for `claim_timeout`, `execution_timeout`,
+`workflow_cancelled`, and `workflow_failed`. These are objective durable queue
+facts; they do not infer why GitHub or a runner cancelled a workflow.

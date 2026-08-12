@@ -2778,6 +2778,8 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /credential-blocked/);
   assert.match(body, /State writer/);
   assert.match(body, /Queue handoff/);
+  assert.match(body, /recovery_reasons/);
+  assert.match(body, /recovering after/);
   assert.doesNotMatch(body, /Recent durable events/);
   assert.doesNotMatch(body, /function bayRecentPublicationEvents/);
   assert.match(body, /id="durable-lifecycle-kanban"/);

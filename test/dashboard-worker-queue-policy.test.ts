@@ -32,6 +32,15 @@ import {
   type ExactReviewQueueItem,
 } from "./dashboard-worker-harness.ts";
 
+function credentialRecoveryJitterMs(key: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < key.length; index += 1) {
+    hash ^= key.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return 1_000 + (Math.abs(hash >>> 0) % 29_001);
+}
+
 test("exact-review retry jitter stays within every parked recovery ladder band", () => {
   const random = seededRandom(0xc1a05);
   for (const delay of [5, 10, 20].map((minutes) => minutes * 60_000)) {
@@ -1081,7 +1090,7 @@ test("branch authority shares the target App circuit and collapses same-owner re
           installationId: 123,
           sourceAuthorityRequired: false,
           attempts: 1,
-          nextAttemptAt: resetAt,
+          nextAttemptAt: resetAt + credentialRecoveryJitterMs("a-openclaw"),
         },
         second: {
           deliveryId: "b-openclaw",
@@ -1096,7 +1105,7 @@ test("branch authority shares the target App circuit and collapses same-owner re
           installationId: 123,
           sourceAuthorityRequired: false,
           attempts: 0,
-          nextAttemptAt: resetAt,
+          nextAttemptAt: resetAt + credentialRecoveryJitterMs("b-openclaw"),
         },
         source: {
           deliveryId: "d-source-openclaw",
@@ -1114,7 +1123,7 @@ test("branch authority shares the target App circuit and collapses same-owner re
           installationId: 123,
           sourceAuthoritySeq: 1,
           attempts: 0,
-          nextAttemptAt: resetAt,
+          nextAttemptAt: resetAt + credentialRecoveryJitterMs("d-source-openclaw"),
         },
       },
     );
@@ -1149,7 +1158,14 @@ test("branch authority shares the target App circuit and collapses same-owner re
     ).json()) as {
       lanes: {
         review: { authority_pending: Record<string, number> };
-        publication: { credential_circuits: Array<{ pool: string; affected_pending: number }> };
+        publication: {
+          credential_circuits: Array<{
+            pool: string;
+            affected_pending: number;
+            active: boolean;
+            recovery_until: string;
+          }>;
+        };
       };
     };
     assert.deepEqual(stats.lanes.review.authority_pending, {
@@ -1157,14 +1173,32 @@ test("branch authority shares the target App circuit and collapses same-owner re
       branch_resolution: 2,
       source_verification: 1,
     });
-    assert.equal(
-      stats.lanes.publication.credential_circuits.find(
-        (circuit) => circuit.pool === "target_app:openclaw",
-      )?.affected_pending,
-      3,
+    const openclawCircuit = stats.lanes.publication.credential_circuits.find(
+      (circuit) => circuit.pool === "target_app:openclaw",
     );
+    const authorityRecoveryAt = Math.max(
+      ...["a-openclaw", "b-openclaw", "d-source-openclaw"].map(
+        (deliveryId) => resetAt + credentialRecoveryJitterMs(deliveryId),
+      ),
+    );
+    assert.equal(openclawCircuit?.affected_pending, 3);
+    assert.equal(openclawCircuit?.active, true);
+    assert.equal(openclawCircuit?.recovery_until, new Date(authorityRecoveryAt).toISOString());
 
     now = resetAt;
+    const resetStats = (await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json()) as {
+      lanes: { publication: { credential_circuits: Array<{ pool: string; active: boolean }> } };
+    };
+    assert.equal(
+      resetStats.lanes.publication.credential_circuits.find(
+        (circuit) => circuit.pool === "target_app:openclaw",
+      )?.active,
+      true,
+    );
+
+    now = resetAt + 30_001;
     await queue.alarm();
     const recovered = (await storage.get("exact-review-queue")) as {
       items: Record<string, { decision: { targetBranch: string } }>;

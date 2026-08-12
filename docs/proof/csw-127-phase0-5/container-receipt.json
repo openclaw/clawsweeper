@@ -1,0 +1,32 @@
+{
+  "contract": "CSW-127 Phase 0.5 quota recovery",
+  "provider": "local-container",
+  "lease_id": "cbx_6580d0b07770",
+  "slug": "quick-lobster",
+  "image": "mcr.microsoft.com/playwright:v1.60.0-noble",
+  "base_head": "c8a9737486",
+  "sync_mode": "read-only host bind mount copied into an isolated container workdir",
+  "run_status": "succeeded",
+  "exit_code": 0,
+  "timing_ms": {
+    "total": 47154,
+    "command": 47059,
+    "build": 3395,
+    "focused_tests": 6243,
+    "worker_do_proof": 27695,
+    "scoped_lint": 1368
+  },
+  "focused_tests": {
+    "passed": 323,
+    "failed": 0
+  },
+  "observed": {
+    "signed_ingest_deduped": true,
+    "conflicting_receipt_fenced": true,
+    "attributable_circuit_count": 1,
+    "raw_reset_claimed": false,
+    "jitter_recovery_claimed": true,
+    "privacy_clean": true
+  },
+  "production_mutation": false
+}

@@ -89,6 +89,7 @@ test("exact-review handoff health distinguishes delayed and stalled claims", () 
         createdAt: NOW - 10 * 60_000,
         updatedAt: NOW - 121_000,
         dispatchedAt: NOW - 121_000,
+        reviewRecoveryReason: "workflow_cancelled",
       },
     ],
   });
@@ -105,6 +106,7 @@ test("exact-review handoff health distinguishes delayed and stalled claims", () 
 
   assert.equal(delayed.status, "degraded");
   assert.equal(delayed.reason, "claim_delayed");
+  assert.equal(delayed.recovery_reasons.workflow_cancelled, 1);
   assert.equal(stalled.status, "stalled");
   assert.equal(stalled.reason, "claim_stalled");
 });

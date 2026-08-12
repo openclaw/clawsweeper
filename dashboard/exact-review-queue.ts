@@ -259,6 +259,8 @@ export type ExactReviewQueueItem = {
   firstFailureAt?: number;
   publicationFailureAttempts?: number;
   reviewFailureAttempts?: number;
+  reviewRecoveryReason?: ExactReviewReviewRecoveryReason;
+  reviewRecoveryAt?: number;
   /**
    * A terminal outcome already committed for this revision. This retains only
    * the status acknowledgement retry driver; it never re-enters publication.
@@ -266,6 +268,11 @@ export type ExactReviewQueueItem = {
   terminalFinalization?: ExactReviewTerminalFinalization;
 };
 export type ExactReviewCompletionOutcome = "success" | "failure" | "cancelled";
+export type ExactReviewReviewRecoveryReason =
+  | "claim_timeout"
+  | "execution_timeout"
+  | "workflow_cancelled"
+  | "workflow_failed";
 type ExactReviewRetryKind = "coordination" | "throttle";
 type ExactReviewPublicationFailureKind = "github_rate_limit" | "github_transient";
 type ExactReviewDispatchFailureClass =
@@ -701,8 +708,24 @@ export class ExactReviewQueue {
     await this.ensureReady();
     this.cleanupLegacyCompatibilitySync();
     if (request.method === "POST" && url.pathname === "/github-egress-telemetry") {
-      const result = this.githubEgressTelemetryStore.ingest(await request.json().catch(() => null));
-      return result.ok ? json({ ok: true, ...result }, 202) : json({ error: result.error }, 400);
+      const now = Date.now();
+      const result = this.githubEgressTelemetryStore.ingest(
+        await request.json().catch(() => null),
+        now,
+      );
+      if (!result.ok) return json({ error: result.error }, 400);
+      let telemetryApplied = false;
+      if (result.credentialCircuits.length) {
+        telemetryApplied = this.applyGithubTelemetrySync(
+          this.readStateSync(),
+          `egress-v2:${result.receiptId}`,
+          result.credentialCircuits,
+          [],
+          now,
+        );
+      }
+      if (telemetryApplied) await this.scheduleNext(this.readStateSync(), now);
+      return json({ ok: true, accepted: result.accepted, deduped: result.deduped }, 202);
     }
     if (request.method === "GET" && url.pathname === "/github-egress-observability") {
       const result = this.githubEgressTelemetryStore.publicObservability(
@@ -1458,6 +1481,7 @@ export class ExactReviewQueue {
               current.reviewFailureAttempts = 0;
               current.firstFailureAt = undefined;
               current.lastFailureReason = undefined;
+              clearExactReviewReviewRecovery(current);
             }
             advanceExactReviewSourceAuthorityWatermark(current, decision);
             if (followUpLeaseDecision && Number.isSafeInteger(followUpLeaseRevision)) {
@@ -3890,6 +3914,7 @@ export class ExactReviewQueue {
           item.firstFailureAt = undefined;
           item.lastFailureReason = undefined;
           clearExactReviewDispatchFailure(item);
+          clearExactReviewReviewRecovery(item);
         } else {
           delete checkedState.items[item.key];
           terminalCompleted += 1;
@@ -4899,6 +4924,7 @@ export class ExactReviewQueue {
         item.firstFailureAt = undefined;
         item.lastFailureReason = undefined;
         clearExactReviewDispatchFailure(item);
+        clearExactReviewReviewRecovery(item);
         Object.assign(
           item,
           exactReviewQueueDebouncedAttempt(state, item.decision, now, now, this.env),
@@ -7391,6 +7417,7 @@ export class ExactReviewQueue {
     item.firstFailureAt = undefined;
     item.lastFailureReason = undefined;
     clearExactReviewDispatchFailure(item);
+    clearExactReviewReviewRecovery(item);
     Object.assign(item, exactReviewQueueDebouncedAttempt(state, decision, now, now, this.env));
     advanceExactReviewSourceAuthorityWatermark(item, decision);
     return {
@@ -9608,7 +9635,7 @@ export class ExactReviewQueue {
           record,
           now,
           "target GitHub credential circuit is open",
-          circuitRetryAt,
+          circuitRetryAt + exactReviewCredentialRecoveryJitterMs(record.intake.commandVersionId),
           false,
         );
         continue;
@@ -9738,7 +9765,10 @@ export class ExactReviewQueue {
           record,
           observedAt,
           sanitizedServerError(error),
-          observation?.retryAt,
+          observation
+            ? observation.retryAt +
+                exactReviewCredentialRecoveryJitterMs(record.intake.commandVersionId)
+            : undefined,
         );
       }
     }
@@ -9878,7 +9908,12 @@ export class ExactReviewQueue {
       );
       if (circuitRetryAt > now) {
         this.recordAuthorityGithubOutcomeSync(reservation.attempts > 0, "skipped_by_circuit", now);
-        this.deferSourceAuthorityReservationSync(reservation, now, circuitRetryAt, false);
+        this.deferSourceAuthorityReservationSync(
+          reservation,
+          now,
+          circuitRetryAt + exactReviewCredentialRecoveryJitterMs(reservation.deliveryId),
+          false,
+        );
         continue;
       }
       try {
@@ -9922,7 +9957,13 @@ export class ExactReviewQueue {
           "exact-review source authority verification deferred",
           error instanceof Error ? error.message : String(error),
         );
-        this.deferSourceAuthorityReservationSync(reservation, observedAt, observation?.retryAt);
+        this.deferSourceAuthorityReservationSync(
+          reservation,
+          observedAt,
+          observation
+            ? observation.retryAt + exactReviewCredentialRecoveryJitterMs(reservation.deliveryId)
+            : undefined,
+        );
       }
     }
   }
@@ -9944,7 +9985,12 @@ export class ExactReviewQueue {
       );
       if (circuitRetryAt > now) {
         this.recordAuthorityGithubOutcomeSync(reservation.attempts > 0, "skipped_by_circuit", now);
-        this.deferBranchAuthorityReservationSync(reservation, now, circuitRetryAt, false);
+        this.deferBranchAuthorityReservationSync(
+          reservation,
+          now,
+          circuitRetryAt + exactReviewCredentialRecoveryJitterMs(reservation.deliveryId),
+          false,
+        );
         continue;
       }
       try {
@@ -9988,7 +10034,13 @@ export class ExactReviewQueue {
           "exact-review branch authority resolution deferred",
           error instanceof Error ? error.message : String(error),
         );
-        this.deferBranchAuthorityReservationSync(reservation, observedAt, observation?.retryAt);
+        this.deferBranchAuthorityReservationSync(
+          reservation,
+          observedAt,
+          observation
+            ? observation.retryAt + exactReviewCredentialRecoveryJitterMs(reservation.deliveryId)
+            : undefined,
+        );
       }
     }
   }
@@ -11045,7 +11097,7 @@ function exactReviewCredentialRecoveryJitterMs(itemKey: string): number {
     hash ^= itemKey.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
-  return Math.abs(hash >>> 0) % 30_001;
+  return 1_000 + (Math.abs(hash >>> 0) % 29_001);
 }
 
 function exactReviewDeadLetterId(item: ExactReviewQueueItem, ownedRevision?: number) {
@@ -11093,6 +11145,16 @@ function finishExactReviewQueueItem(
 ) {
   const retryingFailure = outcome !== "success";
   const hasNewerRevision = item.revision > Number(item.leaseRevision || 0);
+  if (
+    !exactReviewQueueIsPublication(item) &&
+    retryingFailure &&
+    retryKind === undefined &&
+    !hasNewerRevision &&
+    !requeueLatest
+  ) {
+    item.reviewRecoveryReason = outcome === "cancelled" ? "workflow_cancelled" : "workflow_failed";
+    item.reviewRecoveryAt = now;
+  }
   const typedDeferral = retryKind !== undefined && !hasNewerRevision && !requeueLatest;
   // A regular queue item may back off and retry after a failed lease. Failed
   // sweep shards already consumed their one recovery attempt before reaching
@@ -11146,6 +11208,7 @@ function finishExactReviewQueueItem(
     item.reviewFailureAttempts = 0;
     item.parkedReason = undefined;
     item.parkedRecoveryAttempts = 0;
+    clearExactReviewReviewRecovery(item);
   }
   item.updatedAt = now;
   return { requeued: true, parked: false };
@@ -11185,6 +11248,11 @@ function clearExactReviewDispatchFailure(item: ExactReviewQueueItem) {
   item.dispatchFailureAt = undefined;
   item.dispatchFailureFingerprint = undefined;
   item.dispatchFailureDetail = undefined;
+}
+
+function clearExactReviewReviewRecovery(item: ExactReviewQueueItem) {
+  item.reviewRecoveryReason = undefined;
+  item.reviewRecoveryAt = undefined;
 }
 
 function isLiveExactReviewLease(
@@ -11245,6 +11313,7 @@ function reclaimExpiredExactReviewLease(
     delete state.items[key];
     return true;
   }
+  const expiredState = item.state;
   clearExactReviewLease(item);
   item.state = "pending";
   item.nextAttemptAt = now;
@@ -11255,6 +11324,11 @@ function reclaimExpiredExactReviewLease(
     item.reviewFailureAttempts = 0;
     item.firstFailureAt = undefined;
     item.lastFailureReason = undefined;
+    clearExactReviewReviewRecovery(item);
+  } else if (!exactReviewQueueIsPublication(item)) {
+    item.reviewRecoveryReason =
+      expiredState === "dispatching" ? "claim_timeout" : "execution_timeout";
+    item.reviewRecoveryAt = now;
   }
   item.updatedAt = now;
   return true;
@@ -11291,6 +11365,7 @@ function recoverParkedExactReviewItems(state: ExactReviewQueueState, now: number
     item.reviewFailureAttempts = 0;
     item.updatedAt = now;
     clearExactReviewDispatchFailure(item);
+    clearExactReviewReviewRecovery(item);
     recovered += 1;
   }
   return recovered;
@@ -11377,6 +11452,7 @@ function refreshExactReviewPublicationItem(
     current.reviewFailureAttempts = 0;
     current.firstFailureAt = undefined;
     current.lastFailureReason = undefined;
+    clearExactReviewReviewRecovery(current);
     return;
   }
   // Refresh is the terminal recovery for an unusable artifact. It must not be
@@ -13192,24 +13268,40 @@ function exactReviewGithubCircuitBlocksItem(
   item: ExactReviewQueueItem,
   now: number,
 ) {
-  const owner = item.decision.targetRepo.split("/", 1)[0]?.toLowerCase();
   return exactReviewGithubCredentialCircuits(state).some(
     (circuit) =>
-      circuit.retryAt > now &&
-      (circuit.scope === "repository_actions" || circuit.targetOwner === owner),
+      exactReviewGithubCircuitMatchesItem(circuit, item) &&
+      exactReviewGithubCircuitRecoveryAt(circuit, item) > now,
   );
 }
 
 function exactReviewGithubCircuitNextWakeAt(state: ExactReviewQueueState, now: number) {
-  return exactReviewGithubCredentialCircuits(state).reduce<number | null>(
-    (next, circuit) =>
-      circuit.retryAt <= now
-        ? next
-        : next === null
-          ? circuit.retryAt
-          : Math.min(next, circuit.retryAt),
-    null,
-  );
+  let next: number | null = null;
+  for (const item of Object.values(state.items)) {
+    if (!exactReviewQueueIsBatchablePublication(item) || item.state !== "pending") continue;
+    for (const circuit of exactReviewGithubCredentialCircuits(state)) {
+      if (!exactReviewGithubCircuitMatchesItem(circuit, item)) continue;
+      const recoveryAt = exactReviewGithubCircuitRecoveryAt(circuit, item);
+      if (recoveryAt <= now) continue;
+      next = next === null ? recoveryAt : Math.min(next, recoveryAt);
+    }
+  }
+  return next;
+}
+
+function exactReviewGithubCircuitMatchesItem(
+  circuit: ExactReviewGithubCredentialCircuit,
+  item: ExactReviewQueueItem,
+) {
+  const owner = item.decision.targetRepo.split("/", 1)[0]?.toLowerCase();
+  return circuit.scope === "repository_actions" || circuit.targetOwner === owner;
+}
+
+function exactReviewGithubCircuitRecoveryAt(
+  circuit: ExactReviewGithubCredentialCircuit,
+  item: ExactReviewQueueItem,
+) {
+  return circuit.retryAt + exactReviewCredentialRecoveryJitterMs(item.key);
 }
 
 function exactReviewAuthorityPendingByOwner(
@@ -13217,10 +13309,13 @@ function exactReviewAuthorityPendingByOwner(
     ExactReviewSourceAuthorityReservation | ExactReviewBranchAuthorityReservation
   >,
 ) {
-  const pending = new Map<string, number>();
+  const pending = new Map<string, string[]>();
   for (const reservation of reservations) {
     const owner = reservation.decision.targetRepo.split("/", 1)[0]?.toLowerCase();
-    if (owner) pending.set(owner, (pending.get(owner) || 0) + 1);
+    if (!owner) continue;
+    const deliveryIds = pending.get(owner) || [];
+    deliveryIds.push(reservation.deliveryId);
+    pending.set(owner, deliveryIds);
   }
   return pending;
 }
@@ -13228,27 +13323,42 @@ function exactReviewAuthorityPendingByOwner(
 function exactReviewGithubCredentialCircuitStatus(
   state: ExactReviewQueueState,
   now: number,
-  authorityPendingByOwner = new Map<string, number>(),
+  authorityPendingByOwner = new Map<string, string[]>(),
 ) {
   return exactReviewGithubCredentialCircuits(state)
     .map((circuit) => {
-      let affectedPending = Object.values(state.items).filter((item) => {
+      const matchingItems = Object.values(state.items).filter((item) => {
         if (!exactReviewQueueIsBatchablePublication(item) || item.state !== "pending") return false;
-        if (circuit.scope === "repository_actions") return true;
-        return item.decision.targetRepo.split("/", 1)[0]?.toLowerCase() === circuit.targetOwner;
-      }).length;
-      if (circuit.scope === "target_app" && circuit.targetOwner) {
-        affectedPending += authorityPendingByOwner.get(circuit.targetOwner) || 0;
-      }
+        return exactReviewGithubCircuitMatchesItem(circuit, item);
+      });
+      const affectedItems = matchingItems.filter(
+        (item) => exactReviewGithubCircuitRecoveryAt(circuit, item) > now,
+      );
+      const authorityDeliveryIds =
+        circuit.scope === "target_app" && circuit.targetOwner
+          ? authorityPendingByOwner.get(circuit.targetOwner) || []
+          : [];
+      let affectedPending = affectedItems.length;
+      affectedPending += authorityDeliveryIds.length;
+      let recoveryAt = matchingItems.reduce(
+        (latest, item) => Math.max(latest, exactReviewGithubCircuitRecoveryAt(circuit, item)),
+        circuit.retryAt,
+      );
+      recoveryAt = authorityDeliveryIds.reduce(
+        (latest, deliveryId) =>
+          Math.max(latest, circuit.retryAt + exactReviewCredentialRecoveryJitterMs(deliveryId)),
+        recoveryAt,
+      );
       return {
         pool: circuit.poolKey,
         scope: circuit.scope,
         target_owner: circuit.targetOwner || null,
         observed_at: new Date(circuit.observedAt).toISOString(),
         blocked_until: new Date(circuit.retryAt).toISOString(),
+        recovery_until: new Date(recoveryAt).toISOString(),
         reset_source: circuit.provenance,
         authoritative: circuit.authoritative,
-        active: circuit.retryAt > now,
+        active: recoveryAt > now,
         affected_pending: affectedPending,
       };
     })

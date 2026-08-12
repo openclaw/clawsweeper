@@ -27,6 +27,15 @@ const MAX_PUBLIC_ROWS = 2_000;
 const MAX_METRICS_PER_SUBMISSION = 128;
 const MAX_RATE_LIMITS_PER_SUBMISSION = 16;
 const MAX_RATE_LIMIT_INTEGER = 10_000_000_000;
+const MAX_CREDENTIAL_CIRCUIT_MS = 2 * 60 * 60 * 1000;
+
+export type GithubEgressCredentialCircuitObservation = {
+  scope: "repository_actions";
+  observedAt: number;
+  retryAt: number;
+  provenance: "retry_after" | "rate_limit_reset";
+  authoritative: true;
+};
 
 function alignedBucketStart(bucketKind: "five_minute" | "hour", timestamp: number) {
   const bucketMs = bucketKind === "five_minute" ? 300_000 : 3_600_000;
@@ -115,9 +124,23 @@ export class GithubEgressTelemetryStore {
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${RECEIPT_TABLE} (
          receipt_id TEXT PRIMARY KEY,
-         observed_at INTEGER NOT NULL
+         observed_at INTEGER NOT NULL,
+         credential_circuits_json TEXT NOT NULL DEFAULT '[]'
        ) STRICT`,
     );
+    const receiptColumns = new Set(
+      (
+        Array.from(
+          this.storage.sql.exec(`SELECT name FROM pragma_table_info('${RECEIPT_TABLE}')`),
+        ) as Array<Record<string, unknown>>
+      ).map((row) => String(row.name || "")),
+    );
+    if (!receiptColumns.has("credential_circuits_json")) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${RECEIPT_TABLE}
+           ADD COLUMN credential_circuits_json TEXT NOT NULL DEFAULT '[]'`,
+      );
+    }
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${DIAGNOSTICS_TABLE} (
          singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
@@ -149,13 +172,15 @@ export class GithubEgressTelemetryStore {
       );
       return { ok: false as const, error: "invalid_github_egress_telemetry" };
     }
+    const credentialCircuits = githubEgressCredentialCircuitObservations(submission, now);
     return this.storage.transactionSync(() => {
       const existing = Array.from(
         this.storage.sql.exec(
-          `SELECT 1 FROM ${RECEIPT_TABLE} WHERE receipt_id = ? LIMIT 1`,
+          `SELECT credential_circuits_json
+             FROM ${RECEIPT_TABLE} WHERE receipt_id = ? LIMIT 1`,
           submission.receiptId,
         ),
-      );
+      ) as Array<Record<string, unknown>>;
       if (existing.length) {
         this.storage.sql.exec(
           `UPDATE ${DIAGNOSTICS_TABLE}
@@ -164,7 +189,15 @@ export class GithubEgressTelemetryStore {
             WHERE singleton_id = 1`,
           now,
         );
-        return { ok: true as const, accepted: false, deduped: true };
+        return {
+          ok: true as const,
+          accepted: false,
+          deduped: true,
+          receiptId: submission.receiptId,
+          credentialCircuits: storedGithubEgressCredentialCircuitObservations(
+            existing[0]?.credential_circuits_json,
+          ),
+        };
       }
       this.pruneSync(now);
       let incomplete = 0;
@@ -215,9 +248,12 @@ export class GithubEgressTelemetryStore {
         if (!observation.telemetryComplete) incomplete += 1;
       }
       this.storage.sql.exec(
-        `INSERT INTO ${RECEIPT_TABLE} (receipt_id, observed_at) VALUES (?, ?)`,
+        `INSERT INTO ${RECEIPT_TABLE} (
+           receipt_id, observed_at, credential_circuits_json
+         ) VALUES (?, ?, ?)`,
         submission.receiptId,
         now,
+        JSON.stringify(credentialCircuits),
       );
       this.enforceCapsSync(now);
       this.storage.sql.exec(
@@ -233,7 +269,13 @@ export class GithubEgressTelemetryStore {
         incomplete,
         now,
       );
-      return { ok: true as const, accepted: true, deduped: false };
+      return {
+        ok: true as const,
+        accepted: true,
+        deduped: false,
+        receiptId: submission.receiptId,
+        credentialCircuits,
+      };
     });
   }
 
@@ -521,6 +563,94 @@ function githubEgressSubmission(value: unknown, now: number) {
   );
   if (metrics.some((metric) => !metric) || rateLimitObservations.some((item) => !item)) return null;
   return { receiptId, metrics, rateLimitObservations };
+}
+
+function githubEgressCredentialCircuitObservations(
+  submission: NonNullable<ReturnType<typeof githubEgressSubmission>>,
+  now: number,
+): GithubEgressCredentialCircuitObservation[] {
+  const observations: GithubEgressCredentialCircuitObservation[] = [];
+  for (const observation of submission.rateLimitObservations) {
+    // public_read_fallback is the workflow GITHUB_TOKEN and therefore shares
+    // the repository Actions quota. target_app telemetry intentionally omits
+    // its owner, so it cannot safely update an owner-scoped circuit here.
+    if (
+      !observation.telemetryComplete ||
+      (observation.poolClass !== "repository_actions" &&
+        observation.poolClass !== "public_read_fallback")
+    ) {
+      continue;
+    }
+    let retryAt = 0;
+    let provenance: GithubEgressCredentialCircuitObservation["provenance"] | null = null;
+    if (
+      observation.resetAuthorityCandidate === "retry_after" &&
+      observation.headers.retryAfterPresent &&
+      observation.headers.retryAfterSeconds !== null
+    ) {
+      retryAt = observation.observedAt + Number(observation.headers.retryAfterSeconds) * 1_000;
+      provenance = "retry_after";
+    } else if (
+      observation.resetAuthorityCandidate === "rate_limit_reset" &&
+      observation.headers.resetPresent &&
+      observation.headers.resetEpochSeconds !== null &&
+      observation.headers.remainingPresent &&
+      observation.headers.remaining === 0
+    ) {
+      retryAt = Number(observation.headers.resetEpochSeconds) * 1_000;
+      provenance = "rate_limit_reset";
+    }
+    if (
+      !provenance ||
+      retryAt <= now ||
+      retryAt < observation.observedAt ||
+      retryAt > now + MAX_CREDENTIAL_CIRCUIT_MS
+    ) {
+      continue;
+    }
+    observations.push({
+      scope: "repository_actions",
+      observedAt: observation.observedAt,
+      retryAt,
+      provenance,
+      authoritative: true,
+    });
+  }
+  return observations;
+}
+
+function storedGithubEgressCredentialCircuitObservations(
+  value: unknown,
+): GithubEgressCredentialCircuitObservation[] {
+  try {
+    const parsed = JSON.parse(String(value || "[]"));
+    if (!Array.isArray(parsed) || parsed.length > MAX_RATE_LIMITS_PER_SUBMISSION) return [];
+    const observations: GithubEgressCredentialCircuitObservation[] = [];
+    for (const raw of parsed) {
+      const observation = objectValue(raw);
+      if (
+        observation.scope !== "repository_actions" ||
+        !Number.isSafeInteger(observation.observedAt) ||
+        !Number.isSafeInteger(observation.retryAt) ||
+        Number(observation.retryAt) < Number(observation.observedAt) ||
+        !member(["retry_after", "rate_limit_reset"], observation.provenance) ||
+        observation.authoritative !== true
+      ) {
+        return [];
+      }
+      observations.push({
+        scope: "repository_actions",
+        observedAt: Number(observation.observedAt),
+        retryAt: Number(observation.retryAt),
+        provenance:
+          observation.provenance as GithubEgressCredentialCircuitObservation["provenance"],
+        authoritative: true,
+      });
+    }
+    return observations;
+  } catch {
+    return [];
+  }
 }
 
 function githubEgressMetric(value: unknown, now: number) {

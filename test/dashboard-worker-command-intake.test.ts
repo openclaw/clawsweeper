@@ -168,6 +168,21 @@ test("durable command intake survives target throttling before queue admission",
   assert.equal(fixture.acknowledgements.length, 0);
   assert.equal(commandReceiptOutcome(storage), "pending");
 
+  const deferred = Array.from(
+    storage.sql.exec(
+      "SELECT next_attempt_at FROM exact_review_command_intakes WHERE command_version_id = ?",
+      commandVersionId(),
+    ),
+  )[0];
+  const throttledState = (await storage.get("exact-review-queue")) as {
+    dispatcher?: { githubCredentialCircuits?: Record<string, { retryAt: number }> };
+  };
+  const targetCircuit =
+    throttledState.dispatcher?.githubCredentialCircuits?.["target_app:openclaw"];
+  assert.ok(targetCircuit);
+  assert.ok(Number(deferred?.next_attempt_at) > targetCircuit.retryAt);
+  assert.ok(Number(deferred?.next_attempt_at) <= targetCircuit.retryAt + 30_000);
+
   fixture.throttleSourceComment = false;
   storage.sql.exec("UPDATE exact_review_command_intakes SET next_attempt_at = 0");
   const state = (await storage.get("exact-review-queue")) as {

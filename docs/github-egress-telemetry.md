@@ -131,9 +131,30 @@ status, closed request dimensions, and presence plus bounded numeric values for:
 - the allowlisted `X-RateLimit-Resource` value.
 
 `reset_authority_candidate` reports `retry_after`, `rate_limit_reset`, `absent`,
-or `invalid`. It does not choose a shared `blocked_until`, authorize a probe, or
-alter retry behavior. A present but non-numeric authority remains present and is
+or `invalid`. A present but non-numeric authority remains present and is
 classified `invalid`.
+
+The signed ingest path also reuses a narrowly attributable subset of complete
+observations as durable queue circuit evidence. `repository_actions` and
+`public_read_fallback` both identify the workflow `GITHUB_TOKEN` quota and may
+advance the shared repository-Actions `blocked_until` when `Retry-After` is
+numeric, or when `X-RateLimit-Reset` is numeric and
+`X-RateLimit-Remaining: 0`. The reset must be in the future and within two
+hours. Recovery is released per durable publication member at that reset plus
+one to 30 seconds of deterministic jitter. An observation never authorizes an
+early probe.
+
+`target_app` telemetry remains observational because the privacy-safe payload
+does not carry the target owner needed to select an App credential pool.
+Owner-aware Worker and batch paths continue to populate those circuits
+directly. Incomplete observations, permission-style 403 responses with quota
+remaining, invalid headers, stale resets, and unattributable pools never alter
+admission.
+
+Receipt deduplication also binds downstream circuit evidence to the first
+accepted payload. A retry may replay that payload's stored circuit candidates
+after an interrupted handoff, but reusing the receipt ID with different rate
+limit evidence cannot introduce or extend a circuit.
 
 ## Completeness and safe failure
 

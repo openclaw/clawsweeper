@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import YAML from "yaml";
 
+import { ExactReviewQueue } from "../dashboard/exact-review-queue.ts";
 import { GithubEgressTelemetryStore } from "../dashboard/github-egress-telemetry.ts";
 import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
 import {
@@ -607,6 +608,126 @@ test("signed upload, SQLite restart, retention, cardinality, and public privacy 
   }
 });
 
+test("signed egress evidence applies only authoritative resets attributable to Actions", async () => {
+  const now = Math.floor(Date.now() / 1_000) * 1_000;
+  const resetAt = now + 90_000;
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const body = telemetryBody("1".repeat(64), now) as Record<string, unknown>;
+  body.rate_limit_observations = [
+    rateLimitObservation("public_read_fallback", now, resetAt, 0),
+    rateLimitObservation("repository_actions", now + 1, resetAt + 10_000, 0),
+    rateLimitObservation("target_app", now + 2, resetAt + 20_000, 0),
+    rateLimitObservation("repository_actions", now + 3, resetAt + 30_000, 10),
+  ];
+
+  const submit = () =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/github-egress-telemetry", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    );
+  assert.deepEqual(await (await submit()).json(), { ok: true, accepted: true, deduped: false });
+  assert.deepEqual(await (await submit()).json(), { ok: true, accepted: false, deduped: true });
+
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.deepEqual(
+    stats.lanes.publication.credential_circuits.map((circuit) => ({
+      pool: circuit.pool,
+      scope: circuit.scope,
+      target_owner: circuit.target_owner,
+      blocked_until: circuit.blocked_until,
+      reset_source: circuit.reset_source,
+      authoritative: circuit.authoritative,
+    })),
+    [
+      {
+        pool: "actions:openclaw/clawsweeper",
+        scope: "repository_actions",
+        target_owner: null,
+        blocked_until: new Date(resetAt + 10_000).toISOString(),
+        reset_source: "rate_limit_reset",
+        authoritative: true,
+      },
+    ],
+  );
+});
+
+test("a deduped egress receipt cannot introduce circuit evidence from a conflicting body", async () => {
+  const now = Math.floor(Date.now() / 1_000) * 1_000;
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const receiptId = "2".repeat(64);
+  const metricsOnly = telemetryBody(receiptId, now) as Record<string, unknown>;
+  const submit = (body: Record<string, unknown>) =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/github-egress-telemetry", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    );
+
+  assert.deepEqual(await (await submit(metricsOnly)).json(), {
+    ok: true,
+    accepted: true,
+    deduped: false,
+  });
+  const conflicting = structuredClone(metricsOnly);
+  conflicting.rate_limit_observations = [
+    rateLimitObservation("repository_actions", now, now + 90_000, 0),
+  ];
+  assert.deepEqual(await (await submit(conflicting)).json(), {
+    ok: true,
+    accepted: false,
+    deduped: true,
+  });
+
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.deepEqual(stats.lanes.publication.credential_circuits, []);
+});
+
+test("legacy egress receipts migrate without accepting new circuit evidence", () => {
+  const now = Math.floor(Date.now() / 1_000) * 1_000;
+  const receiptId = "3".repeat(64);
+  const storage = new MemoryDurableStorage();
+  storage.sql.exec(
+    `CREATE TABLE exact_review_github_egress_receipts_v2 (
+       receipt_id TEXT PRIMARY KEY,
+       observed_at INTEGER NOT NULL
+     ) STRICT`,
+  );
+  storage.sql.exec(
+    `INSERT INTO exact_review_github_egress_receipts_v2 (receipt_id, observed_at)
+     VALUES (?, ?)`,
+    receiptId,
+    now,
+  );
+  const store = new GithubEgressTelemetryStore(storage);
+  store.ensureSchemaSync();
+  const conflicting = telemetryBody(receiptId, now) as Record<string, unknown>;
+  conflicting.rate_limit_observations = [
+    rateLimitObservation("repository_actions", now, now + 90_000, 0),
+  ];
+
+  const result = store.ingest(conflicting, now);
+  assert.equal(result.ok, true);
+  assert.equal(result.accepted, false);
+  assert.equal(result.deduped, true);
+  assert.deepEqual(result.credentialCircuits, []);
+  assert.ok(
+    Array.from(
+      storage.sql.exec(
+        `SELECT name FROM pragma_table_info('exact_review_github_egress_receipts_v2')`,
+      ),
+    ).some((row) => row.name === "credential_circuits_json"),
+  );
+});
+
 function observerEnv(metricsPath: string, rateLimitPath: string): NodeJS.ProcessEnv {
   return {
     CLAWSWEEPER_GITHUB_EGRESS_METRICS_PATH: metricsPath,
@@ -690,6 +811,44 @@ function telemetryBody(receiptId: string, now: number) {
       },
     ],
     rate_limit_observations: [],
+  };
+}
+
+function rateLimitObservation(
+  poolClass: "repository_actions" | "target_app" | "public_read_fallback",
+  observedAt: number,
+  resetAt: number,
+  remaining: number,
+) {
+  return {
+    observed_at: new Date(observedAt).toISOString(),
+    deployment_revision: "a".repeat(16),
+    config_revision: "b".repeat(16),
+    pool_class: poolClass,
+    pool_identity: "c".repeat(24),
+    stage: "publication_apply",
+    source_action: "scheduled_hot",
+    operation: "item_metadata",
+    method: "GET",
+    route_template: "issue_metadata",
+    page_bucket: "1",
+    status: 403,
+    headers: {
+      retryAfterPresent: false,
+      retryAfterSeconds: null,
+      limitPresent: true,
+      limit: 5_000,
+      remainingPresent: true,
+      remaining,
+      usedPresent: true,
+      used: 5_000 - remaining,
+      resetPresent: true,
+      resetEpochSeconds: Math.floor(resetAt / 1_000),
+      resourcePresent: true,
+      resource: "core",
+    },
+    reset_authority_candidate: "rate_limit_reset",
+    telemetry_complete: true,
   };
 }
 

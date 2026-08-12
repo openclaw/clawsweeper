@@ -5945,7 +5945,12 @@ test("exact-review queue retries dispatch failures and reclaims an unclaimed lea
       { pending: state.pending, dispatching: state.dispatching, leased: state.leased },
       { pending: 0, dispatching: 1, leased: 0 },
     );
+    assert.equal(state.handoff_health.recovery_reasons.claim_timeout, 1);
     assert.equal(dispatchAttempts, 3);
+    const reclaimed = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { reviewRecoveryReason?: string }>;
+    };
+    assert.equal(reclaimed.items["openclaw/gogcli#599"].reviewRecoveryReason, "claim_timeout");
     const staleClaim = await queue.fetch(
       new Request("https://clawsweeper-exact-review-queue/claim", {
         method: "POST",
@@ -6450,6 +6455,11 @@ test("exact-review queue requeues a cancelled claimed lease", async () => {
   assert.equal(state.items["openclaw/openclaw#710"].claimedRunId, undefined);
   assert.equal(state.items["openclaw/openclaw#710"].claimedRunAttempt, undefined);
   assert.equal(state.items["openclaw/openclaw#710"].claimGeneration, undefined);
+  assert.equal(state.items["openclaw/openclaw#710"].reviewRecoveryReason, "workflow_cancelled");
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.handoff_health.recovery_reasons.workflow_cancelled, 1);
 });
 
 test("exact-review publication capacity backs off on GitHub pressure and recovers gradually", async () => {
@@ -8305,10 +8315,14 @@ for (const retryKind of ["coordination", "throttle"] as const) {
       assert.equal(deferred.attempts, 3);
       assert.equal(deferred.reviewFailureAttempts, 2);
       assert.equal(deferred.backoffReason, `${retryKind}_retry`);
+      assert.equal(deferred.reviewRecoveryReason, undefined);
+      assert.equal(deferred.reviewRecoveryAt, undefined);
+      const recoveryStats = await (
+        await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+      ).json();
+      assert.equal(recoveryStats.handoff_health.recovery_reasons.workflow_failed, 0);
       if (retryKind === "throttle") {
-        const stats = await (
-          await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
-        ).json();
+        const stats = recoveryStats;
         assert.equal(stats.scheduled_feed.throttle_source, "review_completion");
         assert.equal(stats.scheduled_feed.throttle_observed_at, new Date(now).toISOString());
         assert.equal(
@@ -9219,6 +9233,7 @@ test("exact-review reconciliation cannot release a later attempt with the same r
     assert.equal(state.items["openclaw/openclaw#718"].state, "pending");
     assert.equal(state.items["openclaw/openclaw#718"].attempts, 1);
     assert.equal(state.items["openclaw/openclaw#718"].claimedRunId, undefined);
+    assert.equal(state.items["openclaw/openclaw#718"].reviewRecoveryReason, "workflow_failed");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -9266,6 +9281,7 @@ test("exact-review stats heals a missing or stale alarm and expired lease", asyn
   assert.ok(stats.oldest_pending_age_seconds >= 120);
   assert.equal(stats.oldest_pending_key, "openclaw/openclaw#700");
   assert.equal(stats.lanes.review.oldest_pending_key, "openclaw/openclaw#700");
+  assert.equal(stats.handoff_health.recovery_reasons.execution_timeout, 1);
   assert.ok(stats.next_wake_at);
   assert.ok((await storage.getAlarm()) !== null);
 

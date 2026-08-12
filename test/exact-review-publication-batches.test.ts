@@ -3494,7 +3494,9 @@ test("credential circuits persist, preserve healthy owners, and defer unattempte
     let stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
     assert.equal(stats.lanes.publication.retried_total, 0);
     assert.equal(stats.lanes.publication.credential_circuits.length, 1);
-    assert.deepEqual(stats.lanes.publication.credential_circuits[0], {
+    const { recovery_until: recoveryUntil, ...credentialCircuit } =
+      stats.lanes.publication.credential_circuits[0];
+    assert.deepEqual(credentialCircuit, {
       pool: "target_app:aaa",
       scope: "target_app",
       target_owner: "aaa",
@@ -3505,6 +3507,8 @@ test("credential circuits persist, preserve healthy owners, and defer unattempte
       active: true,
       affected_pending: 52,
     });
+    assert.ok(Date.parse(recoveryUntil) > longerReset);
+    assert.ok(Date.parse(recoveryUntil) <= longerReset + 30_000);
     assert.equal(
       stats.lanes.publication.github_request_metrics.counters[
         "target_app:item_metadata:read:throttle:first"
@@ -3796,6 +3800,19 @@ test("repository Actions circuit blocks every publication batch until reset", as
       "actions:openclaw/clawsweeper",
     );
     assert.equal(stats.lanes.publication.credential_circuits[0].affected_pending, 2);
+    assert.ok(Date.parse(stats.lanes.publication.credential_circuits[0].recovery_until) > resetAt);
+
+    now = resetAt;
+    const resetBoundary = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-actions-reset-boundary",
+          lease_owner: "worker-boundary",
+          max_items: 2,
+        }),
+      )
+    ).json();
+    assert.equal(resetBoundary.claimed, false, JSON.stringify(resetBoundary));
 
     now = resetAt + 31_000;
     const recovered = await (

@@ -11,6 +11,7 @@ import type {
   ExactReviewGithubCredentialCircuit,
   ExactReviewQueueItem,
   ExactReviewQueueState,
+  ExactReviewReviewRecoveryReason,
 } from "./exact-review-queue.ts";
 
 const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 128;
@@ -248,6 +249,7 @@ type ExactReviewQueueCensus = {
   >;
   handoffItemCount: number;
   handoffPhases: Record<"pending" | "dispatching" | "leased", ExactReviewHandoffPhaseCensus>;
+  reviewRecoveryReasons: Record<ExactReviewReviewRecoveryReason, number>;
   bayCandidates: Map<string, ExactReviewBayCensusCandidate[]>;
 };
 
@@ -440,6 +442,12 @@ function buildExactReviewQueueCensus(
       dispatching: { count: 0, oldestAt: null, oldestKey: null },
       leased: { count: 0, oldestAt: null, oldestKey: null },
     },
+    reviewRecoveryReasons: {
+      claim_timeout: 0,
+      execution_timeout: 0,
+      workflow_cancelled: 0,
+      workflow_failed: 0,
+    },
     bayCandidates: new Map(),
   };
 
@@ -528,6 +536,10 @@ function buildExactReviewQueueCensus(
 
     if (!isPublication && item.state !== "parked") {
       census.handoffItemCount += 1;
+      const recoveryReason = String(item.reviewRecoveryReason || "");
+      if (recoveryReason in census.reviewRecoveryReasons) {
+        census.reviewRecoveryReasons[recoveryReason as ExactReviewReviewRecoveryReason] += 1;
+      }
       const phase = census.handoffPhases[item.state];
       const startedAt = exactReviewHandoffPhaseStartedAt(
         item,
@@ -883,6 +895,7 @@ function exactReviewHandoffFromCensus(
     available_slots: Math.max(0, safeCapacity - active),
     pending_depth: phases.pending.count,
     shed_since_reset: safeShedSinceReset,
+    recovery_reasons: census.reviewRecoveryReasons,
     phases,
   };
   if (census.handoffItemCount === 0) {
