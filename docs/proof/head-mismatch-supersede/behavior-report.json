@@ -1,0 +1,94 @@
+{
+  "overall_behavior": "satisfies_contract",
+  "overall_confidence": 0.98,
+  "target": {
+    "type": "operator CLI and HMAC-authenticated queue API",
+    "access": "Docker-backed Crabbox local-container loopback fixtures"
+  },
+  "checks": [
+    {
+      "contract_clause": "Proven newer-head supersession",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The operator and queue-runtime suites observed one guarded superseded resolution with the full newer head and canonical items endpoint in its note, zero review recovery, publication completed/superseded increments, and no published increment.",
+      "reproduction_steps": [
+        "Serve one stale retry_exhausted publication row",
+        "Serve a different live pull-request head",
+        "Serve a digest-valid complete canonical record for the same target and live head",
+        "Run reconcile with execute enabled and inspect stub mutations plus queue stats"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Unproven mismatch remains open",
+      "status": "pass",
+      "severity": null,
+      "evidence": "Missing and wrong-head canonical records produced head_mismatch_unproven with bounded diagnostics and zero resolution or recovery mutations.",
+      "reproduction_steps": [
+        "Return record_not_found for the signed canonical GET",
+        "Repeat with a valid canonical envelope bound to a head other than the live head",
+        "Verify both rows remain open and no mutation endpoint is called"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Target and row caps",
+      "status": "pass",
+      "severity": null,
+      "evidence": "Eleven proven targets yielded ten evidence reads/resolutions and one head_mismatch_resolution_cap; 21 rows for one target resolved 20 and reported head_mismatch_resolution_partial.",
+      "reproduction_steps": [
+        "Run eleven independent proven mismatch targets",
+        "Run 21 proven stale rows for one target",
+        "Inspect evidence-read counts, resolution batches, and summary classifications"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Dry-run and excluded reasons",
+      "status": "pass",
+      "severity": null,
+      "evidence": "Dry-run reported one planned superseded row while the stub observed zero mutations. workflow_cancelled and tuple_protocol_invalid rows remained open and triggered no canonical evidence read.",
+      "reproduction_steps": [
+        "Repeat the positive fixture without --execute",
+        "Run an excluded-only target",
+        "Verify no mutation and no excluded-target evidence request"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Guarded metric classification",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The queue rejected an unsupported resolution outcome and rejected superseded without resolution aliases; a guarded superseded resolution retained its note and changed only the completed/superseded totals.",
+      "reproduction_steps": [
+        "POST unsupported and unguarded typed resolutions",
+        "POST the guarded superseded resolution",
+        "Read the resolved row and queue stats"
+      ],
+      "confidence": 0.98
+    }
+  ],
+  "anti_cheat_probes": [
+    {
+      "probe": "Changed canonical head away from the live GitHub head",
+      "result": "Resolution stopped and the target was classified head_mismatch_unproven"
+    },
+    {
+      "probe": "Removed the canonical record",
+      "result": "Resolution stopped with zero mutation"
+    },
+    {
+      "probe": "Crossed both bounded prefixes",
+      "result": "Only ten targets and 20 rows were acted on"
+    },
+    {
+      "probe": "Removed --execute",
+      "result": "The plan remained visible but the queue stub observed zero mutations"
+    },
+    {
+      "probe": "Removed resolution aliases from the typed Worker request",
+      "result": "The Worker returned invalid_resolution_guard"
+    }
+  ],
+  "blockers": []
+}

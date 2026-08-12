@@ -26,4 +26,4 @@ pass 223
 fail 0
 ```
 
-The final Crabbox receipt, source-blind behavior report, full gate, and review results are recorded beside this file.
+The pre-commit Codex autoreview reported no accepted/actionable findings. The full `pnpm run check` gate passed. The final Docker-backed Crabbox proof then passed all 223 focused scenarios on committed implementation head `2cd3ab893cf7dd1c93d6db85e5673a4db26999f3`; its receipt and source-blind behavior report are recorded beside this file.
