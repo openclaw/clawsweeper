@@ -19,6 +19,7 @@ const MAX_INVENTORY_ROWS = 10_000;
 const MAX_RECONCILE_INVENTORY_PAGES = 250;
 const MAX_RECONCILE_INVENTORY_REFRESHES = 2;
 const GRAPHQL_IDENTITY_BATCH_SIZE = 40;
+const MAX_CONSECUTIVE_GITHUB_THROTTLES = 3;
 const ACTIVE_RECOVERY_REASONS = new Set(["fresh_review_already_active", "publication_item_active"]);
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9:._-]{1,200}$/;
 const OPERATOR_REQUEST_TIMEOUT_MS = 20_000;
@@ -441,7 +442,22 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
   const selectedGroups = [...groups.values()];
   let identities;
   try {
-    identities = await inspectCanonicalTargets(selectedGroups, args.maxTargets);
+    const inspection = await inspectCanonicalTargets(selectedGroups, args.maxTargets);
+    identities = inspection.identities;
+    for (const failure of inspection.failedTargets) {
+      recordInspectionSkips(summary, [failure.target], failure.error);
+    }
+    if (inspection.notInspectedTargets.length) {
+      recordInspectionSkips(
+        summary,
+        inspection.notInspectedTargets,
+        new Error(
+          "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
+        ),
+      );
+    }
+    summary.skipped_targets +=
+      inspection.failedTargets.length + inspection.notInspectedTargets.length;
   } catch (error) {
     if (error instanceof CanonicalTargetInspectionError) {
       recordAbortedInspectionSkips(summary, {
@@ -477,7 +493,8 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
   const canonicalGroups = new Map();
   for (const group of groups.values()) {
     const live = identities.get(normalizeRecoveryTargetKey(group.target));
-    if (!live || !["open", "closed"].includes(live.state)) {
+    if (!live) continue;
+    if (!["open", "closed"].includes(live.state)) {
       summary.skipped_targets += groups.size;
       printResult(summary);
       return;
@@ -649,27 +666,51 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
 
   refreshBlockedInventory();
   if (recoveries.length) {
+    const revalidatedRecoveries = [];
+    let consecutiveThrottles = 0;
+    let individuallySkipped = 0;
     for (const [index, recovery] of recoveries.entries()) {
       let current;
       try {
         current = await inspectRecoveryTarget(recovery.canonicalTarget);
       } catch (error) {
+        if (isThrottleInspectionError(error)) {
+          recordInspectionSkips(summary, [recovery.canonicalTarget], error);
+          summary.skipped_targets += 1;
+          individuallySkipped += 1;
+          consecutiveThrottles += 1;
+          if (consecutiveThrottles >= MAX_CONSECUTIVE_GITHUB_THROTTLES) {
+            const notInspectedTargets = recoveries
+              .slice(index + 1)
+              .map((candidate) => candidate.canonicalTarget);
+            recordInspectionSkips(
+              summary,
+              notInspectedTargets,
+              new Error(
+                "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
+              ),
+            );
+            summary.skipped_targets += notInspectedTargets.length;
+            individuallySkipped += notInspectedTargets.length;
+            break;
+          }
+          continue;
+        }
         recordAbortedInspectionSkips(summary, {
-          inspectedTargets: recoveries
-            .slice(0, index)
-            .map((candidate) => candidate.canonicalTarget),
+          inspectedTargets: revalidatedRecoveries.map((candidate) => candidate.canonicalTarget),
           failedTargets: [recovery.canonicalTarget],
           notInspectedTargets: recoveries
             .slice(index + 1)
             .map((candidate) => candidate.canonicalTarget),
           error,
         });
-        summary.skipped_targets += recoveries.length;
+        summary.skipped_targets += recoveries.length - individuallySkipped;
         printResult(summary);
         return;
       }
+      consecutiveThrottles = 0;
       if (current.state !== "open" || current.node_id !== recovery.live.node_id) {
-        summary.skipped_targets += recoveries.length;
+        summary.skipped_targets += recoveries.length - individuallySkipped;
         printResult(summary);
         return;
       }
@@ -677,7 +718,7 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
         recovery.primary.fresh_recovery.source_head_sha &&
         recovery.primary.fresh_recovery.source_head_sha !== current.head_sha
       ) {
-        summary.skipped_targets += recoveries.length;
+        summary.skipped_targets += recoveries.length - individuallySkipped;
         printResult(summary);
         return;
       }
@@ -688,19 +729,24 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
         ];
       }
       recovery.currentHeadSha = current.head_sha || null;
+      revalidatedRecoveries.push(recovery);
+    }
+    if (!revalidatedRecoveries.length) {
+      printResult(summary);
+      return;
     }
     const finalPressure = await readQueuePressure(queueUrl);
     summary.queue_pressure = finalPressure.status;
     if (finalPressure.status !== "idle" || finalPressure.availableSlots < 1) {
-      summary.skipped_targets += recoveries.length;
+      summary.skipped_targets += revalidatedRecoveries.length;
       if (finalPressure.status !== "idle") {
-        recordSkipReasonCount(summary, "recovery_deferred_pressure", recoveries.length);
+        recordSkipReasonCount(summary, "recovery_deferred_pressure", revalidatedRecoveries.length);
       }
       printResult(summary);
       return;
     }
-    const admitted = recoveries.slice(0, finalPressure.availableSlots);
-    summary.skipped_targets += recoveries.length - admitted.length;
+    const admitted = revalidatedRecoveries.slice(0, finalPressure.availableSlots);
+    summary.skipped_targets += revalidatedRecoveries.length - admitted.length;
     const ids = admitted.map(({ primary }) => primary.dead_letter_id);
     if (args.execute) {
       const identity = admitted
@@ -1045,7 +1091,7 @@ function operatorRequestSignal(deadlineAt = Number.POSITIVE_INFINITY) {
 
 async function inspectParkedReviewTarget(target, deadlineAt = Number.POSITIVE_INFINITY) {
   const apiUrl = String(process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
-  const token = String(process.env.GITHUB_TOKEN || "");
+  const token = targetReadToken();
   const match = /^([^/]+)\/([^#]+)#([1-9]\d*)$/.exec(target);
   if (!match) throw new Error(`invalid parked review target: ${target}`);
   const [, owner, repo, number] = match;
@@ -1241,6 +1287,8 @@ async function loadInventory(options) {
 
 async function inspectCanonicalTargets(groups, maxTargets) {
   const identities = new Map();
+  const failedTargets = [];
+  let consecutiveThrottles = 0;
   if (groups.length <= Math.min(maxTargets, MAX_RECONCILE_RECOVERIES)) {
     const inspectedTargets = [];
     for (const [index, group] of groups.entries()) {
@@ -1250,7 +1298,20 @@ async function inspectCanonicalTargets(groups, maxTargets) {
           await inspectRecoveryTarget(group.target),
         );
         inspectedTargets.push(group.target);
+        consecutiveThrottles = 0;
       } catch (error) {
+        if (isThrottleInspectionError(error)) {
+          failedTargets.push({ target: group.target, error });
+          consecutiveThrottles += 1;
+          if (consecutiveThrottles >= MAX_CONSECUTIVE_GITHUB_THROTTLES) {
+            return {
+              identities,
+              failedTargets,
+              notInspectedTargets: groups.slice(index + 1).map((candidate) => candidate.target),
+            };
+          }
+          continue;
+        }
         throw new CanonicalTargetInspectionError(error, {
           inspectedTargets,
           failedTargets: [group.target],
@@ -1258,12 +1319,14 @@ async function inspectCanonicalTargets(groups, maxTargets) {
         });
       }
     }
-    return identities;
+    return { identities, failedTargets, notInspectedTargets: [] };
   }
 
   const apiUrl = String(process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
-  const token = String(process.env.GITHUB_TOKEN || "");
-  if (!token) throw new Error("GITHUB_TOKEN is required for canonical target discovery");
+  const token = targetReadToken();
+  if (!token)
+    throw new Error("GH_TOKEN or GITHUB_TOKEN is required for canonical target discovery");
+  const inspectedTargets = [];
   for (let offset = 0; offset < groups.length; offset += GRAPHQL_IDENTITY_BATCH_SIZE) {
     const selected = groups.slice(offset, offset + GRAPHQL_IDENTITY_BATCH_SIZE);
     const fields = selected.map(({ target }, index) => {
@@ -1283,10 +1346,43 @@ async function inspectCanonicalTargets(groups, maxTargets) {
       body: JSON.stringify({ query: `query{${fields.join(" ")}}` }),
       signal: AbortSignal.timeout(20_000),
     });
-    if (!response.ok) throw new Error(`canonical target discovery failed (${response.status})`);
+    if (!response.ok) {
+      const error = new Error(`canonical target discovery failed (${response.status})`);
+      if (isThrottleInspectionError(error)) {
+        for (const group of selected) failedTargets.push({ target: group.target, error });
+        consecutiveThrottles += 1;
+        if (consecutiveThrottles >= MAX_CONSECUTIVE_GITHUB_THROTTLES) {
+          return {
+            identities,
+            failedTargets,
+            notInspectedTargets: groups
+              .slice(offset + selected.length)
+              .map((candidate) => candidate.target),
+          };
+        }
+        continue;
+      }
+      throw new CanonicalTargetInspectionError(error, {
+        inspectedTargets,
+        failedTargets: selected.map((group) => group.target),
+        notInspectedTargets: groups
+          .slice(offset + selected.length)
+          .map((candidate) => candidate.target),
+      });
+    }
+    consecutiveThrottles = 0;
     const result = await response.json();
     if (!result || !result.data || (Array.isArray(result.errors) && result.errors.length)) {
-      throw new Error("canonical target discovery returned incomplete GitHub identities");
+      throw new CanonicalTargetInspectionError(
+        new Error("canonical target discovery returned incomplete GitHub identities"),
+        {
+          inspectedTargets,
+          failedTargets: selected.map((group) => group.target),
+          notInspectedTargets: groups
+            .slice(offset + selected.length)
+            .map((candidate) => candidate.target),
+        },
+      );
     }
     for (const [index, group] of selected.entries()) {
       const item = result.data[`target${index}`]?.item;
@@ -1305,9 +1401,10 @@ async function inspectCanonicalTargets(groups, maxTargets) {
           ? { head_sha: item.headRefOid.toLowerCase() }
           : {}),
       });
+      inspectedTargets.push(group.target);
     }
   }
-  return identities;
+  return { identities, failedTargets, notInspectedTargets: [] };
 }
 
 function normalizeRecoveryTargetKey(target) {
@@ -1380,6 +1477,11 @@ function recordInspectionSkips(summary, targets, error) {
 function recordSkipReasonCount(summary, reasonClass, count) {
   if (count < 1) return;
   summary.skip_reasons[reasonClass] = (summary.skip_reasons[reasonClass] || 0) + count;
+}
+
+function isThrottleInspectionError(error) {
+  const reasonClass = classifyOperatorSkipReason(sanitizeSkipReason(error));
+  return reasonClass === "http_403" || reasonClass === "http_429";
 }
 
 function recordAbortedInspectionSkips(
@@ -1467,7 +1569,7 @@ async function assertOpenRecoveryTargets(targets) {
 
 async function inspectRecoveryTarget(target) {
   const apiUrl = String(process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
-  const token = String(process.env.GITHUB_TOKEN || "");
+  const token = targetReadToken();
   const match = /^([^/]+)\/([^#]+)#([1-9]\d*)$/.exec(target);
   if (!match) throw new Error(`invalid fresh recovery target: ${target}`);
   const [, owner, repo, number] = match;
@@ -1521,6 +1623,10 @@ async function inspectRecoveryTarget(target) {
     canonical_target: canonicalTarget,
     head_sha: headSha,
   };
+}
+
+function targetReadToken() {
+  return String(process.env.GH_TOKEN || process.env.GITHUB_TOKEN || "").trim();
 }
 
 function canonicalGitHubTarget(item, fallback) {

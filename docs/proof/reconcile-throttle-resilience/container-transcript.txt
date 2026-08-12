@@ -1,0 +1,64 @@
+PROOF_PHASE=environment
+provider=local-container
+image=node:24-bookworm
+v24.19.0
+11.17.0
+PROOF_PHASE=corepack
+
+added 1 package in 248ms
+11.10.0
+PROOF_PHASE=install
+? Verifying lockfile against supply-chain policies (79 entries)...
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +19
++++++++++++++++++++
+
+   ╭───────────────────────────────────────────────╮
+   │                                               │
+   │     Update available! 11.10.0 → 11.21.0.      │
+   │     Changelog: https://pnpm.io/v/11.21.0      │
+   │   To update, run: corepack use pnpm@11.21.0   │
+   │                                               │
+   ╰───────────────────────────────────────────────╯
+
+✓ Lockfile passes supply-chain policies (79 entries in 504ms)
+Progress: resolved 19, reused 0, downloaded 16, added 16
+Progress: resolved 19, reused 0, downloaded 19, added 19, done
+
+dependencies:
++ typescript 7.0.2
++ yaml 2.9.0
+
+devDependencies:
++ @types/node 24.13.3
++ markdown-it 15.0.0
++ oxfmt 0.58.0
++ oxlint 1.73.0
++ oxlint-tsgolint 0.24.0
+
+Done in 1.9s using pnpm v11.10.0
+PROOF_PHASE=loopback
+✔ dead-letter workflow is manual, serialized, and bounded to safe actions (1.434776ms)
+✔ automatic dead-letter reconciliation is scheduled, bounded, and least privileged (5.031006ms)
+✔ 100-target reconciliation batches canonical lookups within the GitHub token budget (136.893288ms)
+✔ batched canonical discovery skips a throttled batch and inspects later targets (130.575007ms)
+✔ serial canonical discovery skips one throttle and recovers later targets (74.419709ms)
+✔ serial canonical discovery aborts after three consecutive throttles (62.122239ms)
+✔ serial recovery revalidation skips one throttle and recovers later targets (71.913997ms)
+✔ serial recovery revalidation aborts after three consecutive throttles (78.403114ms)
+✔ operator previews by default and caps mutations at two audited ids (576.224664ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1243.442959
+PROOF_PHASE=content
+827ff1872203f69f9a931c82ce6ba9ae0d74b725da9144fffadb59145659bbe7  .github/workflows/exact-review-dead-letter-operator.yml
+ca419ab25752695eee74534bc4ed4274e02108d68804d9df35128c17d7001237  .github/workflows/exact-review-dead-letter-reconcile.yml
+36ad37157000519f3885ba514a7b453fc6ee74af514bdb15b3217fda58fa536d  scripts/exact-review-dead-letter-operator.mjs
+ccd2a8106a8e11625582e397b50275388bd0ad0a26429dbb9295c152261b9f30  test/exact-review-dead-letter-operator.test.ts
+PROOF_RESULT=pass

@@ -45,6 +45,12 @@ test("dead-letter workflow is manual, serialized, and bounded to safe actions", 
     operatorStep.env.CLAWSWEEPER_WEBHOOK_SECRET,
     "${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}",
   );
+  const targetToken = workflow.jobs.operate.steps.find(
+    (step) => step.name === "Create target read token",
+  );
+  assert.match(targetToken.uses, /^actions\/create-github-app-token@/);
+  assert.equal(targetToken.with.owner, "${{ github.repository_owner }}");
+  assert.equal(operatorStep.env.GH_TOKEN, "${{ steps.target-read-token.outputs.token }}");
   assert.equal(operatorStep.env.GITHUB_TOKEN, "${{ github.token }}");
   assert.match(operatorStep.run, /operator:\$\{GITHUB_RUN_ID\}/);
   assert.doesNotMatch(operatorStep.run, /GITHUB_RUN_ATTEMPT/);
@@ -83,6 +89,13 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
   assert.equal(scheduled.jobs.reconcile.env.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
   assert.match(step.run, /--max-targets "\$MAX_TARGETS"/);
   assert.match(step.run, /--max-recoveries "\$MAX_RECOVERIES"/);
+  const targetToken = scheduled.jobs.reconcile.steps.find(
+    (candidate) => candidate.name === "Create target read token",
+  );
+  assert.match(targetToken.uses, /^actions\/create-github-app-token@/);
+  assert.equal(targetToken.with.owner, "${{ github.repository_owner }}");
+  assert.equal(step.env.GH_TOKEN, "${{ steps.target-read-token.outputs.token }}");
+  assert.equal(step.env.GITHUB_TOKEN, "${{ github.token }}");
   const guard = scheduled.jobs.reconcile.steps.find(
     (candidate) => candidate.name === "Verify live recovery guards",
   );
@@ -99,6 +112,7 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
     parked.env.CLAWSWEEPER_WEBHOOK_SECRET,
     "${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}",
   );
+  assert.equal(parked.env.GH_TOKEN, "${{ steps.target-read-token.outputs.token }}");
   assert.equal(parked.env.GITHUB_TOKEN, "${{ github.token }}");
   assert.match(parked.run, /--action reconcile-parked/);
   assert.match(parked.run, /--max-targets "\$MAX_TARGETS"/);
@@ -2035,6 +2049,38 @@ test("100-target reconciliation batches canonical lookups within the GitHub toke
     scenario.recoveries.reduce((count, recovery) => count + recovery.ids.length, 0),
     10,
   );
+  assert.deepEqual(
+    new Set(scenario.targetReadAuthorizations),
+    new Set(["Bearer test-target-app-token"]),
+  );
+});
+
+test("batched canonical discovery skips a throttled batch and inspects later targets", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: Array.from({ length: 50 }, (_, index) =>
+      row(
+        `batch-${index + 1}`,
+        `publication:batch-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${index + 1}`,
+      ),
+    ),
+    maxTargets: 100,
+    maxRecoveries: 10,
+    failGraphqlRequests: 1,
+    failedStatus: 403,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { http_403: 40 });
+  assert.equal(summary.skipped_targets, 40);
+  assert.equal(summary.recovered_targets, 10);
+  assert.equal(scenario.graphqlRequests, 2);
+  assert.equal(scenario.restRequests, 10);
 });
 
 test("terminal target rechecks stay bounded for closed issues and pull requests", async () => {
@@ -2359,7 +2405,7 @@ test("inaccessible canonical targets cannot starve independently invalid dead le
   assert.equal(JSON.parse(scenario.first.stdout).invalid_rows, 1);
 });
 
-test("serial canonical discovery attributes a failure only to the target that threw", async () => {
+test("serial canonical discovery skips one throttle and recovers later targets", async () => {
   const scenario = await automaticReconcileScenario({
     rows: [
       row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/first#1"),
@@ -2380,30 +2426,49 @@ test("serial canonical discovery attributes a failure only to the target that th
 
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
   const summary = JSON.parse(scenario.first.stdout);
-  assert.deepEqual(summary.skip_reasons, { http_403: 1, not_inspected_abort: 2 });
+  assert.deepEqual(summary.skip_reasons, { http_403: 1 });
   assert.deepEqual(summary.skip_samples, [
     {
       target: "openclaw/first#1",
       reason: "live target check failed for openclaw/first#1 (403)",
     },
-    {
-      target: "openclaw/second#2",
-      reason:
-        "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
-    },
-    {
-      target: "openclaw/third#3",
-      reason:
-        "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
-    },
   ]);
-  assert.equal(summary.skipped_targets, 3);
-  assert.equal(scenario.restRequests, 1);
-  assert.equal(scenario.recoveries.length, 0);
+  assert.equal(summary.skipped_targets, 1);
+  assert.equal(summary.recovered_targets, 2);
+  assert.equal(scenario.restRequests, 5);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["second", "third"]],
+  );
   assert.equal(scenario.resolutions.length, 0);
 });
 
-test("serial recovery revalidation attributes a failure only to the target that threw", async () => {
+test("serial canonical discovery aborts after three consecutive throttles", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: Array.from({ length: 5 }, (_, index) =>
+      row(
+        `target-${index + 1}`,
+        `publication:target-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo-${index + 1}#${index + 1}`,
+      ),
+    ),
+    failedRepositories: ["repo-1", "repo-2", "repo-3"],
+    failedStatus: 403,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { http_403: 3, not_inspected_abort: 2 });
+  assert.equal(summary.skipped_targets, 5);
+  assert.equal(scenario.restRequests, 3);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("serial recovery revalidation skips one throttle and recovers later targets", async () => {
   const scenario = await automaticReconcileScenario({
     rows: [
       row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/repo#1"),
@@ -2424,27 +2489,46 @@ test("serial recovery revalidation attributes a failure only to the target that 
 
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
   const summary = JSON.parse(scenario.first.stdout);
-  assert.deepEqual(summary.skip_reasons, { http_403: 1, not_inspected_abort: 2 });
+  assert.deepEqual(summary.skip_reasons, { http_403: 1 });
   assert.deepEqual(summary.skip_samples, [
     {
       target: "openclaw/repo#1",
       reason: "live target check failed for openclaw/repo#1 (403)",
     },
-    {
-      target: "openclaw/repo#2",
-      reason:
-        "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
-    },
-    {
-      target: "openclaw/repo#3",
-      reason:
-        "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
-    },
   ]);
-  assert.equal(summary.skipped_targets, 3);
-  assert.equal(scenario.restRequests, 4);
-  assert.equal(scenario.recoveries.length, 0);
+  assert.equal(summary.skipped_targets, 1);
+  assert.equal(summary.recovered_targets, 2);
+  assert.equal(scenario.restRequests, 6);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["second", "third"]],
+  );
   assert.equal(scenario.resolutions.length, 0);
+});
+
+test("serial recovery revalidation aborts after three consecutive throttles", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: Array.from({ length: 5 }, (_, index) =>
+      row(
+        `target-${index + 1}`,
+        `publication:target-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${index + 1}`,
+      ),
+    ),
+    failTargetsOnInspection: [1, 2, 3],
+    failedStatus: 403,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { http_403: 3, not_inspected_abort: 2 });
+  assert.equal(summary.skipped_targets, 5);
+  assert.equal(scenario.restRequests, 8);
+  assert.equal(scenario.recoveries.length, 0);
 });
 
 test("automatic recovery refuses a pull request whose current head has advanced", async () => {
@@ -2505,6 +2589,7 @@ async function automaticReconcileScenario(options) {
   let inventoryRequests = 0;
   let graphqlRequests = 0;
   let restRequests = 0;
+  const targetReadAuthorizations = [];
   const restRequestsByNumber = new Map();
   let duplicateFailurePending = options.failFirstDuplicateCleanup === true;
   let duplicateSkipsRemaining =
@@ -2531,13 +2616,22 @@ async function automaticReconcileScenario(options) {
     }
     if (request.url === "/graphql") {
       graphqlRequests += 1;
+      targetReadAuthorizations.push(request.headers.authorization);
+      if (graphqlRequests <= (options.failGraphqlRequests ?? 0)) {
+        response.writeHead(options.failedStatus ?? 403, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "throttled" }));
+        return;
+      }
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       const data = {};
       for (const match of body.query.matchAll(
         /target(\d+):repository\(owner:"([^"]+)",name:"([^"]+)"\)\{item:issueOrPullRequest\(number:(\d+)\)/g,
       )) {
         const [, index, , repository, value] = match;
-        if (options.failedRepository === repository) {
+        if (
+          options.failedRepository === repository ||
+          options.failedRepositories?.includes(repository)
+        ) {
           response.writeHead(200, { "content-type": "application/json" });
           response.end(JSON.stringify({ data, errors: [{ message: "temporary" }] }));
           return;
@@ -2572,6 +2666,7 @@ async function automaticReconcileScenario(options) {
     }
     if (request.url?.startsWith("/repos/")) {
       restRequests += 1;
+      targetReadAuthorizations.push(request.headers.authorization);
       const number = Number(request.url.split("/").at(-1));
       restRequestsByNumber.set(number, (restRequestsByNumber.get(number) || 0) + 1);
       if (request.url.includes("/pulls/")) {
@@ -2590,9 +2685,13 @@ async function automaticReconcileScenario(options) {
         return;
       }
       if (
-        (options.failedRepository &&
-          request.url.includes(`/${options.failedRepository}/issues/`)) ||
-        (options.failTargetOnInspection === number && restRequestsByNumber.get(number) >= 2) ||
+        ((options.failedRepository || options.failedRepositories) &&
+          [options.failedRepository, ...(options.failedRepositories ?? [])].some(
+            (repository) => repository && request.url.includes(`/${repository}/issues/`),
+          )) ||
+        ((options.failTargetOnInspection === number ||
+          options.failTargetsOnInspection?.includes(number)) &&
+          restRequestsByNumber.get(number) >= 2) ||
         (options.failTargetAfterCleanup === number && resolutions.length >= 2)
       ) {
         response.writeHead(options.failedStatus ?? 503, { "content-type": "application/json" });
@@ -2740,6 +2839,7 @@ async function automaticReconcileScenario(options) {
       inventoryRequests,
       graphqlRequests,
       restRequests,
+      targetReadAuthorizations,
     };
   } finally {
     server.close();
@@ -2841,7 +2941,7 @@ test("operator previews by default and caps mutations at two audited ids", async
     for await (const chunk of request) chunks.push(chunk);
     if (request.url?.toLowerCase().startsWith("/repos/openclaw/repo/issues/")) {
       const number = Number(request.url.split("/").at(-1));
-      assert.equal(request.headers.authorization, "Bearer test-github-token");
+      assert.equal(request.headers.authorization, "Bearer test-target-app-token");
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify({
@@ -3105,6 +3205,7 @@ function runOperator(args, queueUrl, secret, extraEnv = {}) {
           EXACT_REVIEW_QUEUE_URL: queueUrl,
           CLAWSWEEPER_WEBHOOK_SECRET: secret,
           GITHUB_API_URL: queueUrl,
+          GH_TOKEN: "test-target-app-token",
           GITHUB_TOKEN: "test-github-token",
           ...extraEnv,
         },
