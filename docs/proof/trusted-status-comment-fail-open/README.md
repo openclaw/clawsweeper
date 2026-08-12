@@ -118,27 +118,35 @@ image that carries no `.git`. Both are fixed:
 Untracked paths are excluded from that comparison, so build output and artifacts
 do not trip it — only a change to the committed tree does.
 
-## Provenance
+## Proof contract
 
-- provider: Crabbox `local-container` (runtime `docker`, OrbStack)
-- image: `node:24` → container node `v24.19.0`, `Linux aarch64`
-  (satisfies `engines.node >= 24`)
-- lease: `cbx_00a7a03160d1` (`coral-shrimp`)
-- run: `run_1b77309b80dd`
-- base ref: `0588bda9` · `src/repair/comment-router.ts` · sha256 `a0f53eca…ba14`
-- artifact: `.crabbox/runs/run_1b77309b80dd/run_1b77309b80dd-artifacts.tgz`
-- result: exit `0`; **28/28** proof checks PASS; focused suites `201/201`
-- tracked state: identical at sync and at end of run —
-  `package.json` sha256 `db731331…0c67`, `pnpm-lock.yaml` sha256 `845314ce…16e3`,
-  `git status --porcelain` empty of tracked entries at all three checkpoints
-- the fallback path was exercised, not skipped: the lease reported
-  `@typescript/typescript-linux-arm64 missing after install`, provisioned it at
-  `/tmp/tmp.QwpzyABdog`, and the tracked-state check immediately afterwards passed
-- privacy and network access: synthetic fixtures only. The **assertions** contact
-  nothing — no GitHub API, no queue, and no production mutation of any kind. The
-  lease **setup** around them reaches the public package registry to obtain pnpm
-  and the platform-native TypeScript binary, and nothing else. No credential is
-  present in the lease.
+This is what a passing run must show. The **observed run for the current head —
+lease, run id, artifact, and redacted output — lives in the PR body**, which is
+where AGENTS.md requires current proof to sit. Deliberately no lease id is pinned
+here: editing this file changes the head, which would immediately make any pinned
+run describe a different commit than the one under review.
+
+| | |
+|---|---|
+| provider | Crabbox `local-container` (runtime `docker`) |
+| image | `node:24`; the script refuses to run below Node 24 |
+| base ref | `0588bda9` · `src/repair/comment-router.ts` |
+| checks | **28**, all PASS |
+| focused suites | `201/201` |
+| exit | `0` |
+
+A run is only valid evidence if it also reports:
+
+- `tracked state unchanged` at all three checkpoints, with identical `package.json`
+  and `pnpm-lock.yaml` digests at sync and at end of run;
+- the pre-fix contrast, either re-derived from git or from the staged copy with its
+  sha256 printed.
+
+**Privacy and network access.** Synthetic fixtures only. The *assertions* contact
+nothing — no GitHub API, no queue, no production mutation of any kind. The lease
+*setup* around them reaches the public package registry to obtain pnpm and the
+platform-native TypeScript binary, and nothing else. No credential is present in
+the lease.
 
 ## Reachability — read this before rating severity
 
