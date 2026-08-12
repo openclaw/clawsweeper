@@ -18,6 +18,7 @@ import {
   filterReviewComments,
   latestClawSweeperReview,
   latestClawSweeperReviewFromHydration,
+  previousClawSweeperReviewFromComment,
   timestampValueMs,
 } from "./clawsweeper-review-comments.js";
 import { truncateText } from "./clawsweeper-text.js";
@@ -229,6 +230,10 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     number: number,
   ): PreviousClawSweeperReview | null {
     return latestClawSweeperReview(comments, number, reviewCommentContext);
+  }
+
+  function extractClawSweeperReviewCommentBody(body: string): PreviousClawSweeperReview {
+    return previousClawSweeperReviewFromComment({ body }, reviewCommentContext);
   }
 
   function filterReviewContextCommentsForTest(
@@ -1116,6 +1121,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     detectBulkFiler,
     detectBulkFilerForTest,
     extractLatestClawSweeperReview,
+    extractClawSweeperReviewCommentBody,
     extractLatestClawSweeperReviewForTest,
     extractLatestClawSweeperReviewFromHydration,
     extractLatestClawSweeperReviewFromHydrationForTest,

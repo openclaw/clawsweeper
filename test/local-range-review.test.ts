@@ -16,6 +16,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildLocalRangeReviewForTest } from "../dist/clawsweeper.js";
+import { changelogReviewDecision, reviewFinding } from "./helpers.ts";
 
 const CLI = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
 
@@ -455,6 +456,148 @@ test("--local-range does not host-download proof video URLs from the body", asyn
       server.close((error) => (error ? reject(error) : resolve())),
     );
     rmSync(codexDir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("--local-range carries hosted-shaped review history across related local iterations", () => {
+  const dir = initRepo();
+  const harness = mkdtempSync(join(tmpdir(), "lrr-history-"));
+  const fakeCodexScript = join(harness, "fake-codex.mjs");
+  const fakeCodex =
+    process.platform === "win32" ? join(harness, "fake-codex.cmd") : join(harness, "fake-codex");
+  const capturePath = join(harness, "captures.json");
+  const decisionPath = join(harness, "decision.json");
+  const priorFindingTitle = "Preserve earlier local finding";
+  writeFileSync(
+    decisionPath,
+    JSON.stringify(
+      changelogReviewDecision({
+        summary: "The deterministic local review found one history-sensitive defect.",
+        bestSolution: "Preserve earlier local review context on the next iteration.",
+        reviewFindings: [
+          reviewFinding({
+            title: priorFindingTitle,
+            body: "A follow-up local review must see this earlier finding.",
+            file: "feature.txt",
+            lineStart: 1,
+            lineEnd: 1,
+          }),
+        ],
+        workReason: "Preserve earlier local review context.",
+        workPrompt: "Carry the previous local review into the follow-up prompt.",
+        workLikelyFiles: ["feature.txt"],
+      }),
+    ),
+  );
+  writeFileSync(
+    fakeCodexScript,
+    `import fs from "node:fs";
+const args = process.argv.slice(2);
+const outputPath = args[args.indexOf("--output-last-message") + 1];
+const prompt = fs.readFileSync(0, "utf8");
+const captures = fs.existsSync(process.env.LOCAL_REVIEW_CAPTURE)
+  ? JSON.parse(fs.readFileSync(process.env.LOCAL_REVIEW_CAPTURE, "utf8"))
+  : [];
+captures.push({
+  hasPreviousReview: prompt.includes('"previousClawSweeperReview"'),
+  hasPriorFinding: prompt.includes(${JSON.stringify(priorFindingTitle)}),
+});
+fs.writeFileSync(process.env.LOCAL_REVIEW_CAPTURE, JSON.stringify(captures));
+fs.writeFileSync(outputPath, fs.readFileSync(process.env.LOCAL_REVIEW_DECISION));
+process.stdout.write(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } }) + "\\n");
+`,
+  );
+  if (process.platform === "win32") {
+    writeFileSync(fakeCodex, `@echo off\r\n"${process.execPath}" "${fakeCodexScript}" %*\r\n`);
+  } else {
+    writeFileSync(fakeCodex, `#!/bin/sh\nexec "${process.execPath}" "${fakeCodexScript}" "$@"\n`, {
+      mode: 0o755,
+    });
+  }
+
+  function runReview(artifactDir: string, base = "base-ref"): void {
+    const result = spawnSync(
+      process.execPath,
+      [
+        CLI,
+        "review",
+        "--local-range",
+        "--base",
+        base,
+        "--target-repo",
+        "openclaw/clawsweeper",
+        "--target-dir",
+        dir,
+        "--artifact-dir",
+        artifactDir,
+        "--codex-timeout-ms",
+        "60000",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: "1",
+          CODEX_BIN: fakeCodex,
+          LOCAL_REVIEW_CAPTURE: capturePath,
+          LOCAL_REVIEW_DECISION: decisionPath,
+        },
+        timeout: 60000,
+      },
+    );
+    assert.equal(result.status, 0, `${result.stderr ?? ""}${result.stdout ?? ""}`);
+  }
+
+  try {
+    writeFileSync(join(dir, "base.txt"), "base\n");
+    git(dir, "add", "base.txt");
+    git(dir, "commit", "-q", "-m", "init");
+    git(dir, "branch", "base-ref");
+    const baseSha = git(dir, "rev-parse", "base-ref");
+    writeFileSync(join(dir, "feature.txt"), "first\n");
+    git(dir, "add", "feature.txt");
+    git(dir, "commit", "-q", "-m", "feat: first local review");
+    const firstHead = git(dir, "rev-parse", "HEAD");
+
+    runReview(join(harness, "run-1"));
+    writeFileSync(join(dir, "feature.txt"), "first\nsecond\n");
+    git(dir, "add", "feature.txt");
+    git(dir, "commit", "-q", "-m", "fix: follow up on local review");
+    runReview(join(harness, "run-2"));
+
+    const historyPath = resolve(
+      dir,
+      git(dir, "rev-parse", "--git-path", "clawsweeper/reviews"),
+      `local-range-review-history-openclaw-clawsweeper-${baseSha}.md`,
+    );
+    const relatedHistory = readFileSync(historyPath, "utf8");
+    assert.match(relatedHistory, /Review history \(1 earlier review cycle\)/);
+    assert.match(relatedHistory, new RegExp(firstHead));
+
+    git(dir, "branch", "alternate-base", firstHead);
+    runReview(join(harness, "run-3"), "alternate-base");
+
+    git(dir, "checkout", "-q", "-b", "unrelated", "base-ref");
+    writeFileSync(join(dir, "unrelated.txt"), "different branch\n");
+    git(dir, "add", "unrelated.txt");
+    git(dir, "commit", "-q", "-m", "feat: unrelated local range");
+    runReview(join(harness, "run-4"));
+
+    const captures = JSON.parse(readFileSync(capturePath, "utf8")) as Array<{
+      hasPreviousReview: boolean;
+      hasPriorFinding: boolean;
+    }>;
+    assert.deepEqual(captures, [
+      { hasPreviousReview: false, hasPriorFinding: false },
+      { hasPreviousReview: true, hasPriorFinding: true },
+      { hasPreviousReview: false, hasPriorFinding: false },
+      { hasPreviousReview: false, hasPriorFinding: false },
+    ]);
+    assert.doesNotMatch(readFileSync(historyPath, "utf8"), /Review history \(/);
+    assert.equal(git(dir, "status", "--porcelain"), "");
+  } finally {
+    rmSync(harness, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   }
 });

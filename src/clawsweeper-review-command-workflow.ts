@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTION_EVENT_REASON_CODES, ACTION_EVENT_STATUSES } from "./action-ledger.js";
 import type { Args } from "./clawsweeper-args.js";
@@ -100,6 +100,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     displayPath,
     enforceExpectedIssueSourceRevision,
     exactLocalReviewNoCandidateError,
+    extractClawSweeperReviewCommentBody,
     existingReview,
     extractLatestClawSweeperReview,
     fetchIssueReviewComments,
@@ -115,6 +116,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     itemContentDigest,
     itemSnapshotHash,
     liveClawSweeperReviewDigest,
+    localExactReviewHistoryPath,
+    localRangeHistoryApplies,
     makeTreeReadOnly,
     markdownFor,
     postReviewStartStatusComment,
@@ -125,6 +128,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     recordReviewLogPublication,
     refreshRelatedItemsContext,
     replaceFrontMatterValue,
+    renderReviewCommentFromReport,
     reportFileName,
     reportReviewFindings,
     restoreTreeModes,
@@ -163,6 +167,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       expectedSourceRevision,
       allowClosed,
       localRangeData,
+      localReviewHistoryPath,
       coordinationHeldPath,
       shardIndex,
       shardCount,
@@ -347,6 +352,26 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         } else {
           console.error(
             `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start #${item.number} (${completed + 1}/${candidates.length})`,
+          );
+        }
+        const itemLocalReviewHistoryPath = localRangeData
+          ? localReviewHistoryPath
+          : localOnly
+            ? localExactReviewHistoryPath(artifactDir, item.repo, item.number)
+            : null;
+        let previousLocalReviewCommentBody =
+          itemLocalReviewHistoryPath && existsSync(itemLocalReviewHistoryPath)
+            ? readFileSync(itemLocalReviewHistoryPath, "utf8")
+            : "";
+        if (
+          !previousLocalReviewCommentBody &&
+          localOnly &&
+          !localRangeData &&
+          existsSync(join(artifactDir, reportFileName(item.repo, item.number)))
+        ) {
+          previousLocalReviewCommentBody = renderReviewCommentFromReport(
+            readFileSync(join(artifactDir, reportFileName(item.repo, item.number)), "utf8"),
+            "none",
           );
         }
         const existingPriorReview = localRangeData ? null : existingReview(item, itemsDir);
@@ -735,6 +760,26 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               reviewCacheDigest: true,
               reviewCacheGitDir: openclawDir,
             });
+        if (previousLocalReviewCommentBody) {
+          const previousLocalReview = extractClawSweeperReviewCommentBody(
+            previousLocalReviewCommentBody,
+          );
+          const hasCompletedLocalReview =
+            previousLocalReview.completedReviewCycles > 0 &&
+            /^[0-9a-f]{40}$/iu.test(previousLocalReview.reviewedSha ?? "");
+          const appliesToRange =
+            !localRangeData ||
+            localRangeHistoryApplies(
+              openclawDir,
+              previousLocalReview?.reviewedSha ?? null,
+              localRangeData.headSha,
+            );
+          if (hasCompletedLocalReview && appliesToRange) {
+            context.previousClawSweeperReview = previousLocalReview;
+          } else {
+            previousLocalReviewCommentBody = "";
+          }
+        }
         if (bulkFilerDetection.context) context.bulkFiler = bulkFilerDetection.context;
         const contextElapsedMs = Date.now() - contextStartedAt;
         const contextItemUpdatedAt = stringOrUndefined(asRecord(context.issue).updatedAt);
@@ -1383,9 +1428,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const action = reviewActionForDecision({ item, decision, git, runtime });
         structuralRecord = refreshStructuralRecordForVerdict();
         const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
-        writeFileSync(
-          reportPath,
-          markdownFor({
+        const reportMarkdown = markdownFor({
             item,
             context,
             decision,
@@ -1404,9 +1447,21 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                   reviewLeaseCommentId: acquiredReviewLease.commentId,
                 }
               : {}),
-          }),
-          "utf8",
-        );
+          });
+        writeFileSync(reportPath, reportMarkdown, "utf8");
+        if (itemLocalReviewHistoryPath) {
+          writeFileSync(
+            itemLocalReviewHistoryPath,
+            renderReviewCommentFromReport(
+              reportMarkdown,
+              "none",
+              previousLocalReviewCommentBody
+                ? { previousReviewCommentBody: previousLocalReviewCommentBody }
+                : undefined,
+            ),
+            "utf8",
+          );
+        }
         recordReviewLogPublication({
           ledger: reviewLedger,
           item,

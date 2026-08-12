@@ -643,7 +643,16 @@ This mode withholds GitHub token variables, points `gh` at an empty config
 directory inside the run artifacts, disables Codex web search, skips host-side
 URL/media preprocessing, and makes no GitHub reads or writes. It is not
 air-gapped: the Codex model invocation still uses its configured network
-service. Reports use a unique
+service. Repeated local reviews preserve the latest local result in the same
+bounded review-history format used by hosted review. The next run receives the
+previous findings and dispositions so it can verify fixes and avoid re-raising
+resolved findings. Exact-item history stays in the selected artifact directory.
+Committed-range history stays under `.git/clawsweeper/reviews/` and is reused
+only for the same target repository and resolved base when its reviewed commit
+is an ancestor of the current `HEAD`; changing the base or switching to an
+unrelated branch starts a fresh history.
+
+Reports use a unique
 `.git/clawsweeper/reviews/local-range-<time>-<pid>/` directory so the default
 run leaves the checkout clean. `--artifact-dir` overrides that location.
 
@@ -740,7 +749,6 @@ The dispatcher sends `repository_dispatch` events to this repository with the
 target repo and exact item number; ClawSweeper then runs one event job that
 reviews, comments, and checks immediate safe apply instead of waiting for the
 next hot-intake cron or bulk publish lane.
-
 
 ## Checks
 

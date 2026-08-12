@@ -741,6 +741,7 @@ export const {
   codexFailureLogKindForTest,
   codexReviewFailureRetryableForTest,
   defaultReviewArtifactDirForTest,
+  localExactReviewHistoryPathForTest,
   makeTreeReadOnlyForTest,
   prepareManagedLocalReviewCheckoutForTest,
   restoreTreeModesForTest,

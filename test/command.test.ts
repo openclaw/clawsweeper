@@ -19,6 +19,7 @@ import {
   exactEventReviewLeaseDispositionForTest,
   itemSourceRevisionSha256ForTest,
   isSuppliedReviewStartLeaseForTest,
+  localExactReviewHistoryPathForTest,
   prepareManagedLocalReviewCheckoutForTest,
   reviewPolicyHashForTest,
   reviewLeaseStillMatchesContextForTest,
@@ -98,6 +99,18 @@ test("local exact reviews default to item-specific artifacts", () => {
   assert.equal(defaultReviewArtifactDirForTest(true, 357, undefined), "artifacts/local-review-357");
   assert.equal(defaultReviewArtifactDirForTest(true, 357, [357]), "artifacts/reviews");
   assert.equal(defaultReviewArtifactDirForTest(false, 357, undefined), "artifacts/reviews");
+});
+
+test("local exact review history is keyed by repository and item", () => {
+  const artifactDir = join("artifacts", "reviews");
+  const first = localExactReviewHistoryPathForTest(artifactDir, "openclaw/openclaw", 357);
+  const second = localExactReviewHistoryPathForTest(artifactDir, "openclaw/openclaw", 358);
+  const otherRepo = localExactReviewHistoryPathForTest(artifactDir, "openclaw/clawsweeper", 357);
+
+  assert.equal(first, join(artifactDir, "local-review-history-openclaw-openclaw-357.md"));
+  assert.equal(second, join(artifactDir, "local-review-history-openclaw-openclaw-358.md"));
+  assert.notEqual(first, second);
+  assert.notEqual(first, otherRepo);
 });
 
 test("CSW-088 scheduled hot planning suppresses #117063, observes an in-flight update, and leaves explicit re-review eligible", () => {

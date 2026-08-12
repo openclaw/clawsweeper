@@ -108,6 +108,7 @@ export interface CreateReviewCommandWorkflowDependencies {
   DEFAULT_PLAN_BATCH_SIZE: 3;
   defaultItemsDir: (profile?: RepositoryProfile) => string;
   defaultLocalRangeArtifactDir: (targetDir: string) => string;
+  defaultLocalRangeHistoryPath: (targetDir: string, repo: string, baseSha: string) => string;
   defaultReviewArtifactDir: (
     localOnly: boolean,
     itemNumber: number | undefined,
@@ -127,6 +128,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     itemNumber: number | undefined,
     shardIndex: number,
   ) => UserFacingCommandError;
+  extractClawSweeperReviewCommentBody: (body: string) => PreviousClawSweeperReview;
   existingReview: (item: Pick<Item, "number" | "repo">, itemsDir: string) => ExistingReview | null;
   extractLatestClawSweeperReview: (
     comments: readonly unknown[],
@@ -198,6 +200,12 @@ export interface CreateReviewCommandWorkflowDependencies {
     itemNumber: number | undefined,
     itemNumbers: number[] | undefined,
   ) => itemNumber is number;
+  localRangeHistoryApplies: (
+    targetDir: string,
+    reviewedSha: string | null,
+    headSha: string,
+  ) => boolean;
+  localExactReviewHistoryPath: (artifactDir: string, repo: string, itemNumber: number) => string;
   makeTreeReadOnly: (path: string, snapshots?: FileModeSnapshot[]) => FileModeSnapshot[];
   markdownFor: (options: {
     item: Item;
@@ -242,6 +250,11 @@ export interface CreateReviewCommandWorkflowDependencies {
   }) => ActionEvent | null;
   refreshRelatedItemsContext: (item: Item, context: ItemContext) => unknown[];
   replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
+  renderReviewCommentFromReport: (
+    markdown: string,
+    reason: "none",
+    options?: { previousReviewCommentBody?: string },
+  ) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
   reportFileName: (repo: string, number: number) => string;
   reportReviewFindings: (markdown: string) => ReviewFinding[];

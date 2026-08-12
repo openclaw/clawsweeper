@@ -216,6 +216,42 @@ export function createReviewRuntime({
     return resolve(targetDir, gitArtifactRoot, `local-range-${Date.now()}-${process.pid}`);
   }
 
+  function defaultLocalRangeHistoryPath(targetDir: string, repo: string, baseSha: string): string {
+    const gitArtifactRoot = run("git", ["rev-parse", "--git-path", "clawsweeper/reviews"], {
+      cwd: targetDir,
+    }).trim();
+    return resolve(
+      targetDir,
+      gitArtifactRoot,
+      `local-range-review-history-${repositoryProfileFor(repo).slug}-${baseSha}.md`,
+    );
+  }
+
+  function localExactReviewHistoryPath(
+    artifactDir: string,
+    repo: string,
+    itemNumber: number,
+  ): string {
+    return join(
+      artifactDir,
+      `local-review-history-${repositoryProfileFor(repo).slug}-${itemNumber}.md`,
+    );
+  }
+
+  function localRangeHistoryApplies(
+    targetDir: string,
+    reviewedSha: string | null,
+    headSha: string,
+  ): boolean {
+    if (!reviewedSha || !/^[0-9a-f]{40}$/i.test(reviewedSha)) return false;
+    try {
+      run("git", ["merge-base", "--is-ancestor", reviewedSha, headSha], { cwd: targetDir });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function resolveReviewCheckout(options: {
     args: Args;
     artifactDir: string;
@@ -353,6 +389,14 @@ export function createReviewRuntime({
     itemNumbers: number[] | undefined,
   ): string {
     return defaultReviewArtifactDir(localOnly, itemNumber, itemNumbers);
+  }
+
+  function localExactReviewHistoryPathForTest(
+    artifactDir: string,
+    repo: string,
+    itemNumber: number,
+  ): string {
+    return localExactReviewHistoryPath(artifactDir, repo, itemNumber);
   }
 
   function prepareManagedLocalReviewCheckoutForTest(
@@ -1083,6 +1127,7 @@ ${extra}
     codexFailureLogKindForTest,
     codexReviewFailureRetryableForTest,
     defaultReviewArtifactDirForTest,
+    localExactReviewHistoryPathForTest,
     makeTreeReadOnlyForTest,
     prepareManagedLocalReviewCheckoutForTest,
     restoreTreeModesForTest,
@@ -1099,12 +1144,15 @@ ${extra}
     codexFailureReason,
     codexReviewFailureRetryable,
     defaultLocalRangeArtifactDir,
+    defaultLocalRangeHistoryPath,
     defaultReviewArtifactDir,
     displayDurationMs,
     displayPath,
     gitInfo,
     isSafeGitBranchName,
     localExactReviewItem,
+    localExactReviewHistoryPath,
+    localRangeHistoryApplies,
     makeTreeReadOnly,
     prCloseCoverageProofPromptTemplate,
     resolveReviewCheckout,

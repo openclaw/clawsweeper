@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { boolArg, itemNumbersArg, numberArg, stringArg } from "./clawsweeper-args.js";
 import {
   DEFAULT_CODEX_MODEL,
@@ -38,6 +38,7 @@ export function prepareReviewCommand(
     DEFAULT_PLAN_BATCH_SIZE,
     defaultItemsDir,
     defaultLocalRangeArtifactDir,
+    defaultLocalRangeHistoryPath,
     defaultReviewArtifactDir,
     ensureDir,
     gitInfo,
@@ -127,6 +128,10 @@ export function prepareReviewCommand(
     ? buildLocalRangeReview(openclawDir, targetRepo(), stringArg(args.base, ""))
     : undefined;
   ensureDir(artifactDir);
+  const localReviewHistoryPath = localRangeData
+    ? defaultLocalRangeHistoryPath(openclawDir, targetRepo(), localRangeData.baseSha)
+    : null;
+  if (localReviewHistoryPath) ensureDir(dirname(localReviewHistoryPath));
   const coordinationHeldPath = join(artifactDir, "coordination-held.json");
   if (existsSync(coordinationHeldPath)) unlinkSync(coordinationHeldPath);
   if (localRangeData) {
@@ -197,6 +202,7 @@ export function prepareReviewCommand(
     additionalPrompt,
     allowClosed,
     localRangeData,
+    localReviewHistoryPath,
     coordinationHeldPath,
     shardIndex,
     shardCount,
