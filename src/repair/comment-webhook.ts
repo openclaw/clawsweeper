@@ -162,10 +162,7 @@ export async function handleGitHubWebhook({
         process.env.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL ||
         process.env.QUEUE_URL ||
         "https://clawsweeper.openclaw.ai",
-      secret:
-        process.env.CLAWSWEEPER_INTERNAL_QUEUE_SECRET ||
-        process.env.CLAWSWEEPER_WEBHOOK_SECRET ||
-        "",
+      secret: process.env.CLAWSWEEPER_WEBHOOK_SECRET || "",
       intake,
     });
     return { statusCode: 202, body: { ok: true, ...result } };

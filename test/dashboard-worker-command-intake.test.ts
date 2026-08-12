@@ -2,6 +2,7 @@ import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import http from "node:http";
 
 import { ExactReviewCommandIntakeStore } from "../dashboard/exact-review-command-intake.ts";
+import { convergeCommandAcknowledgement } from "../dashboard/exact-review-queue.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import {
   assert,
@@ -178,6 +179,44 @@ test("durable command intake survives target throttling before queue admission",
   assert.equal(fixture.acknowledgements.length, 1);
 });
 
+test("command acknowledgement ignores forged markers and paginates to the trusted receipt", async (t) => {
+  const fixture = await startGithubLoopback();
+  t.after(() => fixture.close());
+  const intake = intakeFixture({ updatedAt: COMMAND_UPDATED_AT, body: COMMAND_BODY });
+  const ackMarker = `<!-- clawsweeper-command-ack:${COMMAND_COMMENT_ID} -->`;
+  fixture.seedAcknowledgement({
+    id: 30_000,
+    body: `${ackMarker}\n${intake.decision.commandStatusMarker}`,
+    login: "contributor",
+  });
+  for (let index = 0; index < 99; index += 1) {
+    fixture.seedAcknowledgement({
+      id: 31_000 + index,
+      body: `unrelated comment ${index}`,
+      login: "contributor",
+    });
+  }
+  fixture.seedAcknowledgement({
+    id: 40_000,
+    body: `${ackMarker}\n${intake.decision.commandStatusMarker}\nExact review queued.`,
+    login: "clawsweeper[bot]",
+  });
+
+  const result = await convergeCommandAcknowledgement({
+    env: { GITHUB_API_URL: fixture.origin },
+    token: Promise.resolve("loopback-token"),
+    decision: intake.decision,
+    sourceCommentId: COMMAND_COMMENT_ID,
+  });
+
+  assert.equal(result, 40_000);
+  assert.equal(fixture.acknowledgements.length, 101);
+  assert.equal(
+    fixture.acknowledgements.some((comment) => comment.id === 30_000),
+    true,
+  );
+});
+
 async function mainEquivalentOldCommandPath(origin: string) {
   const acknowledgement = await fetch(
     `${origin}/repos/openclaw/openclaw/issues/${ITEM_NUMBER}/comments`,
@@ -270,7 +309,13 @@ function receiptOutcome(storage: MemoryDurableStorage, commandVersion: string) {
 }
 
 async function startGithubLoopback() {
-  const acknowledgements: Array<{ id: number; body: string; created_at: string }> = [];
+  const acknowledgements: Array<{
+    id: number;
+    body: string;
+    created_at: string;
+    issue_url: string;
+    user: { login: string };
+  }> = [];
   let nextCommentId = 20_000;
   const state = {
     acknowledgements,
@@ -317,12 +362,22 @@ async function startGithubLoopback() {
       return sendJson(response, 201, { token: "loopback-token" });
     }
     if (url.pathname === `/repos/openclaw/openclaw/issues/${ITEM_NUMBER}/comments`) {
-      if (request.method === "GET") return sendJson(response, 200, acknowledgements);
+      if (request.method === "GET") {
+        const page = Math.max(1, Number(url.searchParams.get("page") || 1));
+        const perPage = Math.max(1, Number(url.searchParams.get("per_page") || 100));
+        return sendJson(
+          response,
+          200,
+          acknowledgements.slice((page - 1) * perPage, page * perPage),
+        );
+      }
       if (request.method === "POST") {
         const comment = {
           id: nextCommentId++,
           body: String(body.body || ""),
           created_at: new Date().toISOString(),
+          issue_url: `https://api.github.com/repos/openclaw/openclaw/issues/${ITEM_NUMBER}`,
+          user: { login: "clawsweeper[bot]" },
         };
         acknowledgements.push(comment);
         return sendJson(response, 201, comment);
@@ -368,6 +423,15 @@ async function startGithubLoopback() {
   assert.ok(address && typeof address === "object");
   return Object.assign(state, {
     origin: `http://127.0.0.1:${address.port}`,
+    seedAcknowledgement: (comment: { id: number; body: string; login: string }) => {
+      acknowledgements.push({
+        id: comment.id,
+        body: comment.body,
+        created_at: new Date(comment.id).toISOString(),
+        issue_url: `https://api.github.com/repos/openclaw/openclaw/issues/${ITEM_NUMBER}`,
+        user: { login: comment.login },
+      });
+    },
     close: () =>
       new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),

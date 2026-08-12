@@ -12422,22 +12422,66 @@ export async function convergeCommandAcknowledgement(options: {
   const token = await options.token;
   const ackMarker = clawSweeperCommandAckMarker(options.sourceCommentId);
   const statusMarker = options.decision.commandStatusMarker;
+  const trustedBotLogins = exactReviewCommandBotLogins(options.env);
+  const trustedAcknowledgement = (comment: Record<string, unknown>) =>
+    trustedBotLogins.has(
+      String(objectValue(comment.user).login || "")
+        .trim()
+        .toLowerCase(),
+    );
   const list = async () => {
-    const comments = await githubTokenJson({
-      env: options.env,
-      token,
-      path: `/repos/${options.decision.targetRepo}/issues/${options.decision.itemNumber}/comments?per_page=100`,
-      method: "GET",
-      body: undefined,
-      errorLabel: "direct command acknowledgement list",
-    });
-    return Array.isArray(comments)
-      ? comments
-          .map((comment) => objectValue(comment))
-          .filter((comment) => String(comment.body || "").includes(ackMarker))
-      : [];
+    const matching: Record<string, unknown>[] = [];
+    for (let page = 1; page <= 5; page += 1) {
+      const comments = await githubTokenJson({
+        env: options.env,
+        token,
+        path: `/repos/${options.decision.targetRepo}/issues/${options.decision.itemNumber}/comments?per_page=100&page=${page}`,
+        method: "GET",
+        body: undefined,
+        errorLabel: "direct command acknowledgement list",
+      });
+      if (!Array.isArray(comments)) break;
+      const records = comments.map((comment) => objectValue(comment));
+      matching.push(
+        ...records.filter(
+          (comment) =>
+            trustedAcknowledgement(comment) && String(comment.body || "").includes(ackMarker),
+        ),
+      );
+      if (records.length < 100) break;
+    }
+    return matching;
   };
   let comments = await list();
+  const suppliedStatusCommentId = Number(options.decision.statusCommentId) || null;
+  if (
+    suppliedStatusCommentId &&
+    !comments.some((comment) => Number(comment.id) === suppliedStatusCommentId)
+  ) {
+    const supplied = objectValue(
+      await githubTokenJson({
+        env: options.env,
+        token,
+        path: `/repos/${options.decision.targetRepo}/issues/comments/${suppliedStatusCommentId}`,
+        method: "GET",
+        body: undefined,
+        errorLabel: "direct command supplied acknowledgement",
+      }).catch((error) => {
+        if (error instanceof GitHubRequestError && error.status === 404) return null;
+        throw error;
+      }),
+    );
+    if (
+      Number(supplied.id) === suppliedStatusCommentId &&
+      trustedAcknowledgement(supplied) &&
+      String(supplied.body || "").includes(ackMarker) &&
+      String(supplied.issue_url || "").endsWith(
+        `/repos/${options.decision.targetRepo}/issues/${options.decision.itemNumber}`,
+      )
+    ) {
+      comments.push(supplied);
+    }
+  }
   let exact = comments.find((comment) => String(comment.body || "").includes(statusMarker));
   if (!exact) {
     const bare = comments.find(
@@ -12478,6 +12522,16 @@ export async function convergeCommandAcknowledgement(options: {
     });
   }
   return Number(convergence.keep?.id || exact.id) || null;
+}
+
+function exactReviewCommandBotLogins(env: Record<string, unknown>) {
+  const configured = String(env.CLAWSWEEPER_BOT_LOGINS || "")
+    .split(",")
+    .map((login) => login.trim().toLowerCase())
+    .filter(Boolean);
+  return new Set(
+    configured.length ? configured : ["clawsweeper[bot]", "openclaw-clawsweeper[bot]"],
+  );
 }
 
 async function addCommandReaction(options: {

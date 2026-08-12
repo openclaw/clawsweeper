@@ -3469,8 +3469,7 @@ function enqueueClawSweeperReReview(command: LooseRecord): LooseRecord {
     additionalPrompt: freeformReviewPrompt(command),
   });
   command.command_status_revision = intake.commandVersionId;
-  const secret =
-    process.env.CLAWSWEEPER_INTERNAL_QUEUE_SECRET || process.env.CLAWSWEEPER_WEBHOOK_SECRET || "";
+  const secret = process.env.CLAWSWEEPER_WEBHOOK_SECRET || "";
   if (!secret) throw new Error("internal exact-review queue secret is required");
   const result = runCommandMutation(command, {
     kind: "review_queue_admission",
