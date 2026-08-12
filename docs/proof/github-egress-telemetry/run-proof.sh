@@ -53,4 +53,5 @@ node docs/proof/github-egress-telemetry/run-proof.mjs
 
 test -s "$output_dir/proof-summary.json"
 test -s "$output_dir/public-observability.json"
+test -s "$output_dir/public-observability-15m.json"
 test -s "$output_dir/wrangler.log"
