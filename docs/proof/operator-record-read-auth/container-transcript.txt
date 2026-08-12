@@ -1,0 +1,169 @@
+PROOF_PHASE=environment
+provider=local-container
+image=node:24-bookworm
+head=c2c81fcdb6861a1b15ae9f9b6531d76c776d433b
+base=ae36d608d01701af7e06c313be96689068b5c890
+head_attestation=explicit_argument_with_content_hashes
+v24.19.0
+11.17.0
+jq-1.6
+PROOF_PHASE=corepack
+
+added 1 package in 274ms
+11.10.0
+PROOF_PHASE=install
+? Verifying lockfile against supply-chain policies (79 entries)...
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +19
++++++++++++++++++++
+
+   ╭───────────────────────────────────────────────╮
+   │                                               │
+   │     Update available! 11.10.0 → 11.21.0.      │
+   │     Changelog: https://pnpm.io/v/11.21.0      │
+   │   To update, run: corepack use pnpm@11.21.0   │
+   │                                               │
+   ╰───────────────────────────────────────────────╯
+
+✓ Lockfile passes supply-chain policies (79 entries in 528ms)
+Progress: resolved 19, reused 0, downloaded 17, added 17
+Progress: resolved 19, reused 0, downloaded 19, added 19, done
+
+dependencies:
++ typescript 7.0.2
++ yaml 2.9.0
+
+devDependencies:
++ @types/node 24.13.3
++ markdown-it 15.0.0
++ oxfmt 0.58.0
++ oxlint 1.73.0
++ oxlint-tsgolint 0.24.0
+
+Done in 1.8s using pnpm v11.10.0
+PROOF_PHASE=build
+PROOF_PHASE=focused-router-test
+✔ canonical record reads accept distinct webhook and operator secrets (20.805956ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 164.649768
+PROOF_PHASE=real-worker
+{
+  "schema": "clawsweeper-operator-record-read-auth-proof/v1",
+  "generated_at": "2026-08-12T23:56:21.024Z",
+  "merge_base": "ae36d608d01701af7e06c313be96689068b5c890",
+  "head": "c2c81fcdb6861a1b15ae9f9b6531d76c776d433b",
+  "runtime": "sequential real wrangler dev --local Workers over loopback HTTP",
+  "configuration": {
+    "secrets_distinct": true,
+    "shared_secret_fixture": false,
+    "persisted_state_shared_between_boots": false,
+    "candidate_git_metadata": false,
+    "candidate_head_source": "explicit Crabbox argument",
+    "baseline_source": "exact public GitHub commit"
+  },
+  "before": {
+    "webhook": {
+      "status": 200,
+      "body": {
+        "digest": "0f26c70ecb4fcf26431384b70af9851d87404a8a497f363974a247080f8b9e11",
+        "revision": 1,
+        "content_matches": true,
+        "updated_at_valid": true
+      }
+    },
+    "operator": {
+      "status": 401,
+      "body": {
+        "error": "invalid_signature"
+      }
+    },
+    "garbage": {
+      "status": 401,
+      "body": {
+        "error": "invalid_signature"
+      }
+    }
+  },
+  "after": {
+    "webhook": {
+      "status": 200,
+      "body": {
+        "digest": "0f26c70ecb4fcf26431384b70af9851d87404a8a497f363974a247080f8b9e11",
+        "revision": 1,
+        "content_matches": true,
+        "updated_at_valid": true
+      }
+    },
+    "operator": {
+      "status": 200,
+      "body": {
+        "digest": "0f26c70ecb4fcf26431384b70af9851d87404a8a497f363974a247080f8b9e11",
+        "revision": 1,
+        "content_matches": true,
+        "updated_at_valid": true
+      }
+    },
+    "garbage": {
+      "status": 401,
+      "body": {
+        "error": "invalid_signature"
+      }
+    }
+  },
+  "process_tree_shutdowns": [
+    {
+      "label": "merge-base",
+      "method": "process_group_and_descendants",
+      "targeted_processes": 8,
+      "health_down": true
+    },
+    {
+      "label": "candidate",
+      "method": "process_group_and_descendants",
+      "targeted_processes": 8,
+      "health_down": true
+    }
+  ],
+  "result": {
+    "merge_base_operator_status": 401,
+    "candidate_operator_status": 200,
+    "candidate_webhook_status": 200,
+    "candidate_garbage_status": 401,
+    "status": "succeeded"
+  },
+  "limits": [
+    "Credentials and canonical content are synthetic local fixtures.",
+    "The proof exercises local Worker routing and Durable Object persistence, not production state or GitHub mutation.",
+    "The operational-cursor route is outside scope because it has no operator-secret consumer."
+  ]
+}
+OPERATOR_RECORD_READ_AUTH_PROOF_RC=0
+PROOF_PHASE=dashboard-strict
+PROOF_PHASE=full-gate
+. check:dashboard-queue-boundary: dashboard queue boundary check passed
+. check:docs: Documentation checks passed.
+. format:check: All matched files use the correct format.
+ℹ tests 12
+ℹ pass 12
+ℹ fail 0
+ℹ skipped 0
+ℹ tests 3401
+ℹ pass 3393
+ℹ fail 0
+ℹ skipped 8
+PROOF_PHASE=content
+ea6547649937116d24ee3ab187ca8e9835231584ac585bfc9addeded3b37c922  dashboard/worker.ts
+c0c1825dd97733ea09194da9554f805a9fb9404603e6c43d4a15e58bf4ec0525  docs/proof/operator-record-read-auth/behavior-contract.md
+4d54adab56e97ecb21fa9f6dea49313762d904a4704deae38e8d2e9f27923037  docs/proof/operator-record-read-auth/red-green.md
+521718fca6b486d29bd649d27f3628ce225903f4b3a9ff27def531268ec51c29  docs/proof/operator-record-read-auth/run-proof.mjs
+a8698271a34774193d753901386f71e14f696e4038678786467e3c40e07fe924  docs/proof/operator-record-read-auth/run-proof.sh
+8484d0e38125141f4388b9db1f5c5656b1e95cf7ae90da5c82f4dad1f852fb47  test/dashboard-worker-publication-lifecycle.test.ts
+source_status=git_metadata_unavailable_after_linked-worktree_sync
+PROOF_RESULT=pass

@@ -1,0 +1,90 @@
+{
+  "schema": "clawsweeper-operator-record-read-auth-proof/v1",
+  "generated_at": "2026-08-12T23:56:21.024Z",
+  "merge_base": "ae36d608d01701af7e06c313be96689068b5c890",
+  "head": "c2c81fcdb6861a1b15ae9f9b6531d76c776d433b",
+  "runtime": "sequential real wrangler dev --local Workers over loopback HTTP",
+  "configuration": {
+    "secrets_distinct": true,
+    "shared_secret_fixture": false,
+    "persisted_state_shared_between_boots": false,
+    "candidate_git_metadata": false,
+    "candidate_head_source": "explicit Crabbox argument",
+    "baseline_source": "exact public GitHub commit"
+  },
+  "before": {
+    "webhook": {
+      "status": 200,
+      "body": {
+        "digest": "0f26c70ecb4fcf26431384b70af9851d87404a8a497f363974a247080f8b9e11",
+        "revision": 1,
+        "content_matches": true,
+        "updated_at_valid": true
+      }
+    },
+    "operator": {
+      "status": 401,
+      "body": {
+        "error": "invalid_signature"
+      }
+    },
+    "garbage": {
+      "status": 401,
+      "body": {
+        "error": "invalid_signature"
+      }
+    }
+  },
+  "after": {
+    "webhook": {
+      "status": 200,
+      "body": {
+        "digest": "0f26c70ecb4fcf26431384b70af9851d87404a8a497f363974a247080f8b9e11",
+        "revision": 1,
+        "content_matches": true,
+        "updated_at_valid": true
+      }
+    },
+    "operator": {
+      "status": 200,
+      "body": {
+        "digest": "0f26c70ecb4fcf26431384b70af9851d87404a8a497f363974a247080f8b9e11",
+        "revision": 1,
+        "content_matches": true,
+        "updated_at_valid": true
+      }
+    },
+    "garbage": {
+      "status": 401,
+      "body": {
+        "error": "invalid_signature"
+      }
+    }
+  },
+  "process_tree_shutdowns": [
+    {
+      "label": "merge-base",
+      "method": "process_group_and_descendants",
+      "targeted_processes": 8,
+      "health_down": true
+    },
+    {
+      "label": "candidate",
+      "method": "process_group_and_descendants",
+      "targeted_processes": 8,
+      "health_down": true
+    }
+  ],
+  "result": {
+    "merge_base_operator_status": 401,
+    "candidate_operator_status": 200,
+    "candidate_webhook_status": 200,
+    "candidate_garbage_status": 401,
+    "status": "succeeded"
+  },
+  "limits": [
+    "Credentials and canonical content are synthetic local fixtures.",
+    "The proof exercises local Worker routing and Durable Object persistence, not production state or GitHub mutation.",
+    "The operational-cursor route is outside scope because it has no operator-secret consumer."
+  ]
+}

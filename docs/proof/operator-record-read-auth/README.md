@@ -14,6 +14,6 @@ node docs/proof/operator-record-read-auth/run-proof.mjs \
   "$(git merge-base HEAD origin/main)"
 ```
 
-The final Docker-backed Crabbox `local-container` receipt, captured transcript, behavior report, content hashes, and cleanup result are recorded beside this file after the implementation commit is frozen.
+Docker-backed Crabbox `provider=local-container` ran the frozen executable head `c2c81fcdb6861a1b15ae9f9b6531d76c776d433b` in `node:24-bookworm` on lease `cbx_c96e9586c6f8` (`quick-shrimp-ead6`). The router test passed, the real Worker produced the required 401→200 operator transition with webhook 200 and garbage 401, both process trees stopped cleanly, `check:dashboard-strict` passed without adding `worker.ts`, and the full gate passed 3,393 of 3,401 tests with eight platform skips and zero failures. Crabbox exited 0 and stopped the lease automatically. The frozen [behavior report](behavior-report.json), [receipt](receipt.json), captured transcript, and stderr are recorded beside this file.
 
 OpenClaw Bay is unaffected: no queue lifecycle, telemetry, dashboard data contract, or observer/action boundary changes. The operational-cursor route is also unchanged because its only current consumer uses the webhook secret.
