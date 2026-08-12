@@ -33,5 +33,13 @@ sha256sum \
   scripts/exact-review-dead-letter-operator.mjs \
   scripts/operator-skip-reasons.mjs \
   test/exact-review-dead-letter-operator.test.ts
-git diff --check
+corepack pnpm exec oxfmt --check \
+  .github/workflows/exact-review-dead-letter-operator.yml \
+  .github/workflows/exact-review-dead-letter-reconcile.yml \
+  dashboard/exact-review-queue.ts \
+  dashboard/github-api.ts \
+  dashboard/worker.ts \
+  scripts/exact-review-dead-letter-operator.mjs \
+  scripts/operator-skip-reasons.mjs \
+  test/exact-review-dead-letter-operator.test.ts
 echo "PROOF_RESULT=pass"
