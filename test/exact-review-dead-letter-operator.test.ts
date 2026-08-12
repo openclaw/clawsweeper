@@ -56,7 +56,10 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
   assert.equal(scheduled.on.schedule[0].cron, "*/5 * * * *");
   assert.equal(scheduled.concurrency.group, workflow.concurrency.group);
   assert.equal(scheduled.concurrency["cancel-in-progress"], false);
-  assert.deepEqual(scheduled.permissions, workflow.permissions);
+  assert.deepEqual(scheduled.permissions, {
+    actions: "write",
+    ...workflow.permissions,
+  });
   assert.equal(scheduled.jobs.reconcile.environment, "exact-review-operator");
   assert.equal(scheduled.on.workflow_dispatch.inputs.execute.default, false);
   assert.equal(scheduled.on.workflow_dispatch.inputs.max_targets.default, "100");

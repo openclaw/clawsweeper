@@ -26,6 +26,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: write
   contents: read
   issues: read
   pull-requests: read
@@ -53,6 +54,46 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "24"
+
+      - name: Restore permanent queued-run zombie state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact_dir=.artifacts/exact-review-dlq
+          mkdir -p "$artifact_dir"
+          artifact_id="$(gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/artifacts" -F per_page=100 \
+            --jq '[.artifacts[] | select(.expired == false) | select(.name | startswith("exact-review-dlq-reconcile-"))] | sort_by(.created_at) | reverse | .[0].id // empty')"
+          if [ -z "$artifact_id" ]; then
+            echo "no prior reconcile artifact; using checked-in zombie seed"
+            exit 0
+          fi
+          archive="$RUNNER_TEMP/exact-review-dlq-prior.zip"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$archive"
+          entry="$(unzip -Z1 "$archive" | awk '/(^|\/)stuck-queued-zombies\.json$/ { print; exit }')"
+          if [ -z "$entry" ]; then
+            echo "prior reconcile artifact has no queued-run zombie state; using checked-in seed"
+            exit 0
+          fi
+          unzip -p "$archive" "$entry" > "$artifact_dir/prior-stuck-queued-zombies.json"
+          echo "restored queued-run zombie state from artifact ${artifact_id}"
+
+      - name: Remediate demonstrably stuck queued runs
+        env:
+          EXECUTE: ${{ github.event_name == 'schedule' && 'true' || github.event.inputs.execute }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          args=(
+            --repository "$GITHUB_REPOSITORY"
+            --zombie-state .artifacts/exact-review-dlq/prior-stuck-queued-zombies.json
+            --zombie-output .artifacts/exact-review-dlq/stuck-queued-zombies.json
+            --output .artifacts/exact-review-dlq/stuck-queued-runs.json
+          )
+          if [[ "$EXECUTE" == "true" ]]; then
+            args+=(--execute)
+          fi
+          node scripts/stuck-queued-run-remediation.mjs "${args[@]}"
 
       - name: Verify live recovery guards
         run: |
@@ -120,6 +161,8 @@ jobs:
           path: |
             .artifacts/exact-review-dlq/inventory.json
             .artifacts/exact-review-dlq/parked-reviews.json
+            .artifacts/exact-review-dlq/stuck-queued-runs.json
+            .artifacts/exact-review-dlq/stuck-queued-zombies.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14

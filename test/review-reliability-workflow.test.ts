@@ -56,26 +56,35 @@ test("review reliability telemetry shares the terminal reconciler workflow", () 
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
 });
 
-test("queued workflow janitor is bounded to stale queued runs", () => {
+test("queued workflow remediation shares the guarded dead-letter cadence", () => {
+  assert.equal(existsSync(".github/workflows/queued-run-janitor.yml"), false);
   const workflow = parse(
-    readFileSync(".github/workflows/queued-run-janitor.yml", "utf8"),
+    readFileSync(".github/workflows/exact-review-dead-letter-reconcile.yml", "utf8"),
   ) as Record<string, any>;
-  assert.deepEqual(workflow.permissions, {});
-  assert.deepEqual(workflow.on.schedule, [{ cron: "24 * * * *" }]);
-  assert.ok(Object.hasOwn(workflow.on, "workflow_dispatch"));
-  assert.equal(workflow.concurrency.group, "queued-run-janitor");
+  assert.equal(workflow.on.schedule[0].cron, "*/5 * * * *");
+  assert.equal(workflow.concurrency.group, "exact-review-dead-letter-operator");
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
-  assert.equal(workflow.env.STALE_HOURS, 24);
-  assert.equal(workflow.env.MAX_CANCELLATIONS, 20);
-  assert.deepEqual(workflow.jobs.reap.permissions, { actions: "write" });
-  const run = String(workflow.jobs.reap.steps[0].run);
-  assert.match(run, /-f status=queued/);
-  assert.match(run, /-f "created=<\$\{cutoff\}"/);
-  assert.match(run, /\[\.id, \.created_at, \.display_title\] \| @tsv/);
-  assert.match(run, /actions\/runs\/\$\{run_id\}\/cancel/);
-  assert.match(run, /actions\/runs\/\$\{run_id\}\/force-cancel/);
-  assert.match(run, /cancelled \+ wedged/);
-  assert.doesNotMatch(run, /status=waiting/);
+  assert.equal(workflow.permissions.actions, "write");
+  const restore = workflow.jobs.reconcile.steps.find(
+    (step: Record<string, unknown>) => step.name === "Restore permanent queued-run zombie state",
+  );
+  assert.match(String(restore.run), /actions\/artifacts/);
+  assert.match(String(restore.run), /stuck-queued-zombies\.json/);
+  const remediate = workflow.jobs.reconcile.steps.find(
+    (step: Record<string, unknown>) => step.name === "Remediate demonstrably stuck queued runs",
+  );
+  assert.equal(remediate.env.GITHUB_TOKEN, "${{ github.token }}");
+  assert.equal(
+    remediate.env.EXECUTE,
+    "${{ github.event_name == 'schedule' && 'true' || github.event.inputs.execute }}",
+  );
+  assert.match(String(remediate.run), /stuck-queued-run-remediation\.mjs/);
+  assert.match(String(remediate.run), /--execute/);
+  const upload = workflow.jobs.reconcile.steps.find(
+    (step: Record<string, unknown>) => step.name === "Upload sanitized inventory",
+  );
+  assert.match(String(upload.with.path), /stuck-queued-runs\.json/);
+  assert.match(String(upload.with.path), /stuck-queued-zombies\.json/);
 });
 
 test("exact review generation enters finalization before state hydration", () => {
