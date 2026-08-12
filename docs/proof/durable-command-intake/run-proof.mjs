@@ -31,10 +31,20 @@ for (const directory of [baselineDir, candidateDir, baselinePersist, candidatePe
   fs.mkdirSync(directory, { recursive: true });
 }
 
-const baseSha = git(["rev-parse", baseRef]);
-const candidateSha = git(["rev-parse", "HEAD"]);
-archive(baseSha, baselineDir);
-archive(candidateSha, candidateDir);
+const hasGitMetadata = isGitRepository();
+const baseSha = /^[0-9a-f]{40}$/.test(baseRef) ? baseRef : git(["rev-parse", baseRef]);
+const candidateSha =
+  process.env.PROOF_CANDIDATE_SHA || (hasGitMetadata ? git(["rev-parse", "HEAD"]) : "");
+if (!/^[0-9a-f]{40}$/.test(candidateSha)) {
+  throw new Error("PROOF_CANDIDATE_SHA is required when Crabbox sync omits Git metadata");
+}
+if (hasGitMetadata) {
+  archive(baseSha, baselineDir);
+  archive(candidateSha, candidateDir);
+} else {
+  cloneBaseline(baseSha, baselineDir);
+  copyCandidateTree(candidateDir);
+}
 
 const { privateKey } = generateKeyPairSync("rsa", {
   modulusLength: 2048,
@@ -407,6 +417,53 @@ function archive(ref, destination) {
     maxBuffer: 256 * 1024 * 1024,
   });
   if (extracted.status !== 0) throw new Error(`tar extraction failed: ${extracted.stderr}`);
+}
+
+function cloneBaseline(ref, destination) {
+  const parent = path.dirname(destination);
+  const checkout = path.join(parent, "baseline-checkout");
+  const cloned = spawnSync(
+    "git",
+    [
+      "clone",
+      "--filter=blob:none",
+      "--no-checkout",
+      "https://github.com/openclaw/clawsweeper.git",
+      checkout,
+    ],
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+  );
+  if (cloned.status !== 0) throw new Error(`baseline clone failed: ${cloned.stderr}`);
+  const checkedOut = spawnSync("git", ["-C", checkout, "checkout", "--detach", ref], {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (checkedOut.status !== 0) throw new Error(`baseline checkout failed: ${checkedOut.stderr}`);
+  fs.rmSync(destination, { recursive: true, force: true });
+  fs.renameSync(checkout, destination);
+}
+
+function copyCandidateTree(destination) {
+  const sourceRoot = process.cwd();
+  fs.cpSync(sourceRoot, destination, {
+    recursive: true,
+    filter: (source) => {
+      const relative = path.relative(sourceRoot, source);
+      if (!relative) return true;
+      const first = relative.split(path.sep)[0];
+      return ![".artifacts", ".crabbox", ".git", "coverage", "dist", "node_modules"].includes(
+        first,
+      );
+    },
+  });
+}
+
+function isGitRepository() {
+  return (
+    spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
+      encoding: "utf8",
+    }).status === 0
+  );
 }
 
 function git(args) {
