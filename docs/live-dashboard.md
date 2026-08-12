@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers and the designated Cloudflare operator
 - Source of truth: `dashboard/worker.ts`, `dashboard/exact-review-queue.ts`,
   `dashboard/wrangler.toml`, dashboard tests, and deployed read-only endpoints
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@a1795973a9e6bb00b73cd6adc21a4ea02ca78ced`
 - Update when: routes, public fields, queue projections, capacity, alerts,
   deployment, or state-writer telemetry changes
 
@@ -374,6 +374,15 @@ The publication lane exposes two additional observer-only surfaces:
   class, endpoint category, operation class, outcome, and whether the item
   revision was already retried. These counters are for request-budget analysis;
   they never contain raw URLs, item content, credentials, or local paths.
+
+`GET /api/github-egress-observability?hours=6` adds the publication transport
+denominator without changing those version-1 fields. It separates durable
+members, `gh` invocations, and observed HTTP wire attempts; attributes the
+selected credential pool, method, normalized route, page, source, stage, claim
+generation, and first/repeat revision; and includes sanitized 403/429 reset
+header observations. See
+[GitHub publication egress telemetry](github-egress-telemetry.md) for exact
+semantics, retention, privacy, and known opaque boundaries.
 
 Bay renders these fields as health context only. It has no circuit reset,
 workflow dispatch, queue retry, replay, acknowledgement, or gate control.

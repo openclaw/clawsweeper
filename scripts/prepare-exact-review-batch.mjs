@@ -16,6 +16,10 @@ import {
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  appendLegacyAvoidedGithubEgressMember,
+  recordGithubEgressMember,
+} from "../dist/github-egress-observer.js";
 
 const DEFAULT_CONCURRENCY = 4;
 const MAX_CONCURRENCY = 4;
@@ -113,6 +117,16 @@ async function controller() {
         repeat_revision: item.repeatRevision === true,
         count: 1,
       });
+      appendLegacyAvoidedGithubEgressMember({
+        env: { ...process.env, TARGET_REPO: String(item.decision?.targetRepo || "") },
+        poolClass:
+          activeCircuit.scope === "repository_actions" ? "repository_actions" : "target_app",
+        stage: "publication_prepare",
+        sourceAction: item.decision?.publication?.producerDecision?.sourceAction,
+        operation: "artifact_download",
+        claimGeneration: item.claimGeneration,
+        repeatRevision: item.repeatRevision === true,
+      });
       writeFailure(outcomePath, "retryable_failure", "github_rate_limit", {
         retryAt: activeCircuit.retry_at,
         rateLimitScope: activeCircuit.scope,
@@ -123,10 +137,30 @@ async function controller() {
       return { kind: "circuit_deferred", durationMs: 0 };
     }
     if (existsSync(heartbeatFailurePath) || Date.now() >= deadline) {
+      recordGithubEgressMember({
+        env: { ...process.env, TARGET_REPO: String(item.decision?.targetRepo || "") },
+        poolClass: "repository_actions",
+        stage: "publication_prepare",
+        sourceAction: item.decision?.publication?.producerDecision?.sourceAction,
+        claimGeneration: item.claimGeneration,
+        repeatRevision: item.repeatRevision === true,
+        attempted: false,
+        outcome: "pre_wire_failure",
+      });
       writeFailure(outcomePath, "retryable_failure", "unknown_failure");
       return { kind: "not_admitted", durationMs: 0 };
     }
     admitted += 1;
+    recordGithubEgressMember({
+      env: { ...process.env, TARGET_REPO: String(item.decision?.targetRepo || "") },
+      poolClass: "repository_actions",
+      stage: "publication_prepare",
+      sourceAction: item.decision?.publication?.producerDecision?.sourceAction,
+      claimGeneration: item.claimGeneration,
+      repeatRevision: item.repeatRevision === true,
+      attempted: true,
+      outcome: "attempted",
+    });
     const identity = createHash("sha256")
       .update(`${item.itemKey}:${item.revision}:${item.claimGeneration}`)
       .digest("hex")
@@ -228,6 +262,14 @@ async function worker(itemPath, root, workspace) {
       ".artifacts/exact-review-batch/github-request-metrics.jsonl",
   );
   const repositoryToken = env("REPO_TOKEN");
+  const itemEgressEnv = {
+    TARGET_REPO: targetRepo,
+    CLAWSWEEPER_GITHUB_POOL_CLASS: "repository_actions",
+    CLAWSWEEPER_GITHUB_STAGE: "publication_prepare",
+    CLAWSWEEPER_GITHUB_SOURCE_ACTION: String(producer.sourceAction || ""),
+    CLAWSWEEPER_GITHUB_CLAIM_GENERATION: String(item.claimGeneration),
+    CLAWSWEEPER_GITHUB_REQUEST_REPEAT: String(item.repeatRevision === true),
+  };
   let result = await run(
     "gh",
     [
@@ -241,7 +283,14 @@ async function worker(itemPath, root, workspace) {
       "--dir",
       bundleDir,
     ],
-    { env: { ...process.env, GH_TOKEN: repositoryToken }, capture: true },
+    {
+      env: {
+        ...process.env,
+        GH_TOKEN: repositoryToken,
+        ...itemEgressEnv,
+      },
+      capture: true,
+    },
   );
   appendRequestMetric(requestMetricsPath, {
     scope: "repository_actions",
@@ -257,6 +306,7 @@ async function worker(itemPath, root, workspace) {
       repositoryToken,
       requestMetricsPath,
       rateLimitObservationPath,
+      itemEgressEnv,
     );
     appendJsonLine(rateLimitObservationPath, observation);
     return writeFailure(outcomePath, "retryable_failure", "github_rate_limit", {
@@ -335,6 +385,8 @@ async function worker(itemPath, root, workspace) {
       EXACT_REVIEW_BATCH_MUTATION_OUTPUT: outcomePath,
       CLAWSWEEPER_GITHUB_RATE_LIMIT_OBSERVATION_PATH: rateLimitObservationPath,
       CLAWSWEEPER_GITHUB_REQUEST_METRICS_PATH: requestMetricsPath,
+      CLAWSWEEPER_GITHUB_STAGE: "publication_apply",
+      CLAWSWEEPER_GITHUB_SOURCE_ACTION: String(producer.sourceAction || ""),
       CLAWSWEEPER_GITHUB_REQUEST_REPEAT: String(item.repeatRevision === true),
     },
   });
@@ -363,7 +415,12 @@ function githubThrottleText(value) {
   );
 }
 
-async function resolveRateLimitObservation(token, requestMetricsPath, observationPath) {
+async function resolveRateLimitObservation(
+  token,
+  requestMetricsPath,
+  observationPath,
+  telemetryEnv,
+) {
   const now = Date.now();
   try {
     closeSync(openSync(`${observationPath}.lookup-repository_actions.lock`, "wx"));
@@ -384,7 +441,7 @@ async function resolveRateLimitObservation(token, requestMetricsPath, observatio
       "--jq",
       "{remaining:.resources.core.remaining,reset:.resources.core.reset}",
     ],
-    { env: { ...process.env, GH_TOKEN: token }, capture: true },
+    { env: { ...process.env, GH_TOKEN: token, ...telemetryEnv }, capture: true },
   );
   appendRequestMetric(requestMetricsPath, {
     scope: "repository_actions",

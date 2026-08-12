@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: the linked repository files and their owning code,
   configuration, workflows, and tests
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@a1795973a9e6bb00b73cd6adc21a4ea02ca78ced`
 - Update when: a document is added, retired, moved, changes lifecycle, or gains a
   new canonical owner
 
@@ -88,6 +88,8 @@ everything else requires human comparison with current main.
 
 - [Live dashboard](live-dashboard.md) — active; Worker status and operational
   telemetry
+- [GitHub publication egress telemetry](github-egress-telemetry.md) — active;
+  wire denominator, credential attribution, completeness, and retention
 - [OpenClaw Bay](openclaw-bay-demo.md) — active; public six-lane visualization
 - [Triage dashboard](triage-dashboard.md) — active; cached issue triage
 - [PR proof triage](pr-proof-triage-dashboard.md) — active; maintainer proof
@@ -163,6 +165,8 @@ Review the relevant pages in the same change when any of these surfaces move:
   batching, direct publication, or state writing: scheduler, limits, dashboard,
   Bay, and queue runbooks
 - dashboard route, projection, or public-field changes: dashboard and Bay docs
+- publication GitHub request paths, credential selection, or egress fields:
+  GitHub egress telemetry and public API docs
 - mutation, close, proof, repair, or merge policy changes: policy pages,
   CONTRIBUTING, AGENTS, and repair operations
 - workflow retirement or replacement: every command example and compatibility

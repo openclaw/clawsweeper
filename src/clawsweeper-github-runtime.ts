@@ -139,8 +139,41 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
             ...process.env,
             ...overrides,
           }));
-    if (token) return { ...overrides, GH_TOKEN: token };
-    return Object.keys(overrides).length > 0 ? overrides : undefined;
+    const selected = token ? { ...overrides, GH_TOKEN: token } : overrides;
+    const telemetryEnv = githubEgressEnvironment(
+      args,
+      selected,
+      token ? "public_read_fallback" : undefined,
+    );
+    if (token) return { ...selected, ...telemetryEnv };
+    return Object.keys(selected).length > 0 || telemetryEnv
+      ? { ...selected, ...telemetryEnv }
+      : undefined;
+  }
+
+  function githubEgressEnvironment(
+    args: readonly string[],
+    overrides: NodeJS.ProcessEnv = {},
+    selectedPoolClass?: "public_read_fallback",
+  ): NodeJS.ProcessEnv | undefined {
+    if (!process.env.CLAWSWEEPER_GITHUB_EGRESS_METRICS_PATH?.trim()) return undefined;
+    const scope = githubRequestScope(args, overrides);
+    return {
+      CLAWSWEEPER_GITHUB_POOL_CLASS:
+        selectedPoolClass ?? (scope === "repository_actions" ? "repository_actions" : "target_app"),
+      CLAWSWEEPER_GITHUB_STAGE:
+        process.env.CLAWSWEEPER_GITHUB_STAGE ||
+        (process.env.EXACT_EVENT_PUBLICATION === "true"
+          ? "publication_apply"
+          : "publication_recovery"),
+      CLAWSWEEPER_GITHUB_SOURCE_ACTION: process.env.CLAWSWEEPER_GITHUB_SOURCE_ACTION || "",
+      CLAWSWEEPER_GITHUB_CLAIM_GENERATION:
+        process.env.CLAWSWEEPER_GITHUB_CLAIM_GENERATION ||
+        process.env.EXACT_REVIEW_BATCH_CLAIM_GENERATION ||
+        process.env.EXACT_REVIEW_CLAIM_GENERATION ||
+        "",
+      CLAWSWEEPER_GITHUB_REQUEST_REPEAT: process.env.CLAWSWEEPER_GITHUB_REQUEST_REPEAT || "",
+    };
   }
 
   function githubRequestScope(
@@ -227,7 +260,11 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
         ],
         {
           timeoutMs: RATE_LIMIT_LOOKUP_TIMEOUT_MS,
-          env: { ...process.env, GH_TOKEN: token },
+          env: {
+            ...process.env,
+            GH_TOKEN: token,
+            ...githubEgressEnvironment(["api", "rate_limit"], { GH_TOKEN: token }),
+          },
         },
       );
       recordGitHubRequest(["api", "rate_limit"], scope, "success");

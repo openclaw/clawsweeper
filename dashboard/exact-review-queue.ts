@@ -60,6 +60,7 @@ import {
   type LifecycleTerminalDisposition,
 } from "./exact-review-lifecycle.ts";
 import { ExactReviewLifecycleTelemetryStore } from "./exact-review-lifecycle-telemetry.ts";
+import { GithubEgressTelemetryStore } from "./github-egress-telemetry.ts";
 import { recentDurablePublicationEvents } from "./recent-durable-publication-events.ts";
 import { sanitizedServerError } from "./error-safety.ts";
 import {
@@ -637,6 +638,7 @@ export class ExactReviewQueue {
   private stateWriterCoordinator;
   private lifecycleProjectionStore;
   private lifecycleTelemetryStore;
+  private githubEgressTelemetryStore;
   private readonly random: () => number;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
   private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
@@ -660,6 +662,7 @@ export class ExactReviewQueue {
     this.stateWriterCoordinator = new StateWriterCoordinator(this.storage);
     this.lifecycleProjectionStore = new ExactReviewLifecycleProjectionStore(this.storage);
     this.lifecycleTelemetryStore = new ExactReviewLifecycleTelemetryStore(this.storage);
+    this.githubEgressTelemetryStore = new GithubEgressTelemetryStore(this.storage);
     // Direct in-process users retain the established eager setup behavior.
     // A real Durable Object has blockConcurrencyWhile; defer that setup until a
     // non-Bay request so constructing it for the public pure reader cannot
@@ -682,6 +685,16 @@ export class ExactReviewQueue {
     }
     await this.ensureReady();
     this.cleanupLegacyCompatibilitySync();
+    if (request.method === "POST" && url.pathname === "/github-egress-telemetry") {
+      const result = this.githubEgressTelemetryStore.ingest(await request.json().catch(() => null));
+      return result.ok ? json({ ok: true, ...result }, 202) : json({ error: result.error }, 400);
+    }
+    if (request.method === "GET" && url.pathname === "/github-egress-observability") {
+      const result = this.githubEgressTelemetryStore.publicObservability(
+        Number(url.searchParams.get("hours") || "6"),
+      );
+      return result ? json(result) : json({ error: "invalid_github_egress_window" }, 400);
+    }
     if (request.method === "POST" && url.pathname === "/review-coverage/inventory") {
       const inventory = normalizeReviewCoverageInventory(await request.json().catch(() => null));
       if (!inventory) return json({ error: "invalid_review_coverage_inventory" }, 400);
@@ -3145,6 +3158,7 @@ export class ExactReviewQueue {
                 : null,
               counters: state.dispatcher?.githubRequestMetrics?.counters || {},
             },
+            github_egress_metrics_v2: this.githubEgressTelemetryStore.publicSummary(now),
             batches: {
               enabled: exactReviewPublicationBatchingEnabled(this.env),
               max_items: exactReviewPublicationBatchSize(this.env),
@@ -7285,6 +7299,7 @@ export class ExactReviewQueue {
     this.stateWriterCoordinator.ensureSchemaSync();
     this.lifecycleProjectionStore.ensureSchemaSync();
     this.lifecycleTelemetryStore.ensureSchemaSync();
+    this.githubEgressTelemetryStore.ensureSchemaSync();
     let meta = this.readStorageMetaSync();
     let migratedLegacy = false;
     const legacy = this.storage.kv.get(EXACT_REVIEW_QUEUE_STATE_KEY) as
@@ -9754,6 +9769,9 @@ function exactReviewClaimResponse(
     ...(protocolVersion === 1 ? { revision: item.leaseRevision } : {}),
     lease_revision: item.leaseRevision,
     claim_generation: claimGeneration,
+    ...(protocolVersion === 2
+      ? { repeat_revision: Number(item.publicationFailureAttempts || 0) > 0 }
+      : {}),
     decision: item.leaseDecision,
     ...(item.terminalFinalization
       ? {

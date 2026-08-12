@@ -24,6 +24,7 @@
       "pages": [
         "limits.md",
         "public-api.md",
+        "github-egress-telemetry.md",
         "operator-configuration.md",
         "live-dashboard.md",
         "openclaw-bay-demo.md",

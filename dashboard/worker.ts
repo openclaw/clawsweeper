@@ -927,6 +927,11 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewQueueRequest(request, env, "/publication-batches/complete");
+    if (
+      url.pathname === "/internal/exact-review/github-egress-telemetry" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/github-egress-telemetry");
     if (url.pathname === "/internal/apply-observability" && request.method === "POST")
       return authenticatedApplyObservability(request, env);
     if (url.pathname === "/internal/exact-review/reconcile" && request.method === "POST")
@@ -950,6 +955,11 @@ export default {
       return emptyPerItemReviewsJson(url.searchParams);
     if (url.pathname === "/api/review-observability" && request.method === "GET")
       return exactReviewQueueRequest(env, `/review-observability?${url.searchParams.toString()}`);
+    if (url.pathname === "/api/github-egress-observability" && request.method === "GET")
+      return exactReviewQueueRequest(
+        env,
+        `/github-egress-observability?${url.searchParams.toString()}`,
+      );
     if (url.pathname === "/api/review-coverage" && request.method === "GET")
       return exactReviewQueueRequest(env, "/review-coverage");
     if (url.pathname === "/api/apply-observability" && request.method === "GET")

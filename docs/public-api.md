@@ -3,7 +3,7 @@
 - Status: active operator reference
 - Owner: ClawSweeper dashboard maintainers
 - Source of truth: `dashboard/worker.ts` request routing and its focused tests
-- Last verified: `openclaw/clawsweeper@2b5b345063efe1690e1d802fb1a738aa6a408707`
+- Last verified: `openclaw/clawsweeper@a1795973a9e6bb00b73cd6adc21a4ea02ca78ced`
 - Update when: a public observer route, method, query parameter, response source, or authentication boundary changes
 - Checked by: `pnpm run check:docs`
 
@@ -24,6 +24,7 @@ branch, not a promise that every method will remain supported.
 | `/api/exact-review-queue/item`           | `GET`  | One queue item's status; forwards query parameters.                                         |
 | `/api/exact-review-queue/reviews`        | `GET`  | Per-item review lookup used by observer surfaces.                                           |
 | `/api/review-observability`              | `GET`  | Review observability from the queue Durable Object; forwards query parameters.              |
+| `/api/github-egress-observability`        | `GET`  | Sanitized publication GitHub egress rollups for `hours=1`, `6`, or `24`.                     |
 | `/api/review-coverage`                   | `GET`  | Review coverage from the queue Durable Object.                                              |
 | `/api/apply-observability`               | `GET`  | Apply-lane observability from `applyObservabilityJson`.                                     |
 | `/api/health-history`                    | `GET`  | Historical health from `healthHistoryJson`.                                                 |
@@ -37,5 +38,7 @@ removing a literal observer route in `dashboard/worker.ts` requires updating
 that manifest and this table. The checker excludes `/api/events`, because it is
 an ingest mutation rather than an observer route.
 
-For field interpretation, use [Live dashboard](live-dashboard.md). For the
-rendered lane model, use [OpenClaw Bay](openclaw-bay-demo.md).
+For egress field interpretation, use
+[GitHub publication egress telemetry](github-egress-telemetry.md). For other
+fields, use [Live dashboard](live-dashboard.md). For the rendered lane model,
+use [OpenClaw Bay](openclaw-bay-demo.md).

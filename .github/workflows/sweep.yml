@@ -577,6 +577,7 @@ jobs:
                           process.env.QUEUE_LEASE_REVISION,
                       );
                 const claimGeneration = Number(response.claim_generation);
+                const repeatRevision = response.repeat_revision;
                 if (
                   !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo) ||
                   !Number.isInteger(itemNumber) ||
@@ -597,7 +598,8 @@ jobs:
                     response.item_key !== requestedItemKey ||
                     response.lease_revision !== requestedLeaseRevision ||
                     !Number.isInteger(claimGeneration) ||
-                    claimGeneration < 1)
+                    claimGeneration < 1 ||
+                    typeof repeatRevision !== "boolean")
                 ) {
                   process.exit(1);
                 }
@@ -607,6 +609,7 @@ jobs:
                   `item_key=${itemKey}`,
                   `lease_revision=${Number.isInteger(leaseRevision) ? leaseRevision : ""}`,
                   `claim_generation=${responseProtocol === 2 ? claimGeneration : ""}`,
+                  `repeat_revision=${responseProtocol === 2 ? repeatRevision : false}`,
                   `protocol_version=${responseProtocol}`,
                   `decision=${JSON.stringify(decision)}`,
                 ];
@@ -1388,6 +1391,26 @@ jobs:
           hydrate-git-state: "false"
           hydrate-state-blobs: "false"
 
+      - uses: ./.github/actions/setup-github-egress-observer
+        id: direct-github-egress-observer
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-setup-state.outcome == 'success' }}
+        continue-on-error: true
+        with:
+          metrics-path: .artifacts/direct-publication/github-egress-v2.jsonl
+          rate-limit-path: .artifacts/direct-publication/github-rate-limit-details-v2.jsonl
+          pool-class: target_app
+          stage: publication_apply
+          source-action: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction }}
+          claim-generation: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          repeat-revision: ${{ steps.claim-exact-review-queue.outputs.repeat_revision }}
+
+      - name: Record direct-publication member
+        if: ${{ steps.direct-github-egress-observer.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+        run: node dist/github-egress-observer-cli.js record-member
+
       - name: Deliver GitHub effects and prepare direct state mutation
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-setup-state.outcome == 'success' }}
         id: prepare-direct-exact-review-publication
@@ -1426,6 +1449,8 @@ jobs:
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-exact-review-publication.outputs.accepted == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions
+          CLAWSWEEPER_GITHUB_STAGE: publication_router
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           TARGET_BRANCH: ${{ steps.target.outputs.target_branch }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
@@ -1891,6 +1916,14 @@ jobs:
           done
           exit 1
 
+      - name: Submit direct GitHub egress telemetry
+        if: ${{ always() && steps.direct-github-egress-observer.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: pnpm run --silent repair:github-egress-telemetry submit
+
       - name: Fail unsuccessful exact review generation
         # A held review lease is a successful deferral only after the durable queue
         # accepts retry ownership; queue completion failures must remain visible.
@@ -2005,6 +2038,7 @@ jobs:
                 const producerDecision = publication?.producerDecision;
                 const leaseRevision = Number(response.lease_revision);
                 const claimGeneration = Number(response.claim_generation);
+                const repeatRevision = response.repeat_revision;
                 const publicationLeaseRevision = Number(publication?.leaseRevision);
                 const directItemKey = `${decision?.targetRepo}#${decision?.itemNumber}`;
                 const expectedDeferredItemKey = `${directItemKey}@publish:${publication?.producerRunId}:${publication?.producerRunAttempt}`;
@@ -2045,6 +2079,7 @@ jobs:
                 if (
                   response.claimed !== true ||
                   response.protocol_version !== 2 ||
+                  typeof repeatRevision !== "boolean" ||
                   response.item_key !== process.env.ITEM_KEY ||
                   (!deferredPublication && !directLifecycleRecovery) ||
                   decision?.sourceAction !== "exact_review_artifact_publish" ||
@@ -2088,6 +2123,7 @@ jobs:
                   publisher_item_key: response.item_key,
                   publisher_lease_revision: leaseRevision,
                   publisher_claim_generation: claimGeneration,
+                  repeat_revision: repeatRevision,
                   direct_lifecycle_recovery: directLifecycleRecoveryReady,
                   direct_lifecycle_plan: directLifecycleRecoveryReady
                     ? JSON.stringify(directLifecyclePlan)
@@ -2274,6 +2310,26 @@ jobs:
         with:
           build-script: build:all
 
+      - uses: ./.github/actions/setup-github-egress-observer
+        id: artifact-github-egress-observer
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.setup-publish-pnpm.outcome == 'success' }}
+        continue-on-error: true
+        with:
+          metrics-path: .artifacts/artifact-publication/github-egress-v2.jsonl
+          rate-limit-path: .artifacts/artifact-publication/github-rate-limit-details-v2.jsonl
+          pool-class: target_app
+          stage: publication_apply
+          source-action: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction }}
+          claim-generation: ${{ steps.publication-context.outputs.publisher_claim_generation }}
+          repeat-revision: ${{ steps.publication-context.outputs.repeat_revision }}
+
+      - name: Record artifact-publication member
+        if: ${{ steps.artifact-github-egress-observer.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
+        run: node dist/github-egress-observer-cli.js record-member
+
       - name: Download exact review artifact bundle
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' }}
         id: download-exact-review-bundle
@@ -2285,6 +2341,14 @@ jobs:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           path: .artifacts/exact-review-bundle
+
+      - name: Record artifact download transport boundary
+        if: ${{ always() && steps.artifact-github-egress-observer.outcome == 'success' && steps.download-exact-review-bundle.outcome != 'skipped' }}
+        continue-on-error: true
+        env:
+          CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions
+          CLAWSWEEPER_GITHUB_STAGE: publication_prepare
+        run: node dist/github-egress-observer-cli.js record-unobserved -- run download
 
       - name: Validate exact review artifact bundle
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.download-exact-review-bundle.outcome == 'success' }}
@@ -2558,6 +2622,8 @@ jobs:
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions
+          CLAWSWEEPER_GITHUB_STAGE: publication_router
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           TARGET_BRANCH: ${{ steps.publication-context.outputs.target_branch }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
@@ -3071,6 +3137,14 @@ jobs:
             --state "Waiting" \
             --detail "Another same-revision review is active; durable publication will retry after its lease expires." \
             --run-url "$RUN_URL"
+
+      - name: Submit artifact-publication GitHub egress telemetry
+        if: ${{ always() && steps.artifact-github-egress-observer.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: pnpm run --silent repair:github-egress-telemetry submit
 
       - name: Fail unsuccessful exact review publication
         if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && (steps.exact-review-publication-result.outputs.outcome != 'success' || steps.complete-exact-review-publication.outcome != 'success') }}

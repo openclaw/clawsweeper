@@ -2896,6 +2896,7 @@ test("a newer exact-review enqueue revokes a claimed immutable decision", async 
     item_key: "openclaw/openclaw#620",
     lease_revision: 1,
     claim_generation: 1,
+    repeat_revision: false,
     decision: item.leaseDecision,
   });
 
