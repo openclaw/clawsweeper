@@ -73,14 +73,14 @@ export type ExactReviewLaneHistorySample = {
 export type StateWriterHistorySample = {
   collection_ok: boolean;
   terminal_collection_ok?: boolean;
-  mode?: "single_item" | "batch" | "mixed" | "unknown";
-  tracked_holding?: number;
-  tracked_waiting?: number;
-  tracked_releasing?: number;
-  accepted_operations_total?: number;
-  state_commits_total?: number;
-  materialized_items_total?: number;
-  contention_timeouts_total?: number;
+  mode?: "single_item" | "batch" | "mixed" | "unknown" | undefined;
+  tracked_holding?: number | undefined;
+  tracked_waiting?: number | undefined;
+  tracked_releasing?: number | undefined;
+  accepted_operations_total?: number | undefined;
+  state_commits_total?: number | undefined;
+  materialized_items_total?: number | undefined;
+  contention_timeouts_total?: number | undefined;
   wait_ms?: { p50: number | null; p95: number | null; samples: number };
   hold_ms?: { p50: number | null; p95: number | null; samples: number };
   last_successful_materialization_at?: string | null;
@@ -329,6 +329,7 @@ function normalizeStateWriterHistorySample(value: unknown): StateWriterHistorySa
     integerFields.map((field) => [field, optionalNonNegativeInteger(sample[field])]),
   ) as Record<(typeof integerFields)[number], number | undefined | null>;
   if (!mode || Object.values(values).some((entry) => entry === null)) return null;
+  const validValues = values as Record<(typeof integerFields)[number], number | undefined>;
   const wait = normalizeHistoryPercentiles(sample.wait_ms);
   const hold = normalizeHistoryPercentiles(sample.hold_ms);
   if (!wait || !hold) return null;
@@ -343,7 +344,7 @@ function normalizeStateWriterHistorySample(value: unknown): StateWriterHistorySa
     terminal_collection_ok:
       typeof sample.terminal_collection_ok === "boolean" ? sample.terminal_collection_ok : true,
     mode,
-    ...values,
+    ...validValues,
     wait_ms: wait,
     hold_ms: hold,
     last_successful_materialization_at: lastSuccessfulMaterialization,

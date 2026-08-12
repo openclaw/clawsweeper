@@ -15,11 +15,13 @@ export function exactReviewScheduledLane(
   return null;
 }
 
-export function objectValue(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+export function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
-export function numberFrom(value, fallback) {
+export function numberFrom(value: unknown, fallback: number): number {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }

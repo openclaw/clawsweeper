@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.dashboard.json",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true
+  },
+  // This allowlist is a monotonic strictness ratchet: files must never be removed.
+  "files": [
+    "dashboard/apply-observability.ts",
+    "dashboard/automerge-metrics.ts",
+    "dashboard/dashboard-health.ts",
+    "dashboard/error-safety.ts",
+    "dashboard/exact-review-decision.ts",
+    "dashboard/exact-review-publication-retry.ts",
+    "dashboard/exact-review-queue-shared.ts",
+    "dashboard/exact-review-read-model.ts",
+    "dashboard/github-api.ts",
+    "dashboard/operational-health.ts",
+    "dashboard/review-observability.ts",
+    "dashboard/review-run-telemetry.ts",
+    "dashboard/state-blobs.ts"
+  ],
+  "include": []
+}

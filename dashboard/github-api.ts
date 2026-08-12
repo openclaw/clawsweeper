@@ -20,11 +20,11 @@ export type GitHubRateLimitHint = {
 };
 
 export class GitHubRequestError extends Error {
-  readonly status?: number;
+  readonly status?: number | undefined;
   readonly timedOut: boolean;
   readonly rateLimited: boolean;
-  readonly validationDetail?: GitHubRequestValidationDetail;
-  readonly rateLimitHint?: GitHubRateLimitHint;
+  readonly validationDetail?: GitHubRequestValidationDetail | undefined;
+  readonly rateLimitHint?: GitHubRateLimitHint | undefined;
 
   constructor(
     message: string,
@@ -88,7 +88,7 @@ function invalidGithubApiUrl(): Error {
   );
 }
 
-export function githubAppCredentials(env) {
+export function githubAppCredentials(env: GithubApiEnv) {
   const issuer = stringEnv(env.CLAWSWEEPER_APP_ID) || stringEnv(env.CLAWSWEEPER_APP_CLIENT_ID);
   const privateKey = normalizePrivateKey(env.CLAWSWEEPER_APP_PRIVATE_KEY);
   if (!issuer || !privateKey) return null;
@@ -99,7 +99,11 @@ export function githubAppCredentials(env) {
   };
 }
 
-export async function githubAppInstallationId(appJwt, repo, env = {}) {
+export async function githubAppInstallationId(
+  appJwt: string,
+  repo: string,
+  env: GithubApiEnv = {},
+) {
   if (!repo || !repo.includes("/")) throw new Error("GitHub App installation repo is required");
   const payload = await githubAppJson(
     `/repos/${repo}/installation`,
@@ -114,7 +118,11 @@ export async function githubAppInstallationId(appJwt, repo, env = {}) {
   return String(installationId);
 }
 
-export async function githubAppInstallationIdAsPlainError(appJwt, repo, env = {}) {
+export async function githubAppInstallationIdAsPlainError(
+  appJwt: string,
+  repo: string,
+  env: GithubApiEnv = {},
+) {
   try {
     return await githubAppInstallationId(appJwt, repo, env);
   } catch (error) {
@@ -122,7 +130,12 @@ export async function githubAppInstallationIdAsPlainError(appJwt, repo, env = {}
   }
 }
 
-export async function githubAppJson(path, appJwt, options: GithubAppJsonOptions = {}, env = {}) {
+export async function githubAppJson(
+  path: string,
+  appJwt: string,
+  options: GithubAppJsonOptions = {},
+  env: GithubApiEnv = {},
+) {
   const signal = AbortSignal.timeout(GITHUB_APP_TIMEOUT_MS);
   let response: Response;
   try {
@@ -135,7 +148,7 @@ export async function githubAppJson(path, appJwt, options: GithubAppJsonOptions 
         "User-Agent": "openclaw-clawsweeper-status",
         Authorization: `Bearer ${appJwt}`,
       },
-      body: options.body,
+      ...(options.body === undefined ? {} : { body: options.body }),
     });
   } catch (error) {
     const timedOut =
@@ -165,10 +178,10 @@ export async function githubAppJson(path, appJwt, options: GithubAppJsonOptions 
 }
 
 export async function githubAppJsonAsPlainError(
-  path,
-  appJwt,
+  path: string,
+  appJwt: string,
   options: GithubAppJsonOptions = {},
-  env = {},
+  env: GithubApiEnv = {},
 ) {
   try {
     return await githubAppJson(path, appJwt, options, env);
@@ -265,7 +278,7 @@ function githubValidationToken(value: unknown) {
   return token.length <= 64 ? token : "";
 }
 
-export async function signGithubAppJwt(issuer, privateKey) {
+export async function signGithubAppJwt(issuer: string, privateKey: string) {
   const now = Math.floor(Date.now() / 1000);
   const header = base64UrlEncode(JSON.stringify({ alg: "RS256", typ: "JWT" }));
   const payload = base64UrlEncode(JSON.stringify({ iat: now - 60, exp: now + 540, iss: issuer }));
@@ -285,11 +298,11 @@ export async function signGithubAppJwt(issuer, privateKey) {
   return `${input}.${base64UrlEncode(new Uint8Array(signature))}`;
 }
 
-export function normalizePrivateKey(value) {
+export function normalizePrivateKey(value: unknown) {
   return stringEnv(value)?.replace(/\\n/g, "\n") || "";
 }
 
-export function pemToPkcs8(pem) {
+export function pemToPkcs8(pem: string) {
   const pkcs8 = pemBody(pem, "PRIVATE KEY");
   if (pkcs8) return pkcs8;
   const pkcs1 = pemBody(pem, "RSA PRIVATE KEY");
@@ -297,15 +310,17 @@ export function pemToPkcs8(pem) {
   return wrapPkcs1PrivateKey(pkcs1);
 }
 
-export function pemBody(pem, label) {
+export function pemBody(pem: string, label: string) {
   const pattern = new RegExp(`-----BEGIN ${label}-----([\\s\\S]+?)-----END ${label}-----`, "m");
   const match = String(pem).match(pattern);
   if (!match) return null;
-  const binary = atob(match[1].replace(/\s+/g, ""));
+  const encoded = match[1];
+  if (!encoded) return null;
+  const binary = atob(encoded.replace(/\s+/g, ""));
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
-export function wrapPkcs1PrivateKey(pkcs1) {
+export function wrapPkcs1PrivateKey(pkcs1: Uint8Array) {
   const version = new Uint8Array([0x02, 0x01, 0x00]);
   const algorithm = new Uint8Array([
     0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
@@ -314,11 +329,11 @@ export function wrapPkcs1PrivateKey(pkcs1) {
   return derElement(0x30, concatBytes(version, algorithm, octetString));
 }
 
-export function derElement(tag, value) {
+export function derElement(tag: number, value: Uint8Array) {
   return concatBytes(new Uint8Array([tag]), derLength(value.length), value);
 }
 
-export function derLength(length) {
+export function derLength(length: number) {
   if (length < 0x80) return new Uint8Array([length]);
   const bytes = [];
   let value = length;
@@ -329,7 +344,7 @@ export function derLength(length) {
   return new Uint8Array([0x80 | bytes.length, ...bytes]);
 }
 
-export function concatBytes(...parts) {
+export function concatBytes(...parts: Uint8Array[]) {
   const total = parts.reduce((sum, part) => sum + part.length, 0);
   const output = new Uint8Array(total);
   let offset = 0;
@@ -340,7 +355,7 @@ export function concatBytes(...parts) {
   return output;
 }
 
-export function base64UrlEncode(value) {
+export function base64UrlEncode(value: string | Uint8Array | ArrayBuffer) {
   const bytes =
     typeof value === "string"
       ? new TextEncoder().encode(value)
@@ -348,8 +363,8 @@ export function base64UrlEncode(value) {
         ? value
         : new Uint8Array(value);
   let binary = "";
-  for (let index = 0; index < bytes.length; index += 1) {
-    binary += String.fromCharCode(bytes[index]);
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
   }
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
@@ -360,7 +375,7 @@ function objectValue(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function stringEnv(value) {
+function stringEnv(value: unknown) {
   const text = String(value || "").trim();
   return text ? text : "";
 }

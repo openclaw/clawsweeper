@@ -108,7 +108,7 @@ export type ExactReviewTargetItemState =
   | { state: "terminal" }
   | { state: "unavailable" };
 
-export function exactReviewDecisionFrom(value): ExactReviewDecision | null {
+export function exactReviewDecisionFrom(value: unknown): ExactReviewDecision | null {
   const base = exactReviewBaseDecisionFrom(value);
   if (!base) return null;
   const decision = objectValue(value);
@@ -150,7 +150,7 @@ export function exactReviewDecisionWithoutSourceAuthority(decision: ExactReviewD
 }
 
 export function exactReviewBranchAuthorityDecisionFrom(
-  value,
+  value: unknown,
 ): ExactReviewBranchAuthorityDecision | null {
   const raw = objectValue(value);
   if (String(raw.targetBranch || "").trim() || Object.hasOwn(raw, "publication")) return null;
@@ -168,7 +168,7 @@ export function exactReviewBranchAuthorityReservationKey(deliveryId: string) {
 }
 
 export function exactReviewBranchAuthorityReservationFrom(
-  value,
+  value: unknown,
 ): ExactReviewBranchAuthorityReservation | null {
   const reservation = objectValue(value);
   const deliveryId = String(reservation.deliveryId || "").trim();
@@ -215,7 +215,7 @@ export function exactReviewSourceAuthorityReservationKey(deliveryId: string) {
 }
 
 export function exactReviewSourceAuthorityReservationFrom(
-  value,
+  value: unknown,
 ): ExactReviewSourceAuthorityReservation | null {
   const reservation = objectValue(value);
   const deliveryId = String(reservation.deliveryId || "").trim();
@@ -257,7 +257,7 @@ export function exactReviewSourceAuthorityReservationFrom(
   };
 }
 
-export function exactReviewIngressFrom(value): ExactReviewIngress | null {
+export function exactReviewIngressFrom(value: unknown): ExactReviewIngress | null {
   const ingress = objectValue(value);
   const route = String(ingress.route || "");
   const fingerprint = String(ingress.fingerprint || "")
@@ -282,7 +282,7 @@ export function exactReviewIngressCanPromoteFallback(
   );
 }
 
-export function exactReviewBaseDecisionFrom(value): ExactReviewBaseDecision | null {
+export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDecision | null {
   const decision = objectValue(value);
   const targetRepo = String(decision.targetRepo || "").trim();
   const targetBranch = String(decision.targetBranch || "").trim();
@@ -381,23 +381,27 @@ export function exactReviewBaseDecisionFrom(value): ExactReviewBaseDecision | nu
     sourceEvent,
     sourceAction,
     supersedesInProgress: Boolean(decision.supersedesInProgress),
-    ...(hasSourceHeadSha ? { sourceHeadSha } : {}),
-    ...(hasSourceBaseSha ? { sourceBaseSha } : {}),
-    ...(hasSourceIsDraft ? { sourceIsDraft: decision.sourceIsDraft } : {}),
-    ...(hasSourceContentRevision ? { sourceContentRevision } : {}),
-    ...(hasSourceHeadVerified ? { sourceHeadVerified: decision.sourceHeadVerified } : {}),
-    ...(hasSourceAuthoritySeq ? { sourceAuthoritySeq } : {}),
-    ...(hasSourceUpdatedAt ? { sourceUpdatedAt } : {}),
-    ...(hasSourceDeliveryId ? { sourceDeliveryId } : {}),
+    ...(sourceHeadSha === undefined ? {} : { sourceHeadSha }),
+    ...(sourceBaseSha === undefined ? {} : { sourceBaseSha }),
+    ...(typeof decision.sourceIsDraft === "boolean"
+      ? { sourceIsDraft: decision.sourceIsDraft }
+      : {}),
+    ...(sourceContentRevision === undefined ? {} : { sourceContentRevision }),
+    ...(typeof decision.sourceHeadVerified === "boolean"
+      ? { sourceHeadVerified: decision.sourceHeadVerified }
+      : {}),
+    ...(sourceAuthoritySeq === undefined ? {} : { sourceAuthoritySeq }),
+    ...(sourceUpdatedAt === undefined ? {} : { sourceUpdatedAt }),
+    ...(typeof sourceDeliveryId === "string" ? { sourceDeliveryId } : {}),
     ...(Number.isFinite(Number(decision.codexTimeoutMs))
       ? { codexTimeoutMs: Number(decision.codexTimeoutMs) }
       : {}),
     ...(Number.isFinite(Number(decision.mediaProofTimeoutMs))
       ? { mediaProofTimeoutMs: Number(decision.mediaProofTimeoutMs) }
       : {}),
-    ...(hasCommandStatusMarker ? { commandStatusMarker } : {}),
-    ...(hasStatusCommentId ? { statusCommentId } : {}),
-    ...(hasAdditionalPrompt ? { additionalPrompt } : {}),
+    ...(typeof commandStatusMarker === "string" ? { commandStatusMarker } : {}),
+    ...(statusCommentId === undefined ? {} : { statusCommentId }),
+    ...(typeof additionalPrompt === "string" ? { additionalPrompt } : {}),
   };
 }
 
@@ -510,7 +514,7 @@ export function compareDecimalIdentifiers(left: string, right: string) {
   return normalizedLeft.localeCompare(normalizedRight);
 }
 
-export function exactReviewPublicationFrom(value): ExactReviewPublication | null {
+export function exactReviewPublicationFrom(value: unknown): ExactReviewPublication | null {
   const publication = objectValue(value);
   const artifactName = String(publication.artifactName || "").trim();
   const producerRunId = String(publication.producerRunId || "").trim();
@@ -547,8 +551,15 @@ export function exactReviewPublicationFrom(value): ExactReviewPublication | null
   if (protocolVersion === 2 && (leaseRevision === null || claimGeneration === null)) return null;
   if (!producerDecision) return null;
   if (hasDirectLifecycle && !directLifecycle) return null;
+  if (
+    typeof liveProceeded !== "boolean" ||
+    typeof liveTerminalNoop !== "boolean" ||
+    typeof liveTerminalMissing !== "boolean" ||
+    typeof liveGuardedOpen !== "boolean"
+  ) {
+    return null;
+  }
   const liveOutcomes = [liveProceeded, liveTerminalNoop, liveTerminalMissing, liveGuardedOpen];
-  if (liveOutcomes.some((outcome) => typeof outcome !== "boolean")) return null;
   if (liveOutcomes.filter(Boolean).length !== 1) return null;
   return {
     artifactName,
@@ -569,7 +580,7 @@ export function exactReviewPublicationFrom(value): ExactReviewPublication | null
 }
 
 export function exactReviewDirectLifecycleReceiptFrom(
-  value,
+  value: unknown,
 ): ExactReviewPublication["directLifecycle"] {
   const receipt = objectValue(value);
   const plan = objectValue(receipt.plan);
@@ -707,7 +718,10 @@ export function exactReviewItemKey(decision: ExactReviewDecision) {
     : base;
 }
 
-export function isExactReviewQueueTargetEnabled(decision: ExactReviewDecision, env) {
+export function isExactReviewQueueTargetEnabled(
+  decision: ExactReviewDecision,
+  env: Record<string, unknown>,
+) {
   return (
     decision.targetRepo !== "openclaw/clawhub" ||
     String(env.CLAWSWEEPER_ENABLE_CLAWHUB || "") === "1"

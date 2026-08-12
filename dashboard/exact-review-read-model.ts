@@ -373,15 +373,17 @@ function exactReviewQueueItemOrder(left: ExactReviewQueueItem, right: ExactRevie
 function exactReviewTargetAppRetryAtByOwner(state: ExactReviewQueueState, now: number) {
   const retryAtByOwner = new Map<string, number>();
   for (const circuit of exactReviewGithubCredentialCircuits(state)) {
-    if (circuit.scope !== "target_app" || circuit.retryAt <= now) continue;
-    const current = retryAtByOwner.get(circuit.targetOwner) || 0;
-    retryAtByOwner.set(circuit.targetOwner, Math.max(current, circuit.retryAt));
+    const targetOwner = circuit.targetOwner;
+    if (circuit.scope !== "target_app" || !targetOwner || circuit.retryAt <= now) continue;
+    const current = retryAtByOwner.get(targetOwner) || 0;
+    retryAtByOwner.set(targetOwner, Math.max(current, circuit.retryAt));
   }
   return retryAtByOwner;
 }
 
 function exactReviewTargetAppRetryAt(census: ExactReviewQueueCensus, targetRepo: string) {
-  return census.targetAppRetryAtByOwner.get(targetRepo.split("/", 1)[0]?.toLowerCase()) || 0;
+  const [owner] = targetRepo.split("/", 1);
+  return owner ? census.targetAppRetryAtByOwner.get(owner.toLowerCase()) || 0 : 0;
 }
 
 function buildExactReviewQueueCensus(
@@ -568,9 +570,10 @@ function observeExactReviewBayCandidate(
   const updatedAt = Date.parse(new Date(item.updatedAt).toISOString());
   const candidate = { item, itemKey, repository, itemNumber, updatedAt };
   const previous = projected.get(itemKey);
-  if (!previous || updatedAt > previous[0].updatedAt) {
+  const latest = previous?.[0];
+  if (!latest || updatedAt > latest.updatedAt) {
     projected.set(itemKey, [candidate]);
-  } else if (updatedAt === previous[0].updatedAt) {
+  } else if (updatedAt === latest.updatedAt) {
     previous.push(candidate);
   }
 }
@@ -597,13 +600,20 @@ function exactReviewQueueBayProjectionFromCensus(
     ExactReviewBayStage,
     number
   >;
-  const rowsByStage = Object.fromEntries(
-    EXACT_REVIEW_BAY_STAGES.map((stage) => [stage, []]),
-  ) as Record<ExactReviewBayStage, ExactReviewBayProjectionItem[]>;
+  const rowsByStage: Record<ExactReviewBayStage, ExactReviewBayProjectionItem[]> = {
+    arriving: [],
+    "setting-up": [],
+    reviewing: [],
+    publishing: [],
+    applying: [],
+    repairing: [],
+  };
   for (const candidates of census.bayCandidates.values()) {
-    let selected = candidates[0];
+    const [first, ...remaining] = candidates;
+    if (!first) continue;
+    let selected = first;
     let selectedStage = exactReviewQueueBayStage(selected.item, batchByItemKey);
-    for (const candidate of candidates.slice(1)) {
+    for (const candidate of remaining) {
       const stage = exactReviewQueueBayStage(candidate.item, batchByItemKey);
       if (
         exactReviewQueueBayStagePriority(stage) > exactReviewQueueBayStagePriority(selectedStage)
@@ -1011,8 +1021,8 @@ export function exactReviewQueueStats(
     dispatching: lanes.review.dispatching,
     leased: lanes.review.leased,
     capacity: lanes.review.capacity,
-    dispatcherState: state.dispatcher?.state,
-    handoffStatus: handoffHealth.status,
+    ...(state.dispatcher?.state ? { dispatcherState: state.dispatcher.state } : {}),
+    ...(handoffHealth.status ? { handoffStatus: handoffHealth.status } : {}),
   });
   const stats = {
     generated_at: handoffHealth.observed_at,
@@ -1354,7 +1364,10 @@ function finiteExactReviewNumber(value: unknown, fallback: number) {
   return Number.isFinite(number) ? number : fallback;
 }
 
-export function exactReviewQueueCapacity(env, DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET: number) {
+export function exactReviewQueueCapacity(
+  env: Record<string, unknown>,
+  DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET: number,
+) {
   return Math.max(
     1,
     Math.min(
