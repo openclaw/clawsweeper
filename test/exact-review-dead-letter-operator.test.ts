@@ -383,7 +383,8 @@ test("parked review reconciliation reports bounded HTTP and timeout skip diagnos
     assert.deepEqual(summary.skip_samples, [
       {
         target: "openclaw/repo#1",
-        reason: "parked review target check failed for openclaw/repo#1 with 403",
+        reason:
+          "parked review target check failed for openclaw/repo#1 with 403: Resource not accessible by integration",
       },
       {
         target: "openclaw/repo#2",
@@ -2072,15 +2073,44 @@ test("batched canonical discovery skips a throttled batch and inspects later tar
     maxRecoveries: 10,
     failGraphqlRequests: 1,
     failedStatus: 403,
+    throttleFailures: true,
   });
 
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
   const summary = JSON.parse(scenario.first.stdout);
-  assert.deepEqual(summary.skip_reasons, { http_403: 40 });
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 40 });
   assert.equal(summary.skipped_targets, 40);
   assert.equal(summary.recovered_targets, 10);
   assert.equal(scenario.graphqlRequests, 2);
   assert.equal(scenario.restRequests, 10);
+});
+
+test("batched canonical discovery aborts on an authorization 403", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: Array.from({ length: 50 }, (_, index) =>
+      row(
+        `authorization-${index + 1}`,
+        `publication:authorization-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${index + 1}`,
+      ),
+    ),
+    maxTargets: 100,
+    maxRecoveries: 10,
+    failGraphqlRequests: 1,
+    failedStatus: 403,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { http_403: 40, not_inspected_abort: 10 });
+  assert.equal(summary.skipped_targets, 50);
+  assert.equal(summary.recovered_targets, 0);
+  assert.equal(scenario.graphqlRequests, 1);
+  assert.equal(scenario.restRequests, 0);
 });
 
 test("terminal target rechecks stay bounded for closed issues and pull requests", async () => {
@@ -2422,15 +2452,17 @@ test("serial canonical discovery skips one throttle and recovers later targets",
     ],
     failedRepository: "first",
     failedStatus: 403,
+    throttleFailures: true,
   });
 
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
   const summary = JSON.parse(scenario.first.stdout);
-  assert.deepEqual(summary.skip_reasons, { http_403: 1 });
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 1 });
   assert.deepEqual(summary.skip_samples, [
     {
       target: "openclaw/first#1",
-      reason: "live target check failed for openclaw/first#1 (403)",
+      reason:
+        "live target check failed for openclaw/first#1 (403): API rate limit exceeded for installation",
     },
   ]);
   assert.equal(summary.skipped_targets, 1);
@@ -2441,6 +2473,34 @@ test("serial canonical discovery skips one throttle and recovers later targets",
     [["second", "third"]],
   );
   assert.equal(scenario.resolutions.length, 0);
+});
+
+test("serial canonical discovery aborts on an authorization 403", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/first#1"),
+      row(
+        "second",
+        "publication:second",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/second#2",
+      ),
+      row("third", "publication:third", 3, "retry_exhausted", true, "eligible", "openclaw/third#3"),
+    ],
+    failedRepository: "first",
+    failedStatus: 403,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { http_403: 1, not_inspected_abort: 2 });
+  assert.equal(summary.skipped_targets, 3);
+  assert.equal(summary.recovered_targets, 0);
+  assert.equal(scenario.restRequests, 1);
+  assert.equal(scenario.recoveries.length, 0);
 });
 
 test("serial canonical discovery aborts after three consecutive throttles", async () => {
@@ -2458,11 +2518,12 @@ test("serial canonical discovery aborts after three consecutive throttles", asyn
     ),
     failedRepositories: ["repo-1", "repo-2", "repo-3"],
     failedStatus: 403,
+    throttleFailures: true,
   });
 
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
   const summary = JSON.parse(scenario.first.stdout);
-  assert.deepEqual(summary.skip_reasons, { http_403: 3, not_inspected_abort: 2 });
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 3, not_inspected_abort: 2 });
   assert.equal(summary.skipped_targets, 5);
   assert.equal(scenario.restRequests, 3);
   assert.equal(scenario.recoveries.length, 0);
@@ -2485,15 +2546,17 @@ test("serial recovery revalidation skips one throttle and recovers later targets
     ],
     failTargetOnInspection: 1,
     failedStatus: 403,
+    throttleFailures: true,
   });
 
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
   const summary = JSON.parse(scenario.first.stdout);
-  assert.deepEqual(summary.skip_reasons, { http_403: 1 });
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 1 });
   assert.deepEqual(summary.skip_samples, [
     {
       target: "openclaw/repo#1",
-      reason: "live target check failed for openclaw/repo#1 (403)",
+      reason:
+        "live target check failed for openclaw/repo#1 (403): API rate limit exceeded for installation",
     },
   ]);
   assert.equal(summary.skipped_targets, 1);
@@ -2504,6 +2567,34 @@ test("serial recovery revalidation skips one throttle and recovers later targets
     [["second", "third"]],
   );
   assert.equal(scenario.resolutions.length, 0);
+});
+
+test("serial recovery revalidation aborts on an authorization 403", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/repo#1"),
+      row(
+        "second",
+        "publication:second",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+      row("third", "publication:third", 3, "retry_exhausted", true, "eligible", "openclaw/repo#3"),
+    ],
+    failTargetOnInspection: 1,
+    failedStatus: 403,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { http_403: 1, not_inspected_abort: 2 });
+  assert.equal(summary.skipped_targets, 3);
+  assert.equal(summary.recovered_targets, 0);
+  assert.equal(scenario.restRequests, 4);
+  assert.equal(scenario.recoveries.length, 0);
 });
 
 test("serial recovery revalidation aborts after three consecutive throttles", async () => {
@@ -2521,11 +2612,12 @@ test("serial recovery revalidation aborts after three consecutive throttles", as
     ),
     failTargetsOnInspection: [1, 2, 3],
     failedStatus: 403,
+    throttleFailures: true,
   });
 
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
   const summary = JSON.parse(scenario.first.stdout);
-  assert.deepEqual(summary.skip_reasons, { http_403: 3, not_inspected_abort: 2 });
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 3, not_inspected_abort: 2 });
   assert.equal(summary.skipped_targets, 5);
   assert.equal(scenario.restRequests, 8);
   assert.equal(scenario.recoveries.length, 0);
@@ -2619,7 +2711,13 @@ async function automaticReconcileScenario(options) {
       targetReadAuthorizations.push(request.headers.authorization);
       if (graphqlRequests <= (options.failGraphqlRequests ?? 0)) {
         response.writeHead(options.failedStatus ?? 403, { "content-type": "application/json" });
-        response.end(JSON.stringify({ error: "throttled" }));
+        response.end(
+          JSON.stringify({
+            message: options.throttleFailures
+              ? "API rate limit exceeded for installation"
+              : "Resource not accessible by integration",
+          }),
+        );
         return;
       }
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -2695,7 +2793,15 @@ async function automaticReconcileScenario(options) {
         (options.failTargetAfterCleanup === number && resolutions.length >= 2)
       ) {
         response.writeHead(options.failedStatus ?? 503, { "content-type": "application/json" });
-        response.end(JSON.stringify({ error: "temporary" }));
+        response.end(
+          JSON.stringify({
+            message: options.throttleFailures
+              ? "API rate limit exceeded for installation"
+              : options.failedStatus === 403
+                ? "Resource not accessible by integration"
+                : "temporary",
+          }),
+        );
         return;
       }
       response.writeHead(200, { "content-type": "application/json" });

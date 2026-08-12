@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-08-12T19:58:58Z",
+  "recorded_at": "2026-08-12T20:11:28Z",
   "provider": "local-container",
-  "lease_id": "cbx_312778e3202e",
-  "slug": "tidal-lobster-bb37",
+  "lease_id": "cbx_78a9f8dbbd81",
+  "slug": "quick-crayfish-8b58",
   "container_runtime": "docker",
   "image": "node:24-bookworm",
   "machine_type": "node_24-bookworm",
@@ -11,32 +11,32 @@
   "command": "../crabbox/bin/crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --timing-json --capture-stdout docs/proof/reconcile-throttle-resilience/container-transcript.txt --capture-stderr docs/proof/reconcile-throttle-resilience/container-stderr.txt --script docs/proof/reconcile-throttle-resilience/run-proof.sh",
   "exit_code": 0,
   "lease_stopped": true,
-  "sync_ms": 10033,
-  "command_ms": 4551,
-  "total_ms": 14599,
+  "sync_ms": 11352,
+  "command_ms": 5044,
+  "total_ms": 16409,
   "node_version": "v24.19.0",
   "pnpm_version": "11.10.0",
   "corepack_install_prefix": "$HOME/.local",
   "jq": "not required by this proof",
   "focused_tests": {
-    "total": 9,
-    "passed": 9,
+    "total": 12,
+    "passed": 12,
     "failed": 0
   },
   "content_sha256": {
     ".github/workflows/exact-review-dead-letter-operator.yml": "827ff1872203f69f9a931c82ce6ba9ae0d74b725da9144fffadb59145659bbe7",
     ".github/workflows/exact-review-dead-letter-reconcile.yml": "ca419ab25752695eee74534bc4ed4274e02108d68804d9df35128c17d7001237",
-    "scripts/exact-review-dead-letter-operator.mjs": "36ad37157000519f3885ba514a7b453fc6ee74af514bdb15b3217fda58fa536d",
-    "test/exact-review-dead-letter-operator.test.ts": "ccd2a8106a8e11625582e397b50275388bd0ad0a26429dbb9295c152261b9f30"
+    "scripts/exact-review-dead-letter-operator.mjs": "50401e756e64e267707852cd73923944bddc478e2b846b6b7e18f8aac86e2798",
+    "test/exact-review-dead-letter-operator.test.ts": "23c602316f773598d4bd8d4a096c04d15b839c49efbe533ae683f71c396a16af"
   },
-  "transcript_sha256": "536e155b5ff49a68c594f9a5999e5db3bf45df7991170a21de4da4fd68728765",
+  "transcript_sha256": "908de51fc658e6b9b2d43d875bcd2c13f1528d42d006e9645b4de62de7f5c738",
   "stderr_sha256": "39ad07334ee0b3da51ab7f5232e274dfb5588dc1380a557f3f4d886a7173a9dd",
   "secret_scan": {
     "tool": "trufflehog 3.96.0",
     "command": "trufflehog filesystem --no-update --results=verified,unknown --fail --fail-on-scan-errors docs/proof/reconcile-throttle-resilience/container-transcript.txt docs/proof/reconcile-throttle-resilience/container-stderr.txt",
     "exit_code": 0,
     "chunks": 2,
-    "bytes": 3028,
+    "bytes": 3258,
     "verified_secrets": 0,
     "unknown_secrets": 0
   }

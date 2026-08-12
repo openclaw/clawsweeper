@@ -5,7 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { parseArgs as parseNodeArgs } from "node:util";
-import { classifyOperatorSkipReason } from "./operator-skip-reasons.mjs";
+import { classifyOperatorSkipReason, isGitHubThrottleFailure } from "./operator-skip-reasons.mjs";
 
 const DEFAULT_OUTPUT = ".artifacts/exact-review-dlq/inventory.json";
 const MAX_SELECTED_IDS = 2;
@@ -45,6 +45,16 @@ class CanonicalTargetInspectionError extends Error {
     this.inspectedTargets = inspectedTargets;
     this.failedTargets = failedTargets;
     this.notInspectedTargets = notInspectedTargets;
+  }
+}
+
+class GitHubInspectionHttpError extends Error {
+  constructor(message, response) {
+    super(message);
+    this.name = "GitHubInspectionHttpError";
+    this.status = response.status;
+    this.retryAfter = response.headers.get("retry-after");
+    this.rateLimitRemaining = response.headers.get("x-ratelimit-remaining");
   }
 }
 
@@ -1120,7 +1130,10 @@ async function inspectParkedReviewTarget(target, deadlineAt = Number.POSITIVE_IN
     throw new Error(`parked review target is missing from an existing repository: ${target}`);
   }
   if (!response.ok) {
-    throw new Error(`parked review target check failed for ${target} with ${response.status}`);
+    throw await githubInspectionHttpError(
+      response,
+      `parked review target check failed for ${target} with ${response.status}`,
+    );
   }
   const item = await response.json();
   if (
@@ -1347,7 +1360,10 @@ async function inspectCanonicalTargets(groups, maxTargets) {
       signal: AbortSignal.timeout(20_000),
     });
     if (!response.ok) {
-      const error = new Error(`canonical target discovery failed (${response.status})`);
+      const error = await githubInspectionHttpError(
+        response,
+        `canonical target discovery failed (${response.status})`,
+      );
       if (isThrottleInspectionError(error)) {
         for (const group of selected) failedTargets.push({ target: group.target, error });
         consecutiveThrottles += 1;
@@ -1480,8 +1496,23 @@ function recordSkipReasonCount(summary, reasonClass, count) {
 }
 
 function isThrottleInspectionError(error) {
-  const reasonClass = classifyOperatorSkipReason(sanitizeSkipReason(error));
-  return reasonClass === "http_403" || reasonClass === "http_429";
+  if (isGitHubThrottleFailure(error)) return true;
+  return (
+    error instanceof GitHubInspectionHttpError &&
+    error.status === 403 &&
+    (Boolean(error.retryAfter) || error.rateLimitRemaining === "0")
+  );
+}
+
+async function githubInspectionHttpError(response, context) {
+  let detail = "";
+  try {
+    const body = await response.json();
+    detail = String(body?.message || body?.error || "").trim();
+  } catch {
+    // The HTTP status and headers still preserve the fail-closed classification.
+  }
+  return new GitHubInspectionHttpError(`${context}${detail ? `: ${detail}` : ""}`, response);
 }
 
 function recordAbortedInspectionSkips(
@@ -1584,7 +1615,12 @@ async function inspectRecoveryTarget(target) {
       signal: AbortSignal.timeout(20_000),
     },
   );
-  if (!response.ok) throw new Error(`live target check failed for ${target} (${response.status})`);
+  if (!response.ok) {
+    throw await githubInspectionHttpError(
+      response,
+      `live target check failed for ${target} (${response.status})`,
+    );
+  }
   let item;
   try {
     item = await response.json();
@@ -1611,7 +1647,12 @@ async function inspectRecoveryTarget(target) {
       signal: AbortSignal.timeout(20_000),
     },
   );
-  if (!pullResponse.ok) throw new Error(`live pull-request check failed for ${target}`);
+  if (!pullResponse.ok) {
+    throw await githubInspectionHttpError(
+      pullResponse,
+      `live pull-request check failed for ${target} (${pullResponse.status})`,
+    );
+  }
   const pull = await pullResponse.json();
   const headSha = String(pull?.head?.sha || "").toLowerCase();
   if (pull?.node_id !== item.node_id || !/^[0-9a-f]{40}$/.test(headSha)) {

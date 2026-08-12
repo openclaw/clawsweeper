@@ -24,4 +24,6 @@ pass 62
 fail 0
 ```
 
-The Docker-backed Crabbox receipt independently reran the nine focused loopback/workflow scenarios with 9 passed, 0 failed. Its sanitized output is in `container-transcript.txt`; package-manager notices are isolated in `container-stderr.txt`.
+The first ClawSweeper review correctly found that status-only 403 handling also accepted authorization and policy failures. The fix round preserved the GitHub response message and rate-limit headers, reused the shared throttle classifier, and added fail-closed REST, GraphQL, and revalidation regressions.
+
+The refreshed Docker-backed Crabbox receipt independently reran the twelve focused loopback/workflow scenarios with 12 passed, 0 failed. Its sanitized output is in `container-transcript.txt`; package-manager notices are isolated in `container-stderr.txt`.

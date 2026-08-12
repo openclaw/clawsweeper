@@ -2,7 +2,7 @@
 
 ## Claim
 
-Exact-review dead-letter reconciliation uses the target GitHub App pool for public target REST and GraphQL reads. One isolated GitHub 403 or 429 skips only the affected target or GraphQL batch, so later targets can still be inspected and recovered. Three consecutive throttled calls stop further inspection in that phase, preserving a bounded per-cycle request budget.
+Exact-review dead-letter reconciliation uses the target GitHub App pool for public target REST and GraphQL reads. One isolated GitHub-confirmed rate-limit or abuse 403, or any 429, skips only the affected target or GraphQL batch, so later targets can still be inspected and recovered. Three consecutive confirmed throttles stop further inspection in that phase, preserving a bounded per-cycle request budget. Authorization and policy 403s retain the conservative abort behavior.
 
 ## Exercised surface
 
@@ -12,11 +12,12 @@ Exact-review dead-letter reconciliation uses the target GitHub App pool for publ
 
 ## Scenarios and observable results
 
-1. An initial serial target check returns 403; the next two targets return valid identities and are recovered. The summary reports one `http_403`, one skipped target, and two recovered targets.
-2. The first GraphQL identity batch returns 403; the later batch is inspected and ten targets are recovered. The summary reports 40 `http_403` skips and the request count remains two GraphQL calls plus ten bounded REST revalidations.
+1. An initial serial target check returns a GitHub rate-limit 403; the next two targets return valid identities and are recovered. The summary reports one `github_throttled`, one skipped target, and two recovered targets.
+2. The first GraphQL identity batch returns a GitHub rate-limit 403; the later batch is inspected and ten targets are recovered. The summary reports 40 `github_throttled` skips and the request count remains two GraphQL calls plus ten bounded REST revalidations.
 3. Three consecutive 403s during canonical discovery stop the phase after three REST calls. The remaining two targets report `not_inspected_abort`.
 4. One recovery revalidation returns 403; later candidates are revalidated and recovered. Three consecutive revalidation 403s stop after three calls and account for untouched candidates honestly.
-5. Every target REST and GraphQL request carries the synthetic target-App token while the workflow YAML retains `${{ github.token }}` for repository Actions work.
+5. Ordinary authorization 403s in serial REST discovery, GraphQL discovery, and recovery revalidation abort the remaining phase and recover nothing.
+6. Every target REST and GraphQL request carries the synthetic target-App token while the workflow YAML retains `${{ github.token }}` for repository Actions work.
 
 ## Command and environment
 
