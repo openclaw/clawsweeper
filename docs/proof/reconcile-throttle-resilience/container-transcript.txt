@@ -5,7 +5,7 @@ v24.19.0
 11.17.0
 PROOF_PHASE=corepack
 
-added 1 package in 281ms
+added 1 package in 266ms
 11.10.0
 PROOF_PHASE=install
 ? Verifying lockfile against supply-chain policies (79 entries)...
@@ -22,8 +22,8 @@ Packages: +19
    │                                               │
    ╰───────────────────────────────────────────────╯
 
-✓ Lockfile passes supply-chain policies (79 entries in 535ms)
-Progress: resolved 19, reused 0, downloaded 17, added 16
+✓ Lockfile passes supply-chain policies (79 entries in 572ms)
+Progress: resolved 19, reused 0, downloaded 16, added 16
 Progress: resolved 19, reused 0, downloaded 19, added 19, done
 
 dependencies:
@@ -37,41 +37,52 @@ devDependencies:
 + oxlint 1.73.0
 + oxlint-tsgolint 0.24.0
 
-Done in 2.2s using pnpm v11.10.0
+Done in 5.4s using pnpm v11.10.0
 PROOF_PHASE=loopback
-✔ dead-letter workflow is manual, serialized, and bounded to safe actions (1.518213ms)
-✔ automatic dead-letter reconciliation is scheduled, bounded, and least privileged (3.856178ms)
-✔ 100-target reconciliation batches canonical lookups within the GitHub token budget (161.112134ms)
-✔ batched canonical discovery skips a throttled batch and inspects later targets (158.013624ms)
-✔ batched canonical discovery aborts on an authorization 403 (108.83394ms)
-✔ serial canonical discovery skips one throttle and recovers later targets (105.412014ms)
-✔ multi-owner reconciliation recovers installed targets and reports missing installations (133.06926ms)
-✔ authorization 403 with a valid owner installation remains fail-closed (146.706925ms)
-✔ serial canonical discovery aborts on an authorization 403 (104.115927ms)
-✔ serial canonical discovery aborts after three consecutive throttles (109.046566ms)
-✔ serial recovery revalidation skips one throttle and recovers later targets (116.298795ms)
-✔ serial recovery revalidation aborts on an authorization 403 (108.398023ms)
-✔ serial recovery revalidation aborts after three consecutive throttles (109.874693ms)
-✔ operator previews by default and caps mutations at two audited ids (1108.504587ms)
-ℹ tests 14
+✔ dead-letter workflow is manual, serialized, and bounded to safe actions (1.31692ms)
+✔ automatic dead-letter reconciliation is scheduled, bounded, and least privileged (3.695465ms)
+✔ 100-target reconciliation batches canonical lookups within the GitHub token budget (159.936592ms)
+✔ batched canonical discovery skips a throttled batch and inspects later targets (154.42854ms)
+✔ batched canonical discovery aborts on an authorization 403 (103.876945ms)
+✔ serial canonical discovery skips one throttle and recovers later targets (103.294778ms)
+✔ multi-owner reconciliation recovers installed targets and reports missing installations (135.936922ms)
+✔ throttled owner token mint 429 skips that owner's targets and recovers another owner (189.978523ms)
+✔ throttled owner token mint 403 skips that owner's targets and recovers another owner (156.332002ms)
+✔ throttled installation lookup skips that owner's targets and recovers another owner (138.233552ms)
+✔ an installation removed before token mint remains a bounded missing-installation skip (171.773781ms)
+✔ batched discovery skips a throttled owner setup and continues with another owner (180.579298ms)
+✔ a cached setup throttle spanning three batches counts once and later owners continue (141.605391ms)
+✔ ordinary installation_lookup 401 remains fail-closed (178.474043ms)
+✔ ordinary installation_lookup 403 remains fail-closed (119.259433ms)
+✔ ordinary token_mint 401 remains fail-closed (144.842272ms)
+✔ ordinary token_mint 403 remains fail-closed (155.070666ms)
+✔ persistent setup throttling trips the shared fuse before another owner is attempted (127.517614ms)
+✔ authorization 403 with a valid owner installation remains fail-closed (150.949742ms)
+✔ serial canonical discovery aborts on an authorization 403 (110.000248ms)
+✔ serial canonical discovery aborts after three consecutive throttles (101.845692ms)
+✔ serial recovery revalidation skips one throttle and recovers later targets (104.691613ms)
+✔ serial recovery revalidation aborts on an authorization 403 (104.64503ms)
+✔ serial recovery revalidation aborts after three consecutive throttles (122.456105ms)
+✔ operator previews by default and caps mutations at two audited ids (998.679043ms)
+ℹ tests 25
 ℹ suites 0
-ℹ pass 14
+ℹ pass 25
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 2580.385976
+ℹ duration_ms 4161.002441
 PROOF_PHASE=content
 c12ac0a4d4de3302e4a934536a4cbf5fc80b2beaebd4bd690d73a959983e0da4  .github/workflows/exact-review-dead-letter-operator.yml
 54add17de68f23a4b1fb83bfc233df397d638a0697f5a2188c4a7b31ba1663fa  .github/workflows/exact-review-dead-letter-reconcile.yml
 a28e6c93b1e973efa134456f5f338b3724a3e8451f8421f17bf9e47fb6c49073  dashboard/exact-review-queue.ts
 d70d67264358e1194ebeeca3d3e92c8afda7826942eb118c5d2f3f3d112480ac  dashboard/github-api.ts
 ba9dd4ec63f404948ccb73cbe8e9363946623525907f975b00d81533d8a0602f  dashboard/worker.ts
-be41d9b12fd84495107d454eb125c9f4e8922996c88ced16f3498070f30d554d  scripts/exact-review-dead-letter-operator.mjs
-e796f14c1dd9d39dbf42443955d5d75e09adee655f95777b1a6577eb4e0f39d8  scripts/operator-skip-reasons.mjs
-3071928a679794c81ee1dcab9d664936ee35e59f6cb45286055f215210e71651  test/exact-review-dead-letter-operator.test.ts
+aa66fa6e2a6ed3b2cf997f970755139948576d80cf401619f8c8ba6be2e09c13  scripts/exact-review-dead-letter-operator.mjs
+d83bdbc58d3840d78fd4825476668682bf3ebefb0af93aac222cb3f9fc8e8ada  scripts/operator-skip-reasons.mjs
+3df5315869b8af3dd88f2f285cd7290a2f12894c265c7894cb9a4dd024f86eae  test/exact-review-dead-letter-operator.test.ts
 Checking formatting...
 
 All matched files use the correct format.
-Finished in 112ms on 8 files using 32 threads.
+Finished in 147ms on 8 files using 32 threads.
 PROOF_RESULT=pass

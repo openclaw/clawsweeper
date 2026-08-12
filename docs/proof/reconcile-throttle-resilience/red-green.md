@@ -40,3 +40,19 @@ AssertionError: 2 !== 1
 ```
 
 The green implementation moved the existing `createGithubAppTokenFor` helper to the canonical `dashboard/github-api.ts` plumbing module, then reused that exact credential, signing, installation lookup, and mint path from the operator. The focused owner/authorization/throttle selection passed 11/11, and the complete operator file passed 67/67. The installed/missing-owner scenario reports one recovery plus `installation_missing: 1`; the valid-installation authorization regression proves one mint for three same-owner targets and retains `http_403: 1, not_inspected_abort: 2` with zero recovery. The final Docker-backed Crabbox receipt passed all 14 selected workflow, owner, authorization, and throttle scenarios.
+
+## Round 3: throttled App setup calls
+
+The round-3 red phase added setup-call fixtures before changing production code. The old implementation already treated token-mint 429 as a throttle, but its skip sample lacked the structured App-setup scope; confirmed rate-limit 403s from token mint and installation lookup aborted reconciliation before owner B:
+
+```text
+tests 6
+pass 3
+fail 3
+```
+
+The first pre-commit review found that repeatedly awaiting one cached rejected owner promise could manufacture three fuse events. The widened red case used three same-owner serial targets and an 81-target owner spanning three GraphQL batches; both starved the later healthy owner. The focused red selection failed 3/3. The second review found that splitting lookup from mint had dropped the existing mint-time 404 translation; its regression failed 1/1 because owner B did not recover.
+
+The final implementation honors the shared `GitHubRequestError.rateLimited` marker, wraps setup throttles as `github_throttled scope=app_setup` with stage/owner/status, and keeps the rejected promise as the owner-level negative cache. Error-identity tracking counts that cached rejection once toward the existing fuse while three distinct throttled owners still stop before a fourth call. The token-mint 404 race again reports `installation_missing`; 401 and non-throttle 403 setup failures remain fail-closed.
+
+The final setup-focused selection passed 11/11, the complete operator file passed 78/78, and `pnpm run check` passed. The fresh pre-commit Codex autoreview reported no accepted/actionable findings. The Docker-backed Crabbox receipt passed all 25 selected workflow, owner, setup, authorization, and throttle scenarios.
