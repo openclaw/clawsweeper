@@ -230,9 +230,10 @@ async function sendWebhook(port) {
     },
     body,
   });
+  const responseBody = await response.text();
   return {
     status: response.status,
-    body: await response.text(),
+    body: responseBody.slice(0, 500),
   };
 }
 
@@ -396,11 +397,11 @@ function writeDevVars(checkout, githubOrigin, key) {
   const values = {
     CLAWSWEEPER_WEBHOOK_SECRET: webhookSecret,
     CLAWSWEEPER_APP_CLIENT_ID: "Iv23durable-command-intake-proof",
-    CLAWSWEEPER_APP_PRIVATE_KEY: key.replace(/\n/g, "\\n"),
+    CLAWSWEEPER_APP_PRIVATE_KEY: key,
     GITHUB_API_URL: githubOrigin,
   };
   const contents = `${Object.entries(values)
-    .map(([name, value]) => `${name}=${JSON.stringify(value)}`)
+    .map(([name, value]) => `${name}=${value.includes("\n") ? `"${value}"` : value}`)
     .join("\n")}\n`;
   fs.writeFileSync(path.join(checkout, ".dev.vars"), contents);
   fs.writeFileSync(path.join(checkout, "dashboard", ".dev.vars"), contents);
