@@ -38,13 +38,16 @@ export function extractClawSweeperCommandLine(body: unknown): ClawSweeperCommand
   return null;
 }
 
-export function commandTextForClawSweeperFastAck(body: unknown) {
+export function normalizeClawSweeperCommandLine(body: unknown): ClawSweeperCommandLine | null {
   const command = extractClawSweeperCommandLine(body);
-  if (!command) return "";
-  if (command.trigger === "mention" && command.commandText === "status" && command.rest) {
-    return command.rest;
+  if (command?.trigger === "mention" && command.commandText === "status" && command.rest) {
+    return commandLine("mention", command.rest, "", false);
   }
-  return command.commandText;
+  return command;
+}
+
+export function commandTextForClawSweeperFastAck(body: unknown) {
+  return normalizeClawSweeperCommandLine(body)?.commandText ?? "";
 }
 
 export function isClawSweeperReReviewCommandText(commandText: unknown) {
@@ -73,6 +76,58 @@ export function reviewPromptFromClawSweeperCommandText(commandText: unknown) {
     .trim()
     .replace(RE_REVIEW_PROMPT_PREFIX_PATTERN, "")
     .trim();
+}
+
+export function reReviewContextFromClawSweeperComment(body: unknown) {
+  const command = normalizeClawSweeperCommandLine(body);
+  if (!command || !isClawSweeperReReviewCommandText(command.commandText)) return null;
+  return [
+    reviewPromptFromClawSweeperCommandText(command.commandText),
+    command.supportsContinuation ? command.rest : "",
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+export function directReReviewAdditionalPrompt(options: {
+  body: unknown;
+  maintainerAuthorized: boolean;
+  author: unknown;
+  commentUrl: unknown;
+}) {
+  if (!options.maintainerAuthorized) return "";
+  const context = reReviewContextFromClawSweeperComment(options.body);
+  if (!context) return "";
+  return [
+    "Maintainer context from an @clawsweeper re-review command.",
+    "",
+    `Author: ${String(options.author || "unknown")}`,
+    `Comment: ${String(options.commentUrl || "unknown")}`,
+    "",
+    "Requested focus:",
+    context.slice(0, 3000),
+    "",
+    "Use this only as read-only review context. Do not merge, close, label, or push code from the model.",
+  ].join("\n");
+}
+
+export const clawSweeperCommandAckMarker = (sourceCommentId: number) =>
+  `<!-- clawsweeper-command-ack:${sourceCommentId} -->`;
+
+export function renderClawSweeperQueuedAcknowledgement(
+  sourceCommentId: number,
+  statusMarker?: string,
+) {
+  const detail = statusMarker
+    ? [statusMarker, "🦞👀", "Exact review queued."]
+    : [
+        "🦞👀",
+        "ClawSweeper picked this up.",
+        "",
+        "Command router queued. I will update this comment with the next step.",
+      ];
+  return [clawSweeperCommandAckMarker(sourceCommentId), ...detail].join("\n");
 }
 
 function commandLine(

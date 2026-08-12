@@ -1,7 +1,10 @@
 import {
   commandTextForClawSweeperFastAck,
+  directReReviewAdditionalPrompt,
   isClawSweeperReReviewCommandText,
+  reReviewContextFromClawSweeperComment,
 } from "../src/repair/comment-command-text.ts";
+import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
 import { bayHtml } from "./bay-page.ts";
 import {
@@ -108,6 +111,8 @@ type GithubWebhookUserPayload = { readonly login?: unknown };
 type GithubWebhookIssuePayload = {
   readonly number?: unknown;
   readonly user?: GithubWebhookUserPayload | null;
+  readonly state?: unknown;
+  readonly pull_request?: unknown;
 };
 type GithubWebhookCommentPayload = {
   readonly id?: unknown;
@@ -116,6 +121,7 @@ type GithubWebhookCommentPayload = {
   readonly user?: GithubWebhookUserPayload | null;
   readonly created_at?: unknown;
   readonly updated_at?: unknown;
+  readonly html_url?: unknown;
 };
 type GithubWebhookPullRequestPayload = {
   readonly number?: unknown;
@@ -169,11 +175,16 @@ export type GithubWebhookIssueCommentClassification = {
   readonly targetRepo: string;
   readonly targetBranch: string;
   readonly itemNumber: number;
+  readonly itemKind: "issue" | "pull_request";
+  readonly itemState: string;
   readonly commentId: number;
   readonly installationId: number;
   readonly sourceAction: string;
   readonly commentUpdatedAt?: string;
   readonly commentBody?: string;
+  readonly commentAuthor: string;
+  readonly commentUrl: string;
+  readonly maintainerAuthorized: boolean;
 };
 type GithubWebhookIssueClassification = ExactReviewDecision & {
   readonly accepted: true;
@@ -738,6 +749,8 @@ export default {
       return json({ ok: true, service: "clawsweeper-github-webhook" });
     if (url.pathname === "/github/webhook" && request.method === "POST")
       return githubWebhook(request, env, ctx);
+    if (url.pathname === "/internal/exact-review/command-intake" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/command-intake");
     if (url.pathname === "/internal/exact-review/enqueue" && request.method === "POST")
       return authenticatedExactReviewEnqueue(request, env);
     if (url.pathname === "/internal/exact-review/branch-authority" && request.method === "POST")
@@ -1603,6 +1616,41 @@ async function githubWebhook(request, env, ctx) {
   });
   if (trigger) await recordBayJourneyTelemetry(env, ctx, [trigger], []);
 
+  const commentDecision = decision;
+  if (
+    commentDecision.itemState === "open" &&
+    typeof commentDecision.commentBody === "string" &&
+    commentDecision.commentUpdatedAt &&
+    reReviewContextFromClawSweeperComment(commentDecision.commentBody) !== null
+  ) {
+    const intake = directReReviewIntake({
+      targetRepo: commentDecision.targetRepo,
+      targetBranch: commentDecision.targetBranch,
+      itemNumber: commentDecision.itemNumber,
+      itemKind: commentDecision.itemKind,
+      installationId: commentDecision.installationId,
+      sourceCommentId: commentDecision.commentId,
+      sourceCommentUpdatedAt: commentDecision.commentUpdatedAt,
+      commandBodyDigest: await sha256Text(commentDecision.commentBody),
+      commandOrigin: "hosted_webhook",
+      additionalPrompt: directReReviewAdditionalPrompt({
+        body: commentDecision.commentBody,
+        maintainerAuthorized: commentDecision.maintainerAuthorized,
+        author: commentDecision.commentAuthor,
+        commentUrl: commentDecision.commentUrl,
+      }),
+    });
+    const queue = exactReviewQueueStub(env);
+    if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
+    return queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/command-intake", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(intake),
+      }),
+    );
+  }
+
   const credentials = githubAppCredentials(env);
   if (!credentials) return json({ error: "github_app_not_configured" }, 503);
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
@@ -1615,7 +1663,6 @@ async function githubWebhook(request, env, ctx) {
     permissions: { contents: "write" },
   });
 
-  const commentDecision = decision;
   const targetToken = await createGithubAppTokenFor({
     env,
     appJwt,
@@ -1837,9 +1884,14 @@ function classifyGithubIssueCommentWebhook({
     targetRepo,
     targetBranch,
     itemNumber,
+    itemKind: issue.pull_request ? "pull_request" : "issue",
+    itemState: String(issue.state || "").toLowerCase(),
     commentId,
     installationId,
     sourceAction: action,
+    commentAuthor: String(objectValue(comment.user).login || ""),
+    commentUrl: String(comment.html_url || ""),
+    maintainerAuthorized: CLAWSWEEPER_ALLOWED_ASSOCIATIONS.has(association),
     ...(commentUpdatedAt
       ? {
           commentUpdatedAt,

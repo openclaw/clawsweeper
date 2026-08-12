@@ -201,6 +201,9 @@ jobs:
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
           CLAWSWEEPER_ACTION_LEDGER_INVOCATION: initial
+          CLAWSWEEPER_INTERNAL_QUEUE_SECRET: ${{ secrets.CLAWSWEEPER_INTERNAL_QUEUE_SECRET || secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          CLAWSWEEPER_TARGET_INSTALLATION_ID: ${{ steps.app_token.outputs.installation-id }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
@@ -358,6 +361,9 @@ jobs:
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
           CLAWSWEEPER_ACTION_LEDGER_INVOCATION: retry
+          CLAWSWEEPER_INTERNAL_QUEUE_SECRET: ${{ secrets.CLAWSWEEPER_INTERNAL_QUEUE_SECRET || secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          CLAWSWEEPER_TARGET_INSTALLATION_ID: ${{ steps.app_token.outputs.installation-id }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"

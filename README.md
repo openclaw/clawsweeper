@@ -292,9 +292,11 @@ Users with repository write access and issue/PR authors may ask
 Other contributor commands are ignored without a reply. Scheduled comment routing is dry unless
 `CLAWSWEEPER_COMMENT_ROUTER_EXECUTE=1`; workflow dispatch with `execute=true`
 can be used for one-off live routing.
-For fast intake, the ClawSweeper GitHub App webhook can post the same queued
-status comment and enqueue exact `clawsweeper_comment` or `clawsweeper_item`
-work from eligible public `openclaw/*` and `steipete/*` repositories. Exact
+For fast intake, the ClawSweeper GitHub App webhook durably records eligible
+`review` and `re-review` comment versions before it acknowledges them. Other
+commands still enqueue exact `clawsweeper_comment` work, and item events enqueue
+`clawsweeper_item` work, from eligible public `openclaw/*` and `steipete/*`
+repositories. Exact
 item work is coalesced and leased by the dashboard Worker before it dispatches
 an executor, so webhook bursts do not create capacity-waiting Actions runners.
 The target-side dispatcher remains a scheduled-intake fallback until it adopts

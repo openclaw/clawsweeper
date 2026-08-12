@@ -376,7 +376,12 @@ Supported triggers:
 @openclaw-clawsweeper fix ci
 ```
 
-`review` and `re-review` dispatch ClawSweeper review again for an open issue or PR.
+`review` and `re-review` admit the exact comment version to the durable review
+queue for an open issue or PR. The hosted webhook is the fast path; the
+five-minute router scan is the recovery producer. Both converge on the same
+comment-version receipt, so a throttled router cannot lose the command and a
+redelivery cannot start the same version twice. The queue verifies the source
+comment and current PR head before it creates the marker-backed acknowledgement.
 Issue implementation commands (`implement`, `fix`, `build`, `create pr`, `fix issue`)
 dispatch the repair worker for one open issue and ask it to create or update a
 single ClawSweeper implementation PR. The generated job uses

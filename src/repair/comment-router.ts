@@ -159,6 +159,8 @@ import {
   decideReviewDispatchCoordination,
   type ReviewDispatchCoordinationDecision,
 } from "./review-dispatch-coordination.js";
+import { directReReviewIntake } from "./direct-re-review-admission.js";
+import { postExactReviewCommandIntakeSync } from "./exact-review-command-queue.js";
 
 const automergeMetricWrites: Promise<boolean>[] = [];
 
@@ -3321,9 +3323,8 @@ function trustedAutomationReviewLeaseBlockReason(
 }
 
 function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
-  const requiresCommandStatus = ["re_review", "autofix", "automerge"].includes(
-    String(command.intent ?? ""),
-  );
+  if (command.intent === "re_review") return enqueueClawSweeperReReview(command);
+  const requiresCommandStatus = ["autofix", "automerge"].includes(String(command.intent ?? ""));
   let dispatchKey = dispatchReceiptKey(command);
   const expectedTitle = `Review event item ${command.repo}#${command.issue_number} [${dispatchKey}]`;
   const claimed = claimedDispatchState({
@@ -3448,6 +3449,47 @@ function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
     repo: reviewRepo,
     item_number: command.issue_number,
     dispatch_key: dispatchKey,
+  };
+}
+
+function enqueueClawSweeperReReview(command: LooseRecord): LooseRecord {
+  const dispatchKey = dispatchReceiptKey(command);
+  const itemKind = command.target?.kind === "pull_request" ? "pull_request" : "issue";
+  const intake = directReReviewIntake({
+    targetRepo: command.repo,
+    targetBranch: command.target_branch || "main",
+    itemNumber: Number(command.issue_number),
+    itemKind,
+    installationId: Number(process.env.CLAWSWEEPER_TARGET_INSTALLATION_ID),
+    sourceCommentId: Number(command.comment_id),
+    sourceCommentUpdatedAt: String(command.comment_updated_at || ""),
+    commandBodyDigest: String(command.comment_body_sha256 || ""),
+    commandOrigin: "comment_router",
+    ...(command.status_comment_id ? { statusCommentId: Number(command.status_comment_id) } : {}),
+    additionalPrompt: freeformReviewPrompt(command),
+  });
+  command.command_status_revision = intake.commandVersionId;
+  const secret =
+    process.env.CLAWSWEEPER_INTERNAL_QUEUE_SECRET || process.env.CLAWSWEEPER_WEBHOOK_SECRET || "";
+  if (!secret) throw new Error("internal exact-review queue secret is required");
+  const result = runCommandMutation(command, {
+    kind: "review_queue_admission",
+    identity: intake,
+    operation: () =>
+      postExactReviewCommandIntakeSync({
+        queueUrl: process.env.QUEUE_URL || "https://clawsweeper.openclaw.ai",
+        secret,
+        intake,
+      }),
+  });
+  return {
+    workflow: reviewWorkflow,
+    event: "exact_review_queue",
+    repo: reviewRepo,
+    item_number: command.issue_number,
+    dispatch_key: dispatchKey,
+    command_version_id: intake.commandVersionId,
+    deduped: result.kind === "accepted" && result.deduped,
   };
 }
 

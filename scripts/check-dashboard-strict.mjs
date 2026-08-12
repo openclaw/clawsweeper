@@ -16,6 +16,7 @@ export const DASHBOARD_STRICT_BASELINE_FILES = Object.freeze([
   "dashboard/automerge-metrics.ts",
   "dashboard/dashboard-health.ts",
   "dashboard/error-safety.ts",
+  "dashboard/exact-review-command-intake.ts",
   "dashboard/exact-review-decision.ts",
   "dashboard/exact-review-publication-retry.ts",
   "dashboard/exact-review-queue-shared.ts",

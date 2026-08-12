@@ -46,6 +46,11 @@ export type ExactReviewBaseDecision = {
   commandStatusMarker?: string;
   statusCommentId?: number;
   additionalPrompt?: string;
+  sourceCommentId?: number;
+  sourceCommentUpdatedAt?: string;
+  commandBodyDigest?: string;
+  commandOrigin?: "hosted_webhook" | "comment_router";
+  sourceCommentVerified?: boolean;
 };
 export type ExactReviewPublication = {
   artifactName: string;
@@ -326,6 +331,21 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
   const statusCommentId = hasStatusCommentId ? Number(decision.statusCommentId) : undefined;
   const hasAdditionalPrompt = Object.hasOwn(decision, "additionalPrompt");
   const additionalPrompt = hasAdditionalPrompt ? decision.additionalPrompt : undefined;
+  const hasSourceCommentId = Object.hasOwn(decision, "sourceCommentId");
+  const sourceCommentId = hasSourceCommentId ? Number(decision.sourceCommentId) : undefined;
+  const hasSourceCommentUpdatedAt = Object.hasOwn(decision, "sourceCommentUpdatedAt");
+  const sourceCommentUpdatedAt = hasSourceCommentUpdatedAt
+    ? String(decision.sourceCommentUpdatedAt || "").trim()
+    : undefined;
+  const hasCommandBodyDigest = Object.hasOwn(decision, "commandBodyDigest");
+  const commandBodyDigest = hasCommandBodyDigest
+    ? String(decision.commandBodyDigest || "")
+        .trim()
+        .toLowerCase()
+    : undefined;
+  const hasCommandOrigin = Object.hasOwn(decision, "commandOrigin");
+  const commandOrigin = hasCommandOrigin ? String(decision.commandOrigin || "") : undefined;
+  const hasSourceCommentVerified = Object.hasOwn(decision, "sourceCommentVerified");
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) return null;
   if (!/^[A-Za-z0-9_./-]+$/.test(targetBranch)) return null;
   if (!Number.isInteger(itemNumber) || itemNumber <= 0) return null;
@@ -373,6 +393,31 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
   ) {
     return null;
   }
+  if (
+    hasSourceCommentId &&
+    (!Number.isSafeInteger(sourceCommentId) || Number(sourceCommentId) <= 0)
+  ) {
+    return null;
+  }
+  if (hasSourceCommentUpdatedAt && !Number.isFinite(Date.parse(sourceCommentUpdatedAt || ""))) {
+    return null;
+  }
+  if (hasCommandBodyDigest && !/^[0-9a-f]{64}$/.test(commandBodyDigest || "")) return null;
+  if (
+    hasCommandOrigin &&
+    commandOrigin !== "hosted_webhook" &&
+    commandOrigin !== "comment_router"
+  ) {
+    return null;
+  }
+  if (hasSourceCommentVerified && typeof decision.sourceCommentVerified !== "boolean") return null;
+  const commandMetadataCount = [
+    hasSourceCommentId,
+    hasSourceCommentUpdatedAt,
+    hasCommandBodyDigest,
+    hasCommandOrigin,
+  ].filter(Boolean).length;
+  if (commandMetadataCount !== 0 && commandMetadataCount !== 4) return null;
   return {
     targetRepo,
     targetBranch,
@@ -402,6 +447,15 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
     ...(typeof commandStatusMarker === "string" ? { commandStatusMarker } : {}),
     ...(statusCommentId === undefined ? {} : { statusCommentId }),
     ...(typeof additionalPrompt === "string" ? { additionalPrompt } : {}),
+    ...(sourceCommentId === undefined ? {} : { sourceCommentId }),
+    ...(sourceCommentUpdatedAt === undefined ? {} : { sourceCommentUpdatedAt }),
+    ...(commandBodyDigest === undefined ? {} : { commandBodyDigest }),
+    ...(commandOrigin === "hosted_webhook" || commandOrigin === "comment_router"
+      ? { commandOrigin }
+      : {}),
+    ...(typeof decision.sourceCommentVerified === "boolean"
+      ? { sourceCommentVerified: decision.sourceCommentVerified }
+      : {}),
   };
 }
 
@@ -622,6 +676,22 @@ export function mergePendingExactReviewDecision(
   return merged;
 }
 
+export function exactReviewDecisionHasCommandContext(decision: ExactReviewDecision) {
+  return Boolean(decision.commandStatusMarker || decision.statusCommentId);
+}
+
+export function exactReviewCommandObligationSurvives(
+  current: ExactReviewDecision,
+  incoming: ExactReviewDecision,
+) {
+  if (!exactReviewDecisionHasCommandContext(current)) return true;
+  if (!exactReviewDecisionHasCommandContext(incoming)) return false;
+  return (
+    (current.commandStatusMarker ?? null) === (incoming.commandStatusMarker ?? null) &&
+    (current.statusCommentId ?? null) === (incoming.statusCommentId ?? null)
+  );
+}
+
 export function exactReviewDecisionAtLiveHead(decision: ExactReviewDecision, headSha: string) {
   const refreshed = {
     ...decision,
@@ -649,6 +719,25 @@ export function exactReviewDecisionCanSupersedeReview(
   incoming: ExactReviewDecision,
 ): boolean {
   const active = current.leaseDecision || current.decision;
+  if (
+    active.sourceCommentId &&
+    incoming.sourceCommentId &&
+    active.sourceCommentId === incoming.sourceCommentId
+  ) {
+    const activeCommentAt = Date.parse(String(active.sourceCommentUpdatedAt || ""));
+    const incomingCommentAt = Date.parse(String(incoming.sourceCommentUpdatedAt || ""));
+    if (Number.isFinite(activeCommentAt) && Number.isFinite(incomingCommentAt)) {
+      if (incomingCommentAt < activeCommentAt) return false;
+      if (
+        incomingCommentAt === activeCommentAt &&
+        active.commandBodyDigest &&
+        incoming.commandBodyDigest &&
+        active.commandBodyDigest !== incoming.commandBodyDigest
+      ) {
+        return incoming.sourceCommentVerified === true;
+      }
+    }
+  }
   if (active.itemKind !== "pull_request" || incoming.itemKind !== "pull_request") return true;
 
   const activeHead = String(active.sourceHeadSha || "").toLowerCase();
@@ -688,6 +777,29 @@ export function exactReviewDecisionCanSupersedeReview(
   }
 
   return incomingAuthoritySeq > activeSourceAuthoritySeq;
+}
+
+export function exactReviewCommandVersionIsOlder(
+  active: ExactReviewDecision,
+  incoming: ExactReviewDecision,
+) {
+  if (
+    !active.sourceCommentId ||
+    !incoming.sourceCommentId ||
+    active.sourceCommentId !== incoming.sourceCommentId
+  ) {
+    return false;
+  }
+  const activeAt = Date.parse(String(active.sourceCommentUpdatedAt || ""));
+  const incomingAt = Date.parse(String(incoming.sourceCommentUpdatedAt || ""));
+  if (!Number.isFinite(activeAt) || !Number.isFinite(incomingAt)) return false;
+  if (incomingAt !== activeAt) return incomingAt < activeAt;
+  return Boolean(
+    active.commandBodyDigest &&
+    incoming.commandBodyDigest &&
+    incoming.commandBodyDigest !== active.commandBodyDigest &&
+    incoming.sourceCommentVerified !== true,
+  );
 }
 
 export function exactReviewSourceAuthorityWatermark(

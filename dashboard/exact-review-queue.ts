@@ -1,5 +1,11 @@
 import { stableJson } from "../src/stable-json.ts";
 import {
+  clawSweeperCommandAckMarker,
+  renderClawSweeperQueuedAcknowledgement,
+} from "../src/repair/comment-command-text.ts";
+import { planCommandAckConvergence } from "../src/repair/command-ack-convergence.ts";
+import type { DirectReReviewDecision } from "../src/repair/direct-re-review-admission.ts";
+import {
   normalizeStateWriterOperation,
   normalizeStateWriterProgress,
   payloadHash,
@@ -61,6 +67,10 @@ import {
 } from "./exact-review-lifecycle.ts";
 import { ExactReviewLifecycleTelemetryStore } from "./exact-review-lifecycle-telemetry.ts";
 import { GithubEgressTelemetryStore } from "./github-egress-telemetry.ts";
+import {
+  ExactReviewCommandIntakeStore,
+  type ExactReviewCommandIntakeRecord,
+} from "./exact-review-command-intake.ts";
 import { recentDurablePublicationEvents } from "./recent-durable-publication-events.ts";
 import { sanitizedServerError } from "./error-safety.ts";
 import {
@@ -91,6 +101,9 @@ import {
   exactReviewBranchAuthorityReservationKey,
   exactReviewDecisionAtLiveHead,
   exactReviewDecisionCanSupersedeReview,
+  exactReviewDecisionHasCommandContext,
+  exactReviewCommandObligationSurvives,
+  exactReviewCommandVersionIsOlder,
   exactReviewDecisionFrom,
   exactReviewDecisionWithoutSourceAuthority,
   exactReviewEditedSemanticInput,
@@ -639,6 +652,7 @@ export class ExactReviewQueue {
   private lifecycleProjectionStore;
   private lifecycleTelemetryStore;
   private githubEgressTelemetryStore;
+  private commandIntakeStore;
   private readonly random: () => number;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
   private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
@@ -663,6 +677,7 @@ export class ExactReviewQueue {
     this.lifecycleProjectionStore = new ExactReviewLifecycleProjectionStore(this.storage);
     this.lifecycleTelemetryStore = new ExactReviewLifecycleTelemetryStore(this.storage);
     this.githubEgressTelemetryStore = new GithubEgressTelemetryStore(this.storage);
+    this.commandIntakeStore = new ExactReviewCommandIntakeStore(this.storage);
     // Direct in-process users retain the established eager setup behavior.
     // A real Durable Object has blockConcurrencyWhile; defer that setup until a
     // non-Bay request so constructing it for the public pure reader cannot
@@ -725,6 +740,21 @@ export class ExactReviewQueue {
       return events
         ? json({ recent_durable_publication_events: events })
         : json({ error: "invalid_window" }, 400);
+    }
+    if (request.method === "POST" && url.pathname === "/command-intake") {
+      const now = Date.now();
+      const admitted = this.commandIntakeStore.admit(await request.json().catch(() => null), now);
+      if (!admitted) return json({ error: "invalid_command_intake" }, 400);
+      if (admitted.accepted) await this.scheduleSourceAuthorityVerification(now);
+      return json(
+        {
+          ok: true,
+          accepted: admitted.accepted,
+          ...(admitted.accepted ? { deduped: admitted.deduped } : { reason: admitted.reason }),
+          command_version_id: admitted.commandVersionId,
+        },
+        202,
+      );
     }
     if (request.method === "POST" && url.pathname === "/branch-authority") {
       const body = objectValue(await request.json().catch(() => null));
@@ -1263,6 +1293,21 @@ export class ExactReviewQueue {
           // Ordinary source events retain normal replacement behavior, including the
           // command-context merge for pending items.
           if (!ignoredRecovery) {
+            if (
+              exactReviewCommandVersionIsOlder(current.leaseDecision || current.decision, decision)
+            ) {
+              this.storage.sql.exec(
+                `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} WHERE delivery_id = ?`,
+                deliveryId,
+              );
+              this.writeStateSync(state);
+              return {
+                deduped: true as const,
+                staleCommand: true as const,
+                key,
+                state,
+              };
+            }
             const pendingTerminalFinalizer =
               Boolean(current.terminalFinalization) &&
               (current.state === "pending" || current.state === "parked");
@@ -1288,10 +1333,11 @@ export class ExactReviewQueue {
               // old publication or command marker.
               current.terminalFinalization = undefined;
             }
-            const nextRevision = Math.max(
-              current.revision + 1,
-              this.nextExactReviewItemRevisionSync(key),
-            );
+            const nextRevision =
+              exactReviewDecisionHasCommandContext(current.decision) ||
+              exactReviewDecisionHasCommandContext(decision)
+                ? this.nextExactReviewCommandRevisionSync(key, current.revision + 1)
+                : this.nextExactReviewItemRevisionSync(key, current.revision + 1);
             // Explicit commands arrive through repository_dispatch without a webhook authority
             // tuple. Bind them to the current verified decision via the merge below. An active
             // review keeps its lease and exposes the command as a follow-up revision on completion.
@@ -1314,6 +1360,12 @@ export class ExactReviewQueue {
               !attemptsReviewSupersession ||
               exactReviewDecisionCanSupersedeReview(current, decision);
             if (attemptsReviewSupersession && !sourceAuthorityIsNewer) {
+              if (decision.sourceCommentId) {
+                this.storage.sql.exec(
+                  `DELETE FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} WHERE delivery_id = ?`,
+                  deliveryId,
+                );
+              }
               this.writeStateSync(state);
               return {
                 deduped: true as const,
@@ -1360,14 +1412,27 @@ export class ExactReviewQueue {
               exactReviewQueueIsPublication(current)
                 ? (current.decision.publication?.producerDecision ?? current.decision)
                 : current.decision;
-            current.decision = supersedesActiveReview
+            const nextDecision = supersedesActiveReview
               ? decision
               : mergeable || queuesCommandFollowUp
                 ? mergePendingExactReviewDecision(followUpMergeBase, decision)
                 : decision;
-            current.revision = nextRevision;
-            current.admissionDeliveryId = deliveryId;
-            current.updatedAt = now;
+            if (
+              exactReviewDecisionHasCommandContext(current.decision) ||
+              exactReviewDecisionHasCommandContext(nextDecision)
+            ) {
+              this.transitionCommandRevision(state, current, nextDecision, now, {
+                allocatedRevision: nextRevision,
+                admissionDeliveryId: deliveryId,
+                retainPriorLifecycle:
+                  queuesCommandFollowUp && current.revision === current.leaseRevision,
+              });
+            } else {
+              current.decision = nextDecision;
+              current.revision = nextRevision;
+              current.admissionDeliveryId = deliveryId;
+              current.updatedAt = now;
+            }
             // Immediacy must come from the merged decision: a pending explicit command
             // keeps its command marker through the merge, and a later plain webhook
             // event must not re-debounce it.
@@ -1443,7 +1508,9 @@ export class ExactReviewQueue {
             admissionDeliveryId: deliveryId,
             ...(ingress ? { ingressFingerprint: ingress.fingerprint } : {}),
             state: "pending",
-            revision: this.nextExactReviewItemRevisionSync(key),
+            revision: exactReviewDecisionHasCommandContext(decision)
+              ? this.nextExactReviewCommandRevisionSync(key, 1)
+              : this.nextExactReviewItemRevisionSync(key),
             createdAt: now,
             updatedAt: now,
             ...exactReviewQueueDebouncedAttempt(state, decision, now, now, this.env, true),
@@ -1452,6 +1519,7 @@ export class ExactReviewQueue {
               ? { sourceAuthorityWatermark: exactReviewSourceAuthorityWatermark(decision)! }
               : {}),
           };
+          this.recordCommandAdmission(state.items[key], decision, now);
           ingressAdmitted = true;
         }
         if (
@@ -1520,6 +1588,7 @@ export class ExactReviewQueue {
                 }
               : {}),
             ...("staleSource" in accepted && accepted.staleSource ? { stale_source: true } : {}),
+            ...("staleCommand" in accepted && accepted.staleCommand ? { stale_command: true } : {}),
             ...(accepted.superseded
               ? {
                   superseded: true,
@@ -3327,8 +3396,10 @@ export class ExactReviewQueue {
     await this.storage.deleteAlarm();
     await this.processBranchAuthorityReservations(startedAt);
     await this.processSourceAuthorityReservations(startedAt);
+    await this.processCommandIntakes(startedAt);
     let snapshot = this.storage.transactionSync(() => {
       this.pruneDeliveryReceiptsSync(startedAt);
+      this.commandIntakeStore.pruneTerminalReceipts(startedAt);
       this.directPublicationStore.pruneTerminalSync(startedAt);
       const current = this.readStateSync();
       this.syncLegacyCompatibilitySync(current);
@@ -4559,7 +4630,9 @@ export class ExactReviewQueue {
           key: canonicalKey,
           decision: canonicalDecision,
           state: "pending",
-          revision: this.nextExactReviewItemRevisionSync(canonicalKey),
+          revision: exactReviewDecisionHasCommandContext(canonicalDecision)
+            ? this.nextExactReviewCommandRevisionSync(canonicalKey, 1)
+            : this.nextExactReviewItemRevisionSync(canonicalKey),
           createdAt: now,
           updatedAt: now,
           ...exactReviewQueueDebouncedAttempt(state, canonicalDecision, now, now, this.env),
@@ -4799,7 +4872,7 @@ export class ExactReviewQueue {
         }
         clearExactReviewLease(item);
         item.state = "pending";
-        item.revision = Math.max(item.revision + 1, this.nextExactReviewItemRevisionSync(item.key));
+        item.revision = this.nextExactReviewItemRevisionSync(item.key, item.revision + 1);
         item.admissionDeliveryId = `parked-recovery:${recoveryKey}:${item.key}`;
         item.createdAt = now;
         item.updatedAt = now;
@@ -6241,6 +6314,91 @@ export class ExactReviewQueue {
     });
   }
 
+  private recordCommandAdmission(
+    item: ExactReviewQueueItem,
+    decision: ExactReviewDecision,
+    now: number,
+    revision = item.revision,
+  ) {
+    const commandDecision = decision.publication?.producerDecision ?? decision;
+    if (!exactReviewDecisionHasCommandContext(commandDecision)) return null;
+    const canonicalTargetKey = `${commandDecision.targetRepo}#${commandDecision.itemNumber}`;
+    const existing = this.lifecycleProjectionStore.read(canonicalTargetKey, item.key, revision);
+    if (existing) return existing;
+    return this.lifecycleProjectionStore.recordAdmissionSync({
+      canonicalTargetKey,
+      fenceKey: item.key,
+      revision,
+      deliveryId:
+        commandDecision.sourceDeliveryId ||
+        item.admissionDeliveryId ||
+        `command:${item.key}:${revision}`,
+      sourceAction: commandDecision.sourceAction,
+      commandOriginated: true,
+      statusMarker: commandDecision.commandStatusMarker ?? null,
+      statusCommentId: commandDecision.statusCommentId ?? null,
+      ...(commandDecision.sourceDeliveryId
+        ? { sourceDeliveryId: commandDecision.sourceDeliveryId }
+        : {}),
+      observedAt: now,
+    });
+  }
+
+  private transitionCommandRevision(
+    state: ExactReviewQueueState,
+    item: ExactReviewQueueItem,
+    decision: ExactReviewDecision,
+    now: number,
+    options: {
+      newItem?: boolean;
+      minimumRevision?: number;
+      allocatedRevision?: number;
+      admissionDeliveryId?: string;
+      retainPriorLifecycle?: boolean;
+    } = {},
+  ) {
+    if (!options.newItem) {
+      const prior = this.recordCommandAdmission(item, item.decision, now);
+      if (prior && !options.retainPriorLifecycle) {
+        const requestedKind = exactReviewCommandObligationSurvives(item.decision, decision)
+          ? "requeue"
+          : "superseded";
+        const committedKind = prior.terminalDisposition?.kind;
+        const terminal =
+          committedKind && committedKind !== "requeue"
+            ? prior
+            : this.lifecycleProjectionStore.recordTerminalDispositionSync({
+                canonicalTargetKey: prior.canonicalTargetKey,
+                fenceKey: prior.fenceKey,
+                revision: prior.revision,
+                kind: requestedKind,
+                observedAt: now,
+              });
+        const terminalKind = terminal.terminalDisposition?.kind;
+        if (terminalKind && terminalKind !== "requeue") {
+          this.ensureLifecycleTerminalFinalizationDriver({
+            state,
+            projection: terminal,
+            terminalDisposition: terminalKind,
+            now,
+          });
+        }
+      }
+    }
+    item.revision =
+      options.allocatedRevision ??
+      this.nextExactReviewCommandRevisionSync(
+        item.key,
+        Math.max(options.minimumRevision || 1, options.newItem ? 1 : item.revision + 1),
+      );
+    if (options.admissionDeliveryId) item.admissionDeliveryId = options.admissionDeliveryId;
+    item.decision = decision;
+    item.updatedAt = now;
+    state.items[item.key] = item;
+    this.recordCommandAdmission(item, decision, now);
+    return item;
+  }
+
   private recordLifecycleClaim(item: ExactReviewQueueItem, now: number) {
     if (!exactReviewQueueIsPublication(item) || item.terminalFinalization || !item.claimedRunId) {
       return;
@@ -7205,7 +7363,9 @@ export class ExactReviewQueue {
     item.admissionDeliveryId = `direct-lifecycle-requeue:${item.key}:${completedRevision}`;
     item.ingressFingerprint = undefined;
     item.state = "pending";
-    item.revision = Math.max(item.revision + 1, this.nextExactReviewItemRevisionSync(item.key));
+    item.revision = exactReviewDecisionHasCommandContext(decision)
+      ? this.nextExactReviewCommandRevisionSync(item.key, item.revision + 1)
+      : this.nextExactReviewItemRevisionSync(item.key, item.revision + 1);
     item.createdAt = now;
     item.updatedAt = now;
     item.parkedReason = undefined;
@@ -7238,8 +7398,18 @@ export class ExactReviewQueue {
     return Number(row?.source_revision || 0);
   }
 
-  private nextExactReviewItemRevisionSync(itemKey: string): number {
-    return this.publicationHeadRevisionSync(itemKey.toLowerCase()) + 1;
+  private nextExactReviewItemRevisionSync(itemKey: string, minimumRevision = 1): number {
+    return Math.max(minimumRevision, this.publicationHeadRevisionSync(itemKey.toLowerCase()) + 1);
+  }
+
+  private nextExactReviewCommandRevisionSync(itemKey: string, minimumRevision: number): number {
+    const canonicalKey = itemKey.split("@publish:")[0]!.toLowerCase();
+    return this.commandIntakeStore.allocateItemRevision(
+      canonicalKey,
+      minimumRevision,
+      this.lifecycleProjectionStore.maxRevision(canonicalKey),
+      this.publicationHeadRevisionSync(canonicalKey),
+    );
   }
 
   private freshPublicationItemKeysSync(state: ExactReviewQueueState, now: number) {
@@ -7293,6 +7463,7 @@ export class ExactReviewQueue {
 
   private async initializeStorage() {
     this.ensureStorageSchemaSync();
+    this.commandIntakeStore.ensureSchemaSync();
     this.batchStore.ensureSchemaSync();
     this.directPublicationStore.ensureSchemaSync();
     this.recordSnapshotStore.ensureSchemaSync();
@@ -9402,6 +9573,253 @@ export class ExactReviewQueue {
     this.storage.kv.delete(EXACT_REVIEW_QUEUE_STATE_KEY);
   }
 
+  private async processCommandIntakes(now: number) {
+    for (const record of this.commandIntakeStore.due(now)) {
+      if (!this.commandIntakeStore.isCurrent(record)) {
+        this.commandIntakeStore.finish(
+          record.intake.commandVersionId,
+          "superseded",
+          Date.now(),
+          "newer_comment_version",
+        );
+        continue;
+      }
+      const circuitRetryAt = exactReviewGithubTargetAppCircuitRetryAt(
+        this.readStateSync(),
+        record.intake.decision.targetRepo,
+        now,
+      );
+      if (circuitRetryAt > now) {
+        this.commandIntakeStore.defer(
+          record,
+          now,
+          "target GitHub credential circuit is open",
+          circuitRetryAt,
+          false,
+        );
+        continue;
+      }
+      let tokenPromise: Promise<string> | null = null;
+      const token = () => (tokenPromise ??= exactReviewCommandTargetToken(this.env, record.intake));
+      try {
+        let current = record;
+        if (current.stage === "verify_pending") {
+          const decision = await this.verifyCommandIntake(current, token());
+          if (!decision) continue;
+          this.commandIntakeStore.advance(
+            current.intake.commandVersionId,
+            "enqueue_pending",
+            Date.now(),
+            decision,
+          );
+          current = { ...current, stage: "enqueue_pending", verifiedDecision: decision };
+        }
+        if (current.stage === "enqueue_pending") {
+          const decision = current.verifiedDecision;
+          if (!decision) throw new Error("verified command decision is missing");
+          const response = await this.fetch(
+            new Request("https://clawsweeper-exact-review-queue/enqueue", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                delivery_id: current.intake.commandVersionId,
+                decision,
+              }),
+            }),
+          );
+          const result = objectValue(await response.json().catch(() => null));
+          if (!response.ok) {
+            throw new Error(`command queue admission failed: ${response.status}`);
+          }
+          if (result.stale_source === true || result.stale_command === true) {
+            this.commandIntakeStore.retryVerification(
+              current,
+              Date.now(),
+              result.stale_command === true ? "older_command_version" : "stale_source_authority",
+            );
+            continue;
+          }
+          if (result.queued !== true && result.deduped !== true) {
+            this.commandIntakeStore.finish(
+              current.intake.commandVersionId,
+              "rejected",
+              Date.now(),
+              String(result.reason || result.error || "queue_rejected"),
+            );
+            continue;
+          }
+          this.commandIntakeStore.advance(
+            current.intake.commandVersionId,
+            "effects_pending",
+            Date.now(),
+            decision,
+          );
+          current = { ...current, stage: "effects_pending" };
+        }
+        if (current.stage === "effects_pending") {
+          const decision = current.verifiedDecision;
+          if (!decision) throw new Error("command effects decision is missing");
+          await Promise.all([
+            convergeCommandAcknowledgement({
+              env: this.env,
+              token: token(),
+              decision,
+              sourceCommentId: current.intake.sourceCommentId,
+            }),
+            addCommandReaction({
+              env: this.env,
+              token: token(),
+              repo: decision.targetRepo,
+              commentId: current.intake.sourceCommentId,
+            }),
+          ]);
+          this.commandIntakeStore.finish(
+            current.intake.commandVersionId,
+            "completed",
+            Date.now(),
+            null,
+          );
+        }
+      } catch (error) {
+        const observedAt = Date.now();
+        const observation = exactReviewGithubTargetAppObservation(
+          error,
+          record.intake.decision.targetRepo,
+          observedAt,
+        );
+        this.recordAuthorityGithubOutcomeSync(
+          record.attempts > 0,
+          observation ? "throttle" : "error",
+          observedAt,
+          observation,
+        );
+        this.commandIntakeStore.defer(
+          record,
+          observedAt,
+          sanitizedServerError(error),
+          observation?.retryAt,
+        );
+      }
+    }
+  }
+
+  private async verifyCommandIntake(
+    record: ExactReviewCommandIntakeRecord,
+    token: Promise<string>,
+  ): Promise<DirectReReviewDecision | null> {
+    const intake = record.intake;
+    let sourceComment: Record<string, unknown>;
+    try {
+      sourceComment = objectValue(
+        await githubTokenJson({
+          env: this.env,
+          token: await token,
+          path: `/repos/${intake.decision.targetRepo}/issues/comments/${intake.sourceCommentId}`,
+          method: "GET",
+          body: undefined,
+          errorLabel: "direct re-review source comment",
+        }),
+      );
+    } catch (error) {
+      if (error instanceof GitHubRequestError && (error.status === 404 || error.status === 410)) {
+        this.commandIntakeStore.finish(
+          intake.commandVersionId,
+          "rejected",
+          Date.now(),
+          "source_comment_missing",
+        );
+        return null;
+      }
+      throw error;
+    }
+    const sourceIssueUrl = String(sourceComment.issue_url || "");
+    if (
+      !sourceIssueUrl.endsWith(
+        `/repos/${intake.decision.targetRepo}/issues/${intake.decision.itemNumber}`,
+      )
+    ) {
+      this.commandIntakeStore.finish(
+        intake.commandVersionId,
+        "rejected",
+        Date.now(),
+        "source_comment_item_mismatch",
+      );
+      return null;
+    }
+    const liveCommentUpdatedAt = Date.parse(String(sourceComment.updated_at || ""));
+    const admittedCommentUpdatedAt = Date.parse(intake.sourceCommentUpdatedAt);
+    const liveCommentDigest = await sha256Hex(
+      new TextEncoder().encode(String(sourceComment.body || "")),
+    );
+    if (!Number.isFinite(liveCommentUpdatedAt) || liveCommentUpdatedAt < admittedCommentUpdatedAt) {
+      throw new Error("live source comment version is not yet authoritative");
+    }
+    if (
+      liveCommentUpdatedAt > admittedCommentUpdatedAt ||
+      liveCommentDigest !== intake.commandBodyDigest
+    ) {
+      this.commandIntakeStore.finish(
+        intake.commandVersionId,
+        "rejected",
+        Date.now(),
+        "source_comment_changed",
+      );
+      return null;
+    }
+
+    let decision: DirectReReviewDecision = {
+      ...intake.decision,
+      sourceCommentVerified: true,
+    };
+    const itemPath = decision.itemKind === "pull_request" ? "pulls" : "issues";
+    const item = objectValue(
+      await githubTokenJson({
+        env: this.env,
+        token: await token,
+        path: `/repos/${decision.targetRepo}/${itemPath}/${decision.itemNumber}`,
+        method: "GET",
+        body: undefined,
+        errorLabel: "direct re-review item",
+      }),
+    );
+    if (String(item.state || "").toLowerCase() !== "open") {
+      this.commandIntakeStore.finish(
+        intake.commandVersionId,
+        "rejected",
+        Date.now(),
+        "target_not_open",
+      );
+      return null;
+    }
+    if (decision.itemKind === "pull_request") {
+      const headSha = String(objectValue(item.head).sha || "")
+        .trim()
+        .toLowerCase();
+      const sourceUpdatedAt = String(item.updated_at || "").trim();
+      if (!/^[0-9a-f]{40}$/.test(headSha)) {
+        throw new Error("live pull request head is invalid");
+      }
+      const sourceAuthoritySeq = this.storage.transactionSync(() => {
+        const stored = this.storage.kv.get(EXACT_REVIEW_SOURCE_AUTHORITY_SEQUENCE_KEY);
+        const current = stored === undefined ? 0 : Number(stored);
+        if (!Number.isSafeInteger(current) || current < 0 || current >= Number.MAX_SAFE_INTEGER) {
+          throw new Error("invalid exact-review source authority sequence");
+        }
+        const next = current + 1;
+        this.storage.kv.put(EXACT_REVIEW_SOURCE_AUTHORITY_SEQUENCE_KEY, next);
+        return next;
+      });
+      decision = {
+        ...decision,
+        sourceHeadSha: headSha,
+        sourceHeadVerified: true,
+        sourceAuthoritySeq,
+        ...(Number.isFinite(Date.parse(sourceUpdatedAt)) ? { sourceUpdatedAt } : {}),
+      };
+    }
+    return decision;
+  }
+
   private async processSourceAuthorityReservations(now: number) {
     const reservations = (await this.sourceAuthorityReservations())
       .filter((reservation) => reservation.nextAttemptAt <= now)
@@ -9728,12 +10146,14 @@ export class ExactReviewQueue {
       this.freshPublicationItemKeysSync(state, now),
     );
     const sourceAuthorityNext = await this.nextSourceAuthorityVerificationAt();
+    const commandIntakeNext = this.commandIntakeStore.nextAttemptAt();
     const credentialCircuitNext = exactReviewGithubCircuitNextWakeAt(state, now);
     const next = [
       queueNext,
       batchOwnership.nextLeaseExpiresAt,
       batchDeparture?.dueAt ?? null,
       sourceAuthorityNext,
+      commandIntakeNext,
       credentialCircuitNext,
     ]
       .filter((candidate): candidate is number => candidate !== null)
@@ -11974,6 +12394,108 @@ async function exactReviewSourceAuthorityLiveHead(
   return String(objectValue(objectValue(pull).head).sha || "")
     .trim()
     .toLowerCase();
+}
+
+async function exactReviewCommandTargetToken(
+  env,
+  intake: ExactReviewCommandIntakeRecord["intake"],
+) {
+  const credentials = githubAppCredentials(env);
+  if (!credentials) throw new Error("github app is not configured");
+  const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
+  return createGithubAppTokenFor({
+    env,
+    appJwt,
+    installationId: intake.installationId,
+    label: intake.decision.targetRepo,
+    repositories: [repoName(intake.decision.targetRepo)],
+    permissions: { issues: "write", pull_requests: "write" },
+  });
+}
+
+export async function convergeCommandAcknowledgement(options: {
+  env: Record<string, unknown>;
+  token: Promise<string>;
+  decision: DirectReReviewDecision;
+  sourceCommentId: number;
+}) {
+  const token = await options.token;
+  const ackMarker = clawSweeperCommandAckMarker(options.sourceCommentId);
+  const statusMarker = options.decision.commandStatusMarker;
+  const list = async () => {
+    const comments = await githubTokenJson({
+      env: options.env,
+      token,
+      path: `/repos/${options.decision.targetRepo}/issues/${options.decision.itemNumber}/comments?per_page=100`,
+      method: "GET",
+      body: undefined,
+      errorLabel: "direct command acknowledgement list",
+    });
+    return Array.isArray(comments)
+      ? comments
+          .map((comment) => objectValue(comment))
+          .filter((comment) => String(comment.body || "").includes(ackMarker))
+      : [];
+  };
+  let comments = await list();
+  let exact = comments.find((comment) => String(comment.body || "").includes(statusMarker));
+  if (!exact) {
+    const bare = comments.find(
+      (comment) => !String(comment.body || "").includes("clawsweeper-command-status:"),
+    );
+    const bareId = Number(bare?.id) || null;
+    const body = renderClawSweeperQueuedAcknowledgement(options.sourceCommentId, statusMarker);
+    exact = objectValue(
+      await githubTokenJson({
+        env: options.env,
+        token,
+        path: bareId
+          ? `/repos/${options.decision.targetRepo}/issues/comments/${bareId}`
+          : `/repos/${options.decision.targetRepo}/issues/${options.decision.itemNumber}/comments`,
+        method: bareId ? "PATCH" : "POST",
+        body: { body },
+        errorLabel: "direct command acknowledgement",
+      }),
+    );
+    comments = [
+      ...(await list()),
+      { ...exact, body, id: Number(exact.id || bareId), created_at: exact.created_at || "" },
+    ];
+  }
+  const convergence = planCommandAckConvergence(comments, statusMarker);
+  for (const duplicate of convergence.prunable.slice(0, 20)) {
+    const id = Number(duplicate.id);
+    if (!Number.isSafeInteger(id) || id <= 0) continue;
+    await githubTokenJson({
+      env: options.env,
+      token,
+      path: `/repos/${options.decision.targetRepo}/issues/comments/${id}`,
+      method: "DELETE",
+      body: undefined,
+      errorLabel: "duplicate command acknowledgement cleanup",
+    }).catch((error) => {
+      if (!(error instanceof GitHubRequestError && error.status === 404)) throw error;
+    });
+  }
+  return Number(convergence.keep?.id || exact.id) || null;
+}
+
+async function addCommandReaction(options: {
+  env: Record<string, unknown>;
+  token: Promise<string>;
+  repo: string;
+  commentId: number;
+}) {
+  await githubTokenJson({
+    env: options.env,
+    token: await options.token,
+    path: `/repos/${options.repo}/issues/comments/${options.commentId}/reactions`,
+    method: "POST",
+    body: { content: "eyes" },
+    errorLabel: "direct command reaction",
+  }).catch((error) => {
+    if (!(error instanceof GitHubRequestError && error.status === 422)) throw error;
+  });
 }
 
 async function exactReviewTargetReadToken(env, targetRepo: string, knownInstallationId?: number) {

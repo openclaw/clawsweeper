@@ -228,6 +228,15 @@ type ProjectionIdentity = {
   fenceKey: string;
   revision: number;
 };
+type LifecycleAdmissionInput = ProjectionIdentity & {
+  deliveryId: string;
+  sourceDeliveryId?: string;
+  sourceAction: string;
+  commandOriginated: boolean;
+  statusMarker: string | null;
+  statusCommentId: number | null;
+  observedAt: number;
+};
 
 export class ExactReviewLifecycleProjectionStore {
   private readonly storage: DurableStorage;
@@ -262,17 +271,11 @@ export class ExactReviewLifecycleProjectionStore {
     this.schemaReady = true;
   }
 
-  recordAdmission(
-    input: ProjectionIdentity & {
-      deliveryId: string;
-      sourceDeliveryId?: string;
-      sourceAction: string;
-      commandOriginated: boolean;
-      statusMarker: string | null;
-      statusCommentId: number | null;
-      observedAt: number;
-    },
-  ) {
+  recordAdmission(input: LifecycleAdmissionInput) {
+    return this.storage.transactionSync(() => this.recordAdmissionSync(input));
+  }
+
+  recordAdmissionSync(input: LifecycleAdmissionInput) {
     this.validateIdentity(input);
     if (!validText(input.deliveryId, 1, 300) || !validText(input.sourceAction, 1, 200)) {
       throw new Error("invalid lifecycle admission fact");
@@ -287,51 +290,49 @@ export class ExactReviewLifecycleProjectionStore {
       throw new Error("invalid lifecycle status comment id");
     }
     this.ensureSchemaSync();
-    return this.storage.transactionSync(() => {
-      const existing = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
-      if (existing) {
-        this.assertIdentity(existing, input);
-        const admission = existing.admission;
-        if (
-          admission.deliveryId !== input.deliveryId ||
-          admission.sourceDeliveryId !== input.sourceDeliveryId ||
-          admission.sourceAction !== input.sourceAction ||
-          admission.commandOriginated !== input.commandOriginated ||
-          admission.statusMarker !== input.statusMarker ||
-          admission.statusCommentId !== input.statusCommentId
-        ) {
-          throw new Error("conflicting lifecycle admission fact");
-        }
-        return existing;
+    const existing = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
+    if (existing) {
+      this.assertIdentity(existing, input);
+      const admission = existing.admission;
+      if (
+        admission.deliveryId !== input.deliveryId ||
+        admission.sourceDeliveryId !== input.sourceDeliveryId ||
+        admission.sourceAction !== input.sourceAction ||
+        admission.commandOriginated !== input.commandOriginated ||
+        admission.statusMarker !== input.statusMarker ||
+        admission.statusCommentId !== input.statusCommentId
+      ) {
+        throw new Error("conflicting lifecycle admission fact");
       }
-      const projection: ExactReviewLifecycleProjection = {
-        version: 1,
-        canonicalTargetKey: input.canonicalTargetKey,
-        fenceKey: input.fenceKey,
-        revision: input.revision,
-        admission: {
-          deliveryId: input.deliveryId,
-          ...(input.sourceDeliveryId ? { sourceDeliveryId: input.sourceDeliveryId } : {}),
-          sourceAction: input.sourceAction,
-          commandOriginated: input.commandOriginated,
-          statusMarker: input.statusMarker,
-          statusCommentId: input.statusCommentId,
-          admittedAt: input.observedAt,
-        },
-        claims: [],
-        reviewResults: [],
-        githubEffect: null,
-        canonicalReceipts: [],
-        routerReceipts: [],
-        routerReceipt: null,
-        acknowledgement: { required: input.commandOriginated, attempts: [], observed: null },
-        terminalDispositions: [],
-        terminalDisposition: null,
-        updatedAt: input.observedAt,
-      };
-      this.writeSync(projection);
-      return projection;
-    });
+      return existing;
+    }
+    const projection: ExactReviewLifecycleProjection = {
+      version: 1,
+      canonicalTargetKey: input.canonicalTargetKey,
+      fenceKey: input.fenceKey,
+      revision: input.revision,
+      admission: {
+        deliveryId: input.deliveryId,
+        ...(input.sourceDeliveryId ? { sourceDeliveryId: input.sourceDeliveryId } : {}),
+        sourceAction: input.sourceAction,
+        commandOriginated: input.commandOriginated,
+        statusMarker: input.statusMarker,
+        statusCommentId: input.statusCommentId,
+        admittedAt: input.observedAt,
+      },
+      claims: [],
+      reviewResults: [],
+      githubEffect: null,
+      canonicalReceipts: [],
+      routerReceipts: [],
+      routerReceipt: null,
+      acknowledgement: { required: input.commandOriginated, attempts: [], observed: null },
+      terminalDispositions: [],
+      terminalDisposition: null,
+      updatedAt: input.observedAt,
+    };
+    this.writeSync(projection);
+    return projection;
   }
 
   recordClaim(
@@ -484,25 +485,17 @@ export class ExactReviewLifecycleProjectionStore {
     },
   ) {
     this.validateIdentity(input);
-    return this.mutate(input, (projection) => {
-      const next = { kind: input.kind, observedAt: input.observedAt };
-      const current = projection.terminalDisposition;
-      if (!current) {
-        projection.terminalDispositions.push(next);
-        projection.terminalDisposition = next;
-        return projection;
-      }
-      if (current.kind === next.kind) return projection;
-      // A newer source can requeue a just-routed revision before its final
-      // queue completion lands. Requeue remains an immutable history fact and
-      // a later durable handoff may still complete the same admitted revision.
-      if (next.kind !== "requeue" && current.kind !== "requeue") {
-        throw new Error("conflicting lifecycle terminal disposition");
-      }
-      projection.terminalDispositions.push(next);
-      projection.terminalDisposition = next;
-      return projection;
-    });
+    return this.mutate(input, (projection) => applyTerminalDisposition(projection, input));
+  }
+
+  recordTerminalDispositionSync(
+    input: ProjectionIdentity & {
+      kind: LifecycleTerminalDisposition;
+      observedAt: number;
+    },
+  ) {
+    this.validateIdentity(input);
+    return this.mutateSync(input, (projection) => applyTerminalDisposition(projection, input));
   }
 
   authorizeCommandAcknowledgement(
@@ -767,6 +760,20 @@ export class ExactReviewLifecycleProjectionStore {
       return null;
     }
     return this.readSync(canonicalTargetKey, fenceKey, revision);
+  }
+
+  maxRevision(canonicalTargetKey: string) {
+    if (!validCanonicalTargetKey(canonicalTargetKey)) return 0;
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT MAX(revision) AS max_revision
+           FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          WHERE canonical_target_key = ?`,
+        canonicalTargetKey,
+      ),
+    )[0] as { max_revision?: unknown } | undefined;
+    const revision = Number(row?.max_revision || 0);
+    return Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
   }
 
   /**
@@ -1133,18 +1140,24 @@ export class ExactReviewLifecycleProjectionStore {
     apply: (projection: ExactReviewLifecycleProjection) => T,
     writeResult = true,
   ): T {
+    return this.storage.transactionSync(() => this.mutateSync(input, apply, writeResult));
+  }
+
+  private mutateSync<T>(
+    input: ProjectionIdentity,
+    apply: (projection: ExactReviewLifecycleProjection) => T,
+    writeResult = true,
+  ): T {
     this.ensureSchemaSync();
-    return this.storage.transactionSync(() => {
-      const projection = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
-      if (!projection) throw new Error("missing lifecycle admission fact");
-      this.assertIdentity(projection, input);
-      const result = apply(projection);
-      if (writeResult) {
-        projection.updatedAt = Date.now();
-        this.writeSync(projection);
-      }
-      return result;
-    });
+    const projection = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
+    if (!projection) throw new Error("missing lifecycle admission fact");
+    this.assertIdentity(projection, input);
+    const result = apply(projection);
+    if (writeResult) {
+      projection.updatedAt = Date.now();
+      this.writeSync(projection);
+    }
+    return result;
   }
 
   private readSync(canonicalTargetKey: string, fenceKey: string, revision: number) {
@@ -1196,6 +1209,28 @@ export class ExactReviewLifecycleProjectionStore {
       throw new Error("conflicting lifecycle projection identity");
     }
   }
+}
+
+function applyTerminalDisposition(
+  projection: ExactReviewLifecycleProjection,
+  input: ProjectionIdentity & { kind: LifecycleTerminalDisposition; observedAt: number },
+) {
+  const next = { kind: input.kind, observedAt: input.observedAt };
+  const current = projection.terminalDisposition;
+  if (!current) {
+    projection.terminalDispositions.push(next);
+    projection.terminalDisposition = next;
+    return projection;
+  }
+  if (current.kind === next.kind) return projection;
+  // A newer source can requeue a just-routed revision before its final queue
+  // completion lands. Only a requeue may transition to another terminal fact.
+  if (next.kind !== "requeue" && current.kind !== "requeue") {
+    throw new Error("conflicting lifecycle terminal disposition");
+  }
+  projection.terminalDispositions.push(next);
+  projection.terminalDisposition = next;
+  return projection;
 }
 
 export function lifecycleState(projection: ExactReviewLifecycleProjection): LifecycleState {

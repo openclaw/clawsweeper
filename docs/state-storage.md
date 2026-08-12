@@ -5,16 +5,17 @@ for review records, R2 is canonical for immutable action ledgers and published
 assets, and the `state` branch of `openclaw/clawsweeper-state` retains only the
 operational paths that have not migrated yet.
 
-| Logical paths | Canonical owner | Git state status |
-| --- | --- | --- |
-| `records/**` | Durable Object record store with R2 snapshots | Never checked out or written |
-| fanout and placeholder-recovery cursors per mode | ExactReviewQueue Durable Object KV | Never checked out or written |
-| `ledger/v1/**` | R2 immutable blobs | Never checked out or written |
-| `assets/**` | R2 mutable blobs | Never checked out or written |
-| `jobs/**` | `clawsweeper-state` `state` branch | Retained until its own migration |
-| `results/**` | `clawsweeper-state` `state` branch | Retained until its own migration |
-| `notifications/**` | `clawsweeper-state` `state` branch | Retained until its own migration |
-| `apply-report.json`, `repair-apply-report.json` | `clawsweeper-state` `state` branch | Retained until their own migration |
+| Logical paths                                                                         | Canonical owner                               | Git state status                   |
+| ------------------------------------------------------------------------------------- | --------------------------------------------- | ---------------------------------- |
+| `records/**`                                                                          | Durable Object record store with R2 snapshots | Never checked out or written       |
+| fanout and placeholder-recovery cursors per mode                                      | ExactReviewQueue Durable Object KV            | Never checked out or written       |
+| exact re-review command intakes, version watermarks, receipts, and per-item revisions | ExactReviewQueue Durable Object SQLite        | Never checked out or written       |
+| `ledger/v1/**`                                                                        | R2 immutable blobs                            | Never checked out or written       |
+| `assets/**`                                                                           | R2 mutable blobs                              | Never checked out or written       |
+| `jobs/**`                                                                             | `clawsweeper-state` `state` branch            | Retained until its own migration   |
+| `results/**`                                                                          | `clawsweeper-state` `state` branch            | Retained until its own migration   |
+| `notifications/**`                                                                    | `clawsweeper-state` `state` branch            | Retained until its own migration   |
+| `apply-report.json`, `repair-apply-report.json`                                       | `clawsweeper-state` `state` branch            | Retained until their own migration |
 
 `setup-state` always hydrates records from the Worker and ledger/assets from R2.
 Jobs that need operational Git state receive a sparse checkout containing only
@@ -32,6 +33,13 @@ record operations. Each record carries a monotonic revision so concurrent
 writers cannot silently overwrite one another. Cursor reads and writes are
 fail-open: an unavailable store emits a prominent warning, but productive work
 continues and remains safe to retry.
+
+Eligible `@clawsweeper re-review` comment versions cross the durable boundary
+before acknowledgement or Actions dispatch. The queue keeps one immutable
+identity per comment id, update timestamp, and body digest; a newer edit
+supersedes older pending work, while retries reuse the same receipt. Detailed
+terminal receipts use the same 30-day horizon as resolved dead letters, and the
+per-comment watermark remains after receipt compaction.
 
 Git-backed reports, dashboard status, and post-dispatch cursors are best-effort
 after their productive side effect or canonical publication succeeds. Git
