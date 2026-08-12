@@ -26,4 +26,8 @@ pass 223
 fail 0
 ```
 
-The pre-commit Codex autoreview reported no accepted/actionable findings. The full `pnpm run check` gate passed. The final Docker-backed Crabbox proof then passed all 223 focused scenarios on committed implementation head `2cd3ab893cf7dd1c93d6db85e5673a4db26999f3`; its receipt and source-blind behavior report are recorded beside this file.
+The pre-commit Codex autoreview reported no accepted/actionable findings. The full `pnpm run check` gate passed. The initial Docker-backed Crabbox proof passed all 223 focused scenarios on committed implementation head `2cd3ab893cf7dd1c93d6db85e5673a4db26999f3`.
+
+The first ClawSweeper PR verdict identified one accepted P1 race: the PR head could advance after canonical evidence was read but before the Worker mutation. Fix round 1 adds an immediate same-open-node/same-head GitHub recheck and a loopback fixture that advances head B to C before resolution. The row remains open as `head_mismatch_revalidation_changed`, with zero resolution or recovery calls.
+
+The refreshed full gate passed 3,391 tests with nine platform skips and zero failures, while the paired Codex autoreview again reported no accepted/actionable findings. The refreshed Docker-backed Crabbox proof passed all 224 focused scenarios on committed implementation head `10b45760a0c0fe1adf156909e2df0d737d5fef6a`; its receipt and source-blind behavior report are recorded beside this file.

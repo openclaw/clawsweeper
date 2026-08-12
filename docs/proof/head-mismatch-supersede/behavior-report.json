@@ -32,6 +32,19 @@
       "confidence": 0.99
     },
     {
+      "contract_clause": "Mutation-time head revalidation",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The race fixture served canonical evidence for head B and advanced GitHub to head C before resolution. The operator performed the second issue/pull read, emitted head_mismatch_revalidation_changed, and called neither resolution nor recovery.",
+      "reproduction_steps": [
+        "Serve stale dead-letter head A and initial live head B",
+        "Serve a digest-valid complete canonical record for head B",
+        "Return head C on the immediate pre-mutation GitHub recheck",
+        "Verify the row remains open with zero mutation"
+      ],
+      "confidence": 0.99
+    },
+    {
       "contract_clause": "Target and row caps",
       "status": "pass",
       "severity": null,
@@ -72,6 +85,10 @@
     {
       "probe": "Changed canonical head away from the live GitHub head",
       "result": "Resolution stopped and the target was classified head_mismatch_unproven"
+    },
+    {
+      "probe": "Advanced GitHub from proven head B to head C after canonical evidence",
+      "result": "The second live read detected drift and the operator performed zero mutation"
     },
     {
       "probe": "Removed the canonical record",

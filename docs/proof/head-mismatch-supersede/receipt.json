@@ -1,32 +1,36 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-08-12T23:13:18Z",
+  "recorded_at": "2026-08-12T23:25:19Z",
   "provider": "local-container",
-  "lease_id": "cbx_fedc8cf78814",
-  "slug": "crimson-crab-fdb7",
+  "lease_id": "cbx_a7a8d9e75f26",
+  "slug": "brisk-shrimp-3201",
   "container_runtime": "docker",
   "image": "node:24-bookworm",
   "machine_type": "node_24-bookworm",
-  "tested_head": "2cd3ab893cf7dd1c93d6db85e5673a4db26999f3",
-  "command": "/Users/steipete/Projects/crabbox/bin/crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --timing-json --capture-stdout docs/proof/head-mismatch-supersede/container-transcript.txt --capture-stderr docs/proof/head-mismatch-supersede/container-stderr.txt --script docs/proof/head-mismatch-supersede/run-proof.sh -- 2cd3ab893cf7dd1c93d6db85e5673a4db26999f3",
+  "tested_head": "10b45760a0c0fe1adf156909e2df0d737d5fef6a",
+  "command": "/Users/steipete/Projects/crabbox/bin/crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --timing-json --capture-stdout docs/proof/head-mismatch-supersede/container-transcript.txt --capture-stderr docs/proof/head-mismatch-supersede/container-stderr.txt --script docs/proof/head-mismatch-supersede/run-proof.sh -- 10b45760a0c0fe1adf156909e2df0d737d5fef6a",
   "exit_code": 0,
   "lease_stopped": true,
-  "sync_ms": 991,
-  "command_ms": 23477,
-  "total_ms": 24485,
+  "sync_ms": 898,
+  "command_ms": 22914,
+  "total_ms": 23825,
   "node_version": "v24.19.0",
   "pnpm_version": "11.10.0",
   "focused_tests": {
-    "total": 223,
-    "passed": 223,
+    "total": 224,
+    "passed": 224,
     "failed": 0
   },
   "full_gate": {
     "command": "pnpm run check",
-    "exit_code": 0
+    "exit_code": 0,
+    "tests": 3400,
+    "passed": 3391,
+    "failed": 0,
+    "skipped": 9
   },
   "pre_commit_autoreview": {
-    "command": "autoreview --mode local --prompt <scope-baseline> --stream-engine-output",
+    "command": "autoreview --mode local --prompt <fix-round-scope> --parallel-tests 'pnpm run check' --stream-engine-output",
     "exit_code": 0,
     "accepted_or_actionable_findings": 0,
     "result": "autoreview clean: no accepted/actionable findings reported"
@@ -34,20 +38,20 @@
   "behavior_report": "docs/proof/head-mismatch-supersede/behavior-report.json",
   "content_sha256": {
     "dashboard/exact-review-queue.ts": "1c8cb6c892dac93c8ec7e779913ef2cced910b35de490dfba4510f2ab63d571e",
-    "docs/proof/head-mismatch-supersede/behavior-contract.md": "d5bb9fb32df006cff1de55419e7e04b87d6af2e18bf9dd0f55a2c6a9c1f0bcfc",
+    "docs/proof/head-mismatch-supersede/behavior-contract.md": "6043c80d60714c4511577530abf171bb31e71540cf56ea7120535a103de55e2f",
     "docs/proof/head-mismatch-supersede/run-proof.sh": "6e0162b3552218106aa9cdb1e177b14e7480bdea50d6ef51e1c5226b770bd20b",
-    "scripts/exact-review-dead-letter-operator.mjs": "93b300e348ced842ba92d6f69eca712f7efb8ad137d3f401ea9a74dd996c0e39",
+    "scripts/exact-review-dead-letter-operator.mjs": "c4fafc7663382cbe2e05af4987d01d2888acc2967b747467937af90de8fd568e",
     "test/dashboard-worker-queue-runtime.test.ts": "09b97286ccb29d2222bc033b46e272eb16e86414663ede9f29db7b70dd491074",
-    "test/exact-review-dead-letter-operator.test.ts": "ea0d466d74f1ce351672c69369459d8bee45cc897aeae429b5aac36a3d0587b6"
+    "test/exact-review-dead-letter-operator.test.ts": "e823b57c9fadd8a8c8adcc1659871b72793968e6236f5230cffa324c4a040256"
   },
-  "transcript_sha256": "0a03c06f5553275713e89118c427aaa92216c8bc8f587a19c4ae3d623d16e632",
+  "transcript_sha256": "d49c4b1e6a99f0e9e5bb996a2ab7959604e1d6401bf11e125cd84c58e71c3f95",
   "stderr_sha256": "0caa49b69a4939983dd947dee14d395458a17ad282ce6d09ddecd843609e012c",
   "secret_scan": {
     "tool": "trufflehog 3.96.0",
     "command": "trufflehog filesystem --no-update --results=verified,unknown --fail --fail-on-scan-errors docs/proof/head-mismatch-supersede/container-transcript.txt docs/proof/head-mismatch-supersede/container-stderr.txt",
     "exit_code": 0,
     "chunks": 4,
-    "bytes": 32105,
+    "bytes": 32181,
     "verified_secrets": 0,
     "unknown_secrets": 0
   },
