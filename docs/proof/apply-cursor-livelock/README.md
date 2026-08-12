@@ -54,12 +54,12 @@ docs/proof/apply-cursor-livelock/container-proof.sh
 `fixture-result.json` is the committed machine-readable fixture result. `behavior-report.json`
 records the source-blind behavior validation.
 
-The final fresh-PR proof ran pushed head `e6e534fc39eec471a447d8b956a0c24dd3ee97ca`
-inside `node:24-bookworm` through Crabbox `provider=aws`, lease `cbx_20b3853d5df2`
-(`quick-krill-bd9c`), run `run_dbbae04e9b37`. jq 1.8.2 was installed only after its
+The final committed-head proof ran `2ebe882831f99d9f22dd6f696f48d2a4e80f3195`
+inside `node:24-bookworm` through Crabbox `provider=aws`, lease `cbx_a9f86ad7a357`
+(`quick-prawn-5920`), run `run_61dcc42eb8d2`. jq 1.8.2 was installed only after its
 `jq-linux-amd64` digest matched the repository-pinned value. All five focused fixture/wrap tests
 passed, Crabbox exited 0, and the lease stopped automatically. `container-provenance.json` records
-the complete receipt and the earlier proof-harness runs.
+the complete receipt and the earlier proof-harness attempts.
 
 ## Limits and Bay impact
 

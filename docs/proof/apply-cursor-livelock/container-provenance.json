@@ -1,19 +1,19 @@
 {
   "schema": "clawsweeper-real-boundary-proof-provenance/v1",
-  "claim": "The pushed apply-cursor livelock fix passes its production-shaped fixture and wrap/cycle probes inside a fresh PR checkout mounted into node:24-bookworm.",
+  "claim": "The committed apply-cursor livelock fix passes its production-shaped fixture, adversarial apply-loop scenario, and wrap/cycle probes inside node:24-bookworm.",
   "pull_request": "https://github.com/openclaw/clawsweeper/pull/1129",
-  "reviewed_head": "e6e534fc39eec471a447d8b956a0c24dd3ee97ca",
+  "reviewed_head": "2ebe882831f99d9f22dd6f696f48d2a4e80f3195",
   "crabbox": {
     "cli_version": "0.38.3-5-g2a79805d",
     "provider": "aws",
-    "lease_id": "cbx_20b3853d5df2",
-    "slug": "quick-krill-bd9c",
-    "run_id": "run_dbbae04e9b37",
+    "lease_id": "cbx_a9f86ad7a357",
+    "slug": "quick-prawn-5920",
+    "run_id": "run_61dcc42eb8d2",
     "machine_type": "c7a.8xlarge",
-    "checkout": "--fresh-pr openclaw/clawsweeper#1129 --no-hydrate",
-    "sync_ms": 7566,
-    "command_ms": 32631,
-    "total_ms": 45392,
+    "checkout": "clean committed worktree raw-sync, --no-hydrate",
+    "sync_ms": 20819,
+    "command_ms": 24276,
+    "total_ms": 46687,
     "exit_code": 0,
     "run_status": "succeeded",
     "lease_stopped": true
@@ -32,20 +32,38 @@
     "jq_install_path": "/usr/local/bin/jq"
   },
   "result": {
-    "command": "docker run --rm -v $PWD:/workspace -w /workspace node:24-bookworm bash docs/proof/apply-cursor-livelock/container-proof.sh",
+    "command": "docker run --rm -e APPLY_CURSOR_PROOF_HEAD=2ebe882831f99d9f22dd6f696f48d2a4e80f3195 -v $PWD:/workspace -w /workspace node:24-bookworm bash docs/proof/apply-cursor-livelock/container-proof.sh",
     "fixture_assertions": {
       "old_order_livelocks": true,
       "current_order_advances_terminal_frontier": true,
-      "clipped_frontier_blocks": true
+      "clipped_frontier_blocks": true,
+      "apply_loop_executes_frontier_first": true,
+      "adversarial_order_advances_terminal_frontier": true
     },
-    "tests": 4,
-    "passed": 4,
+    "tests": 5,
+    "passed": 5,
     "failed": 0,
     "cancelled": 0,
     "skipped": 0,
     "proof_rc": 0
   },
   "prior_runs": [
+    {
+      "run_id": "run_f29c14106b53",
+      "lease_id": "cbx_e7d5148b9beb",
+      "reviewed_head": "07e0a7764cc39a014eea119db12e1fb82806f998",
+      "reason": "Raw sync intentionally omitted linked-worktree Git metadata required by the original proof wrapper.",
+      "product_tests_started": false,
+      "lease_released": true
+    },
+    {
+      "run_id": "run_fdaf84682c9e",
+      "lease_id": "cbx_e0ec212513fc",
+      "reviewed_head": "54db6da068abec31758a09e8fc1217626b26c2e5",
+      "reason": "The adversarial synthetic record allowed an incidental GitHub probe; the final fixture forces the credential-free path.",
+      "fixture_started": true,
+      "lease_released": true
+    },
     {
       "run_id": "run_5af9ddacd3db",
       "lease_id": "cbx_32c86f65b7c1",
@@ -90,6 +108,6 @@
   "limits": [
     "Synthetic filesystem records; no GitHub API calls or credentials were present in the container.",
     "The run proves selector/completion and wrap/cycle behavior, not production GitHub latency.",
-    "The receipt commit changes documentation only; reviewed_head is the exact pushed code and proof-harness head exercised by Crabbox."
+    "The receipt commit changes documentation only; reviewed_head is the exact committed code and proof-harness head exercised by Crabbox."
   ]
 }
