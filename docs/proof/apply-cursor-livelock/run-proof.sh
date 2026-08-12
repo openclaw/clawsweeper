@@ -2,7 +2,7 @@
 set -euo pipefail
 
 proof_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(git -C "$proof_dir" rev-parse --show-toplevel)"
+repo_root="$(cd "$proof_dir/../../.." && pwd)"
 
 finish() {
   local proof_rc=$?
@@ -22,7 +22,11 @@ fi
 echo "node=$(node --version)"
 echo "pnpm=$(pnpm --version)"
 echo "jq=$(jq --version)"
-echo "head=$(git rev-parse HEAD)"
+proof_head="${APPLY_CURSOR_PROOF_HEAD:-}"
+if [ -z "$proof_head" ]; then
+  proof_head="$(git rev-parse HEAD)"
+fi
+echo "head=$proof_head"
 
 pnpm install --frozen-lockfile
 pnpm run build:all
