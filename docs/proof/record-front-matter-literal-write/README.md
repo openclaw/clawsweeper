@@ -55,8 +55,8 @@ Recorded run:
 |---|---|
 | provider | `local-container` (runtime `docker`) |
 | image | `node:24` → `v24.19.0`, `Linux aarch64` |
-| lease | `cbx_241c2987e276` (`swift-crab`) |
-| run | `run_b5d44f1fa51f` |
+| lease | `cbx_cae984baa97f` (`quick-crayfish`) |
+| run | `run_26f52fe84002` |
 | base staged | `5439582b` · `src/clawsweeper-record-metadata.ts` · sha256 `df480a1e…83f1` |
 | exit | `0` |
 
@@ -82,9 +82,18 @@ carry a replacement pattern; the script fails the proof if that case ever regres
 
 ## Artifact / trace
 
-`.crabbox/runs/run_b5d44f1fa51f/run_b5d44f1fa51f-artifacts.tgz` holds
+`.crabbox/runs/run_26f52fe84002/run_26f52fe84002-artifacts.tgz` holds
 `.artifacts/record-front-matter-literal-write-proof/` with `before-output.txt`,
 `proof-output.txt`, `focused-tests.txt`, and the install/build logs.
+
+## The run cannot alter the head it is proving
+
+The script records `package.json` and `pnpm-lock.yaml` digests plus
+`git status --porcelain` at sync, then re-checks them after dependency installation
+and at the end of the run; any drift aborts with a diff. The platform-native
+TypeScript fallback installs into a disposable prefix outside the workspace rather
+than writing tracked dependency metadata, so the recorded result does not disturb
+the head it is describing.
 
 ## Limits
 
