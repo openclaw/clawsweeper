@@ -75,10 +75,10 @@ import { recentDurablePublicationEvents } from "./recent-durable-publication-eve
 import { sanitizedServerError } from "./error-safety.ts";
 import {
   GitHubRequestError,
+  createGithubAppTokenFor,
   githubApiUrl,
   githubAppCredentials,
   githubAppInstallationId,
-  githubAppJson,
   githubResponseRateLimitHint,
   githubResponseRateLimited,
   githubResponseValidationDetail,
@@ -12805,32 +12805,6 @@ async function exactReviewTerminalRunFromSummary(
     claim_generation: number;
     outcome: ExactReviewCompletionOutcome;
   };
-}
-
-export async function createGithubAppTokenFor({
-  env = {},
-  appJwt,
-  installationId,
-  label,
-  repositories,
-  permissions,
-}) {
-  const payload = await githubAppJson(
-    `/app/installations/${installationId}/access_tokens`,
-    appJwt,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        repositories: repositories.filter(Boolean),
-        permissions,
-      }),
-      errorLabel: `GitHub App token for ${label}`,
-    },
-    env,
-  );
-  const token = String(payload.token || "");
-  if (!token) throw new Error(`GitHub App token response missing token for ${label}`);
-  return token;
 }
 
 async function dispatchClawsweeperItem({

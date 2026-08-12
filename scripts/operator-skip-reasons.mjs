@@ -20,6 +20,9 @@ export function isGitHubThrottleFailure(value) {
 export function classifyOperatorSkipReason(value) {
   const reason = failureText(value);
   const normalized = reason.toLowerCase();
+  if (normalized.includes("github app installation is missing or revoked")) {
+    return "installation_missing";
+  }
   if (normalized.includes("not inspected because canonical discovery aborted")) {
     return "not_inspected_abort";
   }

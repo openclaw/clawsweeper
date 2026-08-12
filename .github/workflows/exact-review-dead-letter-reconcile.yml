@@ -56,17 +56,6 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Create target read token
-        id: target-read-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          permission-contents: read
-          permission-issues: read
-          permission-pull-requests: read
-
       - name: Restore permanent queued-run zombie state
         env:
           GH_TOKEN: ${{ github.token }}
@@ -131,7 +120,7 @@ jobs:
       - name: Reconcile closed, duplicate, and recoverable dead letters
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}
-          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
+          CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
           MAX_TARGETS: ${{ github.event.inputs.max_targets || '100' }}
           MAX_RECOVERIES: ${{ github.event.inputs.max_recoveries || '10' }}
@@ -152,7 +141,7 @@ jobs:
       - name: Reconcile terminal and open parked reviews
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}
-          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
+          CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
           MAX_TARGETS: ${{ github.event.inputs.max_targets || '100' }}
           EXECUTE: ${{ github.event_name == 'schedule' && 'true' || github.event.inputs.execute }}

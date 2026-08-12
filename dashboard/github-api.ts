@@ -177,6 +177,39 @@ export async function githubAppJson(
   return response.json();
 }
 
+export async function createGithubAppTokenFor({
+  env = {},
+  appJwt,
+  installationId,
+  label,
+  repositories,
+  permissions,
+}: {
+  env?: GithubApiEnv;
+  appJwt: string;
+  installationId: string | number;
+  label: string;
+  repositories?: string[];
+  permissions: Record<string, string>;
+}) {
+  const payload = await githubAppJson(
+    `/app/installations/${installationId}/access_tokens`,
+    appJwt,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        ...(repositories ? { repositories: repositories.filter(Boolean) } : {}),
+        permissions,
+      }),
+      errorLabel: `GitHub App token for ${label}`,
+    },
+    env,
+  );
+  const token = String(payload.token || "");
+  if (!token) throw new Error(`GitHub App token response missing token for ${label}`);
+  return token;
+}
+
 export async function githubAppJsonAsPlainError(
   path: string,
   appJwt: string,

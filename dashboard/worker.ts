@@ -17,6 +17,7 @@ import {
 import { liveActivityBaySnapshot } from "./live-activity.ts";
 import { summarizeDashboardHealth } from "./dashboard-health.ts";
 import {
+  createGithubAppTokenFor,
   githubApiUrl,
   githubAppCredentials,
   githubAppInstallationIdAsPlainError as githubAppInstallationId,
@@ -35,7 +36,6 @@ import { TRIAGE_ROUTING_GROUPS, triageRoutingGroupsForLabels } from "./triage-ro
 import {
   EXACT_REVIEW_QUEUE_NAME,
   EXACT_REVIEW_RECONCILE_CONCURRENCY,
-  createGithubAppTokenFor,
   exactReviewActionsReadToken,
   exactReviewClaimedRuns,
   exactReviewRequestedRuns,

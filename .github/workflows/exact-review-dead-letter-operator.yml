@@ -59,18 +59,6 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Create target read token
-        if: ${{ inputs.action == 'recover-fresh' }}
-        id: target-read-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          permission-contents: read
-          permission-issues: read
-          permission-pull-requests: read
-
       - name: Inventory or operate dead letters
         env:
           ACTION: ${{ inputs.action }}
@@ -79,7 +67,7 @@ jobs:
           IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}
           NOTE: ${{ inputs.note }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}
-          GH_TOKEN: ${{ steps.target-read-token.outputs.token }}
+          CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail

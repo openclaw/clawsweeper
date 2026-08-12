@@ -2,7 +2,7 @@
 
 ## Claim
 
-Exact-review dead-letter reconciliation uses the target GitHub App pool for public target REST and GraphQL reads. One isolated GitHub-confirmed rate-limit or abuse 403, or any 429, skips only the affected target or GraphQL batch, so later targets can still be inspected and recovered. Three consecutive confirmed throttles stop further inspection in that phase, preserving a bounded per-cycle request budget. Authorization and policy 403s retain the conservative abort behavior.
+Exact-review dead-letter reconciliation mints target-read credentials from each target owner's GitHub App installation, caches them per owner for the cycle, and uses them for public target REST and owner-homogeneous GraphQL reads. A missing or revoked installation becomes an `installation_missing` skip for that target while other owners continue. One isolated GitHub-confirmed rate-limit or abuse 403, or any 429, skips only the affected target or GraphQL batch, so later targets can still be inspected and recovered. Three consecutive confirmed throttles stop further inspection in that phase, preserving a bounded per-cycle request budget. Authorization and policy 403s after a valid installation token is minted retain the conservative abort behavior.
 
 ## Exercised surface
 
@@ -18,6 +18,8 @@ Exact-review dead-letter reconciliation uses the target GitHub App pool for publ
 4. One recovery revalidation returns 403; later candidates are revalidated and recovered. Three consecutive revalidation 403s stop after three calls and account for untouched candidates honestly.
 5. Ordinary authorization 403s in serial REST discovery, GraphQL discovery, and recovery revalidation abort the remaining phase and recover nothing.
 6. Every target REST and GraphQL request carries the synthetic target-App token while the workflow YAML retains `${{ github.token }}` for repository Actions work.
+7. Two targets under different owners exercise real App JWT signing and loopback installation/token endpoints. The installed owner recovers with its minted token; the absent owner reports one `installation_missing` skip and sample; the cycle completes.
+8. Three targets under one valid installation mint one owner token. An ordinary authorization 403 on the first target remains fail-closed and aborts the untouched targets.
 
 ## Command and environment
 
@@ -25,6 +27,6 @@ Run `run-proof.sh` inside Docker-backed Crabbox `provider=local-container` with 
 
 ## Limits
 
-GitHub throttling and queue responses are deterministic loopback fixtures. No production credential is present, no live GitHub quota is consumed, and no production queue mutation is performed. This proves credential selection and bounded runtime behavior at the CLI/HTTP boundary, not live GitHub App issuance.
+GitHub installation, token, throttling, and queue responses are deterministic loopback fixtures. The test signs a synthetic App JWT with an ephemeral RSA key, but no production credential is present, no live GitHub quota is consumed, and no production queue mutation is performed. This proves credential selection and bounded runtime behavior at the CLI/HTTP boundary, not live GitHub App issuance.
 
 OpenClaw Bay is unaffected: this is an operator workflow and credential-routing change with no observer data contract or action surface.

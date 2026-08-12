@@ -20,14 +20,18 @@ corepack pnpm install --frozen-lockfile
 
 echo "PROOF_PHASE=loopback"
 node --experimental-strip-types --test \
-  --test-name-pattern='dead-letter workflow is manual|scheduled, bounded|serial canonical discovery|serial recovery revalidation|100-target reconciliation|batched canonical discovery|operator previews' \
+  --test-name-pattern='dead-letter workflow is manual|scheduled, bounded|serial canonical discovery|serial recovery revalidation|100-target reconciliation|batched canonical discovery|multi-owner reconciliation|valid owner installation|operator previews' \
   test/exact-review-dead-letter-operator.test.ts
 
 echo "PROOF_PHASE=content"
 sha256sum \
   .github/workflows/exact-review-dead-letter-operator.yml \
   .github/workflows/exact-review-dead-letter-reconcile.yml \
+  dashboard/exact-review-queue.ts \
+  dashboard/github-api.ts \
+  dashboard/worker.ts \
   scripts/exact-review-dead-letter-operator.mjs \
+  scripts/operator-skip-reasons.mjs \
   test/exact-review-dead-letter-operator.test.ts
 git diff --check
 echo "PROOF_RESULT=pass"

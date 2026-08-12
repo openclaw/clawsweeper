@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -45,12 +45,11 @@ test("dead-letter workflow is manual, serialized, and bounded to safe actions", 
     operatorStep.env.CLAWSWEEPER_WEBHOOK_SECRET,
     "${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}",
   );
-  const targetToken = workflow.jobs.operate.steps.find(
-    (step) => step.name === "Create target read token",
+  assert.equal(
+    operatorStep.env.CLAWSWEEPER_APP_PRIVATE_KEY,
+    "${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}",
   );
-  assert.match(targetToken.uses, /^actions\/create-github-app-token@/);
-  assert.equal(targetToken.with.owner, "${{ github.repository_owner }}");
-  assert.equal(operatorStep.env.GH_TOKEN, "${{ steps.target-read-token.outputs.token }}");
+  assert.equal(operatorStep.env.GH_TOKEN, undefined);
   assert.equal(operatorStep.env.GITHUB_TOKEN, "${{ github.token }}");
   assert.match(operatorStep.run, /operator:\$\{GITHUB_RUN_ID\}/);
   assert.doesNotMatch(operatorStep.run, /GITHUB_RUN_ATTEMPT/);
@@ -89,12 +88,8 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
   assert.equal(scheduled.jobs.reconcile.env.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
   assert.match(step.run, /--max-targets "\$MAX_TARGETS"/);
   assert.match(step.run, /--max-recoveries "\$MAX_RECOVERIES"/);
-  const targetToken = scheduled.jobs.reconcile.steps.find(
-    (candidate) => candidate.name === "Create target read token",
-  );
-  assert.match(targetToken.uses, /^actions\/create-github-app-token@/);
-  assert.equal(targetToken.with.owner, "${{ github.repository_owner }}");
-  assert.equal(step.env.GH_TOKEN, "${{ steps.target-read-token.outputs.token }}");
+  assert.equal(step.env.CLAWSWEEPER_APP_PRIVATE_KEY, "${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}");
+  assert.equal(step.env.GH_TOKEN, undefined);
   assert.equal(step.env.GITHUB_TOKEN, "${{ github.token }}");
   const guard = scheduled.jobs.reconcile.steps.find(
     (candidate) => candidate.name === "Verify live recovery guards",
@@ -112,7 +107,11 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
     parked.env.CLAWSWEEPER_WEBHOOK_SECRET,
     "${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}",
   );
-  assert.equal(parked.env.GH_TOKEN, "${{ steps.target-read-token.outputs.token }}");
+  assert.equal(
+    parked.env.CLAWSWEEPER_APP_PRIVATE_KEY,
+    "${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}",
+  );
+  assert.equal(parked.env.GH_TOKEN, undefined);
   assert.equal(parked.env.GITHUB_TOKEN, "${{ github.token }}");
   assert.match(parked.run, /--action reconcile-parked/);
   assert.match(parked.run, /--max-targets "\$MAX_TARGETS"/);
@@ -2475,6 +2474,98 @@ test("serial canonical discovery skips one throttle and recovers later targets",
   assert.equal(scenario.resolutions.length, 0);
 });
 
+test("multi-owner reconciliation recovers installed targets and reports missing installations", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "installed",
+        "publication:installed",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "installed-owner/repo#1",
+      ),
+      row(
+        "missing",
+        "publication:missing",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "missing-owner/repo#2",
+      ),
+    ],
+    targetInstallations: new Map([
+      ["installed-owner", { id: 123, token: "installed-owner-token" }],
+      ["missing-owner", null],
+    ]),
+    operatorEnv: {
+      GH_TOKEN: "",
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23multiowner",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.skipped_targets, 1);
+  assert.deepEqual(summary.skip_reasons, { installation_missing: 1 });
+  assert.deepEqual(summary.skip_samples, [
+    {
+      target: "missing-owner/repo#2",
+      reason: "GitHub App installation is missing or revoked for missing-owner/repo",
+    },
+  ]);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["installed"]],
+  );
+  assert.deepEqual(scenario.installationRequests, ["installed-owner/repo", "missing-owner/repo"]);
+  assert.deepEqual(scenario.tokenMintRequests, [123]);
+  assert.deepEqual(
+    new Set(scenario.targetReadAuthorizations),
+    new Set(["Bearer installed-owner-token"]),
+  );
+});
+
+test("authorization 403 with a valid owner installation remains fail-closed", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "owner/first#1"),
+      row("second", "publication:second", 2, "retry_exhausted", true, "eligible", "owner/second#2"),
+      row("third", "publication:third", 3, "retry_exhausted", true, "eligible", "owner/third#3"),
+    ],
+    targetInstallations: new Map([["owner", { id: 456, token: "owner-token" }]]),
+    operatorEnv: {
+      GH_TOKEN: "",
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23authorization",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+    failedRepository: "first",
+    failedStatus: 403,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { http_403: 1, not_inspected_abort: 2 });
+  assert.equal(summary.recovered_targets, 0);
+  assert.deepEqual(scenario.installationRequests, ["owner/first"]);
+  assert.deepEqual(scenario.tokenMintRequests, [456]);
+  assert.deepEqual(new Set(scenario.targetReadAuthorizations), new Set(["Bearer owner-token"]));
+});
+
 test("serial canonical discovery aborts on an authorization 403", async () => {
   const scenario = await automaticReconcileScenario({
     rows: [
@@ -2682,6 +2773,8 @@ async function automaticReconcileScenario(options) {
   let graphqlRequests = 0;
   let restRequests = 0;
   const targetReadAuthorizations = [];
+  const installationRequests = [];
+  const tokenMintRequests = [];
   const restRequestsByNumber = new Map();
   let duplicateFailurePending = options.failFirstDuplicateCleanup === true;
   let duplicateSkipsRemaining =
@@ -2704,6 +2797,32 @@ async function automaticReconcileScenario(options) {
           },
         }),
       );
+      return;
+    }
+    const installationMatch = /^\/repos\/([^/]+)\/([^/]+)\/installation$/.exec(request.url ?? "");
+    if (installationMatch && options.targetInstallations) {
+      const [, owner, repo] = installationMatch;
+      installationRequests.push(`${owner}/${repo}`);
+      const installation = options.targetInstallations.get(owner.toLowerCase());
+      if (!installation) {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ message: "Not Found" }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id: installation.id }));
+      return;
+    }
+    const tokenMatch = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(request.url ?? "");
+    if (tokenMatch && options.targetInstallations) {
+      const installationId = Number(tokenMatch[1]);
+      tokenMintRequests.push(installationId);
+      const installation = [...options.targetInstallations.values()].find(
+        (candidate) => candidate?.id === installationId,
+      );
+      assert.ok(installation);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ token: installation.token }));
       return;
     }
     if (request.url === "/graphql") {
@@ -2929,12 +3048,14 @@ async function automaticReconcileScenario(options) {
       [...args, "--output", join(directory, "first.json")],
       `http://127.0.0.1:${address.port}`,
       secret,
+      options.operatorEnv,
     );
     const second = options.repeat
       ? await runOperator(
           [...args, "--output", join(directory, "second.json")],
           `http://127.0.0.1:${address.port}`,
           secret,
+          options.operatorEnv,
         )
       : null;
     return {
@@ -2946,6 +3067,8 @@ async function automaticReconcileScenario(options) {
       graphqlRequests,
       restRequests,
       targetReadAuthorizations,
+      installationRequests,
+      tokenMintRequests,
     };
   } finally {
     server.close();
