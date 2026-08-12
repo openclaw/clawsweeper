@@ -69,7 +69,9 @@ the predicate as it shipped at the base commit:
 
 ```bash
 bash docs/proof/trusted-status-comment-fail-open/stage-before.sh
+PROOF_HEAD="$(git rev-parse HEAD)" \
 crabbox run \
+  --allow-env PROOF_HEAD \
   --provider local-container \
   --local-container-image node:24 \
   --no-hydrate \
@@ -137,6 +139,9 @@ run describe a different commit than the one under review.
 
 A run is only valid evidence if it also reports:
 
+- the head it describes. A container has no `.git`, so `PROOF_HEAD` is computed on
+  the host and forwarded with `--allow-env`; verify `git status` is clean before
+  the run, or the echoed head names a commit the synced tree no longer matches;
 - `tracked state unchanged` at all three checkpoints, with identical `package.json`
   and `pnpm-lock.yaml` digests at sync and at end of run;
 - the pre-fix contrast, either re-derived from git or from the staged copy with its
