@@ -534,15 +534,12 @@ ${profileStatusEnd(profile)}`;
       const defaultBranch = defaultBranchForFixedSha();
       if (!defaultBranch) return null;
       const recentPulls = recentPullsForFixedSha();
-      const recentMergeMatches = recentPulls.filter(
+      const recentMergeMatch = recentPulls.find(
         (pull) => pullFixedShaMatch(pull, fixedSha) === "merge",
       );
-      const hasRecentHeadMatch = recentPulls.some(
-        (pull) => pullFixedShaMatch(pull, fixedSha) === "head",
-      );
-      if (recentMergeMatches.length === 1 && !hasRecentHeadMatch) {
+      if (recentMergeMatch) {
         const bodyMatch = fixedPullRequestFromCommitPulls(
-          recentMergeMatches,
+          [recentMergeMatch],
           "GitHub commit PR lookup",
           issueNumber,
           "",
@@ -550,14 +547,13 @@ ${profileStatusEnd(profile)}`;
         );
         if (bodyMatch) return bodyMatch;
         const commitMessage = commitMessageForFixedSha(fixedSha);
-        const commitMatch = fixedPullRequestFromCommitPulls(
-          recentMergeMatches,
+        return fixedPullRequestFromCommitPulls(
+          [recentMergeMatch],
           "GitHub commit PR lookup",
           issueNumber,
           commitMessage,
           defaultBranch,
         );
-        if (commitMatch) return commitMatch;
       }
       const fallbackPulls = ghJson<unknown[]>([
         "api",

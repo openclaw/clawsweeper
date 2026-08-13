@@ -12,8 +12,13 @@ function statusContextWithCalls() {
       ...pull(702, "merge-cold-list-b", 102),
       head: { sha: "cold-list-b" },
     },
+    {
+      ...pull(705, "other-merge-for-list-a-head", 101),
+      head: { sha: "cold-list-a" },
+    },
   ];
   const fallbackPulls = new Map([
+    ["cold-list-a", [recentPulls[0], recentPulls[2]]],
     [
       "cold-list-b",
       [
@@ -164,6 +169,22 @@ test("a shared head SHA preserves exact association ordering", () => {
   assert.deepEqual(
     calls.filter((path) => /\/commits\/[^/]+\/pulls$/.test(path)),
     ["repos/openclaw/openclaw/commits/cold-list-b/pulls"],
+  );
+});
+
+test("a merge-commit match is authoritative even when another pull shares its head SHA", () => {
+  const { calls, context } = statusContextWithCalls();
+  const resolved = context.attachFixedPullRequest(
+    closeDecision({ fixedSha: "cold-list-a" }),
+    item({ number: 101, kind: "issue" }),
+    {},
+  );
+
+  assert.equal(resolved.fixedPullRequest?.number, 701);
+  assert.deepEqual(
+    calls.filter((path) => /\/commits\/[^/]+\/pulls$/.test(path)),
+    [],
+    "an exact merge-commit match must not use the per-SHA fallback",
   );
 });
 

@@ -4,7 +4,7 @@
 
 Repeated high-confidence issue decisions with the same `fixed_sha` reuse the fixing pull-request
 association already present in the hydrated canonical report without making a GitHub request. Cold
-resolutions share one recent-pulls list per repository process, resolve unique merge-SHA
+resolutions share one recent-pulls list per repository process, resolve authoritative merge-SHA
 associations from that list, and use `GET /commits/:sha/pulls` for head-only or absent associations.
 
 ## Exercised surface
@@ -23,15 +23,17 @@ associations from that list, and use `GET /commits/:sha/pulls` for head-only or 
 
 - Repeat decisions return the byte-equivalent persisted `FixedPullRequest` tuple and make zero
   GitHub calls.
-- Cold list matches retain the existing merged/default-branch/explicit-closing-reference guards and
+- A recent `merge_commit_sha` match is authoritative and makes no per-SHA pull request, even when a
+  different pull shares that SHA as its head.
+- Cold merge matches retain the existing merged/default-branch/explicit-closing-reference guards and
   the existing `GitHub commit PR lookup` source.
 - A fixed SHA represented only as a PR head uses the exact per-SHA association set, preserving the
   legacy newest-merged selection when multiple PRs share that head.
 - A fixed SHA absent from the recent list uses the existing per-SHA commit-pulls lookup and
   commit-message fallback.
 - The counting fixture changes from 7 `commit_pulls` requests to 1 pulls-list request plus 2
-  `commit_pulls` fallbacks. In general, before is `R + C`; after is `1 + C_unmatched`, where
-  head-only associations count as unmatched for safe batching and repeats contribute zero.
+  `commit_pulls` fallbacks. In general, before is `R + C`; after is `1 + (C - C_merge)`, where
+  `C_merge` is the number of authoritative merge-SHA matches and repeats contribute zero.
 - A changed `fixed_sha` never reuses the prior association.
 
 ## State and architecture boundary
@@ -47,8 +49,10 @@ dashboard data contract.
 
 ## Limits
 
-The recent-pulls optimization intentionally inspects the newest 100 pull requests. Head-only, older,
-or otherwise unmatched associations retain the exact per-SHA fallback. The proof uses deterministic
+The recent-pulls optimization intentionally inspects the newest 100 pull requests. Merge-commit
+matches in that window are authoritative; head-only or otherwise unmatched associations retain the
+exact per-SHA fallback, which preserves the complete newest-merged legacy choice even when candidates
+fall outside the window. The proof uses deterministic
 GitHub API fixtures plus a read-only public GitHub transport in a Docker-backed Crabbox container. It
 does not mutate GitHub, publish Worker state, deploy, or measure production latency. The live fixture
 depends on public PR #1138 remaining inside the newest 100 pull requests while the receipt is made.
