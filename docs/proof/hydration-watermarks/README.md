@@ -1,8 +1,8 @@
 # Per-PR hydration watermark proof
 
 This receipt proves the review-side hydration snapshot at implementation head
-`699bda3e5217a3592a639d7a705fecc405dd4dbf` in Docker-backed Crabbox
-`local-container` lease `cbx_adf7c25d0c83`.
+`f55cc63005bfc3f9c71db308851ce45df455a7b1` in Docker-backed Crabbox
+`local-container` lease `cbx_b48597f5f8f0`.
 
 The deterministic counting fixture models three unchanged and two changed PRs. Legacy hydration is
 `2 * (U + K) = 10` commit/review-comment list reads. The candidate makes zero reads for all three
@@ -24,7 +24,12 @@ content revision, and the activity cursor. A regression injects unrelated API me
 never appears in serialized canonical state. Full comment bodies remain because they are required to
 reconstruct byte-identical public review inputs.
 
-The full `pnpm run check` gate passed 3,409 tests: 3,401 passed, 8 skipped, and 0 failed. The focused
+The second review found that the persistence-only snapshot was attached to `ItemContext` and would
+therefore enter Codex prompt JSON and media URL discovery. The repaired serializers explicitly omit
+the snapshot while retaining the compact commit/review-comment windows. Focused sentinels prove a
+compact review comment remains visible and the full cached comment is absent from both boundaries.
+
+The full `pnpm run check` gate passed 3,411 tests: 3,403 passed, 8 skipped, and 0 failed. The focused
 coordinator/context/workflow proof passed 28 of 28 tests. The normalized transcript and stderr were
 scanned with TruffleHog 3.96.0: 0 verified and 0 unknown secrets.
 
