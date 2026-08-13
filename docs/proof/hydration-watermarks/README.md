@@ -1,8 +1,8 @@
 # Per-PR hydration watermark proof
 
 This receipt proves the review-side hydration snapshot at implementation head
-`f55cc63005bfc3f9c71db308851ce45df455a7b1` in Docker-backed Crabbox
-`local-container` lease `cbx_b48597f5f8f0`.
+`7fddfc1c2274c1a08ff5862100fc54278904f8ad` in Docker-backed Crabbox
+`local-container` lease `cbx_8819da9c9dc2`.
 
 The deterministic counting fixture models three unchanged and two changed PRs. Legacy hydration is
 `2 * (U + K) = 10` commit/review-comment list reads. The candidate makes zero reads for all three
@@ -36,8 +36,8 @@ replaces only the snapshot front-matter value with `unknown`; the review body re
 and the next cycle rehydrates from GitHub. The boundary regression covers both this oversized fallback
 and normal-size snapshot retention.
 
-The full `pnpm run check` gate passed 3,411 tests: 3,403 passed, 8 skipped, and 0 failed. The focused
-coordinator/context/workflow proof passed 28 of 28 tests. The normalized transcript and stderr were
+The full `pnpm run check` gate passed 3,413 tests: 3,405 passed, 8 skipped, and 0 failed. The focused
+coordinator/context/workflow proof passed 30 of 30 tests. The normalized transcript and stderr were
 scanned with TruffleHog 3.96.0: 0 verified and 0 unknown secrets.
 
 The canonical Worker report owns the cache metadata; the Git `clawsweeper-state` branch receives no
