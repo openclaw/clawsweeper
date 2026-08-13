@@ -2083,7 +2083,8 @@ function reviewCoverageFrontMatter(head: string): {
   const frontMatter = end === -1 ? head : head.slice(0, end);
   for (const key of ["repository", "repo", "reviewed_at", "review_status"] as const) {
     const match = frontMatter.match(new RegExp(`^${key}:[ \\t]*"?([^"\\n]*)"?[ \\t]*$`, "m"));
-    if (match) result[key] = match[1].trim() || null;
+    const value = match?.[1];
+    if (value !== undefined) result[key] = value.trim() || null;
   }
   const labels = frontMatter.match(/^labels:[ \t]*(.+?)[ \t]*$/m)?.[1]?.trim();
   if (labels) {

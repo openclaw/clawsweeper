@@ -95,14 +95,18 @@ function prProofTriagePageConfig() {
   };
 }
 
-function escapeHtml(value) {
+type TriagePageConfig =
+  | ReturnType<typeof issueTriagePageConfig>
+  | ReturnType<typeof prProofTriagePageConfig>;
+
+function escapeHtml(value: unknown): string {
   return String(value ?? "").replace(
     /[&<>"]/g,
-    (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char],
+    (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char] ?? char,
   );
 }
 
-function externalHttpUrl(value, fallback) {
+function externalHttpUrl(value: unknown, fallback: string): string {
   try {
     const url = new URL(String(value ?? "").trim() || fallback);
     return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : fallback;
@@ -238,11 +242,11 @@ function dashboardThemeControlScript() {
 })();`;
 }
 
-function serializedPageConfig(config) {
+function serializedPageConfig(config: TriagePageConfig): string {
   return JSON.stringify(config).replace(/</g, "\\u003c");
 }
 
-function triageHtml(config) {
+function triageHtml(config: TriagePageConfig): string {
   const pageConfig = serializedPageConfig(config);
   const routingGroupControl = config.routingGroups
     ? `<label class="field">

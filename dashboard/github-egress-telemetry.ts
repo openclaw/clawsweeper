@@ -37,15 +37,24 @@ export type GithubEgressCredentialCircuitObservation = {
   authoritative: true;
 };
 
+type SqlStorage = {
+  exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
+};
+
+type DurableStorage = {
+  sql: SqlStorage;
+  transactionSync: <T>(callback: () => T) => T;
+};
+
 function alignedBucketStart(bucketKind: "five_minute" | "hour", timestamp: number) {
   const bucketMs = bucketKind === "five_minute" ? 300_000 : 3_600_000;
   return Math.floor(timestamp / bucketMs) * bucketMs;
 }
 
 export class GithubEgressTelemetryStore {
-  private readonly storage;
+  private readonly storage: DurableStorage;
 
-  constructor(storage) {
+  constructor(storage: DurableStorage) {
     this.storage = storage;
   }
 
@@ -434,7 +443,11 @@ export class GithubEgressTelemetryStore {
     };
   }
 
-  private upsertMetric(bucketKind: "five_minute" | "hour", bucketStart: number, metric) {
+  private upsertMetric(
+    bucketKind: "five_minute" | "hour",
+    bucketStart: number,
+    metric: NonNullable<ReturnType<typeof githubEgressMetric>>,
+  ) {
     this.storage.sql.exec(
       `INSERT INTO ${ROLLUP_TABLE} (
          bucket_kind, bucket_start, deployment_revision, config_revision,
@@ -557,11 +570,21 @@ function githubEgressSubmission(value: unknown, now: number) {
   ) {
     return null;
   }
-  const metrics = body.metrics.map((metric) => githubEgressMetric(metric, now));
-  const rateLimitObservations = body.rate_limit_observations.map((observation) =>
-    githubRateLimitObservation(observation, now),
-  );
-  if (metrics.some((metric) => !metric) || rateLimitObservations.some((item) => !item)) return null;
+  const rawMetrics: unknown[] = body.metrics;
+  const metrics: Array<NonNullable<ReturnType<typeof githubEgressMetric>>> = [];
+  for (const rawMetric of rawMetrics) {
+    const metric = githubEgressMetric(rawMetric, now);
+    if (!metric) return null;
+    metrics.push(metric);
+  }
+  const rawRateLimitObservations: unknown[] = body.rate_limit_observations;
+  const rateLimitObservations: Array<NonNullable<ReturnType<typeof githubRateLimitObservation>>> =
+    [];
+  for (const rawObservation of rawRateLimitObservations) {
+    const observation = githubRateLimitObservation(rawObservation, now);
+    if (!observation) return null;
+    rateLimitObservations.push(observation);
+  }
   return { receiptId, metrics, rateLimitObservations };
 }
 
@@ -812,7 +835,7 @@ function resetAuthorityCandidate(headers: Record<string, unknown>) {
   return "absent";
 }
 
-function publicRateLimitRow(row) {
+function publicRateLimitRow(row: Record<string, unknown>) {
   return {
     observed_at: new Date(Number(row.observed_at)).toISOString(),
     deployment_revision: row.deployment_revision,
@@ -858,6 +881,6 @@ function digest(value: unknown, length: number) {
   return typeof value === "string" && new RegExp(`^[0-9a-f]{${length}}$`).test(value);
 }
 
-function member(values: readonly unknown[], value: unknown) {
-  return values.includes(value);
+function member<const Member>(values: readonly Member[], value: unknown): value is Member {
+  return values.some((candidate) => candidate === value);
 }

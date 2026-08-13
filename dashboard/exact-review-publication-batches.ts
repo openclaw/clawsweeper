@@ -723,10 +723,11 @@ export class ExactReviewPublicationBatchStore {
           item.terminal_outcome === null
             ? null
             : (String(item.terminal_outcome) as PublicationBatchTerminalOutcome),
-        producerRunId: item.producer_run_id === null ? undefined : String(item.producer_run_id),
-        producerRunAttempt:
-          item.producer_run_attempt === null ? undefined : Number(item.producer_run_attempt),
-        enqueuedAt: item.enqueued_at === null ? undefined : Number(item.enqueued_at),
+        ...(item.producer_run_id === null ? {} : { producerRunId: String(item.producer_run_id) }),
+        ...(item.producer_run_attempt === null
+          ? {}
+          : { producerRunAttempt: Number(item.producer_run_attempt) }),
+        ...(item.enqueued_at === null ? {} : { enqueuedAt: Number(item.enqueued_at) }),
       }),
     );
     return {

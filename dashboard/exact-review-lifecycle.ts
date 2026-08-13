@@ -1375,10 +1375,13 @@ function durableLifecycleBayCard(
 function canonicalTarget(value: string) {
   const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(value);
   if (!match) return null;
+  const repository = match[1];
+  const itemNumber = match[2];
+  if (repository === undefined || itemNumber === undefined) return null;
   return {
-    repository: match[1],
-    number: Number(match[2]),
-    url: `https://github.com/${match[1]}/issues/${match[2]}`,
+    repository,
+    number: Number(itemNumber),
+    url: `https://github.com/${repository}/issues/${itemNumber}`,
   };
 }
 
@@ -1386,9 +1389,12 @@ export function parseDurableLifecycleAuditCursor(value: unknown) {
   if (typeof value !== "string") return null;
   const match = /^([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\.(0|[1-9]\d*)$/i.exec(value);
   if (!match) return null;
-  const offset = Number(match[2]);
+  const snapshotId = match[1];
+  const offsetText = match[2];
+  if (snapshotId === undefined || offsetText === undefined) return null;
+  const offset = Number(offsetText);
   if (!Number.isSafeInteger(offset)) return null;
-  return { snapshotId: match[1].toLowerCase(), offset };
+  return { snapshotId: snapshotId.toLowerCase(), offset };
 }
 
 function encodeAuditCursor(snapshotId: string, offset: number) {
