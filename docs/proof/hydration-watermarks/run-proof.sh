@@ -36,7 +36,7 @@ echo "jq_version=$(jq --version)"
 echo "gh_version=$(gh --version | head -n 1)"
 
 pnpm install --frozen-lockfile
-pnpm run build
+pnpm run build:node
 
 echo "CRABBOX_PHASE:real-transport"
 gh api user --jq '"github_login=" + .login'

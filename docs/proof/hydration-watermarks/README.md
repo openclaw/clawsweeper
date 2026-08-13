@@ -5,11 +5,11 @@ implementation head recorded in `receipt.json`, using Docker-backed Crabbox `loc
 
 The deterministic counting fixture models three unchanged and two changed PRs. Legacy hydration is
 `2 * (U + K) = 10` commit/review-comment list reads. The candidate makes one batched GraphQL request
-for the five planned PRs, zero list reads for all three
-unchanged PRs, one `since` review-comment read for an edited-comment PR, and two full reads for a
-changed-head PR: 4 total requests. Changed hydration windows and complete inputs compare byte-for-byte with
-fresh full hydration. A delete-plus-add fixture proves an invisible deletion causes merged ID
-cardinality to exceed the live count and falls back to a full read.
+for the five planned PRs, zero list reads for all three unchanged PRs, one `since` review-comment read
+for an edited-comment PR, and two full reads for a changed-head PR: 4 total requests. Changed
+hydration windows and complete inputs compare byte-for-byte with fresh full hydration. A
+delete-plus-add fixture proves an invisible deletion causes merged ID cardinality to exceed the live
+count and falls back to a full read.
 
 The planner validation and same coordinator passed through the real GitHub CLI transport against public
 `openclaw/clawsweeper` PR #97. The endpoint returned its known edited review comment from a historical
@@ -44,10 +44,11 @@ replaces only the snapshot front-matter value with `unknown`; the review body re
 and the next cycle rehydrates from GitHub. The boundary regression covers both this oversized fallback
 and normal-size snapshot retention.
 
-The full `pnpm run check` gate passed 3,413 tests: 3,405 passed, 8 skipped, and 0 failed. The focused
-coordinator/context/workflow proof passed 30 of 30 tests. The normalized transcript and stderr were
+The full `pnpm run check` gate passed 3,417 tests: 3,409 passed, 8 skipped, and 0 failed. The focused
+planner/coordinator/context/workflow proof passed 154 of 154 tests. The normalized transcript and stderr were
 scanned with TruffleHog 3.96.0: 0 verified and 0 unknown secrets.
 
 The canonical Worker report owns the cache metadata; the Git `clawsweeper-state` branch receives no
 new file. OpenClaw Bay is unaffected because the publication limit and observer-facing record schema
-are unchanged. This proof does not mutate GitHub, Worker state, lifecycle state, or dashboard data.
+are unchanged. The final container proof is read-only; the earlier field-choice experiment's temporary
+GitHub comment was deleted. No Worker, lifecycle, or dashboard state was mutated.

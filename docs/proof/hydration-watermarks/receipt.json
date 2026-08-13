@@ -1,29 +1,56 @@
 {
-  "schema_version": 1,
-  "recorded_at": "2026-08-13T05:48:07Z",
+  "schema_version": 2,
+  "recorded_at": "2026-08-13T06:21:22Z",
   "provider": "local-container",
-  "lease_id": "cbx_8819da9c9dc2",
-  "slug": "pearl-barnacle",
+  "lease_id": "cbx_0ed2f862f34a",
+  "slug": "amber-crab-b31b",
   "container_runtime": "docker",
   "image": "node:24-bookworm",
   "machine_type": "node_24-bookworm",
-  "tested_head": "7fddfc1c2274c1a08ff5862100fc54278904f8ad",
-  "command": "crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --allow-env GH_TOKEN --timing-json --capture-stdout docs/proof/hydration-watermarks/container-transcript.txt --capture-stderr docs/proof/hydration-watermarks/container-stderr.txt --script docs/proof/hydration-watermarks/run-proof.sh -- 7fddfc1c2274c1a08ff5862100fc54278904f8ad",
+  "tested_head": "202f14d6dd5770d450e73a6093610790688a2b0e",
+  "command": "crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --allow-env GH_TOKEN --timing-json --capture-stdout docs/proof/hydration-watermarks/container-transcript.txt --capture-stderr docs/proof/hydration-watermarks/container-stderr.txt --script docs/proof/hydration-watermarks/run-proof.sh -- 202f14d6dd5770d450e73a6093610790688a2b0e",
   "exit_code": 0,
   "lease_stopped": true,
-  "sync_ms": 979,
-  "command_ms": 118009,
-  "total_ms": 119021,
+  "sync_ms": 1057,
+  "command_ms": 124573,
+  "total_ms": 125647,
   "node_version": "v24.19.0",
   "pnpm_version": "11.10.0",
   "jq_version": "jq-1.6",
   "gh_version": "gh version 2.23.0 (2023-02-27 Debian 2.23.0+dfsg1-1)",
+  "field_choice_experiment": {
+    "repository": "openclaw/clawsweeper",
+    "pull": 1153,
+    "temporary_comment_deleted": true,
+    "delete_endpoint_status": 404,
+    "add": {
+      "reviews_total_count": "0 -> 1",
+      "review_threads_total_count": "0 -> 1",
+      "comment_updated_at": "2026-08-13T06:08:04Z"
+    },
+    "edit": {
+      "comment_updated_at": "2026-08-13T06:08:22Z",
+      "pull_updated_at": "2026-08-13T06:08:04Z"
+    },
+    "delete": {
+      "reviews_total_count": "1 -> 0",
+      "review_threads_total_count": "1 -> 0",
+      "pull_updated_at": "2026-08-13T06:08:04Z"
+    }
+  },
   "counting_proof": {
     "unchanged_prs": 3,
     "changed_prs": 2,
+    "planned_prs": 5,
+    "graphql_page_size": 100,
     "before_list_reads": 10,
+    "after_graphql_requests": 1,
     "after_list_reads": 3,
+    "after_total_requests": 4,
     "unchanged_list_reads": 0,
+    "edit_with_unchanged_pull_updated_at_rehydrated": true,
+    "delete_with_unchanged_pull_updated_at_rehydrated": true,
+    "graphql_failure_rehydrated_without_trusting_or_republishing_cache": true,
     "changed_inputs_byte_equal": true,
     "deletion_full_fallback": true,
     "oversized_snapshot_omitted": true,
@@ -36,87 +63,86 @@
     "repository": "openclaw/clawsweeper",
     "pull": 97,
     "edited_comment_probe": 3255775240,
-    "transport_routes": ["review_comment_list_since", "commit_list", "review_comment_list"],
+    "transport_routes": [
+      "graphql_activity_revision",
+      "review_comment_list_since",
+      "commit_list",
+      "review_comment_list"
+    ],
     "before_list_reads": 10,
+    "after_graphql_requests": 1,
     "after_list_reads": 3,
+    "after_total_requests": 4,
     "unchanged_list_reads": 0,
     "result": "PASS"
   },
   "focused_tests": {
-    "total": 30,
-    "passed": 30,
-    "failed": 0
+    "command": "node --test test/pr-comment-activity-revision.test.ts test/pr-hydration-snapshot.test.ts test/context.test.ts test/review-command-workflow.test.ts test/sweep-workflow.test.ts",
+    "total": 154,
+    "passed": 154,
+    "failed": 0,
+    "skipped": 0
   },
   "full_gate": {
     "command": "pnpm run check",
     "exit_code": 0,
-    "tests": 3413,
-    "passed": 3405,
+    "tests": 3417,
+    "passed": 3409,
     "failed": 0,
     "skipped": 8
   },
+  "behavior_validator": {
+    "contract": "docs/proof/hydration-watermarks/behavior-contract.md",
+    "target": "planner CLI and final Docker-backed proof",
+    "passed": true,
+    "findings": 0
+  },
   "pre_commit_autoreview": {
-    "command": "autoreview --mode local --prompt <pr-b-scope> --stream-engine-output",
+    "command": "autoreview --mode local --max-priority P1 --stream-engine-output --prompt <activity-revision-scope>",
     "exit_code": 0,
     "accepted_or_actionable_findings": 0,
     "result": "autoreview clean: no accepted/actionable findings reported"
   },
-  "fix_round_autoreview": {
-    "command": "autoreview --mode local --prompt <minimized-persistence-fix-scope> --stream-engine-output",
-    "exit_code": 0,
-    "accepted_or_actionable_findings": 0,
-    "result": "autoreview clean: no accepted/actionable findings reported"
-  },
-  "second_fix_round_autoreview": {
-    "command": "autoreview --mode local --prompt <prompt-boundary-fix-scope> --stream-engine-output",
-    "exit_code": 0,
-    "accepted_or_actionable_findings": 0,
-    "result": "autoreview clean: no accepted/actionable findings reported"
-  },
-  "final_p2_pre_commit_autoreview": {
-    "command": "autoreview --mode local --max-priority P2 --prompt <final-p2-scope> --stream-engine-output",
+  "prior_attempt": {
+    "lease_id": "cbx_6a1d91cf2be4",
+    "slug": "jade-crayfish-05de",
     "exit_code": 1,
-    "accepted_or_actionable_findings": 1,
-    "accepted_finding": "Remove the entire snapshot when it contains Unicode line separators"
-  },
-  "final_p2_followup_autoreview": {
-    "command": "autoreview --mode local --max-priority P2 --prompt <unicode-followup-scope> --stream-engine-output",
-    "exit_code": 0,
-    "accepted_or_actionable_findings": 0,
-    "result": "autoreview clean: no accepted/actionable findings reported"
+    "lease_stopped": true,
+    "disposition": "proof harness omitted build:repair before the newly added sweep-workflow focused suite; no product finding"
   },
   "content_sha256": {
-    "src/clawsweeper-item-context.ts": "011a6f281c5ba80bf91174a5805caf623f97479f8e7b8e410f17316aa9e009f0",
-    "dashboard/exact-review-direct-publication.ts": "ff156b342cb3406a55a6c2b7847468edf1f6989cf795084c144adcdf95848090",
-    "src/exact-review-publication-limits.ts": "b3e9e2616ff6ae9155949301306017872da0be5d0a81991ca14c4b515ec51cc4",
-    "src/clawsweeper-report-document.ts": "9ba71c7c9edab99fdd41d9fbd19b25926f6718aa5a15a4e39e840fa333012fe1",
-    "src/clawsweeper-review-command-dependencies.ts": "d1ebc948e7656731d587b8358b354422adf14fcc4b66bcd0f9f83d059346aff6",
-    "src/clawsweeper-review-command-workflow.ts": "d0a4e3b4444138e2b2a2e3cb97ed98f73fed7390b260c9ac4c8f4dccbe9acfe1",
-    "src/clawsweeper-review-runtime.ts": "3ad26ebf011402dbe9f9e9ad3ad3460318201ba82104fbb628e9b6472dee5359",
-    "src/clawsweeper-media-proof.ts": "200343fcde0758a2b8e44b7728517ace0ea5a810939e4ee7902a5974ab8e9979",
-    "src/clawsweeper-types.ts": "96b1803884a55c8e6d1bceb346aedb250d931e2c389cd4586b9a70cbf60158d7",
-    "src/pr-hydration-snapshot.ts": "8ffdc268d7089795d2b7eb89db9be1bb50259e35370c9c4e5aeb5be83d453e20",
-    "test/pr-hydration-snapshot.test.ts": "ba1a799b8ce314a9f004dddfc025fce45c474d1f31dc9a42679b1f645ee200f3",
-    "test/review-prompt-context.test.ts": "b839539ac16563fc0f41bafb160dd7d4e26cae88d452c5b48eb69ec57d8a0bb2",
-    "test/review-prompt-policy.test.ts": "daa4ccce0ebf7e82a83cb8a5c3dc4fb730a2ba9f555d36c2c89cab627bd3970a",
-    "docs/proof/hydration-watermarks/README.md": "9edea3c99c6c53834a8226e896b5267a79b2e282d0313adb9c5c96c9f9a28a76",
-    "docs/proof/hydration-watermarks/behavior-contract.md": "6a90ffbd6ace429c8f03da15d8c79e6bb1a73495b13da7838ffd7da24e8c844a",
-    "docs/proof/hydration-watermarks/real-transport-proof.mjs": "1c2a3389387bb47a40e84dd9dbc9250cabc0017091daef9d0fbc3ceaaaa2349a",
-    "docs/proof/hydration-watermarks/run-proof.sh": "8f7acd923d507994fffcb80ef672d7e4c28abb30a3efcb31040911bb488e7605"
+    ".github/workflows/sweep.yml": "5207465e6ebd6b12022d7a3600f4e6216e66b25bd50ff72960b2a27ff91bc357",
+    "src/clawsweeper-item-context.ts": "a4145c94d78229988f674341f87a8af02a2672cbffbe3326dbc95e59dd06e6b5",
+    "src/clawsweeper-plan-command.ts": "1cd92685d992c574b9dd28cdeae8e1d526f0fd29eec5bf364b9a19785317eca8",
+    "src/clawsweeper-review-command-dependencies.ts": "ba01833b7a7f44319ddf7443a319ff6f6e3fe54423bcbf36ada36af7c9284e4e",
+    "src/clawsweeper-review-command-workflow.ts": "06db7ee476da66a5cea305ca624d0a4d414035058b57907ecfcb492ee16e3a1a",
+    "src/clawsweeper-review-planning-inventory.ts": "1b88a619a68d11389b3d46d75ea77ed3392e5de62438ac0831ae7e067fe820de",
+    "src/clawsweeper-review-planning.ts": "ca386f1701b600699a12b1aac95d1c5b373ea4b402cf805ef99f7bafd5410613",
+    "src/clawsweeper-review-preparation.ts": "a4acfec142291cdcf81b180adf070f527ac5883b68ff1380b5df236280ebbeef",
+    "src/clawsweeper-runtime.ts": "775499c060508a63d59ef609188243d06823fdd3cf9f1bc8af15c9f0f0550370",
+    "src/pr-hydration-snapshot.ts": "3e3eb3aa13ab9d357e5124fe4d8c51313ca3d33fd4de6f32c0ea48b23ca9448a",
+    "test/pr-comment-activity-revision.test.ts": "94810029953c9fb81b940e8ad00132e0231a846f74beef3f41ffa16897dcbfa4",
+    "test/pr-hydration-snapshot.test.ts": "2bd40cd7e1fcb1edf49fc7dca6c177d8bbafbf98f32970bf6a9eedc0745b9277",
+    "test/sweep-workflow.test.ts": "e9d312592077f81af63c19915f8740cc3eac5f906ea795dfad3fcdb6b4dd7e4e",
+    "docs/proof/hydration-watermarks/README.md": "ebcde0ec69acd0389341b1e8e3604a68a15ce66f69f2dc2c00132607e9fdc8e4",
+    "docs/proof/hydration-watermarks/behavior-contract.md": "b06babe711674a3c37c77a139fb62a4aae27c1befb5403e3df95c5834fb87896",
+    "docs/proof/hydration-watermarks/real-transport-proof.mjs": "e4927a0c15532ac3b5e1ed4336e1333aca6ab68bf7f8c091239c4ed6cb3150e5",
+    "docs/proof/hydration-watermarks/run-proof.sh": "e3868c401d3c0c4a890d38a9cdcf19efef6d1ade554bc4fac19a575d31e4e018"
   },
-  "transcript_sha256": "76a5747063dd6ae1ff5cf814b3e5d41c4559fa1660b07fad40c7dc275a2f640e",
-  "stderr_sha256": "f9551d11b5dc2544f7d064e9b578e5a881400fd212183cc5debd526d97cb2a27",
+  "transcript_sha256": "03ff41fd1927a4e20f7108960ae75679edc015a5fdf3fbeb4e197525bbf2dbb2",
+  "stderr_sha256": "229323d58633dfb925f0becb4f0856e9fdc17d314fc8c26b92dd938d7f77009f",
   "secret_scan": {
     "tool": "trufflehog 3.96.0",
     "command": "trufflehog filesystem --no-update --results=verified,unknown --fail --fail-on-scan-errors docs/proof/hydration-watermarks/container-transcript.txt docs/proof/hydration-watermarks/container-stderr.txt",
     "exit_code": 0,
-    "chunks": 59,
-    "bytes": 765658,
+    "chunks": 60,
+    "bytes": 781574,
     "verified_secrets": 0,
     "unknown_secrets": 0
   },
   "cleanup": {
-    "owned_lease_absent_from_local_container_list": true,
+    "successful_lease_absent_from_local_container_list": true,
+    "failed_attempt_lease_absent_from_local_container_list": true,
     "unrelated_preexisting_exited_lease_untouched": true
   }
 }
