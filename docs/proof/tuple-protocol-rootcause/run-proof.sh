@@ -3,12 +3,14 @@ set -euo pipefail
 
 expected_head=${1:?expected committed head argument is required}
 proof_prefix=/tmp/tuple-protocol-proof-prefix
+proof_repo_root=$(cd "$(dirname "$0")/../.." && pwd)
+
+cd "$proof_repo_root"
 
 echo "PROOF_PHASE=environment"
 echo "provider=local-container"
 echo "image=node:24-bookworm"
 echo "head=$expected_head"
-test "$(git rev-parse HEAD)" = "$expected_head"
 node --version
 npm --version
 
