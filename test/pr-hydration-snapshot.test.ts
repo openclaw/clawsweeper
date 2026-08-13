@@ -15,7 +15,13 @@ const firstUpdatedAt = "2026-08-12T01:00:00Z";
 const nextUpdatedAt = "2026-08-12T03:00:00Z";
 
 function commit(sha: string, message: string) {
-  return { sha, author: { login: "contributor" }, commit: { message } };
+  return {
+    sha,
+    node_id: `commit-${sha}`,
+    author: { login: "contributor", avatar_url: "https://avatars.example/contributor" },
+    commit: { message, author: { name: "Contributor", email: "public@example.com" } },
+    files_url: "https://api.github.com/unneeded",
+  };
 }
 
 function comment(id: number, updatedAt: string, body: string) {
@@ -32,11 +38,61 @@ function comment(id: number, updatedAt: string, body: string) {
     line: id,
     side: "RIGHT",
     commit_id: oldHead,
+    node_id: `comment-${id}`,
+    diff_hunk: "@@ unneeded API metadata @@",
+    reactions: { total_count: 1 },
   };
 }
 
 function hydration(items: unknown[]) {
   return { items, total: items.length, hydrated: items.length, truncated: false };
+}
+
+function reviewInputBytes(result: {
+  commits: { items: unknown[] };
+  reviewComments: { items: unknown[] };
+  completeReviewComments: unknown[];
+}): string {
+  const record = (value: unknown) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const normalizedComment = (value: unknown) => {
+    const source = record(value);
+    return {
+      id: source.id ?? null,
+      user: record(source.user).login ?? null,
+      author_association: source.author_association ?? null,
+      html_url: source.html_url ?? null,
+      created_at: source.created_at ?? null,
+      updated_at: source.updated_at ?? null,
+      body: source.body ?? null,
+      pull_request_review_id: source.pull_request_review_id ?? null,
+      in_reply_to_id: source.in_reply_to_id ?? null,
+      path: source.path ?? null,
+      line: source.line ?? null,
+      side: source.side ?? null,
+      start_line: source.start_line ?? null,
+      start_side: source.start_side ?? null,
+      original_line: source.original_line ?? null,
+      original_commit_id: source.original_commit_id ?? null,
+      commit_id: source.commit_id ?? null,
+    };
+  };
+  return JSON.stringify({
+    commits: result.commits.items.map((value) => {
+      const source = record(value);
+      const commit = record(source.commit);
+      return {
+        sha: source.sha ?? null,
+        author: record(source.author).login ?? null,
+        message: commit.message ?? null,
+        commitAuthor: record(commit.author).name ?? null,
+      };
+    }),
+    reviewComments: result.reviewComments.items.map(normalizedComment),
+    completeReviewComments: result.completeReviewComments.map(normalizedComment),
+  });
 }
 
 function initialSnapshot(options: {
@@ -149,12 +205,7 @@ test("changed PRs preserve full hydration bytes with partial or full reads", () 
     fetchReviewCommentsSince: () => [],
   });
   assert.equal(edited.reviewCommentsIncremental, true);
-  assert.equal(JSON.stringify(edited.commits), JSON.stringify(editedFresh.commits));
-  assert.equal(JSON.stringify(edited.reviewComments), JSON.stringify(editedFresh.reviewComments));
-  assert.equal(
-    JSON.stringify(edited.completeReviewComments),
-    JSON.stringify(editedFresh.completeReviewComments),
-  );
+  assert.equal(reviewInputBytes(edited), reviewInputBytes(editedFresh));
 
   const forcedCommits = [commit("2".repeat(40), "replacement")];
   const forcedComments = [comment(2, nextUpdatedAt, "new head")];
@@ -193,8 +244,7 @@ test("changed PRs preserve full hydration bytes with partial or full reads", () 
     fetchCompleteReviewComments: () => forcedComments,
     fetchReviewCommentsSince: () => [],
   });
-  assert.equal(JSON.stringify(forced.commits), JSON.stringify(forcedFresh.commits));
-  assert.equal(JSON.stringify(forced.reviewComments), JSON.stringify(forcedFresh.reviewComments));
+  assert.equal(reviewInputBytes(forced), reviewInputBytes(forcedFresh));
   assert.equal(changedListCalls, 3, "one partial edit read plus two force-push full reads");
   assert.deepEqual({ before: 2 * (3 + 2), after: changedListCalls }, { before: 10, after: 3 });
 });
@@ -238,7 +288,18 @@ test("hydration snapshot front matter round-trips", () => {
     commits: [commit("4".repeat(40), "round trip")],
     comments: [comment(4, firstUpdatedAt, "round trip")],
   });
-  assert.deepEqual(parsePrHydrationSnapshot(serializePrHydrationSnapshot(snapshot)), snapshot);
+  const serialized = serializePrHydrationSnapshot(snapshot);
+  assert.deepEqual(parsePrHydrationSnapshot(serialized), snapshot);
+  for (const omittedField of [
+    "avatar_url",
+    "diff_hunk",
+    "email",
+    "files_url",
+    "node_id",
+    "reactions",
+  ]) {
+    assert.doesNotMatch(serialized, new RegExp(omittedField));
+  }
   assert.equal(parsePrHydrationSnapshot("unknown"), null);
   assert.equal(parsePrHydrationSnapshot('{"version":999}'), null);
 });

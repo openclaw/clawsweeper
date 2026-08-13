@@ -14,6 +14,9 @@ when safe and full list reads when force-pushes or invisible deletions require t
   PR detail fetch and before prompt compaction, semantic revisions, related-item discovery, or activity
   cursor creation.
 - Canonical report persistence through the single-line `pr_hydration_snapshot` front-matter field.
+- Durable data minimization: snapshots reject unknown keys and retain only commit SHA, author login,
+  message/author name, and the review-comment fields consumed by prompt compaction, related-link
+  discovery, filtering, content revision, and the activity cursor. Unrelated REST metadata is removed.
 - Planning/runtime ownership: the open-item inventory already carries `updated_at`; it does not carry
   head SHA. The existing structural probe or PR detail fetch supplies the exact head without adding a
   request.
@@ -33,6 +36,8 @@ when safe and full list reads when force-pushes or invisible deletions require t
   reads for the two changed PRs and zero for unchanged PRs.
 - Snapshot JSON larger than 1 MiB is not persisted, leaving at least half of the 2 MiB canonical-record
   limit for the review report and making the next cycle rehydrate normally.
+- Unknown nested fields in persisted snapshots are rejected, and source REST fields outside the
+  explicit review-input schema never enter the canonical report.
 
 ## GitHub `since` and deletion finding
 

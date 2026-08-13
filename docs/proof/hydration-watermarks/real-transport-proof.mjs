@@ -31,6 +31,32 @@ const editedProbe = runGh([
 assert.ok(editedProbe.some((comment) => comment.id === editedCommentId));
 
 const transport = [];
+const record = (value) =>
+  value && typeof value === "object" && !Array.isArray(value) ? value : {};
+const commitInputs = (items) =>
+  items.map((value) => {
+    const source = record(value);
+    const commit = record(source.commit);
+    return {
+      sha: source.sha ?? null,
+      author: record(source.author).login ?? null,
+      message: commit.message ?? null,
+      commitAuthor: record(commit.author).name ?? null,
+    };
+  });
+const commentInputs = (items) =>
+  items.map((value) => {
+    const source = record(value);
+    return {
+      id: source.id ?? null,
+      user: record(source.user).login ?? null,
+      body: source.body ?? null,
+      updated_at: source.updated_at ?? null,
+      path: source.path ?? null,
+      line: source.line ?? null,
+      commit_id: source.commit_id ?? null,
+    };
+  });
 const fetchList = (kind, path) => {
   transport.push({ kind, path });
   const items = runGh(["api", `${path}${path.includes("?") ? "&" : "?"}per_page=100`]);
@@ -157,13 +183,14 @@ console.log(
       after: { list_reads: 3, unchanged_list_reads: 0 },
       changed_input_equality: {
         metadata_change_comments:
-          JSON.stringify(metadataChanged.completeReviewComments) ===
-          JSON.stringify(cold.completeReviewComments),
+          JSON.stringify(commentInputs(metadataChanged.completeReviewComments)) ===
+          JSON.stringify(commentInputs(cold.completeReviewComments)),
         force_push_commits:
-          JSON.stringify(forced.commits.items) === JSON.stringify(cold.commits.items),
+          JSON.stringify(commitInputs(forced.commits.items)) ===
+          JSON.stringify(commitInputs(cold.commits.items)),
         force_push_comments:
-          JSON.stringify(forced.completeReviewComments) ===
-          JSON.stringify(cold.completeReviewComments),
+          JSON.stringify(commentInputs(forced.completeReviewComments)) ===
+          JSON.stringify(commentInputs(cold.completeReviewComments)),
       },
       transport,
       result: "PASS",

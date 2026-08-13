@@ -151,6 +151,9 @@ function createPrHydrationSnapshot(
   const candidate: PrHydrationSnapshot = {
     version: PR_HYDRATION_SNAPSHOT_VERSION,
     ...snapshot,
+    commits: minimizeHydration(snapshot.commits, minimizeCommit),
+    reviewComments: minimizeHydration(snapshot.reviewComments, minimizeReviewComment),
+    completeReviewComments: snapshot.completeReviewComments.map(minimizeReviewComment),
   };
   if (!validPrHydrationSnapshot(candidate)) return null;
   return Buffer.byteLength(JSON.stringify(candidate), "utf8") <= MAX_PR_HYDRATION_SNAPSHOT_BYTES
@@ -161,6 +164,19 @@ function createPrHydrationSnapshot(
 function validPrHydrationSnapshot(value: unknown): value is PrHydrationSnapshot {
   const snapshot = record(value);
   return (
+    exactKeys(snapshot, [
+      "commitCount",
+      "commits",
+      "completeReviewComments",
+      "headSha",
+      "hydratedAt",
+      "number",
+      "pullUpdatedAt",
+      "repo",
+      "reviewCommentCount",
+      "reviewComments",
+      "version",
+    ]) &&
     snapshot.version === PR_HYDRATION_SNAPSHOT_VERSION &&
     typeof snapshot.repo === "string" &&
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(snapshot.repo) &&
@@ -171,10 +187,11 @@ function validPrHydrationSnapshot(value: unknown): value is PrHydrationSnapshot 
     nonnegativeInteger(snapshot.commitCount) &&
     nonnegativeInteger(snapshot.reviewCommentCount) &&
     validTimestamp(snapshot.hydratedAt) &&
-    validHydration(snapshot.commits) &&
-    validHydration(snapshot.reviewComments) &&
+    validHydration(snapshot.commits, validMinimizedCommit) &&
+    validHydration(snapshot.reviewComments, validMinimizedReviewComment) &&
     Array.isArray(snapshot.completeReviewComments) &&
-    snapshot.completeReviewComments.length === snapshot.reviewCommentCount
+    snapshot.completeReviewComments.length === snapshot.reviewCommentCount &&
+    snapshot.completeReviewComments.every(validMinimizedReviewComment)
   );
 }
 
@@ -185,16 +202,127 @@ function snapshotMatchesPull(
   return snapshot?.repo === options.repo && snapshot.number === options.number;
 }
 
-function validHydration(value: unknown): value is ContextHydration<unknown> {
+function validHydration(
+  value: unknown,
+  validItem: (value: unknown) => boolean,
+): value is ContextHydration<unknown> {
   const hydration = record(value);
   return (
+    exactKeys(hydration, ["hydrated", "items", "total", "truncated"]) &&
     Array.isArray(hydration.items) &&
+    hydration.items.every(validItem) &&
     nonnegativeInteger(hydration.total) &&
     nonnegativeInteger(hydration.hydrated) &&
     typeof hydration.truncated === "boolean" &&
     hydration.items.length === hydration.hydrated &&
     hydration.total >= hydration.hydrated &&
     hydration.truncated === hydration.total > hydration.hydrated
+  );
+}
+
+function minimizeHydration(
+  hydration: ContextHydration<unknown>,
+  minimize: (value: unknown) => unknown,
+): ContextHydration<unknown> {
+  return { ...hydration, items: hydration.items.map(minimize) };
+}
+
+function minimizeCommit(value: unknown): unknown {
+  const source = record(value);
+  const commit = record(source.commit);
+  const author = record(source.author);
+  const commitAuthor = record(commit.author);
+  return {
+    sha: typeof source.sha === "string" ? source.sha : null,
+    author: typeof author.login === "string" ? { login: author.login } : null,
+    commit: {
+      message: typeof commit.message === "string" ? commit.message : null,
+      author: typeof commitAuthor.name === "string" ? { name: commitAuthor.name } : null,
+    },
+  };
+}
+
+function minimizeReviewComment(value: unknown): unknown {
+  const source = record(value);
+  const user = record(source.user);
+  return {
+    id: source.id ?? null,
+    user: typeof user.login === "string" ? { login: user.login } : null,
+    author_association: source.author_association ?? null,
+    html_url: source.html_url ?? null,
+    created_at: source.created_at ?? null,
+    updated_at: source.updated_at ?? null,
+    body: source.body ?? null,
+    pull_request_review_id: source.pull_request_review_id ?? null,
+    in_reply_to_id: source.in_reply_to_id ?? null,
+    path: source.path ?? null,
+    line: source.line ?? null,
+    side: source.side ?? null,
+    start_line: source.start_line ?? null,
+    start_side: source.start_side ?? null,
+    original_line: source.original_line ?? null,
+    original_commit_id: source.original_commit_id ?? null,
+    commit_id: source.commit_id ?? null,
+  };
+}
+
+function validMinimizedCommit(value: unknown): boolean {
+  const source = record(value);
+  const author = source.author === null ? null : record(source.author);
+  const commit = record(source.commit);
+  const commitAuthor = commit.author === null ? null : record(commit.author);
+  return (
+    exactKeys(source, ["author", "commit", "sha"]) &&
+    typeof source.sha === "string" &&
+    SHA_PATTERN.test(source.sha) &&
+    (author === null || (exactKeys(author, ["login"]) && typeof author.login === "string")) &&
+    exactKeys(commit, ["author", "message"]) &&
+    typeof commit.message === "string" &&
+    (commitAuthor === null ||
+      (exactKeys(commitAuthor, ["name"]) && typeof commitAuthor.name === "string"))
+  );
+}
+
+function validMinimizedReviewComment(value: unknown): boolean {
+  const source = record(value);
+  const user = source.user === null ? null : record(source.user);
+  return (
+    exactKeys(source, [
+      "author_association",
+      "body",
+      "commit_id",
+      "created_at",
+      "html_url",
+      "id",
+      "in_reply_to_id",
+      "line",
+      "original_commit_id",
+      "original_line",
+      "path",
+      "pull_request_review_id",
+      "side",
+      "start_line",
+      "start_side",
+      "updated_at",
+      "user",
+    ]) &&
+    reviewCommentId(source) !== null &&
+    (user === null || (exactKeys(user, ["login"]) && typeof user.login === "string")) &&
+    nullableString(source.author_association) &&
+    nullableString(source.body) &&
+    nullableString(source.commit_id) &&
+    nullableString(source.created_at) &&
+    nullableString(source.html_url) &&
+    nullableInteger(source.in_reply_to_id) &&
+    nullableInteger(source.line) &&
+    nullableString(source.original_commit_id) &&
+    nullableInteger(source.original_line) &&
+    nullableString(source.path) &&
+    nullableInteger(source.pull_request_review_id) &&
+    nullableString(source.side) &&
+    nullableInteger(source.start_line) &&
+    nullableString(source.start_side) &&
+    nullableString(source.updated_at)
   );
 }
 
@@ -282,4 +410,17 @@ function nonnegativeInteger(value: unknown): value is number {
 
 function validTimestamp(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function exactKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const keys = Object.keys(value).sort();
+  return keys.length === allowed.length && keys.every((key, index) => key === allowed[index]);
+}
+
+function nullableString(value: unknown): boolean {
+  return value === null || typeof value === "string";
+}
+
+function nullableInteger(value: unknown): boolean {
+  return value === null || (typeof value === "number" && Number.isSafeInteger(value));
 }
