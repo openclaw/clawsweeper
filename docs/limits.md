@@ -249,9 +249,11 @@ review authority reads and publication batching. The
 repository Actions pool is identified only as `actions:openclaw/clawsweeper`;
 target App pools are identified by the non-secret target owner. A primary or
 secondary rate-limit observation persists its reset deadline in the queue
-dispatcher, suppresses new batch dispatch for only the affected pool, and adds
-that deadline to the next alarm wake-up. A later observation may extend but
-cannot shorten an open circuit. When `gh` omits response headers, the publisher
+dispatcher and suppresses new batch dispatch for only the affected pool. Each
+matching member resumes at its reset-plus-deterministic-jitter boundary, and
+the next alarm uses the earliest pending member recovery boundary. A later
+observation may extend but cannot shorten an open circuit. When `gh` omits
+response headers, the publisher
 performs at most one same-credential `/rate_limit` lookup; the one-minute
 fallback is used only when no authoritative reset is available.
 
@@ -270,8 +272,8 @@ include them, so quota pressure before normal queue admission remains visible.
 The first quota failure in a preparation batch stops later members before
 artifact download. The observing member records a normal retryable failure;
 members that never made a GitHub request are requeued after the shared reset
-with deterministic 0-30 second recovery jitter and do not consume their
-individual publication retry or dead-letter budgets. A classifier-approved
+with deterministic 1-30 second per-member recovery jitter and do not consume
+their individual publication retry or dead-letter budgets. A classifier-approved
 public `openclaw/openclaw` read may make one bounded fallback from the exhausted
 Actions token to the already-authorized target App token. That success does not
 close the Actions circuit, and mutations, private reads, and unsupported routes

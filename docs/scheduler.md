@@ -123,10 +123,11 @@ Batch admission is additionally gated by persisted GitHub credential circuits.
 Every batch needs the `actions:openclaw/clawsweeper` pool for producer artifact
 download, while target App circuits are owner-scoped so one exhausted
 installation does not stop healthy owners. A blocked pool prevents workflow
-dispatch, state hydration, and artifact download until its reported reset; the
-alarm wakes at the earliest circuit deadline. The current batch collapses after
-the first pool failure, and unattempted members return without advancing their
-retry budget. Reset recovery is spread by deterministic item jitter.
+dispatch, state hydration, and artifact download for each matching member until
+its reset-plus-deterministic-jitter recovery boundary; the alarm wakes at the
+earliest pending member boundary. The current batch collapses after the first
+pool failure, and unattempted members return without advancing their retry
+budget. Recovery is staggered rather than released as one cohort.
 An owner-scoped target App circuit also defers new exact-review admission for
 that owner, because review and publication share the installation quota; other
 owners remain admissible.
