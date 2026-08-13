@@ -1435,7 +1435,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         } finally {
           codexElapsedMs = Date.now() - codexStartedAt;
         }
-        decision = attachFixedPullRequest(decision, item, context);
+        decision = attachFixedPullRequest(
+          decision,
+          item,
+          context,
+          existingPriorReview?.markdown,
+        );
         decision = verifyRegressionProvenance(decision, item, context, openclawDir, git);
         const runtime = {
           model: PUBLIC_CODEX_MODEL,

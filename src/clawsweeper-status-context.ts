@@ -55,6 +55,10 @@ export function createStatusContext({
   numberOrUndefined,
   recordOrUndefined,
 }: StatusContextDependencies) {
+  const recentPullsByRepo = new Map<string, readonly unknown[]>();
+  const defaultBranchByRepo = new Map<string, string | null>();
+  const commitMessageByRepoSha = new Map<string, string>();
+
   function formatTimestamp(iso: string | undefined): string {
     if (!iso) return "unknown";
     const date = new Date(iso);
@@ -435,6 +439,63 @@ ${profileStatusEnd(profile)}`;
     );
   }
 
+  function recentPullsForFixedSha(): readonly unknown[] {
+    const repo = targetRepo();
+    const cached = recentPullsByRepo.get(repo);
+    if (cached) return cached;
+    const pulls = ghJson<unknown[]>([
+      "api",
+      `repos/${repo}/pulls?state=all&sort=updated&direction=desc&per_page=100`,
+      "-H",
+      "Accept: application/vnd.github+json",
+    ]);
+    recentPullsByRepo.set(repo, pulls);
+    return pulls;
+  }
+
+  function defaultBranchForFixedSha(): string | null {
+    const repo = targetRepo();
+    if (defaultBranchByRepo.has(repo)) return defaultBranchByRepo.get(repo) ?? null;
+    const repository = asRecord(ghJson<unknown>(["api", `repos/${repo}`]));
+    const defaultBranch = repository.default_branch;
+    const resolved =
+      typeof defaultBranch === "string" && defaultBranch.trim() ? defaultBranch : null;
+    defaultBranchByRepo.set(repo, resolved);
+    return resolved;
+  }
+
+  function pullMatchesFixedSha(value: unknown, fixedSha: string): boolean {
+    const pull = asRecord(value);
+    const headSha = asRecord(pull.head).sha;
+    const mergeCommitSha = pull.merge_commit_sha;
+    return [headSha, mergeCommitSha].some(
+      (sha) => typeof sha === "string" && sha.toLowerCase() === fixedSha.toLowerCase(),
+    );
+  }
+
+  function commitMessageForFixedSha(fixedSha: string): string {
+    const cacheKey = `${targetRepo()}@${fixedSha}`;
+    const cached = commitMessageByRepoSha.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const commit = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/commits/${fixedSha}`]));
+    const message = asRecord(commit.commit).message;
+    const resolved = typeof message === "string" ? message : "";
+    commitMessageByRepoSha.set(cacheKey, resolved);
+    return resolved;
+  }
+
+  function persistedFixedPullRequest(
+    decision: Decision,
+    priorReviewMarkdown: string | undefined,
+  ): FixedPullRequest | null {
+    if (!priorReviewMarkdown) return null;
+    const fixedSha = decision.fixedSha?.trim();
+    const priorFixedSha = frontMatterValue(priorReviewMarkdown, "fixed_sha")?.trim();
+    if (!fixedSha || fixedSha === "unknown" || fixedSha !== priorFixedSha) return null;
+    const pullRequest = fixedPullRequestFromReport(priorReviewMarkdown);
+    return pullRequest?.confidence === "high" ? pullRequest : null;
+  }
+
   function pullTargetsBranch(value: unknown, branch: string): boolean {
     return asRecord(asRecord(value).base).ref === branch;
   }
@@ -464,32 +525,50 @@ ${profileStatusEnd(profile)}`;
     const fixedSha = decision.fixedSha?.trim();
     if (!fixedSha || fixedSha === "unknown") return null;
     try {
-      const pulls = ghJson<unknown[]>([
+      const defaultBranch = defaultBranchForFixedSha();
+      if (!defaultBranch) return null;
+      const recentMatches = recentPullsForFixedSha().filter((pull) =>
+        pullMatchesFixedSha(pull, fixedSha),
+      );
+      if (recentMatches.length > 0) {
+        const bodyMatch = fixedPullRequestFromCommitPulls(
+          recentMatches,
+          "GitHub commit PR lookup",
+          issueNumber,
+          "",
+          defaultBranch,
+        );
+        if (bodyMatch) return bodyMatch;
+        const commitMessage = commitMessageForFixedSha(fixedSha);
+        const commitMatch = fixedPullRequestFromCommitPulls(
+          recentMatches,
+          "GitHub commit PR lookup",
+          issueNumber,
+          commitMessage,
+          defaultBranch,
+        );
+        if (commitMatch) return commitMatch;
+      }
+      const fallbackPulls = ghJson<unknown[]>([
         "api",
         `repos/${targetRepo()}/commits/${fixedSha}/pulls`,
         "-H",
         "Accept: application/vnd.github+json",
       ]);
-      const repository = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}`]));
-      const defaultBranch = repository.default_branch;
-      if (typeof defaultBranch !== "string" || !defaultBranch.trim()) return null;
       const bodyMatch = fixedPullRequestFromCommitPulls(
-        pulls,
+        fallbackPulls,
         "GitHub commit PR lookup",
         issueNumber,
         "",
         defaultBranch,
       );
       if (bodyMatch) return bodyMatch;
-      const commit = asRecord(
-        ghJson<unknown>(["api", `repos/${targetRepo()}/commits/${fixedSha}`]),
-      );
-      const commitMessage = asRecord(commit.commit).message;
+      const commitMessage = commitMessageForFixedSha(fixedSha);
       return fixedPullRequestFromCommitPulls(
-        pulls,
+        fallbackPulls,
         "GitHub commit PR lookup",
         issueNumber,
-        typeof commitMessage === "string" ? commitMessage : "",
+        commitMessage,
         defaultBranch,
       );
     } catch (error) {
@@ -498,10 +577,16 @@ ${profileStatusEnd(profile)}`;
     }
   }
 
-  function attachFixedPullRequest(decision: Decision, item: Item, context: ItemContext): Decision {
+  function attachFixedPullRequest(
+    decision: Decision,
+    item: Item,
+    context: ItemContext,
+    priorReviewMarkdown?: string,
+  ): Decision {
     if (decision.fixedPullRequest) return decision;
     const fixedPullRequest =
       fixedPullRequestFromContext(item, context, decision) ??
+      persistedFixedPullRequest(decision, priorReviewMarkdown) ??
       (item.kind === "issue" ? fixedPullRequestFromCommitSha(decision, item.number) : null);
     return fixedPullRequest ? { ...decision, fixedPullRequest } : decision;
   }

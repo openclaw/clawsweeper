@@ -41,7 +41,12 @@ export interface CreateReviewCommandWorkflowDependencies {
   actionLedgerItemKey: (item: Pick<Item, "repo" | "number">) => string;
   activeReviewMutationRunner: MutationRunner | null;
   asRecord: (value: unknown) => Record<string, unknown>;
-  attachFixedPullRequest: (decision: Decision, item: Item, context: ItemContext) => Decision;
+  attachFixedPullRequest: (
+    decision: Decision,
+    item: Item,
+    context: ItemContext,
+    priorReviewMarkdown?: string,
+  ) => Decision;
   verifyRegressionProvenance: (
     decision: Decision,
     item: Item,
