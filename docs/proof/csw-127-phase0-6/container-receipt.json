@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "proof": "CSW-127 Phase 0.6 production-shaped boundary",
+  "base_commit": "4d41d3df4baf191dca9c385c82689425a135a5c4",
+  "code_commit": "7c5d2e9e36a6d5baff6d68e4c2b6366124f3267d",
+  "code_tree": "5133cd9c9b90bdf9aacec401575e2389e88888fa",
+  "provider": "local-container",
+  "provider_id": "cbx_afa50d9f541b",
+  "provider_slug": "quick-krill",
+  "image": "node:24-bookworm",
+  "worker": "wrangler@4.107.0 --local",
+  "durable_object": "SQLite ExactReviewQueue",
+  "status": "succeeded",
+  "exit_code": 0,
+  "lease_stopped": true,
+  "duration_ms": 288746,
+  "phases_ms": {
+    "dependencies": 4137,
+    "build": 2846,
+    "focused_tests": 6409,
+    "worker_queue_transition": 11573,
+    "seed_production_caps": 353,
+    "worker_cap_eviction": 2545,
+    "worker_restart": 2279,
+    "broad_linux_gates": 252889
+  },
+  "focused_tests": {
+    "tests": 232,
+    "passed": 232,
+    "failed": 0
+  },
+  "results": {
+    "rollup_rows_seeded": 50000,
+    "rate_limit_rows_seeded": 10000,
+    "rollup_rows_evicted": 2,
+    "rate_limit_rows_evicted": 1,
+    "fifteen_minute_query_complete": true,
+    "one_hour_query_complete": true,
+    "overlapping_six_hour_query_complete": false,
+    "sqlite_restart_preserved_eviction_watermarks": true,
+    "sqlite_restart_preserved_retry_cause": true,
+    "retry_cause_reconciled": true,
+    "privacy_clean": true,
+    "broad_check": "passed"
+  },
+  "coverage_percent": {
+    "lines": 81.48,
+    "branches": 73.96,
+    "functions": 87.30
+  },
+  "artifact_sha256": {
+    "runtime_receipt_json": "F971B6CB79F4656EA08FA9860B8B5922E128445FD2F489055398A2FFA9F6C87D",
+    "queue_stage_json": "AD92020CD5937982A1B7370C03DBE906FFEE9844851FEFEEACD9653ECAD4F476",
+    "cap_stage_json": "4136FFBD639ECE4EF8E15E66F35D71FF0E050948B084EC2A345CA367BCB15ECB",
+    "restart_stage_json": "C65DA19FD760C46E35D2DFD1ED0D99B0A945CCCC2C40B6E2627791332A38F796",
+    "redacted_wrangler_log": "92324F84CE288E4A0BFB0368D858F76873CBAA192E606D4BB576CD16EFD5F2F1"
+  },
+  "limits": [
+    "The proof used synthetic local fixtures and made no production, GitHub, queue, DLQ, workflow, gate, schedule, capacity, deployment, or credential mutation.",
+    "The target_app closure-proof 403 path is separate and was not changed.",
+    "Phase 1 remains default-disabled and requires separate authorization plus a stable post-merge cohort before activation can be claimed."
+  ]
+}
