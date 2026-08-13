@@ -1,13 +1,14 @@
 {
-  "command": "--script=docs/proof/hydration-watermarks/run-proof.sh ac143b0a3412f433258cd42a8aef2d568df521e6",
-  "command_ms": 102721,
+  "command": "--script=docs/proof/hydration-watermarks/run-proof.sh 5e249b3b9a6a93100ed051624b0a489b4b0dc662",
+  "command_ms": 101140,
   "exit_code": 0,
-  "generated_at": "2026-08-13T07:09:01Z",
-  "lease_id": "cbx_8c317d854bdf",
-  "log_sha256": "sha256:019672fe2d27126d03a184a8a553909fcd8a777a2f80e02e794c29e9110db6c4",
+  "generated_at": "2026-08-13T07:23:27Z",
+  "lease_id": "cbx_05a74878efe7",
+  "log_sha256": "sha256:8699a28ee53f1b383081ea96d9ce4c00db09b09c7b4a1296640d6555764d2083",
   "provider": "local-container",
   "public_key": "HDiXZPYDvcBFN8Hra/G77Hm+QDi303sIhzHZRht//2c=",
+  "run_id": "run_45c37834cd47",
   "schema_version": 1,
-  "signature": "znKjHMAcE6II8Cyv5IqedaV8T+rzgIggui9mPs2StLFJYjHiCmfr6lJnNf1iQJhTh+21AN26HQ6YPivBD0iOAQ==",
-  "slug": "brisk-hermit-ca09"
+  "signature": "6arSfhNuKCk/LKt9IuY7ai28HwoGHbSshzZZ7oUNx3GO1HL5uVurhNvF2DoJxn3Q9+OB0LpaaWk72t5p6ZuGAA==",
+  "slug": "amber-lobster-3f13"
 }
