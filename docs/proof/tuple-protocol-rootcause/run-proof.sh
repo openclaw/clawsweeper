@@ -14,6 +14,16 @@ echo "head=$expected_head"
 node --version
 npm --version
 
+echo "PROOF_PHASE=git_snapshot"
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  git init --initial-branch=main --quiet
+  git config user.name "ClawSweeper proof"
+  git config user.email "proof@clawsweeper.invalid"
+  git add --all
+  git commit --quiet --message "test: snapshot synced proof tree"
+  git update-ref refs/remotes/origin/main HEAD
+fi
+
 echo "PROOF_PHASE=corepack"
 mkdir -p "$proof_prefix/bin"
 npm install --global --prefix "$proof_prefix" corepack@0.35.0
