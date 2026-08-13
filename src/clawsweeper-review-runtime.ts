@@ -424,7 +424,12 @@ export function createReviewRuntime({
   }
 
   function contextJsonForPrompt(context: ItemContext): string {
-    const { semanticPullFiles: _, pullCommitsRevision: __, ...promptContext } = context;
+    const {
+      semanticPullFiles: _,
+      pullCommitsRevision: __,
+      prHydrationSnapshot: ___,
+      ...promptContext
+    } = context;
     return JSON.stringify(promptContext, null, 2);
   }
 

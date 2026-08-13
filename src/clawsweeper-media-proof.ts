@@ -31,7 +31,12 @@ function trimTrailingUrlPunctuation(raw: string): string {
 }
 
 function proofMediaUrlsFromContext(context: ItemContext): string[] {
-  const { semanticPullFiles: _, pullCommitsRevision: __, ...proofContext } = context;
+  const {
+    semanticPullFiles: _,
+    pullCommitsRevision: __,
+    prHydrationSnapshot: ___,
+    ...proofContext
+  } = context;
   const text = JSON.stringify(proofContext);
   const matches = text.match(/https?:\/\/[^\s<>"'\\)]+/g) ?? [];
   const urls: string[] = [];

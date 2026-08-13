@@ -17,6 +17,8 @@ when safe and full list reads when force-pushes or invisible deletions require t
 - Durable data minimization: snapshots reject unknown keys and retain only commit SHA, author login,
   message/author name, and the review-comment fields consumed by prompt compaction, related-link
   discovery, filtering, content revision, and the activity cursor. Unrelated REST metadata is removed.
+- Persistence-only isolation: the full snapshot is excluded from both Codex prompt JSON and media URL
+  discovery. Only the existing compact commit/review-comment windows cross the model boundary.
 - Planning/runtime ownership: the open-item inventory already carries `updated_at`; it does not carry
   head SHA. The existing structural probe or PR detail fetch supplies the exact head without adding a
   request.
@@ -38,6 +40,7 @@ when safe and full list reads when force-pushes or invisible deletions require t
   limit for the review report and making the next cycle rehydrate normally.
 - Unknown nested fields in persisted snapshots are rejected, and source REST fields outside the
   explicit review-input schema never enter the canonical report.
+- The persistence-only snapshot field never appears in the review prompt or media-proof URL scan.
 
 ## GitHub `since` and deletion finding
 

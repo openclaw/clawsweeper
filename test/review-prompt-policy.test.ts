@@ -450,6 +450,21 @@ test("media proof URL discovery includes screenshots and videos", () => {
   ]);
 });
 
+test("media proof URL discovery excludes persistence-only hydration snapshots", () => {
+  const context = {
+    issue: {},
+    comments: [],
+    timeline: [],
+    prHydrationSnapshot: {
+      completeReviewComments: [
+        { body: "https://github.com/user/repo/releases/download/proof/private-cache-only.png" },
+      ],
+    },
+  };
+
+  assert.deepEqual(proofMediaUrlsFromContextForTest(context), []);
+});
+
 test("review prompt keeps draft and protected workflow state out of PR rank", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
