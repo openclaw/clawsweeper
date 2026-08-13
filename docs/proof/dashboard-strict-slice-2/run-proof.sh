@@ -29,7 +29,11 @@ echo "PROOF_RECEIPT=COMMITTED"
 echo "PROOF_HEAD=$proof_head"
 echo "PROOF_MERGE_BASE=$proof_base"
 
-corepack enable
+proof_bin="$HOME/.local/bin"
+mkdir -p "$proof_bin"
+npm install --global --prefix "$HOME/.local" corepack@0.35.0
+corepack enable --install-directory "$proof_bin"
+export PATH="$proof_bin:$PATH"
 pnpm install --frozen-lockfile
 pnpm run check:dashboard-strict
 node --test test/check-dashboard-strict.test.ts
