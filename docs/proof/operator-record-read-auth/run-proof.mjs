@@ -50,7 +50,7 @@ const recordContent = [
   "",
 ].join("\n");
 const recordDigest = createHash("sha256").update(recordContent).digest("hex");
-const recordPath = "/internal/state/records/openclaw-openclaw/items/1148";
+const collections = ["items", "closed", "plans", "decision-packets"];
 const shutdowns = [];
 
 if (observedHead) {
@@ -65,21 +65,18 @@ try {
   worker = await startWorker(baseRoot, "merge-base");
   await publishRecord(worker.origin, "merge-base");
   const before = await readMatrix(worker.origin);
-  assert.equal(before.operator.status, 401);
-  assert.deepEqual(before.operator.body, { error: "invalid_signature" });
-  assertSuccessfulRecord(before.webhook);
-  assert.equal(before.garbage.status, 401);
-  assert.deepEqual(before.garbage.body, { error: "invalid_signature" });
+  assertMatrix(before, { items: 401, closed: 401, plans: 401, "decision-packets": 401 });
+  assertMatrix(before, { items: 200, closed: 200, plans: 200, "decision-packets": 200 }, "webhook");
+  assertMatrix(before, { items: 401, closed: 401, plans: 401, "decision-packets": 401 }, "garbage");
   shutdowns.push(await stopWorker(worker, "merge-base"));
   worker = undefined;
 
   worker = await startWorker(repoRoot, "candidate");
   await publishRecord(worker.origin, "candidate");
   const after = await readMatrix(worker.origin);
-  assertSuccessfulRecord(after.operator);
-  assertSuccessfulRecord(after.webhook);
-  assert.equal(after.garbage.status, 401);
-  assert.deepEqual(after.garbage.body, { error: "invalid_signature" });
+  assertMatrix(after, { items: 200, closed: 401, plans: 401, "decision-packets": 401 });
+  assertMatrix(after, { items: 200, closed: 200, plans: 200, "decision-packets": 200 }, "webhook");
+  assertMatrix(after, { items: 401, closed: 401, plans: 401, "decision-packets": 401 }, "garbage");
   shutdowns.push(await stopWorker(worker, "candidate"));
   worker = undefined;
 
@@ -101,10 +98,8 @@ try {
     after: sanitizeMatrix(after),
     process_tree_shutdowns: shutdowns,
     result: {
-      merge_base_operator_status: before.operator.status,
-      candidate_operator_status: after.operator.status,
-      candidate_webhook_status: after.webhook.status,
-      candidate_garbage_status: after.garbage.status,
+      merge_base_statuses: statusMatrix(before),
+      candidate_statuses: statusMatrix(after),
       status: "succeeded",
     },
     limits: [
@@ -127,17 +122,11 @@ async function publishRecord(origin, label) {
     deliveryId: `operator-record-read-auth:${label}`,
     key: "openclaw-openclaw/1148",
     operations: [
-      {
-        path: "records/openclaw-openclaw/items/1148.md",
+      ...collections.map((collection) => ({
+        path: `records/openclaw-openclaw/${collection}/1148.${collection === "decision-packets" ? "json" : "md"}`,
         expectedDigest: null,
         contentBase64: Buffer.from(recordContent).toString("base64"),
-      },
-      { path: "records/openclaw-openclaw/closed/1148.md", expectedDigest: null },
-      { path: "records/openclaw-openclaw/plans/1148.md", expectedDigest: null },
-      {
-        path: "records/openclaw-openclaw/decision-packets/1148.json",
-        expectedDigest: null,
-      },
+      })),
     ],
   });
   const response = await fetch(`${origin}/internal/state/records/tuples`, {
@@ -152,18 +141,55 @@ async function publishRecord(origin, label) {
 }
 
 async function readMatrix(origin) {
-  return {
-    webhook: await readRecord(origin, webhookSecret),
-    operator: await readRecord(origin, operatorSecret),
-    garbage: await readRecord(origin, garbageSecret),
-  };
+  return Object.fromEntries(
+    await Promise.all(
+      [
+        ["operator", operatorSecret],
+        ["webhook", webhookSecret],
+        ["garbage", garbageSecret],
+      ].map(async ([credential, secret]) => [
+        credential,
+        Object.fromEntries(
+          await Promise.all(
+            collections.map(async (collection) => [
+              collection,
+              await readRecord(origin, collection, secret),
+            ]),
+          ),
+        ),
+      ]),
+    ),
+  );
 }
 
-async function readRecord(origin, secret) {
-  const response = await fetch(`${origin}${recordPath}`, {
-    headers: { "x-clawsweeper-exact-review-signature": signature(secret, "") },
-  });
+async function readRecord(origin, collection, secret) {
+  const response = await fetch(
+    `${origin}/internal/state/records/openclaw-openclaw/${collection}/1148`,
+    {
+      headers: { "x-clawsweeper-exact-review-signature": signature(secret, "") },
+    },
+  );
   return { status: response.status, body: await response.json() };
+}
+
+function assertMatrix(matrix, expected, credential = "operator") {
+  for (const [collection, status] of Object.entries(expected)) {
+    const outcome = matrix[credential][collection];
+    assert.equal(outcome.status, status, `${credential}:${collection}`);
+    if (status === 200) assertSuccessfulRecord(outcome);
+    else assert.deepEqual(outcome.body, { error: "invalid_signature" });
+  }
+}
+
+function statusMatrix(matrix) {
+  return Object.fromEntries(
+    Object.entries(matrix).map(([credential, outcomes]) => [
+      credential,
+      Object.fromEntries(
+        Object.entries(outcomes).map(([collection, outcome]) => [collection, outcome.status]),
+      ),
+    ]),
+  );
 }
 
 function assertSuccessfulRecord(outcome) {
@@ -176,20 +202,25 @@ function assertSuccessfulRecord(outcome) {
 
 function sanitizeMatrix(matrix) {
   return Object.fromEntries(
-    Object.entries(matrix).map(([name, outcome]) => [
-      name,
-      {
-        status: outcome.status,
-        body:
-          outcome.status === 200
-            ? {
-                digest: outcome.body.digest,
-                revision: outcome.body.revision,
-                content_matches: outcome.body.content === recordContent,
-                updated_at_valid: Number.isFinite(Date.parse(outcome.body.updatedAt)),
-              }
-            : outcome.body,
-      },
+    Object.entries(matrix).map(([credential, outcomes]) => [
+      credential,
+      Object.fromEntries(
+        Object.entries(outcomes).map(([collection, outcome]) => [
+          collection,
+          {
+            status: outcome.status,
+            body:
+              outcome.status === 200
+                ? {
+                    digest: outcome.body.digest,
+                    revision: outcome.body.revision,
+                    content_matches: outcome.body.content === recordContent,
+                    updated_at_valid: Number.isFinite(Date.parse(outcome.body.updatedAt)),
+                  }
+                : outcome.body,
+          },
+        ]),
+      ),
     ]),
   );
 }

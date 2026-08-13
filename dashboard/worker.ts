@@ -771,7 +771,7 @@ export default {
       );
     const canonicalRecordPath =
       request.method === "GET"
-        ? /^\/internal\/state\/records\/[^/]+\/(?:items|closed|plans|decision-packets)\/[1-9]\d*$/.exec(
+        ? /^\/internal\/state\/records\/[^/]+\/(items|closed|plans|decision-packets)\/[1-9]\d*$/.exec(
             url.pathname,
           )
         : null;
@@ -780,6 +780,7 @@ export default {
         request,
         env,
         url.pathname.slice("/internal/state".length),
+        canonicalRecordPath[1] === "items",
       );
     if (url.pathname === "/internal/state/records/slugs" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/records/slugs");
@@ -2581,16 +2582,21 @@ async function authenticatedLifecycleCommandAcknowledgement(request, env, ctx) {
   );
 }
 
-async function authenticatedExactReviewQueueRead(request, env, path: string) {
+async function authenticatedExactReviewQueueRead(
+  request,
+  env,
+  path: string,
+  allowOperatorSecret: boolean,
+) {
   const webhookSecret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
-  const operatorSecret = stringEnv(env.EXACT_REVIEW_OPERATOR_SECRET);
+  const operatorSecret = allowOperatorSecret ? stringEnv(env.EXACT_REVIEW_OPERATOR_SECRET) : "";
   if (!webhookSecret && !operatorSecret) return json({ error: "webhook_not_configured" }, 503);
   const body = await request.text();
   const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
   let authenticated = webhookSecret
     ? await verifyGithubWebhookSignature({ secret: webhookSecret, signature, bodyText: body })
     : false;
-  // This read-only route may accept the operator credential because it already authorizes queue mutations.
+  // Reconciliation reads active items only; closed records, plans, and decision packets stay webhook-only.
   if (!authenticated && operatorSecret) {
     authenticated = await verifyGithubWebhookSignature({
       secret: operatorSecret,

@@ -11,4 +11,4 @@ AssertionError: 401 !== 200
 
 The first direct test attempt also documented a fresh-worktree setup dependency: the dashboard harness imports built repair modules, so `pnpm run build:all` is required before the focused test. That setup-only failure is not counted as the behavior RED result above.
 
-GREEN requires the same router fixture to return 200 for distinct operator and webhook signatures, 401 for garbage, and 503 only when neither secret is configured. The real-Worker proof independently requires merge-base operator auth to remain 401 while the candidate returns 200, with full Wrangler process-tree shutdown between the two boots.
+GREEN requires the same router fixture to return 200 for the operator only on `items`, 401 for the operator on `closed`, `plans`, and `decision-packets`, 200 for the webhook on all four collections, 401 for garbage on all four, and the existing 503 behavior when a required credential is not configured. The real-Worker proof independently requires merge-base operator auth to remain 401 everywhere while the candidate unlocks only `items`, with full Wrangler process-tree shutdown between the two boots.

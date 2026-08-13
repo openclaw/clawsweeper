@@ -41,7 +41,7 @@ corepack pnpm run build:all
 
 echo "PROOF_PHASE=focused-router-test"
 node --test \
-  --test-name-pattern='canonical record reads accept distinct webhook and operator secrets' \
+  --test-name-pattern='canonical record operator auth is scoped to items' \
   test/dashboard-worker-publication-lifecycle.test.ts
 
 echo "PROOF_PHASE=real-worker"

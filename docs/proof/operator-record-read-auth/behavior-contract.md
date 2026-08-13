@@ -2,20 +2,21 @@
 
 ## Claim
 
-The canonical-record GET route accepts an HMAC made with either the webhook secret or the exact-review operator secret. The secrets remain distinct, invalid signatures remain unauthorized, and absent configuration remains unavailable only when neither secret exists.
+The canonical-record GET route accepts the exact-review operator secret only for `items`, the sole collection read by reconciliation. The webhook secret retains access to `items`, `closed`, `plans`, and `decision-packets`; invalid signatures remain unauthorized; and missing required configuration remains unavailable.
 
 ## Exercised surface
 
-The proof starts the production dashboard Worker with `wrangler dev --local`, publishes a synthetic canonical record through the signed tuple route, and reads that record through `GET /internal/state/records/openclaw-openclaw/items/1148`. It boots the merge-base Worker and candidate Worker sequentially on the same loopback port with different webhook and operator secret values. Between boots it terminates the complete Wrangler process tree and requires `/api/health` to stop responding.
+The proof starts the production dashboard Worker with `wrangler dev --local`, publishes synthetic canonical records through the signed tuple route, and reads all four collections through `GET /internal/state/records/openclaw-openclaw/<collection>/1148`. It boots the merge-base Worker and candidate Worker sequentially on the same loopback port with different webhook and operator secret values. Between boots it terminates the complete Wrangler process tree and requires `/api/health` to stop responding.
 
 ## Expected behavior
 
-| Revision   | Webhook signature | Operator signature | Garbage signature |
-| ---------- | ----------------: | -----------------: | ----------------: |
-| Merge base |               200 |                401 |               401 |
-| Candidate  |               200 |                200 |               401 |
+| Revision  | Signature | Items | Closed | Plans | Decision packets |
+| --------- | --------- | ----: | -----: | ----: | ---------------: |
+| Candidate | Operator  |   200 |    401 |   401 |              401 |
+| Candidate | Webhook   |   200 |    200 |   200 |              200 |
+| Candidate | Garbage   |   401 |    401 |   401 |              401 |
 
-The router-level unit fixture repeats the candidate matrix with two distinct configured values and also requires `503 webhook_not_configured` when neither value exists.
+The merge base remains webhook-only for all four collections. The router-level unit fixture repeats the candidate matrix with two distinct configured values. It also requires `503 webhook_not_configured` when neither value exists and for an operator-only request to a webhook-only collection.
 
 ## Non-goals and limits
 
