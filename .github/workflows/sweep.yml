@@ -4278,6 +4278,7 @@ jobs:
           ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || github.event.client_payload.review_options.additional_prompt || github.event.client_payload.additional_prompt || '' }}
           EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
           EXPECTED_SOURCE_REVISION: ${{ github.event.client_payload.expected_source_revision || '' }}
+          PR_COMMENT_ACTIVITY_REVISIONS: ${{ matrix.pr_comment_activity_revisions }}
         run: |
           hot_intake_arg=()
           if [ "${{ needs.plan.outputs.hot_intake }}" = "true" ]; then
@@ -4294,6 +4295,10 @@ jobs:
           planned_automatic_review_arg=()
           if [ -z "$EXACT_ITEM" ]; then
             planned_automatic_review_arg=(--planned-automatic-review)
+          fi
+          pr_comment_activity_arg=()
+          if [ -n "$PR_COMMENT_ACTIVITY_REVISIONS" ]; then
+            pr_comment_activity_arg=(--pr-comment-activity-revisions "$PR_COMMENT_ACTIVITY_REVISIONS")
           fi
           codex_timeout_seconds=$(((${{ needs.plan.outputs.codex_timeout_ms }} + 999) / 1000))
           review_timeout_seconds=$(((codex_timeout_seconds + 180) * ${{ needs.plan.outputs.batch_size }}))
@@ -4316,6 +4321,7 @@ jobs:
             --codex-sandbox read-only \
             --codex-timeout-ms ${{ needs.plan.outputs.codex_timeout_ms }} \
             --item-numbers "${{ matrix.item_numbers }}" \
+            "${pr_comment_activity_arg[@]}" \
             "${planned_automatic_review_arg[@]}" \
             "${hot_intake_arg[@]}" \
             --readonly-openclaw \

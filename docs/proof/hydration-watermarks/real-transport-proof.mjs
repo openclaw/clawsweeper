@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 
 import { hydratePrLists } from "../../../dist/pr-hydration-snapshot.js";
+import { createReviewPlanningInventory } from "../../../dist/clawsweeper-review-planning-inventory.js";
 
 const repo = "openclaw/clawsweeper";
 const number = 97;
@@ -31,6 +32,13 @@ const editedProbe = runGh([
 assert.ok(editedProbe.some((comment) => comment.id === editedCommentId));
 
 const transport = [];
+const planningInventory = createReviewPlanningInventory({
+  targetRepo: () => repo,
+  ghJson: (args) => {
+    transport.push({ kind: "graphql_activity_revision", path: "graphql" });
+    return runGh(args);
+  },
+});
 const record = (value) =>
   value && typeof value === "object" && !Array.isArray(value) ? value : {};
 const commitInputs = (items) =>
@@ -67,6 +75,12 @@ const fetchAll = (kind, path) => {
   return runGh(["api", `${path}${path.includes("?") ? "&" : "?"}per_page=100`]);
 };
 
+const setupActivity = planningInventory.fetchPlannedPrActivityRevisions([
+  { kind: "pull_request", number },
+]);
+const setupActivityRevision = setupActivity.revisions[String(number)];
+assert.match(setupActivityRevision ?? "", /^sha256:[0-9a-f]{64}$/);
+
 const cold = hydratePrLists({
   repo,
   number,
@@ -74,6 +88,7 @@ const cold = hydratePrLists({
   headSha: pull.head.sha,
   commitCount: pull.commits,
   reviewCommentCount: pull.review_comments,
+  commentActivityRevision: setupActivityRevision,
   prior: null,
   fetchCommits: () => fetchList("commit_list", `repos/${repo}/pulls/${number}/commits`),
   fetchReviewComments: () =>
@@ -86,9 +101,14 @@ const cold = hydratePrLists({
   now: () => "2026-08-13T04:00:00Z",
 });
 assert.ok(cold.snapshot);
-assert.equal(transport.length, 2);
+assert.equal(transport.filter((entry) => entry.kind !== "graphql_activity_revision").length, 2);
 
 transport.length = 0;
+const cycleActivity = planningInventory.fetchPlannedPrActivityRevisions([
+  { kind: "pull_request", number },
+]);
+assert.equal(cycleActivity.requestCount, 1);
+assert.equal(cycleActivity.revisions[String(number)], setupActivityRevision);
 for (let unchanged = 0; unchanged < 3; unchanged += 1) {
   const reused = hydratePrLists({
     repo,
@@ -97,6 +117,7 @@ for (let unchanged = 0; unchanged < 3; unchanged += 1) {
     headSha: pull.head.sha,
     commitCount: pull.commits,
     reviewCommentCount: pull.review_comments,
+    commentActivityRevision: cycleActivity.revisions[String(number)],
     prior: cold.snapshot,
     fetchCommits: () => {
       throw new Error("unchanged commit list must be reused");
@@ -114,15 +135,20 @@ for (let unchanged = 0; unchanged < 3; unchanged += 1) {
   assert.equal(reused.commitsReused, true);
   assert.equal(reused.reviewCommentsReused, true);
 }
-assert.equal(transport.length, 0);
+assert.equal(
+  transport.filter((entry) => entry.kind !== "graphql_activity_revision").length,
+  0,
+  "unchanged PRs make zero REST list reads",
+);
 
-const metadataChanged = hydratePrLists({
+const activityChanged = hydratePrLists({
   repo,
   number,
-  pullUpdatedAt: "2026-08-13T04:00:01Z",
+  pullUpdatedAt: pull.updated_at,
   headSha: pull.head.sha,
   commitCount: pull.commits,
   reviewCommentCount: pull.review_comments,
+  commentActivityRevision: `sha256:${"f".repeat(64)}`,
   prior: cold.snapshot,
   fetchCommits: () => {
     throw new Error("unchanged commit identity must be reused");
@@ -139,7 +165,7 @@ const metadataChanged = hydratePrLists({
       `repos/${repo}/pulls/${number}/comments?since=${encodeURIComponent(since)}`,
     ),
 });
-assert.equal(metadataChanged.reviewCommentsIncremental, true);
+assert.equal(activityChanged.reviewCommentsIncremental, true);
 
 const forced = hydratePrLists({
   repo,
@@ -148,6 +174,7 @@ const forced = hydratePrLists({
   headSha: "f".repeat(40),
   commitCount: pull.commits,
   reviewCommentCount: pull.review_comments,
+  commentActivityRevision: cycleActivity.revisions[String(number)],
   prior: cold.snapshot,
   fetchCommits: () => fetchList("commit_list", `repos/${repo}/pulls/${number}/commits`),
   fetchReviewComments: () =>
@@ -163,7 +190,7 @@ assert.equal(forced.reviewCommentsIncremental, false);
 
 assert.deepEqual(
   transport.map((entry) => entry.kind),
-  ["review_comment_list_since", "commit_list", "review_comment_list"],
+  ["graphql_activity_revision", "review_comment_list_since", "commit_list", "review_comment_list"],
 );
 
 console.log(
@@ -180,10 +207,15 @@ console.log(
       unchanged_prs: 3,
       changed_prs: 2,
       before: { list_reads: 10 },
-      after: { list_reads: 3, unchanged_list_reads: 0 },
+      after: {
+        graphql_requests: 1,
+        list_reads: 3,
+        total_requests: 4,
+        unchanged_list_reads: 0,
+      },
       changed_input_equality: {
-        metadata_change_comments:
-          JSON.stringify(commentInputs(metadataChanged.completeReviewComments)) ===
+        activity_change_comments:
+          JSON.stringify(commentInputs(activityChanged.completeReviewComments)) ===
           JSON.stringify(commentInputs(cold.completeReviewComments)),
         force_push_commits:
           JSON.stringify(commitInputs(forced.commits.items)) ===

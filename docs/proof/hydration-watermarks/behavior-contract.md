@@ -3,8 +3,9 @@
 ## Claim
 
 Review hydration persists a bounded snapshot of the PR commit window and complete review-comment
-inputs in the canonical report. When PR `updated_at`, head SHA, commit count, and review-comment count
-still match, the next review reuses both snapshots with zero commit-list or review-comment-list calls.
+inputs in the canonical report. When PR `updated_at`, head SHA, commit count, review-comment count, and
+a freshly planned inline-comment activity revision still match, the next review reuses both snapshots
+with zero commit-list or review-comment-list calls.
 Changed PRs preserve the same hydrated inputs by using an edited/new review-comment `since` delta
 when safe and full list reads when force-pushes or invisible deletions require them.
 
@@ -23,21 +24,27 @@ when safe and full list reads when force-pushes or invisible deletions require t
   constant enforced by direct publication, with an oversized snapshot omitted before persistence.
 - Planning/runtime ownership: the open-item inventory already carries `updated_at`; it does not carry
   head SHA. The existing structural probe or PR detail fetch supplies the exact head without adding a
-  request.
+  request. Planning makes one aliased GraphQL request for up to 100 selected PRs and passes the
+  resulting revisions through the shard matrix. Larger plans use `ceil(P / 100)` bounded requests.
+- Fail-closed revision coverage: the revision hashes review count, thread count and IDs, every fetched
+  inline-comment ID and `updatedAt`, and each thread's comment count. A connection beyond 40 threads
+  or 40 comments per thread, a missing node, or any GraphQL error yields no revision and therefore
+  normal hydration rather than cache reuse.
 - Deterministic unchanged, edited, force-pushed, and delete-plus-replacement fixtures.
 - A read-only real GitHub CLI fixture using public `openclaw/clawsweeper` PR #97.
 
 ## Expected observable behavior
 
 - Three unchanged snapshots make zero commit-list and review-comment-list reads.
-- A metadata/comment edit with an unchanged head reuses commits and makes one `since` review-comment
+- A comment edit with unchanged parent PR `updated_at` and head reuses commits and makes one `since` review-comment
   read; its merged hydration bytes equal a fresh full hydration.
 - A force-push head change performs one full commit-window read and one full review-comment-window
   read; its hydration bytes equal a fresh full hydration.
 - A delete-plus-replacement delta cannot hide the deletion: merged ID cardinality exceeds the live
   `review_comments` count, so hydration discards the delta result and performs a full read.
-- The counting fixture uses `U=3` and `K=2`: before is `2 * (U + K) = 10` list reads; after is three
-  reads for the two changed PRs and zero for unchanged PRs.
+- The counting fixture uses `U=3`, `K=2`, and `P=U+K=5`: before is
+  `2 * (U + K) = 10` list reads; after is `G(P) + 0 * U + 3 = 4` total requests, where
+  `G(P)=ceil(P/100)=1` is the batched GraphQL validation and three list reads serve the changed PRs.
 - Snapshot JSON larger than 1 MiB is not persisted. Independently, if an otherwise valid snapshot
   would make the fully serialized UTF-8 canonical record exceed 2 MiB, only that snapshot is omitted
   and the next cycle rehydrates normally.
@@ -48,6 +55,17 @@ when safe and full list reads when force-pushes or invisible deletions require t
 - The persistence-only snapshot field never appears in the review prompt or media-proof URL scan.
 
 ## GitHub `since` and deletion finding
+
+A controlled inline-comment probe on PR #1153 measured the chosen GraphQL fields directly. ADD moved
+`reviews.totalCount` and `reviewThreads.totalCount` from 0 to 1 and introduced the thread/comment
+IDs plus comment `updatedAt=2026-08-13T06:08:04Z`. EDIT moved the comment timestamp to
+`2026-08-13T06:08:22Z` while the parent PR remained `updatedAt=2026-08-13T06:08:04Z`. DELETE left
+that parent timestamp unchanged while both counts returned to 0 and the thread/comment tuples
+disappeared. The temporary probe comment was deleted; its REST endpoint returned 404 afterward.
+
+These observations are why the revision includes all fetched comment IDs/timestamps rather than only
+the newest comment: editing an older inline comment must also move the hash. Per-thread counts catch
+reply add/delete, while overall thread and review counts catch initial-comment add/delete.
 
 The live endpoint for PR #97 returns edited review comment `3255775240` when queried with
 `since=2026-05-18T00:38:30Z`, one second before that comment's `updated_at`. The REST collection returns
@@ -71,5 +89,7 @@ changing lifecycle, status, telemetry, or the observer-only dashboard contract.
 
 ## Limits
 
-The live proof is read-only and depends on public PR #97 retaining its current review-comment history.
-It does not edit/delete a GitHub comment, mutate Worker state, deploy, or claim latency improvements.
+The final container proof is read-only and depends on public PR #97 retaining its current
+review-comment history. The separate field-choice experiment briefly added, edited, and deleted one
+clearly labeled probe on PR #1153; the probe was removed before implementation work continued. No
+Worker state was mutated, nothing was deployed, and no latency improvement is claimed.

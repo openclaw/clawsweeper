@@ -16,6 +16,7 @@ import {
 } from "./commit-sweeper.js";
 import type { Args } from "./clawsweeper-args.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
+import { parsePrCommentActivityRevisionMap } from "./pr-hydration-snapshot.js";
 
 const AUTOMATIC_REVIEW_SOURCE_ACTIONS = new Set([
   "scheduled_hot_intake",
@@ -60,6 +61,9 @@ export function prepareReviewCommand(
   const itemNumbers = hasItemNumbersInput
     ? itemNumbersArg(args.item_numbers, undefined)
     : undefined;
+  const prCommentActivityRevisions = parsePrCommentActivityRevisionMap(
+    stringArg(args.pr_comment_activity_revisions, ""),
+  );
   if (localRange && (itemNumber !== undefined || itemNumbers !== undefined)) {
     throw new UserFacingCommandError(
       "--item-number / --item-numbers cannot be combined with --local-range (local-range reviews " +
@@ -187,6 +191,7 @@ export function prepareReviewCommand(
     localOnly,
     itemNumber,
     itemNumbers,
+    prCommentActivityRevisions,
     humanLocalReview,
     openclawDir,
     artifactDir,

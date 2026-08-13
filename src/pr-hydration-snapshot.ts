@@ -1,7 +1,7 @@
 import type { ContextHydration } from "./clawsweeper-types.js";
 import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "./exact-review-publication-limits.js";
 
-export const PR_HYDRATION_SNAPSHOT_VERSION = 1;
+export const PR_HYDRATION_SNAPSHOT_VERSION = 2;
 // Canonical publication caps the complete report at 2 MiB; leave half for the
 // review itself and skip caching unusually large review discussions.
 export const MAX_PR_HYDRATION_SNAPSHOT_BYTES = 1 * 1024 * 1024;
@@ -9,9 +9,10 @@ export const MAX_PR_HYDRATION_SNAPSHOT_BYTES = 1 * 1024 * 1024;
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
 export interface PrHydrationSnapshot {
-  version: 1;
+  version: 2;
   repo: string;
   number: number;
+  commentActivityRevision: string;
   pullUpdatedAt: string;
   headSha: string;
   commitCount: number;
@@ -40,6 +41,7 @@ interface HydratePrListsOptions {
   headSha: string;
   commitCount: number;
   reviewCommentCount: number;
+  commentActivityRevision: string | null;
   prior: PrHydrationSnapshot | null;
   fetchCommits: () => ContextHydration<unknown>;
   fetchReviewComments: () => ContextHydration<unknown>;
@@ -65,6 +67,8 @@ export function hydratePrLists(options: HydratePrListsOptions): PrHydrationResul
   const unchanged =
     prior !== null &&
     !forceFull &&
+    options.commentActivityRevision !== null &&
+    prior.commentActivityRevision === options.commentActivityRevision &&
     prior.pullUpdatedAt === options.pullUpdatedAt &&
     prior.reviewCommentCount === options.reviewCommentCount;
   if (unchanged) {
@@ -96,18 +100,21 @@ export function hydratePrLists(options: HydratePrListsOptions): PrHydrationResul
     reviewCommentsFullFallback = prior !== null;
   }
 
-  const snapshot = createPrHydrationSnapshot({
-    repo: options.repo,
-    number: options.number,
-    pullUpdatedAt: options.pullUpdatedAt,
-    headSha: options.headSha,
-    commitCount: options.commitCount,
-    reviewCommentCount: options.reviewCommentCount,
-    hydratedAt: hydrationStartedAt,
-    commits,
-    reviewComments,
-    completeReviewComments,
-  });
+  const snapshot = options.commentActivityRevision
+    ? createPrHydrationSnapshot({
+        repo: options.repo,
+        number: options.number,
+        commentActivityRevision: options.commentActivityRevision,
+        pullUpdatedAt: options.pullUpdatedAt,
+        headSha: options.headSha,
+        commitCount: options.commitCount,
+        reviewCommentCount: options.reviewCommentCount,
+        hydratedAt: hydrationStartedAt,
+        commits,
+        reviewComments,
+        completeReviewComments,
+      })
+    : null;
   return {
     commits,
     reviewComments,
@@ -151,6 +158,29 @@ export function parsePrHydrationSnapshot(value: string | undefined): PrHydration
   }
 }
 
+export function parsePrCommentActivityRevisionMap(value: string | undefined): Map<number, string> {
+  if (!value) return new Map();
+  try {
+    const parsed = record(JSON.parse(value));
+    const revisions = new Map<number, string>();
+    for (const [key, revision] of Object.entries(parsed)) {
+      const number = Number(key);
+      if (
+        !Number.isSafeInteger(number) ||
+        number <= 0 ||
+        typeof revision !== "string" ||
+        !validActivityRevision(revision)
+      ) {
+        continue;
+      }
+      revisions.set(number, revision);
+    }
+    return revisions;
+  } catch {
+    return new Map();
+  }
+}
+
 function fullReviewCommentHydration(options: HydratePrListsOptions): {
   reviewComments: ContextHydration<unknown>;
   completeReviewComments: unknown[];
@@ -182,6 +212,7 @@ function validPrHydrationSnapshot(value: unknown): value is PrHydrationSnapshot 
   const snapshot = record(value);
   return (
     exactKeys(snapshot, [
+      "commentActivityRevision",
       "commitCount",
       "commits",
       "completeReviewComments",
@@ -198,6 +229,8 @@ function validPrHydrationSnapshot(value: unknown): value is PrHydrationSnapshot 
     typeof snapshot.repo === "string" &&
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(snapshot.repo) &&
     positiveInteger(snapshot.number) &&
+    typeof snapshot.commentActivityRevision === "string" &&
+    validActivityRevision(snapshot.commentActivityRevision) &&
     validTimestamp(snapshot.pullUpdatedAt) &&
     typeof snapshot.headSha === "string" &&
     SHA_PATTERN.test(snapshot.headSha) &&
@@ -210,6 +243,10 @@ function validPrHydrationSnapshot(value: unknown): value is PrHydrationSnapshot 
     snapshot.completeReviewComments.length === snapshot.reviewCommentCount &&
     snapshot.completeReviewComments.every(validMinimizedReviewComment)
   );
+}
+
+function validActivityRevision(value: string): boolean {
+  return /^sha256:[0-9a-f]{64}$/.test(value);
 }
 
 function snapshotMatchesPull(

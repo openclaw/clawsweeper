@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   fitPrHydrationSnapshotToPublicationLimit,
   hydratePrLists,
+  parsePrCommentActivityRevisionMap,
   parsePrHydrationSnapshot,
   serializePrHydrationSnapshot,
   type PrHydrationSnapshot,
@@ -15,6 +16,8 @@ const oldHead = "a".repeat(40);
 const newHead = "b".repeat(40);
 const firstUpdatedAt = "2026-08-12T01:00:00Z";
 const nextUpdatedAt = "2026-08-12T03:00:00Z";
+const activityRevisionA = `sha256:${"1".repeat(64)}`;
+const activityRevisionB = `sha256:${"2".repeat(64)}`;
 
 function commit(sha: string, message: string) {
   return {
@@ -110,6 +113,7 @@ function initialSnapshot(options: {
     headSha: options.headSha ?? oldHead,
     commitCount: options.commits.length,
     reviewCommentCount: options.comments.length,
+    commentActivityRevision: activityRevisionA,
     prior: null,
     fetchCommits: () => hydration(options.commits),
     fetchReviewComments: () => hydration(options.comments),
@@ -141,6 +145,7 @@ test("unchanged PR hydration snapshots reuse both lists with zero reads", () => 
       headSha: oldHead,
       commitCount: 1,
       reviewCommentCount: 1,
+      commentActivityRevision: activityRevisionA,
       prior,
       fetchCommits: () => {
         listCalls += 1;
@@ -173,10 +178,11 @@ test("changed PRs preserve full hydration bytes with partial or full reads", () 
   const edited = hydratePrLists({
     repo,
     number: 41,
-    pullUpdatedAt: nextUpdatedAt,
+    pullUpdatedAt: firstUpdatedAt,
     headSha: oldHead,
     commitCount: 1,
     reviewCommentCount: 1,
+    commentActivityRevision: activityRevisionB,
     prior: editPrior,
     fetchCommits: () => {
       changedListCalls += 1;
@@ -196,10 +202,11 @@ test("changed PRs preserve full hydration bytes with partial or full reads", () 
   const editedFresh = hydratePrLists({
     repo,
     number: 41,
-    pullUpdatedAt: nextUpdatedAt,
+    pullUpdatedAt: firstUpdatedAt,
     headSha: oldHead,
     commitCount: 1,
     reviewCommentCount: 1,
+    commentActivityRevision: activityRevisionB,
     prior: null,
     fetchCommits: () => hydration(oldCommits),
     fetchReviewComments: () => hydration(editedComments),
@@ -207,6 +214,8 @@ test("changed PRs preserve full hydration bytes with partial or full reads", () 
     fetchReviewCommentsSince: () => [],
   });
   assert.equal(edited.reviewCommentsIncremental, true);
+  assert.equal(edited.reviewCommentsReused, false);
+  assert.equal(editPrior.pullUpdatedAt, firstUpdatedAt, "the parent PR watermark did not move");
   assert.equal(reviewInputBytes(edited), reviewInputBytes(editedFresh));
 
   const forcedCommits = [commit("2".repeat(40), "replacement")];
@@ -219,6 +228,7 @@ test("changed PRs preserve full hydration bytes with partial or full reads", () 
     headSha: newHead,
     commitCount: 1,
     reviewCommentCount: 1,
+    commentActivityRevision: activityRevisionB,
     prior: forcePrior,
     fetchCommits: () => {
       changedListCalls += 1;
@@ -240,6 +250,7 @@ test("changed PRs preserve full hydration bytes with partial or full reads", () 
     headSha: newHead,
     commitCount: 1,
     reviewCommentCount: 1,
+    commentActivityRevision: activityRevisionB,
     prior: null,
     fetchCommits: () => hydration(forcedCommits),
     fetchReviewComments: () => hydration(forcedComments),
@@ -248,7 +259,11 @@ test("changed PRs preserve full hydration bytes with partial or full reads", () 
   });
   assert.equal(reviewInputBytes(forced), reviewInputBytes(forcedFresh));
   assert.equal(changedListCalls, 3, "one partial edit read plus two force-push full reads");
-  assert.deepEqual({ before: 2 * (3 + 2), after: changedListCalls }, { before: 10, after: 3 });
+  const graphQlValidationCalls = Math.ceil((3 + 2) / 100);
+  assert.deepEqual(
+    { before: 2 * (3 + 2), after: graphQlValidationCalls + changedListCalls },
+    { before: 10, after: 4 },
+  );
 });
 
 test("invisible review-comment deletion falls back to a full read", () => {
@@ -263,10 +278,11 @@ test("invisible review-comment deletion falls back to a full read", () => {
   const result = hydratePrLists({
     repo,
     number: 43,
-    pullUpdatedAt: nextUpdatedAt,
+    pullUpdatedAt: firstUpdatedAt,
     headSha: oldHead,
     commitCount: 1,
     reviewCommentCount: 2,
+    commentActivityRevision: activityRevisionB,
     prior,
     fetchCommits: () => {
       throw new Error("commit snapshot should be reused");
@@ -280,8 +296,49 @@ test("invisible review-comment deletion falls back to a full read", () => {
   });
 
   assert.equal(result.reviewCommentsFullFallback, true);
+  assert.equal(prior.pullUpdatedAt, firstUpdatedAt, "the parent PR watermark did not move");
+  assert.equal(result.reviewCommentsReused, false);
   assert.equal(fullReads, 1);
   assert.equal(JSON.stringify(result.completeReviewComments), JSON.stringify(currentComments));
+});
+
+test("failed activity validation never trusts an otherwise unchanged comment snapshot", () => {
+  const oldComments = [comment(7, firstUpdatedAt, "before")];
+  const currentComments = [comment(7, nextUpdatedAt, "after")];
+  const prior = initialSnapshot({
+    number: 47,
+    commits: [commit("7".repeat(40), "same")],
+    comments: oldComments,
+  });
+  let sinceReads = 0;
+  const result = hydratePrLists({
+    repo,
+    number: 47,
+    pullUpdatedAt: firstUpdatedAt,
+    headSha: oldHead,
+    commitCount: 1,
+    reviewCommentCount: 1,
+    commentActivityRevision: null,
+    prior,
+    fetchCommits: () => {
+      throw new Error("unchanged commit identity should still reuse the snapshot");
+    },
+    fetchReviewComments: () => {
+      throw new Error("the incremental edit should not need a full list");
+    },
+    fetchCompleteReviewComments: () => currentComments,
+    fetchReviewCommentsSince: () => {
+      sinceReads += 1;
+      return currentComments;
+    },
+  });
+
+  assert.equal(sinceReads, 1);
+  assert.equal(result.reviewCommentsReused, false);
+  assert.equal(result.reviewCommentsIncremental, true);
+  assert.equal(result.snapshot, null, "an unvalidated result must not become a trusted cache");
+  assert.match(reviewInputBytes(result), /after/);
+  assert.doesNotMatch(reviewInputBytes(result), /before/);
 });
 
 test("hydration snapshot front matter round-trips", () => {
@@ -304,6 +361,15 @@ test("hydration snapshot front matter round-trips", () => {
   }
   assert.equal(parsePrHydrationSnapshot("unknown"), null);
   assert.equal(parsePrHydrationSnapshot('{"version":999}'), null);
+  assert.deepEqual(
+    [
+      ...parsePrCommentActivityRevisionMap(
+        JSON.stringify({ 44: activityRevisionA, 45: null, bad: activityRevisionB }),
+      ),
+    ],
+    [[44, activityRevisionA]],
+  );
+  assert.deepEqual([...parsePrCommentActivityRevisionMap("not json")], []);
 });
 
 test("oversized canonical records drop only the hydration snapshot", () => {

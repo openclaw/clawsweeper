@@ -169,6 +169,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       localOnly,
       itemNumber,
       itemNumbers,
+      prCommentActivityRevisions,
       humanLocalReview,
       openclawDir,
       artifactDir,
@@ -786,6 +787,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                     frontMatterValue(existingPriorReview.markdown, "pr_hydration_snapshot"),
                   )
                 : null,
+              prCommentActivityRevision: prCommentActivityRevisions.get(item.number) ?? null,
             });
         if (previousLocalReviewCommentBody) {
           const previousLocalReview = extractClawSweeperReviewCommentBody(

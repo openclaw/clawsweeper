@@ -5897,7 +5897,15 @@ test("planned background reviews allow safe content-cache reuse without weakenin
   assert.match(reviewJob, /planned_automatic_review_arg=\(--planned-automatic-review\)/);
   assert.match(
     reviewJob,
-    /--item-numbers "\$\{\{ matrix\.item_numbers \}\}" \\\n+\s+"\$\{planned_automatic_review_arg\[@\]\}"/,
+    /PR_COMMENT_ACTIVITY_REVISIONS: \$\{\{ matrix\.pr_comment_activity_revisions \}\}/,
+  );
+  assert.match(
+    reviewJob,
+    /pr_comment_activity_arg=\(--pr-comment-activity-revisions "\$PR_COMMENT_ACTIVITY_REVISIONS"\)/,
+  );
+  assert.match(
+    reviewJob,
+    /--item-numbers "\$\{\{ matrix\.item_numbers \}\}" \\\n+\s+"\$\{pr_comment_activity_arg\[@\]\}" \\\n+\s+"\$\{planned_automatic_review_arg\[@\]\}"/,
   );
   assert.match(
     eventReviewJob,

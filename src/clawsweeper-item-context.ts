@@ -136,6 +136,7 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
       reviewCacheDigest?: boolean;
       reviewCacheGitDir?: string;
       prHydrationSnapshot?: PrHydrationSnapshot | null;
+      prCommentActivityRevision?: string | null;
     } = {},
   ): ItemContext {
     const issue = ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${item.number}`]);
@@ -258,6 +259,7 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
               headSha: pullHeadSha,
               commitCount: pullCommitCount,
               reviewCommentCount: pullReviewCommentCount,
+              commentActivityRevision: options.prCommentActivityRevision ?? null,
               prior: options.prHydrationSnapshot ?? null,
               fetchCommits: () =>
                 ghPagedContextWindow<unknown>(

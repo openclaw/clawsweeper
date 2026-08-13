@@ -103,6 +103,7 @@ export interface CreateReviewCommandWorkflowDependencies {
       reviewCacheDigest?: boolean;
       reviewCacheGitDir?: string;
       prHydrationSnapshot?: PrHydrationSnapshot | null;
+      prCommentActivityRevision?: string | null;
     },
   ) => ItemContext;
   commentId: (comment: Record<string, unknown> | undefined) => number | null;

@@ -43,7 +43,7 @@ gh api user --jq '"github_login=" + .login'
 node docs/proof/hydration-watermarks/real-transport-proof.mjs
 
 echo "CRABBOX_PHASE:behavior"
-node --test test/pr-hydration-snapshot.test.ts test/context.test.ts test/review-command-workflow.test.ts
+node --test test/pr-comment-activity-revision.test.ts test/pr-hydration-snapshot.test.ts test/context.test.ts test/review-command-workflow.test.ts test/sweep-workflow.test.ts
 
 echo "CRABBOX_PHASE:full-gate"
 pnpm run check
