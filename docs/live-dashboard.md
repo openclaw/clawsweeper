@@ -392,8 +392,10 @@ The publication lane exposes two additional observer-only surfaces:
   revision was already retried. These counters are for request-budget analysis;
   they never contain raw URLs, item content, credentials, or local paths.
 - `flow.last_15_minutes.causes` and `flow.last_60_minutes.causes` reconcile
-  publication retries, backoff, supersession, and dead-letter exhaustion against
-  durable flow counts. Cause rows use only closed stage, completion, reason,
+  publication retry, backoff, supersession, refresh, and dead-letter exhaustion
+  against durable flow counts. The surrounding flow window exposes `refreshed`
+  and `refreshed_rate_per_hour` as the independent refresh denominator. Cause
+  rows use only closed stage, completion, reason,
   revision-relation, pool-class, recovery-cause, backoff, and attempt buckets.
   `attribution_complete=false` or a failed per-transition `reconciliation`
   explicitly marks a legacy or truncated denominator; the Worker never invents

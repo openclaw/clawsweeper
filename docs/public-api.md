@@ -50,9 +50,10 @@ bounded `recovery_reasons` counts for `claim_timeout`, `execution_timeout`,
 `workflow_cancelled`, and `workflow_failed`. These are objective durable queue
 facts; they do not infer why GitHub or a runner cancelled a workflow.
 
-Publication flow windows include a bounded `causes` object. Its closed aggregate
-rows reconcile retry, backoff, supersession, and dead-letter causes without raw
-identifiers. Terminal deferrals are distinct from publications, and one batch
+Publication flow windows include a bounded `causes` object. Their `refreshed`
+and `refreshed_rate_per_hour` fields provide the independent refresh denominator.
+Closed aggregate rows reconcile retry, backoff, supersession, refresh, and
+dead-letter causes without raw identifiers. Terminal deferrals are distinct from publications, and one batch
 completion may emit both a completed publication and a follow-on backoff when a
 newer local revision remains. Consumers must check `rows_truncated`,
 `attribution_complete`, and

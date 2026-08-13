@@ -8252,7 +8252,8 @@ export class ExactReviewQueue {
            CHECK (publication_semantic_deduped >= 0),
          publication_retried INTEGER NOT NULL DEFAULT 0 CHECK (publication_retried >= 0),
          publication_dead_lettered INTEGER NOT NULL DEFAULT 0
-           CHECK (publication_dead_lettered >= 0)
+           CHECK (publication_dead_lettered >= 0),
+         publication_refreshed INTEGER NOT NULL DEFAULT 0 CHECK (publication_refreshed >= 0)
        ) STRICT`,
     );
     for (const column of [
@@ -8264,6 +8265,7 @@ export class ExactReviewQueue {
       "review_shed_backpressure",
       "review_shed_scheduled_rate",
       "publication_semantic_deduped",
+      "publication_refreshed",
     ]) {
       const present = Array.from(
         this.storage.sql.exec(
@@ -9058,6 +9060,7 @@ export class ExactReviewQueue {
       publicationSemanticDeduped,
       publicationRetried,
       publicationDeadLettered,
+      publicationRefreshed,
     });
   }
 
@@ -9101,6 +9104,7 @@ export class ExactReviewQueue {
     publicationSemanticDeduped,
     publicationRetried,
     publicationDeadLettered,
+    publicationRefreshed,
   }: {
     reviewEnqueued: number;
     reviewCompleted: number;
@@ -9116,6 +9120,7 @@ export class ExactReviewQueue {
     publicationSemanticDeduped: number;
     publicationRetried: number;
     publicationDeadLettered: number;
+    publicationRefreshed: number;
   }) {
     if (
       !reviewEnqueued &&
@@ -9131,7 +9136,8 @@ export class ExactReviewQueue {
       !publicationSuperseded &&
       !publicationSemanticDeduped &&
       !publicationRetried &&
-      !publicationDeadLettered
+      !publicationDeadLettered &&
+      !publicationRefreshed
     ) {
       return;
     }
@@ -9142,10 +9148,10 @@ export class ExactReviewQueue {
       `INSERT INTO ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE}
          (bucket_start, review_enqueued, review_completed, review_superseded, review_retried,
           review_shed, review_shed_backpressure, review_shed_scheduled_rate,
-          publication_enqueued, publication_resolved, publication_published,
-          publication_superseded, publication_semantic_deduped,
-          publication_retried, publication_dead_lettered)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           publication_enqueued, publication_resolved, publication_published,
+           publication_superseded, publication_semantic_deduped,
+           publication_retried, publication_dead_lettered, publication_refreshed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(bucket_start) DO UPDATE SET
          review_enqueued = review_enqueued + excluded.review_enqueued,
          review_completed = review_completed + excluded.review_completed,
@@ -9164,7 +9170,8 @@ export class ExactReviewQueue {
            publication_semantic_deduped + excluded.publication_semantic_deduped,
          publication_retried = publication_retried + excluded.publication_retried,
          publication_dead_lettered =
-           publication_dead_lettered + excluded.publication_dead_lettered`,
+           publication_dead_lettered + excluded.publication_dead_lettered,
+         publication_refreshed = publication_refreshed + excluded.publication_refreshed`,
       bucketStart,
       reviewEnqueued,
       reviewCompleted,
@@ -9180,6 +9187,7 @@ export class ExactReviewQueue {
       publicationSemanticDeduped,
       publicationRetried,
       publicationDeadLettered,
+      publicationRefreshed,
     );
   }
 
@@ -9718,7 +9726,8 @@ export class ExactReviewQueue {
                   COALESCE(SUM(publication_superseded), 0) AS superseded,
                   COALESCE(SUM(publication_semantic_deduped), 0) AS semantic_deduped,
                   COALESCE(SUM(publication_retried), 0) AS retried,
-                  COALESCE(SUM(publication_dead_lettered), 0) AS dead_lettered
+                  COALESCE(SUM(publication_dead_lettered), 0) AS dead_lettered,
+                  COALESCE(SUM(publication_refreshed), 0) AS refreshed
              FROM ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE}
             WHERE bucket_start >= ?`,
           now - windowMs,
@@ -9732,12 +9741,14 @@ export class ExactReviewQueue {
       const superseded = Number(row?.superseded || 0);
       const semanticDeduped = Number(row?.semantic_deduped || 0);
       const deadLettered = Number(row?.dead_lettered || 0);
+      const refreshed = Number(row?.refreshed || 0);
       const causes = this.publicationCauseSummarySync(now - windowMs, {
         published,
         superseded,
         semantic_deduped: semanticDeduped,
         retried,
         dead_lettered: deadLettered,
+        refreshed,
       });
       return {
         window_minutes: windowMs / 60_000,
@@ -9748,6 +9759,7 @@ export class ExactReviewQueue {
         semantic_deduped: semanticDeduped,
         retried,
         dead_lettered: deadLettered,
+        refreshed,
         arrival_rate_per_hour: Math.round(enqueued * multiplier * 10) / 10,
         resolved_rate_per_hour: Math.round(resolved * multiplier * 10) / 10,
         published_rate_per_hour: Math.round(published * multiplier * 10) / 10,
@@ -9755,6 +9767,7 @@ export class ExactReviewQueue {
         semantic_deduped_rate_per_hour: Math.round(semanticDeduped * multiplier * 10) / 10,
         retried_rate_per_hour: Math.round(retried * multiplier * 10) / 10,
         dead_lettered_rate_per_hour: Math.round(deadLettered * multiplier * 10) / 10,
+        refreshed_rate_per_hour: Math.round(refreshed * multiplier * 10) / 10,
         net_drain_rate_per_hour: Math.round((resolved - enqueued) * multiplier * 10) / 10,
         retry_amplification: resolved > 0 ? Math.round((retried / resolved) * 100) / 100 : null,
         causes,
@@ -9766,7 +9779,7 @@ export class ExactReviewQueue {
   private publicationCauseSummarySync(
     windowStart: number,
     expected: Record<
-      "published" | "superseded" | "semantic_deduped" | "retried" | "dead_lettered",
+      "published" | "superseded" | "semantic_deduped" | "retried" | "dead_lettered" | "refreshed",
       number
     >,
   ) {

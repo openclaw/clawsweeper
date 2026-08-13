@@ -2383,6 +2383,13 @@ test("exact-review queue upgrades flow metrics without losing publication comple
     },
   );
   assert.equal(stats.lanes.publication.flow.last_15_minutes.published_rate_per_hour, 4);
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.refreshed, 0);
+  assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.reconciliation.refreshed, {
+    flow_count: 0,
+    cause_count: 0,
+    complete: true,
+  });
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.causes.attribution_complete, false);
   assert.deepEqual(stats.lanes.review.flow.last_15_minutes, {
     window_minutes: 15,
     arrival: 0,
@@ -7915,6 +7922,14 @@ test("exact-review publication refreshes an artifact after its third unavailable
     await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
   ).json();
   assert.equal(stats.lanes.publication.refreshed_total, 1);
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.refreshed, 1);
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.refreshed_rate_per_hour, 4);
+  assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.reconciliation.refreshed, {
+    flow_count: 1,
+    cause_count: 1,
+    complete: true,
+  });
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.causes.attribution_complete, true);
 });
 
 test("exact-review publication completes a close-coverage deferral without refreshing", async () => {
