@@ -223,10 +223,27 @@ hourly bucket that overlaps the window's lower boundary, so totals can include a
 most one bucket of observations immediately before the exact cutoff. Raw
 rate-limit observations use the exact cutoff. `rows_truncated` and
 `rate_limit_rows_truncated` identify a bounded public response, while
-`rollup_window_complete` and
-`rate_limit_window_complete` identify any cap eviction during the requested
-window. `query_complete` is true only when neither condition applies. These
-query bounds are separate from transport `telemetry_complete`.
+`rollup_window_complete` and `rate_limit_window_complete` compare the requested
+lower boundary with the latest timestamp actually removed by a cap. Running a
+cap cleanup does not make a later intact window incomplete merely because the
+cleanup happened during that window. A missing legacy eviction boundary fails
+closed. `query_complete` is true only when neither retention boundary nor a
+public row cap affects the query. These query bounds are separate from transport
+`telemetry_complete`.
+
+`retention.last_rollup_evicted_bucket_start` and
+`retention.last_rate_limit_evicted_observed_at` expose those sanitized evidence
+boundaries alongside per-kind cumulative eviction counts. They are evidence
+timestamps, not the time cleanup ran. `rollup_eviction_count_exact=false`
+marks a legacy migration where the per-kind counts are conservative upper
+bounds; completeness still uses the per-kind evidence watermark and fails
+closed when that boundary is unavailable.
+
+No-traffic buckets are not materialized. Therefore `query_complete=true` means
+all stored evidence for the requested window is available; it is not a claim
+that every clock bucket had a workflow or publication member. Use durable queue
+starts, workflow results, and receipt timing to distinguish no qualifying
+traffic from a missing producer.
 
 The public view also returns full-window `units` totals for members,
 invocations, and wire attempts. These conservation denominators remain exact
@@ -273,7 +290,9 @@ The Durable Object validates every enum, digest length, timestamp window,
 numeric header, count, and chunk limit before committing a receipt. It stores
 both five-minute and hourly rollups transactionally and deduplicates upload
 retries by producer-run-scoped, content-derived receipt ID. Cap evictions are
-cumulative diagnostics and mark affected public windows incomplete.
+cumulative diagnostics. The highest timestamp actually evicted for each rollup
+kind and for sanitized rate-limit detail marks only overlapping public windows
+incomplete.
 
 The 15-minute view does not raise or bypass the public row cap. A collector
 must preserve `rows_truncated` and `query_complete` and record a gap if even the

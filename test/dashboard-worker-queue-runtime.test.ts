@@ -2398,6 +2398,76 @@ test("exact-review queue upgrades flow metrics without losing publication comple
   });
 });
 
+test("exact-review publication cause telemetry keeps public cardinality bounded", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  assert.throws(
+    () =>
+      storage.sql.exec(
+        `INSERT INTO exact_review_publication_cause_buckets_v1
+           (bucket_start, transition, stage, completion_kind, reason_code,
+            revision_relation, pool_class, recovery_cause, backoff_reason,
+            attempt_bucket, count)
+         VALUES (?, 'retried', 'publication_apply', 'retryable_failure',
+                 'private/repository#123', 'same_revision', 'repository_actions',
+                 'transient_retry', 'publication_retry', '1', 1)`,
+        Date.now(),
+      ),
+    /CHECK constraint failed/,
+  );
+  const stages = [
+    "publication_prepare",
+    "publication_apply",
+    "publication_router",
+    "state_commit",
+    "workflow",
+  ];
+  const reasons = [
+    "github_rate_limit",
+    "github_transient",
+    "state_contention",
+    "review_lease_active",
+    "workflow_cancelled",
+    "artifact_unavailable",
+    "artifact_expired",
+    "close_coverage_retry",
+    "close_coverage_deferred",
+    "invalid_artifact",
+    "missing_record_tuple",
+    "tuple_protocol_invalid",
+    "policy_invariant",
+    "unknown_failure",
+  ];
+  const attempts = ["0", "1", "2", "3_5", "6_13", "14_plus", "unknown"];
+  const bucketStart = Math.floor(Date.now() / 300_000) * 300_000;
+  for (let index = 0; index < 257; index += 1) {
+    const stage = stages[index % stages.length];
+    const reason = reasons[Math.floor(index / stages.length) % reasons.length];
+    const attempt =
+      attempts[Math.floor(index / (stages.length * reasons.length)) % attempts.length];
+    storage.sql.exec(
+      `INSERT INTO exact_review_publication_cause_buckets_v1
+         (bucket_start, transition, stage, completion_kind, reason_code,
+          revision_relation, pool_class, recovery_cause, backoff_reason,
+          attempt_bucket, count)
+       VALUES (?, 'retried', ?, 'retryable_failure', ?, 'same_revision',
+               'repository_actions', 'transient_retry', 'publication_retry', ?, 1)`,
+      bucketStart,
+      stage,
+      reason,
+      attempt,
+    );
+  }
+
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  const causes = stats.lanes.publication.flow.last_15_minutes.causes;
+  assert.equal(causes.rows.length, 256);
+  assert.equal(causes.rows_truncated, true);
+  assert.equal(causes.attribution_complete, false);
+  assert.deepEqual(causes.privacy, { raw_identifiers: false, closed_dimensions: true });
+  assert.equal(JSON.stringify(causes).includes("openclaw/"), false);
+});
+
 test("exact-review queue migrates delivery receipts and retains them for seven days", async () => {
   const storage = new MemoryDurableStorage();
   const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
@@ -6606,6 +6676,55 @@ test("exact-review publication retries a state fetch timeout without throttling 
   assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, null);
 });
 
+test("exact-review publication records an unattempted target-app quota circuit as backoff", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(7804, "78040");
+  const retryAt = Date.now() + 10 * 60_000;
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "retryable_failure",
+        reason_code: "github_rate_limit",
+        attempted: false,
+        pool_class: "target_app",
+        retry_at: new Date(retryAt).toISOString(),
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), { ok: true, requeued: true });
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.retried, 0);
+  assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
+    {
+      transition: "backoff",
+      stage: "publication_apply",
+      completion_kind: "retryable_failure",
+      reason_code: "github_rate_limit",
+      revision_relation: "same_revision",
+      pool_class: "target_app",
+      recovery_cause: "credential_circuit",
+      backoff_reason: "publication_retry",
+      attempt_bucket: "0",
+      count: 1,
+    },
+  ]);
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.causes.attribution_complete, true);
+});
+
 test("exact-review publication gives state contention the transient retry budget", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewPublicationItem(7803, "78030");
@@ -6656,6 +6775,26 @@ test("exact-review publication gives state contention the transient retry budget
   assert.equal(stats.lanes.publication.capacity_control.mode, "adaptive");
   assert.equal(stats.lanes.publication.capacity_control.ceiling, 48);
   assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, null);
+  assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
+    {
+      transition: "retried",
+      stage: "state_commit",
+      completion_kind: "retryable_failure",
+      reason_code: "state_contention",
+      revision_relation: "same_revision",
+      pool_class: "target_app",
+      recovery_cause: "state_retry",
+      backoff_reason: "publication_retry",
+      attempt_bucket: "3_5",
+      count: 1,
+    },
+  ]);
+  assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.reconciliation.retried, {
+    flow_count: 1,
+    cause_count: 1,
+    complete: true,
+  });
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.causes.attribution_complete, true);
 });
 
 test("exact-review publication defers an active review lease without throttling capacity", async () => {
@@ -6735,6 +6874,20 @@ test("exact-review publication supersedes stale tuples without counting a publis
   assert.equal(stats.lanes.publication.flow.last_15_minutes.published_rate_per_hour, 0);
   assert.equal(stats.lanes.publication.flow.last_15_minutes.superseded_rate_per_hour, 4);
   assert.equal(stats.lanes.publication.dead_letters.open, 0);
+  assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
+    {
+      transition: "superseded",
+      stage: "publication_apply",
+      completion_kind: "superseded",
+      reason_code: "remote_newer_tuple",
+      revision_relation: "newer_remote_revision",
+      pool_class: "target_app",
+      recovery_cause: "remote_revision",
+      backoff_reason: "none",
+      attempt_bucket: "0",
+      count: 1,
+    },
+  ]);
 });
 
 test("exact-review publication dead-letters exhausted permanent failures and replays idempotently", async () => {
@@ -6777,6 +6930,36 @@ test("exact-review publication dead-letters exhausted permanent failures and rep
   assert.equal(listed.dead_letters[0].reason_code, "invalid_artifact");
   assert.equal(listed.dead_letters[0].attempts, 3);
   const id = listed.dead_letters[0].dead_letter_id;
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
+    {
+      transition: "dead_lettered",
+      stage: "publication_prepare",
+      completion_kind: "permanent_failure",
+      reason_code: "invalid_artifact",
+      revision_relation: "same_revision",
+      pool_class: "target_app",
+      recovery_cause: "retry_budget_exhausted",
+      backoff_reason: "none",
+      attempt_bucket: "3_5",
+      count: 1,
+    },
+  ]);
+  assert.deepEqual(
+    stats.lanes.publication.flow.last_15_minutes.causes.reconciliation.dead_lettered,
+    {
+      flow_count: 1,
+      cause_count: 1,
+      complete: true,
+    },
+  );
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.causes.attribution_complete, true);
+  const serializedCauses = JSON.stringify(stats.lanes.publication.flow.last_15_minutes.causes);
+  for (const sentinel of [item.key, "openclaw/openclaw", "782", "sha256:deadbeef"]) {
+    assert.equal(serializedCauses.includes(sentinel), false, sentinel);
+  }
 
   const replay = () =>
     queue.fetch(
@@ -7806,6 +7989,23 @@ test("exact-review publication completes a close-coverage deferral without refre
   ).json();
   assert.equal(stats.lanes.publication.refreshed_total, 0);
   assert.equal(stats.lanes.publication.dead_letters.open, 0);
+  assert.equal(stats.lanes.publication.published_total, 0);
+  assert.deepEqual(
+    stats.lanes.publication.flow.last_15_minutes.causes.rows.map((row) => ({
+      transition: row.transition,
+      completion_kind: row.completion_kind,
+      reason_code: row.reason_code,
+      recovery_cause: row.recovery_cause,
+    })),
+    [
+      {
+        transition: "deferred",
+        completion_kind: "deferred",
+        reason_code: "close_coverage_deferred",
+        recovery_cause: "coverage_retry",
+      },
+    ],
+  );
 });
 
 test("exact-review publication accepts the legacy close-coverage refresh during rollout", async () => {
@@ -7913,6 +8113,94 @@ test("exact-review publication retains one unknown completion for a current-work
     await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
   ).json();
   assert.equal(stats.lanes.publication.dead_letters.open, 0);
+});
+
+test("exact-review exhausted unknown failures retain durable privacy-safe cause attribution", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(7852, "78520");
+  item.publicationFailureAttempts = 13;
+  item.firstFailureAt = Date.now() - 30 * 60_000;
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+  storage.sql.exec(
+    `INSERT INTO exact_review_publication_cause_buckets_v1
+       (bucket_start, transition, stage, completion_kind, reason_code,
+        revision_relation, pool_class, recovery_cause, backoff_reason,
+        attempt_bucket, count)
+     VALUES (?, 'retried', 'workflow', 'retryable_failure', 'workflow_cancelled',
+             'same_revision', 'repository_actions', 'workflow_retry',
+             'publication_retry', '1', 1)`,
+    Date.now() - 49 * 60 * 60_000,
+  );
+  const body = {
+    lease_id: item.leaseId,
+    item_key: item.key,
+    lease_revision: item.leaseRevision,
+    claim_generation: item.claimGeneration,
+    run_id: item.claimedRunId,
+    run_attempt: item.claimedRunAttempt,
+    outcome: "failure",
+    completion_kind: "permanent_failure",
+    reason_code: "unknown_failure",
+    error_fingerprint: "sha256:private-unknown-fingerprint",
+  };
+
+  const complete = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  );
+  assert.deepEqual(await complete.json(), { ok: true, requeued: false });
+  const duplicate = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  );
+  assert.equal(duplicate.status, 409);
+  const listed = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/dead-letters/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 10 }),
+      }),
+    )
+  ).json();
+  assert.equal(listed.dead_letters[0].reason_code, "retry_exhausted");
+  assert.equal(
+    Number(
+      Array.from(
+        storage.sql.exec("SELECT COUNT(*) AS count FROM exact_review_publication_cause_buckets_v1"),
+      )[0]?.count,
+    ),
+    1,
+    "expired attribution and a duplicate completion cannot amplify the durable cause count",
+  );
+
+  const restarted = new ExactReviewQueue({ storage }, {});
+  const stats = await (
+    await restarted.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
+    {
+      transition: "dead_lettered",
+      stage: "publication_apply",
+      completion_kind: "permanent_failure",
+      reason_code: "unknown_failure",
+      revision_relation: "same_revision",
+      pool_class: "target_app",
+      recovery_cause: "retry_budget_exhausted",
+      backoff_reason: "none",
+      attempt_bucket: "14_plus",
+      count: 1,
+    },
+  ]);
+  assert.equal(stats.lanes.publication.flow.last_15_minutes.causes.attribution_complete, true);
+  const serialized = JSON.stringify(stats.lanes.publication.flow.last_15_minutes.causes);
+  for (const sentinel of [item.key, "openclaw/openclaw", "7852", body.error_fingerprint]) {
+    assert.equal(serialized.includes(sentinel), false, sentinel);
+  }
 });
 
 test("ordinary exact-review retries do not increment publication retry telemetry", async () => {

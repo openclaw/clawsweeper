@@ -408,6 +408,7 @@ test("batch completion forwards one quota circuit and marks collapsed members un
       JSON.stringify({
         kind: "retryable_failure",
         reasonCode: "github_rate_limit",
+        rateLimitScope: "repository_actions",
         retryAt,
         attempted: true,
       }),
@@ -417,6 +418,7 @@ test("batch completion forwards one quota circuit and marks collapsed members un
       JSON.stringify({
         kind: "retryable_failure",
         reasonCode: "github_rate_limit",
+        rateLimitScope: "repository_actions",
         retryAt,
         attempted: false,
       }),
@@ -507,6 +509,7 @@ globalThis.fetch = async (url, init) => {
         claim_generation: attempted.claimGeneration,
         terminal_outcome: "retryable_failure",
         reason_code: "github_rate_limit",
+        pool_class: "repository_actions",
         retry_at: retryAt,
       },
       {
@@ -515,6 +518,7 @@ globalThis.fetch = async (url, init) => {
         claim_generation: collapsed.claimGeneration,
         terminal_outcome: "retryable_failure",
         reason_code: "github_rate_limit",
+        pool_class: "repository_actions",
         retry_at: retryAt,
         attempted: false,
       },

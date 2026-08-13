@@ -660,6 +660,119 @@ test("signed upload, SQLite restart, retention, cardinality, and public privacy 
   }
 });
 
+test("cap eviction watermarks preserve intact short windows without synthesizing missing buckets", () => {
+  const storage = new MemoryDurableStorage();
+  const store = new GithubEgressTelemetryStore(storage, {
+    maxRollupRows: 2,
+    maxRateLimitRows: 1,
+  });
+  store.ensureSchemaSync();
+  const oldObservedAt = NOW - 2 * 60 * 60_000;
+  const recentObservedAt = NOW - 5 * 60_000;
+  const oldBody = telemetryBody("1".repeat(64), oldObservedAt);
+  oldBody.rate_limit_observations = [
+    rateLimitObservation("repository_actions", oldObservedAt, oldObservedAt + 60_000, 0),
+  ];
+  const recentBody = telemetryBody("2".repeat(64), recentObservedAt);
+  recentBody.rate_limit_observations = [
+    rateLimitObservation("repository_actions", recentObservedAt, recentObservedAt + 60_000, 10),
+  ];
+
+  assert.equal(store.ingest(oldBody, NOW).ok, true, "late evidence inside retention is accepted");
+  assert.equal(store.ingest(recentBody, NOW).ok, true);
+
+  const fifteenMinutes = store.publicObservability(0.25, NOW)!;
+  const oneHour = store.publicObservability(1, NOW)!;
+  const sixHours = store.publicObservability(6, NOW)!;
+  assert.equal(fifteenMinutes.completeness.query_complete, true);
+  assert.equal(oneHour.completeness.rollup_window_complete, true);
+  assert.equal(oneHour.completeness.rate_limit_window_complete, true);
+  assert.equal(oneHour.completeness.query_complete, true);
+  assert.equal(oneHour.rows.length, 1, "a traffic-free bucket is not fabricated");
+  assert.equal(oneHour.units.wire_attempt, 1);
+  assert.deepEqual(oneHour.retention, {
+    rollup_evicted_rows_total: 1,
+    rollup_eviction_count_exact: true,
+    rate_limit_evicted_rows_total: 1,
+    last_rollup_evicted_bucket_start: new Date(oldObservedAt).toISOString(),
+    last_rate_limit_evicted_observed_at: new Date(oldObservedAt).toISOString(),
+  });
+  assert.equal(sixHours.completeness.rollup_window_complete, false);
+  assert.equal(sixHours.completeness.rate_limit_window_complete, false);
+  assert.equal(sixHours.completeness.query_complete, false);
+});
+
+test("legacy eviction diagnostics migrate conservatively across restart", () => {
+  const storage = new MemoryDurableStorage();
+  const initial = new GithubEgressTelemetryStore(storage);
+  initial.ensureSchemaSync();
+  const retainedAt = NOW - 2 * 60 * 60_000;
+  const body = telemetryBody("3".repeat(64), retainedAt);
+  body.rate_limit_observations = [
+    rateLimitObservation("repository_actions", retainedAt, retainedAt + 60_000, 10),
+  ];
+  assert.equal(initial.ingest(body, NOW).ok, true);
+  storage.sql.exec(
+    `UPDATE exact_review_github_egress_diagnostics_v2
+        SET evicted_rollup_rows = 4,
+            evicted_five_minute_rollup_rows = 0,
+            evicted_hour_rollup_rows = 0,
+            evicted_rate_limit_rows = 2,
+            last_five_minute_evicted_bucket_start = NULL,
+            last_hour_evicted_bucket_start = NULL,
+            last_rate_limit_evicted_observed_at = NULL`,
+  );
+
+  const restarted = new GithubEgressTelemetryStore(storage);
+  restarted.ensureSchemaSync();
+  const oneHour = restarted.publicObservability(1, NOW)!;
+  assert.equal(oneHour.completeness.query_complete, true);
+  assert.equal(oneHour.retention.rollup_evicted_rows_total, 4);
+  assert.equal(oneHour.retention.rollup_eviction_count_exact, false);
+  assert.equal(oneHour.retention.rate_limit_evicted_rows_total, 2);
+  assert.equal(
+    oneHour.retention.last_rollup_evicted_bucket_start,
+    new Date(retainedAt).toISOString(),
+  );
+  assert.equal(
+    oneHour.retention.last_rate_limit_evicted_observed_at,
+    new Date(retainedAt).toISOString(),
+  );
+
+  const recentFiveMinuteBoundary = NOW - 30 * 60_000;
+  storage.sql.exec(
+    `UPDATE exact_review_github_egress_rollups_v2
+        SET bucket_start = ?
+      WHERE bucket_kind = 'five_minute'`,
+    recentFiveMinuteBoundary,
+  );
+  storage.sql.exec(
+    `UPDATE exact_review_github_egress_diagnostics_v2
+        SET last_five_minute_evicted_bucket_start = NULL`,
+  );
+  const perKindBoundary = new GithubEgressTelemetryStore(storage);
+  perKindBoundary.ensureSchemaSync();
+  const maskedOneHour = perKindBoundary.publicObservability(1, NOW)!;
+  assert.equal(maskedOneHour.completeness.rollup_window_complete, false);
+  assert.equal(
+    maskedOneHour.retention.last_rollup_evicted_bucket_start,
+    new Date(recentFiveMinuteBoundary).toISOString(),
+    "an older retained hourly row cannot mask a five-minute legacy boundary",
+  );
+
+  storage.sql.exec("DELETE FROM exact_review_github_egress_rollups_v2");
+  storage.sql.exec("DELETE FROM exact_review_github_rate_limits_v2");
+  storage.sql.exec(
+    `UPDATE exact_review_github_egress_diagnostics_v2
+        SET last_five_minute_evicted_bucket_start = NULL,
+            last_hour_evicted_bucket_start = NULL,
+            last_rate_limit_evicted_observed_at = NULL`,
+  );
+  const boundaryUnknown = new GithubEgressTelemetryStore(storage);
+  boundaryUnknown.ensureSchemaSync();
+  assert.equal(boundaryUnknown.publicObservability(1, NOW)!.completeness.query_complete, false);
+});
+
 test("signed egress evidence applies only authoritative resets attributable to Actions", async () => {
   const now = Math.floor(Date.now() / 1_000) * 1_000;
   const resetAt = now + 90_000;

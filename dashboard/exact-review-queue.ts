@@ -322,6 +322,7 @@ type ExactReviewPublicationCompletion = {
   reasonCode: ExactReviewPublicationReasonCode;
   errorFingerprint?: string;
   attempted?: boolean;
+  poolClass?: "repository_actions" | "target_app";
 };
 type ExactReviewPublicationBatchCompletion = PublicationBatchCompletion & {
   publicationCompletion?: ExactReviewPublicationCompletion;
@@ -492,6 +493,52 @@ type ExactReviewQueueMetricDelta = {
   publicationRetried?: number;
   publicationDeadLettered?: number;
   publicationRefreshed?: number;
+  publicationTransitions?: ExactReviewPublicationTransitionFact[];
+};
+type ExactReviewPublicationTransitionFact = {
+  transition:
+    | "published"
+    | "superseded"
+    | "deferred"
+    | "semantic_deduped"
+    | "backoff"
+    | "retried"
+    | "refreshed"
+    | "dead_lettered";
+  stage:
+    | "publication_prepare"
+    | "publication_apply"
+    | "publication_router"
+    | "state_commit"
+    | "workflow"
+    | "unknown";
+  completionKind: ExactReviewPublicationCompletionKind | "none";
+  reasonCode: ExactReviewPublicationReasonCode | "semantic_duplicate" | "unattributed";
+  revisionRelation:
+    | "same_revision"
+    | "newer_local_revision"
+    | "newer_remote_revision"
+    | "semantic_duplicate"
+    | "unknown";
+  poolClass: "repository_actions" | "target_app" | "not_applicable" | "unknown";
+  recoveryCause:
+    | "none"
+    | "credential_circuit"
+    | "retry_budget_exhausted"
+    | "transient_retry"
+    | "state_retry"
+    | "lease_retry"
+    | "workflow_retry"
+    | "artifact_refresh"
+    | "coverage_retry"
+    | "validation_failure"
+    | "newer_revision"
+    | "remote_revision"
+    | "semantic_deduplication"
+    | "unattributed";
+  backoffReason: ExactReviewBackoffReason | "none" | "unknown";
+  attemptBucket: "0" | "1" | "2" | "3_5" | "6_13" | "14_plus" | "unknown";
+  count: number;
 };
 type ExactReviewSupersessionAudit = {
   auditId: string;
@@ -593,6 +640,7 @@ const EXACT_REVIEW_QUEUE_INGRESS_TABLE = "exact_review_queue_ingress";
 const EXACT_REVIEW_QUEUE_EDIT_SEMANTIC_TABLE = "exact_review_queue_edit_semantic";
 const EXACT_REVIEW_QUEUE_METRICS_TABLE = "exact_review_queue_metrics";
 const EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE = "exact_review_queue_metric_buckets";
+const EXACT_REVIEW_PUBLICATION_CAUSE_BUCKET_TABLE = "exact_review_publication_cause_buckets_v1";
 const EXACT_REVIEW_QUEUE_SUPERSESSION_TABLE = "exact_review_queue_supersessions";
 const EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE = "exact_review_queue_dead_letters";
 const EXACT_REVIEW_QUEUE_PARKED_ACTION_TABLE = "exact_review_queue_parked_actions";
@@ -615,6 +663,7 @@ const EXACT_REVIEW_PARKED_RESOLVE_MAX_ITEMS = 20;
 const EXACT_REVIEW_PARKED_RECOVER_MAX_ITEMS = 5;
 const EXACT_REVIEW_QUEUE_METRIC_BUCKET_MS = 5 * 60 * 1000;
 const EXACT_REVIEW_QUEUE_METRIC_BUCKET_TTL_MS = 48 * 60 * 60 * 1000;
+const EXACT_REVIEW_PUBLICATION_CAUSE_PUBLIC_LIMIT = 256;
 const EXACT_REVIEW_QUEUE_SUPERSESSION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_PUBLICATION_CONTROL_KEY = "exact-review-publication-control:v1";
 export const EXACT_REVIEW_QUEUE_NAME = "global";
@@ -1903,12 +1952,15 @@ export class ExactReviewQueue {
       const hasStructuredCompletion =
         body.completion_kind !== undefined ||
         body.reason_code !== undefined ||
-        body.error_fingerprint !== undefined;
+        body.error_fingerprint !== undefined ||
+        body.pool_class !== undefined ||
+        body.attempted !== undefined;
       const publicationCompletion = hasStructuredCompletion
         ? exactReviewPublicationCompletion(
             body.completion_kind,
             body.reason_code,
             body.error_fingerprint,
+            body.pool_class,
           )
         : undefined;
       if (hasStructuredCompletion && !publicationCompletion) {
@@ -1959,6 +2011,19 @@ export class ExactReviewQueue {
       const requestedRetryAt = exactReviewCompletionRetryAt(body.retry_at, now);
       if (body.retry_at !== undefined && requestedRetryAt === null) {
         return json({ error: "invalid_retry_at" }, 400);
+      }
+      const attempted = body.attempted === undefined ? undefined : body.attempted === true;
+      if (body.attempted !== undefined && typeof body.attempted !== "boolean") {
+        return json({ error: "invalid_publication_attempted" }, 400);
+      }
+      if (
+        attempted === false &&
+        (publicationCompletion?.reasonCode !== "github_rate_limit" || requestedRetryAt === null)
+      ) {
+        return json({ error: "invalid_publication_attempted" }, 400);
+      }
+      if (publicationCompletion && attempted !== undefined) {
+        publicationCompletion.attempted = attempted;
       }
       const retryKind =
         body.retry_kind === undefined ? undefined : exactReviewRetryKind(body.retry_kind);
@@ -2089,6 +2154,15 @@ export class ExactReviewQueue {
         tupleCompletion || directLifecycleRequeue
           ? claimGeneration
           : exactReviewClaimGeneration(item.claimGeneration);
+      const publicationAttempt =
+        publicationCompletionOwnedByLease && publicationCompletion
+          ? publicationCompletion.attempted === false ||
+            publicationCompletion.kind === "published" ||
+            publicationCompletion.kind === "superseded" ||
+            publicationCompletion.kind === "deferred"
+            ? Number(item.publicationFailureAttempts || 0)
+            : Number(item.publicationFailureAttempts || 0) + 1
+          : 0;
       const completionResult = directLifecycleRequeue
         ? item.revision > leaseRevision
           ? finishExactReviewPublicationQueueItem({
@@ -2198,6 +2272,22 @@ export class ExactReviewQueue {
         item.updatedAt = now;
       }
       const { requeued } = completionResult;
+      const publicationTransition =
+        publicationCompletionOwnedByLease && publicationCompletion
+          ? exactReviewPublicationTransitionFact({
+              completion: publicationCompletion,
+              result: completionResult,
+              itemRevision: item.revision,
+              ownedRevision: lifecycleRevision,
+              requeueLatest,
+              defaultPoolClass: "target_app",
+              backoffReason:
+                completionResult.requeued || completionResult.parked
+                  ? item.backoffReason
+                  : undefined,
+              attempt: publicationAttempt,
+            })
+          : null;
       if (!publicationItem && retryKind === "throttle") {
         this.deferScheduledReviewAdmissionForThrottleSync(now, requestedRetryAt ?? 0);
       }
@@ -2222,6 +2312,7 @@ export class ExactReviewQueue {
           ...(publicationItem && completionResult.retried ? { publicationRetried: 1 } : {}),
           ...(completionResult.deadLetter ? { publicationDeadLettered: 1 } : {}),
           ...(completionResult.refreshed ? { publicationRefreshed: 1 } : {}),
+          ...(publicationTransition ? { publicationTransitions: [publicationTransition] } : {}),
         },
         publicationItem &&
           ((publicationCompletion
@@ -6317,6 +6408,7 @@ export class ExactReviewQueue {
         let retried = 0;
         let deadLettered = 0;
         let refreshed = 0;
+        const publicationTransitions: ExactReviewPublicationTransitionFact[] = [];
         for (const completion of accepted) {
           const requested = requestedByFence.get(
             `${completion.itemKey}:${completion.revision}:${completion.claimGeneration}`,
@@ -6360,6 +6452,10 @@ export class ExactReviewQueue {
             });
           }
           if (requested.publicationCompletion) {
+            const publicationAttempt =
+              requested.publicationCompletion.attempted === false
+                ? Number(item.publicationFailureAttempts || 0)
+                : Number(item.publicationFailureAttempts || 0) + 1;
             const projectionBeforeTerminalCommit = this.lifecycleProjectionStore.read(
               `${item.decision.targetRepo}#${item.decision.itemNumber}`,
               item.key,
@@ -6416,6 +6512,18 @@ export class ExactReviewQueue {
               this.insertDeadLetterSync(result.deadLetter);
               deadLettered += 1;
             }
+            publicationTransitions.push(
+              exactReviewPublicationTransitionFact({
+                completion: requested.publicationCompletion,
+                result,
+                itemRevision: item.revision,
+                ownedRevision: completion.revision,
+                requeueLatest: false,
+                defaultPoolClass: "repository_actions",
+                backoffReason: result.requeued || result.parked ? item.backoffReason : undefined,
+                attempt: publicationAttempt,
+              }),
+            );
             const telemetryOutcome = exactReviewLifecycleTelemetryPublicationOutcome(
               requested.publicationCompletion,
             );
@@ -6465,6 +6573,32 @@ export class ExactReviewQueue {
             deadLetterCapacityAvailable: true,
             env: this.env,
           });
+          const publicationTransitionInput = {
+            completion: publicationCompletion,
+            itemRevision: item.revision,
+            ownedRevision: completion.revision,
+            requeueLatest: false,
+            defaultPoolClass: "repository_actions" as const,
+            attempt: Number(item.publicationFailureAttempts || 0),
+          };
+          publicationTransitions.push(
+            exactReviewPublicationTransitionFact({
+              ...publicationTransitionInput,
+              // The batch publisher already completed this owned revision.
+              // Preserve that primary flow fact even when the queue must also
+              // retain a newer local revision for another publication.
+              result: { ...result, requeued: false, parked: false },
+            }),
+          );
+          if (result.requeued || result.parked) {
+            publicationTransitions.push(
+              exactReviewPublicationTransitionFact({
+                ...publicationTransitionInput,
+                result,
+                backoffReason: item.backoffReason,
+              }),
+            );
+          }
           const terminalDisposition =
             exactReviewLifecycleCompletionDisposition({
               projection: projectionBeforeTerminalCommit,
@@ -6512,6 +6646,7 @@ export class ExactReviewQueue {
           publicationRetried: retried,
           publicationDeadLettered: deadLettered,
           publicationRefreshed: refreshed,
+          publicationTransitions,
         });
       },
     );
@@ -8146,6 +8281,64 @@ export class ExactReviewQueue {
       }
     }
     this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_PUBLICATION_CAUSE_BUCKET_TABLE} (
+         bucket_start INTEGER NOT NULL,
+         transition TEXT NOT NULL CHECK (transition IN (
+           'published', 'superseded', 'deferred', 'semantic_deduped', 'backoff',
+           'retried', 'refreshed', 'dead_lettered'
+         )),
+         stage TEXT NOT NULL CHECK (stage IN (
+           'publication_prepare', 'publication_apply', 'publication_router',
+           'state_commit', 'workflow', 'unknown'
+         )),
+         completion_kind TEXT NOT NULL CHECK (completion_kind IN (
+           'published', 'superseded', 'retryable_failure', 'refresh_required',
+           'deferred', 'permanent_failure', 'none'
+         )),
+         reason_code TEXT NOT NULL CHECK (reason_code IN (
+           'publication_applied', 'remote_newer_tuple', 'remote_closed', 'live_terminal',
+           'github_rate_limit', 'github_transient', 'state_contention',
+           'review_lease_active', 'workflow_cancelled', 'artifact_unavailable',
+           'artifact_expired', 'close_coverage_retry', 'close_coverage_deferred',
+           'invalid_artifact', 'missing_record_tuple', 'tuple_protocol_invalid',
+           'policy_invariant', 'unknown_failure', 'retry_exhausted',
+           'semantic_duplicate', 'unattributed'
+         )),
+         revision_relation TEXT NOT NULL CHECK (revision_relation IN (
+           'same_revision', 'newer_local_revision', 'newer_remote_revision',
+           'semantic_duplicate', 'unknown'
+         )),
+         pool_class TEXT NOT NULL CHECK (pool_class IN (
+           'repository_actions', 'target_app', 'not_applicable', 'unknown'
+         )),
+         recovery_cause TEXT NOT NULL CHECK (recovery_cause IN (
+           'none', 'credential_circuit', 'retry_budget_exhausted', 'transient_retry',
+           'state_retry', 'lease_retry', 'workflow_retry', 'artifact_refresh',
+           'coverage_retry', 'validation_failure', 'newer_revision',
+           'remote_revision', 'semantic_deduplication', 'unattributed'
+         )),
+         backoff_reason TEXT NOT NULL CHECK (backoff_reason IN (
+           'dispatch_debounce', 'dispatcher_backoff', 'admission_retry',
+           'coordination_retry', 'throttle_retry', 'review_retry',
+           'publication_retry', 'none', 'unknown'
+         )),
+         attempt_bucket TEXT NOT NULL CHECK (attempt_bucket IN (
+           '0', '1', '2', '3_5', '6_13', '14_plus', 'unknown'
+         )),
+         count INTEGER NOT NULL CHECK (count >= 1),
+         PRIMARY KEY (
+           bucket_start, transition, stage, completion_kind, reason_code,
+           revision_relation, pool_class, recovery_cause, backoff_reason,
+           attempt_bucket
+         )
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_publication_causes_window_v1
+         ON ${EXACT_REVIEW_PUBLICATION_CAUSE_BUCKET_TABLE}
+         (bucket_start, transition, reason_code)`,
+    );
+    this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE} (
          dead_letter_id TEXT PRIMARY KEY,
          item_key TEXT NOT NULL,
@@ -8782,6 +8975,20 @@ export class ExactReviewQueue {
     const publicationRetried = exactReviewMetricDelta(delta.publicationRetried);
     const publicationDeadLettered = exactReviewMetricDelta(delta.publicationDeadLettered);
     const publicationRefreshed = exactReviewMetricDelta(delta.publicationRefreshed);
+    const publicationTransitions = reconciledPublicationTransitionFacts(
+      delta.publicationTransitions || [],
+      {
+        published: publicationPublished,
+        superseded: publicationSuperseded,
+        semantic_deduped: publicationSemanticDeduped,
+        retried: publicationRetried,
+        dead_lettered: publicationDeadLettered,
+        refreshed: publicationRefreshed,
+      },
+    );
+    for (const transition of publicationTransitions) {
+      this.incrementPublicationCauseBucketSync(transition);
+    }
     if (
       !reviewEnqueued &&
       !reviewCompleted &&
@@ -8852,6 +9059,31 @@ export class ExactReviewQueue {
       publicationRetried,
       publicationDeadLettered,
     });
+  }
+
+  private incrementPublicationCauseBucketSync(fact: ExactReviewPublicationTransitionFact) {
+    const bucketStart =
+      Math.floor(Date.now() / EXACT_REVIEW_QUEUE_METRIC_BUCKET_MS) *
+      EXACT_REVIEW_QUEUE_METRIC_BUCKET_MS;
+    this.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_PUBLICATION_CAUSE_BUCKET_TABLE}
+         (bucket_start, transition, stage, completion_kind, reason_code,
+          revision_relation, pool_class, recovery_cause, backoff_reason,
+          attempt_bucket, count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT DO UPDATE SET count = count + excluded.count`,
+      bucketStart,
+      fact.transition,
+      fact.stage,
+      fact.completionKind,
+      fact.reasonCode,
+      fact.revisionRelation,
+      fact.poolClass,
+      fact.recoveryCause,
+      fact.backoffReason,
+      fact.attemptBucket,
+      fact.count,
+    );
   }
 
   private incrementQueueMetricBucketSync({
@@ -9149,6 +9381,10 @@ export class ExactReviewQueue {
   private pruneQueueTelemetrySync(now: number) {
     this.storage.sql.exec(
       `DELETE FROM ${EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE} WHERE bucket_start < ?`,
+      now - EXACT_REVIEW_QUEUE_METRIC_BUCKET_TTL_MS,
+    );
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_PUBLICATION_CAUSE_BUCKET_TABLE} WHERE bucket_start < ?`,
       now - EXACT_REVIEW_QUEUE_METRIC_BUCKET_TTL_MS,
     );
     this.storage.sql.exec(
@@ -9496,6 +9732,13 @@ export class ExactReviewQueue {
       const superseded = Number(row?.superseded || 0);
       const semanticDeduped = Number(row?.semantic_deduped || 0);
       const deadLettered = Number(row?.dead_lettered || 0);
+      const causes = this.publicationCauseSummarySync(now - windowMs, {
+        published,
+        superseded,
+        semantic_deduped: semanticDeduped,
+        retried,
+        dead_lettered: deadLettered,
+      });
       return {
         window_minutes: windowMs / 60_000,
         enqueued,
@@ -9514,9 +9757,91 @@ export class ExactReviewQueue {
         dead_lettered_rate_per_hour: Math.round(deadLettered * multiplier * 10) / 10,
         net_drain_rate_per_hour: Math.round((resolved - enqueued) * multiplier * 10) / 10,
         retry_amplification: resolved > 0 ? Math.round((retried / resolved) * 100) / 100 : null,
+        causes,
       };
     };
     return { last_15_minutes: summarize(15 * 60_000), last_60_minutes: summarize(60 * 60_000) };
+  }
+
+  private publicationCauseSummarySync(
+    windowStart: number,
+    expected: Record<
+      "published" | "superseded" | "semantic_deduped" | "retried" | "dead_lettered",
+      number
+    >,
+  ) {
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `SELECT transition, stage, completion_kind, reason_code, revision_relation,
+                pool_class, recovery_cause, backoff_reason, attempt_bucket,
+                SUM(count) AS count
+           FROM ${EXACT_REVIEW_PUBLICATION_CAUSE_BUCKET_TABLE}
+          WHERE bucket_start >= ?
+          GROUP BY transition, stage, completion_kind, reason_code, revision_relation,
+                   pool_class, recovery_cause, backoff_reason, attempt_bucket
+          ORDER BY transition, stage, completion_kind, reason_code, revision_relation,
+                   pool_class, recovery_cause, backoff_reason, attempt_bucket
+          LIMIT ?`,
+        windowStart,
+        EXACT_REVIEW_PUBLICATION_CAUSE_PUBLIC_LIMIT + 1,
+      ),
+    ) as Array<Record<string, unknown>>;
+    const rowsTruncated = rows.length > EXACT_REVIEW_PUBLICATION_CAUSE_PUBLIC_LIMIT;
+    const publicRows = rows.slice(0, EXACT_REVIEW_PUBLICATION_CAUSE_PUBLIC_LIMIT).map((row) => ({
+      transition: String(row.transition || "unknown"),
+      stage: String(row.stage || "unknown"),
+      completion_kind: String(row.completion_kind || "none"),
+      reason_code: String(row.reason_code || "unattributed"),
+      revision_relation: String(row.revision_relation || "unknown"),
+      pool_class: String(row.pool_class || "unknown"),
+      recovery_cause: String(row.recovery_cause || "unattributed"),
+      backoff_reason: String(row.backoff_reason || "unknown"),
+      attempt_bucket: String(row.attempt_bucket || "unknown"),
+      count: Number(row.count || 0),
+    }));
+    const observed = Object.fromEntries(
+      Object.keys(expected).map((transition) => [
+        transition,
+        publicRows
+          .filter((row) => row.transition === transition)
+          .reduce((total, row) => total + row.count, 0),
+      ]),
+    ) as Record<keyof typeof expected, number>;
+    const reconciliation = Object.fromEntries(
+      Object.entries(expected).map(([transition, count]) => [
+        transition,
+        {
+          flow_count: count,
+          cause_count: observed[transition as keyof typeof expected],
+          complete:
+            !rowsTruncated && observed[transition as keyof typeof expected] === Number(count),
+        },
+      ]),
+    );
+    const unattributed = publicRows
+      .filter(
+        (row) =>
+          row.reason_code === "unattributed" ||
+          row.recovery_cause === "unattributed" ||
+          row.stage === "unknown" ||
+          row.revision_relation === "unknown" ||
+          row.pool_class === "unknown",
+      )
+      .reduce((total, row) => total + row.count, 0);
+    return {
+      rows: publicRows,
+      rows_truncated: rowsTruncated,
+      unattributed,
+      attribution_complete:
+        !rowsTruncated &&
+        unattributed === 0 &&
+        Object.values(reconciliation).every((entry) => entry.complete),
+      reconciliation,
+      privacy: {
+        raw_identifiers: false,
+        closed_dimensions: true,
+      },
+    };
   }
 
   private deadLetterStatsSync() {
@@ -10771,6 +11096,7 @@ function exactReviewPublicationCompletion(
   kindValue,
   reasonValue,
   errorFingerprintValue,
+  poolClassValue?: unknown,
 ): ExactReviewPublicationCompletion | null {
   const kind = exactReviewPublicationCompletionKind(kindValue);
   const reasonCode = exactReviewPublicationReasonCode(reasonValue);
@@ -10806,7 +11132,19 @@ function exactReviewPublicationCompletion(
   if (!allowedReasons[kind].has(reasonCode)) return null;
   const errorFingerprint = String(errorFingerprintValue || "").trim();
   if (errorFingerprint && !/^[A-Za-z0-9:._-]{1,200}$/.test(errorFingerprint)) return null;
-  return { kind, reasonCode, ...(errorFingerprint ? { errorFingerprint } : {}) };
+  const poolClass =
+    poolClassValue === undefined || poolClassValue === ""
+      ? undefined
+      : poolClassValue === "repository_actions" || poolClassValue === "target_app"
+        ? poolClassValue
+        : null;
+  if (poolClass === null) return null;
+  return {
+    kind,
+    reasonCode,
+    ...(errorFingerprint ? { errorFingerprint } : {}),
+    ...(poolClass ? { poolClass } : {}),
+  };
 }
 
 function exactReviewRunAttempt(value): number | null {
@@ -11323,6 +11661,175 @@ function finishExactReviewPublicationQueueItem({
       : "publication_retry";
   item.updatedAt = now;
   return { requeued: true, retried: true, refreshed: false, parked: false };
+}
+
+function reconciledPublicationTransitionFacts(
+  facts: ExactReviewPublicationTransitionFact[],
+  expected: Record<
+    "published" | "superseded" | "semantic_deduped" | "retried" | "dead_lettered" | "refreshed",
+    number
+  >,
+): ExactReviewPublicationTransitionFact[] {
+  const reconciled = facts.filter((fact) => Number.isSafeInteger(fact.count) && fact.count > 0);
+  for (const [transition, expectedCount] of Object.entries(expected)) {
+    const attributed = reconciled
+      .filter((fact) => fact.transition === transition)
+      .reduce((total, fact) => total + fact.count, 0);
+    const missing = Math.max(0, Number(expectedCount) - attributed);
+    if (!missing) continue;
+    if (transition === "semantic_deduped") {
+      reconciled.push({
+        transition,
+        stage: "publication_apply",
+        completionKind: "none",
+        reasonCode: "semantic_duplicate",
+        revisionRelation: "semantic_duplicate",
+        poolClass: "not_applicable",
+        recoveryCause: "semantic_deduplication",
+        backoffReason: "none",
+        attemptBucket: "0",
+        count: missing,
+      });
+      continue;
+    }
+    reconciled.push({
+      transition: transition as ExactReviewPublicationTransitionFact["transition"],
+      stage: "unknown",
+      completionKind: "none",
+      reasonCode: "unattributed",
+      revisionRelation: "unknown",
+      poolClass: "unknown",
+      recoveryCause: "unattributed",
+      backoffReason: "unknown",
+      attemptBucket: "unknown",
+      count: missing,
+    });
+  }
+  return reconciled;
+}
+
+function exactReviewPublicationTransitionFact({
+  completion,
+  result,
+  itemRevision,
+  ownedRevision,
+  requeueLatest,
+  defaultPoolClass,
+  backoffReason,
+  attempt,
+}: {
+  completion: ExactReviewPublicationCompletion;
+  result: {
+    requeued: boolean;
+    retried: boolean;
+    refreshed: boolean;
+    parked: boolean;
+    deadLetter?: ExactReviewDeadLetterInsert;
+  };
+  itemRevision: number;
+  ownedRevision: number;
+  requeueLatest: boolean;
+  defaultPoolClass: "repository_actions" | "target_app";
+  backoffReason?: ExactReviewBackoffReason;
+  attempt: number;
+}): ExactReviewPublicationTransitionFact {
+  const revisionRelation =
+    itemRevision > ownedRevision || requeueLatest
+      ? "newer_local_revision"
+      : completion.reasonCode === "remote_newer_tuple"
+        ? "newer_remote_revision"
+        : "same_revision";
+  const transition = result.deadLetter
+    ? "dead_lettered"
+    : result.retried
+      ? "retried"
+      : result.refreshed
+        ? "refreshed"
+        : result.requeued || result.parked
+          ? "backoff"
+          : completion.kind === "superseded"
+            ? "superseded"
+            : completion.kind === "deferred"
+              ? "deferred"
+              : "published";
+  return {
+    transition,
+    stage: exactReviewPublicationCauseStage(completion.reasonCode),
+    completionKind: completion.kind,
+    reasonCode: completion.reasonCode,
+    revisionRelation,
+    poolClass: completion.poolClass || defaultPoolClass,
+    recoveryCause: exactReviewPublicationRecoveryCause(completion, result, revisionRelation),
+    backoffReason: backoffReason || "none",
+    attemptBucket: exactReviewPublicationAttemptBucket(attempt),
+    count: 1,
+  };
+}
+
+function exactReviewPublicationCauseStage(
+  reasonCode: ExactReviewPublicationReasonCode,
+): ExactReviewPublicationTransitionFact["stage"] {
+  if (
+    [
+      "artifact_unavailable",
+      "artifact_expired",
+      "invalid_artifact",
+      "missing_record_tuple",
+      "tuple_protocol_invalid",
+    ].includes(reasonCode)
+  ) {
+    return "publication_prepare";
+  }
+  if (reasonCode === "state_contention") return "state_commit";
+  if (reasonCode === "workflow_cancelled") return "workflow";
+  if (reasonCode === "close_coverage_deferred") return "publication_router";
+  return "publication_apply";
+}
+
+function exactReviewPublicationRecoveryCause(
+  completion: ExactReviewPublicationCompletion,
+  result: { deadLetter?: ExactReviewDeadLetterInsert },
+  revisionRelation: ExactReviewPublicationTransitionFact["revisionRelation"],
+): ExactReviewPublicationTransitionFact["recoveryCause"] {
+  if (result.deadLetter) return "retry_budget_exhausted";
+  if (revisionRelation === "newer_local_revision") return "newer_revision";
+  if (revisionRelation === "newer_remote_revision") return "remote_revision";
+  if (completion.reasonCode === "github_rate_limit" && completion.attempted === false) {
+    return "credential_circuit";
+  }
+  if (["github_rate_limit", "github_transient"].includes(completion.reasonCode)) {
+    return "transient_retry";
+  }
+  if (completion.reasonCode === "state_contention") return "state_retry";
+  if (completion.reasonCode === "review_lease_active") return "lease_retry";
+  if (completion.reasonCode === "workflow_cancelled") return "workflow_retry";
+  if (["artifact_unavailable", "artifact_expired"].includes(completion.reasonCode)) {
+    return "artifact_refresh";
+  }
+  if (["close_coverage_retry", "close_coverage_deferred"].includes(completion.reasonCode)) {
+    return "coverage_retry";
+  }
+  if (
+    [
+      "invalid_artifact",
+      "missing_record_tuple",
+      "tuple_protocol_invalid",
+      "policy_invariant",
+    ].includes(completion.reasonCode)
+  ) {
+    return "validation_failure";
+  }
+  return completion.reasonCode === "unknown_failure" ? "unattributed" : "none";
+}
+
+function exactReviewPublicationAttemptBucket(
+  attempt: number,
+): ExactReviewPublicationTransitionFact["attemptBucket"] {
+  if (!Number.isSafeInteger(attempt) || attempt < 0) return "unknown";
+  if (attempt <= 2) return String(attempt) as "0" | "1" | "2";
+  if (attempt <= 5) return "3_5";
+  if (attempt <= 13) return "6_13";
+  return "14_plus";
 }
 
 function exactReviewCredentialRecoveryJitterMs(itemKey: string): number {
@@ -13621,6 +14128,7 @@ function exactReviewPublicationBatchCompletions(
             terminalOutcome,
             item.reason_code,
             item.error_fingerprint,
+            item.pool_class,
           );
     const requestedRetryAt = exactReviewCompletionRetryAt(item.retry_at, Date.now());
     const attempted = item.attempted === undefined ? undefined : item.attempted === true;

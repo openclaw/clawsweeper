@@ -24,7 +24,7 @@ branch, not a promise that every method will remain supported.
 | `/api/exact-review-queue/item`           | `GET`  | One queue item's status; forwards query parameters.                                         |
 | `/api/exact-review-queue/reviews`        | `GET`  | Per-item review lookup used by observer surfaces.                                           |
 | `/api/review-observability`              | `GET`  | Review observability from the queue Durable Object; forwards query parameters.              |
-| `/api/github-egress-observability`        | `GET`  | Sanitized publication GitHub egress rollups for `hours=0.25`, `1`, `6`, or `24`.              |
+| `/api/github-egress-observability`       | `GET`  | Sanitized publication GitHub egress rollups for `hours=0.25`, `1`, `6`, or `24`.            |
 | `/api/review-coverage`                   | `GET`  | Review coverage from the queue Durable Object.                                              |
 | `/api/apply-observability`               | `GET`  | Apply-lane observability from `applyObservabilityJson`.                                     |
 | `/api/health-history`                    | `GET`  | Historical health from `healthHistoryJson`.                                                 |
@@ -49,3 +49,14 @@ per-member jitter boundary as `recovery_until`. Its `handoff_health` includes
 bounded `recovery_reasons` counts for `claim_timeout`, `execution_timeout`,
 `workflow_cancelled`, and `workflow_failed`. These are objective durable queue
 facts; they do not infer why GitHub or a runner cancelled a workflow.
+
+Publication flow windows include a bounded `causes` object. Its closed aggregate
+rows reconcile retry, backoff, supersession, and dead-letter causes without raw
+identifiers. Terminal deferrals are distinct from publications, and one batch
+completion may emit both a completed publication and a follow-on backoff when a
+newer local revision remains. Consumers must check `rows_truncated`,
+`attribution_complete`, and
+the per-transition `reconciliation` before treating the rows as a complete
+denominator. The GitHub-egress response similarly exposes sanitized retention
+watermarks; `query_complete` describes retained evidence, not the existence of
+traffic in every clock bucket.

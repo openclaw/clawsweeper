@@ -639,6 +639,10 @@ function failureCompletion(
       ? new Date(Date.parse(outcome.retryAt)).toISOString()
       : undefined;
   const attempted = outcome.attempted === false ? false : undefined;
+  const poolClass =
+    outcome.rateLimitScope === "repository_actions" || outcome.rateLimitScope === "target_app"
+      ? outcome.rateLimitScope
+      : undefined;
   return {
     ...member,
     terminalOutcome,
@@ -646,6 +650,7 @@ function failureCompletion(
     ...(errorFingerprint ? { errorFingerprint } : {}),
     ...(retryAt ? { retryAt } : {}),
     ...(attempted !== undefined ? { attempted } : {}),
+    ...(poolClass ? { poolClass } : {}),
   };
 }
 

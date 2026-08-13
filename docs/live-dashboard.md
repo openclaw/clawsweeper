@@ -391,6 +391,26 @@ The publication lane exposes two additional observer-only surfaces:
   class, endpoint category, operation class, outcome, and whether the item
   revision was already retried. These counters are for request-budget analysis;
   they never contain raw URLs, item content, credentials, or local paths.
+- `flow.last_15_minutes.causes` and `flow.last_60_minutes.causes` reconcile
+  publication retries, backoff, supersession, and dead-letter exhaustion against
+  durable flow counts. Cause rows use only closed stage, completion, reason,
+  revision-relation, pool-class, recovery-cause, backoff, and attempt buckets.
+  `attribution_complete=false` or a failed per-transition `reconciliation`
+  explicitly marks a legacy or truncated denominator; the Worker never invents
+  attribution for an old aggregate.
+
+An unattempted credential-circuit member appears as `transition: backoff` and
+does not increment `retried`. A retry-exhausted dead letter preserves the
+underlying completion reason in the cause row while the operator-facing dead
+letter retains its established `retry_exhausted` reason. A terminal coverage
+deferral is reported as `transition: deferred`, never as a publication. When a
+batch publishes its owned revision while a newer local revision is already
+queued, the ledger records both the completed publication and the follow-on
+backoff; the published row still reconciles to the durable publication total.
+Cause rows persist in
+SQLite for the same 48-hour window as publication flow buckets, are capped at
+256 public dimension rows plus a truncation flag, and never expose repository,
+item, credential, lease, run, fingerprint, or exact revision identity.
 
 The durable handoff's `handoff_health.recovery_reasons` counts bounded
 `claim_timeout`, `execution_timeout`, `workflow_cancelled`, and

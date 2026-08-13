@@ -3324,6 +3324,7 @@ test("retryable batch completion releases ownership and preserves queue retry po
               claim_generation: member.claim_generation,
               terminal_outcome: "retryable_failure",
               reason_code: "state_contention",
+              pool_class: "repository_actions",
               error_fingerprint: "state-contention-proof",
             },
           ],
@@ -3349,6 +3350,20 @@ test("retryable batch completion releases ownership and preserves queue retry po
     assert.equal(stats.lanes.publication.completed_total, 0);
     assert.equal(stats.lanes.publication.retried_total, 1);
     assert.equal(stats.lanes.publication.batches.leased, 0);
+    assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
+      {
+        transition: "retried",
+        stage: "state_commit",
+        completion_kind: "retryable_failure",
+        reason_code: "state_contention",
+        revision_relation: "same_revision",
+        pool_class: "repository_actions",
+        recovery_cause: "state_retry",
+        backoff_reason: "publication_retry",
+        attempt_bucket: "1",
+        count: 1,
+      },
+    ]);
 
     now += 10 * 60_000;
     const replacement = await (
@@ -3482,6 +3497,7 @@ test("credential circuits persist, preserve healthy owners, and defer unattempte
               claim_generation: member.claim_generation,
               terminal_outcome: "retryable_failure",
               reason_code: "github_rate_limit",
+              pool_class: "target_app",
               retry_at: new Date(longerReset).toISOString(),
               attempted: false,
             },
@@ -3516,6 +3532,20 @@ test("credential circuits persist, preserve healthy owners, and defer unattempte
       1,
     );
     assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, "github_rate_limit");
+    assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
+      {
+        transition: "backoff",
+        stage: "publication_apply",
+        completion_kind: "retryable_failure",
+        reason_code: "github_rate_limit",
+        revision_relation: "same_revision",
+        pool_class: "target_app",
+        recovery_cause: "credential_circuit",
+        backoff_reason: "publication_retry",
+        attempt_bucket: "0",
+        count: 1,
+      },
+    ]);
 
     const lateReset = now + 180_000;
     const lateTelemetry = {
@@ -3939,6 +3969,32 @@ test("batch published completion preserves a newer revision owned by the same le
     assert.equal(stats.lanes.publication.pending, 1);
     assert.equal(stats.lanes.publication.published_total, 1);
     assert.equal(stats.lanes.publication.batches.leased, 0);
+    assert.equal(
+      stats.lanes.publication.flow.last_15_minutes.causes.reconciliation.published.complete,
+      true,
+    );
+    assert.deepEqual(
+      stats.lanes.publication.flow.last_15_minutes.causes.rows.map((row) => ({
+        transition: row.transition,
+        reason_code: row.reason_code,
+        revision_relation: row.revision_relation,
+        recovery_cause: row.recovery_cause,
+      })),
+      [
+        {
+          transition: "backoff",
+          reason_code: "publication_applied",
+          revision_relation: "newer_local_revision",
+          recovery_cause: "newer_revision",
+        },
+        {
+          transition: "published",
+          reason_code: "publication_applied",
+          revision_relation: "newer_local_revision",
+          recovery_cause: "newer_revision",
+        },
+      ],
+    );
 
     now += 1;
     const replacement = await (
