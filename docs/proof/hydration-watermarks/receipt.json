@@ -7,7 +7,7 @@
   "container_runtime": "docker",
   "image": "node:24-bookworm",
   "machine_type": "node_24-bookworm",
-  "tested_head": "202f14d6dd5770d450e73a6093610790688a2b0e",
+  "tested_head": "202f14d6dd463f8b9c81a3b6a9bb8490e817076d",
   "command": "crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --allow-env GH_TOKEN --timing-json --capture-stdout docs/proof/hydration-watermarks/container-transcript.txt --capture-stderr docs/proof/hydration-watermarks/container-stderr.txt --script docs/proof/hydration-watermarks/run-proof.sh -- 202f14d6dd5770d450e73a6093610790688a2b0e",
   "exit_code": 0,
   "lease_stopped": true,
