@@ -42,13 +42,13 @@ function writeReceipt(name, value) {
 
 function assertCause(stats) {
   const causes = stats.lanes.publication.flow.last_15_minutes.causes;
-  const row = causes.rows.find(
+  const retry = causes.rows.find(
     (candidate) =>
       candidate.transition === "retried" &&
       candidate.reason_code === "state_contention" &&
       candidate.pool_class === "repository_actions",
   );
-  assert.deepEqual(row, {
+  assert.deepEqual(retry, {
     transition: "retried",
     stage: "state_commit",
     completion_kind: "retryable_failure",
@@ -60,7 +60,30 @@ function assertCause(stats) {
     attempt_bucket: "1",
     count: 1,
   });
+  const refresh = causes.rows.find(
+    (candidate) =>
+      candidate.transition === "refreshed" &&
+      candidate.reason_code === "artifact_unavailable" &&
+      candidate.pool_class === "repository_actions",
+  );
+  assert.deepEqual(refresh, {
+    transition: "refreshed",
+    stage: "publication_prepare",
+    completion_kind: "refresh_required",
+    reason_code: "artifact_unavailable",
+    revision_relation: "same_revision",
+    pool_class: "repository_actions",
+    recovery_cause: "artifact_refresh",
+    backoff_reason: "unknown",
+    attempt_bucket: "1",
+    count: 1,
+  });
   assert.deepEqual(causes.reconciliation.retried, {
+    flow_count: 1,
+    cause_count: 1,
+    complete: true,
+  });
+  assert.deepEqual(causes.reconciliation.refreshed, {
     flow_count: 1,
     cause_count: 1,
     complete: true,
@@ -69,45 +92,47 @@ function assertCause(stats) {
   for (const sentinel of ["openclaw/openclaw", "990601", "phase0-6-proof-batch"]) {
     assert.equal(JSON.stringify(causes).includes(sentinel), false, sentinel);
   }
-  return row;
+  return { retry, refresh };
 }
 
 if (stage === "queue") {
-  const producerRunId = "9990601";
-  const itemNumber = 990601;
   const targetRepo = "openclaw/openclaw";
-  const producerDecision = {
-    targetRepo,
-    targetBranch: "main",
-    itemNumber,
-    itemKind: "issue",
-    sourceEvent: "issues",
-    sourceAction: "opened",
-    supersedesInProgress: false,
-  };
-  const enqueue = await signedPost("/internal/exact-review/enqueue", {
-    delivery_id: "phase0-6-proof-publication",
-    decision: {
-      ...producerDecision,
-      sourceAction: "exact_review_artifact_publish",
-      publication: {
-        artifactName: `exact-review-${producerRunId}-1`,
-        producerRunId,
-        producerRunAttempt: 1,
-        sourceSha: "d".repeat(40),
-        itemKey: `${targetRepo}#${itemNumber}`,
-        protocolVersion: 2,
-        leaseRevision: 1,
-        claimGeneration: 1,
-        liveProceeded: true,
-        liveTerminalNoop: false,
-        liveTerminalMissing: false,
-        liveGuardedOpen: false,
-        producerDecision,
+  async function enqueuePublication(itemNumber, producerRunId) {
+    const producerDecision = {
+      targetRepo,
+      targetBranch: "main",
+      itemNumber,
+      itemKind: "issue",
+      sourceEvent: "issues",
+      sourceAction: "opened",
+      supersedesInProgress: false,
+    };
+    const enqueue = await signedPost("/internal/exact-review/enqueue", {
+      delivery_id: `phase0-6-proof-publication-${itemNumber}`,
+      decision: {
+        ...producerDecision,
+        sourceAction: "exact_review_artifact_publish",
+        publication: {
+          artifactName: `exact-review-${producerRunId}-1`,
+          producerRunId,
+          producerRunAttempt: 1,
+          sourceSha: "d".repeat(40),
+          itemKey: `${targetRepo}#${itemNumber}`,
+          protocolVersion: 2,
+          leaseRevision: 1,
+          claimGeneration: 1,
+          liveProceeded: true,
+          liveTerminalNoop: false,
+          liveTerminalMissing: false,
+          liveGuardedOpen: false,
+          producerDecision,
+        },
       },
-    },
-  });
-  assert.equal(enqueue.queued, true, JSON.stringify(enqueue));
+    });
+    assert.equal(enqueue.queued, true, JSON.stringify(enqueue));
+  }
+
+  await enqueuePublication(990601, "9990601");
   const claim = await signedPost("/internal/exact-review/publication-batches/claim", {
     claim_id: "phase0-6-proof-claim",
     lease_owner: "phase0-6-proof-worker",
@@ -131,12 +156,41 @@ if (stage === "queue") {
     ],
   });
   assert.equal(completion.accepted, 1, JSON.stringify(completion));
+
+  await enqueuePublication(990602, "9990602");
+  const refreshClaim = await signedPost("/internal/exact-review/publication-batches/claim", {
+    claim_id: "phase0-6-proof-refresh-claim",
+    lease_owner: "phase0-6-proof-refresh-worker",
+    max_items: 1,
+  });
+  assert.equal(refreshClaim.claimed, true, JSON.stringify(refreshClaim));
+  const refreshMember = refreshClaim.batch.items[0];
+  const refreshCompletion = await signedPost(
+    "/internal/exact-review/publication-batches/complete",
+    {
+      batch_id: refreshClaim.batch.batch_id,
+      lease_owner: "phase0-6-proof-refresh-worker",
+      items: [
+        {
+          item_key: refreshMember.item_key,
+          revision: refreshMember.revision,
+          claim_generation: refreshMember.claim_generation,
+          terminal_outcome: "refresh_required",
+          reason_code: "artifact_unavailable",
+          pool_class: "repository_actions",
+        },
+      ],
+    },
+  );
+  assert.equal(refreshCompletion.accepted, 1, JSON.stringify(refreshCompletion));
+
   const stats = await publicJson("/api/exact-review-queue");
-  const cause = assertCause(stats);
+  const causes = assertCause(stats);
   writeReceipt("queue-stage.json", {
     ok: true,
     durable_retry_count: stats.lanes.publication.flow.last_15_minutes.retried,
-    cause,
+    durable_refresh_count: stats.lanes.publication.flow.last_15_minutes.refreshed,
+    causes,
     privacy_clean: true,
   });
 } else if (stage === "cap") {
@@ -232,14 +286,14 @@ if (stage === "queue") {
   assert.equal(JSON.stringify(oneHour).includes("c".repeat(24)), false);
   assert.equal(JSON.stringify(oneHour).includes("d".repeat(24)), false);
   const stats = await publicJson("/api/exact-review-queue");
-  const cause = assertCause(stats);
+  const causes = assertCause(stats);
   writeReceipt("cap-stage.json", {
     ok: true,
     short_windows_complete: true,
     overlapping_window_complete: false,
     rollup_evicted_rows: oneHour.retention.rollup_evicted_rows_total,
     rate_limit_evicted_rows: oneHour.retention.rate_limit_evicted_rows_total,
-    cause,
+    causes,
     privacy_clean: true,
   });
 } else if (stage === "verify") {
@@ -249,12 +303,12 @@ if (stage === "queue") {
   assert.equal(oneHour.retention.rollup_eviction_count_exact, true);
   assert.equal(oneHour.retention.rate_limit_evicted_rows_total, 1);
   const stats = await publicJson("/api/exact-review-queue");
-  const cause = assertCause(stats);
+  const causes = assertCause(stats);
   writeReceipt("restart-stage.json", {
     ok: true,
     sqlite_restart_preserved_eviction_watermarks: true,
     sqlite_restart_preserved_cause: true,
-    cause,
+    causes,
   });
 } else {
   throw new Error(`unknown proof stage: ${stage}`);
