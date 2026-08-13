@@ -74,7 +74,7 @@ function assertCause(stats) {
     revision_relation: "same_revision",
     pool_class: "repository_actions",
     recovery_cause: "artifact_refresh",
-    backoff_reason: "unknown",
+    backoff_reason: "none",
     attempt_bucket: "1",
     count: 1,
   });
