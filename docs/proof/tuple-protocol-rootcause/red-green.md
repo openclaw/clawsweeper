@@ -27,3 +27,13 @@ tests 176
 pass 176
 fail 0
 ```
+
+Docker-backed Crabbox `local-container` reproduced the same 176/176 GREEN result on committed source head `080904359d54c6e2cdf9b0e314bf44471c09d196`. The container's subsequent full docs gate stopped because bounded Crabbox sync omitted unrelated historical proof artifacts; the complete host checkout passed the authoritative full gate:
+
+```text
+pnpm run check
+tests 3405
+pass 3396
+fail 0
+skipped 9
+```
