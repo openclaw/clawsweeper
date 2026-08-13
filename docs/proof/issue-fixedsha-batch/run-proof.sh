@@ -24,14 +24,23 @@ if ! command -v jq >/dev/null 2>&1; then
   sudo apt-get update -qq
   sudo apt-get install -y -qq jq >/dev/null
 fi
+if ! command -v gh >/dev/null 2>&1; then
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq gh >/dev/null
+fi
 
 echo "tested_head=$actual_head"
 echo "node_version=$(node --version)"
 echo "pnpm_version=$(pnpm --version)"
 echo "jq_version=$(jq --version)"
+echo "gh_version=$(gh --version | head -n 1)"
 
 pnpm install --frozen-lockfile
 pnpm run build
+
+echo "CRABBOX_PHASE:real-transport"
+gh api user --jq '"github_login=" + .login'
+node docs/proof/issue-fixedsha-batch/real-transport-proof.mjs
 
 echo "CRABBOX_PHASE:behavior"
 node --test test/fixed-sha-pull-resolution.test.ts test/review-close-policy.test.ts

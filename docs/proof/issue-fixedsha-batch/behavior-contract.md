@@ -16,6 +16,8 @@ associations from that list, and use `GET /commits/:sha/pulls` for head-only or 
   state write is introduced.
 - A counting fixture with four repeat resolutions and three cold resolutions: one merge-SHA list
   match, one shared-head-SHA exact lookup, and one absent-SHA exact lookup.
+- A public live-transport fixture using `openclaw/clawsweeper` PR #1138 / issue #1135 through the
+  real `gh api` client, with resolver routes recorded after setup discovery.
 
 ## Expected observable behavior
 
@@ -47,5 +49,6 @@ dashboard data contract.
 
 The recent-pulls optimization intentionally inspects the newest 100 pull requests. Head-only, older,
 or otherwise unmatched associations retain the exact per-SHA fallback. The proof uses deterministic
-GitHub API fixtures in a Docker-backed Crabbox container; it does not mutate GitHub, publish Worker
-state, deploy, or measure production latency.
+GitHub API fixtures plus a read-only public GitHub transport in a Docker-backed Crabbox container. It
+does not mutate GitHub, publish Worker state, deploy, or measure production latency. The live fixture
+depends on public PR #1138 remaining inside the newest 100 pull requests while the receipt is made.
