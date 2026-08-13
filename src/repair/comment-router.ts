@@ -135,6 +135,7 @@ import {
   ghErrorText,
   ghJsonWithRetry as ghJson,
   ghJsonWithRetryAsync as ghJsonAsync,
+  ghPagedLimitWithRetry as ghPagedLimit,
   ghPagedWithRetry as ghPaged,
   ghPagedWithRetryAsync as ghPagedAsync,
   ghSpawn,
@@ -191,6 +192,7 @@ const {
   maxAutoRepairsPerPr,
   lookupConcurrency,
   since,
+  sinceCommentIds,
   itemNumbers,
   commentIds,
   statusCommentId,
@@ -261,6 +263,9 @@ const collaboratorPermissionCache = new Map();
 const activeRepairRunsByPrefix = new Map<string, LooseRecord[]>();
 const liveTargetCache = new Map<number, LooseRecord>();
 const issueCommentsCache = new Map<number, JsonValue[]>();
+const throttledIssueCommentLookups = new Set<number>();
+const throttledCollaboratorLookups = new Set<string>();
+let deferredGitHubThrottle: GitHubRateLimitError | null = null;
 const MAX_MEDIA_PREPROCESSING_TIMEOUT_MS = 480_000;
 const PROOF_OVERRIDE_DESCRIPTION_MARKER = "<!-- clawsweeper-proof-override-note -->";
 const cachedIssueComments = createCachedIssueCommentsLookup(
@@ -276,6 +281,7 @@ const openIssueNumbersByLabel = createCachedLabelNumberLookup((label) =>
     `repos/${targetRepo}/issues?state=open&labels=${encodeURIComponent(label)}&per_page=100`,
   ).map((issue: JsonValue) => issue.number),
 );
+let recentCommentCursorCandidate: LooseRecord | null = null;
 const comments = measure("list_candidate_comments", () =>
   exactCommentVersionFastPath.suppress ? [] : listCandidateComments(),
 );
@@ -338,6 +344,7 @@ const report: LooseRecord = {
   lookup_concurrency: lookupConcurrency,
   commands,
   exact_comment_version_fast_path: exactCommentVersionFastPath,
+  routing_cursor_candidate: recentCommentCursorCandidate,
   short_circuited: exactCommentVersionFastPath.suppress,
 };
 
@@ -437,6 +444,7 @@ if (writeReport) writeReportFile(repoRoot(), report);
 await flushCommandActionEvents();
 await Promise.allSettled(automergeMetricWrites);
 console.log(JSON.stringify(report, null, 2));
+if (deferredGitHubThrottle) throw deferredGitHubThrottle;
 
 function measure<T>(name: string, fn: () => T): T {
   const start = Date.now();
@@ -827,13 +835,27 @@ async function prehydrateCommandLookups(
   );
 
   await Promise.all([
-    mapLimit(logins, lookupConcurrency, (login) => fetchCollaboratorPermissionAsync(login)),
+    mapLimit(logins, lookupConcurrency, async (login) => {
+      try {
+        await fetchCollaboratorPermissionAsync(login);
+      } catch (error) {
+        if (!(error instanceof GitHubRateLimitError)) throw error;
+        deferGitHubThrottle(error);
+        throttledCollaboratorLookups.add(login.toLowerCase());
+      }
+    }),
     mapLimit(issueNumbers, lookupConcurrency, async (number) => {
       liveTargetCache.set(number, await fetchLiveTargetAsync(number));
     }),
     mapLimit(issueNumbers, lookupConcurrency, async (number) => {
       if (options.refreshIssueComments) issueCommentsCache.delete(number);
-      await cachedIssueCommentsAsync(number);
+      try {
+        await cachedIssueCommentsAsync(number);
+      } catch (error) {
+        if (!(error instanceof GitHubRateLimitError)) throw error;
+        deferGitHubThrottle(error);
+        throttledIssueCommentLookups.add(number);
+      }
     }),
   ]);
 }
@@ -844,6 +866,16 @@ function classifyCommand(command: LooseRecord): JsonValue {
   }
   if (command.comment_version_key && supersededReReviewVersions.has(command.comment_version_key)) {
     return { ...command, status: "skipped", reason: SUPERSEDED_RE_REVIEW_REASON };
+  }
+  if (
+    throttledIssueCommentLookups.has(Number(command.issue_number)) ||
+    throttledCollaboratorLookups.has(String(command.author ?? "").toLowerCase())
+  ) {
+    return {
+      ...command,
+      status: "waiting",
+      reason: "GitHub throttled required routing context; the next cycle will retry",
+    };
   }
   let authorization: LooseRecord | null = null;
   if (command.trusted_bot) {
@@ -2432,6 +2464,12 @@ function executeCommandWithReceipt(command: LooseRecord) {
     queueAutomergeProductMetrics(command);
   } catch (error) {
     recordCommandFailure(command, error);
+    if (error instanceof GitHubRateLimitError) {
+      deferGitHubThrottle(error);
+      command.status = "waiting";
+      command.reason = "GitHub throttled command execution; the next cycle will retry";
+      return;
+    }
     throw error;
   }
 }
@@ -4509,9 +4547,44 @@ function existingJobPath(clusterId: string, repo: string = targetRepo) {
 }
 
 function listRecentComments() {
-  const list = ghPaged(
-    `repos/${targetRepo}/issues/comments?since=${encodeURIComponent(since)}&per_page=100`,
+  const readLimit = maxComments + sinceCommentIds.size;
+  const list = ghPagedLimit<LooseRecord>(
+    `repos/${targetRepo}/issues/comments?since=${encodeURIComponent(since)}&sort=updated&direction=asc`,
+    readLimit,
+  )
+    .filter(
+      (comment) =>
+        Date.parse(String(comment.updated_at ?? "")) !== Date.parse(since) ||
+        !sinceCommentIds.has(Number(comment.id)),
+    )
+    .slice(0, maxComments);
+  const latestUpdatedAt = list.reduce(
+    (latest, comment) =>
+      Date.parse(String(comment.updated_at ?? "")) > Date.parse(latest)
+        ? String(comment.updated_at)
+        : latest,
+    "1970-01-01T00:00:00.000Z",
   );
+  if (list.length > 0) {
+    recentCommentCursorCandidate = {
+      repo: targetRepo,
+      updated_at: new Date(latestUpdatedAt).toISOString(),
+      comment_ids: list
+        .filter(
+          (comment) =>
+            new Date(String(comment.updated_at ?? "")).toISOString() ===
+            new Date(latestUpdatedAt).toISOString(),
+        )
+        .map((comment) => Number(comment.id))
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    };
+  } else if (sinceCommentIds.size === 0) {
+    recentCommentCursorCandidate = {
+      repo: targetRepo,
+      updated_at: new Date(since).toISOString(),
+      comment_ids: [],
+    };
+  }
   return list;
 }
 
@@ -4645,6 +4718,7 @@ function fetchLiveTarget(command: LooseRecord): LooseRecord {
     const pull = issue.pull_request ? fetchPullRequestView(command.issue_number) : null;
     return { issue, pull };
   } catch (error) {
+    if (error instanceof GitHubRateLimitError) deferGitHubThrottle(error);
     return {
       ...command,
       status: "waiting",
@@ -4659,6 +4733,7 @@ async function fetchLiveTargetAsync(number: number): Promise<LooseRecord> {
     const pull = issue.pull_request ? await fetchPullRequestViewAsync(number) : null;
     return { issue, pull };
   } catch (error) {
+    if (error instanceof GitHubRateLimitError) deferGitHubThrottle(error);
     return {
       issue_number: number,
       status: "waiting",
@@ -5445,6 +5520,10 @@ async function mapLimit<T, R>(
   });
   await Promise.all(workers);
   return results;
+}
+
+function deferGitHubThrottle(error: GitHubRateLimitError) {
+  deferredGitHubThrottle ??= error;
 }
 
 function ledgerPath() {

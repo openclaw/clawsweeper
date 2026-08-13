@@ -329,6 +329,14 @@ it classifies the command, so the visible reply is available as soon as the
 target dispatcher starts. Exact comment dispatches scan only the source comment
 and use per-comment receiver concurrency; the scheduled sweep remains a
 five-minute fallback.
+The scheduled sweep persists a per-repository `updated_at` watermark and the
+comment ids already inspected at that exact timestamp. It reads repository
+comments oldest-first from that watermark and advances it only after the router
+process completes successfully. A GitHub installation rate limit, abuse-limit
+403, or 429 therefore emits a structured `github_throttled` defer and exits
+successfully without moving the watermark; the next sweep repeats the
+uncompleted interval. Other failures remain fatal. Exact-comment and exact-item
+dispatches never advance the scheduled watermark.
 The status comment itself uses one compact badge: `🦞👀` for acknowledgement,
 `🦞🧹` for review, `🦞🔧` for repair/build/fix work, and `🦞✅` for completed or
 paused work.

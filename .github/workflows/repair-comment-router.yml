@@ -103,6 +103,8 @@ jobs:
             results
             schema/clawsweeper-pr-close-coverage-proof.schema.json
             scripts/hydrate-state.ts
+            scripts/comment-router-runner.mjs
+            scripts/operator-skip-reasons.mjs
             scripts/prepare-worker-record-cache.ts
             scripts/worker-blobs.ts
             scripts/worker-records.ts
@@ -320,10 +322,12 @@ jobs:
             exit 0
           fi
           jobs_changed=0
+          cursor_changed="$(jq -r '.routing_cursor_changed == true' results/comment-router-latest.json 2>/dev/null || true)"
           if ! git diff --no-index --quiet -- "$CLAWSWEEPER_STATE_DIR/jobs" jobs; then
             jobs_changed=1
           fi
           if [ "$jobs_changed" = "0" ] &&
+             [ "$cursor_changed" != "true" ] &&
              jq -e '((.ledger_claimed // 0) + (.ledger_changed // 0)) == 0' results/comment-router-latest.json >/dev/null 2>&1; then
             echo "No durable router state changed; skipping state publication."
             exit 0
@@ -337,6 +341,9 @@ jobs:
           # changed repair jobs need the serialized Git state writer.
           if [ "$jobs_changed" = "1" ]; then
             publish_args+=(--path jobs)
+          fi
+          if [ "$cursor_changed" = "true" ]; then
+            publish_args+=(--path "results/comment-router-cursors/${{ steps.target.outputs.target_slug }}.json")
           fi
           pnpm run repair:publish-main -- "${publish_args[@]}"
 
@@ -476,10 +483,12 @@ jobs:
           # The initial publish copies every published path back into the state
           # checkout, making it the baseline for retry-only job mutations.
           jobs_changed=0
+          cursor_changed="$(jq -r '.routing_cursor_changed == true' results/comment-router-latest.json 2>/dev/null || true)"
           if ! git diff --no-index --quiet -- "$CLAWSWEEPER_STATE_DIR/jobs" jobs; then
             jobs_changed=1
           fi
           if [ "$jobs_changed" = "0" ] &&
+             [ "$cursor_changed" != "true" ] &&
              jq -e '((.ledger_claimed // 0) + (.ledger_changed // 0)) == 0' results/comment-router-latest.json >/dev/null 2>&1; then
             echo "No durable router retry state changed; skipping state publication."
             exit 0
@@ -492,6 +501,9 @@ jobs:
           # Retry receipts are append-only unless the retry changed a repair job.
           if [ "$jobs_changed" = "1" ]; then
             publish_args+=(--path jobs)
+          fi
+          if [ "$cursor_changed" = "true" ]; then
+            publish_args+=(--path "results/comment-router-cursors/${{ steps.target.outputs.target_slug }}.json")
           fi
           pnpm run repair:publish-main -- "${publish_args[@]}"
 
