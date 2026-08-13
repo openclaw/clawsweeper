@@ -22,13 +22,19 @@ Durable Object was instantiated rather than accepting a Worker-only response.
 The wrapper requires a clean committed checkout and writes a slice-specific
 summary under ignored `.artifacts/dashboard-strict-slice-2/`. Its receipt is
 `COMMITTED` only when `HEAD` is a commit and tracked files are clean.
+Crabbox raw sync intentionally omits Git metadata, so the container command
+receives both revisions from programmatic host-side Git queries and hydrates a
+temporary Git object store from an uncommitted `source.bundle`. The bundle is a
+transport artifact only and is removed after the run.
 
 ## Run
 
 From the repository root on Node 24 or newer:
 
 ```bash
-docs/proof/dashboard-strict-slice-2/run-proof.sh "$(git rev-parse HEAD)"
+docs/proof/dashboard-strict-slice-2/run-proof.sh \
+  "$(git rev-parse HEAD)" \
+  "$(git merge-base HEAD origin/main)"
 ```
 
 ## Expected observation
