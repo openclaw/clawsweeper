@@ -19,6 +19,8 @@ when safe and full list reads when force-pushes or invisible deletions require t
   discovery, filtering, content revision, and the activity cursor. Unrelated REST metadata is removed.
 - Persistence-only isolation: the full snapshot is excluded from both Codex prompt JSON and media URL
   discovery. Only the existing compact commit/review-comment windows cross the model boundary.
+- Final-record budgeting: the fully serialized canonical markdown is measured against the same 2 MiB
+  constant enforced by direct publication, with an oversized snapshot omitted before persistence.
 - Planning/runtime ownership: the open-item inventory already carries `updated_at`; it does not carry
   head SHA. The existing structural probe or PR detail fetch supplies the exact head without adding a
   request.
@@ -36,8 +38,11 @@ when safe and full list reads when force-pushes or invisible deletions require t
   `review_comments` count, so hydration discards the delta result and performs a full read.
 - The counting fixture uses `U=3` and `K=2`: before is `2 * (U + K) = 10` list reads; after is three
   reads for the two changed PRs and zero for unchanged PRs.
-- Snapshot JSON larger than 1 MiB is not persisted, leaving at least half of the 2 MiB canonical-record
-  limit for the review report and making the next cycle rehydrate normally.
+- Snapshot JSON larger than 1 MiB is not persisted. Independently, if an otherwise valid snapshot
+  would make the fully serialized UTF-8 canonical record exceed 2 MiB, only that snapshot is omitted
+  and the next cycle rehydrates normally.
+- Oversized-record fallback preserves the review body byte-for-byte; a normal-size record retains its
+  snapshot byte-for-byte.
 - Unknown nested fields in persisted snapshots are rejected, and source REST fields outside the
   explicit review-input schema never enter the canonical report.
 - The persistence-only snapshot field never appears in the review prompt or media-proof URL scan.
@@ -61,8 +66,8 @@ The Git `clawsweeper-state` branch does not own records and receives no new file
 comment, label, apply, and action-ledger writes are unchanged; the report gains cache-only hydration
 metadata.
 
-OpenClaw Bay is unaffected. This changes review input hydration only and adds no lifecycle, status,
-telemetry, or dashboard contract.
+OpenClaw Bay is unaffected. The shared limit keeps existing publication behavior aligned without
+changing lifecycle, status, telemetry, or the observer-only dashboard contract.
 
 ## Limits
 

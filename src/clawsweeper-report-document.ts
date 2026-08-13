@@ -32,7 +32,10 @@ import {
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import type { createReportContextRendering } from "./clawsweeper-report-context.js";
 import type { createReportCommentHelpers } from "./clawsweeper-report-comment-helpers.js";
-import { serializePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
+import {
+  fitPrHydrationSnapshotToPublicationLimit,
+  serializePrHydrationSnapshot,
+} from "./pr-hydration-snapshot.js";
 
 export function createReportDocumentRendering(
   dependencies: CreateReportRenderingDependencies &
@@ -538,7 +541,7 @@ export function createReportDocumentRendering(
     const dataModelChange = dataModelChangeFromContext(options.item.repo, options.context);
     const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
     const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
-    return `---
+    const markdown = `---
 number: ${options.item.number}
 repository: ${options.item.repo}
 type: ${options.item.kind}
@@ -879,6 +882,7 @@ ${renderReviewContextBudget(options.context)}
 - context collection ms: ${reviewTelemetryNumber(options.runtime.contextElapsedMs)}
 - Codex review ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
   `;
+    return fitPrHydrationSnapshotToPublicationLimit(markdown);
   }
 
   return {

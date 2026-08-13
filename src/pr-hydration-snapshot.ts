@@ -1,4 +1,5 @@
 import type { ContextHydration } from "./clawsweeper-types.js";
+import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "./exact-review-publication-limits.js";
 
 export const PR_HYDRATION_SNAPSHOT_VERSION = 1;
 // Canonical publication caps the complete report at 2 MiB; leave half for the
@@ -121,6 +122,22 @@ export function hydratePrLists(options: HydratePrListsOptions): PrHydrationResul
 
 export function serializePrHydrationSnapshot(snapshot: PrHydrationSnapshot | undefined): string {
   return snapshot ? JSON.stringify(snapshot) : "unknown";
+}
+
+export function fitPrHydrationSnapshotToPublicationLimit(record: string): string {
+  if (Buffer.byteLength(record, "utf8") <= EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES) {
+    return record;
+  }
+  const frontMatterEnd = record.indexOf("\n---\n", 4);
+  if (frontMatterEnd < 0) return record;
+  const frontMatter = record.slice(0, frontMatterEnd);
+  const fieldPrefix = "pr_hydration_snapshot: ";
+  const fieldStart = frontMatter.indexOf(`\n${fieldPrefix}`) + 1;
+  if (fieldStart === 0) return record;
+  const nextLine = frontMatter.indexOf("\n", fieldStart);
+  const fieldEnd = nextLine < 0 ? frontMatter.length : nextLine;
+  const fittedFrontMatter = `${frontMatter.slice(0, fieldStart)}${fieldPrefix}unknown${frontMatter.slice(fieldEnd)}`;
+  return `${fittedFrontMatter}${record.slice(frontMatterEnd)}`;
 }
 
 export function parsePrHydrationSnapshot(value: string | undefined): PrHydrationSnapshot | null {

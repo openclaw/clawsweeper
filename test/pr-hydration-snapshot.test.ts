@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  fitPrHydrationSnapshotToPublicationLimit,
   hydratePrLists,
   parsePrHydrationSnapshot,
   serializePrHydrationSnapshot,
   type PrHydrationSnapshot,
 } from "../dist/pr-hydration-snapshot.js";
+import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "../dist/exact-review-publication-limits.js";
 
 const repo = "openclaw/clawsweeper";
 const oldHead = "a".repeat(40);
@@ -302,4 +304,39 @@ test("hydration snapshot front matter round-trips", () => {
   }
   assert.equal(parsePrHydrationSnapshot("unknown"), null);
   assert.equal(parsePrHydrationSnapshot('{"version":999}'), null);
+});
+
+test("oversized canonical records drop only the hydration snapshot", () => {
+  const snapshot = initialSnapshot({
+    number: 45,
+    commits: [commit("5".repeat(40), "publication limit")],
+    comments: [comment(5, firstUpdatedAt, "publication\u2028limit\u2029snapshot")],
+  });
+  const snapshotLine = `pr_hydration_snapshot: ${serializePrHydrationSnapshot(snapshot)}`;
+  const prefix = `---\n${snapshotLine}\n---\n`;
+  const snapshotlessPrefix = "---\npr_hydration_snapshot: unknown\n---\n";
+  const review = "r".repeat(
+    EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES -
+      Buffer.byteLength(snapshotlessPrefix, "utf8") -
+      1,
+  );
+  const record = `${prefix}${review}`;
+
+  assert.ok(Buffer.byteLength(record, "utf8") > EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES);
+  const fitted = fitPrHydrationSnapshotToPublicationLimit(record);
+  assert.ok(Buffer.byteLength(fitted, "utf8") <= EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES);
+  assert.match(fitted, /^pr_hydration_snapshot: unknown$/m);
+  assert.equal(fitted.includes("\u2028limit\u2029snapshot"), false);
+  assert.equal(fitted.slice(fitted.indexOf("---\n", 4) + 4), review);
+});
+
+test("normal-size canonical records keep the hydration snapshot byte-identical", () => {
+  const snapshot = initialSnapshot({
+    number: 46,
+    commits: [commit("6".repeat(40), "normal record")],
+    comments: [comment(6, firstUpdatedAt, "normal record")],
+  });
+  const record = `---\npr_hydration_snapshot: ${serializePrHydrationSnapshot(snapshot)}\n---\nreview\n`;
+
+  assert.equal(fitPrHydrationSnapshotToPublicationLimit(record), record);
 });

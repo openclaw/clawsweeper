@@ -29,10 +29,17 @@ therefore enter Codex prompt JSON and media URL discovery. The repaired serializ
 the snapshot while retaining the compact commit/review-comment windows. Focused sentinels prove a
 compact review comment remains visible and the full cached comment is absent from both boundaries.
 
+The final review found that the independent 1 MiB snapshot cap could still push a valid review over
+the canonical publication boundary. The repaired report renderer now measures the complete serialized
+UTF-8 record against the publication owner's shared 2 MiB constant. If the record is too large, it
+replaces only the snapshot front-matter value with `unknown`; the review body remains byte-identical
+and the next cycle rehydrates from GitHub. The boundary regression covers both this oversized fallback
+and normal-size snapshot retention.
+
 The full `pnpm run check` gate passed 3,411 tests: 3,403 passed, 8 skipped, and 0 failed. The focused
 coordinator/context/workflow proof passed 28 of 28 tests. The normalized transcript and stderr were
 scanned with TruffleHog 3.96.0: 0 verified and 0 unknown secrets.
 
 The canonical Worker report owns the cache metadata; the Git `clawsweeper-state` branch receives no
-new file. OpenClaw Bay is unaffected. This proof does not mutate GitHub, Worker state, lifecycle state,
-or dashboard data.
+new file. OpenClaw Bay is unaffected because the publication limit and observer-facing record schema
+are unchanged. This proof does not mutate GitHub, Worker state, lifecycle state, or dashboard data.
