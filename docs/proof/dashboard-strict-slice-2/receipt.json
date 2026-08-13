@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-13T08:35:37Z",
+  "provider": "local-container",
+  "lease_id": "cbx_09029c0c14c9",
+  "slug": "amber-barnacle-e0c5",
+  "container_runtime": "docker",
+  "image": "node:24-bookworm",
+  "machine_type": "node_24-bookworm",
+  "tested_head": "b1828132c3f36445ce75b7ea618255bb818f9422",
+  "merge_base": "96b8703e4c0b4782dfcc488b46777559149326bb",
+  "command": "../crabbox/bin/crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --timing-json --capture-stdout docs/proof/dashboard-strict-slice-2/container-transcript.txt --capture-stderr docs/proof/dashboard-strict-slice-2/container-stderr.txt --script docs/proof/dashboard-strict-slice-2/run-proof.sh -- \"$(git rev-parse HEAD)\" \"$(git merge-base HEAD origin/main)\"",
+  "exit_code": 0,
+  "run_status": "succeeded",
+  "lease_stopped": true,
+  "sync_ms": 2012,
+  "command_ms": 100729,
+  "total_ms": 102757,
+  "runtime": {
+    "crabbox": "0.38.3-5-g2a79805d",
+    "docker": "29.4.0",
+    "node": "v24.19.0",
+    "pnpm": "11.10.0",
+    "jq": "jq-1.8.1",
+    "jq_checksum_verified": true,
+    "jq_install_directory": "$HOME/.local/bin"
+  },
+  "strict_slice": {
+    "new_modules": 13,
+    "strict_errors_before": 67,
+    "strict_errors_after": 0,
+    "ratchet_tests": 4,
+    "ratchet_tests_passed": 4
+  },
+  "full_gate": {
+    "command": "pnpm run check",
+    "exit_code": 0,
+    "tests": 3423,
+    "passed": 3415,
+    "failed": 0,
+    "skipped": 8
+  },
+  "worker_equivalence": {
+    "worker": "wrangler dev --local",
+    "durable_object": "SQLite-backed ExactReviewQueue",
+    "durable_object_instantiated": true,
+    "seeded_items_per_worker": 6,
+    "worker_process_tree_kill_between_boots": true,
+    "all_normalized_responses_byte_identical": true,
+    "responses": [
+      {
+        "route": "/api/exact-review-queue",
+        "normalized_bytes": 11286,
+        "normalized_sha256": "ada2e4b7cfc5d69ad1c1b7a29e67cbe395e413555ce7ef0036b5799951e6d4e4"
+      },
+      {
+        "route": "/api/status",
+        "normalized_bytes": 24737,
+        "normalized_sha256": "b801e4a5ff9e8515bb5083797b4897bea473874a23190d47486e6a8ef8969f61"
+      }
+    ],
+    "production_mutations": 0,
+    "openclaw_bay_affected": false
+  },
+  "pre_proof_autoreview": {
+    "command": "autoreview --mode local --stream-engine-output",
+    "exit_code": 0,
+    "accepted_or_actionable_findings": 0,
+    "result": "autoreview clean: no accepted/actionable findings reported"
+  },
+  "content_sha256": {
+    "docs/proof/dashboard-strict-slice-2/run-proof.sh": "149c7daf9a3581a38acad1908950f44658394ac9708278b922693670409931e1",
+    "docs/proof/dashboard-strict-slice-2/run-proof.mjs": "fceb6c56010d7bc799b1e27de7d4d50ad1015fc3e4ed3fc536120e939039351d"
+  },
+  "transcript": {
+    "path": "docs/proof/dashboard-strict-slice-2/container-transcript.txt",
+    "bytes": 589294,
+    "sha256": "ed1c77441b99a372366f66544d0d45dfada673495026e0d6f5efac7b5b485673",
+    "sanitization": "Synthetic 40-character fixture IDs and one ephemeral test-repository commit were replaced with named placeholders."
+  },
+  "stderr": {
+    "path": "docs/proof/dashboard-strict-slice-2/container-stderr.txt",
+    "bytes": 1940,
+    "sha256": "5fe728f3a377d9adfec76dbb455281843153aa9b33621f7edbc9dd1599b6b35f"
+  },
+  "secret_scan": {
+    "tool": "trufflehog 3.96.0",
+    "command": "trufflehog filesystem --no-update --results=verified,unknown --fail --fail-on-scan-errors docs/proof/dashboard-strict-slice-2/container-transcript.txt docs/proof/dashboard-strict-slice-2/container-stderr.txt",
+    "exit_code": 0,
+    "chunks": 59,
+    "bytes": 766338,
+    "verified_secrets": 0,
+    "unknown_secrets": 0
+  },
+  "cleanup": {
+    "owned_lease_absent_from_local_container_list": true,
+    "unrelated_preexisting_exited_lease_untouched": true,
+    "transport_bundle_removed": true
+  },
+  "limits": [
+    "The runtime scenario uses synthetic pending issue reviews and a deterministic loopback GitHub error stub.",
+    "The proof does not contact GitHub, acquire review leases, publish records, deploy a Worker, or mutate production.",
+    "OpenClaw Bay is unaffected because its observer-only projection remained byte-identical and no action surface changed."
+  ]
+}

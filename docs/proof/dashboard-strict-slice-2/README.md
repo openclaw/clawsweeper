@@ -53,6 +53,26 @@ docs/proof/dashboard-strict-slice-2/run-proof.sh \
   and `COMMITTED` receipt;
 - no production system is contacted or mutated.
 
+## Crabbox receipt
+
+The proof passed at committed implementation head
+`b1828132c3f36445ce75b7ea618255bb818f9422` in Docker-backed Crabbox
+`provider=local-container`, image `node:24-bookworm`, lease
+`cbx_09029c0c14c9` (`amber-barnacle-e0c5`). The full `pnpm run check` gate
+passed 3,415 of 3,423 tests with eight skipped and no failures. The local
+Wrangler comparison instantiated the SQLite-backed `ExactReviewQueue`, seeded
+six items in each independent Worker, killed the complete process tree between
+boots, and produced byte-identical normalized queue and status responses.
+
+[`receipt.json`](receipt.json) binds the provider, lease, tested revisions,
+toolchain, timing, response hashes, transcript hashes, secret scan, and cleanup
+state. The sanitized [container transcript](container-transcript.txt) and
+[stderr](container-stderr.txt) were scanned with TruffleHog 3.96.0 with zero
+verified or unknown secrets. Synthetic test-only 40-character fixture IDs and
+one ephemeral test-repository commit were replaced with named placeholders so
+the committed [Git object cross-check](sha-cross-check.txt) contains only real
+repository revisions.
+
 ## OpenClaw Bay and limits
 
 OpenClaw Bay is unaffected. Its public projection is included in the normalized

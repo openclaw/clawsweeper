@@ -1,0 +1,30 @@
+hint: Using 'master' as the name for the initial branch. This default branch name
+hint: is subject to change. To configure the initial branch name to use in all
+hint: of your new repositories, which will suppress this warning, call:
+hint: 
+hint: 	git config --global init.defaultBranch <name>
+hint: 
+hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+hint: 'development'. The just-created branch can be renamed via this command:
+hint: 
+hint: 	git branch -m <name>
+docs/proof/dashboard-strict-slice-2/source.bundle is okay
+npm notice
+npm notice New major version of npm available! 11.17.0 -> 12.0.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+npm notice To update run: npm install -g npm@12.0.2
+npm notice
+! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-11.10.0.tgz
+$ node scripts/check-dashboard-strict.mjs
+$ pnpm run check:parallel
+$ pnpm run check:static && pnpm run build:all && pnpm run lint && pnpm run test:coverage:changed:no-build && pnpm run test:coverage:no-build
+$ pnpm run "/^(check:active-surface|check:dashboard-queue-boundary|check:dashboard-strict|check:docs|check:limits|format:check)$/"
+$ pnpm run build && pnpm run build:repair && pnpm run build:dashboard
+$ tsc -p tsconfig.json
+$ tsc -p tsconfig.repair.json
+$ tsc -p tsconfig.dashboard.json
+$ pnpm run "/^lint:.*/"
+$ node scripts/run-node-tests.mjs fix-prompt-builder -- --experimental-test-coverage --test-coverage-include='dist/repair/fix-prompt-builder.js' --test-coverage-lines=85 --test-coverage-branches=85 --test-coverage-functions=85
+[run-node-tests] target=fix-prompt-builder concurrency=16 files=1
+$ node scripts/run-node-tests.mjs all -- --experimental-test-coverage --test-coverage-include='dist/**/*.js' --test-coverage-exclude='dist/repair/*.test.js' --test-coverage-lines=49 --test-coverage-branches=66 --test-coverage-functions=57
+[run-node-tests] target=all concurrency=16 files=254
