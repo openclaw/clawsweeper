@@ -37,20 +37,31 @@ const workerPort = await availablePort();
 const webhookSecret = "synthetic-record-read-webhook-proof-secret";
 const operatorSecret = "synthetic-record-read-operator-proof-secret";
 const garbageSecret = "synthetic-record-read-garbage-proof-secret";
-const recordContent = [
+const packetContent = '{"version":1,"proof":"operator-record-read-auth"}\n';
+const packetDigest = createHash("sha256").update(packetContent).digest("hex");
+const itemContent = [
   "---",
   "repository: openclaw/openclaw",
   "number: 1148",
   "type: pull_request",
   "review_status: complete",
   `pull_head_sha: ${"a".repeat(40)}`,
+  `decision_packet_sha256: ${packetDigest}`,
+  "decision_packet_path: records/openclaw-openclaw/decision-packets/1148.json",
   "---",
   "",
   "Synthetic canonical record for operator auth proof.",
   "",
 ].join("\n");
-const recordDigest = createHash("sha256").update(recordContent).digest("hex");
 const collections = ["items", "closed", "plans", "decision-packets"];
+const collectionNumbers = { items: 1148, closed: 1149, plans: 1148, "decision-packets": 1148 };
+const collectionContent = {
+  items: itemContent,
+  closed:
+    "---\nrepository: openclaw/openclaw\nnumber: 1149\ndecision_packet_sha256: none\ndecision_packet_path: none\n---\n\nSynthetic closed record.\n",
+  plans: "---\nreviewed_at: 2026-08-12T23:38:00Z\n---\n\nSynthetic plan record.\n",
+  "decision-packets": packetContent,
+};
 const shutdowns = [];
 
 if (observedHead) {
@@ -63,7 +74,7 @@ if (observedHead) {
 let worker;
 try {
   worker = await startWorker(baseRoot, "merge-base");
-  await publishRecord(worker.origin, "merge-base");
+  await publishRecords(worker.origin, "merge-base");
   const before = await readMatrix(worker.origin);
   assertMatrix(before, { items: 401, closed: 401, plans: 401, "decision-packets": 401 });
   assertMatrix(before, { items: 200, closed: 200, plans: 200, "decision-packets": 200 }, "webhook");
@@ -72,7 +83,7 @@ try {
   worker = undefined;
 
   worker = await startWorker(repoRoot, "candidate");
-  await publishRecord(worker.origin, "candidate");
+  await publishRecords(worker.origin, "candidate");
   const after = await readMatrix(worker.origin);
   assertMatrix(after, { items: 200, closed: 401, plans: 401, "decision-packets": 401 });
   assertMatrix(after, { items: 200, closed: 200, plans: 200, "decision-packets": 200 }, "webhook");
@@ -117,18 +128,33 @@ try {
   await rm(scratch, { recursive: true, force: true });
 }
 
-async function publishRecord(origin, label) {
-  const body = JSON.stringify({
-    deliveryId: `operator-record-read-auth:${label}`,
+async function publishRecords(origin, label) {
+  await publishTuple(origin, {
+    deliveryId: `operator-record-read-auth:${label}:open`,
     key: "openclaw-openclaw/1148",
-    operations: [
-      ...collections.map((collection) => ({
-        path: `records/openclaw-openclaw/${collection}/1148.${collection === "decision-packets" ? "json" : "md"}`,
-        expectedDigest: null,
-        contentBase64: Buffer.from(recordContent).toString("base64"),
-      })),
-    ],
+    operations: collections.map((collection) => ({
+      path: `records/openclaw-openclaw/${collection}/1148.${collection === "decision-packets" ? "json" : "md"}`,
+      expectedDigest: null,
+      ...(collection === "closed"
+        ? {}
+        : { contentBase64: Buffer.from(collectionContent[collection]).toString("base64") }),
+    })),
   });
+  await publishTuple(origin, {
+    deliveryId: `operator-record-read-auth:${label}:closed`,
+    key: "openclaw-openclaw/1149",
+    operations: collections.map((collection) => ({
+      path: `records/openclaw-openclaw/${collection}/1149.${collection === "decision-packets" ? "json" : "md"}`,
+      expectedDigest: null,
+      ...(collection === "closed"
+        ? { contentBase64: Buffer.from(collectionContent.closed).toString("base64") }
+        : {}),
+    })),
+  });
+}
+
+async function publishTuple(origin, mutation) {
+  const body = JSON.stringify(mutation);
   const response = await fetch(`${origin}/internal/state/records/tuples`, {
     method: "POST",
     headers: {
@@ -153,7 +179,7 @@ async function readMatrix(origin) {
           await Promise.all(
             collections.map(async (collection) => [
               collection,
-              await readRecord(origin, collection, secret),
+              { ...(await readRecord(origin, collection, secret)), collection },
             ]),
           ),
         ),
@@ -164,7 +190,7 @@ async function readMatrix(origin) {
 
 async function readRecord(origin, collection, secret) {
   const response = await fetch(
-    `${origin}/internal/state/records/openclaw-openclaw/${collection}/1148`,
+    `${origin}/internal/state/records/openclaw-openclaw/${collection}/${collectionNumbers[collection]}`,
     {
       headers: { "x-clawsweeper-exact-review-signature": signature(secret, "") },
     },
@@ -194,8 +220,9 @@ function statusMatrix(matrix) {
 
 function assertSuccessfulRecord(outcome) {
   assert.equal(outcome.status, 200);
-  assert.equal(outcome.body.content, recordContent);
-  assert.equal(outcome.body.digest, recordDigest);
+  const expectedContent = collectionContent[outcome.collection];
+  assert.equal(outcome.body.content, expectedContent);
+  assert.equal(outcome.body.digest, createHash("sha256").update(expectedContent).digest("hex"));
   assert.equal(outcome.body.revision, 1);
   assert.equal(Number.isFinite(Date.parse(outcome.body.updatedAt)), true);
 }
@@ -214,7 +241,7 @@ function sanitizeMatrix(matrix) {
                 ? {
                     digest: outcome.body.digest,
                     revision: outcome.body.revision,
-                    content_matches: outcome.body.content === recordContent,
+                    content_matches: outcome.body.content === collectionContent[collection],
                     updated_at_valid: Number.isFinite(Date.parse(outcome.body.updatedAt)),
                   }
                 : outcome.body,
