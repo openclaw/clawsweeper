@@ -1,7 +1,7 @@
 # Fixed-SHA issue enrichment proof
 
 This receipt proves the review-side fixed-SHA resolver at implementation head
-`24f1fe67d59e14fbadc3b09df4b644e595696250` in a Docker-backed Crabbox
+`66cb6daba4b3a55d27c86f99abe9351b5c1ea361` in a Docker-backed Crabbox
 `local-container` lease.
 
 The counted fixture follows the real review path. Four repeated issue/fixed-SHA pairs carry their
@@ -16,8 +16,8 @@ The same request formula also passed through the real GitHub CLI transport again
 real merge SHA used one recent-pulls list, and the real head and interior commit SHAs used two exact
 commit-pulls fallbacks; all three resolved PR #1138. The run was read-only.
 
-The full `pnpm run check` gate passed 3,407 tests: 3,399 passed, 8 skipped, and 0 failed. The focused
-resolver/policy proof passed 33 of 33 tests. The transcript and stderr were scanned with TruffleHog
+The full `pnpm run check` gate passed 3,408 tests: 3,400 passed, 8 skipped, and 0 failed. The focused
+resolver/policy proof passed 34 of 34 tests. The transcript and stderr were scanned with TruffleHog
 3.96.0: 0 verified and 0 unknown secrets.
 
 The first proof attempt reached the full gate but the base `node:24-bookworm` image lacked `jq`, so
@@ -26,7 +26,7 @@ that repository test prerequisite. ClawSweeper's first review then found that he
 by multiple PRs. The repaired resolver now treats an exact `merge_commit_sha` match as authoritative,
 because that merge commit belongs to one PR, even when another recent or older PR shares the SHA as
 its head. Head-only and absent matches still use the legacy exact endpoint. The refreshed
-successful live-transport run used lease `cbx_acbfe7ed20be`; Crabbox stopped it automatically. Two
+successful final live-transport run used lease `cbx_06ffbac51895`; Crabbox stopped it automatically. Two
 credential/rate-limit attempts stopped before tests, their captures were discarded, and the frozen
 harness reran unchanged after quota reset. One unrelated
 pre-existing exited local-container lease was left untouched.
