@@ -1,19 +1,19 @@
 {
   "schema_version": 2,
-  "recorded_at": "2026-08-13T06:21:22Z",
+  "recorded_at": "2026-08-13T06:51:54.715957Z",
   "provider": "local-container",
-  "lease_id": "cbx_0ed2f862f34a",
-  "slug": "amber-crab-b31b",
+  "lease_id": "cbx_3b4477840e88",
+  "slug": "coral-crab-ec0c",
   "container_runtime": "docker",
   "image": "node:24-bookworm",
   "machine_type": "node_24-bookworm",
-  "tested_head": "202f14d6dd463f8b9c81a3b6a9bb8490e817076d",
-  "command": "crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --allow-env GH_TOKEN --timing-json --capture-stdout docs/proof/hydration-watermarks/container-transcript.txt --capture-stderr docs/proof/hydration-watermarks/container-stderr.txt --script docs/proof/hydration-watermarks/run-proof.sh -- 202f14d6dd5770d450e73a6093610790688a2b0e",
+  "tested_head": "a16392b205fb711b6ebb9d47d270080110dc7574",
+  "command": "crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --fresh-pr openclaw/clawsweeper#1153 --preflight --allow-env GH_TOKEN --timing-json --timing-record .artifacts/pr-1153-proof-timing.jsonl --capture-stdout docs/proof/hydration-watermarks/container-transcript.txt --capture-stderr docs/proof/hydration-watermarks/container-stderr.txt --script docs/proof/hydration-watermarks/run-proof.sh -- a16392b205fb711b6ebb9d47d270080110dc7574",
   "exit_code": 0,
   "lease_stopped": true,
-  "sync_ms": 1057,
-  "command_ms": 124573,
-  "total_ms": 125647,
+  "sync_ms": 10166,
+  "command_ms": 121396,
+  "total_ms": 131600,
   "node_version": "v24.19.0",
   "pnpm_version": "11.10.0",
   "jq_version": "jq-1.6",
@@ -103,13 +103,6 @@
     "accepted_or_actionable_findings": 0,
     "result": "autoreview clean: no accepted/actionable findings reported"
   },
-  "prior_attempt": {
-    "lease_id": "cbx_6a1d91cf2be4",
-    "slug": "jade-crayfish-05de",
-    "exit_code": 1,
-    "lease_stopped": true,
-    "disposition": "proof harness omitted build:repair before the newly added sweep-workflow focused suite; no product finding"
-  },
   "content_sha256": {
     ".github/workflows/sweep.yml": "5207465e6ebd6b12022d7a3600f4e6216e66b25bd50ff72960b2a27ff91bc357",
     "src/clawsweeper-item-context.ts": "a4145c94d78229988f674341f87a8af02a2672cbffbe3326dbc95e59dd06e6b5",
@@ -129,20 +122,20 @@
     "docs/proof/hydration-watermarks/real-transport-proof.mjs": "e4927a0c15532ac3b5e1ed4336e1333aca6ab68bf7f8c091239c4ed6cb3150e5",
     "docs/proof/hydration-watermarks/run-proof.sh": "e3868c401d3c0c4a890d38a9cdcf19efef6d1ade554bc4fac19a575d31e4e018"
   },
-  "transcript_sha256": "03ff41fd1927a4e20f7108960ae75679edc015a5fdf3fbeb4e197525bbf2dbb2",
+  "transcript_sha256": "a7f98fcd523784773ba9b345e7e17ab9c4eab08650bc366db907b27422a27d57",
   "stderr_sha256": "229323d58633dfb925f0becb4f0856e9fdc17d314fc8c26b92dd938d7f77009f",
   "secret_scan": {
     "tool": "trufflehog 3.96.0",
     "command": "trufflehog filesystem --no-update --results=verified,unknown --fail --fail-on-scan-errors docs/proof/hydration-watermarks/container-transcript.txt docs/proof/hydration-watermarks/container-stderr.txt",
     "exit_code": 0,
     "chunks": 60,
-    "bytes": 781574,
+    "bytes": 781700,
     "verified_secrets": 0,
     "unknown_secrets": 0
   },
   "cleanup": {
-    "successful_lease_absent_from_local_container_list": true,
-    "failed_attempt_lease_absent_from_local_container_list": true,
+    "owned_lease_absent_from_local_container_list": true,
     "unrelated_preexisting_exited_lease_untouched": true
-  }
+  },
+  "tested_head_source": "fresh-pr checkout: git rev-parse HEAD"
 }
