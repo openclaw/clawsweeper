@@ -1,8 +1,8 @@
 {
   "schema": "clawsweeper-operator-record-read-auth-proof/v1",
-  "generated_at": "2026-08-12T23:56:21.024Z",
+  "generated_at": "2026-08-13T00:18:03.379Z",
   "merge_base": "ae36d608d01701af7e06c313be96689068b5c890",
-  "head": "c2c81fcdb6861a1b15ae9f9b6531d76c776d433b",
+  "head": "1855dfbb0c0d0b66978a99b20756845e3d6fa131",
   "runtime": "sequential real wrangler dev --local Workers over loopback HTTP",
   "configuration": {
     "secrets_distinct": true,
@@ -13,52 +13,115 @@
     "baseline_source": "exact public GitHub commit"
   },
   "before": {
-    "webhook": {
-      "status": 200,
-      "body": {
-        "digest": "0f26c70ecb4fcf26431384b70af9851d87404a8a497f363974a247080f8b9e11",
-        "revision": 1,
-        "content_matches": true,
-        "updated_at_valid": true
-      }
-    },
     "operator": {
-      "status": 401,
-      "body": {
-        "error": "invalid_signature"
+      "items": { "status": 401, "body": { "error": "invalid_signature" } },
+      "closed": { "status": 401, "body": { "error": "invalid_signature" } },
+      "plans": { "status": 401, "body": { "error": "invalid_signature" } },
+      "decision-packets": { "status": 401, "body": { "error": "invalid_signature" } }
+    },
+    "webhook": {
+      "items": {
+        "status": 200,
+        "body": {
+          "digest": "6471d07455ff7a89b394dae08e7e693a6f79629db0e14e8f58115b9c90be986a",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "closed": {
+        "status": 200,
+        "body": {
+          "digest": "15f2f682df60c650c5f0e7f4235f410b2402460ac19e9dd6d14271013aa657c0",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "plans": {
+        "status": 200,
+        "body": {
+          "digest": "b89ebbdc643dd7be0defe48e3d48ce7342c62a4cc150f9ef199dab2b7c26e129",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "decision-packets": {
+        "status": 200,
+        "body": {
+          "digest": "a24f6dd883067f6048feacf7c00c1c8c2572ef1a0b09690b7945855555e8ccc0",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
       }
     },
     "garbage": {
-      "status": 401,
-      "body": {
-        "error": "invalid_signature"
-      }
+      "items": { "status": 401, "body": { "error": "invalid_signature" } },
+      "closed": { "status": 401, "body": { "error": "invalid_signature" } },
+      "plans": { "status": 401, "body": { "error": "invalid_signature" } },
+      "decision-packets": { "status": 401, "body": { "error": "invalid_signature" } }
     }
   },
   "after": {
-    "webhook": {
-      "status": 200,
-      "body": {
-        "digest": "0f26c70ecb4fcf26431384b70af9851d87404a8a497f363974a247080f8b9e11",
-        "revision": 1,
-        "content_matches": true,
-        "updated_at_valid": true
-      }
-    },
     "operator": {
-      "status": 200,
-      "body": {
-        "digest": "0f26c70ecb4fcf26431384b70af9851d87404a8a497f363974a247080f8b9e11",
-        "revision": 1,
-        "content_matches": true,
-        "updated_at_valid": true
+      "items": {
+        "status": 200,
+        "body": {
+          "digest": "6471d07455ff7a89b394dae08e7e693a6f79629db0e14e8f58115b9c90be986a",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "closed": { "status": 401, "body": { "error": "invalid_signature" } },
+      "plans": { "status": 401, "body": { "error": "invalid_signature" } },
+      "decision-packets": { "status": 401, "body": { "error": "invalid_signature" } }
+    },
+    "webhook": {
+      "items": {
+        "status": 200,
+        "body": {
+          "digest": "6471d07455ff7a89b394dae08e7e693a6f79629db0e14e8f58115b9c90be986a",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "closed": {
+        "status": 200,
+        "body": {
+          "digest": "15f2f682df60c650c5f0e7f4235f410b2402460ac19e9dd6d14271013aa657c0",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "plans": {
+        "status": 200,
+        "body": {
+          "digest": "b89ebbdc643dd7be0defe48e3d48ce7342c62a4cc150f9ef199dab2b7c26e129",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "decision-packets": {
+        "status": 200,
+        "body": {
+          "digest": "a24f6dd883067f6048feacf7c00c1c8c2572ef1a0b09690b7945855555e8ccc0",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
       }
     },
     "garbage": {
-      "status": 401,
-      "body": {
-        "error": "invalid_signature"
-      }
+      "items": { "status": 401, "body": { "error": "invalid_signature" } },
+      "closed": { "status": 401, "body": { "error": "invalid_signature" } },
+      "plans": { "status": 401, "body": { "error": "invalid_signature" } },
+      "decision-packets": { "status": 401, "body": { "error": "invalid_signature" } }
     }
   },
   "process_tree_shutdowns": [
@@ -76,10 +139,16 @@
     }
   ],
   "result": {
-    "merge_base_operator_status": 401,
-    "candidate_operator_status": 200,
-    "candidate_webhook_status": 200,
-    "candidate_garbage_status": 401,
+    "merge_base_statuses": {
+      "operator": { "items": 401, "closed": 401, "plans": 401, "decision-packets": 401 },
+      "webhook": { "items": 200, "closed": 200, "plans": 200, "decision-packets": 200 },
+      "garbage": { "items": 401, "closed": 401, "plans": 401, "decision-packets": 401 }
+    },
+    "candidate_statuses": {
+      "operator": { "items": 200, "closed": 401, "plans": 401, "decision-packets": 401 },
+      "webhook": { "items": 200, "closed": 200, "plans": 200, "decision-packets": 200 },
+      "garbage": { "items": 401, "closed": 401, "plans": 401, "decision-packets": 401 }
+    },
     "status": "succeeded"
   },
   "limits": [

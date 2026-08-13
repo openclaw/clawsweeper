@@ -1,20 +1,20 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-08-12T23:58:40Z",
+  "recorded_at": "2026-08-13T00:22:47Z",
   "provider": "local-container",
-  "lease_id": "cbx_c96e9586c6f8",
-  "slug": "quick-shrimp-ead6",
+  "lease_id": "cbx_23906feb2769",
+  "slug": "pearl-shrimp-a24f",
   "container_runtime": "docker",
   "image": "node:24-bookworm",
   "machine_type": "node_24-bookworm",
-  "tested_head": "c2c81fcdb6861a1b15ae9f9b6531d76c776d433b",
+  "tested_head": "1855dfbb0c0d0b66978a99b20756845e3d6fa131",
   "base_head": "ae36d608d01701af7e06c313be96689068b5c890",
-  "command": "/Users/steipete/Projects/crabbox/bin/crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --timing-json --capture-stdout docs/proof/operator-record-read-auth/container-transcript.txt --capture-stderr docs/proof/operator-record-read-auth/container-stderr.txt --script docs/proof/operator-record-read-auth/run-proof.sh -- c2c81fcdb6861a1b15ae9f9b6531d76c776d433b ae36d608d01701af7e06c313be96689068b5c890",
+  "command": "/Users/steipete/Projects/crabbox/bin/crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --timing-json --capture-stdout docs/proof/operator-record-read-auth/container-transcript.txt --capture-stderr docs/proof/operator-record-read-auth/container-stderr.txt --script docs/proof/operator-record-read-auth/run-proof.sh -- 1855dfbb0c0d0b66978a99b20756845e3d6fa131 ae36d608d01701af7e06c313be96689068b5c890",
   "exit_code": 0,
   "lease_stopped": true,
-  "sync_ms": 1079,
-  "command_ms": 142192,
-  "total_ms": 143285,
+  "sync_ms": 1015,
+  "command_ms": 260400,
+  "total_ms": 261431,
   "node_version": "v24.19.0",
   "pnpm_version": "11.10.0",
   "jq_version": "jq-1.6",
@@ -24,10 +24,24 @@
     "failed": 0
   },
   "real_worker": {
-    "merge_base_operator_status": 401,
-    "candidate_operator_status": 200,
-    "candidate_webhook_status": 200,
-    "candidate_garbage_status": 401,
+    "operator": {
+      "items": 200,
+      "closed": 401,
+      "plans": 401,
+      "decision-packets": 401
+    },
+    "webhook": {
+      "items": 200,
+      "closed": 200,
+      "plans": 200,
+      "decision-packets": 200
+    },
+    "garbage": {
+      "items": 401,
+      "closed": 401,
+      "plans": 401,
+      "decision-packets": 401
+    },
     "full_process_tree_shutdowns": 2,
     "health_down_after_each_shutdown": true
   },
@@ -46,47 +60,42 @@
   },
   "pre_commit_autoreview": [
     {
-      "scope": "complete implementation bundle",
+      "scope": "round-two implementation and matrix",
       "exit_code": 0,
       "accepted_or_actionable_findings": 0,
       "result": "autoreview clean: no accepted/actionable findings reported"
     },
     {
-      "scope": "linked-worktree proof transport correction",
-      "exit_code": 0,
-      "accepted_or_actionable_findings": 0,
-      "result": "autoreview clean: no accepted/actionable findings reported"
-    },
-    {
-      "scope": "container gate prerequisite correction",
-      "exit_code": 0,
-      "accepted_or_actionable_findings": 0,
-      "result": "autoreview clean: no accepted/actionable findings reported"
+      "scope": "proof harness plus stale failed-run transcript",
+      "exit_code": 1,
+      "accepted_or_actionable_findings": 1,
+      "result": "accepted P1 resolved by this successful final-head container receipt"
     }
   ],
   "behavior_report": "docs/proof/operator-record-read-auth/behavior-report.json",
   "content_sha256": {
-    "dashboard/worker.ts": "ea6547649937116d24ee3ab187ca8e9835231584ac585bfc9addeded3b37c922",
-    "docs/proof/operator-record-read-auth/behavior-contract.md": "c0c1825dd97733ea09194da9554f805a9fb9404603e6c43d4a15e58bf4ec0525",
-    "docs/proof/operator-record-read-auth/red-green.md": "4d54adab56e97ecb21fa9f6dea49313762d904a4704deae38e8d2e9f27923037",
-    "docs/proof/operator-record-read-auth/run-proof.mjs": "521718fca6b486d29bd649d27f3628ce225903f4b3a9ff27def531268ec51c29",
-    "docs/proof/operator-record-read-auth/run-proof.sh": "a8698271a34774193d753901386f71e14f696e4038678786467e3c40e07fe924",
-    "test/dashboard-worker-publication-lifecycle.test.ts": "8484d0e38125141f4388b9db1f5c5656b1e95cf7ae90da5c82f4dad1f852fb47"
+    "dashboard/worker.ts": "5508c1bfe6a685ba62b22d8ceada83c756b35f48c730a80b42cbd2bd10ec41bc",
+    "docs/proof/operator-record-read-auth/behavior-contract.md": "a950aa0ca94f2e6c396209140c055ac5994e7680cd0267f6fa5f230feb1ed786",
+    "docs/proof/operator-record-read-auth/red-green.md": "7c60ddb812795928ba08d988fb351c269ca1760bf1ff75e9ad3175e955bade63",
+    "docs/proof/operator-record-read-auth/run-proof.mjs": "f6b9f2e2261acaf105f50e55180e92dacaf3282fe2eca4df1605bd99992588a9",
+    "docs/proof/operator-record-read-auth/run-proof.sh": "d085561567bd4ab3659d6aecb78ff419d745dfecc6c1c0ef0f8f3c2882eae2c4",
+    "test/dashboard-worker-publication-lifecycle.test.ts": "dbcce41ccc3ecb38620bea13d4c93d0eff9f317b24c8b569e9dfd1fe4bec0c93"
   },
-  "transcript_sha256": "46028317a5ca54ccc1f9f1856d7369f2c148c4e1c4d5920446ee037d579f92a5",
+  "transcript_sha256": "8e1da1d966baeccd428df56d89cf06701d60c5606fbc9ddcd53394c210664e90",
   "stderr_sha256": "f558a75380196784725021d1f644597a31a196bb0ccd1f16542c0b6fda2c7e39",
   "secret_scan": {
     "tool": "trufflehog 3.96.0",
     "command": "trufflehog filesystem --no-update --results=verified,unknown --fail --fail-on-scan-errors docs/proof/operator-record-read-auth/container-transcript.txt docs/proof/operator-record-read-auth/container-stderr.txt",
     "exit_code": 0,
     "chunks": 2,
-    "bytes": 5913,
+    "bytes": 9815,
     "verified_secrets": 0,
     "unknown_secrets": 0
   },
   "cleanup": {
-    "owned_lease_absent_from_local_container_list": true,
+    "owned_success_lease_absent_from_local_container_list": true,
+    "owned_failed_lease_absent_from_local_container_list": true,
     "unrelated_preexisting_exited_lease_untouched": true,
-    "failed_attempt_artifacts_moved_to_macos_trash": true
+    "failed_capture_moved_to_macos_trash": true
   }
 }

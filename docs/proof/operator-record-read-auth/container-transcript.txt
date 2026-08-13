@@ -1,7 +1,7 @@
 PROOF_PHASE=environment
 provider=local-container
 image=node:24-bookworm
-head=c2c81fcdb6861a1b15ae9f9b6531d76c776d433b
+head=1855dfbb0c0d0b66978a99b20756845e3d6fa131
 base=ae36d608d01701af7e06c313be96689068b5c890
 head_attestation=explicit_argument_with_content_hashes
 v24.19.0
@@ -9,7 +9,7 @@ v24.19.0
 jq-1.6
 PROOF_PHASE=corepack
 
-added 1 package in 274ms
+added 1 package in 337ms
 11.10.0
 PROOF_PHASE=install
 ? Verifying lockfile against supply-chain policies (79 entries)...
@@ -26,8 +26,8 @@ Packages: +19
    │                                               │
    ╰───────────────────────────────────────────────╯
 
-✓ Lockfile passes supply-chain policies (79 entries in 528ms)
-Progress: resolved 19, reused 0, downloaded 17, added 17
+✓ Lockfile passes supply-chain policies (79 entries in 464ms)
+Progress: resolved 19, reused 0, downloaded 16, added 16
 Progress: resolved 19, reused 0, downloaded 19, added 19, done
 
 dependencies:
@@ -41,10 +41,10 @@ devDependencies:
 + oxlint 1.73.0
 + oxlint-tsgolint 0.24.0
 
-Done in 1.8s using pnpm v11.10.0
+Done in 3.1s using pnpm v11.10.0
 PROOF_PHASE=build
 PROOF_PHASE=focused-router-test
-✔ canonical record reads accept distinct webhook and operator secrets (20.805956ms)
+✔ canonical record operator auth is scoped to items (29.007503ms)
 ℹ tests 1
 ℹ suites 0
 ℹ pass 1
@@ -52,13 +52,13 @@ PROOF_PHASE=focused-router-test
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 164.649768
+ℹ duration_ms 174.1721
 PROOF_PHASE=real-worker
 {
   "schema": "clawsweeper-operator-record-read-auth-proof/v1",
-  "generated_at": "2026-08-12T23:56:21.024Z",
+  "generated_at": "2026-08-13T00:18:03.379Z",
   "merge_base": "ae36d608d01701af7e06c313be96689068b5c890",
-  "head": "c2c81fcdb6861a1b15ae9f9b6531d76c776d433b",
+  "head": "1855dfbb0c0d0b66978a99b20756845e3d6fa131",
   "runtime": "sequential real wrangler dev --local Workers over loopback HTTP",
   "configuration": {
     "secrets_distinct": true,
@@ -69,51 +69,189 @@ PROOF_PHASE=real-worker
     "baseline_source": "exact public GitHub commit"
   },
   "before": {
-    "webhook": {
-      "status": 200,
-      "body": {
-        "digest": "0f26c70ecb4fcf26431384b70af9851d87404a8a497f363974a247080f8b9e11",
-        "revision": 1,
-        "content_matches": true,
-        "updated_at_valid": true
+    "operator": {
+      "items": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "closed": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "plans": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "decision-packets": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
       }
     },
-    "operator": {
-      "status": 401,
-      "body": {
-        "error": "invalid_signature"
+    "webhook": {
+      "items": {
+        "status": 200,
+        "body": {
+          "digest": "6471d07455ff7a89b394dae08e7e693a6f79629db0e14e8f58115b9c90be986a",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "closed": {
+        "status": 200,
+        "body": {
+          "digest": "15f2f682df60c650c5f0e7f4235f410b2402460ac19e9dd6d14271013aa657c0",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "plans": {
+        "status": 200,
+        "body": {
+          "digest": "b89ebbdc643dd7be0defe48e3d48ce7342c62a4cc150f9ef199dab2b7c26e129",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "decision-packets": {
+        "status": 200,
+        "body": {
+          "digest": "a24f6dd883067f6048feacf7c00c1c8c2572ef1a0b09690b7945855555e8ccc0",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
       }
     },
     "garbage": {
-      "status": 401,
-      "body": {
-        "error": "invalid_signature"
+      "items": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "closed": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "plans": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "decision-packets": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
       }
     }
   },
   "after": {
-    "webhook": {
-      "status": 200,
-      "body": {
-        "digest": "0f26c70ecb4fcf26431384b70af9851d87404a8a497f363974a247080f8b9e11",
-        "revision": 1,
-        "content_matches": true,
-        "updated_at_valid": true
+    "operator": {
+      "items": {
+        "status": 200,
+        "body": {
+          "digest": "6471d07455ff7a89b394dae08e7e693a6f79629db0e14e8f58115b9c90be986a",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "closed": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "plans": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "decision-packets": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
       }
     },
-    "operator": {
-      "status": 200,
-      "body": {
-        "digest": "0f26c70ecb4fcf26431384b70af9851d87404a8a497f363974a247080f8b9e11",
-        "revision": 1,
-        "content_matches": true,
-        "updated_at_valid": true
+    "webhook": {
+      "items": {
+        "status": 200,
+        "body": {
+          "digest": "6471d07455ff7a89b394dae08e7e693a6f79629db0e14e8f58115b9c90be986a",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "closed": {
+        "status": 200,
+        "body": {
+          "digest": "15f2f682df60c650c5f0e7f4235f410b2402460ac19e9dd6d14271013aa657c0",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "plans": {
+        "status": 200,
+        "body": {
+          "digest": "b89ebbdc643dd7be0defe48e3d48ce7342c62a4cc150f9ef199dab2b7c26e129",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "decision-packets": {
+        "status": 200,
+        "body": {
+          "digest": "a24f6dd883067f6048feacf7c00c1c8c2572ef1a0b09690b7945855555e8ccc0",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
       }
     },
     "garbage": {
-      "status": 401,
-      "body": {
-        "error": "invalid_signature"
+      "items": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "closed": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "plans": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "decision-packets": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
       }
     }
   },
@@ -132,10 +270,46 @@ PROOF_PHASE=real-worker
     }
   ],
   "result": {
-    "merge_base_operator_status": 401,
-    "candidate_operator_status": 200,
-    "candidate_webhook_status": 200,
-    "candidate_garbage_status": 401,
+    "merge_base_statuses": {
+      "operator": {
+        "items": 401,
+        "closed": 401,
+        "plans": 401,
+        "decision-packets": 401
+      },
+      "webhook": {
+        "items": 200,
+        "closed": 200,
+        "plans": 200,
+        "decision-packets": 200
+      },
+      "garbage": {
+        "items": 401,
+        "closed": 401,
+        "plans": 401,
+        "decision-packets": 401
+      }
+    },
+    "candidate_statuses": {
+      "operator": {
+        "items": 200,
+        "closed": 401,
+        "plans": 401,
+        "decision-packets": 401
+      },
+      "webhook": {
+        "items": 200,
+        "closed": 200,
+        "plans": 200,
+        "decision-packets": 200
+      },
+      "garbage": {
+        "items": 401,
+        "closed": 401,
+        "plans": 401,
+        "decision-packets": 401
+      }
+    },
     "status": "succeeded"
   },
   "limits": [
@@ -159,11 +333,11 @@ PROOF_PHASE=full-gate
 ℹ fail 0
 ℹ skipped 8
 PROOF_PHASE=content
-ea6547649937116d24ee3ab187ca8e9835231584ac585bfc9addeded3b37c922  dashboard/worker.ts
-c0c1825dd97733ea09194da9554f805a9fb9404603e6c43d4a15e58bf4ec0525  docs/proof/operator-record-read-auth/behavior-contract.md
-4d54adab56e97ecb21fa9f6dea49313762d904a4704deae38e8d2e9f27923037  docs/proof/operator-record-read-auth/red-green.md
-521718fca6b486d29bd649d27f3628ce225903f4b3a9ff27def531268ec51c29  docs/proof/operator-record-read-auth/run-proof.mjs
-a8698271a34774193d753901386f71e14f696e4038678786467e3c40e07fe924  docs/proof/operator-record-read-auth/run-proof.sh
-8484d0e38125141f4388b9db1f5c5656b1e95cf7ae90da5c82f4dad1f852fb47  test/dashboard-worker-publication-lifecycle.test.ts
+5508c1bfe6a685ba62b22d8ceada83c756b35f48c730a80b42cbd2bd10ec41bc  dashboard/worker.ts
+a950aa0ca94f2e6c396209140c055ac5994e7680cd0267f6fa5f230feb1ed786  docs/proof/operator-record-read-auth/behavior-contract.md
+7c60ddb812795928ba08d988fb351c269ca1760bf1ff75e9ad3175e955bade63  docs/proof/operator-record-read-auth/red-green.md
+f6b9f2e2261acaf105f50e55180e92dacaf3282fe2eca4df1605bd99992588a9  docs/proof/operator-record-read-auth/run-proof.mjs
+d085561567bd4ab3659d6aecb78ff419d745dfecc6c1c0ef0f8f3c2882eae2c4  docs/proof/operator-record-read-auth/run-proof.sh
+dbcce41ccc3ecb38620bea13d4c93d0eff9f317b24c8b569e9dfd1fe4bec0c93  test/dashboard-worker-publication-lifecycle.test.ts
 source_status=git_metadata_unavailable_after_linked-worktree_sync
 PROOF_RESULT=pass
