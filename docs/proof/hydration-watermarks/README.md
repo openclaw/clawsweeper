@@ -1,13 +1,13 @@
 # Per-PR hydration watermark proof
 
-This receipt proves the review-side hydration snapshot and batched activity-revision validation at the
-implementation head recorded in `receipt.json`, using Docker-backed Crabbox `local-container`.
+The signed Crabbox receipt proves the review-side hydration snapshot and activity-revision validation
+at the implementation head recorded in its command, using Docker-backed Crabbox `local-container`.
 
 The deterministic counting fixture models three unchanged and two changed PRs. Legacy hydration is
-`2 * P = 10` commit/review-comment list reads. The candidate makes one batched GraphQL request for
-the five planned PRs, one hydration-time GraphQL revision check for each of the three cache-hit
-candidates, zero list reads for those unchanged PRs, one `since` review-comment read for an
-edited-comment PR, and two full reads for a changed-head PR: 7 total requests. Changed
+`2 * P = 10` commit/review-comment list reads. The candidate makes four GraphQL requests total: one
+batched planning request for the five PRs plus one hydration-time revision check for each of the three
+cache-hit candidates. Those unchanged PRs make zero list reads; an edited-comment PR makes one
+`since` review-comment read and a changed-head PR makes two full reads: 7 total requests. Changed
 hydration windows and complete inputs compare byte-for-byte with fresh full hydration. A
 delete-plus-add fixture proves an invisible deletion causes merged ID cardinality to exceed the live
 count and falls back to a full read.
@@ -48,8 +48,8 @@ replaces only the snapshot front-matter value with `unknown`; the review body re
 and the next cycle rehydrates from GitHub. The boundary regression covers both this oversized fallback
 and normal-size snapshot retention.
 
-The full `pnpm run check` gate passed 3,417 tests: 3,409 passed, 8 skipped, and 0 failed. The focused
-planner/coordinator/context/workflow proof passed 154 of 154 tests. The normalized transcript and stderr were
+The full `pnpm run check` gate passed 3,419 tests: 3,411 passed, 8 skipped, and 0 failed. The focused
+planner/coordinator/context/workflow proof passed 156 of 156 tests. The normalized transcript and stderr were
 scanned with TruffleHog 3.96.0: 0 verified and 0 unknown secrets.
 
 The canonical Worker report owns the cache metadata; the Git `clawsweeper-state` branch receives no
