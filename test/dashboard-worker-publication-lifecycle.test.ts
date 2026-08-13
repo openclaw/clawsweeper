@@ -301,6 +301,16 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
   );
 
   const batchLeased = leasedExactReviewPublicationItem(702, "7020");
+  const commandProducerDecision = {
+    ...batchLeased.decision.publication.producerDecision,
+    itemKind: "pull_request" as const,
+    sourceEvent: "issues",
+    sourceAction: "legacy_dispatch",
+    commandStatusMarker: `<!-- clawsweeper-command-status:702:re_review:${"c".repeat(40)} -->`,
+    statusCommentId: 7_020,
+  };
+  batchLeased.decision.publication.producerDecision = commandProducerDecision;
+  batchLeased.leaseDecision.publication.producerDecision = commandProducerDecision;
   batchLeased.revision = 4;
   batchLeased.leaseRevision = 4;
   batchLeased.claimGeneration = 2;
@@ -395,6 +405,62 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     env,
   );
   assert.equal((await repeatedBatch.json()).deduped, true);
+  const driftedBatchPayload = {
+    ...batchPayload,
+    operations: [
+      {
+        ...batchPayload.operations[0],
+        contentBase64: "eQ==",
+      },
+    ],
+  };
+  const driftedBatchBody = JSON.stringify(driftedBatchPayload);
+  const driftedBatchSignature = `sha256=${createHmac("sha256", "test-secret").update(driftedBatchBody).digest("hex")}`;
+  const driftedBatch = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/publication-batch-results", {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": driftedBatchSignature },
+      body: driftedBatchBody,
+    }),
+    env,
+  );
+  assert.equal(driftedBatch.status, 202);
+  assert.deepEqual(await driftedBatch.json(), {
+    ok: true,
+    accepted: false,
+    deduped: true,
+    superseded: false,
+    superseded_revisions: [],
+    canonical_target_key: "openclaw/openclaw#702",
+    fence_key: batchLeased.key,
+    state_commit_sha: "do-revision:4",
+  });
+  const retainedCanonical = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/records/openclaw-openclaw/items/702"),
+  );
+  assert.equal(retainedCanonical.status, 200);
+  assert.equal((await retainedCanonical.json()).content, "x");
+
+  const conflictingDirectPayload = {
+    ...payload,
+    operations: [{ ...payload.operations[0], contentBase64: "eQ==" }],
+  };
+  const conflictingDirectBody = JSON.stringify(conflictingDirectPayload);
+  const conflictingDirectSignature = `sha256=${createHmac("sha256", "test-secret").update(conflictingDirectBody).digest("hex")}`;
+  const conflictingDirect = await worker.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": conflictingDirectSignature },
+      body: conflictingDirectBody,
+    }),
+    env,
+  );
+  assert.equal(conflictingDirect.status, 400);
+  assert.deepEqual(await conflictingDirect.json(), {
+    error: "invalid_direct_publication_plan",
+    fallback_required: true,
+    detail: "conflicting direct publication retry",
+  });
   const wrongFencePayload = {
     ...batchPayload,
     fenceKey: "openclaw/openclaw#702",

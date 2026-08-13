@@ -3497,7 +3497,7 @@ test("head-mismatch supersession enforces target and row caps", async () => {
   assert.deepEqual(rowSummary.skip_reasons, { head_mismatch_resolution_partial: 1 });
 });
 
-test("head-mismatch supersession is mutation-free in dry-run and excludes unrelated reasons", async () => {
+test("head-mismatch supersession includes proven tuple failures but excludes workflow cancellation", async () => {
   const staleHead = "a".repeat(40);
   const liveHead = "b".repeat(40);
   const stale = (id, reason) => {
@@ -3524,11 +3524,45 @@ test("head-mismatch supersession is mutation-free in dry-run and excludes unrela
     canonicalRecords: new Map([[7, canonicalRecordEnvelope("openclaw/repo", 7, liveHead)]]),
   });
   assert.equal(excluded.first.code, 0, excluded.first.stderr);
-  assert.equal(excluded.resolutions.length, 0);
-  assert.equal(excluded.canonicalRecordRequests.length, 0);
+  assert.equal(excluded.resolutions.length, 1);
+  assert.deepEqual(excluded.resolutions[0].ids, ["tuple"]);
+  assert.equal(excluded.resolutions[0].resolution_outcome, "superseded");
+  assert.equal(excluded.canonicalRecordRequests.length, 1);
   assert.deepEqual(JSON.parse(excluded.first.stdout).skip_reasons, {
     head_mismatch_out_of_scope: 1,
   });
+});
+
+test("automatic reconciliation recovers a current-head tuple failure instead of superseding it", async () => {
+  const liveHead = "b".repeat(40);
+  const item = row(
+    "tuple-current",
+    "publication:tuple-current",
+    1,
+    "tuple_protocol_invalid",
+    true,
+    "eligible",
+    "openclaw/repo#7",
+  );
+  item.item = {
+    decision: { publication: { producerDecision: { sourceHeadSha: liveHead } } },
+  };
+  const scenario = await automaticReconcileScenario({
+    rows: [item],
+    pullRequestHeads: new Map([[7, liveHead]]),
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.resolutions.length, 0);
+  assert.equal(scenario.canonicalRecordRequests.length, 0);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["tuple-current"]],
+  );
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.superseded_targets, 0);
+  assert.deepEqual(summary.skip_reasons, {});
 });
 
 test("automatic recovery revalidates the live GitHub target after cleanup", async () => {
