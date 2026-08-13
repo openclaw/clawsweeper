@@ -1,22 +1,23 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-08-13T03:50:54Z",
+  "recorded_at": "2026-08-13T04:40:54Z",
   "provider": "local-container",
-  "lease_id": "cbx_0d8a7af39abe",
-  "slug": "brisk-krill-80af",
+  "lease_id": "cbx_acbfe7ed20be",
+  "slug": "jade-barnacle-70da",
   "container_runtime": "docker",
   "image": "node:24-bookworm",
   "machine_type": "node_24-bookworm",
-  "tested_head": "553def3061320c864251c6abf7288eb9ba14a905",
-  "command": "crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --timing-json --capture-stdout docs/proof/issue-fixedsha-batch/container-transcript.txt --capture-stderr docs/proof/issue-fixedsha-batch/container-stderr.txt --script docs/proof/issue-fixedsha-batch/run-proof.sh -- 553def3061320c864251c6abf7288eb9ba14a905",
+  "tested_head": "24f1fe67d59e14fbadc3b09df4b644e595696250",
+  "command": "crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --allow-env GH_TOKEN --timing-json --capture-stdout docs/proof/issue-fixedsha-batch/container-transcript.txt --capture-stderr docs/proof/issue-fixedsha-batch/container-stderr.txt --script docs/proof/issue-fixedsha-batch/run-proof.sh -- 24f1fe67d59e14fbadc3b09df4b644e595696250",
   "exit_code": 0,
   "lease_stopped": true,
-  "sync_ms": 963,
-  "command_ms": 506841,
-  "total_ms": 507840,
+  "sync_ms": 1110,
+  "command_ms": 181148,
+  "total_ms": 182303,
   "node_version": "v24.19.0",
   "pnpm_version": "11.10.0",
   "jq_version": "jq-1.6",
+  "gh_version": "gh version 2.23.0 (2023-02-27 Debian 2.23.0+dfsg1-1)",
   "counting_proof": {
     "repeats": 4,
     "cold": 3,
@@ -30,6 +31,19 @@
     "total": 33,
     "passed": 33,
     "failed": 0
+  },
+  "live_transport": {
+    "read_only": true,
+    "repository": "openclaw/clawsweeper",
+    "issue": 1135,
+    "pull": 1138,
+    "setup_transport_calls": 3,
+    "resolver_transport_routes": ["repository", "pulls_list", "commit_pulls", "commit_pulls"],
+    "before_commit_pulls": 7,
+    "after_pull_lists": 1,
+    "after_commit_pulls": 2,
+    "repeat_github_calls": 0,
+    "result": "PASS"
   },
   "full_gate": {
     "command": "pnpm run check",
@@ -51,28 +65,36 @@
     "accepted_or_actionable_findings": 0,
     "result": "autoreview clean: no accepted/actionable findings reported"
   },
+  "live_transport_autoreview": {
+    "command": "autoreview --mode local --prompt <live-transport-proof-scope> --stream-engine-output",
+    "exit_code": 0,
+    "accepted_or_actionable_findings": 0,
+    "result": "autoreview clean: no accepted/actionable findings reported"
+  },
   "content_sha256": {
     "src/clawsweeper-review-command-dependencies.ts": "4fd611f268ae6e0a8478d8f8ee2255b90d558b70332b8a1633fd45a8a33dfb1f",
     "src/clawsweeper-review-command-workflow.ts": "eb4291c487828ebe210ad5f23599318b66bd40f4a18dcef1b8f502e5d46398cd",
     "src/clawsweeper-status-context.ts": "845bfaf18484d459fc0e0baf7df5fad9bad3c665323527a89bf6eab099d2a870",
     "test/fixed-sha-pull-resolution.test.ts": "55c0f839a5ae98cf49bc7d60928c671b64e7e1acdc6f5e9e62573c6ae39a9c71",
-    "docs/proof/issue-fixedsha-batch/behavior-contract.md": "8374fc073cccdc0781e95de349f7579f76f6e064c61ebe3ec92f6275da9cb1a3",
-    "docs/proof/issue-fixedsha-batch/run-proof.sh": "1a277d82d51db41a6eb755a0f17aecf4c46106cc5b8deb70ab0ed2e5fee2e252"
+    "docs/proof/issue-fixedsha-batch/behavior-contract.md": "f4a7056902db38c0e1d8c86fe099a31265cb23788f120b55659a52a92b538a79",
+    "docs/proof/issue-fixedsha-batch/run-proof.sh": "d987041b98003e5efb1674b56f41b6d0fbe9377658fc6bdbba9120d32e075cdd",
+    "docs/proof/issue-fixedsha-batch/real-transport-proof.mjs": "f8a2aaf3d9e690c2a218296c382a2562a0e541ce52f157abb4c00ac6379c2c94"
   },
-  "transcript_sha256": "1bceea36d8587469afb5a13b7367d4f82ad4522d91c320098667a4e0e2ce6f5e",
-  "stderr_sha256": "b55d427c322c8acc9c32df4b97275762551bfbe4ce994a3dd3fd7fb8844d5a04",
+  "transcript_sha256": "37093c654d4edbe9b81ab9ce32329706478c789e8ad093f160267a14e7b73bac",
+  "stderr_sha256": "f9551d11b5dc2544f7d064e9b578e5a881400fd212183cc5debd526d97cb2a27",
   "secret_scan": {
     "tool": "trufflehog 3.96.0",
     "command": "trufflehog filesystem --no-update --results=verified,unknown --fail --fail-on-scan-errors docs/proof/issue-fixedsha-batch/container-transcript.txt docs/proof/issue-fixedsha-batch/container-stderr.txt",
     "exit_code": 0,
     "chunks": 59,
-    "bytes": 763609,
+    "bytes": 764688,
     "verified_secrets": 0,
     "unknown_secrets": 0
   },
   "cleanup": {
     "owned_lease_absent_from_local_container_list": true,
     "unrelated_preexisting_exited_lease_untouched": true,
-    "failed_run_captures_moved_to_macos_trash": true
+    "failed_run_captures_moved_to_macos_trash": true,
+    "credential_task_window_closed": true
   }
 }

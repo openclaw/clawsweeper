@@ -1,7 +1,7 @@
 # Fixed-SHA issue enrichment proof
 
 This receipt proves the review-side fixed-SHA resolver at implementation head
-`553def3061320c864251c6abf7288eb9ba14a905` in a Docker-backed Crabbox
+`24f1fe67d59e14fbadc3b09df4b644e595696250` in a Docker-backed Crabbox
 `local-container` lease.
 
 The counted fixture follows the real review path. Four repeated issue/fixed-SHA pairs carry their
@@ -10,6 +10,11 @@ matches a recent pull's unique merge SHA, one uses the exact lookup for a shared
 absent from the recent list and falls back to the per-SHA commit-pulls endpoint. The legacy formula is
 `R + C = 4 + 3 = 7` `commit_pulls` requests. The candidate makes one recent-pulls request, two bounded
 fallbacks, and zero requests for repeats: `1 + C_unmatched = 3` counted requests.
+
+The same request formula also passed through the real GitHub CLI transport against public
+`openclaw/clawsweeper` PR #1138 and issue #1135. Four prior-report repeats made no `gh` call, the
+real merge SHA used one recent-pulls list, and the real head and interior commit SHAs used two exact
+commit-pulls fallbacks; all three resolved PR #1138. The run was read-only.
 
 The full `pnpm run check` gate passed 3,407 tests: 3,399 passed, 8 skipped, and 0 failed. The focused
 resolver/policy proof passed 33 of 33 tests. The transcript and stderr were scanned with TruffleHog
@@ -20,7 +25,9 @@ The first proof attempt reached the full gate but the base `node:24-bookworm` im
 that repository test prerequisite. ClawSweeper's first review then found that head SHAs can be shared
 by multiple PRs, so the repaired resolver reserves the list fast path for one unambiguous merge-SHA
 match and sends head-only or ambiguous matches through the legacy exact endpoint. The refreshed
-successful run used lease `cbx_0d8a7af39abe`; Crabbox stopped it automatically. One unrelated
+successful live-transport run used lease `cbx_acbfe7ed20be`; Crabbox stopped it automatically. Two
+credential/rate-limit attempts stopped before tests, their captures were discarded, and the frozen
+harness reran unchanged after quota reset. One unrelated
 pre-existing exited local-container lease was left untouched.
 
 This is controlled fixture evidence. It does not mutate GitHub, publish canonical Worker records,

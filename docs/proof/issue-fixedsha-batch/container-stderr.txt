@@ -1,4 +1,5 @@
 debconf: delaying package configuration, since apt-utils is not installed
+debconf: delaying package configuration, since apt-utils is not installed
 ! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-11.10.0.tgz
 $ tsc -p tsconfig.json
 $ pnpm run check:parallel
