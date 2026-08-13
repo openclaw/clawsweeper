@@ -464,13 +464,19 @@ ${profileStatusEnd(profile)}`;
     return resolved;
   }
 
-  function pullMatchesFixedSha(value: unknown, fixedSha: string): boolean {
+  function pullFixedShaMatch(value: unknown, fixedSha: string): "merge" | "head" | null {
     const pull = asRecord(value);
     const headSha = asRecord(pull.head).sha;
     const mergeCommitSha = pull.merge_commit_sha;
-    return [headSha, mergeCommitSha].some(
-      (sha) => typeof sha === "string" && sha.toLowerCase() === fixedSha.toLowerCase(),
-    );
+    if (
+      typeof mergeCommitSha === "string" &&
+      mergeCommitSha.toLowerCase() === fixedSha.toLowerCase()
+    ) {
+      return "merge";
+    }
+    return typeof headSha === "string" && headSha.toLowerCase() === fixedSha.toLowerCase()
+      ? "head"
+      : null;
   }
 
   function commitMessageForFixedSha(fixedSha: string): string {
@@ -527,12 +533,16 @@ ${profileStatusEnd(profile)}`;
     try {
       const defaultBranch = defaultBranchForFixedSha();
       if (!defaultBranch) return null;
-      const recentMatches = recentPullsForFixedSha().filter((pull) =>
-        pullMatchesFixedSha(pull, fixedSha),
+      const recentPulls = recentPullsForFixedSha();
+      const recentMergeMatches = recentPulls.filter(
+        (pull) => pullFixedShaMatch(pull, fixedSha) === "merge",
       );
-      if (recentMatches.length > 0) {
+      const hasRecentHeadMatch = recentPulls.some(
+        (pull) => pullFixedShaMatch(pull, fixedSha) === "head",
+      );
+      if (recentMergeMatches.length === 1 && !hasRecentHeadMatch) {
         const bodyMatch = fixedPullRequestFromCommitPulls(
-          recentMatches,
+          recentMergeMatches,
           "GitHub commit PR lookup",
           issueNumber,
           "",
@@ -541,7 +551,7 @@ ${profileStatusEnd(profile)}`;
         if (bodyMatch) return bodyMatch;
         const commitMessage = commitMessageForFixedSha(fixedSha);
         const commitMatch = fixedPullRequestFromCommitPulls(
-          recentMatches,
+          recentMergeMatches,
           "GitHub commit PR lookup",
           issueNumber,
           commitMessage,

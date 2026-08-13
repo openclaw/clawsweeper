@@ -13,7 +13,19 @@ function statusContextWithCalls() {
       head: { sha: "cold-list-b" },
     },
   ];
-  const fallbackPulls = new Map([["cold-fallback", [pull(703, "cold-fallback", 103)]]]);
+  const fallbackPulls = new Map([
+    [
+      "cold-list-b",
+      [
+        recentPulls[1],
+        {
+          ...pull(704, "other-merge-for-shared-head", 102),
+          head: { sha: "cold-list-b" },
+        },
+      ],
+    ],
+    ["cold-fallback", [pull(703, "cold-fallback", 103)]],
+  ]);
   const ghJson = <T>(args: string[]): T => {
     const path = args[1] ?? "";
     calls.push(path);
@@ -97,7 +109,7 @@ test("fixed-SHA issue enrichment reuses repeats and batches cold resolutions", (
   ] as const;
   const coldFixtures = [
     [101, "cold-list-a", 701],
-    [102, "cold-list-b", 702],
+    [102, "cold-list-b", 704],
     [103, "cold-fallback", 703],
   ] as const;
 
@@ -130,10 +142,28 @@ test("fixed-SHA issue enrichment reuses repeats and batches cold resolutions", (
   };
   assert.deepEqual(before, { commitPulls: 7, pullLists: 0 });
   assert.equal(pullLists.length, 1, "one cold pull-list request per repository cycle");
-  assert.deepEqual(commitPulls, ["repos/openclaw/openclaw/commits/cold-fallback/pulls"]);
+  assert.deepEqual(commitPulls, [
+    "repos/openclaw/openclaw/commits/cold-list-b/pulls",
+    "repos/openclaw/openclaw/commits/cold-fallback/pulls",
+  ]);
   assert.deepEqual(
     { commitPulls: commitPulls.length, pullLists: pullLists.length },
-    { commitPulls: 1, pullLists: 1 },
+    { commitPulls: 2, pullLists: 1 },
+  );
+});
+
+test("a shared head SHA preserves exact association ordering", () => {
+  const { calls, context } = statusContextWithCalls();
+  const resolved = context.attachFixedPullRequest(
+    closeDecision({ fixedSha: "cold-list-b" }),
+    item({ number: 102, kind: "issue" }),
+    {},
+  );
+
+  assert.equal(resolved.fixedPullRequest?.number, 704);
+  assert.deepEqual(
+    calls.filter((path) => /\/commits\/[^/]+\/pulls$/.test(path)),
+    ["repos/openclaw/openclaw/commits/cold-list-b/pulls"],
   );
 });
 
