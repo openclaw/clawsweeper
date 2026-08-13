@@ -31,9 +31,26 @@ echo "PROOF_MERGE_BASE=$proof_base"
 
 proof_bin="$HOME/.local/bin"
 mkdir -p "$proof_bin"
+jq_version="1.8.1"
+case "$(uname -m)" in
+  x86_64) jq_asset="jq-linux-amd64" ;;
+  aarch64 | arm64) jq_asset="jq-linux-arm64" ;;
+  *) echo "unsupported jq architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+jq_dir="$(mktemp -d)"
+curl --fail --show-error --silent --location \
+  "https://github.com/jqlang/jq/releases/download/jq-${jq_version}/${jq_asset}" \
+  --output "$jq_dir/$jq_asset"
+curl --fail --show-error --silent --location \
+  "https://github.com/jqlang/jq/releases/download/jq-${jq_version}/sha256sum.txt" \
+  --output "$jq_dir/sha256sum.txt"
+(cd "$jq_dir" && grep " ${jq_asset}$" sha256sum.txt | sha256sum --check -)
+install -m 0755 "$jq_dir/$jq_asset" "$proof_bin/jq"
+rm -rf "$jq_dir"
 npm install --global --prefix "$HOME/.local" corepack@0.35.0
 corepack enable --install-directory "$proof_bin"
 export PATH="$proof_bin:$PATH"
+jq --version
 pnpm install --frozen-lockfile
 pnpm run check:dashboard-strict
 node --test test/check-dashboard-strict.test.ts

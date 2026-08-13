@@ -27,6 +27,10 @@ receives both revisions from programmatic host-side Git queries and hydrates a
 temporary Git object store from an uncommitted `source.bundle`. The bundle is a
 transport artifact only and is removed after the run.
 
+The container entrypoint installs Corepack and checksum-verifies the official
+jq 1.8.1 static binary before placing both tools under the unprivileged user's
+`$HOME/.local/bin`.
+
 ## Run
 
 From the repository root on Node 24 or newer:
