@@ -31,6 +31,7 @@ import type { RepositoryProfile } from "./repository-profiles.js";
 import type { ReviewSemanticRecord } from "./review-semantic-cache.js";
 import type { ReviewStructuralPullState } from "./review-structural-cache.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
+import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 
 export interface CreateReviewCommandWorkflowDependencies {
   actionLedgerFailureDisposition: (error: unknown) => {
@@ -101,6 +102,7 @@ export interface CreateReviewCommandWorkflowDependencies {
       fullTimelineForRelations?: boolean;
       reviewCacheDigest?: boolean;
       reviewCacheGitDir?: string;
+      prHydrationSnapshot?: PrHydrationSnapshot | null;
     },
   ) => ItemContext;
   commentId: (comment: Record<string, unknown> | undefined) => number | null;

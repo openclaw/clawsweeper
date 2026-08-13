@@ -42,6 +42,7 @@ import {
 import { reviewContentCacheHit } from "./scheduler-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
+import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 
 function reviewStartLeaseCommentUpdatedAt(
   comment: Record<string, unknown> | undefined,
@@ -780,6 +781,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               fullTimelineForRelations: true,
               reviewCacheDigest: true,
               reviewCacheGitDir: openclawDir,
+              prHydrationSnapshot: existingPriorReview
+                ? parsePrHydrationSnapshot(
+                    frontMatterValue(existingPriorReview.markdown, "pr_hydration_snapshot"),
+                  )
+                : null,
             });
         if (previousLocalReviewCommentBody) {
           const previousLocalReview = extractClawSweeperReviewCommentBody(

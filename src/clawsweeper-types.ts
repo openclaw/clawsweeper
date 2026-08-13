@@ -4,6 +4,7 @@ import type { RepositoryProfile } from "./repository-profiles.js";
 import type { ReviewHistoryCycle } from "./review-history.js";
 import type { ReviewSemanticRecord } from "./review-semantic-cache.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
+import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import type { SchedulerDueCandidate } from "./scheduler-policy.js";
 
 /** Shared ClawSweeper domain, review, scheduling, and dashboard shapes. */
@@ -613,6 +614,7 @@ export interface ItemContext {
   pullReviewComments?: unknown[];
   pullReviewCommentsRevision?: string;
   pullReviewActivityCursor?: string;
+  prHydrationSnapshot?: PrHydrationSnapshot;
   pullChecks?: unknown;
   bulkFiler?: BulkFilerReviewContext;
   counts?: {

@@ -32,6 +32,7 @@ import {
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import type { createReportContextRendering } from "./clawsweeper-report-context.js";
 import type { createReportCommentHelpers } from "./clawsweeper-report-comment-helpers.js";
+import { serializePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 
 export function createReportDocumentRendering(
   dependencies: CreateReportRenderingDependencies &
@@ -555,6 +556,7 @@ review_lease_owner: ${options.reviewLeaseOwner ?? "unknown"}
 review_lease_comment_id: ${options.reviewLeaseCommentId ?? "unknown"}
 main_sha: ${options.git.mainSha}
 pull_head_sha: ${pullHeadShaFromContext(options.context) ?? "unknown"}
+pr_hydration_snapshot: ${serializePrHydrationSnapshot(options.context.prHydrationSnapshot)}
 reviewed_pull_state_digest: ${
       reviewedPullStateDigest
         ? (reviewStructuralPullStateDigest(reviewedPullStateDigest) ?? "unknown")
