@@ -8,6 +8,7 @@ import type {
 } from "./clawsweeper-types.js";
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import { stableJson } from "./stable-json.js";
+import { fetchPrCommentActivityRevision } from "./pr-comment-activity-revision.js";
 import {
   hydratePrLists,
   type PrHydrationSnapshot,
@@ -261,6 +262,12 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
               reviewCommentCount: pullReviewCommentCount,
               commentActivityRevision: options.prCommentActivityRevision ?? null,
               prior: options.prHydrationSnapshot ?? null,
+              revalidateCommentActivityRevision: () =>
+                fetchPrCommentActivityRevision({
+                  repo: targetRepo(),
+                  number: item.number,
+                  ghJson,
+                }),
               fetchCommits: () =>
                 ghPagedContextWindow<unknown>(
                   `repos/${targetRepo()}/pulls/${item.number}/commits`,

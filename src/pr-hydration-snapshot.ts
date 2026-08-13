@@ -43,6 +43,7 @@ interface HydratePrListsOptions {
   reviewCommentCount: number;
   commentActivityRevision: string | null;
   prior: PrHydrationSnapshot | null;
+  revalidateCommentActivityRevision: () => string | null;
   fetchCommits: () => ContextHydration<unknown>;
   fetchReviewComments: () => ContextHydration<unknown>;
   fetchCompleteReviewComments: () => unknown[];
@@ -64,13 +65,24 @@ export function hydratePrLists(options: HydratePrListsOptions): PrHydrationResul
   let reviewCommentsIncremental = false;
   let reviewCommentsFullFallback = false;
 
-  const unchanged =
+  const cacheHitCandidate =
     prior !== null &&
     !forceFull &&
     options.commentActivityRevision !== null &&
     prior.commentActivityRevision === options.commentActivityRevision &&
     prior.pullUpdatedAt === options.pullUpdatedAt &&
     prior.reviewCommentCount === options.reviewCommentCount;
+  let hydrationActivityRevision = options.commentActivityRevision;
+  if (cacheHitCandidate) {
+    try {
+      const revision = options.revalidateCommentActivityRevision();
+      hydrationActivityRevision = revision && validActivityRevision(revision) ? revision : null;
+    } catch {
+      hydrationActivityRevision = null;
+    }
+  }
+  const unchanged =
+    cacheHitCandidate && hydrationActivityRevision === prior.commentActivityRevision;
   if (unchanged) {
     reviewComments = prior.reviewComments;
     completeReviewComments = prior.completeReviewComments;
@@ -100,11 +112,11 @@ export function hydratePrLists(options: HydratePrListsOptions): PrHydrationResul
     reviewCommentsFullFallback = prior !== null;
   }
 
-  const snapshot = options.commentActivityRevision
+  const snapshot = hydrationActivityRevision
     ? createPrHydrationSnapshot({
         repo: options.repo,
         number: options.number,
-        commentActivityRevision: options.commentActivityRevision,
+        commentActivityRevision: hydrationActivityRevision,
         pullUpdatedAt: options.pullUpdatedAt,
         headSha: options.headSha,
         commitCount: options.commitCount,

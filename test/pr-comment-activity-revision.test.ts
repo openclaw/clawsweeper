@@ -6,6 +6,7 @@ import {
   PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
   PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE,
 } from "../dist/clawsweeper-review-planning-inventory.js";
+import { fetchPrCommentActivityRevision } from "../dist/pr-comment-activity-revision.js";
 
 function emptyPullRequest() {
   return {
@@ -129,4 +130,32 @@ test("GraphQL errors and incomplete connections fail closed", () => {
     },
   })).fetchPlannedPrActivityRevisions([{ kind: "pull_request", number: 1153 }]);
   assert.equal(incomplete.revisions["1153"], null);
+});
+
+test("hydration-time checks reuse the planning query and revision decoder", () => {
+  const calls: string[][] = [];
+  const revision = fetchPrCommentActivityRevision({
+    repo: "openclaw/clawsweeper",
+    number: 1153,
+    ghJson: (args) => {
+      calls.push(args);
+      return { data: { repository: { pr_1153: activityPullRequest() } } };
+    },
+  });
+  const planned = inventory(() => ({
+    data: { repository: { pr_1153: activityPullRequest() } },
+  })).fetchPlannedPrActivityRevisions([{ kind: "pull_request", number: 1153 }]);
+
+  assert.equal(calls.length, 1);
+  assert.match(queryFrom(calls[0]!), /pr_1153: pullRequest\(number: 1153\)/);
+  assert.equal(revision, planned.revisions["1153"]);
+  assert.throws(
+    () =>
+      fetchPrCommentActivityRevision({
+        repo: "openclaw/clawsweeper",
+        number: 1153,
+        ghJson: () => ({ errors: [{ message: "unavailable" }] }),
+      }),
+    /GraphQL returned errors/,
+  );
 });

@@ -4,7 +4,8 @@
 
 Review hydration persists a bounded snapshot of the PR commit window and complete review-comment
 inputs in the canonical report. When PR `updated_at`, head SHA, commit count, review-comment count, and
-a freshly planned inline-comment activity revision still match, the next review reuses both snapshots
+a freshly planned inline-comment activity revision still match, hydration revalidates that revision
+immediately before consuming the cached comments. Only a just-in-time match reuses both snapshots,
 with zero commit-list or review-comment-list calls.
 Changed PRs preserve the same hydrated inputs by using an edited/new review-comment `since` delta
 when safe and full list reads when force-pushes or invisible deletions require them.
@@ -26,7 +27,11 @@ when safe and full list reads when force-pushes or invisible deletions require t
   head SHA. The existing structural probe or PR detail fetch supplies the exact head without adding a
   request. Planning makes one aliased GraphQL request for up to 100 selected PRs and passes the
   resulting revisions through the shard matrix. Larger plans use `ceil(P / 100)` bounded requests.
-- Fail-closed revision coverage: the revision hashes review count, thread count and IDs, every fetched
+- Consumption-time ownership: `hydratePrLists` treats the planned revision as a cheap first filter.
+  Only when all snapshot watermarks would otherwise hit does it make one GraphQL revision check for
+  that PR. A match permits reuse; a mismatch or check failure takes the normal rehydration path.
+- Fail-closed revision coverage: planning and hydration share the same query and decoder. The revision
+  hashes review count, thread count and IDs, every fetched
   inline-comment ID and `updatedAt`, and each thread's comment count. A connection beyond 40 threads
   or 40 comments per thread, a missing node, or any GraphQL error yields no revision and therefore
   normal hydration rather than cache reuse.
@@ -35,16 +40,22 @@ when safe and full list reads when force-pushes or invisible deletions require t
 
 ## Expected observable behavior
 
-- Three unchanged snapshots make zero commit-list and review-comment-list reads.
+- Three unchanged snapshots make exactly three hydration-time GraphQL revision checks and zero
+  commit-list and review-comment-list reads.
+- An inline-comment edit after planning validation but before hydration is detected by the one
+  just-in-time check and rehydrated. A hydration-time check error also rehydrates and publishes no
+  trusted replacement snapshot.
 - A comment edit with unchanged parent PR `updated_at` and head reuses commits and makes one `since` review-comment
   read; its merged hydration bytes equal a fresh full hydration.
 - A force-push head change performs one full commit-window read and one full review-comment-window
   read; its hydration bytes equal a fresh full hydration.
 - A delete-plus-replacement delta cannot hide the deletion: merged ID cardinality exceeds the live
   `review_comments` count, so hydration discards the delta result and performs a full read.
-- The counting fixture uses `U=3`, `K=2`, and `P=U+K=5`: before is
-  `2 * (U + K) = 10` list reads; after is `G(P) + 0 * U + 3 = 4` total requests, where
-  `G(P)=ceil(P/100)=1` is the batched GraphQL validation and three list reads serve the changed PRs.
+- For `P` planned PRs, `C` planning-approved cache-hit candidates, and `K` PRs that ultimately need
+  list hydration, before is `2 * P` list reads. After is `G(P) + C + L(K)`, where
+  `G(P)=ceil(P/100)` is planning validation, `C` is the one per-candidate hydration check, and
+  `L(K) <= 2 * K` is normal list hydration. The fixture has `P=5`, `C=3`, and `L(K)=3`: 10 reads
+  before versus `1 + 3 + 3 = 7` total requests after.
 - Snapshot JSON larger than 1 MiB is not persisted. Independently, if an otherwise valid snapshot
   would make the fully serialized UTF-8 canonical record exceed 2 MiB, only that snapshot is omitted
   and the next cycle rehydrates normally.

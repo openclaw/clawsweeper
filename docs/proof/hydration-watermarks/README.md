@@ -4,16 +4,18 @@ This receipt proves the review-side hydration snapshot and batched activity-revi
 implementation head recorded in `receipt.json`, using Docker-backed Crabbox `local-container`.
 
 The deterministic counting fixture models three unchanged and two changed PRs. Legacy hydration is
-`2 * (U + K) = 10` commit/review-comment list reads. The candidate makes one batched GraphQL request
-for the five planned PRs, zero list reads for all three unchanged PRs, one `since` review-comment read
-for an edited-comment PR, and two full reads for a changed-head PR: 4 total requests. Changed
+`2 * P = 10` commit/review-comment list reads. The candidate makes one batched GraphQL request for
+the five planned PRs, one hydration-time GraphQL revision check for each of the three cache-hit
+candidates, zero list reads for those unchanged PRs, one `since` review-comment read for an
+edited-comment PR, and two full reads for a changed-head PR: 7 total requests. Changed
 hydration windows and complete inputs compare byte-for-byte with fresh full hydration. A
 delete-plus-add fixture proves an invisible deletion causes merged ID cardinality to exceed the live
 count and falls back to a full read.
 
-The planner validation and same coordinator passed through the real GitHub CLI transport against public
+The planner validation, hydration-time revalidation, and same coordinator passed through the real GitHub CLI transport against public
 `openclaw/clawsweeper` PR #97. The endpoint returned its known edited review comment from a historical
-`since` query. The planner made one GraphQL request; three snapshot reuses made no list call; a
+`since` query. The planner made one GraphQL request; three snapshot reuses each made one just-in-time
+GraphQL revision check and no list call; a
 synthetic activity-revision change with unchanged parent metadata made one live
 `since` request; a synthetic changed head made one live commit-list and one live review-comment-list
 request. The proof is read-only.
@@ -23,7 +25,9 @@ a review, thread, comment ID, and comment timestamp; EDIT advanced the comment t
 moving the parent PR timestamp; DELETE removed the review/thread/comment tuple while the parent PR
 timestamp remained unchanged. The probe comment was deleted and its endpoint returned 404. The
 revision therefore hashes all bounded thread/comment IDs and comment timestamps plus thread, comment,
-and review counts. GraphQL errors and truncated connections fail closed to normal hydration.
+and review counts. The hydration coordinator rechecks that same revision immediately before consuming
+a candidate snapshot. A mismatch or any check error fails closed to normal hydration, so an edit in
+the planning-to-hydration window cannot serve stale input.
 
 ClawSweeper's first review identified that the initial snapshot retained whole REST objects. The
 repaired snapshot now accepts only an exact minimized schema: commit SHA/login/message/author name

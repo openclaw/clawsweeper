@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 
 import { hydratePrLists } from "../../../dist/pr-hydration-snapshot.js";
 import { createReviewPlanningInventory } from "../../../dist/clawsweeper-review-planning-inventory.js";
+import { fetchPrCommentActivityRevision } from "../../../dist/pr-comment-activity-revision.js";
 
 const repo = "openclaw/clawsweeper";
 const number = 97;
@@ -74,6 +75,10 @@ const fetchAll = (kind, path) => {
   transport.push({ kind, path });
   return runGh(["api", `${path}${path.includes("?") ? "&" : "?"}per_page=100`]);
 };
+const fetchHydrationActivityRevision = () => {
+  transport.push({ kind: "graphql_hydration_revision", path: "graphql" });
+  return fetchPrCommentActivityRevision({ repo, number, ghJson: runGh });
+};
 
 const setupActivity = planningInventory.fetchPlannedPrActivityRevisions([
   { kind: "pull_request", number },
@@ -90,6 +95,9 @@ const cold = hydratePrLists({
   reviewCommentCount: pull.review_comments,
   commentActivityRevision: setupActivityRevision,
   prior: null,
+  revalidateCommentActivityRevision: () => {
+    throw new Error("cold hydration must not revalidate");
+  },
   fetchCommits: () => fetchList("commit_list", `repos/${repo}/pulls/${number}/commits`),
   fetchReviewComments: () =>
     fetchList("review_comment_list", `repos/${repo}/pulls/${number}/comments`),
@@ -119,6 +127,7 @@ for (let unchanged = 0; unchanged < 3; unchanged += 1) {
     reviewCommentCount: pull.review_comments,
     commentActivityRevision: cycleActivity.revisions[String(number)],
     prior: cold.snapshot,
+    revalidateCommentActivityRevision: fetchHydrationActivityRevision,
     fetchCommits: () => {
       throw new Error("unchanged commit list must be reused");
     },
@@ -136,7 +145,7 @@ for (let unchanged = 0; unchanged < 3; unchanged += 1) {
   assert.equal(reused.reviewCommentsReused, true);
 }
 assert.equal(
-  transport.filter((entry) => entry.kind !== "graphql_activity_revision").length,
+  transport.filter((entry) => !entry.kind.startsWith("graphql_")).length,
   0,
   "unchanged PRs make zero REST list reads",
 );
@@ -150,6 +159,9 @@ const activityChanged = hydratePrLists({
   reviewCommentCount: pull.review_comments,
   commentActivityRevision: `sha256:${"f".repeat(64)}`,
   prior: cold.snapshot,
+  revalidateCommentActivityRevision: () => {
+    throw new Error("planning already rejected this cache hit");
+  },
   fetchCommits: () => {
     throw new Error("unchanged commit identity must be reused");
   },
@@ -176,6 +188,9 @@ const forced = hydratePrLists({
   reviewCommentCount: pull.review_comments,
   commentActivityRevision: cycleActivity.revisions[String(number)],
   prior: cold.snapshot,
+  revalidateCommentActivityRevision: () => {
+    throw new Error("changed heads are not cache-hit candidates");
+  },
   fetchCommits: () => fetchList("commit_list", `repos/${repo}/pulls/${number}/commits`),
   fetchReviewComments: () =>
     fetchList("review_comment_list", `repos/${repo}/pulls/${number}/comments`),
@@ -190,7 +205,15 @@ assert.equal(forced.reviewCommentsIncremental, false);
 
 assert.deepEqual(
   transport.map((entry) => entry.kind),
-  ["graphql_activity_revision", "review_comment_list_since", "commit_list", "review_comment_list"],
+  [
+    "graphql_activity_revision",
+    "graphql_hydration_revision",
+    "graphql_hydration_revision",
+    "graphql_hydration_revision",
+    "review_comment_list_since",
+    "commit_list",
+    "review_comment_list",
+  ],
 );
 
 console.log(
@@ -208,9 +231,11 @@ console.log(
       changed_prs: 2,
       before: { list_reads: 10 },
       after: {
-        graphql_requests: 1,
+        graphql_requests: 4,
+        planning_graphql_requests: 1,
+        hydration_graphql_requests: 3,
         list_reads: 3,
-        total_requests: 4,
+        total_requests: 7,
         unchanged_list_reads: 0,
       },
       changed_input_equality: {

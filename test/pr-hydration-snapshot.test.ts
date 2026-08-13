@@ -115,6 +115,9 @@ function initialSnapshot(options: {
     reviewCommentCount: options.comments.length,
     commentActivityRevision: activityRevisionA,
     prior: null,
+    revalidateCommentActivityRevision: () => {
+      throw new Error("cold hydration must not revalidate");
+    },
     fetchCommits: () => hydration(options.commits),
     fetchReviewComments: () => hydration(options.comments),
     fetchCompleteReviewComments: () => options.comments,
@@ -127,8 +130,9 @@ function initialSnapshot(options: {
   return result.snapshot;
 }
 
-test("unchanged PR hydration snapshots reuse both lists with zero reads", () => {
+test("unchanged PR hydration snapshots reuse both lists after one hydration-time check", () => {
   let listCalls = 0;
+  let hydrationRevisionCalls = 0;
   const snapshots = [1, 2, 3].map((number) =>
     initialSnapshot({
       number,
@@ -147,6 +151,10 @@ test("unchanged PR hydration snapshots reuse both lists with zero reads", () => 
       reviewCommentCount: 1,
       commentActivityRevision: activityRevisionA,
       prior,
+      revalidateCommentActivityRevision: () => {
+        hydrationRevisionCalls += 1;
+        return activityRevisionA;
+      },
       fetchCommits: () => {
         listCalls += 1;
         throw new Error("unchanged commits must be reused");
@@ -167,6 +175,7 @@ test("unchanged PR hydration snapshots reuse both lists with zero reads", () => 
     assert.equal(result.reviewCommentsReused, true);
   }
   assert.equal(listCalls, 0);
+  assert.equal(hydrationRevisionCalls, 3, "each cache-hit candidate pays one revision check");
 });
 
 test("changed PRs preserve full hydration bytes with partial or full reads", () => {
@@ -184,6 +193,9 @@ test("changed PRs preserve full hydration bytes with partial or full reads", () 
     reviewCommentCount: 1,
     commentActivityRevision: activityRevisionB,
     prior: editPrior,
+    revalidateCommentActivityRevision: () => {
+      throw new Error("planning already rejected this cache hit");
+    },
     fetchCommits: () => {
       changedListCalls += 1;
       throw new Error("unchanged commit identity must reuse the snapshot");
@@ -208,6 +220,9 @@ test("changed PRs preserve full hydration bytes with partial or full reads", () 
     reviewCommentCount: 1,
     commentActivityRevision: activityRevisionB,
     prior: null,
+    revalidateCommentActivityRevision: () => {
+      throw new Error("cold hydration must not revalidate");
+    },
     fetchCommits: () => hydration(oldCommits),
     fetchReviewComments: () => hydration(editedComments),
     fetchCompleteReviewComments: () => editedComments,
@@ -230,6 +245,9 @@ test("changed PRs preserve full hydration bytes with partial or full reads", () 
     reviewCommentCount: 1,
     commentActivityRevision: activityRevisionB,
     prior: forcePrior,
+    revalidateCommentActivityRevision: () => {
+      throw new Error("changed heads are not cache-hit candidates");
+    },
     fetchCommits: () => {
       changedListCalls += 1;
       return hydration(forcedCommits);
@@ -252,6 +270,9 @@ test("changed PRs preserve full hydration bytes with partial or full reads", () 
     reviewCommentCount: 1,
     commentActivityRevision: activityRevisionB,
     prior: null,
+    revalidateCommentActivityRevision: () => {
+      throw new Error("cold hydration must not revalidate");
+    },
     fetchCommits: () => hydration(forcedCommits),
     fetchReviewComments: () => hydration(forcedComments),
     fetchCompleteReviewComments: () => forcedComments,
@@ -259,10 +280,14 @@ test("changed PRs preserve full hydration bytes with partial or full reads", () 
   });
   assert.equal(reviewInputBytes(forced), reviewInputBytes(forcedFresh));
   assert.equal(changedListCalls, 3, "one partial edit read plus two force-push full reads");
-  const graphQlValidationCalls = Math.ceil((3 + 2) / 100);
+  const planningGraphQlCalls = Math.ceil((3 + 2) / 100);
+  const hydrationGraphQlCalls = 3;
   assert.deepEqual(
-    { before: 2 * (3 + 2), after: graphQlValidationCalls + changedListCalls },
-    { before: 10, after: 4 },
+    {
+      before: 2 * (3 + 2),
+      after: planningGraphQlCalls + hydrationGraphQlCalls + changedListCalls,
+    },
+    { before: 10, after: 7 },
   );
 });
 
@@ -284,6 +309,9 @@ test("invisible review-comment deletion falls back to a full read", () => {
     reviewCommentCount: 2,
     commentActivityRevision: activityRevisionB,
     prior,
+    revalidateCommentActivityRevision: () => {
+      throw new Error("planning already rejected this cache hit");
+    },
     fetchCommits: () => {
       throw new Error("commit snapshot should be reused");
     },
@@ -302,7 +330,7 @@ test("invisible review-comment deletion falls back to a full read", () => {
   assert.equal(JSON.stringify(result.completeReviewComments), JSON.stringify(currentComments));
 });
 
-test("failed activity validation never trusts an otherwise unchanged comment snapshot", () => {
+test("an edit between planning and hydration revalidates before using the snapshot", () => {
   const oldComments = [comment(7, firstUpdatedAt, "before")];
   const currentComments = [comment(7, nextUpdatedAt, "after")];
   const prior = initialSnapshot({
@@ -310,6 +338,7 @@ test("failed activity validation never trusts an otherwise unchanged comment sna
     commits: [commit("7".repeat(40), "same")],
     comments: oldComments,
   });
+  let hydrationRevisionCalls = 0;
   let sinceReads = 0;
   const result = hydratePrLists({
     repo,
@@ -318,8 +347,55 @@ test("failed activity validation never trusts an otherwise unchanged comment sna
     headSha: oldHead,
     commitCount: 1,
     reviewCommentCount: 1,
-    commentActivityRevision: null,
+    commentActivityRevision: activityRevisionA,
     prior,
+    revalidateCommentActivityRevision: () => {
+      hydrationRevisionCalls += 1;
+      return activityRevisionB;
+    },
+    fetchCommits: () => {
+      throw new Error("unchanged commit identity should still reuse the snapshot");
+    },
+    fetchReviewComments: () => {
+      throw new Error("the incremental edit should not need a full list");
+    },
+    fetchCompleteReviewComments: () => currentComments,
+    fetchReviewCommentsSince: () => {
+      sinceReads += 1;
+      return currentComments;
+    },
+  });
+
+  assert.equal(hydrationRevisionCalls, 1);
+  assert.equal(sinceReads, 1);
+  assert.equal(result.reviewCommentsReused, false);
+  assert.equal(result.reviewCommentsIncremental, true);
+  assert.equal(result.snapshot?.commentActivityRevision, activityRevisionB);
+  assert.match(reviewInputBytes(result), /after/);
+  assert.doesNotMatch(reviewInputBytes(result), /before/);
+});
+
+test("hydration-time revision check failures rehydrate and do not publish a trusted snapshot", () => {
+  const oldComments = [comment(8, firstUpdatedAt, "before")];
+  const currentComments = [comment(8, nextUpdatedAt, "after")];
+  const prior = initialSnapshot({
+    number: 48,
+    commits: [commit("8".repeat(40), "same")],
+    comments: oldComments,
+  });
+  let sinceReads = 0;
+  const result = hydratePrLists({
+    repo,
+    number: 48,
+    pullUpdatedAt: firstUpdatedAt,
+    headSha: oldHead,
+    commitCount: 1,
+    reviewCommentCount: 1,
+    commentActivityRevision: activityRevisionA,
+    prior,
+    revalidateCommentActivityRevision: () => {
+      throw new Error("GraphQL unavailable during hydration");
+    },
     fetchCommits: () => {
       throw new Error("unchanged commit identity should still reuse the snapshot");
     },
@@ -336,9 +412,8 @@ test("failed activity validation never trusts an otherwise unchanged comment sna
   assert.equal(sinceReads, 1);
   assert.equal(result.reviewCommentsReused, false);
   assert.equal(result.reviewCommentsIncremental, true);
-  assert.equal(result.snapshot, null, "an unvalidated result must not become a trusted cache");
+  assert.equal(result.snapshot, null);
   assert.match(reviewInputBytes(result), /after/);
-  assert.doesNotMatch(reviewInputBytes(result), /before/);
 });
 
 test("hydration snapshot front matter round-trips", () => {
