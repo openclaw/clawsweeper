@@ -6,6 +6,19 @@ expected_blobs_base64=${2:?base64-encoded committed blob manifest is required}
 expected_base=${3:?expected origin/main base commit is required}
 proof_root=docs/proof/health-phantom-queued-run
 proof_prefix=/tmp/health-phantom-proof-prefix
+candidate_overlay=/tmp/health-phantom-candidate-overlay.tar
+proof_files=(
+  dashboard/github-webhook-read-model.ts
+  dashboard/worker.ts
+  docs/github-webhook-read-model.md
+  docs/live-dashboard.md
+  "$proof_root/README.md"
+  "$proof_root/behavior-contract.md"
+  "$proof_root/behavior-report.json"
+  "$proof_root/red-green.md"
+  "$proof_root/run-proof.sh"
+  test/github-webhook-read-model.test.ts
+)
 
 echo "PROOF_PHASE=environment"
 echo "provider=local-container"
@@ -18,12 +31,12 @@ npm --version
 echo "PROOF_PHASE=git_identity"
 [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]]
 [[ "$expected_base" =~ ^[0-9a-f]{40}$ ]]
+tar -cf "$candidate_overlay" "${proof_files[@]}"
 git init --initial-branch=proof --quiet
 git remote add origin https://github.com/openclaw/clawsweeper.git
 git fetch --quiet --depth=1 origin "$expected_base"
-while IFS= read -r file; do
-  test -e "$file" || git checkout --quiet FETCH_HEAD -- "$file"
-done < <(git ls-tree -r --name-only FETCH_HEAD)
+git checkout --quiet FETCH_HEAD -- .
+tar -xf "$candidate_overlay"
 git add --all -- . \
   ':!.crabbox' \
   ':!docs/proof/health-phantom-queued-run/container-stderr.txt' \
@@ -64,18 +77,6 @@ jq -e '
 
 echo "PROOF_PHASE=committed_objects"
 expected_blobs_json=$(printf '%s' "$expected_blobs_base64" | base64 --decode)
-proof_files=(
-  dashboard/github-webhook-read-model.ts
-  dashboard/worker.ts
-  docs/github-webhook-read-model.md
-  docs/live-dashboard.md
-  "$proof_root/README.md"
-  "$proof_root/behavior-contract.md"
-  "$proof_root/behavior-report.json"
-  "$proof_root/red-green.md"
-  "$proof_root/run-proof.sh"
-  test/github-webhook-read-model.test.ts
-)
 for file in "${proof_files[@]}"; do
   committed_blob=$(jq -er --arg path "$file" '.[$path]' <<<"$expected_blobs_json")
   worktree_blob=$(git hash-object -w "$file")
