@@ -953,6 +953,7 @@ export interface ReconcileResult {
   fetchedClosedAt: number;
   changedItemNumbers: number[];
   changedRecordFiles: string[];
+  deferred?: { reason: "github_rate_limited"; retryAt: string };
 }
 
 export type AuditRecordLocation = "items" | "closed";
