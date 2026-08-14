@@ -47,6 +47,12 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
   test "$(git rev-parse 'HEAD^{tree}')" = "$PROOF_SOURCE_TREE"
   git cat-file -e "${PROOF_SOURCE_HEAD}^{commit}"
   git cat-file -e "${PROOF_SOURCE_TREE}^{tree}"
+else
+  git init --quiet
+  git config user.name "Crabbox Proof"
+  git config user.email "crabbox-proof@localhost"
+  git add --all
+  git commit --quiet -m "test fixture baseline"
 fi
 
 echo CRABBOX_PHASE:proof
