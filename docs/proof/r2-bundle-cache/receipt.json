@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "recordedAt": "2026-08-14T05:22:00Z",
+  "recordedAt": "2026-08-14T05:31:00Z",
   "provider": "local-container",
-  "leaseId": "cbx_8a078d433bc1",
-  "slug": "quick-crab-a29a",
+  "leaseId": "cbx_27fd45c696a1",
+  "slug": "jade-prawn-d716",
   "image": "node:24-bookworm",
   "leaseStopped": true,
   "git": {
-    "head": "72963a2f0997d1d05c4110df31a41afc713b5b13",
-    "tree": "e875e5a8f5ebf2ad50b27d5c1f6ace3125a11dae",
+    "head": "0e9ca08dea526b536e6818176228a09409a3c6a9",
+    "tree": "d06aa801c6ee434707f15d9724e237bb8cec8181",
     "catFileCrossCheck": true
   },
   "artifact": ".artifacts/r2-bundle-cache/proof.json",
@@ -41,17 +41,17 @@
     "command": "pnpm run check",
     "result": "passed",
     "lineCoveragePercent": 81.58,
-    "branchCoveragePercent": 74.01,
+    "branchCoveragePercent": 74.0,
     "functionCoveragePercent": 87.41,
     "dashboardStrict": "passed"
   },
   "timingMs": {
-    "install": 8157,
-    "build": 2692,
-    "behavior": 12170,
-    "check": 323894,
-    "command": 347336,
-    "total": 348685
+    "install": 7038,
+    "build": 1977,
+    "behavior": 7357,
+    "check": 87976,
+    "command": 104698,
+    "total": 105846
   },
   "limitsOfProof": [
     "Uses Wrangler dev local R2 and Durable Object semantics rather than the deployed Cloudflare network.",
