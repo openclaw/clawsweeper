@@ -21,7 +21,10 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
   actual_tree=$(git rev-parse "$actual_head^{tree}")
 else
   git init --initial-branch=proof --quiet
-  git add --all
+  git add --all -- . \
+    ':!.crabbox' \
+    ':!docs/proof/health-phantom-queued-run/container-stderr.txt' \
+    ':!docs/proof/health-phantom-queued-run/container-transcript.txt'
   actual_tree=$(git write-tree)
 fi
 test "$actual_tree" = "$expected_tree"
