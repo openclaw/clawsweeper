@@ -1,18 +1,19 @@
 # CSW-127 Phase 0.6 proof receipt
 
-The rebased product-and-proof commit `3850b0819197f4a3362786235494f43339ba101a`
-(tree `57592bb4ecd11fae0716503175b0dc05804626a5`) passed the production-shaped
+The product-and-proof commit rebased onto merged PR #1169,
+`ef640c54c8f28cfa0bdab2b3f6f03927a2285907`
+(tree `7d750caaf9ddc1db1cad3f27a952edf12f68d458`), passed the production-shaped
 boundary proof defined in [behavior-contract.md](behavior-contract.md).
 
 ## Environment
 
-- Provider: Crabbox `local-container`, lease `cbx_188631fc27eb` (`quick-barnacle`)
+- Provider: Crabbox `local-container`, lease `cbx_a6feceb049e8` (`violet-hermit`)
 - Image: `node:24-bookworm`
 - Runtime boundary: `wrangler@4.107.0 --local` plus the real SQLite-backed
   `ExactReviewQueue` Durable Object
-- Result: exit `0`; lease stopped; 303,578 ms total
+- Result: exit `0`; lease stopped; 276,521 ms total
 - Source identity: the container reconstructed the immutable `git archive` and
-  asserted tree `57592bb4ecd11fae0716503175b0dc05804626a5` before running proof
+  asserted tree `7d750caaf9ddc1db1cad3f27a952edf12f68d458` before running proof
 
 The proof used [run-crabbox-bind.sh](run-crabbox-bind.sh) as the local-container
 entry point and [run-proof.sh](run-proof.sh) as the in-container harness. The
@@ -39,26 +40,35 @@ disposable proof container because the selected Node image does not include it.
 - Public output passed the privacy assertions. A follow-up scan of the bounded
   receipts and redacted Worker log found no token, authorization header, private
   key, database URL, API-key, or token-assignment patterns.
-- The full Linux `pnpm run check` gate passed. Coverage was 81.48% lines, 74.11%
+- The full Linux `pnpm run check` gate passed. Coverage was 81.49% lines, 74.13%
   branches, and 87.33% functions.
 
 ## Rebased contract reconciliation
 
-The proved Phase 0.6 branch was rebased onto `main` at
-`e17e09425b604aeb6db9fb56494f640a9454ec97`. The combined tree preserves the
+The proved Phase 0.6 branch was rebased once more onto `main` at
+`6494ab5eb285cc2993d4679d6723e4b2486de99c`. The combined tree preserves the
 landed [R2 artifact receipt store](https://github.com/openclaw/clawsweeper/pull/1163),
 the [ETag broker](https://github.com/openclaw/clawsweeper/pull/1164) and its
 `broker_lookup` and `conditional_response` telemetry units, the
 [webhook materialized read model](https://github.com/openclaw/clawsweeper/pull/1167),
-and the [restored throttled-publication retry classification](https://github.com/openclaw/clawsweeper/pull/1168).
+the [restored throttled-publication retry classification](https://github.com/openclaw/clawsweeper/pull/1168),
+and [PR #1169's bounded per-run operational-health confirmation](https://github.com/openclaw/clawsweeper/pull/1169).
 Phase 0.6 adds independent eviction watermarks and bounded
 publication-transition cause buckets; it does not duplicate or replace those
-contracts.
+contracts. PR #1169's webhook run-confirmation, exact-recheck, unknown-health,
+and phantom-run eviction semantics remain unchanged; the two changes add
+separate sections to `docs/live-dashboard.md`.
 
 The first rebased local ClawSweeper range review found one P2 observer-only
 defect: terminal batch outcomes advanced the attempt bucket after an earlier
-failure. Commit `3850b0819197f4a3362786235494f43339ba101a` aligned the batch path
+failure. The rebased fix commit `3f3793dfff6a959a36cc3767101d902d7ff6e154` aligned the batch path
 with direct completion and added the retry-then-publish regression above.
+
+Two discarded Docker leases stopped before test execution. Lease
+`cbx_42cd4a3fdb12` rejected the CRLF-mounted wrapper, and lease
+`cbx_35f8c4b178f6` rejected ignored-file contamination through the worktree
+bind. The successful run used the harness's immutable `git archive` input and
+the same expected Git tree.
 
 Machine-readable results and artifact digests are recorded in
 [container-receipt.json](container-receipt.json). Raw local artifacts are not
@@ -70,6 +80,6 @@ reviewable proof boundary.
 This was a local, production-shaped boundary test with synthetic fixtures. It
 did not touch production, GitHub, workflows, queues, DLQs, gates, schedules,
 capacity, deployments, or credentials. It does not activate Phase 1. The
-owner-isolated `target_app` closure-proof 403 remains separate. A stable
-post-merge production cohort still requires separate authorization before any
-Phase 1 activation conclusion.
+owner-isolated `target_app` closure-proof 403 remains separate. The post-merge
+production cohort is authorized as read-only observation; Phase 1 activation
+still requires a separate explicit decision even if that cohort passes.

@@ -2,11 +2,14 @@
 
 ## Scope and authority
 
-- Base: `openclaw/clawsweeper` `main` at `e17e09425b604aeb6db9fb56494f640a9454ec97`.
+- Base: `openclaw/clawsweeper` `main` at `6494ab5eb285cc2993d4679d6723e4b2486de99c`.
 - Branch: `codex/csw-127-phase0-6`.
 - Effective runtime: `danger-full-access`, approval `never`, network enabled.
-- Authorized output: an exact-head draft PR only. No merge, deployment, workflow dispatch,
-  queue/DLQ mutation, capacity/schedule/admission change, gate change, or Phase 1 activation.
+- Authorized proof scope: reconcile and prove the exact PR head and prepare the final merge
+  preflight. Any merge still requires separate explicit approval under repository policy.
+  After an approved merge, only automatically triggered deployment and read-only post-deploy
+  monitoring are in scope. No manual workflow dispatch, queue/DLQ mutation,
+  capacity/schedule/admission change, gate change, or Phase 1 activation.
 - PR #1145 remains independent and untouched; Phase 1 stays default-disabled.
 
 ## Evidence-driven claims
@@ -26,6 +29,8 @@
    retention, and cardinality caps preserve the same queue transition and public summary.
 5. Existing reset-plus-jitter admission behavior, command resumption, typed exits, pool owner
    isolation, v1/v2 compatibility, Bay/status semantics, and rollback behavior are unchanged.
+   PR #1169's bounded webhook run confirmation, exact rechecks, unknown-health handling, and
+   phantom queued-run eviction remain intact and independent of publication telemetry.
 6. The Phase 0.5 sixth-recovery signal supports diagnostic attribution only. Retry limits,
    backoff delays, capacity, and scheduling remain unchanged unless deterministic proof finds a
    separate product defect.
@@ -61,7 +66,10 @@ lease/run ID, commands, redacted transcript, observed result, and limits.
 - Dirty-patch Codex review, accepted-finding fixes, focused proof rerun, then committed-range
   Codex review against the actual base.
 - Local ClawSweeper `--local-range` review from a clean committed branch.
-- Open a draft PR only after exact-head proof is complete; put the Real Behavior Proof package in
-  the main body, request one normal `@clawsweeper review`, and monitor CI/CodeQL.
-- The draft may become ready for maintainer look, but must remain unmerged. A new stable-cohort
-  post-merge monitor requires separate authorization.
+- Put the refreshed Real Behavior Proof package in the main PR body, request one normal
+  `@clawsweeper re-review`, and monitor CI/CodeQL without manual reruns.
+- When separately and explicitly approved, merge only through an ordinary expected-head squash
+  after the exact current head/body is clean, all required checks and reviews pass, and no
+  unresolved or requested-change threads remain.
+- Start the separately authorized baseline-plus-24 stable-cohort monitor only after automatic
+  deployment and live smoke prove the squash SHA.
