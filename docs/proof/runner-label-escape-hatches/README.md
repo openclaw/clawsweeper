@@ -3,8 +3,9 @@
 ## Claim
 
 Every GitHub Actions job that defaults to a Blacksmith runner can be redirected with a repository
-variable while preserving its existing Blacksmith label when the variable is unset. No repository
-variables are set by this change.
+variable while preserving its existing Blacksmith label when the variable is unset. The report
+lane's override is live: `CLAWSWEEPER_REPORT_RUNNER=ubuntu-latest` remains set while Blacksmith
+us-west is unavailable. The E2E and spam overrides remain unset, so their fallbacks are unchanged.
 
 ## Label inventory and variable ownership
 
@@ -51,11 +52,28 @@ contains proof artifacts only after the tested workflow tree; no workflow, test,
 change follows the tested head in this push. Full machine provenance is frozen in
 `container-receipt.json`.
 
+## Live GitHub Actions proof
+
+GitHub accepted a `workflow_dispatch` for `maintainer-report-discord.yml` directly from branch
+`steipete/runner-label-escape-hatches` at tested head
+`32334740ba22b0e7fe69d1c71bfc013441f3dbf6`. Run
+[`31759075251`](https://github.com/openclaw/clawsweeper/actions/runs/31759075251) resolved the report
+job label to `ubuntu-latest`, assigned GitHub-hosted runner `GitHub Actions 1011717149`, and
+completed successfully. This demonstrates that branch dispatch used the PR branch workflow
+definition and respected the configured repository variable.
+
+For contrast, scheduled run
+[`31688886472`](https://github.com/openclaw/clawsweeper/actions/runs/31688886472) at pre-change
+`main` head `4d41d3df4baf191dca9c385c82689425a135a5c4` resolved the same job to
+`blacksmith-4vcpu-ubuntu-2404` and ran on a Blacksmith runner. The full redacted API transcript,
+object cross-checks, behavior contract, and variable end-state are in `live-actions.md`.
+
 OpenClaw Bay is unaffected: runner selection does not change workflow lifecycle publication,
 status telemetry, dashboard data contracts, or the observer-only action boundary.
 
 ## Limits
 
-This proves static workflow selection and the repository gates. It does not dispatch the workflows
-or set repository variables. With variables unset, GitHub Actions resolves the same Blacksmith
-labels as before.
+The live run exercises the report-lane override only. The E2E, containment, repair-publication,
+and spam mappings remain covered by the workflow-shape tests and repository gate rather than live
+dispatches. The historical report run proves the report lane's Blacksmith default; the unchanged
+fallback expressions and tests cover the other unset defaults.
