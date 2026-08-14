@@ -162,6 +162,7 @@ class BlobRequestError extends Error {
 async function putBlob(bucket: BlobR2Bucket, body: Record<string, unknown>) {
   const path = requireBlobPath(body.path);
   const digest = requireBlobDigest(body.digest);
+  requireArtifactPathDigest(path, digest);
   const content = decodeBase64(body.contentBase64);
   if (!content) throw new BlobRequestError(400, { error: "invalid_blob_content" });
   if (content.byteLength > STATE_BLOB_PUT_MAX_BYTES) {
@@ -262,6 +263,7 @@ async function listBlobs(bucket: BlobR2Bucket, body: Record<string, unknown>) {
 async function startMultipart(bucket: BlobR2Bucket, body: Record<string, unknown>) {
   const path = requireBlobPath(body.path);
   const digest = requireBlobDigest(body.digest);
+  requireArtifactPathDigest(path, digest);
   const bytes = Number(body.bytes);
   if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > STATE_BLOB_MAX_BYTES) {
     throw new BlobRequestError(400, {
@@ -324,6 +326,7 @@ async function completeMultipart(bucket: BlobR2Bucket, body: Record<string, unkn
   const path = requireBlobPath(body.path);
   const uploadId = requireUploadId(body.uploadId);
   const digest = requireBlobDigest(body.digest);
+  requireArtifactPathDigest(path, digest);
   const bytes = Number(body.bytes);
   if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > STATE_BLOB_MAX_BYTES) {
     throw new BlobRequestError(400, {
@@ -409,6 +412,15 @@ function requireBlobDigest(value: unknown): string {
     throw new BlobRequestError(400, { error: "invalid_blob_digest" });
   }
   return value;
+}
+
+function requireArtifactPathDigest(path: string, digest: string) {
+  if (
+    path.startsWith("artifacts/exact-review/") &&
+    path !== `artifacts/exact-review/v1/${digest}`
+  ) {
+    throw new BlobRequestError(400, { error: "artifact_blob_key_digest_mismatch" });
+  }
 }
 
 function requireUploadId(value: unknown): string {

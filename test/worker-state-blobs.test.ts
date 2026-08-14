@@ -18,7 +18,8 @@ const secret = "state-blob-secret";
 const baseUrl = "https://worker.example";
 const ledgerPath = "ledger/v1/events/2026/07/26/openclaw/openclaw/shard-000.jsonl";
 const assetPath = "assets/social/card.svg";
-const artifactPath = `artifacts/exact-review/v1/${"a".repeat(64)}`;
+const artifactContent = Buffer.from("cached bundle bytes");
+const artifactPath = `artifacts/exact-review/v1/${sha256(artifactContent)}`;
 
 test("state blob endpoints reject unsigned requests and fail closed without a bucket", async () => {
   const env = { CLAWSWEEPER_WEBHOOK_SECRET: secret, STATE_SNAPSHOTS: new FakeR2Bucket() };
@@ -179,7 +180,7 @@ test("ledger keys are create-only while asset keys may overwrite", async () => {
   const stat = await statStateBlob({ ...options, blobPath: assetPath });
   assert.equal(stat?.digest, sha256(Buffer.from("<svg two/>")));
 
-  const artifact = Buffer.from("cached bundle bytes");
+  const artifact = artifactContent;
   await putBlob(env, artifactPath, artifact);
   const artifactConflict = await worker.fetch(
     signedBlobRequest("put", {
@@ -189,8 +190,8 @@ test("ledger keys are create-only while asset keys may overwrite", async () => {
     }),
     env,
   );
-  assert.equal(artifactConflict.status, 409);
-  assert.equal((await artifactConflict.json()).error, "artifact_blob_immutable_conflict");
+  assert.equal(artifactConflict.status, 400);
+  assert.equal((await artifactConflict.json()).error, "artifact_blob_key_digest_mismatch");
 
   for (const malformed of [
     "artifacts/exact-review/v1/not-a-digest",
@@ -208,6 +209,29 @@ test("ledger keys are create-only while asset keys may overwrite", async () => {
     assert.equal(rejected.status, 400, malformed);
     assert.equal((await rejected.json()).error, "invalid_blob_path", malformed);
   }
+
+  const mismatchedKey = `artifacts/exact-review/v1/${"b".repeat(64)}`;
+  const mismatchedDirect = await worker.fetch(
+    signedBlobRequest("put", {
+      path: mismatchedKey,
+      digest: sha256(artifact),
+      contentBase64: artifact.toString("base64"),
+    }),
+    env,
+  );
+  assert.equal(mismatchedDirect.status, 400);
+  assert.equal((await mismatchedDirect.json()).error, "artifact_blob_key_digest_mismatch");
+
+  const mismatchedStart = await worker.fetch(
+    signedBlobRequest("multipart/start", {
+      path: mismatchedKey,
+      digest: sha256(artifact),
+      bytes: artifact.byteLength,
+    }),
+    env,
+  );
+  assert.equal(mismatchedStart.status, 400);
+  assert.equal((await mismatchedStart.json()).error, "artifact_blob_key_digest_mismatch");
 });
 
 test("multipart uploads stream fixed-size parts and enforce immutability at completion", async () => {
@@ -308,6 +332,38 @@ test("multipart uploads stream fixed-size parts and enforce immutability at comp
   );
   assert.equal(staleUpload.status, 400);
   assert.equal((await staleUpload.json()).error, "invalid_blob_upload");
+
+  const artifactContent = Buffer.from("multipart artifact bytes");
+  const artifactDigest = sha256(artifactContent);
+  const artifactKey = `artifacts/exact-review/v1/${artifactDigest}`;
+  const artifactStarted = await signedJson(
+    env,
+    "multipart/start",
+    { path: artifactKey, digest: artifactDigest, bytes: artifactContent.byteLength },
+    201,
+  );
+  const artifactPart = await signedJson(env, "multipart/part", {
+    path: artifactKey,
+    uploadId: artifactStarted.uploadId,
+    partNumber: 1,
+    contentBase64: artifactContent.toString("base64"),
+  });
+  const mismatchedComplete = await worker.fetch(
+    signedBlobRequest("multipart/complete", {
+      path: artifactKey,
+      uploadId: artifactStarted.uploadId,
+      digest: "c".repeat(64),
+      bytes: artifactContent.byteLength,
+      parts: [artifactPart.part],
+    }),
+    env,
+  );
+  assert.equal(mismatchedComplete.status, 400);
+  assert.equal((await mismatchedComplete.json()).error, "artifact_blob_key_digest_mismatch");
+  await signedJson(env, "multipart/abort", {
+    path: artifactKey,
+    uploadId: artifactStarted.uploadId,
+  });
 });
 
 test("chunked downloads retry transient 5xx responses and reject invalid ranges", async () => {
