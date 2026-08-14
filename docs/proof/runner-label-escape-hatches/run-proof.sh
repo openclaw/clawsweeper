@@ -31,6 +31,11 @@ export PATH="$PNPM_HOME:$PATH"
 if ! command -v pnpm >/dev/null 2>&1; then
   corepack enable --install-directory "$PNPM_HOME"
 fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "CRABBOX_PHASE:tools"
+  sudo apt-get update
+  sudo apt-get install --yes jq
+fi
 
 echo "CRABBOX_PHASE:install"
 pnpm install --frozen-lockfile
