@@ -24,7 +24,8 @@ job snapshot behind a verification-start boundary, then emits
 `github_read_model_workflow_run_evicted`. A failed exact read removes the
 unconfirmed row from the calculation and makes telemetry `unknown`. Repair-only
 snapshots without observed subscription coverage still use the pre-#1167 live
-status polls.
+status polls. Rows older than the existing 24-hour zombie boundary stay in the
+separate zombie metrics and do not spend exact verification requests.
 
 The executable contract is in [behavior-contract.md](behavior-contract.md), the
 captured RED/GREEN result is in [red-green.md](red-green.md), and
@@ -33,6 +34,14 @@ the complete repository gate, static JSON validation, and committed-object
 cross-checks in Docker-backed Crabbox. [behavior-report.json](behavior-report.json)
 records the source-blind result. The final container receipt and compact
 transcripts are recorded beside these files after the isolated run.
+
+[worker-loopback-report.json](worker-loopback-report.json) is the real-boundary
+trace requested in the first ClawSweeper review. It starts `wrangler dev
+--local`, uses the real SQLite Durable Object plus signed webhook/repair HTTP
+routes, waits through the five-minute production TTL, and serves exact completed
+and 404 responses from a separate loopback GitHub HTTP server. The resulting
+`/api/status` response was healthy, both rows were absent afterward, and the
+Worker emitted both eviction telemetry verdicts.
 
 OpenClaw Bay is unaffected. The change repairs the dashboard's internal
 observer read path and adds no public field or queue, workflow, GitHub, DLQ,

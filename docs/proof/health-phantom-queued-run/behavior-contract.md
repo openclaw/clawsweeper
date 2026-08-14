@@ -39,6 +39,8 @@ health result must preserve the pre-read-model live-poll behavior.
 
 - Keep the same snapshot entry but change the live fixture from completed or
   absent to queued; the alert must return.
+- Age the queued row past the 24-hour zombie boundary; it remains separately
+  observable but must not spend an exact verification request.
 - Repeat the phantom request after eviction; the stale entry must not reappear.
 - Use an entry within the freshness TTL; the fixture must not claim stale-entry
   re-verification behavior.
@@ -48,6 +50,8 @@ health result must preserve the pre-read-model live-poll behavior.
 - A RED run against fresh `origin/main` showing the phantom degrades health.
 - A GREEN run at the final committed head showing completed and absent entries
   heal with telemetry while a genuinely queued run still alerts.
+- A final-head Wrangler Worker trace through signed loopback HTTP transport and
+  its real SQLite Durable Object.
 - `pnpm run check`, including `check:dashboard-strict`, and clean Codex
   autoreview.
 - Docker-backed Crabbox `local-container` receipt for the exact final pushed

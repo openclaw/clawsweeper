@@ -1,0 +1,44 @@
+{
+  "schema": "health-phantom-worker-loopback-proof/v1",
+  "generated_at": "2026-08-14T16:00:08.769Z",
+  "target": "loopback Worker /api/status",
+  "worker": "wrangler dev --local",
+  "github_transport": "loopback HTTP GitHub server",
+  "durable_object": "SQLite-backed ExactReviewQueue",
+  "workflow_ttl_wait_ms": 302000,
+  "seeded_runs": [7001, 7002],
+  "exact_run_requests": [7002, 7001],
+  "health": {
+    "status": "healthy",
+    "telemetry_complete": true,
+    "queued_over_threshold": 0
+  },
+  "read_model_after": {
+    "runs": 0
+  },
+  "telemetry": [
+    {
+      "event": "github_read_model_workflow_run_evicted",
+      "consumer": "dashboard_workflow_health",
+      "repository": "openclaw/openclaw",
+      "run_id": 7002,
+      "snapshot_status": "queued",
+      "snapshot_confirmed_at": "2026-08-14T15:55:06.389Z",
+      "verdict": "absent",
+      "read_model_evicted": true
+    },
+    {
+      "event": "github_read_model_workflow_run_evicted",
+      "consumer": "dashboard_workflow_health",
+      "repository": "openclaw/openclaw",
+      "run_id": 7001,
+      "snapshot_status": "queued",
+      "snapshot_confirmed_at": "2026-08-14T15:55:06.368Z",
+      "verdict": "completed",
+      "read_model_evicted": true
+    }
+  ],
+  "production_mutations": 0,
+  "openclaw_bay_affected": false,
+  "limits": "Local Wrangler Worker, SQLite Durable Object, and loopback HTTP GitHub server; no production credentials, endpoints, subscriptions, or mutations."
+}

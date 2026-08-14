@@ -31,6 +31,7 @@ import {
 import {
   HEALTH_HISTORY_RETENTION_DAYS,
   OPERATIONAL_QUEUE_DEGRADED_MS,
+  OPERATIONAL_QUEUE_ZOMBIE_MS,
   exactReviewHistorySample,
   mergeHealthHistorySample,
   normalizeHealthHistorySample,
@@ -2029,6 +2030,7 @@ async function revalidateStaleWorkflowHealthRuns({
     if (!Number.isFinite(createdAt) || now - createdAt < OPERATIONAL_QUEUE_DEGRADED_MS) {
       return false;
     }
+    if (now - createdAt > OPERATIONAL_QUEUE_ZOMBIE_MS) return false;
     const confirmedAt = confirmedAtByRun.get(Number(run.id));
     return (
       confirmedAt === undefined || now - confirmedAt > GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS

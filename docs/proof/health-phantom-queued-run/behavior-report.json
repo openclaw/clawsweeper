@@ -67,6 +67,18 @@
         "Read /api/status"
       ],
       "confidence": 0.99
+    },
+    {
+      "contract_clause": "Zombie rows remain outside exact verification",
+      "status": "pass",
+      "severity": null,
+      "evidence": "A 25-hour queued snapshot row remained healthy with zombie_queued_runs=1 and generated zero exact-run requests.",
+      "reproduction_steps": [
+        "Seed a queued row older than 24 hours with an expired confirmation",
+        "Read /api/status",
+        "Inspect health and the exact-run request counter"
+      ],
+      "confidence": 0.99
     }
   ],
   "anti_cheat_probes": [
@@ -85,6 +97,10 @@
     {
       "probe": "Read the read model after terminal verification",
       "result": "The phantom workflow run remained absent"
+    },
+    {
+      "probe": "Aged the row beyond the 24-hour zombie boundary",
+      "result": "The zombie remained separately observable and no exact verification request was made"
     }
   ],
   "blockers": []

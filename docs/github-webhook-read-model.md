@@ -52,7 +52,8 @@ active run refreshes the row; a completed or missing run is evicted with
 `github_read_model_workflow_run_evicted` telemetry. If exact verification
 fails, operational health is `unknown` rather than reporting an unconfirmed
 queued run. The eviction is bounded by the verification start time so a newer
-webhook delivery cannot be deleted by the repair.
+webhook delivery cannot be deleted by the repair. Rows beyond the existing
+24-hour zombie boundary remain separately observable without exact rechecks.
 
 Publisher-HMAC remains the normal automated read credential. Exact-review planning intentionally does not receive that shared secret; its item read instead uses the already-issued full lease tuple as a scoped capability. The queue accepts that capability only for the tuple's live leased repository and item, and it cannot write or repair the read model.
 

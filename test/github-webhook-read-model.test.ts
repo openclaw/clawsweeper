@@ -369,14 +369,16 @@ test("dashboard workflow snapshot preserves health decisions while removing run 
 });
 
 test("dashboard health revalidates and evicts stale phantom queued runs", async () => {
-  for (const liveVerdict of ["completed", "absent", "queued", "error"] as const) {
+  for (const liveVerdict of ["completed", "absent", "queued", "error", "zombie"] as const) {
     const storage = new MemoryDurableStorage();
     const store = new GithubWebhookReadModelStore(storage);
     store.ensureSchemaSync();
     const queue = new ExactReviewQueue({ storage }, {});
     const observedAtMs = Date.now() - GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS - 60_000;
     const observedAt = new Date(observedAtMs).toISOString();
-    const createdAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    const createdAt = new Date(
+      Date.now() - (liveVerdict === "zombie" ? 25 * 60 * 60_000 : 60 * 60_000),
+    ).toISOString();
     const staleRun = {
       id: 9911,
       name: "Review",
@@ -419,9 +421,12 @@ test("dashboard health revalidates and evicts stale phantom queued runs", async 
       value: { default: { match: async () => undefined, put: async () => undefined } },
     });
     console.warn = (...values: unknown[]) => warnings.push(values.map(String).join(" "));
+    let exactRunRequests = 0;
     globalThis.fetch = async (input) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       if (url.pathname === "/repos/openclaw/openclaw/actions/runs/9911") {
+        exactRunRequests += 1;
+        if (liveVerdict === "zombie") throw new Error("zombie must not be reverified");
         if (liveVerdict === "absent") return jsonResponse({ message: "Not Found" }, 404);
         if (liveVerdict === "error") return jsonResponse({ message: "Unavailable" }, 503);
         return jsonResponse(
@@ -450,9 +455,18 @@ test("dashboard health revalidates and evicts stale phantom queued runs", async 
         { waitUntil: () => undefined },
       );
       const status = (await response.json()) as {
-        operational_health: { status: string; queued_over_threshold: number };
+        operational_health: {
+          status: string;
+          queued_over_threshold: number;
+          zombie_queued_runs: number;
+        };
       };
-      if (liveVerdict === "error") {
+      if (liveVerdict === "zombie") {
+        assert.equal(status.operational_health.status, "healthy");
+        assert.equal(status.operational_health.queued_over_threshold, 0);
+        assert.equal(status.operational_health.zombie_queued_runs, 1);
+        assert.equal(exactRunRequests, 0);
+      } else if (liveVerdict === "error") {
         assert.equal(status.operational_health.status, "unknown");
         assert.equal(status.operational_health.queued_over_threshold, 0);
         assert.equal(
