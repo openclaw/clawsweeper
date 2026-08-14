@@ -30,6 +30,7 @@ import {
 } from "./github-api.ts";
 import {
   HEALTH_HISTORY_RETENTION_DAYS,
+  OPERATIONAL_QUEUE_DEGRADED_MS,
   exactReviewHistorySample,
   mergeHealthHistorySample,
   normalizeHealthHistorySample,
@@ -80,6 +81,7 @@ import {
   type StateBlobOperation,
 } from "./state-blobs.ts";
 import {
+  GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS,
   githubWebhookReadModelDeliveryFromWebhook,
   type GithubWebhookReadModelDelivery,
 } from "./github-webhook-read-model.ts";
@@ -97,6 +99,7 @@ export {
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
 const QUEUED_RUN_STATUSES = new Set(["queued", "waiting", "requested", "pending"]);
+const OPERATIONAL_QUEUED_RUN_STATUSES = new Set(["queued", "requested", "pending"]);
 type DashboardContext = { waitUntil?: (promise: Promise<unknown>) => void };
 type GithubJsonReader = (path: string) => ReturnType<typeof githubJson>;
 type StoredValue = { value: string; expires_at?: number };
@@ -1992,6 +1995,147 @@ function reportGithubReadModelDashboardFallback(snapshot: Record<string, unknown
   );
 }
 
+async function revalidateStaleWorkflowHealthRuns({
+  env,
+  repo,
+  runs,
+  observations,
+  checkedAt,
+  github,
+}: {
+  env: DashboardEnv;
+  repo: string;
+  runs: unknown[];
+  observations: unknown[];
+  checkedAt: string;
+  github: GithubJsonReader;
+}): Promise<{ runs: unknown[]; errors: string[] }> {
+  const checkedAtMs = Date.parse(checkedAt);
+  const now = Number.isFinite(checkedAtMs) ? checkedAtMs : Date.now();
+  const confirmedAtByRun = new Map(
+    observations.flatMap((value) => {
+      const observation = objectValue(value);
+      const runId = Number(observation.run_id);
+      const confirmedAt = Date.parse(String(observation.confirmed_at || ""));
+      return Number.isSafeInteger(runId) && runId > 0 && Number.isFinite(confirmedAt)
+        ? ([[runId, confirmedAt]] as const)
+        : [];
+    }),
+  );
+  const candidates = runs.filter((value) => {
+    const run = objectValue(value);
+    if (!OPERATIONAL_QUEUED_RUN_STATUSES.has(String(run.status || ""))) return false;
+    const createdAt = Date.parse(String(run.created_at || ""));
+    if (!Number.isFinite(createdAt) || now - createdAt < OPERATIONAL_QUEUE_DEGRADED_MS) {
+      return false;
+    }
+    const confirmedAt = confirmedAtByRun.get(Number(run.id));
+    return (
+      confirmedAt === undefined || now - confirmedAt > GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS
+    );
+  });
+  if (candidates.length === 0) return { runs, errors: [] };
+
+  const outcomes = await mapWithConcurrency(candidates, 5, async (value) => {
+    const snapshotRun = objectValue(value);
+    const runId = Number(snapshotRun.id);
+    if (!Number.isSafeInteger(runId) || runId <= 0) {
+      return { runId, error: "snapshot run has no valid id" };
+    }
+    const verificationStartedAt = new Date().toISOString();
+    try {
+      const liveRun = objectValue(await github(`/repos/${repo}/actions/runs/${runId}`));
+      if (Number(liveRun.id) !== runId) {
+        return { runId, error: "live workflow response id mismatch" };
+      }
+      if (isActiveWorkflowRun(liveRun)) {
+        const object = githubWebhookReadModelWorkflowObject(repo, "workflow_run", liveRun);
+        if (object) {
+          await githubWebhookReadModelQueuePost(env, "repair", {
+            repository: repo,
+            repair_kind: "workflows",
+            objects: [object],
+          }).catch(() => null);
+        }
+        return { runId, liveRun };
+      }
+      const repair = await githubWebhookReadModelQueuePost(env, "repair", {
+        repository: repo,
+        repair_kind: "workflows",
+        workflow_run_verification_started_at: verificationStartedAt,
+        evict_workflow_run_ids: [runId],
+        objects: [],
+      }).catch(() => null);
+      const verdict = String(liveRun.status || "completed");
+      reportGithubReadModelWorkflowRunEvicted({
+        repo,
+        runId,
+        snapshotRun,
+        verdict,
+        confirmedAt: confirmedAtByRun.get(runId),
+        evicted: Number(repair?.evicted_workflow_runs || 0) > 0,
+      });
+      return { runId, evicted: true };
+    } catch (error) {
+      if (/GitHub 404 for /.test(String(error instanceof Error ? error.message : error))) {
+        const repair = await githubWebhookReadModelQueuePost(env, "repair", {
+          repository: repo,
+          repair_kind: "workflows",
+          workflow_run_verification_started_at: verificationStartedAt,
+          evict_workflow_run_ids: [runId],
+          objects: [],
+        }).catch(() => null);
+        reportGithubReadModelWorkflowRunEvicted({
+          repo,
+          runId,
+          snapshotRun,
+          verdict: "absent",
+          confirmedAt: confirmedAtByRun.get(runId),
+          evicted: Number(repair?.evicted_workflow_runs || 0) > 0,
+        });
+        return { runId, evicted: true };
+      }
+      return { runId, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  const byRunId = new Map(outcomes.map((outcome) => [outcome.runId, outcome]));
+  return {
+    runs: runs.flatMap((value) => {
+      const outcome = byRunId.get(Number(objectValue(value).id));
+      if (!outcome) return [value];
+      if (outcome.error || outcome.evicted) return [];
+      return outcome.liveRun ? [outcome.liveRun] : [];
+    }),
+    errors: outcomes.flatMap((outcome) =>
+      outcome.error ? [`workflow run ${outcome.runId} reverify: ${outcome.error}`] : [],
+    ),
+  };
+}
+
+function reportGithubReadModelWorkflowRunEvicted({
+  repo,
+  runId,
+  snapshotRun,
+  verdict,
+  confirmedAt,
+  evicted,
+}) {
+  console.warn(
+    JSON.stringify({
+      event: "github_read_model_workflow_run_evicted",
+      consumer: "dashboard_workflow_health",
+      repository: repo,
+      run_id: runId,
+      snapshot_status: String(snapshotRun.status || "unknown"),
+      snapshot_confirmed_at: Number.isFinite(confirmedAt)
+        ? new Date(confirmedAt).toISOString()
+        : null,
+      verdict,
+      read_model_evicted: evicted,
+    }),
+  );
+}
+
 function bayJourneyTriggerFromGithubWebhook({
   decision,
   payload,
@@ -3660,30 +3804,44 @@ async function statusSnapshot(env) {
     : null;
   const workflowReadModelUsable = workflowReadModel?.usable === true;
   if (!workflowReadModelUsable) reportGithubReadModelDashboardFallback(workflowReadModel);
-  const [runs, completedRuns, activeRunCandidates] = workflowReadModelUsable
-    ? [
-        { workflow_runs: Array.isArray(workflowReadModel.runs) ? workflowReadModel.runs : [] },
-        {
-          workflow_runs: (Array.isArray(workflowReadModel.runs)
-            ? workflowReadModel.runs
-            : []
-          ).filter((run) => objectValue(run).status === "completed"),
-        },
-        (Array.isArray(workflowReadModel.runs) ? workflowReadModel.runs : []).filter((run) =>
-          isActiveWorkflowRun(run),
-        ),
-      ]
-    : await Promise.all([
-        github(`/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
-          errors.push(`workflow runs: ${error.message}`);
-          return null;
-        }),
-        github(`/repos/${repo}/actions/runs?status=completed&per_page=100`).catch((error) => {
-          errors.push(`workflow runs completed: ${error.message}`);
-          return null;
-        }),
-        activeWorkflowRunCandidates(env, repo, activeRunErrors, github),
-      ]);
+  let runs;
+  let completedRuns;
+  let activeRunCandidates;
+  let operationalRunCandidates;
+  if (workflowReadModelUsable) {
+    const reconciled = await revalidateStaleWorkflowHealthRuns({
+      env,
+      repo,
+      runs: Array.isArray(workflowReadModel.runs) ? workflowReadModel.runs : [],
+      observations: Array.isArray(workflowReadModel.run_observations)
+        ? workflowReadModel.run_observations
+        : [],
+      checkedAt: generatedAt,
+      github,
+    });
+    activeRunErrors.push(...reconciled.errors);
+    runs = { workflow_runs: reconciled.runs };
+    completedRuns = {
+      workflow_runs: reconciled.runs.filter((run) => objectValue(run).status === "completed"),
+    };
+    activeRunCandidates = reconciled.runs.filter((run) => isActiveWorkflowRun(run));
+    operationalRunCandidates = reconciled.runs.filter((run) =>
+      ACTIVE_RUN_STATUSES.has(String(objectValue(run).status || "")),
+    );
+  } else {
+    [runs, completedRuns, activeRunCandidates] = await Promise.all([
+      github(`/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
+        errors.push(`workflow runs: ${error.message}`);
+        return null;
+      }),
+      github(`/repos/${repo}/actions/runs?status=completed&per_page=100`).catch((error) => {
+        errors.push(`workflow runs completed: ${error.message}`);
+        return null;
+      }),
+      activeWorkflowRunCandidates(env, repo, activeRunErrors, github),
+    ]);
+    operationalRunCandidates = activeRunCandidates;
+  }
   errors.push(...activeRunErrors);
   const workflowRuns = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
   const completedWorkflowRuns = uniqueWorkflowRuns([
@@ -3721,7 +3879,7 @@ async function statusSnapshot(env) {
   const supportRuns = activeRuns.filter((run) => isSupportWorkflowRun(run));
   const controlPlane = controlPlaneSnapshot(activeRuns);
   const operationalHealth = summarizeOperationalHealth(
-    activeRunCandidates.filter((run) => !isSupportWorkflowRun(run)),
+    operationalRunCandidates.filter((run) => !isSupportWorkflowRun(run)),
     generatedAt,
     activeRunErrors.length === 0,
   );

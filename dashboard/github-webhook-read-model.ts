@@ -444,7 +444,10 @@ export class GithubWebhookReadModelStore {
     });
   }
 
-  repair(value: unknown, now = Date.now()): { accepted: boolean; watermark: number } {
+  repair(
+    value: unknown,
+    now = Date.now(),
+  ): { accepted: boolean; watermark: number; evicted_workflow_runs: number } {
     const body = record(value);
     const repository = normalizedRepository(body.repository);
     const repairKind = stringValue(body.repair_kind);
@@ -465,6 +468,10 @@ export class GithubWebhookReadModelStore {
         ? body.complete_workflow_job_runs.map(positiveInteger).filter(nonNullable)
         : [];
     const workflowJobCensusBoundary = workflowJobCensusStartedAt ?? 0;
+    const workflowRunVerificationStartedAt = timestampMs(body.workflow_run_verification_started_at);
+    const evictWorkflowRunIds = Array.isArray(body.evict_workflow_run_ids)
+      ? body.evict_workflow_run_ids.map(positiveInteger).filter(nonNullable)
+      : [];
     if (
       !repository ||
       !new Set(["items", "comments", "placeholders", "workflows"]).has(repairKind)
@@ -474,14 +481,55 @@ export class GithubWebhookReadModelStore {
     if (objects.some((object) => object.repository !== repository)) {
       throw new Error("github_webhook_read_model_repair_repository_mismatch");
     }
+    if (
+      evictWorkflowRunIds.length > 0 &&
+      (repairKind !== "workflows" || workflowRunVerificationStartedAt === null)
+    ) {
+      throw new Error("invalid_github_webhook_read_model_workflow_eviction");
+    }
     return this.storage.transactionSync(() => {
       const watermark = this.watermarkSync() + 1;
+      let evictedWorkflowRuns = 0;
       this.storage.sql.exec(
         `UPDATE github_webhook_read_model_meta_v1 SET watermark = ?, updated_at = ? WHERE singleton_id = 1`,
         watermark,
         now,
       );
       const deliveryId = `repair:${repairKind}:${repository}:${watermark}`;
+      for (const runId of new Set(evictWorkflowRunIds)) {
+        const row = firstRow(
+          this.storage.sql.exec(
+            `SELECT received_at FROM github_webhook_read_model_workflows_v1
+              WHERE repository = ? AND object_kind = 'workflow_run' AND object_id = ?`,
+            repository,
+            runId,
+          ),
+        );
+        if (!row || Number(row.received_at) > workflowRunVerificationStartedAt!) continue;
+        this.storage.sql.exec(
+          `DELETE FROM github_webhook_read_model_workflows_v1
+            WHERE repository = ? AND object_kind = 'workflow_run' AND object_id = ?
+              AND received_at <= ?`,
+          repository,
+          runId,
+          workflowRunVerificationStartedAt,
+        );
+        this.storage.sql.exec(
+          `DELETE FROM github_webhook_read_model_workflows_v1
+            WHERE repository = ? AND run_id = ? AND object_kind <> 'workflow_run'
+              AND received_at <= ?`,
+          repository,
+          runId,
+          workflowRunVerificationStartedAt,
+        );
+        this.storage.sql.exec(
+          `DELETE FROM github_webhook_read_model_workflow_coverage_v1
+            WHERE repository = ? AND coverage_kind = 'run_jobs' AND run_id = ?`,
+          repository,
+          runId,
+        );
+        evictedWorkflowRuns += 1;
+      }
       if (workflowRunCensusComplete) {
         const liveRunIds = new Set(
           objects
@@ -597,7 +645,7 @@ export class GithubWebhookReadModelStore {
         watermark,
       );
       this.pruneSync(now);
-      return { accepted: true, watermark };
+      return { accepted: true, watermark, evicted_workflow_runs: evictedWorkflowRuns };
     });
   }
 
@@ -796,7 +844,7 @@ export class GithubWebhookReadModelStore {
     if (!repository) throw new Error("invalid_github_webhook_read_model_workflows_request");
     const rows = Array.from(
       this.storage.sql.exec(
-        `SELECT object_kind, run_id, snapshot_json, source_updated_at, received_at
+        `SELECT object_kind, object_id, run_id, snapshot_json, source_updated_at, received_at
            FROM github_webhook_read_model_workflows_v1
           WHERE repository = ? ORDER BY source_updated_at DESC, object_id DESC`,
         repository,
@@ -845,6 +893,13 @@ export class GithubWebhookReadModelStore {
       usable: Boolean(runCensus) && classState.available && !workflowFreshness.stale,
       freshness: workflowFreshness,
       runs: values.filter((entry) => entry.kind === "workflow_run").map((entry) => entry.value),
+      run_observations: rows
+        .filter((row) => row.object_kind === "workflow_run")
+        .map((row) => ({
+          run_id: Number(row.object_id),
+          source_updated_at: new Date(Number(row.source_updated_at)).toISOString(),
+          confirmed_at: new Date(Number(row.received_at)).toISOString(),
+        })),
       jobs: values.filter((entry) => entry.kind === "workflow_job").map((entry) => entry.value),
       checks: values
         .filter((entry) => entry.kind === "check_run" || entry.kind === "check_suite")
@@ -1060,13 +1115,24 @@ export class GithubWebhookReadModelStore {
         delivery_id, watermark, received_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (repository, object_kind, object_id) DO UPDATE SET
-         run_id = excluded.run_id,
-         source_updated_at = excluded.source_updated_at,
-         snapshot_json = excluded.snapshot_json,
+         run_id = CASE
+           WHEN excluded.source_updated_at >= github_webhook_read_model_workflows_v1.source_updated_at
+             THEN excluded.run_id
+           ELSE github_webhook_read_model_workflows_v1.run_id
+         END,
+         source_updated_at = MAX(
+           github_webhook_read_model_workflows_v1.source_updated_at,
+           excluded.source_updated_at
+         ),
+         snapshot_json = CASE
+           WHEN excluded.source_updated_at >= github_webhook_read_model_workflows_v1.source_updated_at
+             THEN excluded.snapshot_json
+           ELSE github_webhook_read_model_workflows_v1.snapshot_json
+         END,
          delivery_id = excluded.delivery_id,
          watermark = excluded.watermark,
-         received_at = excluded.received_at
-       WHERE excluded.source_updated_at > github_webhook_read_model_workflows_v1.source_updated_at`,
+         received_at = MAX(github_webhook_read_model_workflows_v1.received_at, excluded.received_at)
+       WHERE excluded.source_updated_at >= github_webhook_read_model_workflows_v1.source_updated_at`,
       object.repository,
       object.kind,
       object.id,

@@ -45,6 +45,15 @@ The migrated consumers are exact-item review planning, dashboard workflow-run/jo
 
 Workflow rows alone never establish completeness. Dashboard run snapshots require a persisted successful bounded run census, and job snapshots require fresh complete coverage for each run before that run can avoid its live job poll. Census repair removes older rows absent from the authoritative result while preserving webhook rows received after the census began.
 
+Each workflow-run row also exposes its last delivery-or-poll confirmation time.
+Before an over-threshold queued row with an expired confirmation can affect
+operational health, the dashboard re-reads that exact run from GitHub. A live
+active run refreshes the row; a completed or missing run is evicted with
+`github_read_model_workflow_run_evicted` telemetry. If exact verification
+fails, operational health is `unknown` rather than reporting an unconfirmed
+queued run. The eviction is bounded by the verification start time so a newer
+webhook delivery cannot be deleted by the repair.
+
 Publisher-HMAC remains the normal automated read credential. Exact-review planning intentionally does not receive that shared secret; its item read instead uses the already-issued full lease tuple as a scoped capability. The queue accepts that capability only for the tuple's live leased repository and item, and it cannot write or repair the read model.
 
 ## Hard safety boundary

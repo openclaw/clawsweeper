@@ -5,6 +5,7 @@ import test from "node:test";
 
 import {
   GITHUB_WEBHOOK_READ_MODEL_COMMENT_TTL_MS,
+  GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS,
   GithubWebhookReadModelStore,
   githubWebhookReadModelDeliveryFromWebhook,
 } from "../dashboard/github-webhook-read-model.ts";
@@ -367,6 +368,193 @@ test("dashboard workflow snapshot preserves health decisions while removing run 
   assert.equal(githubRequests, 8, "the snapshot decision adds no GitHub requests");
 });
 
+test("dashboard health revalidates and evicts stale phantom queued runs", async () => {
+  for (const liveVerdict of ["completed", "absent", "queued", "error"] as const) {
+    const storage = new MemoryDurableStorage();
+    const store = new GithubWebhookReadModelStore(storage);
+    store.ensureSchemaSync();
+    const queue = new ExactReviewQueue({ storage }, {});
+    const observedAtMs = Date.now() - GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS - 60_000;
+    const observedAt = new Date(observedAtMs).toISOString();
+    const createdAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    const staleRun = {
+      id: 9911,
+      name: "Review",
+      display_title: "Review event item openclaw/openclaw#9911",
+      status: "queued",
+      conclusion: null,
+      created_at: createdAt,
+      updated_at: observedAt,
+    };
+    store.ingest(
+      requiredDelivery("workflow_run", `phantom-${liveVerdict}`, observedAt, {
+        action: "requested",
+        repository,
+        workflow_run: staleRun,
+      }),
+      observedAtMs,
+    );
+    store.repair(
+      {
+        repository: "openclaw/openclaw",
+        repair_kind: "workflows",
+        workflow_run_census_complete: true,
+        // Model the census race: this row arrived after the census began, so
+        // reconciliation preserved it even though the completed census omitted it.
+        workflow_run_census_started_at: new Date(observedAtMs - 1).toISOString(),
+        objects: [],
+      },
+      Date.now() - 30_000,
+    );
+    const seeded = await store.readWorkflows({ repository: "openclaw/openclaw" });
+    assert.equal(seeded.usable, true);
+    assert.equal((seeded.runs as unknown[]).length, 1);
+
+    const originalFetch = globalThis.fetch;
+    const originalCaches = globalThis.caches;
+    const originalWarn = console.warn;
+    const warnings: string[] = [];
+    Object.defineProperty(globalThis, "caches", {
+      configurable: true,
+      value: { default: { match: async () => undefined, put: async () => undefined } },
+    });
+    console.warn = (...values: unknown[]) => warnings.push(values.map(String).join(" "));
+    globalThis.fetch = async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/repos/openclaw/openclaw/actions/runs/9911") {
+        if (liveVerdict === "absent") return jsonResponse({ message: "Not Found" }, 404);
+        if (liveVerdict === "error") return jsonResponse({ message: "Unavailable" }, 503);
+        return jsonResponse(
+          liveVerdict === "completed"
+            ? { ...staleRun, status: "completed", conclusion: "success", updated_at: new Date() }
+            : staleRun,
+        );
+      }
+      if (url.pathname.includes("/actions/workflows/") || url.pathname.endsWith("/actions/runs")) {
+        return jsonResponse({ workflow_runs: [] });
+      }
+      if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+      if (url.pathname.includes("/issues")) return jsonResponse([]);
+      throw new Error(`unexpected fetch ${url}`);
+    };
+    try {
+      const response = await worker.fetch(
+        new Request("https://clawsweeper.openclaw.ai/api/status"),
+        {
+          CLAWSWEEPER_REPO: "openclaw/openclaw",
+          TARGET_REPOS: "openclaw/openclaw",
+          CACHE_TTL_SECONDS: "0",
+          CLAWSWEEPER_WEBHOOK_SECRET: secret,
+          EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+        },
+        { waitUntil: () => undefined },
+      );
+      const status = (await response.json()) as {
+        operational_health: { status: string; queued_over_threshold: number };
+      };
+      if (liveVerdict === "error") {
+        assert.equal(status.operational_health.status, "unknown");
+        assert.equal(status.operational_health.queued_over_threshold, 0);
+        assert.equal(
+          warnings.some((line) => line.includes("github_read_model_workflow_run_evicted")),
+          false,
+        );
+      } else if (liveVerdict === "queued") {
+        assert.equal(status.operational_health.status, "degraded");
+        assert.equal(status.operational_health.queued_over_threshold, 1);
+        assert.equal(
+          warnings.some((line) => line.includes("github_read_model_workflow_run_evicted")),
+          false,
+        );
+        const confirmed = await store.readWorkflows({ repository: "openclaw/openclaw" });
+        const observation = (confirmed.run_observations as Array<Record<string, unknown>>)[0];
+        assert.ok(Date.parse(String(observation.confirmed_at)) > observedAtMs);
+      } else {
+        assert.equal(status.operational_health.status, "healthy");
+        assert.equal(status.operational_health.queued_over_threshold, 0);
+        assert.equal(
+          warnings.some(
+            (line) =>
+              line.includes("github_read_model_workflow_run_evicted") &&
+              line.includes(`"verdict":"${liveVerdict}"`),
+          ),
+          true,
+        );
+        const healed = await store.readWorkflows({ repository: "openclaw/openclaw" });
+        assert.deepEqual(healed.runs, []);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      console.warn = originalWarn;
+      Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+    }
+  }
+});
+
+test("dashboard health ignores repair-fed workflow rows without subscription coverage", async () => {
+  const storage = new MemoryDurableStorage();
+  const store = new GithubWebhookReadModelStore(storage);
+  store.ensureSchemaSync();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const now = new Date().toISOString();
+  const phantom = {
+    id: 9921,
+    status: "queued",
+    created_at: new Date(Date.now() - 60 * 60_000).toISOString(),
+    updated_at: now,
+  };
+  store.repair(
+    {
+      repository: "openclaw/openclaw",
+      repair_kind: "workflows",
+      workflow_run_census_complete: true,
+      workflow_run_census_started_at: now,
+      objects: [workflowObject("workflow_run", 9921, 9921, now, phantom)],
+    },
+    Date.now(),
+  );
+  const repairOnly = await store.readWorkflows({ repository: "openclaw/openclaw" });
+  assert.equal(repairOnly.usable, false);
+  assert.equal((repairOnly.class_state as Record<string, unknown>).reason, "never_observed");
+
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: { match: async () => undefined, put: async () => undefined } },
+  });
+  globalThis.fetch = async (input) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname.includes("/actions/workflows/") || url.pathname.endsWith("/actions/runs")) {
+      return jsonResponse({ workflow_runs: [] });
+    }
+    if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+    if (url.pathname.includes("/issues")) return jsonResponse([]);
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      {
+        CLAWSWEEPER_REPO: "openclaw/openclaw",
+        TARGET_REPOS: "openclaw/openclaw",
+        CACHE_TTL_SECONDS: "0",
+        CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      },
+      { waitUntil: () => undefined },
+    );
+    const status = (await response.json()) as {
+      operational_health: { status: string; queued_over_threshold: number };
+    };
+    assert.equal(status.operational_health.status, "healthy");
+    assert.equal(status.operational_health.queued_over_threshold, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
 test("exact-review lease capability reads only its own item without the webhook secret", async () => {
   const storage = new MemoryDurableStorage();
   await storage.put("exact-review-queue", {
@@ -498,6 +686,13 @@ function workflowObject(
     sourceUpdatedAt: updatedAt,
     snapshot,
   };
+}
+
+function jsonResponse(value: unknown, status = 200) {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 }
 
 function workflowHealthDecision(

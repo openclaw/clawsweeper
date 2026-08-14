@@ -238,6 +238,15 @@ chart. `/api/status` classifies the already-fetched active workflow runs as:
 - `stalled`: at least one in-progress run is 150 minutes old;
 - `unknown`: one or more actionable-status reads failed.
 
+Webhook workflow snapshots retain a per-run delivery-or-poll confirmation
+time. An over-threshold queued run whose confirmation is older than the
+five-minute workflow TTL is re-read through the exact GitHub run endpoint
+before it can degrade health. Completed or missing runs are removed from the
+snapshot and emit structured eviction telemetry; a failed recheck makes the
+snapshot unknown. Until `workflow_run` subscription coverage has actually been
+observed, repair-fed rows remain unusable and this path uses the same bounded
+live status polls as before the webhook read model.
+
 Healthy status stays hidden. A non-zombie queued run at least 30 minutes old, an
 in-progress run at least 150 minutes old, or incomplete Actions telemetry opens the
 expandable “Work execution needs attention” alert. This live diagnostic reuses
