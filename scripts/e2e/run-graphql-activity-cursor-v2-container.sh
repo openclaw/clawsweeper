@@ -40,10 +40,14 @@ echo CRABBOX_PHASE:build
 pnpm run build:all
 
 echo CRABBOX_PHASE:source
-PROOF_SOURCE_HEAD="$(git rev-parse HEAD)"
-git cat-file -e "${PROOF_SOURCE_HEAD}^{commit}"
-PROOF_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
-git cat-file -e "${PROOF_SOURCE_TREE}^{tree}"
+if [[ -z "${PROOF_SOURCE_HEAD:-}" || -z "${PROOF_SOURCE_TREE:-}" ]]; then
+  PROOF_SOURCE_HEAD="$(git rev-parse HEAD)"
+  git cat-file -e "${PROOF_SOURCE_HEAD}^{commit}"
+  PROOF_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+  git cat-file -e "${PROOF_SOURCE_TREE}^{tree}"
+fi
+[[ "$PROOF_SOURCE_HEAD" =~ ^[0-9a-f]{40}$ ]]
+[[ "$PROOF_SOURCE_TREE" =~ ^[0-9a-f]{40}$ ]]
 export PROOF_SOURCE_HEAD PROOF_SOURCE_TREE
 
 echo CRABBOX_PHASE:proof
