@@ -72,7 +72,9 @@ jq -e '
   .health.status == "healthy" and
   .health.telemetry_complete == true and
   .health.queued_over_threshold == 0 and
-  .read_model_after.runs == 0 and
+  .health.zombie_queued_runs == 1 and
+  .read_model_after.runs == 1 and
+  .read_model_after.run_ids == [7003] and
   (.exact_run_requests | sort) == [7001, 7002] and
   ([.telemetry[].verdict] | sort) == ["absent", "completed"]
 ' /tmp/health-phantom-worker-loopback-report.json >/dev/null
@@ -92,7 +94,8 @@ jq -e '
 jq -e '
   .schema == "health-phantom-worker-loopback-proof/v1" and
   .health.status == "healthy" and
-  .read_model_after.runs == 0 and
+  .health.zombie_queued_runs == 1 and
+  .read_model_after.run_ids == [7003] and
   .production_mutations == 0
 ' "$proof_root/worker-loopback-report.json" >/dev/null
 

@@ -41,7 +41,9 @@ trace requested in the first ClawSweeper review. It starts `wrangler dev
 routes, waits through the five-minute production TTL, and serves exact completed
 and 404 responses from a separate loopback GitHub HTTP server. The resulting
 `/api/status` response was healthy, both rows were absent afterward, and the
-Worker emitted both eviction telemetry verdicts.
+Worker emitted both eviction telemetry verdicts. The refreshed round-2 trace
+also seeds a 25-hour zombie, proves that no exact request is spent on it, and
+leaves only that separately observable zombie row in the read model.
 
 OpenClaw Bay is unaffected. The change repairs the dashboard's internal
 observer read path and adds no public field or queue, workflow, GitHub, DLQ,

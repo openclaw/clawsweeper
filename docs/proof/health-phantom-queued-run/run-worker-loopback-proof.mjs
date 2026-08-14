@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHmac } from "node:crypto";
 import {
   createWriteStream,
@@ -31,9 +31,12 @@ const githubPort = await availablePort();
 const exactRequests = [];
 const githubStub = createHttpServer((request, response) => {
   const url = new URL(request.url || "/", `http://127.0.0.1:${githubPort}`);
-  const exact = url.pathname.match(/^\/repos\/openclaw\/openclaw\/actions\/runs\/(7001|7002)$/);
+  const exact = url.pathname.match(
+    /^\/repos\/openclaw\/openclaw\/actions\/runs\/(7001|7002|7003)$/,
+  );
   if (exact) {
     exactRequests.push(Number(exact[1]));
+    if (exact[1] === "7003") return sendJson(response, 500, { message: "zombie rechecked" });
     if (exact[1] === "7002") return sendJson(response, 404, { message: "Not Found" });
     return sendJson(response, 200, {
       ...workflowRun(7001, "completed", seededAt),
@@ -96,7 +99,7 @@ const seededAt = new Date();
 
 try {
   await waitForWorker(origin, worker, workerLogPath);
-  for (const runId of [7001, 7002]) {
+  for (const runId of [7001, 7002, 7003]) {
     const webhook = await signedGithubWebhook(origin, runId, seededAt);
     assert.equal(webhook.status, 202, webhook.text);
     assert.equal(webhook.body.materialized, true);
@@ -124,7 +127,7 @@ try {
   });
   assert.equal(before.status, 200, before.text);
   assert.equal(before.body.usable, true);
-  assert.equal(before.body.runs.length, 2);
+  assert.equal(before.body.runs.length, 3);
 
   const statusResponse = await fetch(`${origin}/api/status`);
   const statusText = await statusResponse.text();
@@ -132,13 +135,17 @@ try {
   const status = JSON.parse(statusText);
   assert.equal(status.operational_health.status, "healthy");
   assert.equal(status.operational_health.queued_over_threshold, 0);
+  assert.equal(status.operational_health.zombie_queued_runs, 1);
   assert.deepEqual(exactRequests.toSorted((left, right) => left - right), [7001, 7002]);
 
   const after = await signedInternalPost(origin, "workflows", {
     repository: "openclaw/openclaw",
   });
   assert.equal(after.status, 200, after.text);
-  assert.deepEqual(after.body.runs, []);
+  assert.deepEqual(
+    after.body.runs.map((run) => run.id),
+    [7003],
+  );
   await delay(250);
   const workerLog = readFileSync(workerLogPath, "utf8");
   const telemetry = workerLog
@@ -158,19 +165,28 @@ try {
   const report = {
     schema: "health-phantom-worker-loopback-proof/v1",
     generated_at: new Date().toISOString(),
+    tested_runtime_head: git("rev-parse", "HEAD"),
+    runtime_blobs: {
+      "dashboard/worker.ts": git("hash-object", "dashboard/worker.ts"),
+      "dashboard/github-webhook-read-model.ts": git(
+        "hash-object",
+        "dashboard/github-webhook-read-model.ts",
+      ),
+    },
     target: `${origin}/api/status`,
     worker: "wrangler dev --local",
     github_transport: `http://127.0.0.1:${githubPort}`,
     durable_object: "SQLite-backed ExactReviewQueue",
     workflow_ttl_wait_ms: ttlWaitMs,
-    seeded_runs: [7001, 7002],
+    seeded_runs: [7001, 7002, 7003],
     exact_run_requests: exactRequests,
     health: {
       status: status.operational_health.status,
       telemetry_complete: status.operational_health.telemetry_complete,
       queued_over_threshold: status.operational_health.queued_over_threshold,
+      zombie_queued_runs: status.operational_health.zombie_queued_runs,
     },
-    read_model_after: { runs: after.body.runs.length },
+    read_model_after: { runs: after.body.runs.length, run_ids: [7003] },
     telemetry: telemetry.map((line) => JSON.parse(line)),
     production_mutations: 0,
     openclaw_bay_affected: false,
@@ -202,7 +218,9 @@ function workflowRun(id, status, observedAt) {
     display_title: `Review event item openclaw/openclaw#${id}`,
     status,
     conclusion: null,
-    created_at: new Date(observedAt.getTime() - 60 * 60_000).toISOString(),
+    created_at: new Date(
+      observedAt.getTime() - (id === 7003 ? 25 * 60 * 60_000 : 60 * 60_000),
+    ).toISOString(),
     updated_at: observedAt.toISOString(),
   };
 }
@@ -295,4 +313,8 @@ async function waitForWorker(originUrl, child, logPath) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+function git(...command) {
+  return execFileSync("git", command, { encoding: "utf8" }).trim();
 }
