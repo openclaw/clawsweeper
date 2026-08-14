@@ -539,6 +539,100 @@ globalThis.fetch = async (url, init) => {
   }
 });
 
+for (const command of ["complete", "release"] as const) {
+  test(`batch ${command} preserves a target-app circuit on a fallback completion`, () => {
+    const root = mkdtempSync(join(tmpdir(), `clawsweeper-batch-cli-${command}-scope-`));
+    try {
+      const member = batchMember(`openclaw/openclaw#814@publish:8140:1`, 814);
+      const manifestPath = join(root, "manifest.json");
+      const receiptPath = join(root, "receipt.json");
+      const completionPath = join(root, "completion.json");
+      const observationsPath = join(root, "github-rate-limits.jsonl");
+      const preloadPath = join(root, "fetch-preload.cjs");
+      const retryAt = new Date(Date.now() + 60_000).toISOString();
+      writeFileSync(
+        manifestPath,
+        JSON.stringify({
+          batchId: `batch-${command}-target-app-scope`,
+          leaseOwner: "proof-worker",
+          configuredBatchSize: 1,
+          batchWaitMs: 0,
+          items: [{ ...member, outcomePath: join(root, "missing-outcome.json") }],
+        }),
+      );
+      writeFileSync(
+        receiptPath,
+        JSON.stringify({
+          batchId: `batch-${command}-target-app-scope`,
+          publishedItemKeys: [],
+          outcomes: [],
+        }),
+      );
+      writeFileSync(
+        observationsPath,
+        `${JSON.stringify({
+          scope: "target_app",
+          target_owner: "scope-proof",
+          observed_at: new Date().toISOString(),
+          retry_at: retryAt,
+          provenance: "retry_after",
+          authoritative: true,
+        })}\n`,
+      );
+      writeFileSync(
+        preloadPath,
+        `const fs = require("node:fs");
+const manifest = JSON.parse(fs.readFileSync(process.env.EXACT_REVIEW_BATCH_MANIFEST, "utf8"));
+const wireItems = manifest.items.map((item) => ({ item_key: item.itemKey, revision: item.revision, claim_generation: item.claimGeneration, decision: item.decision }));
+const response = (value) => new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+globalThis.fetch = async (url, init) => {
+  const target = String(url);
+  if (target.endsWith("/publication-batches/fetch")) return response({ batch: { batch_id: manifest.batchId, lease_owner: manifest.leaseOwner, lease_expires_at: "2026-08-10T16:00:00.000Z", items: wireItems }, items: wireItems, superseded: 0 });
+  if (target.endsWith("/publication-batches/complete")) {
+    fs.writeFileSync(process.env.BATCH_CLI_COMPLETION, init.body);
+    return response({ accepted: 1, skipped: 0, telemetry_accepted: true, batch: { batch_id: manifest.batchId, lease_owner: manifest.leaseOwner, lease_expires_at: "2026-08-10T16:00:00.000Z", items: [] } });
+  }
+  throw new Error("unexpected mock fetch target: " + target);
+};
+`,
+      );
+      const result = spawnSync(
+        process.execPath,
+        ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", command],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+            EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+            EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+            EXACT_REVIEW_BATCH_RECEIPT: receiptPath,
+            CLAWSWEEPER_GITHUB_RATE_LIMIT_OBSERVATION_PATH: observationsPath,
+            BATCH_CLI_COMPLETION: completionPath,
+          },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const completion = JSON.parse(readFileSync(completionPath, "utf8"));
+      assert.deepEqual(completion.items, [
+        {
+          item_key: member.itemKey,
+          revision: member.revision,
+          claim_generation: member.claimGeneration,
+          terminal_outcome: "retryable_failure",
+          reason_code: "github_rate_limit",
+          pool_class: "target_app",
+          retry_at: retryAt,
+          attempted: false,
+        },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test("batch completion forwards telemetry appended after an earlier acknowledgement", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-batch-cli-late-telemetry-"));
   try {
