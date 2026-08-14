@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-14T09:58:10Z",
+  "provider": "local-container",
+  "lease_id": "cbx_cad7f071c835",
+  "slug": "blue-prawn-8cd8",
+  "container_runtime": "docker",
+  "image": "node:24-bookworm",
+  "machine_type": "node_24-bookworm",
+  "tested_head": "926db2264ea55f9ecd8ff7c87148e2a564d43af4",
+  "merge_base": "386730fc41ae0b1b63a7dbbd648404be6bd65c66",
+  "command": "/Users/steipete/Projects/crabbox/bin/crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --timing-json --capture-stdout docs/proof/webhook-read-model/container-transcript.txt --capture-stderr docs/proof/webhook-read-model/container-stderr.txt --shell -- sudo apt-get update >/dev/null && sudo apt-get install -y jq >/dev/null && docs/proof/webhook-read-model/run-proof.sh 926db2264ea55f9ecd8ff7c87148e2a564d43af4 386730fc41ae0b1b63a7dbbd648404be6bd65c66",
+  "exit_code": 0,
+  "lease_stopped": true,
+  "sync_ms": 10026,
+  "command_ms": 99201,
+  "total_ms": 109244,
+  "command_phases_ms": {
+    "user_command": 1647,
+    "install": 2473,
+    "build": 1757,
+    "focused": 916,
+    "loopback": 43,
+    "dashboard_strict": 475,
+    "full_gate": 91888
+  },
+  "node_version": "v24.19.0",
+  "pnpm_version": "11.10.0",
+  "focused_tests": {
+    "tests": 57,
+    "passed": 57,
+    "failed": 0
+  },
+  "loopback": {
+    "signed_event_classes": 8,
+    "duplicate_guid_deduped": true,
+    "object_watermark_monotonic": true,
+    "tombstone_late_edit_blocked": true,
+    "ttl_staleness_marked": true,
+    "count_gap_forced_repair": true,
+    "complete_repair_healed_gap": true
+  },
+  "poller_equivalence": {
+    "planning_item_github_requests": "1 -> 0",
+    "dashboard_workflow_github_requests": "8 -> 0",
+    "placeholder_github_requests": "3 -> 0",
+    "repair_loop_router_github_requests": "1 -> 0",
+    "decisions_identical": true
+  },
+  "safety": {
+    "apply_generation_live_hits": 1,
+    "final_bypass_live_hits": 1,
+    "read_model_guard_hits": 0,
+    "two_sided_lease_contract_unchanged": true,
+    "placeholder_delete_live_revalidation_unchanged": true
+  },
+  "dashboard_strict": {
+    "command": "pnpm run check:dashboard-strict",
+    "exit_code": 0,
+    "ratchet_added": "dashboard/github-webhook-read-model.ts"
+  },
+  "full_gate": {
+    "command": "pnpm run check",
+    "exit_code": 0,
+    "tests": 3461,
+    "passed": 3453,
+    "failed": 0,
+    "skipped": 8,
+    "coverage": {
+      "lines": 81.46,
+      "branches": 74.06,
+      "functions": 87.34
+    }
+  },
+  "pre_commit_autoreview": {
+    "command": "autoreview --mode local --stream-engine-output --parallel-tests 'pnpm run check'",
+    "exit_code": 0,
+    "accepted_or_actionable_findings": 0,
+    "result": "autoreview clean: no accepted/actionable findings reported"
+  },
+  "behavior_report": "docs/proof/webhook-read-model/behavior-report.json",
+  "content_sha256": {
+    "dashboard/github-webhook-read-model.ts": "fcbf50ca3724238666452490fc7d5306dcb76df68af086921365a24e5aa90ad1",
+    "dashboard/worker.ts": "fdad277f8eaaa443255c92e3d95a1f297b55d7212376128d5725bec154ce4410",
+    "dashboard/exact-review-queue.ts": "db83eb3744e397afa6793dac73fe23faa80d5250489c97afaddb68b42a694d28",
+    "src/github-webhook-read-model-client.ts": "b708972c8a8abdfae6eb66e55167d1cabd0a97b185e741cdb276dd960744e78d",
+    "src/clawsweeper-review-planning-inventory.ts": "c141d666b0a95d1768e6af0ca8fb550816da071505ec07f94f0589406814eb84",
+    "src/review-placeholder-recovery.ts": "d3208c472532f7bbb5985f329111e37ae8fba8f1a5e15de819426a664bf2d009",
+    "src/repair/comment-router-read-model.ts": "320ad49fb01249ad23d321cba641a8fa26920e4fb80fe13c793721c8a3c1a27a",
+    "test/github-webhook-read-model.test.ts": "44ca8b5e8623011e4559b0bd0045c958e88d9fbdb977d4199898e0c59c3eca77",
+    "docs/github-webhook-read-model.md": "5dedc9dd08594b3db898e61cc857ae7acfc4f57c9d0922a7c20f545df5b08f19",
+    "docs/proof/webhook-read-model/run-proof.sh": "f8a550147afbc54192454a8a5e9a0b67d351802ae59bb5310d2b5c86c5e58e17"
+  },
+  "artifact_sha256": {
+    "behavior_report": "94f409911d3168b33c97881a73615e098a3c06966dfe61ce1afdcc7b4be22519",
+    "raw_container_transcript": "f1b0ab15841b4bf38d2412ac682c1a72259fcb3a653ca038316d4c397ba73ac5",
+    "container_transcript_summary": "cceb2c9f514152ab518e21ffae6f83660832398e286c0aa973c2af668c2930d3",
+    "container_stderr": "83f6e243015fd4f3ff6b64b66611825ef83f50686b7dad313ebe07f8934e4ab2"
+  },
+  "secret_scan": {
+    "tool": "trufflehog 3.96.0",
+    "command": "trufflehog filesystem --no-update --results=verified,unknown --fail --fail-on-scan-errors docs/proof/webhook-read-model/container-transcript-summary.txt docs/proof/webhook-read-model/container-stderr.txt docs/proof/webhook-read-model/behavior-report.json",
+    "exit_code": 0,
+    "chunks": 3,
+    "bytes": 4818,
+    "verified_secrets": 0,
+    "unknown_secrets": 0
+  },
+  "cleanup": {
+    "owned_success_lease_absent_from_local_container_list": true,
+    "owned_failed_lease_absent_from_local_container_list": true,
+    "unrelated_preexisting_exited_lease_untouched": true,
+    "raw_success_transcript_moved_to_private_tmp": true,
+    "failed_capture_removed": true
+  }
+}

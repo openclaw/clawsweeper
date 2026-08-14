@@ -1,0 +1,69 @@
+{
+  "schema": "clawsweeper-webhook-read-model-proof/v1",
+  "generated_at": "2026-08-14T09:57:59.331Z",
+  "tested_head": "926db2264ea55f9ecd8ff7c87148e2a564d43af4",
+  "merge_base": "386730fc41ae0b1b63a7dbbd648404be6bd65c66",
+  "ingress": {
+    "signed_loopback": true,
+    "event_classes": [
+      "issues",
+      "pull_requests",
+      "issue_comments",
+      "pull_request_reviews",
+      "pull_request_review_comments",
+      "workflow_runs",
+      "workflow_jobs",
+      "checks"
+    ],
+    "duplicate_guid_deduped": true,
+    "object_watermark_monotonic": true,
+    "late_comment_edit_cannot_resurrect_tombstone": true,
+    "ttl_staleness_marked": true,
+    "count_gap_forces_repair": true,
+    "complete_repair_heals_gap": true
+  },
+  "pollers": {
+    "planning_item": {
+      "poll_github_requests": 1,
+      "snapshot_github_requests": 0,
+      "decisions_identical": true,
+      "gap_repair_github_requests": 1
+    },
+    "dashboard_workflow_health": {
+      "fixture_active_runs": 1,
+      "poll_github_requests": 8,
+      "snapshot_github_requests": 0,
+      "formula": "2 general/completed + 5 active-status scans + N job pages -> 0 GitHub requests while fresh",
+      "decisions_identical": true
+    },
+    "placeholder_discovery": {
+      "poll_github_requests": 3,
+      "snapshot_github_requests": 0,
+      "decisions_identical": true,
+      "slow_repair_ttl_ms": 21600000
+    },
+    "repair_loop_router": {
+      "poll_github_requests": 1,
+      "snapshot_github_requests": 0,
+      "decisions_identical": true
+    }
+  },
+  "safety": {
+    "warm_snapshot_available": true,
+    "apply_generation_live_hits": 1,
+    "final_bypass_live_hits": 1,
+    "read_model_guard_hits": 0,
+    "two_sided_lease_contract_unchanged": true,
+    "placeholder_delete_live_revalidation_unchanged": true
+  },
+  "subscriptions": {
+    "readiness_is_per_event_class": true,
+    "never_observed_degrades_to_poll": true,
+    "structured_telemetry": "github_read_model_degraded"
+  },
+  "openclaw_bay": {
+    "affected": false,
+    "reason": "Internal read transport only; public observer schema and no-action boundary are unchanged."
+  },
+  "limits": "Deterministic local fixtures; no production GitHub, App subscription, Worker, queue, or mutation traffic."
+}
