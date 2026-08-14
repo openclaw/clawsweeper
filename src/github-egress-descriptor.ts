@@ -115,6 +115,9 @@ export function githubEgressRouteTemplate(value: string): GitHubEgressRouteTempl
     return "commit_metadata";
   }
   if (/^\/repos\/[^/]+\/[^/]+\/actions\/runs\/?$/.test(path)) return "actions_runs";
+  if (/^\/repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/jobs\/?$/.test(path)) {
+    return "actions_run_jobs";
+  }
   if (/^\/repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/artifacts\/?$/.test(path)) {
     return "actions_run_artifacts";
   }
@@ -198,6 +201,7 @@ export function githubEgressOperation(route: GitHubEgressRouteTemplate): GitHubE
     route === "commit_metadata" ||
     route === "commit_pulls" ||
     route === "actions_runs" ||
+    route === "actions_run_jobs" ||
     route === "search_issues"
   )
     return "item_metadata";

@@ -59,6 +59,7 @@ export type GitHubEgressMethod = (typeof GITHUB_EGRESS_METHODS)[number];
 export const GITHUB_EGRESS_ROUTE_TEMPLATES = [
   "actions_artifact_archive",
   "actions_runs",
+  "actions_run_jobs",
   "actions_run_artifacts",
   "actions_workflow_dispatch",
   "authenticated_user",
@@ -103,7 +104,13 @@ export const GITHUB_EGRESS_PAGE_BUCKETS = [
 ] as const;
 export type GitHubEgressPageBucket = (typeof GITHUB_EGRESS_PAGE_BUCKETS)[number];
 
-export const GITHUB_EGRESS_UNITS = ["invocation", "wire_attempt", "member"] as const;
+export const GITHUB_EGRESS_UNITS = [
+  "invocation",
+  "wire_attempt",
+  "member",
+  "broker_lookup",
+  "conditional_response",
+] as const;
 export type GitHubEgressUnit = (typeof GITHUB_EGRESS_UNITS)[number];
 
 export const GITHUB_EGRESS_OUTCOMES = [
@@ -115,6 +122,11 @@ export const GITHUB_EGRESS_OUTCOMES = [
   "ambiguous",
   "pre_wire_failure",
   "legacy_avoided",
+  "cache_hit",
+  "cache_miss",
+  "cache_skip",
+  "cache_200_stored",
+  "cache_304_served",
 ] as const;
 export type GitHubEgressOutcome = (typeof GITHUB_EGRESS_OUTCOMES)[number];
 

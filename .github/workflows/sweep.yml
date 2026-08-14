@@ -1417,6 +1417,7 @@ jobs:
         continue-on-error: true
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           CLAWSWEEPER_PUBLIC_GH_TOKEN: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}
           REPO_TOKEN: ${{ github.token }}

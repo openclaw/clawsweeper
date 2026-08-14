@@ -48,13 +48,30 @@ export function createGitHubContext({
   }
 
   function ghPaged<T>(path: string, options: { requireApp?: boolean } = {}): T[] {
-    const args = ["api", githubPaginatedPath(path), "--paginate", "--slurp"];
-    if (options.requireApp && exactPublicationPublicReadToken(args, targetRepo())) {
-      args.push("--method", "GET");
+    if (
+      process.env.EXACT_EVENT_PUBLICATION !== "true" ||
+      !process.env.EXACT_REVIEW_QUEUE_URL?.trim() ||
+      !process.env.CLAWSWEEPER_WEBHOOK_SECRET?.trim()
+    ) {
+      const args = ["api", githubPaginatedPath(path), "--paginate", "--slurp"];
+      if (options.requireApp && exactPublicationPublicReadToken(args, targetRepo())) {
+        args.push("--method", "GET");
+      }
+      const pages = ghJson<unknown[]>(args);
+      if (!Array.isArray(pages)) return [];
+      return pages.flatMap((page) => (Array.isArray(page) ? (page as T[]) : []));
     }
-    const pages = ghJson<unknown[]>(args);
-    if (!Array.isArray(pages)) return [];
-    return pages.flatMap((page) => (Array.isArray(page) ? (page as T[]) : []));
+    const entries: T[] = [];
+    for (let page = 1; ; page += 1) {
+      const args = ["api", githubPagePath(path, page)];
+      if (options.requireApp && exactPublicationPublicReadToken(args, targetRepo())) {
+        args.push("--method", "GET");
+      }
+      const current = ghJson<unknown[]>(args);
+      if (!Array.isArray(current)) return entries;
+      entries.push(...(current as T[]));
+      if (current.length < 100) return entries;
+    }
   }
 
   function ghPagedLimit<T>(path: string, limit: number): T[] {

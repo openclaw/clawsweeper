@@ -323,13 +323,25 @@ export class GithubEgressTelemetryStore {
         start,
       ),
     ) as Array<Record<string, unknown>>;
-    const byUnit = { invocation: 0, wire_attempt: 0, member: 0 };
+    const byUnit = {
+      invocation: 0,
+      wire_attempt: 0,
+      member: 0,
+      broker_lookup: 0,
+      conditional_response: 0,
+    };
     let complete = 0;
     let incomplete = 0;
     for (const row of totals) {
       const count = Number(row.count || 0);
       const unit = String(row.unit || "");
-      if (unit === "invocation" || unit === "wire_attempt" || unit === "member") {
+      if (
+        unit === "invocation" ||
+        unit === "wire_attempt" ||
+        unit === "member" ||
+        unit === "broker_lookup" ||
+        unit === "conditional_response"
+      ) {
         byUnit[unit] += count;
       }
       if (Number(row.telemetry_complete) === 1) complete += count;

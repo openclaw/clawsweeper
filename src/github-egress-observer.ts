@@ -24,6 +24,7 @@ import {
   type GitHubEgressPoolClass,
   type GitHubEgressRouteTemplate,
   type GitHubEgressStage,
+  type GitHubEgressUnit,
   type GitHubRateLimitHeadersV2,
   type GitHubRateLimitObservationV2,
 } from "./github-egress-telemetry-contract.js";
@@ -207,6 +208,45 @@ export function recordUnobservedGitHubInvocation(
   }
 }
 
+export function recordGithubEgressBrokerEvent(
+  args: readonly string[],
+  options: {
+    unit: Extract<GitHubEgressUnit, "broker_lookup" | "conditional_response">;
+    outcome: Extract<
+      GitHubEgressOutcome,
+      "cache_hit" | "cache_miss" | "cache_skip" | "cache_200_stored" | "cache_304_served"
+    >;
+    status?: 200 | 304 | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
+    nowMs?: number | undefined;
+  },
+): void {
+  const env = options.env ?? process.env;
+  const nowMs = options.nowMs ?? Date.now();
+  try {
+    const context = githubEgressContext(args, env);
+    appendGithubEgressMetric(env, {
+      ...metricBase(context, nowMs),
+      operation: context.descriptor.operation,
+      method: context.descriptor.method,
+      routeTemplate: context.descriptor.routeTemplate,
+      pageBucket: githubEgressPageBucket(githubPageFromArgs(args)),
+      unit: options.unit,
+      outcome: options.outcome,
+      statusBucket: githubEgressStatusBucket(options.status ?? null),
+      latencyBucket: "unknown",
+      attempted: options.unit === "conditional_response",
+      telemetryComplete:
+        context.complete &&
+        context.descriptor.method === "GET" &&
+        context.descriptor.routeTemplate !== "unknown",
+      count: 1,
+    });
+  } catch {
+    // Broker observation is fail-open and never changes a GitHub read.
+  }
+}
+
 export function appendLegacyAvoidedGithubEgressMember(options: {
   env?: NodeJS.ProcessEnv;
   poolClass: GitHubEgressPoolClass;
@@ -383,6 +423,17 @@ function githubEgressAllowedHosts(env: NodeJS.ProcessEnv): ReadonlySet<string> {
     }
   }
   return hosts;
+}
+
+function githubPageFromArgs(args: readonly string[]): number | null {
+  const endpoint = args.find((value) => value.includes("/repos/") || value.startsWith("repos/"));
+  if (!endpoint) return null;
+  try {
+    const page = new URL(endpoint, "https://api.github.invalid").searchParams.get("page");
+    return page && /^\d+$/.test(page) ? Number(page) : null;
+  } catch {
+    return null;
+  }
 }
 
 function responseHeaders(block: string): GitHubRateLimitHeadersV2 {

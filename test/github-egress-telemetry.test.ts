@@ -14,6 +14,7 @@ import {
 } from "../dist/github-egress-descriptor.js";
 import {
   observeGitHubDebugStderr,
+  recordGithubEgressBrokerEvent,
   recordGithubEgressMember,
   recordUnobservedGitHubInvocation,
 } from "../dist/github-egress-observer.js";
@@ -140,6 +141,53 @@ test("unsafe or unavailable wire parsing fails open with incomplete bounded metr
   }
 });
 
+test("broker lookups and conditional responses use separate telemetry units", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-egress-etag-"));
+  try {
+    const metricsPath = join(root, "metrics.jsonl");
+    const env = observerEnv(metricsPath, join(root, "rate.jsonl"));
+    const args = ["api", "repos/openclaw/openclaw/issues/42/comments?per_page=100&page=2"];
+    recordGithubEgressBrokerEvent(args, {
+      env,
+      nowMs: NOW,
+      unit: "broker_lookup",
+      outcome: "cache_hit",
+    });
+    recordGithubEgressBrokerEvent(args, {
+      env,
+      nowMs: NOW,
+      unit: "conditional_response",
+      outcome: "cache_304_served",
+      status: 304,
+    });
+    const metrics = jsonLines(metricsPath);
+    assert.deepEqual(
+      metrics.map((metric) => ({
+        unit: metric.unit,
+        outcome: metric.outcome,
+        statusBucket: metric.statusBucket,
+        pageBucket: metric.pageBucket,
+      })),
+      [
+        {
+          unit: "broker_lookup",
+          outcome: "cache_hit",
+          statusBucket: "none",
+          pageBucket: "2",
+        },
+        {
+          unit: "conditional_response",
+          outcome: "cache_304_served",
+          statusBucket: "3xx",
+          pageBucket: "2",
+        },
+      ],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("descriptor exposes only closed method, operation, and route dimensions", () => {
   assert.deepEqual(
     githubEgressCommandDescriptor([
@@ -176,6 +224,7 @@ test("descriptor exposes only closed method, operation, and route dimensions", (
       ["/repos/o/r/commits/secret/check-runs", "commit_check_runs"],
       ["/repos/o/r/commits/secret/pulls", "commit_pulls"],
       ["/repos/o/r/actions/runs", "actions_runs"],
+      ["/repos/o/r/actions/runs/42/jobs", "actions_run_jobs"],
     ].map(([route, expected]) => [githubEgressRouteTemplate(route!), expected]),
     [
       ["graphql", "graphql"],
@@ -195,6 +244,7 @@ test("descriptor exposes only closed method, operation, and route dimensions", (
       ["commit_check_runs", "commit_check_runs"],
       ["commit_pulls", "commit_pulls"],
       ["actions_runs", "actions_runs"],
+      ["actions_run_jobs", "actions_run_jobs"],
     ],
   );
 });
@@ -467,6 +517,8 @@ test("signed upload, SQLite restart, retention, cardinality, and public privacy 
       invocation: 3,
       wire_attempt: 0,
       member: 1,
+      broker_lookup: 0,
+      conditional_response: 0,
     });
     assert.equal(publicView!.privacy.pool_identity, "withheld");
     const serialized = JSON.stringify(publicView);

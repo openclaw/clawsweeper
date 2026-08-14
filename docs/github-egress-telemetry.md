@@ -41,11 +41,13 @@ the operation, route, page, outcome, or rate-limit-header breakdown is needed.
 
 Do not add unlike units. Each row declares one of these units:
 
-| Unit           | What one count means                                                                             |
-| -------------- | ------------------------------------------------------------------------------------------------ |
-| `member`       | One durable publication member entering a direct, artifact, or batch publication boundary.       |
-| `invocation`   | One `gh` command invocation, including a pre-wire failure or an opaque artifact download action. |
-| `wire_attempt` | One HTTP request observed in a safe `GH_DEBUG=api` transport frame; each pagination page counts. |
+| Unit                   | What one count means                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------ |
+| `member`               | One durable publication member entering a direct, artifact, or batch publication boundary.       |
+| `invocation`           | One `gh` command invocation, including a pre-wire failure or an opaque artifact download action. |
+| `wire_attempt`         | One HTTP request observed in a safe `GH_DEBUG=api` transport frame; each pagination page counts. |
+| `broker_lookup`        | One durable ETag broker lookup decision: hit, miss, or skip.                                     |
+| `conditional_response` | One GitHub 200 stored by the broker or one 304 whose durable body was confirmed and served.      |
 
 A paginated invocation therefore contributes one `invocation` and N
 `wire_attempt` rows. An artifact download whose binary redirect is unsafe to
@@ -53,6 +55,46 @@ debug contributes an incomplete `invocation` but no invented wire count.
 `attempted=false` is emitted only for a directly observed pre-wire condition or
 an existing batch circuit skip. Phase 0 does not manufacture requests that a
 future coordinator might have avoided.
+
+Do not equate a broker hit with a quota saving. `cache_hit` means only that an
+ETag was available for the next live request. The separate
+`cache_304_served` conditional-response row proves that GitHub returned 304 and
+the matching durable body was confirmed. A 304 costs zero REST quota points but
+still contributes a normal `wire_attempt`; the broker reduces quota charges,
+not wire requests. `cache_200_stored`, `cache_miss`, and `cache_skip` remain
+separate outcomes so operators can distinguish population, absence, and
+bounded/fail-open exclusions.
+
+## Durable ETag broker
+
+The first brokered surfaces are publication-apply issue/pull metadata and
+page-stable issue comments, pull comments, and pull reviews, plus the dashboard
+Actions run/job health reads. Publication reads continue to use the existing
+in-generation memoizer; the broker is consulted only when a real cross-run or
+new-generation GitHub request is about to be sent.
+
+The version-1 key is the canonical JSON tuple
+`[1, credential_pool, route_with_sorted_query, media_type]`. Collection routes
+materialize default `per_page` and `page=1`, so every page is independent and a
+page-1 304 never validates page 2. Credential pool remains one of
+`repository_actions`, `target_app`, or `public_read_fallback`; raw tokens and
+private pool identities are never persisted or exposed.
+
+Entries live in the exact-review queue Durable Object for 30 days, matching the
+artifact-receipt retention convention. The store is capped at 2,048 entries and
+512 KiB of UTF-8 JSON per body; missing ETags, malformed JSON, and larger bodies
+are counted as `cache_skip` and read normally. Each entry retains its response
+timestamp, last validation timestamp, ETag, body digest, and body. Automated
+runner access uses the publisher-scoped webhook HMAC because publication jobs
+already hold that narrowly scoped credential; the operator secret stays
+reserved for human recovery.
+
+Lookup returns only ETag and digest. After GitHub returns 304, a separate
+confirmation must still match that ETag/digest before the Worker returns the
+body. If lookup or confirmation fails, the caller performs an unconditional
+live read. Final pre/post-mutation guards therefore preserve their live
+authority: they may save quota with a 304, but they cannot consume a bare cached
+body.
 
 Stable pull-request activity validation uses the version-2 GraphQL cursor when
 reviews, review threads, and every nested inline review comment fit in the

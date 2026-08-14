@@ -6,6 +6,10 @@ import {
 } from "../src/repair/comment-command-text.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
+import {
+  githubEtagCacheKey,
+  githubEtagCacheRequestBody,
+} from "../src/github-etag-cache-contract.ts";
 import { bayHtml } from "./bay-page.ts";
 import {
   dashboardHtml,
@@ -902,6 +906,24 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewQueueRequest(request, env, "/artifact-cache/receipt/store");
+    // Like the artifact cache, this automated data plane uses the publisher-scoped
+    // webhook secret already present in publication jobs. The operator credential
+    // remains reserved for human recovery and administrative access.
+    if (
+      url.pathname === "/internal/exact-review/github-etag-cache/lookup" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/github-etag-cache/lookup");
+    if (
+      url.pathname === "/internal/exact-review/github-etag-cache/store" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/github-etag-cache/store");
+    if (
+      url.pathname === "/internal/exact-review/github-etag-cache/confirm" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/github-etag-cache/confirm");
     if (
       url.pathname === "/internal/exact-review/lifecycle/router-receipt" &&
       request.method === "POST"
@@ -7248,16 +7270,97 @@ function createGithubJsonCache(env): GithubJsonReader {
 
 async function githubJson(env, path) {
   const token = await githubAuthToken(env);
-  const response = await fetch(githubApiUrl(env, path), {
+  const key = githubEtagCacheKey({
+    credentialPool: env.GITHUB_TOKEN ? "repository_actions" : "target_app",
+    route: path,
+    surface: "dashboard",
+  });
+  const requestBody = key ? githubEtagCacheRequestBody(key, "dashboard") : null;
+  const etagBrokerEnabled = Boolean(
+    requestBody && exactReviewQueueStub(env) && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET),
+  );
+  let cachedEntry: Record<string, unknown> | null = null;
+  if (etagBrokerEnabled && requestBody) {
+    try {
+      const lookup = await githubEtagQueuePost(env, "lookup", requestBody);
+      cachedEntry = lookup.hit === true ? objectValue(lookup.entry) : null;
+    } catch {
+      cachedEntry = null;
+    }
+  }
+  let response = await githubJsonResponse(env, path, token, String(cachedEntry?.etag || ""));
+  if (response.status === 304 && etagBrokerEnabled && requestBody && cachedEntry) {
+    try {
+      const confirmed = await githubEtagQueuePost(env, "confirm", {
+        ...requestBody,
+        etag: String(cachedEntry.etag || ""),
+        body_digest: String(cachedEntry.bodyDigest || ""),
+      });
+      const body = typeof confirmed.body === "string" ? confirmed.body : "";
+      const entry = objectValue(confirmed.entry);
+      if (
+        confirmed.confirmed === true &&
+        body &&
+        entry.etag === cachedEntry.etag &&
+        entry.bodyDigest === cachedEntry.bodyDigest &&
+        (await sha256Utf8(body)) === cachedEntry.bodyDigest
+      ) {
+        return parseGithubJsonBody(body, path);
+      }
+    } catch {
+      // The final guard may use a 304, but it never consumes an unconfirmed body.
+    }
+    response = await githubJsonResponse(env, path, token, "");
+  }
+  if (!response.ok) throw new Error(`GitHub ${response.status} for ${path}`);
+  const body = await response.text();
+  if (etagBrokerEnabled && requestBody) {
+    const etag = response.headers.get("etag") || "";
+    await githubEtagQueuePost(env, "store", { ...requestBody, etag, body }).catch(() => undefined);
+  }
+  return parseGithubJsonBody(body, path);
+}
+
+export const githubJsonForTest = githubJson;
+
+function githubJsonResponse(env, path, token: string, ifNoneMatch: string) {
+  return fetch(githubApiUrl(env, path), {
     signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     headers: {
       Accept: "application/vnd.github+json",
       "User-Agent": "openclaw-clawsweeper-status",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(ifNoneMatch ? { "If-None-Match": ifNoneMatch } : {}),
     },
   });
-  if (!response.ok) throw new Error(`GitHub ${response.status} for ${path}`);
-  return response.json();
+}
+
+async function githubEtagQueuePost(env, operation: "lookup" | "store" | "confirm", body) {
+  const response = await exactReviewQueueRequest(
+    env,
+    `/github-etag-cache/${operation}`,
+    new Request("https://clawsweeper-etag-cache", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+  const result = objectValue(await response.json().catch(() => null));
+  if (!response.ok) throw new Error(String(result.error || "GitHub ETag cache unavailable"));
+  return result;
+}
+
+function parseGithubJsonBody(body: string, path: string) {
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error(`GitHub returned invalid JSON for ${path}`);
+  }
+}
+
+async function sha256Utf8(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function githubGraphql(env, query, variables) {

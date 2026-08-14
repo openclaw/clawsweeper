@@ -10,6 +10,7 @@ operational paths that have not migrated yet.
 | `records/**`                                                                          | Durable Object record store with R2 snapshots | Never checked out or written       |
 | fanout and placeholder-recovery cursors per mode                                      | ExactReviewQueue Durable Object KV            | Never checked out or written       |
 | exact re-review command intakes, version watermarks, receipts, and per-item revisions | ExactReviewQueue Durable Object SQLite        | Never checked out or written       |
+| bounded GitHub ETag, JSON body, digest, and validation timestamp entries              | ExactReviewQueue Durable Object SQLite        | Never checked out or written       |
 | `ledger/v1/**`                                                                        | R2 immutable blobs                            | Never checked out or written       |
 | `assets/**`                                                                           | R2 mutable blobs                              | Never checked out or written       |
 | `artifacts/exact-review/v1/<sha256>`                                                  | R2 immutable cache blobs                      | Never checked out or written       |
@@ -51,6 +52,13 @@ revision, and protocol version. Reuse requires an exact tuple match and a
 verified object digest; every miss or mismatch falls back to GitHub. Receipts
 expire after 30 days, and cache traffic incrementally prunes expired receipts
 plus old unreferenced R2 objects (including upload orphans) in bounded batches.
+
+GitHub conditional-read entries stay in queue SQLite rather than runner-local
+files because publication runners are ephemeral. They share the 30-day receipt
+retention convention, cap the store at 2,048 entries and each JSON body at 512
+KiB, and evict least-recently validated entries when full. The durable body is
+returned only by the post-304 confirmation operation; a lookup alone returns
+only its ETag and digest.
 
 Git-backed reports, dashboard status, and post-dispatch cursors are best-effort
 after their productive side effect or canonical publication succeeds. Git
