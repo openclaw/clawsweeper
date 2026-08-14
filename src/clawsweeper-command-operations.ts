@@ -599,7 +599,7 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
           // returns the interrupted item to the next scheduled window. Failing
           // loudly here only discarded the rest of the scan window.
           runtimeBudget.onYield(
-            `GitHub rate limited until ${error.retryAt}; apply resumes next cycle`,
+            `GitHub rate limited until ${error.retryAt}; credential scope ${error.scope}; reset source ${error.provenance}; apply resumes next cycle`,
           );
           return;
         }
