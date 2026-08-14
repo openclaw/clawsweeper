@@ -23,7 +23,7 @@ jobs:
         (contains(fromJSON('["issue_comment","pull_request_review_comment"]'), github.event.client_payload.activity.type) || contains(fromJSON('["issue_comment","pull_request_review_comment"]'), github.event.client_payload.event_name)) &&
         (github.event.client_payload.activity.action == 'created' || github.event.client_payload.activity.action == 'edited' || github.event.client_payload.action == 'created' || github.event.client_payload.action == 'edited')
       }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.CLAWSWEEPER_SPAM_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 5
     steps:
       - name: Check core API budget
