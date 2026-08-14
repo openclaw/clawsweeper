@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-14T04:48:48Z",
+  "claim": "Apply reuses identical GitHub reads only within one mutation-bounded generation while preserving live final barriers and validated snapshot safety.",
+  "source": {
+    "head": "82d9a3b14961793d13f3d0b113078eb84e4caf00",
+    "tree": "feb92bdcd220ed054fe9a73e1615bb327802d0d5",
+    "commit_object_verified": true,
+    "tree_object_verified": true,
+    "pull_request": 1161
+  },
+  "crabbox": {
+    "provider": "local-container",
+    "lease_id": "cbx_0241049e673e",
+    "slug": "golden-barnacle-01a8",
+    "runtime": "docker",
+    "image": "ubuntu:26.04",
+    "architecture": "arm64",
+    "node": "v24.19.0",
+    "pnpm": "11.10.0",
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true,
+    "sync_ms": 13856,
+    "command_ms": 11421,
+    "total_ms": 25278
+  },
+  "transport": "loopback HTTP from a Crabbox fresh-PR checkout",
+  "requests": {
+    "formula_before": "F(1)+C(4)+P(6)+L(3)=14",
+    "formula_after": "U(6)+L_live(3)=9",
+    "before": 14,
+    "after": 9,
+    "barrier": {
+      "pull": 2,
+      "comments": 1
+    },
+    "validated_snapshot": {
+      "files": 0,
+      "commits": 0,
+      "inline_comments": 0
+    }
+  },
+  "assertions": {
+    "generation_bound_value_rejected": true,
+    "mutation_advances_generation": true,
+    "barriers_bypass_warm_generation": true,
+    "concurrent_head_blocked": true,
+    "concurrent_comment_blocked": true,
+    "snapshot_mismatch_full_fallback": true,
+    "v2_snapshot_compatibility": true
+  },
+  "full_gate": {
+    "environment": "macOS host, Node v24.19.0, pnpm 11.10.0",
+    "command": "pnpm run check",
+    "tests": 3444,
+    "pass": 3435,
+    "fail": 0,
+    "skip": 9,
+    "coverage_lines_percent": 81.57,
+    "coverage_branches_percent": 74.01,
+    "coverage_functions_percent": 87.39,
+    "dashboard_strict": true,
+    "docs": true,
+    "format": true,
+    "lint": true,
+    "build_all": true
+  },
+  "limits": [
+    "The behavior proof uses deterministic loopback GitHub endpoints rather than live target mutations.",
+    "Persisted v2 snapshots still require one pull-file list read because v2 did not contain files.",
+    "The successful Crabbox receipt covers toolchain, build, source identity, and behavior proof; the exact-source complete gate is recorded separately because Linux cursor-trace fixtures reject Linux filesystem metadata.",
+    "The receipt source commit is followed only by this proof package; the verification recipe rejects intervening non-proof changes."
+  ]
+}
