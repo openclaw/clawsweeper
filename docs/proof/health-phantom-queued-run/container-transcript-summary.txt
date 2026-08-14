@@ -1,0 +1,42 @@
+PROOF_PHASE=environment
+provider=local-container
+image=node:24-bookworm
+expected_head=cbdb12378633584433f740d84038c73ea6b33c79
+expected_base=e17e09425b604aeb6db9fb56494f640a9454ec97
+node=v24.19.0
+pnpm=11.10.0
+
+PROOF_PHASE=focused_behavior
+tests=21
+pass=21
+fail=0
+skipped=0
+
+PROOF_PHASE=dashboard_strict
+result=pass
+
+PROOF_PHASE=full_gate
+tests=3465
+pass=3457
+fail=0
+skipped=8
+coverage_lines=81.49
+coverage_branches=74.07
+coverage_functions=87.33
+
+PROOF_PHASE=static_json
+result=pass
+
+PROOF_PHASE=committed_objects
+blob=c769c760f6a592234fea74b96eb9cd08f129f49f path=dashboard/github-webhook-read-model.ts
+blob=73f3c487daa4045672213fd901f1f826e76103fc path=dashboard/worker.ts
+blob=cdd5080c46e519b7e5db5d8fbade726269e53dcd path=docs/github-webhook-read-model.md
+blob=4c3a53d271cce4fcf97a7a1420b98b0c538cdf84 path=docs/live-dashboard.md
+blob=553cec320a88061e9cdd1a5343474fcac3e663c2 path=docs/proof/health-phantom-queued-run/README.md
+blob=6cfd9a860e7e446305c63addd46e56e963619be6 path=docs/proof/health-phantom-queued-run/behavior-contract.md
+blob=3b80e397a1cbcae7b8acc1c64b8e2b72a604370e path=docs/proof/health-phantom-queued-run/behavior-report.json
+blob=5ef3ab0d4c1de452700cbe4642eed26c1b38bd4d path=docs/proof/health-phantom-queued-run/red-green.md
+blob=ab27bd739fc69154d1cb5b81b975ddf9016efca9 path=docs/proof/health-phantom-queued-run/run-proof.sh
+blob=c3c1a7103358f69255581432f9bb47b550dfc4b5 path=test/github-webhook-read-model.test.ts
+
+PROOF_RESULT=pass
