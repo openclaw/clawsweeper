@@ -1,18 +1,18 @@
 # CSW-127 Phase 0.6 proof receipt
 
-The rebased product-and-proof commit `11033cfcfa20a42531b14fcf7088b9ceceae6f11`
-(tree `4dd53b571c5139971b65d08519761398d1986dd4`) passed the production-shaped
+The rebased product-and-proof commit `3850b0819197f4a3362786235494f43339ba101a`
+(tree `57592bb4ecd11fae0716503175b0dc05804626a5`) passed the production-shaped
 boundary proof defined in [behavior-contract.md](behavior-contract.md).
 
 ## Environment
 
-- Provider: Crabbox `local-container`, lease `cbx_7ae7a1933700` (`jade-crab`)
+- Provider: Crabbox `local-container`, lease `cbx_188631fc27eb` (`quick-barnacle`)
 - Image: `node:24-bookworm`
 - Runtime boundary: `wrangler@4.107.0 --local` plus the real SQLite-backed
   `ExactReviewQueue` Durable Object
-- Result: exit `0`; lease stopped; 340,369 ms total
+- Result: exit `0`; lease stopped; 303,578 ms total
 - Source identity: the container reconstructed the immutable `git archive` and
-  asserted tree `4dd53b571c5139971b65d08519761398d1986dd4` before running proof
+  asserted tree `57592bb4ecd11fae0716503175b0dc05804626a5` before running proof
 
 The proof used [run-crabbox-bind.sh](run-crabbox-bind.sh) as the local-container
 entry point and [run-proof.sh](run-proof.sh) as the in-container harness. The
@@ -33,10 +33,13 @@ disposable proof container because the selected Node image does not include it.
   view remained incomplete.
 - A real Worker restart preserved eviction watermarks plus retry- and
   refresh-cause reconciliation.
+- A retryable batch completion followed by a successful completion for the same
+  durable revision retained attempt bucket `1`, matching the direct-completion
+  path rather than overstating the terminal transition as a second failure.
 - Public output passed the privacy assertions. A follow-up scan of the bounded
   receipts and redacted Worker log found no token, authorization header, private
   key, database URL, API-key, or token-assignment patterns.
-- The full Linux `pnpm run check` gate passed. Coverage was 81.49% lines, 74.12%
+- The full Linux `pnpm run check` gate passed. Coverage was 81.48% lines, 74.11%
   branches, and 87.33% functions.
 
 ## Rebased contract reconciliation
@@ -51,6 +54,11 @@ and the [restored throttled-publication retry classification](https://github.com
 Phase 0.6 adds independent eviction watermarks and bounded
 publication-transition cause buckets; it does not duplicate or replace those
 contracts.
+
+The first rebased local ClawSweeper range review found one P2 observer-only
+defect: terminal batch outcomes advanced the attempt bucket after an earlier
+failure. Commit `3850b0819197f4a3362786235494f43339ba101a` aligned the batch path
+with direct completion and added the retry-then-publish regression above.
 
 Machine-readable results and artifact digests are recorded in
 [container-receipt.json](container-receipt.json). Raw local artifacts are not

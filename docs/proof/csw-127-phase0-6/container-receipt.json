@@ -2,27 +2,27 @@
   "schema_version": 1,
   "proof": "CSW-127 Phase 0.6 production-shaped boundary",
   "base_commit": "e17e09425b604aeb6db9fb56494f640a9454ec97",
-  "code_commit": "11033cfcfa20a42531b14fcf7088b9ceceae6f11",
-  "code_tree": "4dd53b571c5139971b65d08519761398d1986dd4",
+  "code_commit": "3850b0819197f4a3362786235494f43339ba101a",
+  "code_tree": "57592bb4ecd11fae0716503175b0dc05804626a5",
   "provider": "local-container",
-  "provider_id": "cbx_7ae7a1933700",
-  "provider_slug": "jade-crab",
+  "provider_id": "cbx_188631fc27eb",
+  "provider_slug": "quick-barnacle",
   "image": "node:24-bookworm",
   "worker": "wrangler@4.107.0 --local",
   "durable_object": "SQLite ExactReviewQueue",
   "status": "succeeded",
   "exit_code": 0,
   "lease_stopped": true,
-  "duration_ms": 340369,
+  "duration_ms": 303578,
   "phases_ms": {
-    "dependencies": 4708,
-    "build": 2920,
-    "focused_tests": 7334,
-    "worker_queue_transition": 12781,
-    "seed_production_caps": 305,
-    "worker_cap_eviction": 2402,
-    "worker_restart": 2205,
-    "broad_linux_gates": 302173
+    "dependencies": 3723,
+    "build": 2817,
+    "focused_tests": 6423,
+    "worker_queue_transition": 11629,
+    "seed_production_caps": 281,
+    "worker_cap_eviction": 2582,
+    "worker_restart": 2285,
+    "broad_linux_gates": 267462
   },
   "focused_tests": {
     "tests": 233,
@@ -46,16 +46,16 @@
     "broad_check": "passed"
   },
   "coverage_percent": {
-    "lines": 81.49,
-    "branches": 74.12,
+    "lines": 81.48,
+    "branches": 74.11,
     "functions": 87.33
   },
   "artifact_sha256": {
-    "runtime_receipt_json": "2F3BA996B65C19502EC483C198452D27D5D4083E867EDD3FB1E7E39136DDCB12",
+    "runtime_receipt_json": "AF35F9BA2057566FE66DE07DA85BAEAAEF9FDD0ADC3147D326A0C560058509EF",
     "queue_stage_json": "6F4253CC09DDB8FE029B5579191A175E6B8808A1272C63E3121C70499A3F91DC",
     "cap_stage_json": "B3FCBC4C12A2DD1AEFA3094A9E5DF2F1A69F85E123AC0E012380C5D40B882779",
     "restart_stage_json": "4480B0478D780A97BCD2FC26826D3C739A886BC3305566A183133F46D9C93AF3",
-    "redacted_wrangler_log": "C5B663E3C1D1EEC1A8EA4E82C553ACFF9045AB917CD1C3CD2971AD46D898BEF4"
+    "redacted_wrangler_log": "42DED9B1D22383951279E2D7010B1B49D80B3FC965D8E3159477C26583B1B846"
   },
   "limits": [
     "The proof used synthetic local fixtures and made no production, GitHub, queue, DLQ, workflow, gate, schedule, capacity, deployment, or credential mutation.",

@@ -41,6 +41,8 @@
   buckets, row truncation, rate-limit truncation, and conservation without synthesized rows.
 - Drive same-revision retry/backoff, newer-revision supersession, repository-Actions throttle
   deferral, unknown-failure exhaustion into DLQ, and post-restart public cause reconciliation.
+- Prove that a terminal batch outcome after a prior same-revision failure preserves the existing
+  failure depth instead of charging another attempt to the terminal transition.
 - Assert all public cause dimensions are closed and bounded and sentinel repository/item/token/
   lease/artifact/error values never appear.
 - Run focused telemetry/queue/workflow tests, broad Linux gates, `git diff --check`, and
