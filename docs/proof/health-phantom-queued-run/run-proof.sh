@@ -16,6 +16,10 @@ npm --version
 echo "PROOF_PHASE=git_identity"
 [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]]
 git init --initial-branch=proof --quiet
+git add --all -- . \
+  ':!.crabbox' \
+  ':!docs/proof/health-phantom-queued-run/container-stderr.txt' \
+  ':!docs/proof/health-phantom-queued-run/container-transcript.txt'
 
 echo "PROOF_PHASE=corepack"
 if ! command -v jq >/dev/null 2>&1; then
