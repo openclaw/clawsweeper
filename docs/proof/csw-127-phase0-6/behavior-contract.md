@@ -2,7 +2,7 @@
 
 ## Scope and authority
 
-- Base: `openclaw/clawsweeper` `main` at `4d41d3df4baf191dca9c385c82689425a135a5c4`.
+- Base: `openclaw/clawsweeper` `main` at `e17e09425b604aeb6db9fb56494f640a9454ec97`.
 - Branch: `codex/csw-127-phase0-6`.
 - Effective runtime: `danger-full-access`, approval `never`, network enabled.
 - Authorized output: an exact-head draft PR only. No merge, deployment, workflow dispatch,

@@ -1,18 +1,18 @@
 # CSW-127 Phase 0.6 proof receipt
 
-The exact product-and-proof commit `1e6ee58bb26736369dd099476079bf5021049264`
-(tree `3bdf1ce609f2b07a900305817892ef3cd15c2d3c`) passed the production-shaped
+The rebased product-and-proof commit `11033cfcfa20a42531b14fcf7088b9ceceae6f11`
+(tree `4dd53b571c5139971b65d08519761398d1986dd4`) passed the production-shaped
 boundary proof defined in [behavior-contract.md](behavior-contract.md).
 
 ## Environment
 
-- Provider: Crabbox `local-container`, lease `cbx_fb4fccfeaaef` (`quick-prawn`)
+- Provider: Crabbox `local-container`, lease `cbx_7ae7a1933700` (`jade-crab`)
 - Image: `node:24-bookworm`
 - Runtime boundary: `wrangler@4.107.0 --local` plus the real SQLite-backed
   `ExactReviewQueue` Durable Object
-- Result: exit `0`; lease stopped; 297,406 ms total
+- Result: exit `0`; lease stopped; 340,369 ms total
 - Source identity: the container reconstructed the immutable `git archive` and
-  asserted tree `3bdf1ce609f2b07a900305817892ef3cd15c2d3c` before running proof
+  asserted tree `4dd53b571c5139971b65d08519761398d1986dd4` before running proof
 
 The proof used [run-crabbox-bind.sh](run-crabbox-bind.sh) as the local-container
 entry point and [run-proof.sh](run-proof.sh) as the in-container harness. The
@@ -22,7 +22,7 @@ disposable proof container because the selected Node image does not include it.
 
 ## Observed result
 
-- All 232 focused telemetry, queue, batch-publication, and batch-CLI tests passed.
+- All 233 focused telemetry, queue, batch-publication, and batch-CLI tests passed.
 - The Worker accepted signed queue transitions and the SQLite Durable Object
   exposed independently reconciled, closed-dimension retry and refresh causes.
 - The proof seeded the production caps of 50,000 rollup rows and 10,000
@@ -36,8 +36,21 @@ disposable proof container because the selected Node image does not include it.
 - Public output passed the privacy assertions. A follow-up scan of the bounded
   receipts and redacted Worker log found no token, authorization header, private
   key, database URL, API-key, or token-assignment patterns.
-- The full Linux `pnpm run check` gate passed. Coverage was 81.49% lines, 73.97%
-  branches, and 87.30% functions.
+- The full Linux `pnpm run check` gate passed. Coverage was 81.49% lines, 74.12%
+  branches, and 87.33% functions.
+
+## Rebased contract reconciliation
+
+The proved Phase 0.6 branch was rebased onto `main` at
+`e17e09425b604aeb6db9fb56494f640a9454ec97`. The combined tree preserves the
+landed [R2 artifact receipt store](https://github.com/openclaw/clawsweeper/pull/1163),
+the [ETag broker](https://github.com/openclaw/clawsweeper/pull/1164) and its
+`broker_lookup` and `conditional_response` telemetry units, the
+[webhook materialized read model](https://github.com/openclaw/clawsweeper/pull/1167),
+and the [restored throttled-publication retry classification](https://github.com/openclaw/clawsweeper/pull/1168).
+Phase 0.6 adds independent eviction watermarks and bounded
+publication-transition cause buckets; it does not duplicate or replace those
+contracts.
 
 Machine-readable results and artifact digests are recorded in
 [container-receipt.json](container-receipt.json). Raw local artifacts are not
