@@ -52,7 +52,7 @@ test("hosted webhook accepts author read-only mention commands", async () => {
   }
 });
 
-test("hosted webhook ignores inline ClawSweeper mentions before fast ack", async () => {
+test("hosted webhook materializes inline mentions without routing a command", async () => {
   const response = await worker.fetch(
     signedGithubWebhookRequest({
       event: "issue_comment",
@@ -82,8 +82,10 @@ test("hosted webhook ignores inline ClawSweeper mentions before fast ack", async
   assert.equal(response.status, 202);
   assert.deepEqual(await response.json(), {
     ok: true,
-    accepted: false,
-    reason: "no routable ClawSweeper command",
+    accepted: true,
+    materialized: false,
+    event: "issue_comment",
+    action: "created",
   });
 });
 
@@ -100,7 +102,7 @@ test("hosted webhook returns invalid_json for signed malformed bodies", async ()
   assert.deepEqual(await response.json(), { error: "invalid_json" });
 });
 
-test("hosted webhook rejects label additions before exact-review intake", async () => {
+test("hosted webhook materializes label additions without exact-review intake", async () => {
   for (const sender of ["openclaw-clawsweeper[bot]", "openclaw-barnacle[bot]", "steipete"]) {
     const response = await worker.fetch(
       signedGithubWebhookRequest({
@@ -126,8 +128,10 @@ test("hosted webhook rejects label additions before exact-review intake", async 
     assert.equal(response.status, 202);
     assert.deepEqual(await response.json(), {
       ok: true,
-      accepted: false,
-      reason: "unsupported action",
+      accepted: true,
+      materialized: false,
+      event: "issues",
+      action: "labeled",
     });
   }
 });
@@ -1329,7 +1333,7 @@ test("hosted webhook requeues unlocked and close-guard removal events", async ()
   }
 });
 
-test("hosted webhook ignores removal of non-close-guard labels", async () => {
+test("hosted webhook materializes removal of non-close-guard labels", async () => {
   const response = await worker.fetch(
     signedGithubWebhookRequest({
       event: "issues",
@@ -1355,8 +1359,10 @@ test("hosted webhook ignores removal of non-close-guard labels", async () => {
   assert.equal(response.status, 202);
   assert.deepEqual(await response.json(), {
     ok: true,
-    accepted: false,
-    reason: "unsupported action",
+    accepted: true,
+    materialized: false,
+    event: "issues",
+    action: "unlabeled",
   });
 });
 

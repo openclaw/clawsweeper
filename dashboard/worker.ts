@@ -79,6 +79,10 @@ import {
   handleStateBlobRequest,
   type StateBlobOperation,
 } from "./state-blobs.ts";
+import {
+  githubWebhookReadModelDeliveryFromWebhook,
+  type GithubWebhookReadModelDelivery,
+} from "./github-webhook-read-model.ts";
 
 export {
   ExactReviewQueue,
@@ -117,6 +121,7 @@ type GithubWebhookIssuePayload = {
   readonly user?: GithubWebhookUserPayload | null;
   readonly state?: unknown;
   readonly pull_request?: unknown;
+  readonly updated_at?: unknown;
 };
 type GithubWebhookCommentPayload = {
   readonly id?: unknown;
@@ -136,6 +141,19 @@ type GithubWebhookPullRequestPayload = {
   readonly body?: unknown;
   readonly updated_at?: unknown;
 };
+type GithubWebhookReviewPayload = {
+  readonly id?: unknown;
+  readonly submitted_at?: unknown;
+  readonly updated_at?: unknown;
+};
+type GithubWebhookWorkflowObjectPayload = {
+  readonly id?: unknown;
+  readonly run_id?: unknown;
+  readonly created_at?: unknown;
+  readonly started_at?: unknown;
+  readonly completed_at?: unknown;
+  readonly updated_at?: unknown;
+};
 type GithubWebhookBasePayload = {
   readonly action?: unknown;
   readonly repository?: GithubWebhookRepositoryPayload | null;
@@ -152,9 +170,33 @@ type GithubIssueWebhookPayload = GithubWebhookBasePayload & {
 type GithubPullRequestWebhookPayload = GithubWebhookBasePayload & {
   readonly pull_request?: GithubWebhookPullRequestPayload | null;
 };
+type GithubPullRequestReviewWebhookPayload = GithubPullRequestWebhookPayload & {
+  readonly review?: GithubWebhookReviewPayload | null;
+};
+type GithubPullRequestReviewCommentWebhookPayload = GithubPullRequestWebhookPayload & {
+  readonly comment?: GithubWebhookCommentPayload | null;
+};
+type GithubWorkflowRunWebhookPayload = GithubWebhookBasePayload & {
+  readonly workflow_run?: GithubWebhookWorkflowObjectPayload | null;
+};
+type GithubWorkflowJobWebhookPayload = GithubWebhookBasePayload & {
+  readonly workflow_job?: GithubWebhookWorkflowObjectPayload | null;
+  readonly workflow_run?: GithubWebhookWorkflowObjectPayload | null;
+};
+type GithubCheckRunWebhookPayload = GithubWebhookBasePayload & {
+  readonly check_run?: GithubWebhookWorkflowObjectPayload | null;
+};
+type GithubCheckSuiteWebhookPayload = GithubWebhookBasePayload & {
+  readonly check_suite?: GithubWebhookWorkflowObjectPayload | null;
+};
 type GithubWebhookPayload = GithubIssueCommentWebhookPayload &
   GithubIssueWebhookPayload &
-  GithubPullRequestWebhookPayload;
+  GithubPullRequestReviewWebhookPayload &
+  GithubPullRequestReviewCommentWebhookPayload &
+  GithubWorkflowRunWebhookPayload &
+  GithubWorkflowJobWebhookPayload &
+  GithubCheckRunWebhookPayload &
+  GithubCheckSuiteWebhookPayload;
 type GithubWebhookClassifierRuntimeInput = {
   readonly event: string;
   readonly payload: GithubWebhookPayload;
@@ -167,7 +209,22 @@ export type GithubWebhookClassifierInput<Event extends string = string> =
       ? { readonly event: Event; readonly payload: GithubIssueWebhookPayload }
       : Event extends "pull_request"
         ? { readonly event: Event; readonly payload: GithubPullRequestWebhookPayload }
-        : { readonly event: Event; readonly payload: GithubWebhookBasePayload };
+        : Event extends "pull_request_review"
+          ? { readonly event: Event; readonly payload: GithubPullRequestReviewWebhookPayload }
+          : Event extends "pull_request_review_comment"
+            ? {
+                readonly event: Event;
+                readonly payload: GithubPullRequestReviewCommentWebhookPayload;
+              }
+            : Event extends "workflow_run"
+              ? { readonly event: Event; readonly payload: GithubWorkflowRunWebhookPayload }
+              : Event extends "workflow_job"
+                ? { readonly event: Event; readonly payload: GithubWorkflowJobWebhookPayload }
+                : Event extends "check_run"
+                  ? { readonly event: Event; readonly payload: GithubCheckRunWebhookPayload }
+                  : Event extends "check_suite"
+                    ? { readonly event: Event; readonly payload: GithubCheckSuiteWebhookPayload }
+                    : { readonly event: Event; readonly payload: GithubWebhookBasePayload };
 
 type GithubWebhookRejectedClassification = {
   readonly accepted: false;
@@ -204,11 +261,27 @@ type GithubWebhookPullRequestClassification = ExactReviewDecision & {
   readonly itemKind: "pull_request";
   readonly sourceEvent: "pull_request";
 };
+type GithubWebhookActivityClassification = {
+  readonly accepted: true;
+  readonly type: "activity";
+  readonly sourceEvent:
+    | "issue_comment"
+    | "issues"
+    | "pull_request"
+    | "pull_request_review"
+    | "pull_request_review_comment"
+    | "workflow_run"
+    | "workflow_job"
+    | "check_run"
+    | "check_suite";
+  readonly sourceAction: string;
+};
 export type GithubWebhookClassification =
   | GithubWebhookRejectedClassification
   | GithubWebhookIssueCommentClassification
   | GithubWebhookIssueClassification
-  | GithubWebhookPullRequestClassification;
+  | GithubWebhookPullRequestClassification
+  | GithubWebhookActivityClassification;
 type WorkflowRunSummary = {
   id: number | string;
   name?: string;
@@ -263,6 +336,26 @@ const CLAWSWEEPER_ISSUE_ITEM_ACTIONS = new Set([
   "unlocked",
   "unlabeled",
 ]);
+const GITHUB_ISSUE_LIFECYCLE_ACTIONS = new Set([
+  "opened",
+  "edited",
+  "deleted",
+  "transferred",
+  "pinned",
+  "unpinned",
+  "closed",
+  "reopened",
+  "assigned",
+  "unassigned",
+  "labeled",
+  "unlabeled",
+  "locked",
+  "unlocked",
+  "milestoned",
+  "demilestoned",
+  "typed",
+  "untyped",
+]);
 const CLAWSWEEPER_PULL_ITEM_ACTIONS = new Set([
   "opened",
   "reopened",
@@ -273,8 +366,23 @@ const CLAWSWEEPER_PULL_ITEM_ACTIONS = new Set([
   "unlocked",
   "unlabeled",
 ]);
+const GITHUB_PULL_REQUEST_LIFECYCLE_ACTIONS = new Set([
+  ...CLAWSWEEPER_PULL_ITEM_ACTIONS,
+  "closed",
+  "assigned",
+  "unassigned",
+  "labeled",
+  "locked",
+  "milestoned",
+  "demilestoned",
+  "review_requested",
+  "review_request_removed",
+  "auto_merge_enabled",
+  "auto_merge_disabled",
+]);
 const DEFAULT_FAST_ACK_SETTLE_DELAYS_MS = [250, 1500, 10_000];
 const inFlightFastAcks = new Map();
+let githubReadModelDashboardFallbackReported = false;
 const CLAWSWEEPER_WEBHOOK_DENY_REPOS = new Set(["openclaw/clawsweeper-state", "openclaw/.github"]);
 const OPTIONAL_SECTION_TIMEOUT_MS = 6000;
 const STALE_CACHE_TTL_SECONDS = 900;
@@ -924,6 +1032,18 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewQueueRequest(request, env, "/github-etag-cache/confirm");
+    const githubReadModelRoute =
+      request.method === "POST"
+        ? /^\/internal\/state\/github-read-model\/(item|comments|activity|workflows|placeholders|repair)$/.exec(
+            url.pathname,
+          )
+        : null;
+    if (githubReadModelRoute)
+      return authenticatedExactReviewQueueRequest(
+        request,
+        env,
+        `/github-read-model/${githubReadModelRoute[1]}`,
+      );
     if (
       url.pathname === "/internal/exact-review/lifecycle/router-receipt" &&
       request.method === "POST"
@@ -1277,7 +1397,7 @@ function refreshStatus(request, env) {
 }
 
 async function refreshStatusCaches(request, env) {
-  const ttl = numberFrom(env.CACHE_TTL_SECONDS, 20);
+  const ttl = numberFrom(env.CACHE_TTL_SECONDS, 60);
   const staleTtl = numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS);
   const baseSnapshot = await statusSnapshot(env);
   // Queue stats and the GitHub-backed global lease are operational observations, not
@@ -1522,6 +1642,32 @@ async function githubWebhook(request, env, ctx) {
     );
   }
 
+  const decision = classifyGithubWebhook({ event, payload });
+  let readModelMaterialized = false;
+  if (decision.accepted === true && deliveryHeaders.deliveryId) {
+    const delivery = githubWebhookReadModelDeliveryFromWebhook({
+      event,
+      deliveryId: deliveryHeaders.deliveryId,
+      receivedAt: new Date().toISOString(),
+      payload,
+    });
+    if (delivery) {
+      try {
+        await materializeGithubWebhookReadModel(env, delivery);
+        readModelMaterialized = true;
+      } catch (error) {
+        console.warn(
+          JSON.stringify({
+            event: "github_read_model_ingest_failed",
+            github_event: event,
+            delivery_id: deliveryHeaders.deliveryId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    }
+  }
+
   const completion = bayJourneyCompletionFromGithubWebhook({ event, payload, env });
   if (completion) {
     const acknowledgement = await recordLifecycleCommandAcknowledgement(env, completion);
@@ -1554,9 +1700,21 @@ async function githubWebhook(request, env, ctx) {
     return json({ ok: true, accepted: false, reason: "recorded lifecycle acknowledgement" }, 202);
   }
 
-  const decision = classifyGithubWebhook({ event, payload });
   if (decision.accepted === false) {
     return json({ ok: true, accepted: false, reason: decision.reason }, 202);
+  }
+
+  if (decision.type === "activity") {
+    return json(
+      {
+        ok: true,
+        accepted: true,
+        materialized: readModelMaterialized,
+        event: decision.sourceEvent,
+        action: decision.sourceAction,
+      },
+      202,
+    );
   }
 
   if ("type" in decision && decision.type === "item") {
@@ -1755,6 +1913,80 @@ async function recordBayJourneyTelemetry(env, ctx, triggers, completions) {
   await write;
 }
 
+async function materializeGithubWebhookReadModel(
+  env: DashboardEnv,
+  delivery: GithubWebhookReadModelDelivery,
+): Promise<void> {
+  const response = await exactReviewQueueRequest(
+    env,
+    "/github-read-model/ingest",
+    new Request("https://clawsweeper-exact-review-queue/github-read-model/ingest", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(delivery),
+    }),
+  );
+  if (!response.ok) {
+    throw new Error(`github read-model ingest returned ${response.status}`);
+  }
+}
+
+async function githubWebhookReadModelQueuePost(
+  env: DashboardEnv,
+  operation: "workflows" | "repair",
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
+  const response = await exactReviewQueueRequest(
+    env,
+    `/github-read-model/${operation}`,
+    new Request(`https://clawsweeper-exact-review-queue/github-read-model/${operation}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+  if (!response.ok) return null;
+  return objectValue(await response.json().catch(() => null));
+}
+
+function githubWebhookReadModelWorkflowObject(
+  repository: string,
+  kind: "workflow_run" | "workflow_job",
+  value: unknown,
+): Record<string, unknown> | null {
+  const source = objectValue(value);
+  const id = Number(source.id);
+  const sourceUpdatedAt = exactWebhookTimestamp(
+    source.updated_at || source.completed_at || source.started_at || source.created_at,
+  );
+  if (!Number.isSafeInteger(id) || id <= 0 || !sourceUpdatedAt) return null;
+  const runId = kind === "workflow_run" ? id : Number(source.run_id);
+  return {
+    kind,
+    repository: repository.toLowerCase(),
+    id,
+    runId: Number.isSafeInteger(runId) && runId > 0 ? runId : null,
+    sourceUpdatedAt,
+    snapshot: source,
+  };
+}
+
+function reportGithubReadModelDashboardFallback(snapshot: Record<string, unknown> | null): void {
+  if (githubReadModelDashboardFallbackReported) return;
+  githubReadModelDashboardFallbackReported = true;
+  const classState = objectValue(snapshot?.class_state);
+  console.warn(
+    JSON.stringify({
+      event: "github_read_model_degraded",
+      consumer: "dashboard_workflow_health",
+      event_class: "workflow_runs",
+      reason: String(classState.reason || (snapshot ? "snapshot_stale_or_gap" : "unavailable")),
+      probe_window_elapsed: classState.probe_window_elapsed === true,
+      fallback: "live_poll",
+    }),
+  );
+}
+
 function bayJourneyTriggerFromGithubWebhook({
   decision,
   payload,
@@ -1867,7 +2099,28 @@ function classifyGithubWebhook({
   const comment = classifyGithubIssueCommentWebhook({ event, payload });
   if (comment.accepted === true) return comment;
   if (comment.reason !== "not issue_comment") return comment;
-  return classifyGithubItemWebhook({ event, payload });
+  const item = classifyGithubItemWebhook({ event, payload });
+  if (item.accepted === true || item.reason !== "unsupported event") return item;
+  if (
+    new Set([
+      "pull_request_review",
+      "pull_request_review_comment",
+      "workflow_run",
+      "workflow_job",
+      "check_run",
+      "check_suite",
+    ]).has(event) &&
+    isEligibleGithubWebhookRepository(objectValue(payload.repository)) &&
+    String(payload.action || "")
+  ) {
+    return {
+      accepted: true,
+      type: "activity",
+      sourceEvent: event as GithubWebhookActivityClassification["sourceEvent"],
+      sourceAction: String(payload.action),
+    };
+  }
+  return item;
 }
 export type GithubWebhookClassifier = typeof classifyGithubWebhook;
 
@@ -1876,40 +2129,50 @@ function classifyGithubIssueCommentWebhook({
   payload,
 }: GithubWebhookClassifierRuntimeInput):
   | GithubWebhookRejectedClassification
-  | GithubWebhookIssueCommentClassification {
+  | GithubWebhookIssueCommentClassification
+  | GithubWebhookActivityClassification {
   if (event !== "issue_comment") return { accepted: false, reason: "not issue_comment" };
   const action = String(payload.action || "");
-  if (!["created", "edited"].includes(action))
+  if (!["created", "edited", "deleted"].includes(action))
     return { accepted: false, reason: "unsupported action" };
   const comment = objectValue(payload.comment);
   const issue = objectValue(payload.issue);
   const repo = objectValue(payload.repository);
-  const association = String(comment.author_association || "").toUpperCase();
-  const commandText = commandTextForClawSweeperFastAck(String(comment.body || ""));
-  if (!commandText) return { accepted: false, reason: "no routable ClawSweeper command" };
-  if (
-    !CLAWSWEEPER_ALLOWED_ASSOCIATIONS.has(association) &&
-    !isAuthorReadOnlyGithubWebhookCommand({ comment, issue, commandText })
-  ) {
-    return {
-      accepted: false,
-      reason: `author association ${association || "unknown"} is not allowed`,
-    };
-  }
-  const targetRepo = String(repo.full_name || "");
-  const targetBranch = targetDefaultBranch(repo);
   if (!isEligibleGithubWebhookRepository(repo)) {
     return { accepted: false, reason: "repository not eligible" };
   }
   const itemNumber = Number(issue.number);
   const commentId = Number(comment.id);
-  const installationId = Number(objectValue(payload.installation).id);
   if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
     return { accepted: false, reason: "missing issue number" };
   }
   if (!Number.isInteger(commentId) || commentId <= 0) {
     return { accepted: false, reason: "missing comment id" };
   }
+  const association = String(comment.author_association || "").toUpperCase();
+  const commandText = commandTextForClawSweeperFastAck(String(comment.body || ""));
+  if (action === "deleted" || !commandText) {
+    return {
+      accepted: true,
+      type: "activity",
+      sourceEvent: "issue_comment",
+      sourceAction: action,
+    };
+  }
+  if (
+    !CLAWSWEEPER_ALLOWED_ASSOCIATIONS.has(association) &&
+    !isAuthorReadOnlyGithubWebhookCommand({ comment, issue, commandText })
+  ) {
+    return {
+      accepted: true,
+      type: "activity",
+      sourceEvent: "issue_comment",
+      sourceAction: action,
+    };
+  }
+  const targetRepo = String(repo.full_name || "");
+  const targetBranch = targetDefaultBranch(repo);
+  const installationId = Number(objectValue(payload.installation).id);
   if (!Number.isInteger(installationId) || installationId <= 0) {
     return { accepted: false, reason: "missing installation id" };
   }
@@ -1979,7 +2242,8 @@ function classifyGithubItemWebhook({
 }: GithubWebhookClassifierRuntimeInput):
   | GithubWebhookRejectedClassification
   | GithubWebhookIssueClassification
-  | GithubWebhookPullRequestClassification {
+  | GithubWebhookPullRequestClassification
+  | GithubWebhookActivityClassification {
   const action = String(payload.action || "");
   const repo = objectValue(payload.repository);
   if (!isEligibleGithubWebhookRepository(repo)) {
@@ -1988,20 +2252,23 @@ function classifyGithubItemWebhook({
   const targetRepo = String(repo.full_name || "");
   const targetBranch = targetDefaultBranch(repo);
   const installationId = Number(objectValue(payload.installation).id);
-  if (!Number.isInteger(installationId) || installationId <= 0) {
-    return { accepted: false, reason: "missing installation id" };
-  }
 
   if (event === "issues") {
-    if (!CLAWSWEEPER_ISSUE_ITEM_ACTIONS.has(action)) {
-      return { accepted: false, reason: "unsupported action" };
-    }
-    if (action === "unlabeled" && !isCloseGuardLabel(payload.label)) {
+    if (!GITHUB_ISSUE_LIFECYCLE_ACTIONS.has(action)) {
       return { accepted: false, reason: "unsupported action" };
     }
     const itemNumber = Number(objectValue(payload.issue).number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing issue number" };
+    }
+    if (
+      !CLAWSWEEPER_ISSUE_ITEM_ACTIONS.has(action) ||
+      (action === "unlabeled" && !isCloseGuardLabel(payload.label))
+    ) {
+      return { accepted: true, type: "activity", sourceEvent: "issues", sourceAction: action };
+    }
+    if (!Number.isInteger(installationId) || installationId <= 0) {
+      return { accepted: false, reason: "missing installation id" };
     }
     return {
       accepted: true,
@@ -2018,16 +2285,27 @@ function classifyGithubItemWebhook({
   }
 
   if (event === "pull_request") {
-    if (!CLAWSWEEPER_PULL_ITEM_ACTIONS.has(action)) {
-      return { accepted: false, reason: "unsupported action" };
-    }
-    if (action === "unlabeled" && !isCloseGuardLabel(payload.label)) {
+    if (!GITHUB_PULL_REQUEST_LIFECYCLE_ACTIONS.has(action)) {
       return { accepted: false, reason: "unsupported action" };
     }
     const pullRequest = objectValue(payload.pull_request);
     const itemNumber = Number(pullRequest.number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing pull request number" };
+    }
+    if (
+      !CLAWSWEEPER_PULL_ITEM_ACTIONS.has(action) ||
+      (action === "unlabeled" && !isCloseGuardLabel(payload.label))
+    ) {
+      return {
+        accepted: true,
+        type: "activity",
+        sourceEvent: "pull_request",
+        sourceAction: action,
+      };
+    }
+    if (!Number.isInteger(installationId) || installationId <= 0) {
+      return { accepted: false, reason: "missing installation id" };
     }
     const sourceHeadSha = String(objectValue(pullRequest.head).sha || "")
       .trim()
@@ -3370,17 +3648,37 @@ async function statusSnapshot(env) {
     .filter(Boolean);
   const budget = numberFrom(env.WORKER_BUDGET, 128);
   const activeRunErrors = [];
-  const [runs, completedRuns, activeRunCandidates] = await Promise.all([
-    github(`/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
-      errors.push(`workflow runs: ${error.message}`);
-      return null;
-    }),
-    github(`/repos/${repo}/actions/runs?status=completed&per_page=100`).catch((error) => {
-      errors.push(`workflow runs completed: ${error.message}`);
-      return null;
-    }),
-    activeWorkflowRunCandidates(env, repo, activeRunErrors, github),
-  ]);
+  const workflowReadModel = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
+    ? await githubWebhookReadModelQueuePost(env, "workflows", {
+        repository: repo,
+      }).catch(() => null)
+    : null;
+  const workflowReadModelUsable = workflowReadModel?.usable === true;
+  if (!workflowReadModelUsable) reportGithubReadModelDashboardFallback(workflowReadModel);
+  const [runs, completedRuns, activeRunCandidates] = workflowReadModelUsable
+    ? [
+        { workflow_runs: Array.isArray(workflowReadModel.runs) ? workflowReadModel.runs : [] },
+        {
+          workflow_runs: (Array.isArray(workflowReadModel.runs)
+            ? workflowReadModel.runs
+            : []
+          ).filter((run) => objectValue(run).status === "completed"),
+        },
+        (Array.isArray(workflowReadModel.runs) ? workflowReadModel.runs : []).filter((run) =>
+          isActiveWorkflowRun(run),
+        ),
+      ]
+    : await Promise.all([
+        github(`/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
+          errors.push(`workflow runs: ${error.message}`);
+          return null;
+        }),
+        github(`/repos/${repo}/actions/runs?status=completed&per_page=100`).catch((error) => {
+          errors.push(`workflow runs completed: ${error.message}`);
+          return null;
+        }),
+        activeWorkflowRunCandidates(env, repo, activeRunErrors, github),
+      ]);
   errors.push(...activeRunErrors);
   const workflowRuns = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
   const completedWorkflowRuns = uniqueWorkflowRuns([
@@ -3391,6 +3689,23 @@ async function statusSnapshot(env) {
     ...activeRunCandidates.filter((run) => isActiveWorkflowRun(run)),
     ...workflowRuns.filter((run) => isActiveWorkflowRun(run)),
   ]).sort(newestWorkflowRunFirst);
+  if (!workflowReadModelUsable && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)) {
+    const objects = uniqueWorkflowRuns([
+      ...workflowRuns,
+      ...completedWorkflowRuns,
+      ...activeRuns,
+    ]).flatMap((run) => {
+      const object = githubWebhookReadModelWorkflowObject(repo, "workflow_run", run);
+      return object ? [object] : [];
+    });
+    if (objects.length > 0) {
+      await githubWebhookReadModelQueuePost(env, "repair", {
+        repository: repo,
+        repair_kind: "workflows",
+        objects,
+      }).catch(() => null);
+    }
+  }
   const workerRuns = activeRuns.filter((run) => !isSupportWorkflowRun(run));
   const supportRuns = activeRuns.filter((run) => isSupportWorkflowRun(run));
   const controlPlane = controlPlaneSnapshot(activeRuns);
@@ -3406,7 +3721,11 @@ async function statusSnapshot(env) {
       isCodexWorkflowFallback(run) &&
       TERMINAL_BAD_CONCLUSIONS.has(String(run.conclusion)),
   );
-  const activeJobs = await activeWorkerSnapshot(env, repo, workerRuns, github);
+  const readModelJobs =
+    workflowReadModel?.jobs_usable === true && Array.isArray(workflowReadModel.jobs)
+      ? workflowReadModel.jobs
+      : undefined;
+  const activeJobs = await activeWorkerSnapshot(env, repo, workerRuns, github, readModelJobs);
   const [
     workerHealth,
     pipeline,
@@ -3418,7 +3737,7 @@ async function statusSnapshot(env) {
     storedEvents,
   ] = await Promise.all([
     withTimeout(
-      recentWorkerHealth(env, repo, completedWorkflowRuns, github),
+      recentWorkerHealth(env, repo, completedWorkflowRuns, github, readModelJobs),
       OPTIONAL_SECTION_TIMEOUT_MS * 2,
       "worker health",
     ).catch((error) => {
@@ -4469,6 +4788,7 @@ async function activeWorkerSnapshot(
   repo,
   runs,
   github: GithubJsonReader = (path) => githubJson(env, path),
+  readModelJobs?: unknown[],
 ) {
   const detailRunLimit = Math.max(
     1,
@@ -4481,7 +4801,7 @@ async function activeWorkerSnapshot(
   const detailRuns: WorkflowRunSummary[] = runs.slice(0, detailRunLimit);
   const results = await mapWithConcurrency(detailRuns, fetchConcurrency, async (run) => {
     try {
-      const jobs = await workflowJobsForRun(env, repo, run.id, github, run);
+      const jobs = await workflowJobsForRun(env, repo, run.id, github, run, readModelJobs);
       const activeJobs = jobs.filter((job) => isActiveWorkflowJob(job));
       return {
         run,
@@ -4561,6 +4881,7 @@ async function recentWorkerHealth(
   repo,
   runs: WorkflowRunSummary[],
   github: GithubJsonReader = (path) => githubJson(env, path),
+  readModelJobs?: unknown[],
 ) {
   const cacheKey = `worker-health:v3:${String(repo || "").toLowerCase()}`;
   const cached = await readStoredJson(env, cacheKey);
@@ -4582,7 +4903,7 @@ async function recentWorkerHealth(
   const results = await mapWithConcurrency(completedRuns, fetchConcurrency, async (run) => {
     try {
       return {
-        attempts: (await workflowJobsForRun(env, repo, run.id, github, run))
+        attempts: (await workflowJobsForRun(env, repo, run.id, github, run, readModelJobs))
           .filter((job) => isCodexWorkerJob(job))
           .map((job) => workerHealthAttempt(run, job))
           .filter(Boolean),
@@ -5636,7 +5957,11 @@ async function workflowJobsForRun(
   runId,
   github: GithubJsonReader = (path) => githubJson(env, path),
   run?: WorkflowRunSummary,
+  readModelJobs?: unknown[],
 ) {
+  if (readModelJobs) {
+    return readModelJobs.filter((job) => Number(objectValue(job).run_id) === Number(runId));
+  }
   const key = `workflow-jobs:${repo}:${runId}`;
   const cached = await readStoredJson(env, key);
   if (Array.isArray(cached)) return cached;
@@ -5666,6 +5991,17 @@ async function workflowJobsForRun(
       ? numberFrom(env.WORKER_JOB_CACHE_TTL_SECONDS, WORKER_JOB_CACHE_TTL_SECONDS)
       : WORKER_JOB_IDLE_CACHE_TTL_SECONDS,
   );
+  const repairObjects = jobs.flatMap((job) => {
+    const object = githubWebhookReadModelWorkflowObject(repo, "workflow_job", job);
+    return object ? [object] : [];
+  });
+  if (repairObjects.length > 0 && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)) {
+    await githubWebhookReadModelQueuePost(env, "repair", {
+      repository: repo,
+      repair_kind: "workflows",
+      objects: repairObjects,
+    }).catch(() => null);
+  }
   return jobs;
 }
 

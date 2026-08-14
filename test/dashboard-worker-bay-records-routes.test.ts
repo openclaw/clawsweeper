@@ -3760,8 +3760,10 @@ test("hosted webhook records an edited review command through its final command 
   );
   assert.deepEqual(await retryingFailure.json(), {
     ok: true,
-    accepted: false,
-    reason: "no routable ClawSweeper command",
+    accepted: true,
+    materialized: false,
+    event: "issue_comment",
+    action: "edited",
   });
 
   const state = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1")) || "{}");

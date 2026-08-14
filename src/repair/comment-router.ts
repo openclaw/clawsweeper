@@ -2,6 +2,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
+import { readRepairLoopComments } from "./comment-router-read-model.js";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import { CLOSE_PROTECTED_LABEL_NAMES } from "./exact-review-guard-labels.js";
 import {
@@ -4622,10 +4623,17 @@ function listRepairLoopReviewComments() {
     ...listOpenIssueNumbersWithLabel(AUTOMERGE_LABEL),
   ]);
   return numbers.flatMap((number) =>
-    ghPaged<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`).filter(
-      isClawSweeperReviewMarkerComment,
-    ),
+    repairLoopIssueComments(number).filter(isClawSweeperReviewMarkerComment),
   );
+}
+
+function repairLoopIssueComments(number: number): JsonValue[] {
+  return readRepairLoopComments({
+    repository: targetRepo,
+    number,
+    liveRead: () =>
+      ghPaged<LooseRecord>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`),
+  });
 }
 
 function listRepairLoopSweepCommands(existingCommands: LooseRecord[]) {

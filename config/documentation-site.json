@@ -25,6 +25,7 @@
         "limits.md",
         "public-api.md",
         "github-egress-telemetry.md",
+        "github-webhook-read-model.md",
         "operator-configuration.md",
         "live-dashboard.md",
         "openclaw-bay-demo.md",

@@ -61,6 +61,8 @@ everything else requires human comparison with current main.
   boundaries
 - [Work lane](work-lane.md) — active; bounded workflow admission
 - [Review cache](review-cache.md) — active; reusable review-state contract
+- [GitHub webhook read model](github-webhook-read-model.md) — active; signed
+  ingress, App subscriptions, snapshot freshness, repair, and safety boundary
 
 ## Configuration and repository onboarding
 
