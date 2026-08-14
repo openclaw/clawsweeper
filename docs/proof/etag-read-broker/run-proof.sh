@@ -4,6 +4,14 @@ set -euo pipefail
 expected_head="${1:?expected head is required}"
 expected_base="${2:?expected merge base is required}"
 
+if [ ! -d .git ]; then
+  git init --quiet
+  git remote add origin https://github.com/openclaw/clawsweeper.git
+  git fetch --quiet --depth=16 origin steipete/etag-read-broker main
+  git reset --mixed --quiet "$expected_head"
+  git diff --exit-code -- .
+fi
+
 test "$(git rev-parse HEAD)" = "$expected_head"
 test "$(git merge-base HEAD origin/main)" = "$expected_base"
 git cat-file -e "${expected_head}^{commit}"
