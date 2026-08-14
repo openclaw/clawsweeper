@@ -37,7 +37,10 @@ shape tests assert their exact expressions.
 The committed `run-proof.sh` is the static `jq` recipe for the Docker-backed Crabbox run. It obtains
 the head commit, head tree, and base commit through `git rev-parse`, verifies all three objects with
 `git cat-file`, runs the focused workflow tests and `pnpm run check`, and validates its generated
-JSON receipt. See `red-green.md` for the local RED/GREEN transcript.
+JSON receipt. Raw Crabbox sync omits Git metadata, so the run transports the already-committed head
+and base in a temporary Git bundle, reconstructs the refs inside the lease, and removes the bundle
+before validation. The bundle is proof transport only and is not committed. See `red-green.md` for
+the local RED/GREEN transcript.
 
 OpenClaw Bay is unaffected: runner selection does not change workflow lifecycle publication,
 status telemetry, dashboard data contracts, or the observer-only action boundary.

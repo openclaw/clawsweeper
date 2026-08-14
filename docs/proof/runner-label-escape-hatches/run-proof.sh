@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  proof_bundle="docs/proof/runner-label-escape-hatches/proof-objects.bundle"
+  test -f "$proof_bundle"
+  git init --quiet
+  git fetch --quiet "$proof_bundle" \
+    HEAD:refs/heads/proof-head \
+    refs/remotes/origin/main:refs/remotes/origin/main
+  git symbolic-ref HEAD refs/heads/proof-head
+  git reset --mixed --quiet HEAD
+  rm -f "$proof_bundle"
+fi
+
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 output_dir="${RUNNER_LABEL_PROOF_OUTPUT:-.artifacts/runner-label-escape-hatches}"
@@ -50,7 +62,8 @@ EOF
 echo "CRABBOX_PHASE:check"
 pnpm run check | tee "$output_dir/full-gate.log"
 
-test -z "$(git status --porcelain)"
+git diff --quiet HEAD
+git diff --cached --quiet HEAD
 
 jq -n \
   --arg head_sha "$head_sha" \
@@ -71,6 +84,7 @@ jq -n \
       head_tree: true,
       base_commit: true
     },
+    git_transport: "temporary bundle removed before validation",
     runtime: {
       node: $node_version,
       pnpm: $pnpm_version
