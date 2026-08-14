@@ -41,3 +41,21 @@ object-missing fallback and a lease-revision mismatch. It does not exercise the
 deployed Cloudflare network or GitHub's hosted artifact service. OpenClaw Bay is
 unaffected: this cache is internal data-plane state and exposes no observer or
 control contract.
+
+The final successful run is recorded in `receipt.json`. Verify the committed
+receipt without dynamic inputs:
+
+```sh
+jq -e '
+  .provider == "local-container" and
+  .image == "node:24-bookworm" and
+  .leaseStopped == true and
+  .git.catFileCrossCheck == true and
+  .counted.firstGithubArtifactRequests == 1 and
+  .counted.repeatGithubArtifactRequestsAfter == 0 and
+  .counted.missingObjectFallbackGithubArtifactRequests == 1 and
+  .counted.leaseMismatchGithubArtifactRequests == 1 and
+  .gates.result == "passed" and
+  .gates.dashboardStrict == "passed"
+' docs/proof/r2-bundle-cache/receipt.json
+```
