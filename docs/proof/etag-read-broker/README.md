@@ -21,6 +21,8 @@ node docs/proof/etag-read-broker/run-proof.mjs \
 The Docker-backed Crabbox command is recorded in `receipt.json`; its script
 runs the focused behavior tests, the loopback proof, dashboard strict, and the
 full repository gate on Node 24, then validates the report with static `jq`.
+`container-transcript-summary.txt` retains the exact phase and result markers;
+the oversized raw coverage transcript is intentionally excluded from Git.
 
 OpenClaw Bay is unaffected. This changes internal GitHub read transport and
 telemetry dimensions only; the public observer payload and its read-only/no-
