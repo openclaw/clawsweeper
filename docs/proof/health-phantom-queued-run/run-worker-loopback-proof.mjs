@@ -140,21 +140,31 @@ try {
   const observedStatuses = [];
   while (remaining > 0) {
     const requestsBefore = exactRequests.length;
-    const startedAt = Date.now();
-    const statusResponse = await fetch(`${origin}/api/status`);
-    const statusText = await statusResponse.text();
-    assert.equal(statusResponse.status, 200, statusText);
-    const status = JSON.parse(statusText);
     const batchSize = Math.min(recheckBatchSize, remaining);
-    const responseElapsedMs = Date.now() - startedAt;
-    assert.ok(responseElapsedMs < 1_500, `bounded Worker response took ${responseElapsedMs}ms`);
-    assert.equal(status.operational_health.queued_over_threshold, 0);
-    assert.ok(
-      status.operational_health.status === "unknown" ||
-        status.operational_health.status === "healthy",
-      statusText,
-    );
-    observedStatuses.push(status.operational_health.status);
+    const responseSamples = [];
+    const triggerDeadline = Date.now() + 15_000;
+    while (exactRequests.length === requestsBefore && Date.now() < triggerDeadline) {
+      const startedAt = Date.now();
+      const statusResponse = await fetch(`${origin}/api/status`);
+      const statusText = await statusResponse.text();
+      assert.equal(statusResponse.status, 200, statusText);
+      const status = JSON.parse(statusText);
+      const responseElapsedMs = Date.now() - startedAt;
+      assert.ok(responseElapsedMs < 1_500, `bounded Worker response took ${responseElapsedMs}ms`);
+      assert.equal(status.operational_health.queued_over_threshold, 0);
+      assert.ok(
+        status.operational_health.status === "unknown" ||
+          status.operational_health.status === "healthy",
+        statusText,
+      );
+      observedStatuses.push(status.operational_health.status);
+      responseSamples.push({
+        status: status.operational_health.status,
+        cache: statusResponse.headers.get("x-clawsweeper-cache"),
+        elapsed_ms: responseElapsedMs,
+      });
+      if (exactRequests.length === requestsBefore) await delay(500);
+    }
     await waitFor(
       () => exactRequests.length - requestsBefore >= batchSize,
       15_000,
@@ -167,9 +177,8 @@ try {
       batch_size: batchSize,
       omitted_count: remaining,
       expected_result_status: remaining > 0 ? "unknown" : "healthy",
-      response_status: status.operational_health.status,
-      response_cache: statusResponse.headers.get("x-clawsweeper-cache"),
-      response_elapsed_ms: responseElapsedMs,
+      response_attempts: responseSamples.length,
+      responses: responseSamples,
     });
   }
   const finalResponse = await fetch(`${origin}/api/status`);
