@@ -3406,6 +3406,32 @@ test("retryable batch completion releases ownership and preserves queue retry po
       )
     ).json();
     assert.equal(fetchedReplacement.items.length, 1);
+
+    const published = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/complete", {
+          batch_id: replacement.batch.batch_id,
+          lease_owner: "worker-2",
+          items: [
+            {
+              item_key: replacement.batch.items[0].item_key,
+              revision: replacement.batch.items[0].revision,
+              claim_generation: replacement.batch.items[0].claim_generation,
+              terminal_outcome: "published",
+            },
+          ],
+        }),
+      )
+    ).json();
+    assert.equal(published.accepted, 1, JSON.stringify(published));
+
+    const completedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(completedStats.lanes.publication.pending, 0);
+    assert.equal(completedStats.lanes.publication.published_total, 1);
+    const publishedCause = completedStats.lanes.publication.flow.last_15_minutes.causes.rows.find(
+      (row: { transition: string }) => row.transition === "published",
+    );
+    assert.equal(publishedCause?.attempt_bucket, "1");
   } finally {
     Date.now = originalNow;
   }

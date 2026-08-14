@@ -6453,7 +6453,10 @@ export class ExactReviewQueue {
           }
           if (requested.publicationCompletion) {
             const publicationAttempt =
-              requested.publicationCompletion.attempted === false
+              requested.publicationCompletion.attempted === false ||
+              requested.publicationCompletion.kind === "published" ||
+              requested.publicationCompletion.kind === "superseded" ||
+              requested.publicationCompletion.kind === "deferred"
                 ? Number(item.publicationFailureAttempts || 0)
                 : Number(item.publicationFailureAttempts || 0) + 1;
             const projectionBeforeTerminalCommit = this.lifecycleProjectionStore.read(
