@@ -20,6 +20,11 @@ import {
   appendLegacyAvoidedGithubEgressMember,
   recordGithubEgressMember,
 } from "../dist/github-egress-observer.js";
+import {
+  exactReviewArtifactReceiptTuple,
+  publishExactReviewArtifact,
+  restoreExactReviewArtifact,
+} from "./exact-review-artifact-cache.mjs";
 
 const DEFAULT_CONCURRENCY = 4;
 const MAX_CONCURRENCY = 4;
@@ -103,39 +108,11 @@ async function controller() {
   let timeouts = 0;
   let admitted = 0;
   let collapsed = 0;
-  let activeCircuit = null;
+  let cacheHits = 0;
+  let cacheFallbacks = 0;
+  let githubArtifactRequests = 0;
   const { peak } = await runBoundedPool(items, concurrency, async (item, index) => {
     const outcomePath = checkedOutcomePath(workspace, item.outcomePath);
-    activeCircuit = activeCircuit || latestActiveRateLimitObservation(rateLimitObservationPath);
-    if (activeCircuit) {
-      collapsed += 1;
-      appendRequestMetric(requestMetricsPath, {
-        scope: activeCircuit.scope,
-        category: "artifact_download",
-        mode: "read",
-        outcome: "skipped_by_circuit",
-        repeat_revision: item.repeatRevision === true,
-        count: 1,
-      });
-      appendLegacyAvoidedGithubEgressMember({
-        env: { ...process.env, TARGET_REPO: String(item.decision?.targetRepo || "") },
-        poolClass:
-          activeCircuit.scope === "repository_actions" ? "repository_actions" : "target_app",
-        stage: "publication_prepare",
-        sourceAction: item.decision?.publication?.producerDecision?.sourceAction,
-        operation: "artifact_download",
-        claimGeneration: item.claimGeneration,
-        repeatRevision: item.repeatRevision === true,
-      });
-      writeFailure(outcomePath, "retryable_failure", "github_rate_limit", {
-        retryAt: activeCircuit.retry_at,
-        rateLimitScope: activeCircuit.scope,
-        rateLimitProvenance: activeCircuit.provenance,
-        rateLimitAuthoritative: activeCircuit.authoritative === true,
-        attempted: false,
-      });
-      return { kind: "circuit_deferred", durationMs: 0 };
-    }
     if (existsSync(heartbeatFailurePath) || Date.now() >= deadline) {
       recordGithubEgressMember({
         env: { ...process.env, TARGET_REPO: String(item.decision?.targetRepo || "") },
@@ -150,17 +127,6 @@ async function controller() {
       writeFailure(outcomePath, "retryable_failure", "unknown_failure");
       return { kind: "not_admitted", durationMs: 0 };
     }
-    admitted += 1;
-    recordGithubEgressMember({
-      env: { ...process.env, TARGET_REPO: String(item.decision?.targetRepo || "") },
-      poolClass: "repository_actions",
-      stage: "publication_prepare",
-      sourceAction: item.decision?.publication?.producerDecision?.sourceAction,
-      claimGeneration: item.claimGeneration,
-      repeatRevision: item.repeatRevision === true,
-      attempted: true,
-      outcome: "attempted",
-    });
     const identity = createHash("sha256")
       .update(`${item.itemKey}:${item.revision}:${item.claimGeneration}`)
       .digest("hex")
@@ -182,6 +148,12 @@ async function controller() {
         [process.argv[1], "worker", itemPath, root, workspace],
         { timeoutMs: Math.min(itemTimeoutMs, remainingTimeout(deadline)) },
       );
+      const acquisition = readWorkerAcquisition(root);
+      if (acquisition.cacheHit) cacheHits += 1;
+      if (acquisition.cacheFallback) cacheFallbacks += 1;
+      githubArtifactRequests += acquisition.githubArtifactRequests;
+      if (acquisition.circuitDeferred) collapsed += 1;
+      else admitted += 1;
       timedOut = status.timedOut;
       if (timedOut) timeouts += 1;
       if ((status.code !== 0 || timedOut) && !existsSync(outcomePath)) {
@@ -193,7 +165,6 @@ async function controller() {
       }
       console.error(`Failed to prepare batch member ${item.itemKey} during ${failureStage}`);
     } finally {
-      activeCircuit = activeCircuit || latestActiveRateLimitObservation(rateLimitObservationPath);
       durations.push(Date.now() - workerStartedAt);
       try {
         rmSync(root, { recursive: true, force: true });
@@ -213,6 +184,9 @@ async function controller() {
     workerP95Ms: percentile(sortedDurations, 0.95),
     admitted,
     collapsed,
+    cacheHits,
+    cacheFallbacks,
+    githubArtifactRequests,
     completedOutcomes: items.filter((item) =>
       existsSync(checkedOutcomePath(workspace, item.outcomePath)),
     ).length,
@@ -261,7 +235,6 @@ async function worker(itemPath, root, workspace) {
     process.env.CLAWSWEEPER_GITHUB_REQUEST_METRICS_PATH ||
       ".artifacts/exact-review-batch/github-request-metrics.jsonl",
   );
-  const repositoryToken = env("REPO_TOKEN");
   const itemEgressEnv = {
     TARGET_REPO: targetRepo,
     CLAWSWEEPER_GITHUB_POOL_CLASS: "repository_actions",
@@ -270,65 +243,220 @@ async function worker(itemPath, root, workspace) {
     CLAWSWEEPER_GITHUB_CLAIM_GENERATION: String(item.claimGeneration),
     CLAWSWEEPER_GITHUB_REQUEST_REPEAT: String(item.repeatRevision === true),
   };
-  let result = await run(
-    "gh",
-    [
-      "run",
-      "download",
-      String(publication.producerRunId),
-      "--repo",
-      env("GITHUB_REPOSITORY"),
-      "--name",
-      String(publication.artifactName),
-      "--dir",
-      bundleDir,
-    ],
-    {
-      env: {
-        ...process.env,
-        GH_TOKEN: repositoryToken,
-        ...itemEgressEnv,
-      },
-      capture: true,
-    },
-  );
-  appendRequestMetric(requestMetricsPath, {
-    scope: "repository_actions",
-    category: "artifact_download",
-    mode: "read",
-    outcome:
-      result.code === 0 ? "success" : githubThrottleText(result.stderr) ? "throttle" : "error",
-    repeat_revision: item.repeatRevision === true,
-    count: 1,
-  });
-  if (result.code !== 0 && githubThrottleText(result.stderr)) {
-    const observation = await resolveRateLimitObservation(
-      repositoryToken,
-      requestMetricsPath,
-      rateLimitObservationPath,
-      itemEgressEnv,
-    );
-    appendJsonLine(rateLimitObservationPath, observation);
-    return writeFailure(outcomePath, "retryable_failure", "github_rate_limit", {
-      retryAt: observation.retry_at,
-      rateLimitScope: observation.scope,
-      rateLimitProvenance: observation.provenance,
-      rateLimitAuthoritative: observation.authoritative,
-      attempted: true,
-    });
-  }
-  if (result.code !== 0)
-    return writeFailure(outcomePath, "retryable_failure", "artifact_unavailable");
-  const artifactBytes = directoryBytes(bundleDir);
   const maxArtifactBytes = positiveInteger(
     process.env.EXACT_REVIEW_BATCH_MAX_ARTIFACT_BYTES,
     DEFAULT_ARTIFACT_BYTES,
   );
-  if (artifactBytes > maxArtifactBytes) {
-    return writeFailure(outcomePath, "retryable_failure", "artifact_unavailable");
+  const maxArchiveBytes = maxArtifactBytes + 2 * 1024 * 1024;
+  const acquisitionPath = join(root, "artifact-acquisition.json");
+  const acquisition = {
+    cacheHit: false,
+    cacheFallback: false,
+    circuitDeferred: false,
+    githubArtifactRequests: 0,
+  };
+  const cacheOptions = exactReviewArtifactCacheOptions(item, bundleDir, maxArchiveBytes);
+  let bundleReady = false;
+  if (cacheOptions) {
+    try {
+      const restored = await restoreExactReviewArtifact(cacheOptions);
+      if (restored.hit) {
+        const validation = await validateExactReviewBundle({
+          bundleDir,
+          workspace,
+          item,
+          decision,
+          publication,
+          producer,
+          itemNumber,
+          targetRepo,
+        });
+        if (!validation.valid) throw new Error("cached bundle validation failed");
+        acquisition.cacheHit = true;
+        bundleReady = true;
+      } else {
+        acquisition.cacheFallback = true;
+      }
+    } catch {
+      acquisition.cacheFallback = true;
+      rmSync(bundleDir, { recursive: true, force: true });
+      mkdirSync(bundleDir, { recursive: true });
+      console.warn(
+        `Exact-review artifact cache miss or mismatch for ${item.itemKey}; using GitHub`,
+      );
+    }
   }
 
-  result = await run(
+  if (!bundleReady) {
+    const activeCircuit = latestActiveRateLimitObservation(rateLimitObservationPath);
+    if (activeCircuit) {
+      acquisition.circuitDeferred = true;
+      writeWorkerAcquisition(acquisitionPath, acquisition);
+      appendRequestMetric(requestMetricsPath, {
+        scope: activeCircuit.scope,
+        category: "artifact_download",
+        mode: "read",
+        outcome: "skipped_by_circuit",
+        repeat_revision: item.repeatRevision === true,
+        count: 1,
+      });
+      appendLegacyAvoidedGithubEgressMember({
+        env: { ...process.env, TARGET_REPO: targetRepo },
+        poolClass:
+          activeCircuit.scope === "repository_actions" ? "repository_actions" : "target_app",
+        stage: "publication_prepare",
+        sourceAction: producer.sourceAction,
+        operation: "artifact_download",
+        claimGeneration: item.claimGeneration,
+        repeatRevision: item.repeatRevision === true,
+      });
+      return writeFailure(outcomePath, "retryable_failure", "github_rate_limit", {
+        retryAt: activeCircuit.retry_at,
+        rateLimitScope: activeCircuit.scope,
+        rateLimitProvenance: activeCircuit.provenance,
+        rateLimitAuthoritative: activeCircuit.authoritative === true,
+        attempted: false,
+      });
+    }
+    recordGithubEgressMember({
+      env: { ...process.env, TARGET_REPO: targetRepo },
+      poolClass: "repository_actions",
+      stage: "publication_prepare",
+      sourceAction: producer.sourceAction,
+      claimGeneration: item.claimGeneration,
+      repeatRevision: item.repeatRevision === true,
+      attempted: true,
+      outcome: "attempted",
+    });
+    acquisition.githubArtifactRequests = 1;
+    writeWorkerAcquisition(acquisitionPath, acquisition);
+    const repositoryToken = env("REPO_TOKEN");
+    let result = await run(
+      "gh",
+      [
+        "run",
+        "download",
+        String(publication.producerRunId),
+        "--repo",
+        env("GITHUB_REPOSITORY"),
+        "--name",
+        String(publication.artifactName),
+        "--dir",
+        bundleDir,
+      ],
+      {
+        env: {
+          ...process.env,
+          GH_TOKEN: repositoryToken,
+          ...itemEgressEnv,
+        },
+        capture: true,
+      },
+    );
+    appendRequestMetric(requestMetricsPath, {
+      scope: "repository_actions",
+      category: "artifact_download",
+      mode: "read",
+      outcome:
+        result.code === 0 ? "success" : githubThrottleText(result.stderr) ? "throttle" : "error",
+      repeat_revision: item.repeatRevision === true,
+      count: 1,
+    });
+    if (result.code !== 0 && githubThrottleText(result.stderr)) {
+      const observation = await resolveRateLimitObservation(
+        repositoryToken,
+        requestMetricsPath,
+        rateLimitObservationPath,
+        itemEgressEnv,
+      );
+      appendJsonLine(rateLimitObservationPath, observation);
+      return writeFailure(outcomePath, "retryable_failure", "github_rate_limit", {
+        retryAt: observation.retry_at,
+        rateLimitScope: observation.scope,
+        rateLimitProvenance: observation.provenance,
+        rateLimitAuthoritative: observation.authoritative,
+        attempted: true,
+      });
+    }
+    if (result.code !== 0)
+      return writeFailure(outcomePath, "retryable_failure", "artifact_unavailable");
+    const artifactBytes = directoryBytes(bundleDir);
+    if (artifactBytes > maxArtifactBytes) {
+      return writeFailure(outcomePath, "retryable_failure", "artifact_unavailable");
+    }
+    const validation = await validateExactReviewBundle({
+      bundleDir,
+      workspace,
+      item,
+      decision,
+      publication,
+      producer,
+      itemNumber,
+      targetRepo,
+    });
+    if (!validation.valid) {
+      if (validation.legacyTupleless) {
+        return writeFailure(outcomePath, "permanent_failure", "tuple_protocol_invalid");
+      }
+      return writeFailure(outcomePath, "retryable_failure", "unknown_failure");
+    }
+    bundleReady = true;
+    if (cacheOptions) {
+      await publishExactReviewArtifact(cacheOptions).catch(() => {
+        console.warn(`Exact-review artifact cache population failed for ${item.itemKey}`);
+      });
+    }
+  }
+  writeWorkerAcquisition(acquisitionPath, acquisition);
+  const report = join(bundleDir, "review", `${itemNumber}.md`);
+  if (existsSync(report)) {
+    cpSync(report, join(eventArtifacts, `${itemNumber}.md`));
+    cpSync(report, outcomePath.replace(/\.json$/, ".report.md"));
+  }
+
+  const result = await run(
+    process.execPath,
+    [join(workspace, "dist/repair/publish-event-result.js")],
+    {
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_GH_RETRY_ATTEMPTS: "2",
+        CLAWSWEEPER_CODE_ROOT: workspace,
+        EXACT_REVIEW_WORK_ROOT: root,
+        TARGET_REPO: targetRepo,
+        ITEM_NUMBER: itemNumber,
+        MIN_AGE_MINUTES: "0",
+        REVIEW_ONLY: String(producer.sourceAction === "failed_review_shard_recovery"),
+        EXACT_EVENT_PUBLICATION: "true",
+        EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED: "true",
+        EXACT_REVIEW_BATCH_ITEM_KEY: String(item.itemKey),
+        EXACT_REVIEW_BATCH_REVISION: String(item.revision),
+        EXACT_REVIEW_BATCH_CLAIM_GENERATION: String(item.claimGeneration),
+        EXACT_REVIEW_BATCH_MUTATION_OUTPUT: outcomePath,
+        CLAWSWEEPER_GITHUB_RATE_LIMIT_OBSERVATION_PATH: rateLimitObservationPath,
+        CLAWSWEEPER_GITHUB_REQUEST_METRICS_PATH: requestMetricsPath,
+        CLAWSWEEPER_GITHUB_STAGE: "publication_apply",
+        CLAWSWEEPER_GITHUB_SOURCE_ACTION: String(producer.sourceAction || ""),
+        CLAWSWEEPER_GITHUB_REQUEST_REPEAT: String(item.repeatRevision === true),
+      },
+    },
+  );
+  if (result.code !== 0 && !existsSync(outcomePath)) {
+    writeFailure(outcomePath, "retryable_failure", "unknown_failure");
+  }
+}
+
+async function validateExactReviewBundle({
+  bundleDir,
+  workspace,
+  decision,
+  publication,
+  producer,
+  itemNumber,
+  targetRepo,
+}) {
+  const result = await run(
     process.execPath,
     [join(workspace, "dist/repair/exact-review-bundle-cli.js"), "validate"],
     {
@@ -356,42 +484,57 @@ async function worker(itemPath, root, workspace) {
       },
     },
   );
-  if (result.code !== 0) return writeFailure(outcomePath, "retryable_failure", "unknown_failure");
   const report = join(bundleDir, "review", `${itemNumber}.md`);
-  if (existsSync(report) && legacyTupleless(readFileSync(report, "utf8"))) {
-    return writeFailure(outcomePath, "permanent_failure", "tuple_protocol_invalid");
-  }
-  if (existsSync(report)) {
-    cpSync(report, join(eventArtifacts, `${itemNumber}.md`));
-    cpSync(report, outcomePath.replace(/\.json$/, ".report.md"));
-  }
+  const tupleless = existsSync(report) && legacyTupleless(readFileSync(report, "utf8"));
+  return { valid: result.code === 0 && !tupleless, legacyTupleless: tupleless };
+}
 
-  result = await run(process.execPath, [join(workspace, "dist/repair/publish-event-result.js")], {
-    cwd: root,
-    env: {
-      ...process.env,
-      CLAWSWEEPER_GH_RETRY_ATTEMPTS: "2",
-      CLAWSWEEPER_CODE_ROOT: workspace,
-      EXACT_REVIEW_WORK_ROOT: root,
-      TARGET_REPO: targetRepo,
-      ITEM_NUMBER: itemNumber,
-      MIN_AGE_MINUTES: "0",
-      REVIEW_ONLY: String(producer.sourceAction === "failed_review_shard_recovery"),
-      EXACT_EVENT_PUBLICATION: "true",
-      EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED: "true",
-      EXACT_REVIEW_BATCH_ITEM_KEY: String(item.itemKey),
-      EXACT_REVIEW_BATCH_REVISION: String(item.revision),
-      EXACT_REVIEW_BATCH_CLAIM_GENERATION: String(item.claimGeneration),
-      EXACT_REVIEW_BATCH_MUTATION_OUTPUT: outcomePath,
-      CLAWSWEEPER_GITHUB_RATE_LIMIT_OBSERVATION_PATH: rateLimitObservationPath,
-      CLAWSWEEPER_GITHUB_REQUEST_METRICS_PATH: requestMetricsPath,
-      CLAWSWEEPER_GITHUB_STAGE: "publication_apply",
-      CLAWSWEEPER_GITHUB_SOURCE_ACTION: String(producer.sourceAction || ""),
-      CLAWSWEEPER_GITHUB_REQUEST_REPEAT: String(item.repeatRevision === true),
-    },
-  });
-  if (result.code !== 0 && !existsSync(outcomePath)) {
-    writeFailure(outcomePath, "retryable_failure", "unknown_failure");
+function exactReviewArtifactCacheOptions(item, bundleDir, maxArchiveBytes) {
+  const baseUrl = String(process.env.EXACT_REVIEW_QUEUE_URL || "").trim();
+  const webhookSecret = String(process.env.CLAWSWEEPER_WEBHOOK_SECRET || "");
+  if (!baseUrl || !webhookSecret) return null;
+  try {
+    return {
+      baseUrl,
+      webhookSecret,
+      tuple: exactReviewArtifactReceiptTuple(item),
+      bundleDir,
+      maxArchiveBytes,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeWorkerAcquisition(path, value) {
+  writeFileSync(path, `${JSON.stringify(value)}\n`, "utf8");
+}
+
+function readWorkerAcquisition(root) {
+  const path = join(root, "artifact-acquisition.json");
+  if (!existsSync(path)) {
+    return {
+      cacheHit: false,
+      cacheFallback: false,
+      circuitDeferred: false,
+      githubArtifactRequests: 0,
+    };
+  }
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    return {
+      cacheHit: value.cacheHit === true,
+      cacheFallback: value.cacheFallback === true,
+      circuitDeferred: value.circuitDeferred === true,
+      githubArtifactRequests: Number(value.githubArtifactRequests) === 1 ? 1 : 0,
+    };
+  } catch {
+    return {
+      cacheHit: false,
+      cacheFallback: false,
+      circuitDeferred: false,
+      githubArtifactRequests: 0,
+    };
   }
 }
 

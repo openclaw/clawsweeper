@@ -889,6 +889,19 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewQueueRequest(request, env, "/publication-batch-results");
+    // This is an automated cache data-plane operation, so it uses the scoped
+    // publisher/webhook secret already present in the batch job. The operator
+    // secret remains confined to human recovery and administrative reads.
+    if (
+      url.pathname === "/internal/exact-review/artifact-cache/receipt/lookup" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/artifact-cache/receipt/lookup");
+    if (
+      url.pathname === "/internal/exact-review/artifact-cache/receipt/store" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/artifact-cache/receipt/store");
     if (
       url.pathname === "/internal/exact-review/lifecycle/router-receipt" &&
       request.method === "POST"

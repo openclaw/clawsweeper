@@ -18,6 +18,7 @@ const secret = "state-blob-secret";
 const baseUrl = "https://worker.example";
 const ledgerPath = "ledger/v1/events/2026/07/26/openclaw/openclaw/shard-000.jsonl";
 const assetPath = "assets/social/card.svg";
+const artifactPath = `artifacts/exact-review/v1/${"a".repeat(64)}`;
 
 test("state blob endpoints reject unsigned requests and fail closed without a bucket", async () => {
   const env = { CLAWSWEEPER_WEBHOOK_SECRET: secret, STATE_SNAPSHOTS: new FakeR2Bucket() };
@@ -177,6 +178,19 @@ test("ledger keys are create-only while asset keys may overwrite", async () => {
   assert.equal(replaced.unchanged, false);
   const stat = await statStateBlob({ ...options, blobPath: assetPath });
   assert.equal(stat?.digest, sha256(Buffer.from("<svg two/>")));
+
+  const artifact = Buffer.from("cached bundle bytes");
+  await putBlob(env, artifactPath, artifact);
+  const artifactConflict = await worker.fetch(
+    signedBlobRequest("put", {
+      path: artifactPath,
+      digest: sha256(Buffer.from("different cached bytes")),
+      contentBase64: Buffer.from("different cached bytes").toString("base64"),
+    }),
+    env,
+  );
+  assert.equal(artifactConflict.status, 409);
+  assert.equal((await artifactConflict.json()).error, "artifact_blob_immutable_conflict");
 });
 
 test("multipart uploads stream fixed-size parts and enforce immutability at completion", async () => {

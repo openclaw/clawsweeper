@@ -117,8 +117,9 @@ packets; labels and report prose do not reconstruct the decision. Pass
 profile's default records directory.
 
 Canonical review records live in the Cloudflare Durable Object store and are
-snapshotted to R2. Immutable `ledger/v1/` action events and published `assets/`
-also live in R2. The `state` branch of `openclaw/clawsweeper-state` now retains
+snapshotted to R2. Immutable `ledger/v1/` action events, published `assets/`,
+and the bounded content-addressed `artifacts/exact-review/v1/` retry cache also
+live in R2. The `state` branch of `openclaw/clawsweeper-state` now retains
 only `jobs/`, `results/`, `notifications/`, `apply-report.json`, and
 `repair-apply-report.json`; its `main` branch remains the dashboard renderer
 source. `scripts/hydrate-state.ts` combines those sources for local commands.

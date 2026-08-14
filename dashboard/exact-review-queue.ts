@@ -74,6 +74,10 @@ import {
 import { recentDurablePublicationEvents } from "./recent-durable-publication-events.ts";
 import { sanitizedServerError } from "./error-safety.ts";
 import {
+  ExactReviewArtifactReceiptStore,
+  exactReviewArtifactReceiptTuple,
+} from "./exact-review-artifact-cache.ts";
+import {
   GitHubRequestError,
   createGithubAppTokenFor,
   githubApiUrl,
@@ -660,6 +664,7 @@ export class ExactReviewQueue {
   private lifecycleTelemetryStore;
   private githubEgressTelemetryStore;
   private commandIntakeStore;
+  private artifactReceiptStore;
   private readonly random: () => number;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
   private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
@@ -685,6 +690,10 @@ export class ExactReviewQueue {
     this.lifecycleTelemetryStore = new ExactReviewLifecycleTelemetryStore(this.storage);
     this.githubEgressTelemetryStore = new GithubEgressTelemetryStore(this.storage);
     this.commandIntakeStore = new ExactReviewCommandIntakeStore(this.storage);
+    this.artifactReceiptStore = new ExactReviewArtifactReceiptStore(
+      this.storage,
+      env.STATE_SNAPSHOTS,
+    );
     // Direct in-process users retain the established eager setup behavior.
     // A real Durable Object has blockConcurrencyWhile; defer that setup until a
     // non-Bay request so constructing it for the public pure reader cannot
@@ -2990,6 +2999,35 @@ export class ExactReviewQueue {
 
     if (request.method === "POST" && url.pathname === "/publication-batches/complete") {
       return this.completePublicationBatch(await request.json().catch(() => null));
+    }
+
+    if (request.method === "POST" && url.pathname === "/artifact-cache/receipt/lookup") {
+      const body = await request.json().catch(() => null);
+      if (!exactReviewArtifactReceiptTuple(body)) {
+        return json({ error: "invalid_artifact_receipt_tuple" }, 400);
+      }
+      const now = Date.now();
+      const receipt = this.artifactReceiptStore.lookup(body, now);
+      await this.artifactReceiptStore.prune(now).catch((error: unknown) => {
+        console.warn(`artifact cache prune failed: ${sanitizedServerError(error)}`);
+      });
+      return json({ ok: true, hit: Boolean(receipt), receipt });
+    }
+
+    if (request.method === "POST" && url.pathname === "/artifact-cache/receipt/store") {
+      const body = await request.json().catch(() => null);
+      const now = Date.now();
+      try {
+        const result = await this.artifactReceiptStore.store(body, now);
+        if (!result.ok) return json({ error: result.error }, result.status);
+        await this.artifactReceiptStore.prune(now).catch((error: unknown) => {
+          console.warn(`artifact cache prune failed: ${sanitizedServerError(error)}`);
+        });
+        return json({ ok: true, deduped: result.deduped, receipt: result.receipt }, 201);
+      } catch (error) {
+        console.warn(`artifact cache receipt store failed: ${sanitizedServerError(error)}`);
+        return json({ error: "artifact_cache_unavailable" }, 503);
+      }
     }
 
     if (request.method === "GET" && url.pathname === "/item-status") {
@@ -7530,6 +7568,7 @@ export class ExactReviewQueue {
     this.lifecycleProjectionStore.ensureSchemaSync();
     this.lifecycleTelemetryStore.ensureSchemaSync();
     this.githubEgressTelemetryStore.ensureSchemaSync();
+    this.artifactReceiptStore.ensureSchemaSync();
     let meta = this.readStorageMetaSync();
     let migratedLegacy = false;
     const legacy = this.storage.kv.get(EXACT_REVIEW_QUEUE_STATE_KEY) as

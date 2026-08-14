@@ -1,12 +1,14 @@
 /**
  * R2-backed state blob store for the Cloudflare-canonical migration (phase 3).
  *
- * Serves the two remaining git-state trees from the shared STATE_SNAPSHOTS
- * bucket under distinct key prefixes:
+ * Serves the remaining git-state trees and exact-review artifact cache from
+ * the shared STATE_SNAPSHOTS bucket under distinct key prefixes:
  *   - `ledger/v1/...`  — immutable append-only action-ledger shards. Writes are
  *     create-only: overwriting an existing key with a different content digest
  *     is rejected; a same-digest PUT is idempotent.
  *   - `assets/...`     — mutable published assets; overwrite is allowed.
+ *   - `artifacts/exact-review/v1/<sha256>` — immutable, content-addressed
+ *     exact-review bundle archives. Queue receipts fence their reuse.
  *
  * Record snapshots produced by the phase-2 code live under
  * `<repoSlug>/<revision>/...` keys and never collide with these prefixes.
@@ -36,8 +38,8 @@ export const STATE_BLOB_MULTIPART_PART_BYTES = 8 * 1024 * 1024;
 export const STATE_BLOB_MAX_BYTES = 1024 * 1024 * 1024;
 export const STATE_BLOB_LIST_MAX_LIMIT = 1000;
 
-const BLOB_PATH_PREFIXES = ["ledger/v1/", "assets/"] as const;
-const IMMUTABLE_PATH_PREFIXES = ["ledger/"] as const;
+const BLOB_PATH_PREFIXES = ["ledger/v1/", "assets/", "artifacts/exact-review/v1/"] as const;
+const IMMUTABLE_PATH_PREFIXES = ["ledger/", "artifacts/exact-review/"] as const;
 const BLOB_PATH_SEGMENT_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._+@-]{0,254}$/;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -372,7 +374,9 @@ function existingConflict(
   if (existingDigest === digest && existing.size === bytes) return "unchanged";
   if (!isImmutableStateBlobPath(path)) return null;
   return new BlobRequestError(409, {
-    error: "ledger_blob_immutable_conflict",
+    error: path.startsWith("artifacts/")
+      ? "artifact_blob_immutable_conflict"
+      : "ledger_blob_immutable_conflict",
     path,
     existingBytes: existing.size,
     existingDigest,
