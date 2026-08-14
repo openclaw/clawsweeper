@@ -3,6 +3,7 @@ set -euo pipefail
 
 expected_head=${1:?expected committed head argument is required}
 expected_blobs_base64=${2:?base64-encoded committed blob manifest is required}
+expected_base=${3:?expected origin/main base commit is required}
 proof_root=docs/proof/health-phantom-queued-run
 proof_prefix=/tmp/health-phantom-proof-prefix
 
@@ -10,12 +11,19 @@ echo "PROOF_PHASE=environment"
 echo "provider=local-container"
 echo "image=node:24-bookworm"
 echo "expected_head=$expected_head"
+echo "expected_base=$expected_base"
 node --version
 npm --version
 
 echo "PROOF_PHASE=git_identity"
 [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]]
+[[ "$expected_base" =~ ^[0-9a-f]{40}$ ]]
 git init --initial-branch=proof --quiet
+git remote add origin https://github.com/openclaw/clawsweeper.git
+git fetch --quiet --depth=1 origin "$expected_base"
+while IFS= read -r file; do
+  test -e "$file" || git checkout --quiet FETCH_HEAD -- "$file"
+done < <(git ls-tree -r --name-only FETCH_HEAD)
 git add --all -- . \
   ':!.crabbox' \
   ':!docs/proof/health-phantom-queued-run/container-stderr.txt' \
