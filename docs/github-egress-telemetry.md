@@ -4,7 +4,8 @@
 - Owner: ClawSweeper publication and dashboard maintainers
 - Source of truth: `src/github-egress-observer.ts`,
   `src/github-egress-telemetry-contract.ts`,
-  `dashboard/github-egress-telemetry.ts`, and the publication workflows
+  `src/review-activity-cursor.ts`, `dashboard/github-egress-telemetry.ts`, and
+  the publication workflows
 - Last verified: `openclaw/clawsweeper@a1795973a9e6bb00b73cd6adc21a4ea02ca78ced`
 - Update when: a publication request path, credential selection rule, telemetry
   dimension, retention limit, or public response changes
@@ -52,6 +53,17 @@ debug contributes an incomplete `invocation` but no invented wire count.
 `attempted=false` is emitted only for a directly observed pre-wire condition or
 an existing batch circuit skip. Phase 0 does not manufacture requests that a
 future coordinator might have avoided.
+
+Stable pull-request activity validation uses the version-2 GraphQL cursor when
+reviews, review threads, and every nested inline review comment fit in the
+bounded query. The safety invariant remains two independent reads: a normal
+single-PR check therefore contributes two GraphQL invocations instead of two
+sets of reviews, inline-comment, and review-thread reads. The same query shape
+can alias up to eight PRs, so a bounded publication batch still contributes two
+GraphQL invocations. Any GraphQL error, pagination, partial connection, or
+missing required field activates the complete version-1 path for that PR and
+emits one `reviewed_pr_activity_cursor_v2_fallback` JSON line; the decoder never
+accepts a partial activity identity.
 
 Use the unit totals as a conservation check:
 

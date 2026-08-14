@@ -68,7 +68,10 @@ import {
   isLockedConversationCommentError,
 } from "./github-retry.js";
 import { type PrCloseCoverageProofRuntime } from "./pr-close-coverage-proof.js";
-import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
+import {
+  compareReviewedPrActivityCursors,
+  isReviewedPrActivityCursor,
+} from "./review-activity-cursor.js";
 import {
   clearResolvedReviewRecoveryLabel,
   REVIEW_RECOVERY_STUCK_LABEL,
@@ -920,7 +923,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         return (
           item.kind !== "pull_request" ||
           (freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, context) &&
-            context.pullReviewActivityCursor === expectedReviewActivityCursor)
+            compareReviewedPrActivityCursors(
+              context.pullReviewActivityCursor,
+              expectedReviewActivityCursor,
+            ) === "equal")
         );
       };
       const currentReviewActivityBlock = createApplyReviewActivityGuard(dependencies, {

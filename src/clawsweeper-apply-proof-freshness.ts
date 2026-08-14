@@ -7,7 +7,10 @@ import type {
   PrCloseCoverageProofGateBlock,
   PrCloseCoverageProofGateResult,
 } from "./clawsweeper-types.js";
-import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
+import {
+  compareReviewedPrActivityCursors,
+  isReviewedPrActivityCursor,
+} from "./review-activity-cursor.js";
 import { stableJson } from "./stable-json.js";
 
 export interface ApplySelfMutationItemReceipt {
@@ -135,8 +138,14 @@ export function createApplyProofFreshnessGuards({
         (itemKind !== "pull_request" ||
           (freshPullRequestReviewHead(reviewMarkdown, refreshedContext) &&
             isReviewedPrActivityCursor(expectedReviewActivityCursor) &&
-            receipt.reviewActivityCursor === expectedReviewActivityCursor &&
-            refreshedReviewActivityCursor === expectedReviewActivityCursor)),
+            compareReviewedPrActivityCursors(
+              receipt.reviewActivityCursor,
+              expectedReviewActivityCursor,
+            ) === "equal" &&
+            compareReviewedPrActivityCursors(
+              refreshedReviewActivityCursor,
+              expectedReviewActivityCursor,
+            ) === "equal")),
     );
     const refreshedCompleteReceiptMatchesReview = (): boolean => {
       refreshedContext ??= collectItemContext(refreshed.item, {
@@ -146,7 +155,10 @@ export function createApplyProofFreshnessGuards({
       if (!completeReviewActivityReceiptMatches(refreshedContext)) return false;
       return (
         itemKind !== "pull_request" ||
-        refreshedReviewActivityCursor === expectedReviewActivityCursor
+        compareReviewedPrActivityCursors(
+          refreshedReviewActivityCursor,
+          expectedReviewActivityCursor,
+        ) === "equal"
       );
     };
     const persistedAutomationReceiptMatches =
