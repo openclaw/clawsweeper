@@ -42,6 +42,15 @@ and base in a temporary Git bundle, reconstructs the refs inside the lease, and 
 before validation. The bundle is proof transport only and is not committed. See `red-green.md` for
 the local RED/GREEN transcript.
 
+The final run used Crabbox `provider=local-container`, lease `cbx_d1a06e39d867`
+(`golden-prawn-16e4`), image `node:24-bookworm`, and tested head
+`f84b7d60daa24d979eef6299be0d9c2a55fdab62`. The focused suite passed 9/9 and the full
+`pnpm run check` gate passed 3,420 tests with zero failures and eight platform skips. The one-shot
+lease stopped automatically and is absent from the local-container inventory. The receipt commit
+contains proof artifacts only after the tested workflow tree; no workflow, test, or proof script
+change follows the tested head in this push. Full machine provenance is frozen in
+`container-receipt.json`.
+
 OpenClaw Bay is unaffected: runner selection does not change workflow lifecycle publication,
 status telemetry, dashboard data contracts, or the observer-only action boundary.
 

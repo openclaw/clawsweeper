@@ -39,3 +39,7 @@ tests 9
 pass 9
 fail 0
 ```
+
+Docker-backed Crabbox `provider=local-container` repeated the GREEN contract at committed head
+`f84b7d60daa24d979eef6299be0d9c2a55fdab62` on lease `cbx_d1a06e39d867`, then completed the full
+repository gate with 3,420 passed, zero failed, and eight skipped tests.
