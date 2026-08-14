@@ -29,6 +29,10 @@ git cat-file -e "$actual_tree^{tree}"
 echo "actual_tree=$actual_tree"
 
 echo "PROOF_PHASE=corepack"
+if ! command -v jq >/dev/null 2>&1; then
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq jq
+fi
 mkdir -p "$proof_prefix/bin"
 npm install --global --prefix "$proof_prefix" corepack@0.35.0
 export PATH="$proof_prefix/bin:$PATH"
