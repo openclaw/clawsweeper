@@ -2877,3 +2877,91 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     }
   }
 });
+
+test("comment-only sync defers the remaining batch when GitHub is rate limited", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const originalReport = implementedCloseReport();
+    writeFileSync(join(itemsDir, "321.md"), originalReport, "utf8");
+
+    const ghMock = `
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.error("gh: API rate limit exceeded for installation. (HTTP 403)");
+  process.exit(1);
+}
+console.error("unexpected gh args", JSON.stringify(args));
+process.exit(1);
+`;
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: ["--sync-comments-only"],
+      });
+    });
+
+    const report = JSON.parse(readText(reportPath));
+    assert.deepEqual(
+      report.map((result) => ({ number: result.number, action: result.action })),
+      [
+        { number: 321, action: "skipped_runtime_budget" },
+        { number: 0, action: "skipped_runtime_budget" },
+      ],
+    );
+    for (const result of report) {
+      assert.match(result.reason, /rate limited until .*comment sync deferred/);
+    }
+    assert.equal(readText(join(itemsDir, "321.md")), originalReport);
+    assert.equal(existsSync(join(closedDir, "321.md")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("close-mode apply still fails loudly when GitHub is rate limited", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    writeFileSync(join(itemsDir, "321.md"), implementedCloseReport(), "utf8");
+
+    const ghMock = `
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+const path = args[1] || "";
+if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  console.error("gh: API rate limit exceeded for installation. (HTTP 403)");
+  process.exit(1);
+}
+console.error("unexpected gh args", JSON.stringify(args));
+process.exit(1);
+`;
+    assert.throws(
+      () =>
+        withMockGh(root, ghMock, () => {
+          runApplyDecisionsForTest({ itemsDir, closedDir, plansDir, reportPath });
+        }),
+      /rate limit/i,
+    );
+
+    assert.ok(existsSync(join(itemsDir, "321.md")));
+    assert.equal(existsSync(join(closedDir, "321.md")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

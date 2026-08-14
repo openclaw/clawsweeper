@@ -32,6 +32,7 @@ import type {
   ReviewStartStatusCommentResult,
 } from "./clawsweeper-types.js";
 import { UserFacingCommandError } from "./command.js";
+import { GitHubRateLimitError } from "./github-retry.js";
 import { syncDecisionPacketRecord } from "./decision-packets.js";
 import { captureCanonicalRecordBaseline } from "./repair/canonical-record-baseline.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
@@ -567,6 +568,19 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError && runtimeBudget.onYield) {
           runtimeBudget.onYield(error.reason);
+          return;
+        }
+        if (
+          error instanceof GitHubRateLimitError &&
+          boolArg(args.sync_comments_only) &&
+          runtimeBudget.onYield
+        ) {
+          // Comment sync is idempotent and re-runs on the next 15-minute tick,
+          // so an exhausted GitHub quota defers the remaining batch like a
+          // runtime-budget yield instead of recording a workflow failure.
+          runtimeBudget.onYield(
+            `GitHub rate limited until ${error.retryAt}; comment sync deferred to the next cycle`,
+          );
           return;
         }
         runtimeBudget.onFailure?.(error);
