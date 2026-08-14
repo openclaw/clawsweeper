@@ -1,27 +1,44 @@
 PROOF_PHASE=environment
 provider=local-container
+lease=cbx_bf0dd8a62776
+slug=amber-krill-748d
 image=node:24-bookworm
-expected_head=cbdb12378633584433f740d84038c73ea6b33c79
+expected_head=2c4f16e06c41c8544d0c36c1a95e5ad5041bfef6
 expected_base=e17e09425b604aeb6db9fb56494f640a9454ec97
 node=v24.19.0
 pnpm=11.10.0
 
 PROOF_PHASE=focused_behavior
-tests=21
-pass=21
+tests=22
+pass=22
 fail=0
 skipped=0
+
+PROOF_PHASE=worker_loopback
+stale_backlog_rows=205
+exact_candidates=207
+batch_limit=10
+batches=21
+initial_omitted=197
+unique_exact_reads=207
+max_response_ms=542
+observed_unknown=true
+final_health=healthy
+queued_over_threshold=0
+zombie_exact_reads=0
+eviction_telemetry_count=207
+result=pass
 
 PROOF_PHASE=dashboard_strict
 result=pass
 
 PROOF_PHASE=full_gate
-tests=3465
-pass=3457
+tests=3466
+pass=3458
 fail=0
 skipped=8
 coverage_lines=81.49
-coverage_branches=74.07
+coverage_branches=74.10
 coverage_functions=87.33
 
 PROOF_PHASE=static_json
@@ -29,14 +46,22 @@ result=pass
 
 PROOF_PHASE=committed_objects
 blob=c769c760f6a592234fea74b96eb9cd08f129f49f path=dashboard/github-webhook-read-model.ts
-blob=73f3c487daa4045672213fd901f1f826e76103fc path=dashboard/worker.ts
-blob=cdd5080c46e519b7e5db5d8fbade726269e53dcd path=docs/github-webhook-read-model.md
-blob=4c3a53d271cce4fcf97a7a1420b98b0c538cdf84 path=docs/live-dashboard.md
-blob=553cec320a88061e9cdd1a5343474fcac3e663c2 path=docs/proof/health-phantom-queued-run/README.md
-blob=6cfd9a860e7e446305c63addd46e56e963619be6 path=docs/proof/health-phantom-queued-run/behavior-contract.md
-blob=3b80e397a1cbcae7b8acc1c64b8e2b72a604370e path=docs/proof/health-phantom-queued-run/behavior-report.json
-blob=5ef3ab0d4c1de452700cbe4642eed26c1b38bd4d path=docs/proof/health-phantom-queued-run/red-green.md
-blob=ab27bd739fc69154d1cb5b81b975ddf9016efca9 path=docs/proof/health-phantom-queued-run/run-proof.sh
-blob=c3c1a7103358f69255581432f9bb47b550dfc4b5 path=test/github-webhook-read-model.test.ts
+blob=d99f7a2ae19d6daf9ee61a914598da530405ca5b path=dashboard/worker.ts
+blob=5e2a77751c28c54f476ce488ef5c1b9cd8bb59b9 path=docs/github-webhook-read-model.md
+blob=2675cb766de3c69d07129c470f647db577ade8e8 path=docs/live-dashboard.md
+blob=58f2145b6c566bef1e3164d25da9a612492d6987 path=docs/proof/health-phantom-queued-run/README.md
+blob=94c3ca83c97351879fa4ff1730ff5581ed6485a8 path=docs/proof/health-phantom-queued-run/behavior-contract.md
+blob=318da5fb0a6c298c267ab52c883f6c2e247860c6 path=docs/proof/health-phantom-queued-run/behavior-report.json
+blob=9842dacff98cd439e2c09e504fb3822b62eed41b path=docs/proof/health-phantom-queued-run/red-green.md
+blob=2dbe3886f83a6d311ad0a2cad6a2bcad7f504161 path=docs/proof/health-phantom-queued-run/run-proof.sh
+blob=f8c01597d319c932bbd4e7f319ccedf1bb7294ed path=docs/proof/health-phantom-queued-run/run-worker-loopback-proof.mjs
+blob=567b785c49541802e31142317a399336de51743c path=docs/proof/health-phantom-queued-run/worker-loopback-report.json
+blob=f03cd97f71a80af7997676e5cc226fba53711112 path=test/github-webhook-read-model.test.ts
+
+PROOF_PHASE=cleanup
+lease_stopped=true
+owned_lease_absent_from_list=true
+prior_failed_lease=cbx_d2a91a97351c
+prior_failed_lease_stopped=true
 
 PROOF_RESULT=pass
