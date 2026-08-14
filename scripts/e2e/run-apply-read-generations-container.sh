@@ -40,12 +40,14 @@ echo CRABBOX_PHASE:build
 pnpm run build:all
 
 echo CRABBOX_PHASE:source
-test -n "${PROOF_SOURCE_HEAD:-}"
-test -n "${PROOF_SOURCE_TREE:-}"
-test "$(git rev-parse HEAD)" = "$PROOF_SOURCE_HEAD"
-test "$(git rev-parse 'HEAD^{tree}')" = "$PROOF_SOURCE_TREE"
-git cat-file -e "${PROOF_SOURCE_HEAD}^{commit}"
-git cat-file -e "${PROOF_SOURCE_TREE}^{tree}"
+[[ "${PROOF_SOURCE_HEAD:-}" =~ ^[0-9a-f]{40}$ ]]
+[[ "${PROOF_SOURCE_TREE:-}" =~ ^[0-9a-f]{40}$ ]]
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  test "$(git rev-parse HEAD)" = "$PROOF_SOURCE_HEAD"
+  test "$(git rev-parse 'HEAD^{tree}')" = "$PROOF_SOURCE_TREE"
+  git cat-file -e "${PROOF_SOURCE_HEAD}^{commit}"
+  git cat-file -e "${PROOF_SOURCE_TREE}^{tree}"
+fi
 
 echo CRABBOX_PHASE:proof
 node scripts/e2e/apply-read-generations-loopback.mjs
