@@ -18,7 +18,7 @@ git cat-file -e "${expected_head}^{commit}"
 git cat-file -e "${expected_base}^{commit}"
 
 echo CRABBOX_PHASE:install
-corepack enable
+sudo corepack enable
 pnpm install --frozen-lockfile
 
 echo CRABBOX_PHASE:build
