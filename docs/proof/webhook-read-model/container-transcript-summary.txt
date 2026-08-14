@@ -6,8 +6,8 @@ CRABBOX_PHASE:build
 pnpm run build:all: PASS
 
 CRABBOX_PHASE:focused
-tests 57
-pass 57
+tests 59
+pass 59
 fail 0
 
 CRABBOX_PHASE:loopback
@@ -18,6 +18,12 @@ monotonic object watermark: PASS
 comment tombstone and late-edit rejection: PASS
 TTL staleness: PASS
 gap detection and repair: PASS
+cold/partial workflow snapshot rejected: PASS
+complete run census required: PASS
+fresh per-run job coverage required: PASS
+missing workflow-job subscription retains live poll: PASS
+exact-review lease reader authorized: PASS
+exact-review shared webhook secret exposed: false
 planning requests: 1 -> 0
 dashboard workflow requests: 8 -> 0
 placeholder requests: 3 -> 0
@@ -35,12 +41,12 @@ dashboard queue boundary check passed
 Documentation checks passed
 lint: 0 warnings, 0 errors
 focused coverage tests: 12 passed, 0 failed
-full tests: 3461
-full passed: 3453
+full tests: 3463
+full passed: 3455
 full failed: 0
 full skipped: 8
-coverage lines: 81.46
-coverage branches: 74.06
-coverage functions: 87.34
+coverage lines: 81.49
+coverage branches: 74.07
+coverage functions: 87.33
 
-WEBHOOK_READ_MODEL_PROOF_OK head=926db2264ea55f9ecd8ff7c87148e2a564d43af4 base=386730fc41ae0b1b63a7dbbd648404be6bd65c66
+WEBHOOK_READ_MODEL_PROOF_OK head=d563120f3b7be59b3e6df6bb928c8a1933dec4f3 base=386730fc41ae0b1b63a7dbbd648404be6bd65c66

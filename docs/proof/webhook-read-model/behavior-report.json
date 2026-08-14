@@ -1,7 +1,7 @@
 {
   "schema": "clawsweeper-webhook-read-model-proof/v1",
-  "generated_at": "2026-08-14T09:57:59.331Z",
-  "tested_head": "926db2264ea55f9ecd8ff7c87148e2a564d43af4",
+  "generated_at": "2026-08-14T10:17:01.872Z",
+  "tested_head": "d563120f3b7be59b3e6df6bb928c8a1933dec4f3",
   "merge_base": "386730fc41ae0b1b63a7dbbd648404be6bd65c66",
   "ingress": {
     "signed_loopback": true,
@@ -20,7 +20,10 @@
     "late_comment_edit_cannot_resurrect_tombstone": true,
     "ttl_staleness_marked": true,
     "count_gap_forces_repair": true,
-    "complete_repair_heals_gap": true
+    "complete_repair_heals_gap": true,
+    "partial_workflow_snapshot_rejected": true,
+    "complete_run_census_required": true,
+    "per_run_job_coverage_required": true
   },
   "pollers": {
     "planning_item": {
@@ -54,7 +57,9 @@
     "final_bypass_live_hits": 1,
     "read_model_guard_hits": 0,
     "two_sided_lease_contract_unchanged": true,
-    "placeholder_delete_live_revalidation_unchanged": true
+    "placeholder_delete_live_revalidation_unchanged": true,
+    "exact_review_lease_reader_authorized": true,
+    "exact_review_webhook_secret_exposed": false
   },
   "subscriptions": {
     "readiness_is_per_event_class": true,
