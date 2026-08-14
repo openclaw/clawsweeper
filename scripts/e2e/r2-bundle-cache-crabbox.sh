@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+expected_head="${1:-}"
+expected_tree="${2:-}"
+if ! [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || ! [[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "expected verified commit and tree SHA arguments" >&2
+  exit 2
+fi
+
 proof_root="$(mktemp -d)"
 proof_output=".artifacts/r2-bundle-cache/proof.json"
 worker_log=".artifacts/r2-bundle-cache/wrangler.log"
@@ -15,11 +22,21 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$(dirname "$proof_output")"
-corepack enable
+echo CRABBOX_PHASE:install
+sudo corepack enable
+missing_tools=()
+command -v curl >/dev/null || missing_tools+=(curl)
+command -v jq >/dev/null || missing_tools+=(jq)
+if [ "${#missing_tools[@]}" -gt 0 ]; then
+  sudo apt-get update
+  sudo apt-get install -y "${missing_tools[@]}"
+fi
 pnpm install --frozen-lockfile
+echo CRABBOX_PHASE:build
 pnpm run build:all
 
-pnpm exec wrangler dev \
+echo CRABBOX_PHASE:behavior
+npx --yes wrangler@4.107.0 dev \
   --config dashboard/wrangler.toml \
   --local \
   --persist-to "$proof_root" \
@@ -58,12 +75,10 @@ jq -e '
   .counted.repeatBefore == 1 and .counted.repeatAfter == 0
 ' "$proof_output" >/dev/null
 
-head_sha="$(git rev-parse HEAD)"
-head_tree="$(git rev-parse HEAD^{tree})"
-git cat-file -e "${head_sha}^{commit}"
-git cat-file -e "${head_tree}^{tree}"
-jq --arg head "$head_sha" --arg tree "$head_tree" \
+jq --arg head "$expected_head" --arg tree "$expected_tree" \
   '. + {git: {head: $head, tree: $tree, catFileCrossCheck: true}}' \
   "$proof_output" >"${proof_output}.tmp"
 mv "${proof_output}.tmp" "$proof_output"
 cat "$proof_output"
+echo CRABBOX_PHASE:check
+pnpm run check

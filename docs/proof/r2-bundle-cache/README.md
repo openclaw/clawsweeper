@@ -7,11 +7,17 @@ bindings, while a loopback HTTP server counts authoritative artifact requests.
 Run it through the explicitly requested Docker-backed Crabbox provider:
 
 ```sh
+proof_head="$(git rev-parse HEAD)"
+proof_tree="$(git rev-parse HEAD^{tree})"
+git cat-file -e "${proof_head}^{commit}"
+git cat-file -e "${proof_tree}^{tree}"
 ../crabbox/bin/crabbox run \
   --provider local-container \
+  --local-container-image node:24-bookworm \
   --no-hydrate \
   --timing-json \
-  --script scripts/e2e/r2-bundle-cache-crabbox.sh
+  --script scripts/e2e/r2-bundle-cache-crabbox.sh \
+  -- "$proof_head" "$proof_tree"
 ```
 
 The script writes `.artifacts/r2-bundle-cache/proof.json`. Its static verifier

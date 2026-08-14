@@ -175,10 +175,10 @@ function validateBundle(bundleDir) {
 
 function deleteLocalR2Object(objectKey) {
   const result = spawnSync(
-    "pnpm",
+    "npx",
     [
-      "exec",
-      "wrangler",
+      "--yes",
+      "wrangler@4.107.0",
       "r2",
       "object",
       "delete",
