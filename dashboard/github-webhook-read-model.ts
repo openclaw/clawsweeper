@@ -370,6 +370,16 @@ export class GithubWebhookReadModelStore {
          PRIMARY KEY (repository, number, collection_kind)
        ) STRICT`,
     );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS github_webhook_read_model_workflow_coverage_v1 (
+         repository TEXT NOT NULL,
+         coverage_kind TEXT NOT NULL,
+         run_id INTEGER NOT NULL CHECK (run_id >= 0),
+         repaired_at INTEGER NOT NULL,
+         watermark INTEGER NOT NULL,
+         PRIMARY KEY (repository, coverage_kind, run_id)
+       ) STRICT`,
+    );
   }
 
   ingest(
@@ -444,6 +454,17 @@ export class GithubWebhookReadModelStore {
     const completeCommentItems = Array.isArray(body.complete_comment_items)
       ? body.complete_comment_items.map(positiveInteger).filter(nonNullable)
       : [];
+    const workflowRunCensusStartedAt = timestampMs(body.workflow_run_census_started_at);
+    const workflowRunCensusComplete =
+      repairKind === "workflows" &&
+      body.workflow_run_census_complete === true &&
+      workflowRunCensusStartedAt !== null;
+    const workflowJobCensusStartedAt = timestampMs(body.workflow_job_census_started_at);
+    const completeWorkflowJobRuns =
+      workflowJobCensusStartedAt !== null && Array.isArray(body.complete_workflow_job_runs)
+        ? body.complete_workflow_job_runs.map(positiveInteger).filter(nonNullable)
+        : [];
+    const workflowJobCensusBoundary = workflowJobCensusStartedAt ?? 0;
     if (
       !repository ||
       !new Set(["items", "comments", "placeholders", "workflows"]).has(repairKind)
@@ -461,6 +482,62 @@ export class GithubWebhookReadModelStore {
         now,
       );
       const deliveryId = `repair:${repairKind}:${repository}:${watermark}`;
+      if (workflowRunCensusComplete) {
+        const liveRunIds = new Set(
+          objects
+            .filter(
+              (object): object is GithubWebhookReadModelWorkflow => object.kind === "workflow_run",
+            )
+            .map((object) => object.id),
+        );
+        const existingRuns = Array.from(
+          this.storage.sql.exec(
+            `SELECT object_id, received_at FROM github_webhook_read_model_workflows_v1
+              WHERE repository = ? AND object_kind = 'workflow_run'`,
+            repository,
+          ),
+        );
+        for (const row of existingRuns) {
+          const id = Number(row.object_id);
+          if (liveRunIds.has(id) || Number(row.received_at) > workflowRunCensusStartedAt) continue;
+          this.storage.sql.exec(
+            `DELETE FROM github_webhook_read_model_workflows_v1
+              WHERE repository = ? AND object_kind = 'workflow_run' AND object_id = ?`,
+            repository,
+            id,
+          );
+        }
+        this.upsertWorkflowCoverageSync(repository, "run_census", 0, now, watermark);
+      }
+      for (const runId of completeWorkflowJobRuns) {
+        const liveJobIds = new Set(
+          objects
+            .filter(
+              (object): object is GithubWebhookReadModelWorkflow =>
+                object.kind === "workflow_job" && object.runId === runId,
+            )
+            .map((object) => object.id),
+        );
+        const existingJobs = Array.from(
+          this.storage.sql.exec(
+            `SELECT object_id, received_at FROM github_webhook_read_model_workflows_v1
+              WHERE repository = ? AND object_kind = 'workflow_job' AND run_id = ?`,
+            repository,
+            runId,
+          ),
+        );
+        for (const row of existingJobs) {
+          const id = Number(row.object_id);
+          if (liveJobIds.has(id) || Number(row.received_at) > workflowJobCensusBoundary) continue;
+          this.storage.sql.exec(
+            `DELETE FROM github_webhook_read_model_workflows_v1
+              WHERE repository = ? AND object_kind = 'workflow_job' AND object_id = ?`,
+            repository,
+            id,
+          );
+        }
+        this.upsertWorkflowCoverageSync(repository, "run_jobs", runId, now, watermark);
+      }
       for (const number of completeCommentItems) {
         const liveIds = new Set(
           objects
@@ -727,9 +804,31 @@ export class GithubWebhookReadModelStore {
     );
     const latestRun = rows.find((row) => row.object_kind === "workflow_run");
     const latestJob = rows.find((row) => row.object_kind === "workflow_job");
+    const runCensus = firstRow(
+      this.storage.sql.exec(
+        `SELECT repaired_at, watermark FROM github_webhook_read_model_workflow_coverage_v1
+          WHERE repository = ? AND coverage_kind = 'run_census' AND run_id = 0`,
+        repository,
+      ),
+    );
+    const coveredJobRuns = Array.from(
+      this.storage.sql.exec(
+        `SELECT run_id FROM github_webhook_read_model_workflow_coverage_v1
+          WHERE repository = ? AND coverage_kind = 'run_jobs' AND repaired_at > ?
+          ORDER BY run_id`,
+        repository,
+        now - GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS,
+      ),
+    ).map((row) => Number(row.run_id));
     const classState = this.classState("workflow_runs", now);
     const jobsClassState = this.classState("workflow_jobs", now);
-    const workflowFreshness = freshness(latestRun, GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS, now);
+    const workflowFreshness = freshness(
+      runCensus
+        ? { received_at: runCensus.repaired_at, source_updated_at: runCensus.repaired_at }
+        : latestRun,
+      GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS,
+      now,
+    );
     const jobFreshness = freshness(latestJob, GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS, now);
     const values = rows.map((row) => ({
       kind: String(row.object_kind),
@@ -742,8 +841,8 @@ export class GithubWebhookReadModelStore {
       class_state: classState,
       jobs_class_state: jobsClassState,
       jobs_freshness: jobFreshness,
-      hit: rows.length > 0,
-      usable: rows.length > 0 && classState.available && !workflowFreshness.stale,
+      hit: rows.length > 0 || Boolean(runCensus),
+      usable: Boolean(runCensus) && classState.available && !workflowFreshness.stale,
       freshness: workflowFreshness,
       runs: values.filter((entry) => entry.kind === "workflow_run").map((entry) => entry.value),
       jobs: values.filter((entry) => entry.kind === "workflow_job").map((entry) => entry.value),
@@ -751,6 +850,7 @@ export class GithubWebhookReadModelStore {
         .filter((entry) => entry.kind === "check_run" || entry.kind === "check_suite")
         .map((entry) => entry.value),
       jobs_usable: Boolean(latestJob) && jobsClassState.available && !jobFreshness.stale,
+      job_coverage_run_ids: jobsClassState.available ? coveredJobRuns : [],
     };
   }
 
@@ -976,6 +1076,27 @@ export class GithubWebhookReadModelStore {
       deliveryId,
       watermark,
       receivedAt,
+    );
+  }
+
+  private upsertWorkflowCoverageSync(
+    repository: string,
+    coverageKind: "run_census" | "run_jobs",
+    runId: number,
+    repairedAt: number,
+    watermark: number,
+  ): void {
+    this.storage.sql.exec(
+      `INSERT INTO github_webhook_read_model_workflow_coverage_v1
+       (repository, coverage_kind, run_id, repaired_at, watermark)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (repository, coverage_kind, run_id) DO UPDATE SET
+         repaired_at = excluded.repaired_at, watermark = excluded.watermark`,
+      repository,
+      coverageKind,
+      runId,
+      repairedAt,
+      watermark,
     );
   }
 

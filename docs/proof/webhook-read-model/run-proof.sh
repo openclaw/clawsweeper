@@ -48,6 +48,9 @@ jq -e '
   .ingress.ttl_staleness_marked == true and
   .ingress.count_gap_forces_repair == true and
   .ingress.complete_repair_heals_gap == true and
+  .ingress.partial_workflow_snapshot_rejected == true and
+  .ingress.complete_run_census_required == true and
+  .ingress.per_run_job_coverage_required == true and
   .pollers.planning_item.decisions_identical == true and
   .pollers.planning_item.poll_github_requests == 1 and
   .pollers.planning_item.snapshot_github_requests == 0 and
@@ -63,6 +66,8 @@ jq -e '
   .safety.apply_generation_live_hits == 1 and
   .safety.final_bypass_live_hits == 1 and
   .safety.read_model_guard_hits == 0 and
+  .safety.exact_review_lease_reader_authorized == true and
+  .safety.exact_review_webhook_secret_exposed == false and
   .subscriptions.readiness_is_per_event_class == true and
   .subscriptions.never_observed_degrades_to_poll == true and
   .openclaw_bay.affected == false

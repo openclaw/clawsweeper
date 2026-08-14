@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -11,8 +12,10 @@ import worker, { ExactReviewQueue } from "../dashboard/worker.ts";
 import {
   MemoryDurableNamespace,
   MemoryDurableStorage,
+  leasedExactReviewQueueItem,
   signedGithubWebhookRequest,
 } from "./dashboard-worker-harness.ts";
+import { githubReadModelLeaseItemRequest } from "../dist/github-webhook-read-model-client.js";
 
 const secret = "github-read-model-test-secret";
 const repository = {
@@ -224,9 +227,40 @@ test("signed webhook loopback covers lifecycle, comments, reviews, checks, runs,
   assert.equal(activity.usable, true);
   assert.deepEqual(activity.counts, { reviews: 1, review_comments: 1 });
   assert.match(String(activity.activity_digest), /^[0-9a-f]{64}$/);
+  const partialWorkflows = await signedRead(env, "workflows", {
+    repository: "openclaw/openclaw",
+  });
+  assert.equal(partialWorkflows.usable, false, "webhook rows alone are not a complete census");
+  await queue.fetch(
+    new Request("https://queue/github-read-model/repair", {
+      method: "POST",
+      body: JSON.stringify({
+        repository: "openclaw/openclaw",
+        repair_kind: "workflows",
+        workflow_run_census_complete: true,
+        workflow_run_census_started_at: now,
+        complete_workflow_job_runs: [901],
+        workflow_job_census_started_at: now,
+        objects: [
+          workflowObject("workflow_run", 901, 901, now, {
+            id: 901,
+            status: "in_progress",
+            updated_at: now,
+          }),
+          workflowObject("workflow_job", 902, 901, now, {
+            id: 902,
+            run_id: 901,
+            status: "in_progress",
+            updated_at: now,
+          }),
+        ],
+      }),
+    }),
+  );
   const workflows = await signedRead(env, "workflows", { repository: "openclaw/openclaw" });
   assert.equal(workflows.usable, true);
   assert.equal(workflows.jobs_usable, true);
+  assert.deepEqual(workflows.job_coverage_run_ids, [901]);
   assert.equal((workflows.runs as unknown[]).length, 1);
   assert.equal((workflows.jobs as unknown[]).length, 1);
   assert.equal((workflows.checks as unknown[]).length, 1);
@@ -277,6 +311,36 @@ test("dashboard workflow snapshot preserves health decisions while removing run 
       workflow_run: run,
     }),
   );
+  const partial = await store.readWorkflows(
+    { repository: "openclaw/openclaw" },
+    Date.parse(now) + 1,
+  );
+  assert.equal(partial.usable, false);
+  store.repair(
+    {
+      repository: "openclaw/openclaw",
+      repair_kind: "workflows",
+      workflow_run_census_complete: true,
+      workflow_run_census_started_at: now,
+      complete_workflow_job_runs: [9901],
+      workflow_job_census_started_at: now,
+      objects: [
+        workflowObject("workflow_run", 9901, 9901, now, run),
+        workflowObject("workflow_job", 9902, 9901, now, job),
+      ],
+    },
+    Date.parse(now) + 1,
+  );
+  const censusWithoutJobSubscription = await store.readWorkflows(
+    { repository: "openclaw/openclaw" },
+    Date.parse(now) + 1,
+  );
+  assert.equal(censusWithoutJobSubscription.usable, true);
+  assert.deepEqual(
+    censusWithoutJobSubscription.job_coverage_run_ids,
+    [],
+    "a repair census cannot impersonate the missing workflow_job subscription",
+  );
   store.ingest(
     requiredDelivery("workflow_job", "status-job", now, {
       action: "in_progress",
@@ -301,6 +365,74 @@ test("dashboard workflow snapshot preserves health decisions while removing run 
   );
   assert.deepEqual(snapshotDecision, pollDecision);
   assert.equal(githubRequests, 8, "the snapshot decision adds no GitHub requests");
+});
+
+test("exact-review lease capability reads only its own item without the webhook secret", async () => {
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: {
+      "openclaw/openclaw#700": leasedExactReviewQueueItem(700, "7000"),
+    },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const now = new Date().toISOString();
+  await queue.fetch(
+    new Request("https://queue/github-read-model/ingest", {
+      method: "POST",
+      body: JSON.stringify(
+        requiredDelivery("issues", "lease-item", now, {
+          action: "labeled",
+          repository,
+          issue: issue(700, "lease snapshot", now),
+        }),
+      ),
+    }),
+  );
+  const env = { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) };
+  const lease = githubReadModelLeaseItemRequest(
+    { repository: "openclaw/openclaw", number: 700 },
+    {
+      QUEUE_URL: "https://clawsweeper.openclaw.ai",
+      EXACT_REVIEW_ITEM_KEY: "openclaw/openclaw#700",
+      EXACT_REVIEW_LEASE_ID: "lease-700",
+      EXACT_REVIEW_LEASE_REVISION: "1",
+      EXACT_REVIEW_CLAIM_GENERATION: "1",
+      GITHUB_RUN_ID: "7000",
+      GITHUB_RUN_ATTEMPT: "1",
+    },
+  );
+  assert.ok(lease);
+  const response = await worker.fetch(
+    new Request(lease.url, { method: "POST", body: lease.body }),
+    env,
+  );
+  assert.equal(response.status, 200);
+  const snapshot = (await response.json()) as Record<string, unknown>;
+  assert.equal(snapshot.lease_authorized, true);
+  assert.equal(snapshot.usable, true);
+  assert.equal((snapshot.item as Record<string, unknown>).title, "lease snapshot");
+
+  const forged = JSON.parse(lease.body);
+  forged.claim_generation = 2;
+  const rejected = await worker.fetch(
+    new Request(lease.url, { method: "POST", body: JSON.stringify(forged) }),
+    env,
+  );
+  assert.equal(rejected.status, 409);
+});
+
+test("exact-review workflow exposes the scoped lease tuple but not the shared webhook secret", () => {
+  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const start = workflow.indexOf("- name: Review exact event item");
+  const end = workflow.indexOf("\n      - name:", start + 1);
+  const step = workflow.slice(start, end);
+  assert.match(step, /EXACT_REVIEW_ITEM_KEY:/);
+  assert.match(step, /EXACT_REVIEW_LEASE_ID:/);
+  assert.match(step, /EXACT_REVIEW_LEASE_REVISION:/);
+  assert.match(step, /EXACT_REVIEW_CLAIM_GENERATION:/);
+  assert.match(step, /QUEUE_URL:/);
+  assert.doesNotMatch(step, /CLAWSWEEPER_WEBHOOK_SECRET:/);
 });
 
 function issue(number: number, title: string, updatedAt: string) {
@@ -348,6 +480,23 @@ function commentObject(number: number, id: number, body: string, updatedAt: stri
     sourceUpdatedAt: updatedAt,
     tombstone: false,
     snapshot: { id, body, created_at: updatedAt, updated_at: updatedAt },
+  };
+}
+
+function workflowObject(
+  kind: "workflow_run" | "workflow_job",
+  id: number,
+  runId: number,
+  updatedAt: string,
+  snapshot: Record<string, unknown>,
+) {
+  return {
+    kind,
+    repository: "openclaw/openclaw",
+    id,
+    runId,
+    sourceUpdatedAt: updatedAt,
+    snapshot,
   };
 }
 

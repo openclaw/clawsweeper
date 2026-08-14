@@ -931,6 +931,11 @@ export default {
     if (url.pathname === "/internal/exact-review/heartbeat" && request.method === "POST")
       return exactReviewQueueRequest(env, "/heartbeat", request);
     if (
+      url.pathname === "/internal/exact-review/github-read-model/item" &&
+      request.method === "POST"
+    )
+      return exactReviewQueueRequest(env, "/github-read-model/lease-item", request);
+    if (
       url.pathname === "/internal/exact-review/state-writer-progress" &&
       request.method === "POST"
     )
@@ -3702,6 +3707,12 @@ async function statusSnapshot(env) {
       await githubWebhookReadModelQueuePost(env, "repair", {
         repository: repo,
         repair_kind: "workflows",
+        ...(runs && completedRuns && activeRunErrors.length === 0
+          ? {
+              workflow_run_census_complete: true,
+              workflow_run_census_started_at: generatedAt,
+            }
+          : {}),
         objects,
       }).catch(() => null);
     }
@@ -3721,10 +3732,19 @@ async function statusSnapshot(env) {
       isCodexWorkflowFallback(run) &&
       TERMINAL_BAD_CONCLUSIONS.has(String(run.conclusion)),
   );
-  const readModelJobs =
-    workflowReadModel?.jobs_usable === true && Array.isArray(workflowReadModel.jobs)
-      ? workflowReadModel.jobs
-      : undefined;
+  const readModelJobs = Array.isArray(workflowReadModel?.jobs)
+    ? {
+        jobs: workflowReadModel.jobs as unknown[],
+        coveredRunIds: new Set<number>(
+          (Array.isArray(workflowReadModel.job_coverage_run_ids)
+            ? workflowReadModel.job_coverage_run_ids
+            : []
+          )
+            .map((value) => Number(value))
+            .filter((value) => Number.isSafeInteger(value) && value > 0),
+        ),
+      }
+    : undefined;
   const activeJobs = await activeWorkerSnapshot(env, repo, workerRuns, github, readModelJobs);
   const [
     workerHealth,
@@ -4788,7 +4808,7 @@ async function activeWorkerSnapshot(
   repo,
   runs,
   github: GithubJsonReader = (path) => githubJson(env, path),
-  readModelJobs?: unknown[],
+  readModelJobs?: { jobs: unknown[]; coveredRunIds: Set<number> },
 ) {
   const detailRunLimit = Math.max(
     1,
@@ -4881,7 +4901,7 @@ async function recentWorkerHealth(
   repo,
   runs: WorkflowRunSummary[],
   github: GithubJsonReader = (path) => githubJson(env, path),
-  readModelJobs?: unknown[],
+  readModelJobs?: { jobs: unknown[]; coveredRunIds: Set<number> },
 ) {
   const cacheKey = `worker-health:v3:${String(repo || "").toLowerCase()}`;
   const cached = await readStoredJson(env, cacheKey);
@@ -5957,15 +5977,17 @@ async function workflowJobsForRun(
   runId,
   github: GithubJsonReader = (path) => githubJson(env, path),
   run?: WorkflowRunSummary,
-  readModelJobs?: unknown[],
+  readModelJobs?: { jobs: unknown[]; coveredRunIds: Set<number> },
 ) {
-  if (readModelJobs) {
-    return readModelJobs.filter((job) => Number(objectValue(job).run_id) === Number(runId));
+  if (readModelJobs?.coveredRunIds.has(Number(runId))) {
+    return readModelJobs.jobs.filter((job) => Number(objectValue(job).run_id) === Number(runId));
   }
   const key = `workflow-jobs:${repo}:${runId}`;
   const cached = await readStoredJson(env, key);
   if (Array.isArray(cached)) return cached;
   const jobs = [];
+  let complete = false;
+  const jobCensusStartedAt = new Date().toISOString();
   for (let page = 1; page <= WORKER_JOB_PAGE_LIMIT; page += 1) {
     const payload = await github(
       `/repos/${repo}/actions/runs/${runId}/jobs?filter=latest&per_page=100&page=${page}`,
@@ -5977,6 +5999,7 @@ async function workflowJobsForRun(
       pageJobs.length < 100 ||
       (Number.isFinite(totalCount) && totalCount >= 0 && jobs.length >= totalCount)
     ) {
+      complete = true;
       break;
     }
   }
@@ -5995,10 +6018,12 @@ async function workflowJobsForRun(
     const object = githubWebhookReadModelWorkflowObject(repo, "workflow_job", job);
     return object ? [object] : [];
   });
-  if (repairObjects.length > 0 && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)) {
+  if ((repairObjects.length > 0 || complete) && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)) {
     await githubWebhookReadModelQueuePost(env, "repair", {
       repository: repo,
       repair_kind: "workflows",
+      ...(complete ? { complete_workflow_job_runs: [Number(runId)] } : {}),
+      ...(complete ? { workflow_job_census_started_at: jobCensusStartedAt } : {}),
       objects: repairObjects,
     }).catch(() => null);
   }

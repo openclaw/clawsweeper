@@ -7,6 +7,13 @@ export type GithubReadModelEnvironment = {
   readonly EXACT_REVIEW_QUEUE_URL?: string;
   readonly QUEUE_URL?: string;
   readonly CLAWSWEEPER_WEBHOOK_SECRET?: string;
+  readonly EXACT_REVIEW_ITEM_KEY?: string;
+  readonly EXACT_REVIEW_LEASE_ID?: string;
+  readonly EXACT_REVIEW_LEASE_REVISION?: string;
+  readonly EXACT_REVIEW_CLAIM_GENERATION?: string;
+  readonly EXACT_REVIEW_SOURCE_HEAD_SHA?: string;
+  readonly GITHUB_RUN_ID?: string;
+  readonly GITHUB_RUN_ATTEMPT?: string;
 };
 
 export type GithubReadModelResponse = JsonRecord & {
@@ -28,10 +35,8 @@ export function githubReadModelRequestSync(
   payload: JsonRecord,
   env: GithubReadModelEnvironment = process.env,
 ): GithubReadModelResponse | null {
-  const config = githubReadModelConfig(env);
-  if (!config) return null;
-  const body = JSON.stringify(payload);
-  const signature = `sha256=${createHmac("sha256", config.secret).update(body).digest("hex")}`;
+  const request = githubReadModelSyncRequest(operation, payload, env);
+  if (!request) return null;
   const result = spawnSync(
     "curl",
     [
@@ -46,15 +51,14 @@ export function githubReadModelRequestSync(
       "POST",
       "--header",
       "content-type: application/json",
-      "--header",
-      `x-clawsweeper-exact-review-signature: ${signature}`,
+      ...request.headers.flatMap(([name, value]) => ["--header", `${name}: ${value}`]),
       "--data-binary",
       "@-",
-      `${config.baseUrl}/internal/state/github-read-model/${operation}`,
+      request.url,
     ],
     {
       encoding: "utf8",
-      input: body,
+      input: request.body,
       timeout: 6_000,
       maxBuffer: 4 * 1_024 * 1_024,
       env: process.env,
@@ -94,6 +98,52 @@ export async function githubReadModelRequest(
   } catch {
     return null;
   }
+}
+
+export function githubReadModelLeaseItemRequest(
+  payload: JsonRecord,
+  env: GithubReadModelEnvironment,
+): { url: string; body: string } | null {
+  const baseUrl = githubReadModelBaseUrl(env);
+  const repository = typeof payload.repository === "string" ? payload.repository.toLowerCase() : "";
+  const number = positiveInteger(payload.number);
+  const itemKey = String(env.EXACT_REVIEW_ITEM_KEY || "").trim();
+  const leaseId = String(env.EXACT_REVIEW_LEASE_ID || "").trim();
+  const leaseRevision = positiveInteger(env.EXACT_REVIEW_LEASE_REVISION);
+  const claimGeneration = positiveInteger(env.EXACT_REVIEW_CLAIM_GENERATION);
+  const runId = positiveInteger(env.GITHUB_RUN_ID);
+  const runAttempt = positiveInteger(env.GITHUB_RUN_ATTEMPT);
+  const sourceHeadSha = String(env.EXACT_REVIEW_SOURCE_HEAD_SHA || "")
+    .trim()
+    .toLowerCase();
+  if (
+    !baseUrl ||
+    !validRepository(repository) ||
+    !number ||
+    itemKey.toLowerCase() !== `${repository}#${number}` ||
+    !leaseId ||
+    !leaseRevision ||
+    !claimGeneration ||
+    !runId ||
+    !runAttempt ||
+    (sourceHeadSha && !/^[0-9a-f]{40}$/.test(sourceHeadSha))
+  ) {
+    return null;
+  }
+  return {
+    url: `${baseUrl}/internal/exact-review/github-read-model/item`,
+    body: JSON.stringify({
+      repository,
+      number,
+      item_key: itemKey,
+      lease_id: leaseId,
+      lease_revision: leaseRevision,
+      claim_generation: claimGeneration,
+      run_id: String(runId),
+      run_attempt: runAttempt,
+      ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
+    }),
+  };
 }
 
 export function usableGithubReadModelResponse(
@@ -191,15 +241,44 @@ function githubReadModelConfig(env: GithubReadModelEnvironment): {
   baseUrl: string;
   secret: string;
 } | null {
-  const raw = String(env.EXACT_REVIEW_QUEUE_URL || env.QUEUE_URL || "").trim();
+  const baseUrl = githubReadModelBaseUrl(env);
   const secret = String(env.CLAWSWEEPER_WEBHOOK_SECRET || "").trim();
-  if (!raw || !secret) return null;
+  return baseUrl && secret ? { baseUrl, secret } : null;
+}
+
+function githubReadModelSyncRequest(
+  operation: "item" | "comments" | "activity" | "workflows" | "placeholders" | "repair",
+  payload: JsonRecord,
+  env: GithubReadModelEnvironment,
+): { url: string; body: string; headers: Array<readonly [string, string]> } | null {
+  const config = githubReadModelConfig(env);
+  if (config) {
+    const body = JSON.stringify(payload);
+    return {
+      url: `${config.baseUrl}/internal/state/github-read-model/${operation}`,
+      body,
+      headers: [
+        [
+          "x-clawsweeper-exact-review-signature",
+          `sha256=${createHmac("sha256", config.secret).update(body).digest("hex")}`,
+        ],
+      ],
+    };
+  }
+  if (operation !== "item") return null;
+  const lease = githubReadModelLeaseItemRequest(payload, env);
+  return lease ? { ...lease, headers: [] } : null;
+}
+
+function githubReadModelBaseUrl(env: GithubReadModelEnvironment): string | null {
+  const raw = String(env.EXACT_REVIEW_QUEUE_URL || env.QUEUE_URL || "").trim();
+  if (!raw) return null;
   try {
     const url = new URL(raw);
     const loopback =
       url.protocol === "http:" && new Set(["127.0.0.1", "localhost", "::1"]).has(url.hostname);
     if ((url.protocol !== "https:" && !loopback) || url.username || url.password) return null;
-    return { baseUrl: url.toString().replace(/\/$/, ""), secret };
+    return url.toString().replace(/\/$/, "");
   } catch {
     return null;
   }

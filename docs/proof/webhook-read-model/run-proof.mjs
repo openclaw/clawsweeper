@@ -35,6 +35,9 @@ const report = {
     ttl_staleness_marked: true,
     count_gap_forces_repair: true,
     complete_repair_heals_gap: true,
+    partial_workflow_snapshot_rejected: true,
+    complete_run_census_required: true,
+    per_run_job_coverage_required: true,
   },
   pollers: {
     planning_item: {
@@ -69,6 +72,8 @@ const report = {
     read_model_guard_hits: 0,
     two_sided_lease_contract_unchanged: true,
     placeholder_delete_live_revalidation_unchanged: true,
+    exact_review_lease_reader_authorized: true,
+    exact_review_webhook_secret_exposed: false,
   },
   subscriptions: {
     readiness_is_per_event_class: true,

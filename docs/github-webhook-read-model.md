@@ -43,6 +43,10 @@ Publisher-authenticated POST routes live below `/internal/state/github-read-mode
 
 The migrated consumers are exact-item review planning, dashboard workflow-run/job health, review-placeholder discovery, and repair-loop comment hydration in the comment router. Each retains a bounded repair poll. The dashboard's composed live snapshot TTL is 60 seconds; webhook workflow state is independently capped at 5 minutes.
 
+Workflow rows alone never establish completeness. Dashboard run snapshots require a persisted successful bounded run census, and job snapshots require fresh complete coverage for each run before that run can avoid its live job poll. Census repair removes older rows absent from the authoritative result while preserving webhook rows received after the census began.
+
+Publisher-HMAC remains the normal automated read credential. Exact-review planning intentionally does not receive that shared secret; its item read instead uses the already-issued full lease tuple as a scoped capability. The queue accepts that capability only for the tuple's live leased repository and item, and it cannot write or repair the read model.
+
 ## Hard safety boundary
 
 This read model never serves apply mutation guards, the two-sided lease check, or any post-mutation verification. Apply binds those reads to a `LiveReadGeneration`, which bypasses the webhook snapshot; explicit final-guard bypass reads always reach GitHub. Placeholder deletion likewise re-reads the closed item and exact comment live immediately before deletion. Webhook state is asynchronous and lossy, so it is evidence for planning and observation—not authority to mutate GitHub.

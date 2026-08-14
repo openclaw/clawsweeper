@@ -3060,6 +3060,66 @@ export class ExactReviewQueue {
       }
     }
 
+    if (request.method === "POST" && url.pathname === "/github-read-model/lease-item") {
+      const body = objectValue(await request.json().catch(() => null));
+      const itemKey = String(body.item_key || "").trim();
+      const leaseId = String(body.lease_id || "").trim();
+      const leaseRevision = Number(body.lease_revision);
+      const claimGeneration = Number(body.claim_generation);
+      const runId = String(body.run_id || "").trim();
+      const runAttempt = exactReviewRunAttempt(body.run_attempt);
+      const sourceHeadSha = String(body.source_head_sha || "")
+        .trim()
+        .toLowerCase();
+      const repository = String(body.repository || "")
+        .trim()
+        .toLowerCase();
+      const number = Number(body.number);
+      if (
+        !itemKey ||
+        !leaseId ||
+        !/^\d+$/.test(runId) ||
+        !Number.isInteger(leaseRevision) ||
+        leaseRevision < 1 ||
+        !Number.isInteger(claimGeneration) ||
+        claimGeneration < 1 ||
+        runAttempt === null ||
+        !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repository) ||
+        !Number.isSafeInteger(number) ||
+        number < 1 ||
+        (sourceHeadSha && !/^[0-9a-f]{40}$/.test(sourceHeadSha))
+      ) {
+        return json({ error: "invalid_lease_read_tuple" }, 400);
+      }
+      const item = this.readStateSync().items[itemKey];
+      const now = Date.now();
+      if (
+        !item ||
+        item.state !== "leased" ||
+        item.leaseId !== leaseId ||
+        item.leaseRevision !== leaseRevision ||
+        exactReviewClaimGeneration(item.claimGeneration) !== claimGeneration ||
+        item.claimedRunId !== runId ||
+        item.claimedRunAttempt !== runAttempt ||
+        item.decision.targetRepo.toLowerCase() !== repository ||
+        item.decision.itemNumber !== number ||
+        (item.leaseDecision?.sourceHeadSha &&
+          item.leaseDecision.sourceHeadSha.toLowerCase() !== sourceHeadSha) ||
+        !isLiveExactReviewLease(
+          item,
+          now,
+          exactReviewPublicationDispatchLeaseMs(this.env),
+          exactReviewHeartbeatGraceMs(this.env),
+        )
+      ) {
+        return json({ error: "lease_not_active" }, 409);
+      }
+      return json({
+        ...(await this.githubWebhookReadModelStore.readItem({ repository, number }, now)),
+        lease_authorized: true,
+      });
+    }
+
     if (request.method === "POST" && url.pathname === "/github-read-model/repair") {
       try {
         return json(
