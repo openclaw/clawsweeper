@@ -505,6 +505,131 @@ test("dashboard health revalidates and evicts stale phantom queued runs", async 
   }
 });
 
+test("dashboard health caps stale queued-run revalidation and drains oldest rows first", async () => {
+  const storage = new MemoryDurableStorage();
+  const store = new GithubWebhookReadModelStore(storage);
+  store.ensureSchemaSync();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const observedAtMs = Date.now() - GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS - 60_000;
+  const observedAt = new Date(observedAtMs).toISOString();
+  const staleRunCount = 205;
+  const expectedBatchSize = 10;
+  const runIds = Array.from({ length: staleRunCount }, (_, index) => 10_000 + index);
+
+  for (const [index, runId] of runIds.entries()) {
+    store.ingest(
+      requiredDelivery("workflow_run", `stale-batch-${runId}`, observedAt, {
+        action: "requested",
+        repository,
+        workflow_run: {
+          id: runId,
+          name: "Review",
+          display_title: `Review event item openclaw/openclaw#${runId}`,
+          status: "queued",
+          conclusion: null,
+          created_at: new Date(Date.now() - (60 + index) * 60_000).toISOString(),
+          updated_at: observedAt,
+        },
+      }),
+      observedAtMs,
+    );
+  }
+  store.repair(
+    {
+      repository: "openclaw/openclaw",
+      repair_kind: "workflows",
+      workflow_run_census_complete: true,
+      workflow_run_census_started_at: new Date(observedAtMs - 1).toISOString(),
+      objects: [],
+    },
+    Date.now() - 30_000,
+  );
+
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  const exactRunRequests: number[] = [];
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: { match: async () => undefined, put: async () => undefined } },
+  });
+  console.warn = (...values: unknown[]) => warnings.push(values.map(String).join(" "));
+  globalThis.fetch = async (input) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const exactRun = url.pathname.match(/^\/repos\/openclaw\/openclaw\/actions\/runs\/(\d+)$/);
+    if (exactRun) {
+      exactRunRequests.push(Number(exactRun[1]));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return jsonResponse({ message: "Not Found" }, 404);
+    }
+    if (url.pathname.includes("/actions/workflows/") || url.pathname.endsWith("/actions/runs")) {
+      return jsonResponse({ workflow_runs: [] });
+    }
+    if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+    if (url.pathname.includes("/issues")) return jsonResponse([]);
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    let remaining = staleRunCount;
+    let refreshes = 0;
+    while (remaining > 0) {
+      const requestsBefore = exactRunRequests.length;
+      const startedAt = Date.now();
+      const response = await worker.fetch(
+        new Request("https://clawsweeper.openclaw.ai/api/status"),
+        {
+          CLAWSWEEPER_REPO: "openclaw/openclaw",
+          TARGET_REPOS: "openclaw/openclaw",
+          CACHE_TTL_SECONDS: "0",
+          CLAWSWEEPER_WEBHOOK_SECRET: secret,
+          EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+        },
+        { waitUntil: () => undefined },
+      );
+      const elapsedMs = Date.now() - startedAt;
+      const status = (await response.json()) as {
+        operational_health: { status: string; queued_over_threshold: number };
+      };
+      const batchSize = Math.min(expectedBatchSize, remaining);
+      assert.equal(exactRunRequests.length - requestsBefore, batchSize);
+      assert.ok(elapsedMs < 500, `bounded refresh took ${elapsedMs}ms`);
+      remaining -= batchSize;
+      refreshes += 1;
+      assert.equal(status.operational_health.queued_over_threshold, 0);
+      assert.equal(status.operational_health.status, remaining > 0 ? "unknown" : "healthy");
+
+      const snapshot = await store.readWorkflows({ repository: "openclaw/openclaw" });
+      assert.equal((snapshot.runs as unknown[]).length, remaining);
+    }
+
+    assert.equal(refreshes, Math.ceil(staleRunCount / expectedBatchSize));
+    assert.deepEqual(
+      exactRunRequests.slice(0, expectedBatchSize).toSorted((left, right) => left - right),
+      runIds.slice(-expectedBatchSize),
+    );
+    assert.deepEqual(
+      exactRunRequests.toSorted((left, right) => left - right),
+      runIds,
+      "successive refreshes select every stale row exactly once",
+    );
+    assert.ok(
+      warnings.some(
+        (line) =>
+          line.includes('"event":"github_read_model_workflow_run_revalidation_batch"') &&
+          line.includes(`"batch_size":${expectedBatchSize}`) &&
+          line.includes(`"omitted_count":${staleRunCount - expectedBatchSize}`),
+      ),
+      "batch telemetry records the cap and omitted count",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
 test("dashboard health ignores repair-fed workflow rows without subscription coverage", async () => {
   const storage = new MemoryDurableStorage();
   const store = new GithubWebhookReadModelStore(storage);

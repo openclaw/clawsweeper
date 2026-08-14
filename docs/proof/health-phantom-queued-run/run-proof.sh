@@ -65,7 +65,7 @@ node --test \
   test/dashboard-operational-health.test.ts
 
 echo "PROOF_PHASE=worker_loopback"
-node "$proof_root/run-worker-loopback-proof.mjs" \
+PROOF_EXPECTED_HEAD="$expected_head" node "$proof_root/run-worker-loopback-proof.mjs" \
   --output /tmp/health-phantom-worker-loopback-report.json
 jq -e '
   .schema == "health-phantom-worker-loopback-proof/v1" and
@@ -75,7 +75,23 @@ jq -e '
   .health.zombie_queued_runs == 1 and
   .read_model_after.runs == 1 and
   .read_model_after.run_ids == [7003] and
-  (.exact_run_requests | sort) == [7001, 7002] and
+  .revalidation_batch_limit == 10 and
+  (.stale_backlog_run_ids | length) == 205 and
+  (.exact_run_requests | length) == 207 and
+  (.exact_run_requests | unique | length) == 207 and
+  (.exact_run_requests | index(7003)) == null and
+  (.status_refreshes | length) == 21 and
+  .status_refreshes[0].batch_size == 10 and
+  .status_refreshes[0].omitted_count == 197 and
+  .status_refreshes[0].expected_result_status == "unknown" and
+  ([.status_refreshes[].batch_size] | all(. <= 10)) and
+  .status_refreshes[-1].omitted_count == 0 and
+  .status_refreshes[-1].expected_result_status == "healthy" and
+  (.observed_health_statuses | index("unknown")) != null and
+  .observed_health_statuses[-1] == "healthy" and
+  .batch_telemetry[0].batch_size == 10 and
+  .batch_telemetry[0].omitted_count == 197 and
+  .batch_telemetry[-1].omitted_count == 0 and
   ([.telemetry[].verdict] | sort) == ["absent", "completed"]
 ' /tmp/health-phantom-worker-loopback-report.json >/dev/null
 
@@ -95,6 +111,14 @@ jq -e '
   .schema == "health-phantom-worker-loopback-proof/v1" and
   .health.status == "healthy" and
   .health.zombie_queued_runs == 1 and
+  .revalidation_batch_limit == 10 and
+  (.stale_backlog_run_ids | length) == 205 and
+  (.status_refreshes | length) == 21 and
+  ([.status_refreshes[].batch_size] | all(. <= 10)) and
+  .status_refreshes[0].expected_result_status == "unknown" and
+  .status_refreshes[-1].expected_result_status == "healthy" and
+  (.observed_health_statuses | index("unknown")) != null and
+  .observed_health_statuses[-1] == "healthy" and
   .read_model_after.run_ids == [7003] and
   .production_mutations == 0
 ' "$proof_root/worker-loopback-report.json" >/dev/null

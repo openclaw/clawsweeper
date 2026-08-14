@@ -389,6 +389,9 @@ const inFlightFastAcks = new Map();
 let githubReadModelDashboardFallbackReported = false;
 const CLAWSWEEPER_WEBHOOK_DENY_REPOS = new Set(["openclaw/clawsweeper-state", "openclaw/.github"]);
 const OPTIONAL_SECTION_TIMEOUT_MS = 6000;
+// Ten exact reads are two five-way waves: below the 20-second status refresh
+// cadence even at the 4.5-second GitHub timeout, while healing up to 30 rows/minute.
+const STALE_WORKFLOW_HEALTH_RECHECK_BATCH_SIZE = 10;
 const STALE_CACHE_TTL_SECONDS = 900;
 const CI_STATUS_TTL_SECONDS = 7200;
 const WORKER_JOB_CACHE_TTL_SECONDS = 60;
@@ -2023,22 +2026,44 @@ async function revalidateStaleWorkflowHealthRuns({
         : [];
     }),
   );
-  const candidates = runs.filter((value) => {
-    const run = objectValue(value);
-    if (!OPERATIONAL_QUEUED_RUN_STATUSES.has(String(run.status || ""))) return false;
-    const createdAt = Date.parse(String(run.created_at || ""));
-    if (!Number.isFinite(createdAt) || now - createdAt < OPERATIONAL_QUEUE_DEGRADED_MS) {
-      return false;
-    }
-    if (now - createdAt > OPERATIONAL_QUEUE_ZOMBIE_MS) return false;
-    const confirmedAt = confirmedAtByRun.get(Number(run.id));
-    return (
-      confirmedAt === undefined || now - confirmedAt > GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS
-    );
-  });
+  const candidates = runs
+    .filter((value) => {
+      const run = objectValue(value);
+      if (!OPERATIONAL_QUEUED_RUN_STATUSES.has(String(run.status || ""))) return false;
+      const createdAt = Date.parse(String(run.created_at || ""));
+      if (!Number.isFinite(createdAt) || now - createdAt < OPERATIONAL_QUEUE_DEGRADED_MS) {
+        return false;
+      }
+      if (now - createdAt > OPERATIONAL_QUEUE_ZOMBIE_MS) return false;
+      const confirmedAt = confirmedAtByRun.get(Number(run.id));
+      return (
+        confirmedAt === undefined || now - confirmedAt > GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS
+      );
+    })
+    .sort((left, right) => {
+      const leftRun = objectValue(left);
+      const rightRun = objectValue(right);
+      return (
+        Date.parse(String(leftRun.created_at || "")) -
+          Date.parse(String(rightRun.created_at || "")) || Number(leftRun.id) - Number(rightRun.id)
+      );
+    });
   if (candidates.length === 0) return { runs, errors: [] };
+  const recheckBatch = candidates.slice(0, STALE_WORKFLOW_HEALTH_RECHECK_BATCH_SIZE);
+  const omittedCandidates = new Set(candidates.slice(STALE_WORKFLOW_HEALTH_RECHECK_BATCH_SIZE));
+  console.warn(
+    JSON.stringify({
+      event: "github_read_model_workflow_run_revalidation_batch",
+      consumer: "dashboard_workflow_health",
+      repository: repo,
+      candidate_count: candidates.length,
+      batch_limit: STALE_WORKFLOW_HEALTH_RECHECK_BATCH_SIZE,
+      batch_size: recheckBatch.length,
+      omitted_count: omittedCandidates.size,
+    }),
+  );
 
-  const outcomes = await mapWithConcurrency(candidates, 5, async (value) => {
+  const outcomes = await mapWithConcurrency(recheckBatch, 5, async (value) => {
     const snapshotRun = objectValue(value);
     const runId = Number(snapshotRun.id);
     if (!Number.isSafeInteger(runId) || runId <= 0) {
@@ -2103,14 +2128,22 @@ async function revalidateStaleWorkflowHealthRuns({
   const byRunId = new Map(outcomes.map((outcome) => [outcome.runId, outcome]));
   return {
     runs: runs.flatMap((value) => {
+      if (omittedCandidates.has(value)) return [];
       const outcome = byRunId.get(Number(objectValue(value).id));
       if (!outcome) return [value];
       if (outcome.error || outcome.evicted) return [];
       return outcome.liveRun ? [outcome.liveRun] : [];
     }),
-    errors: outcomes.flatMap((outcome) =>
-      outcome.error ? [`workflow run ${outcome.runId} reverify: ${outcome.error}`] : [],
-    ),
+    errors: [
+      ...(omittedCandidates.size > 0
+        ? [
+            `workflow run reverify omitted ${omittedCandidates.size} stale candidates after batch ${recheckBatch.length}`,
+          ]
+        : []),
+      ...outcomes.flatMap((outcome) =>
+        outcome.error ? [`workflow run ${outcome.runId} reverify: ${outcome.error}`] : [],
+      ),
+    ],
   };
 }
 

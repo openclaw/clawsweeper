@@ -17,10 +17,15 @@ Repair upserts also ignored an equal `updated_at`, so a live poll that confirmed
 an unchanged genuinely queued run could not refresh its row age.
 
 Workflow reads now expose each run's last delivery-or-poll confirmation. Before
-an expired row can contribute to `queued_over_threshold`, the Worker performs
-one exact GitHub run read with five-way bounded concurrency. Live active state
-refreshes the row. Completed or missing state removes the run and its dependent
-job snapshot behind a verification-start boundary, then emits
+an expired row can contribute to `queued_over_threshold`, the Worker rechecks
+at most the ten oldest stale rows per refresh. Ten is two waves at the existing
+five-way concurrency, bounded below the 20-second refresh cadence even when
+each exact request reaches its 4.5-second timeout. Omitted unconfirmed rows are
+excluded from queue pressure and make health `unknown`; successive refreshes
+continue through the backlog. Structured batch telemetry records the selected
+and omitted counts. Live active state refreshes the row. Completed or missing
+state removes the run and its dependent job snapshot behind a
+verification-start boundary, then emits
 `github_read_model_workflow_run_evicted`. A failed exact read removes the
 unconfirmed row from the calculation and makes telemetry `unknown`. Repair-only
 snapshots without observed subscription coverage still use the pre-#1167 live
@@ -39,11 +44,14 @@ transcripts are recorded beside these files after the isolated run.
 trace requested in the first ClawSweeper review. It starts `wrangler dev
 --local`, uses the real SQLite Durable Object plus signed webhook/repair HTTP
 routes, waits through the five-minute production TTL, and serves exact completed
-and 404 responses from a separate loopback GitHub HTTP server. The resulting
-`/api/status` response was healthy, both rows were absent afterward, and the
-Worker emitted both eviction telemetry verdicts. The refreshed round-2 trace
-also seeds a 25-hour zombie, proves that no exact request is spent on it, and
-leaves only that separately observable zombie row in the read model.
+and 404 responses from a separate loopback GitHub HTTP server. Its round-3
+scenario seeds 205 additional stale rows, proves a maximum of ten exact reads
+per refresh with oldest-first selection and unknown health for omissions, then
+drains the backlog across successive refreshes. The resulting
+`/api/status` response was healthy, all 207 non-zombie candidates were absent
+afterward, and the Worker emitted both original eviction telemetry verdicts.
+The trace also seeds a 25-hour zombie, proves that no exact request is spent on
+it, and leaves only that separately observable zombie row in the read model.
 
 OpenClaw Bay is unaffected. The change repairs the dashboard's internal
 observer read path and adds no public field or queue, workflow, GitHub, DLQ,

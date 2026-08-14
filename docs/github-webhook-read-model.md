@@ -47,8 +47,14 @@ Workflow rows alone never establish completeness. Dashboard run snapshots requir
 
 Each workflow-run row also exposes its last delivery-or-poll confirmation time.
 Before an over-threshold queued row with an expired confirmation can affect
-operational health, the dashboard re-reads that exact run from GitHub. A live
-active run refreshes the row; a completed or missing run is evicted with
+operational health, the dashboard re-reads that exact run from GitHub. Each
+20-second status refresh checks at most the ten oldest stale rows, which keeps
+the work to two five-way request waves. Unconfirmed rows omitted from that
+batch are excluded from queue pressure and make health `unknown`; later
+refreshes continue with the next-oldest rows. Structured
+`github_read_model_workflow_run_revalidation_batch` telemetry records the batch
+limit, selected count, and omitted count. A live active run refreshes the row;
+a completed or missing run is evicted with
 `github_read_model_workflow_run_evicted` telemetry. If exact verification
 fails, operational health is `unknown` rather than reporting an unconfirmed
 queued run. The eviction is bounded by the verification start time so a newer

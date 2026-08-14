@@ -3,7 +3,7 @@
   "overall_confidence": 0.99,
   "target": {
     "type": "loopback API",
-    "access": "dashboard Worker /api/status through the in-memory Durable Object and GitHub fixtures"
+    "access": "dashboard Worker /api/status through Wrangler dev, the SQLite Durable Object, and a loopback GitHub HTTP fixture"
   },
   "checks": [
     {
@@ -57,6 +57,19 @@
       "confidence": 0.99
     },
     {
+      "contract_clause": "Fixed-size oldest-first revalidation backlog",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The real Worker fixture seeded 205 stale backlog rows plus the original completed and absent rows. The first refresh issued exactly 10 exact reads for the oldest rows, reported batch_size=10 and omitted_count=197, returned unknown with queued_over_threshold=0, and completed in 157 ms. Successive refreshes never exceeded 10 reads, selected all 207 candidates exactly once across 21 batches, and ended healthy with only the 25-hour zombie retained.",
+      "reproduction_steps": [
+        "Seed 205 stale queued rows plus completed, absent, and zombie fixtures through signed webhook HTTP requests",
+        "Wait through the production five-minute confirmation TTL",
+        "Read /api/status and inspect exact-run requests, health, and batch telemetry",
+        "Repeat status refreshes until the Durable Object backlog drains"
+      ],
+      "confidence": 0.99
+    },
+    {
       "contract_clause": "Failed exact verification never invents degradation",
       "status": "pass",
       "severity": null,
@@ -101,6 +114,10 @@
     {
       "probe": "Aged the row beyond the 24-hour zombie boundary",
       "result": "The zombie remained separately observable and no exact verification request was made"
+    },
+    {
+      "probe": "Expanded the stale fixture from one row to 205 rows and delayed every exact response",
+      "result": "One refresh remained capped at 10 exact reads, omitted rows produced unknown rather than degradation, oldest rows were selected first, and 21 refreshes drained the full backlog"
     }
   ],
   "blockers": []

@@ -3,8 +3,9 @@
 ## User-visible goal
 
 Operational health must never report a queued workflow run that the live GitHub
-census cannot confirm. When workflow-run webhook subscriptions are missing, the
-health result must preserve the pre-read-model live-poll behavior.
+census cannot confirm, and one status refresh must perform only a fixed small
+batch of exact-run checks. When workflow-run webhook subscriptions are missing,
+the health result must preserve the pre-read-model live-poll behavior.
 
 ## Target
 
@@ -12,8 +13,8 @@ health result must preserve the pre-read-model live-poll behavior.
 - Access: `wrangler dev --local` with a loopback GitHub fixture and Durable
   Object-backed workflow snapshot.
 - Fixtures: one stale snapshot-only queued run, completed and absent live-census
-  responses, and one genuinely queued live run. No production credential or
-  endpoint is used.
+  responses, one genuinely queued live run, and 205 stale queued rows ordered
+  by age. No production credential or endpoint is used.
 
 ## Operator tasks and expected behavior
 
@@ -34,6 +35,14 @@ health result must preserve the pre-read-model live-poll behavior.
    coverage.
    - The health result equals the live census, matching the polling behavior
      that preceded the webhook read model.
+5. Read `/api/status` with 205 stale queued rows in the read model.
+   - The first refresh issues exactly the fixed batch size of exact-run reads,
+     prioritizing the oldest rows, and returns promptly.
+   - Unconfirmed rows omitted from that batch do not contribute to
+     `queued_over_threshold`; health is unknown until every omitted row has
+     either been confirmed or healed.
+   - Batch telemetry records the selected batch size and omitted-row count.
+   - Repeated refreshes select the next-oldest rows and drain the backlog.
 
 ## Anti-cheat probes
 
@@ -44,6 +53,8 @@ health result must preserve the pre-read-model live-poll behavior.
 - Repeat the phantom request after eviction; the stale entry must not reappear.
 - Use an entry within the freshness TTL; the fixture must not claim stale-entry
   re-verification behavior.
+- Repeat the 205-row request until the read model is empty; no refresh may
+  exceed the fixed exact-read batch, and every row must be selected once.
 
 ## Evidence required
 
@@ -63,5 +74,6 @@ health result must preserve the pre-read-model live-poll behavior.
 
 No production workflow, queue, GitHub item, deployment, or subscription is
 mutated. This change does not add webhook subscriptions or alter alert
-thresholds. OpenClaw Bay is unaffected because it remains an observer-only
-projection and gains no action surface.
+thresholds. Timing is asserted with a deterministic delayed loopback fixture,
+not as a production latency benchmark. OpenClaw Bay is unaffected because it
+remains an observer-only projection and gains no action surface.
