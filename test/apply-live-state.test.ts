@@ -2920,7 +2920,7 @@ process.exit(1);
       ],
     );
     for (const result of report) {
-      assert.match(result.reason, /rate limited until .*comment sync deferred/);
+      assert.match(result.reason, /rate limited until .*apply resumes next cycle/);
     }
     assert.equal(readText(join(itemsDir, "321.md")), originalReport);
     assert.equal(existsSync(join(closedDir, "321.md")), false);
@@ -2929,7 +2929,7 @@ process.exit(1);
   }
 });
 
-test("close-mode apply still fails loudly when GitHub is rate limited", () => {
+test("close-mode apply defers the remaining scan window when GitHub is rate limited", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
@@ -2938,7 +2938,8 @@ test("close-mode apply still fails loudly when GitHub is rate limited", () => {
     const reportPath = join(root, "apply-report.json");
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
-    writeFileSync(join(itemsDir, "321.md"), implementedCloseReport(), "utf8");
+    const originalReport = implementedCloseReport();
+    writeFileSync(join(itemsDir, "321.md"), originalReport, "utf8");
 
     const ghMock = `
 const rawArgs = process.argv.slice(2);
@@ -2951,15 +2952,22 @@ if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
 console.error("unexpected gh args", JSON.stringify(args));
 process.exit(1);
 `;
-    assert.throws(
-      () =>
-        withMockGh(root, ghMock, () => {
-          runApplyDecisionsForTest({ itemsDir, closedDir, plansDir, reportPath });
-        }),
-      /rate limit/i,
-    );
+    withMockGh(root, ghMock, () => {
+      runApplyDecisionsForTest({ itemsDir, closedDir, plansDir, reportPath });
+    });
 
-    assert.ok(existsSync(join(itemsDir, "321.md")));
+    const report = JSON.parse(readText(reportPath));
+    assert.deepEqual(
+      report.map((result) => ({ number: result.number, action: result.action })),
+      [
+        { number: 321, action: "skipped_runtime_budget" },
+        { number: 0, action: "skipped_runtime_budget" },
+      ],
+    );
+    for (const result of report) {
+      assert.match(result.reason, /rate limited until .*apply resumes next cycle/);
+    }
+    assert.equal(readText(join(itemsDir, "321.md")), originalReport);
     assert.equal(existsSync(join(closedDir, "321.md")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
