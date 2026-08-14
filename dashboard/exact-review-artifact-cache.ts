@@ -124,6 +124,10 @@ export class ExactReviewArtifactReceiptStore {
          ON ${EXACT_REVIEW_ARTIFACT_RECEIPT_TABLE} (expires_at, digest)`,
     );
     this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_artifact_receipts_digest_expiry
+         ON ${EXACT_REVIEW_ARTIFACT_RECEIPT_TABLE} (digest, expires_at)`,
+    );
+    this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_ARTIFACT_CACHE_META_TABLE} (
          singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
          prune_cursor TEXT

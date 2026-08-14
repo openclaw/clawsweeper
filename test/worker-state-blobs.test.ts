@@ -191,6 +191,23 @@ test("ledger keys are create-only while asset keys may overwrite", async () => {
   );
   assert.equal(artifactConflict.status, 409);
   assert.equal((await artifactConflict.json()).error, "artifact_blob_immutable_conflict");
+
+  for (const malformed of [
+    "artifacts/exact-review/v1/not-a-digest",
+    `artifacts/exact-review/v1/${"b".repeat(64)}/nested`,
+    `artifacts/exact-review/v1/${"C".repeat(64)}`,
+  ]) {
+    const rejected = await worker.fetch(
+      signedBlobRequest("put", {
+        path: malformed,
+        digest: sha256(artifact),
+        contentBase64: artifact.toString("base64"),
+      }),
+      env,
+    );
+    assert.equal(rejected.status, 400, malformed);
+    assert.equal((await rejected.json()).error, "invalid_blob_path", malformed);
+  }
 });
 
 test("multipart uploads stream fixed-size parts and enforce immutability at completion", async () => {

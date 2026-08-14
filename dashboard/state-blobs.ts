@@ -40,6 +40,7 @@ export const STATE_BLOB_LIST_MAX_LIMIT = 1000;
 
 const BLOB_PATH_PREFIXES = ["ledger/v1/", "assets/", "artifacts/exact-review/v1/"] as const;
 const IMMUTABLE_PATH_PREFIXES = ["ledger/", "artifacts/exact-review/"] as const;
+const EXACT_REVIEW_ARTIFACT_PATH_PATTERN = /^artifacts\/exact-review\/v1\/[0-9a-f]{64}$/;
 const BLOB_PATH_SEGMENT_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._+@-]{0,254}$/;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -93,6 +94,12 @@ type BlobR2Bucket = {
 export function isValidStateBlobPath(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 900) return false;
   if (!BLOB_PATH_PREFIXES.some((prefix) => value.startsWith(prefix))) return false;
+  if (
+    value.startsWith("artifacts/exact-review/") &&
+    !EXACT_REVIEW_ARTIFACT_PATH_PATTERN.test(value)
+  ) {
+    return false;
+  }
   return value.split("/").every((segment) => BLOB_PATH_SEGMENT_PATTERN.test(segment));
 }
 

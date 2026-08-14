@@ -81,6 +81,43 @@ test("artifact cache retention prunes expired receipts and old unreferenced R2 o
   assert.equal(store.lookup(tuple, now + EXACT_REVIEW_ARTIFACT_RECEIPT_RETENTION_MS + 1), null);
 });
 
+test("artifact receipt cleanup is digest-indexed and bounded at realistic populations", async () => {
+  const now = Date.parse("2026-08-14T00:00:00Z");
+  const storage = new MemoryDurableStorage();
+  const bucket = new ArtifactBucket();
+  const store = new ExactReviewArtifactReceiptStore(storage, bucket);
+  store.ensureSchemaSync();
+  const indexes = Array.from(
+    storage.sql.exec(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'exact_review_artifact_receipts' ORDER BY name",
+    ),
+  ).map((row) => String(row.name));
+  assert.ok(indexes.includes("exact_review_artifact_receipts_digest_expiry"));
+
+  for (let index = 1; index <= 140; index += 1) {
+    const digest = index.toString(16).padStart(64, "0");
+    storage.sql.exec(
+      `INSERT INTO exact_review_artifact_receipts
+         (producer_run_id, producer_run_attempt, artifact_name, canonical_item_key,
+          lease_revision, protocol_version, digest, bytes, object_key, created_at, expires_at)
+       VALUES (?, 1, ?, ?, 1, 2, ?, 1, ?, ?, ?)`,
+      String(20_000 + index),
+      `exact-review-${20_000 + index}-1`,
+      `openclaw/openclaw#${20_000 + index}`,
+      digest,
+      `${EXACT_REVIEW_ARTIFACT_CACHE_PREFIX}${digest}`,
+      now - 1,
+      now,
+    );
+  }
+  assert.equal((await store.prune(now)).receiptsDeleted, 128);
+  const remaining = Number(
+    Array.from(storage.sql.exec("SELECT COUNT(*) AS count FROM exact_review_artifact_receipts"))[0]
+      ?.count,
+  );
+  assert.equal(remaining, 12);
+});
+
 test("Worker artifact receipt endpoints use publisher scope, not operator scope", async () => {
   const now = Date.now();
   const storage = new MemoryDurableStorage();
