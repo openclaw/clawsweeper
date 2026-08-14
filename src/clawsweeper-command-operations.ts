@@ -36,6 +36,11 @@ import { GitHubRateLimitError } from "./github-retry.js";
 import { syncDecisionPacketRecord } from "./decision-packets.js";
 import { captureCanonicalRecordBaseline } from "./repair/canonical-record-baseline.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
+import {
+  generationReadKey,
+  type LiveReadGeneration,
+  type LiveReadOptions,
+} from "./live-read-generation.js";
 
 interface CreateCommandOperationsDependencies {
   actionLedgerFailureDisposition: (error: unknown) => {
@@ -412,9 +417,26 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     return sha.trim() || null;
   }
 
-  function liveIssueSourceRevision(number: number): string {
-    const issue = ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${number}`]);
-    const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`);
+  function liveIssueSourceRevision(
+    number: number,
+    options: LiveReadOptions & { liveReadGeneration?: LiveReadGeneration } = {},
+  ): string {
+    const issueArgs = ["api", `repos/${targetRepo()}/issues/${number}`];
+    const commentsPath = `repos/${targetRepo()}/issues/${number}/comments`;
+    const issue = options.liveReadGeneration
+      ? options.liveReadGeneration.read(
+          generationReadKey("json", issueArgs),
+          () => ghJson<unknown>(issueArgs),
+          options,
+        )
+      : ghJson<unknown>(issueArgs);
+    const comments = options.liveReadGeneration
+      ? options.liveReadGeneration.read(
+          generationReadKey("paged", [commentsPath]),
+          () => ghPaged<unknown>(commentsPath),
+          options,
+        )
+      : ghPaged<unknown>(commentsPath);
     return itemSourceRevisionSha256(issue, comments);
   }
 

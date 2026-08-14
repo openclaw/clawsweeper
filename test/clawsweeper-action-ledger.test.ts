@@ -574,7 +574,7 @@ test("apply receipts start per item and persist mutation observation before fina
     source,
     /const commentMutationOccurred = result\.commentMutationOccurred === true;[\s\S]*applyActionEventDisposition\([\s\S]*commentMutationOccurred,[\s\S]*reviewCommentPublicationEventDisposition\([\s\S]*commentMutationOccurred,/,
   );
-  assert.match(applyLoop, /executeApplyClose\(dependencies, \{/);
+  assert.match(applyLoop, /executeApplyClose\(\s*\{/);
   assert.match(
     readText("src/clawsweeper-apply-close-execution.ts"),
     /closeItem\(\{ number, kind: item\.kind/,

@@ -1,14 +1,14 @@
 import type { ContextHydration } from "./clawsweeper-types.js";
 import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "./exact-review-publication-limits.js";
 
-export const PR_HYDRATION_SNAPSHOT_VERSION = 2;
+export const PR_HYDRATION_SNAPSHOT_VERSION = 3;
 // Canonical publication caps the complete report at 2 MiB; leave half for the
 // review itself and skip caching unusually large review discussions.
 export const MAX_PR_HYDRATION_SNAPSHOT_BYTES = 1 * 1024 * 1024;
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
-export interface PrHydrationSnapshot {
+export interface PrHydrationSnapshotV2 {
   version: 2;
   repo: string;
   number: number;
@@ -23,7 +23,16 @@ export interface PrHydrationSnapshot {
   completeReviewComments: unknown[];
 }
 
+export interface PrHydrationSnapshotV3 extends Omit<PrHydrationSnapshotV2, "version"> {
+  version: 3;
+  changedFileCount: number;
+  files: ContextHydration<unknown>;
+}
+
+export type PrHydrationSnapshot = PrHydrationSnapshotV2 | PrHydrationSnapshotV3;
+
 export interface PrHydrationResult {
+  files: ContextHydration<unknown>;
   commits: ContextHydration<unknown>;
   reviewComments: ContextHydration<unknown>;
   completeReviewComments: unknown[];
@@ -32,6 +41,7 @@ export interface PrHydrationResult {
   reviewCommentsReused: boolean;
   reviewCommentsIncremental: boolean;
   reviewCommentsFullFallback: boolean;
+  filesReused: boolean;
 }
 
 interface HydratePrListsOptions {
@@ -39,11 +49,14 @@ interface HydratePrListsOptions {
   number: number;
   pullUpdatedAt: string;
   headSha: string;
+  changedFileCount: number;
   commitCount: number;
   reviewCommentCount: number;
   commentActivityRevision: string | null;
   prior: PrHydrationSnapshot | null;
+  requireFullyValidatedSnapshot?: boolean;
   revalidateCommentActivityRevision: () => string | null;
+  fetchFiles?: () => ContextHydration<unknown>;
   fetchCommits: () => ContextHydration<unknown>;
   fetchReviewComments: () => ContextHydration<unknown>;
   fetchCompleteReviewComments: () => unknown[];
@@ -53,11 +66,9 @@ interface HydratePrListsOptions {
 
 export function hydratePrLists(options: HydratePrListsOptions): PrHydrationResult {
   const hydrationStartedAt = options.now?.() ?? new Date().toISOString();
+  const changedFileCount = options.changedFileCount ?? 0;
   const prior = snapshotMatchesPull(options.prior, options) ? options.prior : null;
   const forceFull = prior !== null && prior.headSha.toLowerCase() !== options.headSha.toLowerCase();
-
-  const commitsReused = prior !== null && !forceFull && prior.commitCount === options.commitCount;
-  const commits = commitsReused ? prior.commits : options.fetchCommits();
 
   let reviewComments: ContextHydration<unknown>;
   let completeReviewComments: unknown[];
@@ -83,22 +94,43 @@ export function hydratePrLists(options: HydratePrListsOptions): PrHydrationResul
   }
   const unchanged =
     cacheHitCandidate && hydrationActivityRevision === prior.commentActivityRevision;
-  if (unchanged) {
-    reviewComments = prior.reviewComments;
-    completeReviewComments = prior.completeReviewComments;
+  const fullyValidatedPrior =
+    unchanged &&
+    prior.commitCount === options.commitCount &&
+    (prior.version === 2 ||
+      (prior.changedFileCount === changedFileCount && prior.files.total === changedFileCount))
+      ? prior
+      : null;
+  const reusablePrior = options.requireFullyValidatedSnapshot ? fullyValidatedPrior : prior;
+  const reusableForceFull =
+    reusablePrior !== null && reusablePrior.headSha.toLowerCase() !== options.headSha.toLowerCase();
+  const filesReused =
+    reusablePrior?.version === 3 &&
+    !reusableForceFull &&
+    reusablePrior.changedFileCount === changedFileCount;
+  const files = filesReused ? reusablePrior.files : (options.fetchFiles?.() ?? emptyHydration());
+  const commitsReused =
+    reusablePrior !== null &&
+    !reusableForceFull &&
+    reusablePrior.commitCount === options.commitCount;
+  const commits = commitsReused ? reusablePrior.commits : options.fetchCommits();
+
+  if (unchanged && reusablePrior !== null) {
+    reviewComments = reusablePrior.reviewComments;
+    completeReviewComments = reusablePrior.completeReviewComments;
     reviewCommentsReused = true;
-  } else if (prior !== null && !forceFull && options.reviewCommentCount === 0) {
+  } else if (reusablePrior !== null && !reusableForceFull && options.reviewCommentCount === 0) {
     reviewComments = emptyHydration();
     completeReviewComments = [];
-    reviewCommentsReused = prior.reviewCommentCount === 0;
+    reviewCommentsReused = reusablePrior.reviewCommentCount === 0;
   } else if (
-    prior !== null &&
-    !forceFull &&
-    options.reviewCommentCount >= prior.reviewCommentCount
+    reusablePrior !== null &&
+    !reusableForceFull &&
+    options.reviewCommentCount >= reusablePrior.reviewCommentCount
   ) {
-    const since = incrementalSince(prior);
+    const since = incrementalSince(reusablePrior);
     const delta = options.fetchReviewCommentsSince(since);
-    const merged = mergeReviewComments(prior.completeReviewComments, delta);
+    const merged = mergeReviewComments(reusablePrior.completeReviewComments, delta);
     if (merged !== null && merged.length === options.reviewCommentCount) {
       completeReviewComments = merged;
       reviewComments = hydrationWindow(merged, options.reviewCommentCount, 40);
@@ -109,7 +141,7 @@ export function hydratePrLists(options: HydratePrListsOptions): PrHydrationResul
     }
   } else {
     ({ reviewComments, completeReviewComments } = fullReviewCommentHydration(options));
-    reviewCommentsFullFallback = prior !== null;
+    reviewCommentsFullFallback = reusablePrior !== null;
   }
 
   const snapshot = hydrationActivityRevision
@@ -119,15 +151,18 @@ export function hydratePrLists(options: HydratePrListsOptions): PrHydrationResul
         commentActivityRevision: hydrationActivityRevision,
         pullUpdatedAt: options.pullUpdatedAt,
         headSha: options.headSha,
+        changedFileCount,
         commitCount: options.commitCount,
         reviewCommentCount: options.reviewCommentCount,
         hydratedAt: hydrationStartedAt,
+        files,
         commits,
         reviewComments,
         completeReviewComments,
       })
     : null;
   return {
+    files,
     commits,
     reviewComments,
     completeReviewComments,
@@ -136,6 +171,7 @@ export function hydratePrLists(options: HydratePrListsOptions): PrHydrationResul
     reviewCommentsReused,
     reviewCommentsIncremental,
     reviewCommentsFullFallback,
+    filesReused,
   };
 }
 
@@ -205,11 +241,12 @@ function fullReviewCommentHydration(options: HydratePrListsOptions): {
 }
 
 function createPrHydrationSnapshot(
-  snapshot: Omit<PrHydrationSnapshot, "version">,
-): PrHydrationSnapshot | null {
-  const candidate: PrHydrationSnapshot = {
+  snapshot: Omit<PrHydrationSnapshotV3, "version">,
+): PrHydrationSnapshotV3 | null {
+  const candidate: PrHydrationSnapshotV3 = {
     version: PR_HYDRATION_SNAPSHOT_VERSION,
     ...snapshot,
+    files: minimizeHydration(snapshot.files, minimizePullFile),
     commits: minimizeHydration(snapshot.commits, minimizeCommit),
     reviewComments: minimizeHydration(snapshot.reviewComments, minimizeReviewComment),
     completeReviewComments: snapshot.completeReviewComments.map(minimizeReviewComment),
@@ -222,22 +259,43 @@ function createPrHydrationSnapshot(
 
 function validPrHydrationSnapshot(value: unknown): value is PrHydrationSnapshot {
   const snapshot = record(value);
+  const versionSpecific =
+    snapshot.version === 2
+      ? exactKeys(snapshot, [
+          "commentActivityRevision",
+          "commitCount",
+          "commits",
+          "completeReviewComments",
+          "headSha",
+          "hydratedAt",
+          "number",
+          "pullUpdatedAt",
+          "repo",
+          "reviewCommentCount",
+          "reviewComments",
+          "version",
+        ])
+      : snapshot.version === PR_HYDRATION_SNAPSHOT_VERSION &&
+        exactKeys(snapshot, [
+          "changedFileCount",
+          "commentActivityRevision",
+          "commitCount",
+          "commits",
+          "completeReviewComments",
+          "files",
+          "headSha",
+          "hydratedAt",
+          "number",
+          "pullUpdatedAt",
+          "repo",
+          "reviewCommentCount",
+          "reviewComments",
+          "version",
+        ]) &&
+        nonnegativeInteger(snapshot.changedFileCount) &&
+        validHydration(snapshot.files, validMinimizedPullFile);
   return (
-    exactKeys(snapshot, [
-      "commentActivityRevision",
-      "commitCount",
-      "commits",
-      "completeReviewComments",
-      "headSha",
-      "hydratedAt",
-      "number",
-      "pullUpdatedAt",
-      "repo",
-      "reviewCommentCount",
-      "reviewComments",
-      "version",
-    ]) &&
-    snapshot.version === PR_HYDRATION_SNAPSHOT_VERSION &&
+    versionSpecific &&
     typeof snapshot.repo === "string" &&
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(snapshot.repo) &&
     positiveInteger(snapshot.number) &&
@@ -250,7 +308,10 @@ function validPrHydrationSnapshot(value: unknown): value is PrHydrationSnapshot 
     nonnegativeInteger(snapshot.reviewCommentCount) &&
     validTimestamp(snapshot.hydratedAt) &&
     validHydration(snapshot.commits, validMinimizedCommit) &&
+    record(snapshot.commits).total === snapshot.commitCount &&
     validHydration(snapshot.reviewComments, validMinimizedReviewComment) &&
+    record(snapshot.reviewComments).total === snapshot.reviewCommentCount &&
+    (snapshot.version !== 3 || record(snapshot.files).total === snapshot.changedFileCount) &&
     Array.isArray(snapshot.completeReviewComments) &&
     snapshot.completeReviewComments.length === snapshot.reviewCommentCount &&
     snapshot.completeReviewComments.every(validMinimizedReviewComment)
@@ -308,6 +369,19 @@ function minimizeCommit(value: unknown): unknown {
   };
 }
 
+function minimizePullFile(value: unknown): unknown {
+  const source = record(value);
+  return {
+    filename: source.filename ?? null,
+    previous_filename: source.previous_filename ?? null,
+    status: source.status ?? null,
+    additions: source.additions ?? null,
+    deletions: source.deletions ?? null,
+    changes: source.changes ?? null,
+    patch: source.patch ?? null,
+  };
+}
+
 function minimizeReviewComment(value: unknown): unknown {
   const source = record(value);
   const user = record(source.user);
@@ -346,6 +420,28 @@ function validMinimizedCommit(value: unknown): boolean {
     typeof commit.message === "string" &&
     (commitAuthor === null ||
       (exactKeys(commitAuthor, ["name"]) && typeof commitAuthor.name === "string"))
+  );
+}
+
+function validMinimizedPullFile(value: unknown): boolean {
+  const source = record(value);
+  return (
+    exactKeys(source, [
+      "additions",
+      "changes",
+      "deletions",
+      "filename",
+      "patch",
+      "previous_filename",
+      "status",
+    ]) &&
+    typeof source.filename === "string" &&
+    nullableString(source.previous_filename) &&
+    nullableString(source.status) &&
+    nullableInteger(source.additions) &&
+    nullableInteger(source.deletions) &&
+    nullableInteger(source.changes) &&
+    nullableString(source.patch)
   );
 }
 

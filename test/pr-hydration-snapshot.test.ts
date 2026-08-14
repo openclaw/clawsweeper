@@ -49,6 +49,18 @@ function comment(id: number, updatedAt: string, body: string) {
   };
 }
 
+function pullFile(filename: string) {
+  return {
+    filename,
+    previous_filename: null,
+    status: "modified",
+    additions: 1,
+    deletions: 1,
+    changes: 2,
+    patch: "@@ -1 +1 @@\n-old\n+new",
+  };
+}
+
 function hydration(items: unknown[]) {
   return { items, total: items.length, hydrated: items.length, truncated: false };
 }
@@ -176,6 +188,146 @@ test("unchanged PR hydration snapshots reuse both lists after one hydration-time
   }
   assert.equal(listCalls, 0);
   assert.equal(hydrationRevisionCalls, 3, "each cache-hit candidate pays one revision check");
+});
+
+test("apply-style validation reuses files, commits, and inline comments only after a live match", () => {
+  const files = [pullFile("src/example.ts")];
+  const commits = [commit("9".repeat(40), "same")];
+  const comments = [comment(9, firstUpdatedAt, "same")];
+  const cold = hydratePrLists({
+    repo,
+    number: 49,
+    pullUpdatedAt: firstUpdatedAt,
+    headSha: oldHead,
+    changedFileCount: files.length,
+    commitCount: commits.length,
+    reviewCommentCount: comments.length,
+    commentActivityRevision: activityRevisionA,
+    prior: null,
+    fetchFiles: () => hydration(files),
+    fetchCommits: () => hydration(commits),
+    fetchReviewComments: () => hydration(comments),
+    fetchCompleteReviewComments: () => comments,
+    fetchReviewCommentsSince: () => [],
+    revalidateCommentActivityRevision: () => null,
+  });
+  assert.ok(cold.snapshot);
+
+  let listReads = 0;
+  const reused = hydratePrLists({
+    repo,
+    number: 49,
+    pullUpdatedAt: firstUpdatedAt,
+    headSha: oldHead,
+    changedFileCount: files.length,
+    commitCount: commits.length,
+    reviewCommentCount: comments.length,
+    commentActivityRevision: activityRevisionA,
+    prior: cold.snapshot,
+    requireFullyValidatedSnapshot: true,
+    revalidateCommentActivityRevision: () => activityRevisionA,
+    fetchFiles: () => {
+      listReads += 1;
+      return hydration(files);
+    },
+    fetchCommits: () => {
+      listReads += 1;
+      return hydration(commits);
+    },
+    fetchReviewComments: () => {
+      listReads += 1;
+      return hydration(comments);
+    },
+    fetchCompleteReviewComments: () => comments,
+    fetchReviewCommentsSince: () => {
+      throw new Error("validated apply reuse must not take the incremental path");
+    },
+  });
+  assert.equal(listReads, 0);
+  assert.equal(reused.filesReused, true);
+  assert.equal(reused.commitsReused, true);
+  assert.equal(reused.reviewCommentsReused, true);
+
+  const mismatchReads: string[] = [];
+  const mismatched = hydratePrLists({
+    repo,
+    number: 49,
+    pullUpdatedAt: firstUpdatedAt,
+    headSha: oldHead,
+    changedFileCount: files.length,
+    commitCount: commits.length,
+    reviewCommentCount: comments.length,
+    commentActivityRevision: activityRevisionA,
+    prior: cold.snapshot,
+    requireFullyValidatedSnapshot: true,
+    revalidateCommentActivityRevision: () => activityRevisionB,
+    fetchFiles: () => {
+      mismatchReads.push("files");
+      return hydration(files);
+    },
+    fetchCommits: () => {
+      mismatchReads.push("commits");
+      return hydration(commits);
+    },
+    fetchReviewComments: () => {
+      mismatchReads.push("inline-comments");
+      return hydration(comments);
+    },
+    fetchCompleteReviewComments: () => comments,
+    fetchReviewCommentsSince: () => {
+      throw new Error("strict mismatch must use normal full reads");
+    },
+  });
+  assert.deepEqual(mismatchReads, ["files", "commits", "inline-comments"]);
+  assert.equal(mismatched.filesReused, false);
+  assert.equal(mismatched.commitsReused, false);
+  assert.equal(mismatched.reviewCommentsReused, false);
+});
+
+test("apply consumes validated v2 snapshots while hydrating their missing file window", () => {
+  const current = initialSnapshot({
+    number: 50,
+    commits: [commit("5".repeat(40), "same")],
+    comments: [comment(50, firstUpdatedAt, "same")],
+  });
+  assert.equal(current.version, 3);
+  if (current.version !== 3) throw new Error("expected current hydration snapshot version");
+  const { changedFileCount: _changedFileCount, files: _files, ...fields } = current;
+  const prior = { ...fields, version: 2 as const };
+  const listReads: string[] = [];
+  const result = hydratePrLists({
+    repo,
+    number: 50,
+    pullUpdatedAt: firstUpdatedAt,
+    headSha: oldHead,
+    changedFileCount: 1,
+    commitCount: 1,
+    reviewCommentCount: 1,
+    commentActivityRevision: activityRevisionA,
+    prior,
+    requireFullyValidatedSnapshot: true,
+    revalidateCommentActivityRevision: () => activityRevisionA,
+    fetchFiles: () => {
+      listReads.push("files");
+      return hydration([pullFile("src/example.ts")]);
+    },
+    fetchCommits: () => {
+      listReads.push("commits");
+      return hydration([]);
+    },
+    fetchReviewComments: () => {
+      listReads.push("inline-comments");
+      return hydration([]);
+    },
+    fetchCompleteReviewComments: () => [],
+    fetchReviewCommentsSince: () => [],
+  });
+
+  assert.deepEqual(listReads, ["files"]);
+  assert.equal(result.filesReused, false);
+  assert.equal(result.commitsReused, true);
+  assert.equal(result.reviewCommentsReused, true);
+  assert.equal(result.snapshot?.version, 3);
 });
 
 test("changed PRs preserve full hydration bytes with partial or full reads", () => {
@@ -424,6 +576,11 @@ test("hydration snapshot front matter round-trips", () => {
   });
   const serialized = serializePrHydrationSnapshot(snapshot);
   assert.deepEqual(parsePrHydrationSnapshot(serialized), snapshot);
+  assert.equal(snapshot.version, 3);
+  if (snapshot.version !== 3) throw new Error("expected current hydration snapshot version");
+  const { changedFileCount: _changedFileCount, files: _files, ...v2Fields } = snapshot;
+  const v2 = { ...v2Fields, version: 2 as const };
+  assert.deepEqual(parsePrHydrationSnapshot(JSON.stringify(v2)), v2);
   for (const omittedField of [
     "avatar_url",
     "diff_hunk",

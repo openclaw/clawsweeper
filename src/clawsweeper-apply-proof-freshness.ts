@@ -90,7 +90,7 @@ export function createApplyProofFreshnessGuards({
     ) {
       return null;
     }
-    const refreshed = fetchItem(number);
+    const refreshed = fetchItem(number, { bypassGenerationCache: true });
     if (refreshed.state !== "open") {
       return {
         reason: `state changed to ${refreshed.state}`,
@@ -105,6 +105,7 @@ export function createApplyProofFreshnessGuards({
         (refreshedContext ??= collectItemContext(refreshed.item, {
           fullTimelineForRelations: true,
           reviewCacheDigest: true,
+          bypassGenerationCache: true,
         })),
       );
     const candidateItemReceipts = selfMutationItemReceipts.filter(
@@ -116,6 +117,7 @@ export function createApplyProofFreshnessGuards({
       refreshedContext ??= collectItemContext(refreshed.item, {
         fullTimelineForRelations: true,
         reviewCacheDigest: true,
+        bypassGenerationCache: true,
       });
     }
     const refreshedCompleteActivityContext = refreshedContext?.[completeActivityContextSymbol];
@@ -151,6 +153,7 @@ export function createApplyProofFreshnessGuards({
       refreshedContext ??= collectItemContext(refreshed.item, {
         fullTimelineForRelations: true,
         reviewCacheDigest: true,
+        bypassGenerationCache: true,
       });
       if (!completeReviewActivityReceiptMatches(refreshedContext)) return false;
       return (
@@ -174,6 +177,7 @@ export function createApplyProofFreshnessGuards({
       refreshedContext ??= collectItemContext(refreshed.item, {
         fullTimelineForRelations: true,
         reviewCacheDigest: true,
+        bypassGenerationCache: true,
       });
       const proofSecondStartMs = Math.floor(prCloseCoverageProofStartedAtMs / 1000) * 1000;
       return contextHasNonAutomationActivityAfter(refreshedContext, proofSecondStartMs - 1, {
@@ -210,6 +214,7 @@ export function createApplyProofFreshnessGuards({
         (refreshedContext ??= collectItemContext(refreshed.item, {
           fullTimelineForRelations: true,
           reviewCacheDigest: true,
+          bypassGenerationCache: true,
         })),
       );
       if (refreshedHash !== storedHash) {

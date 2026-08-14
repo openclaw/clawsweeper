@@ -22,6 +22,11 @@ import {
   PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
   PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE,
 } from "./pr-comment-activity-revision.js";
+import {
+  generationReadKey,
+  type LiveReadGeneration,
+  type LiveReadOptions,
+} from "./live-read-generation.js";
 
 export {
   PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
@@ -180,19 +185,28 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
       pagesScanned: result.pagesScanned,
     };
   }
-  function fetchItem(number: number): { item: Item; state: string } {
-    const issue = ghJson<
-      GitHubIssueListItem & {
-        active_lock_reason?: string | null;
-        locked?: boolean;
-        state?: string;
-      }
-    >([
-      "api",
-      `repos/${targetRepo()}/issues/${number}`,
-      "--jq",
-      "{number,title,html_url,created_at,updated_at,closed_at,state,locked,active_lock_reason,author_association,user:{login:.user.login},labels:[.labels[].name],pull_request:(.pull_request // null)}",
-    ]);
+  function fetchItem(
+    number: number,
+    options: LiveReadOptions & { liveReadGeneration?: LiveReadGeneration } = {},
+  ): { item: Item; state: string } {
+    const args = ["api", `repos/${targetRepo()}/issues/${number}`];
+    const readIssue = () =>
+      ghJson<
+        GitHubIssueListItem & {
+          active_lock_reason?: string | null;
+          locked?: boolean;
+          state?: string;
+        }
+      >(args);
+    const issue = options.liveReadGeneration
+      ? options.liveReadGeneration.read(generationReadKey("json", args), readIssue, options)
+      : readIssue();
+    const labels = (issue.labels ?? []).flatMap((label: unknown) => {
+      if (typeof label === "string") return [label];
+      if (!label || typeof label !== "object" || Array.isArray(label)) return [];
+      const name = (label as { name?: unknown }).name;
+      return typeof name === "string" ? [name] : [];
+    });
     return {
       item: {
         repo: targetRepo(),
@@ -205,7 +219,7 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
         closedAt: issue.closed_at,
         author: issue.user?.login ?? "unknown",
         authorAssociation: normalizeAuthorAssociation(issue.author_association),
-        labels: issue.labels ?? [],
+        labels,
         locked: issue.locked === true,
         activeLockReason: issue.active_lock_reason ?? null,
       },

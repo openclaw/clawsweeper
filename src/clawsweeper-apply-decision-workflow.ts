@@ -78,6 +78,8 @@ import {
 } from "./review-recovery-label-backfill.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
 import { stableJson } from "./stable-json.js";
+import { LiveReadGeneration, type GenerationBoundValue } from "./live-read-generation.js";
+import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 
 export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWorkflowDependencies) {
   const {
@@ -147,6 +149,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     recordApplyActionLedgerItemResults,
     recordApplyMutationBoundary,
     resetGuardReadCache,
+    setGuardReadGeneration,
     removeCurrentCursorTraceItem,
     removeIssueLabel,
     renderReviewCommentFromReport,
@@ -174,6 +177,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     updateReviewCommentMetadata,
     upsertReviewComment,
     validateCloseDecision,
+    withGuardReadOptions,
   } = dependencies;
 
   function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudget): void {
@@ -498,6 +502,21 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let markdown = entry.markdown;
       const repo = entry.repo;
       const number = entry.number;
+      const liveReadGeneration = new LiveReadGeneration();
+      setGuardReadGeneration(liveReadGeneration);
+      const fetchApplyItem = (
+        itemNumber: number,
+        options: { bypassGenerationCache?: boolean } = {},
+      ) => fetchItem(itemNumber, { ...options, liveReadGeneration });
+      const collectApplyItemContext = (
+        contextItem: Parameters<typeof collectItemContext>[0],
+        options: NonNullable<Parameters<typeof collectItemContext>[1]> = {},
+      ) => collectItemContext(contextItem, { ...options, liveReadGeneration });
+      const applyReadDependencies: CreateApplyDecisionWorkflowDependencies = {
+        ...dependencies,
+        fetchItem: fetchApplyItem,
+        collectItemContext: collectApplyItemContext,
+      };
       activeApplyItem = { repo, number, mutationOccurred: false };
       startApplyActionLedgerItem(applyLedger, entry);
       const applyItemResultStart = results.length;
@@ -515,6 +534,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let reconcileSkippedIssueLabelAdditions = (_labels: readonly string[]): void => {};
       let refreshRenderedReviewComment = (): void => {};
       let restoreDiscardedIssueLabelState = (): void => {};
+      let resetGenerationBoundReads = (): void => {};
       const rememberPublishedLabelSync = (): void => {
         if (dryRun) return;
         publishedIssueLabelMutation = true;
@@ -586,6 +606,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       try {
       const markMutationObserved = (): void => {
         if (dryRun) return;
+        liveReadGeneration.invalidate();
+        resetGenerationBoundReads();
         if (!preserveGuardReadCacheAfterMutation) resetMutationGuardBoundary();
         activeApplyItem = { repo, number, mutationOccurred: true };
         mutationByItem.set(`${repo}#${number}`, true);
@@ -801,7 +823,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       }
       let liveItem: ReturnType<typeof fetchItem>;
       try {
-        liveItem = fetchItem(number);
+        liveItem = fetchApplyItem(number);
       } catch (error) {
         if (!isGitHubNotFoundError(error)) throw error;
         // A repository lookup can return the same 404 when the repo is missing or
@@ -857,7 +879,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       }
       const previousLabels = [...item.labels];
       const reportLabelsBeforeApply = frontMatterStringArray(markdown, "labels");
-      let currentContext: ItemContext | undefined;
+      const markdownBeforeApplyDecisionMutations = markdown;
+      const persistedPrHydrationSnapshot = parsePrHydrationSnapshot(
+        frontMatterValue(markdownBeforeApplyDecisionMutations, "pr_hydration_snapshot"),
+      );
+      let currentContext: GenerationBoundValue<ItemContext> | undefined;
       let currentClosingPullRequests: unknown[] | undefined;
       let clawSweeperLabelsChanged = false;
       let issueAdvisoryLabelsChanged = false;
@@ -882,13 +908,21 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         deferredSelfMutationReceipt = false;
       };
       const currentItemContext = (): ItemContext => {
-        currentContext ??= collectItemContext(item, {
-          fullTimelineForRelations: true,
-          reviewCacheDigest: true,
-        });
-        return currentContext;
+        currentContext ??= liveReadGeneration.bind(
+          collectApplyItemContext(item, {
+            fullTimelineForRelations: true,
+            reviewCacheDigest: true,
+            prHydrationSnapshot: persistedPrHydrationSnapshot,
+            prCommentActivityRevision:
+              persistedPrHydrationSnapshot?.commentActivityRevision ?? null,
+            requireFullyValidatedPrHydrationSnapshot: true,
+          }),
+        );
+        return liveReadGeneration.value(currentContext);
       };
-      const markdownBeforeApplyDecisionMutations = markdown;
+      resetGenerationBoundReads = (): void => {
+        currentContext = undefined;
+      };
       const expectedReviewActivityCursor = frontMatterValue(
         markdownBeforeApplyDecisionMutations,
         "review_activity_cursor",
@@ -956,7 +990,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const initialReviewHeadSha =
         item.kind === "pull_request"
           ? (pullHeadShaFromContext(currentItemContext()) ?? "")
-          : liveIssueSourceRevision(number);
+          : liveIssueSourceRevision(number, { liveReadGeneration });
       if (state === "open" && exactEventPublication) {
         const exactLeaseDisposition = exactEventReviewLeaseDisposition(
           markdownBeforeApplyDecisionMutations,
@@ -995,7 +1029,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         currentApplyMutationLeaseBlockReason,
         refreshReviewStartLeaseState,
       } = createApplyLeaseGuards({
-        ...dependencies,
+        ...applyReadDependencies,
         canonicalBoundStaleReviewReason: (...args) => canonicalBoundStaleReviewReason(...args),
         closeDelayMs,
         currentReviewActivityBlock,
@@ -1003,6 +1037,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         getActiveApplyMutationLease: () => activeApplyMutationLease,
         initialReviewHeadSha,
         item,
+        liveReadGeneration,
         markdownBeforeApplyDecisionMutations,
         number,
         reportReviewRevision,
@@ -1083,7 +1118,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       if (initialCanonicalCommentSyncGuard.skipCurrentItem) continue;
       rememberSelfMutationUpdatedAt = (): void => {
         if (dryRun) return;
-        const automationItem = fetchItem(number).item;
+        const automationItem = fetchApplyItem(number).item;
         const automationItemUpdatedAt = automationItem.updatedAt;
         markdown = replaceFrontMatterValue(
           markdown,
@@ -1096,9 +1131,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         // final close gate repeats those checks and verifies that no target-side
         // activity landed after proof.
         if (!reviewedSourceRevision || reviewedSourceRevision === "unknown") return;
-        const receiptContext = collectItemContext(automationItem, {
+        const receiptContext = collectApplyItemContext(automationItem, {
           fullTimelineForRelations: true,
           reviewCacheDigest: true,
+          prHydrationSnapshot: persistedPrHydrationSnapshot,
+          prCommentActivityRevision:
+            persistedPrHydrationSnapshot?.commentActivityRevision ?? null,
+          requireFullyValidatedPrHydrationSnapshot: true,
         });
         if (!completeReviewActivityReceiptMatches(receiptContext)) return;
         const completeActivityContext = receiptContext[completeActivityContextSymbol];
@@ -1142,7 +1181,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         results.push(...applyRuntimeBudgetYieldResults(number, reason));
         logProgress(`budget stop, resume next cycle: ${reason}`);
       };
-      const { canStartSameAuthorPairCloseInThisRun } = createApplyCloseGuards(dependencies, {
+      const { canStartSameAuthorPairCloseInThisRun } = createApplyCloseGuards(
+        applyReadDependencies,
+        {
         applyCloseReasons,
         applyKind,
         canClosePairCounterpartInThisRun,
@@ -1173,7 +1214,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         repo,
         requiredMaintainerDecision,
         staleMinAgeDays,
-      });
+        },
+      );
       if (syncCommentsOnly && state !== "open") {
         markApplyChecked("closed");
         results.push({
@@ -1597,7 +1639,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let markedReviewComment = markedReviewCommentForApply(reviewComment);
       const { postProofCoveringPrFreshnessBlock, postProofFreshnessBlock } =
         createApplyProofFreshnessGuards({
-          ...dependencies,
+          ...applyReadDependencies,
           action,
           automationItemUpdatedAt: frontMatterValue(
             markdownBeforeApplyDecisionMutations,
@@ -2064,7 +2106,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             }
             const lowSignalCommentSyncBlockReason =
               closeReason === "low_signal_unmergeable_pr"
-                ? lowSignalUnmergeablePrApplyBlockReasonSafe(number, staleMinAgeDays)
+                ? withGuardReadOptions({ bypassGenerationCache: true }, () =>
+                    lowSignalUnmergeablePrApplyBlockReasonSafe(number, staleMinAgeDays),
+                  )
                 : null;
             if (lowSignalCommentSyncBlockReason) {
               if (
@@ -2251,7 +2295,15 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       preserveGuardReadCacheAfterMutation = false;
       resetMutationGuardBoundary();
       const appliedCloseReason = closeReason;
-      const closeFlow = executeApplyClose(dependencies, {
+      const closeFlow = executeApplyClose(
+        {
+          ...applyReadDependencies,
+          lowSignalUnmergeablePrApplyBlockReasonSafe: (...args) =>
+            withGuardReadOptions({ bypassGenerationCache: true }, () =>
+              lowSignalUnmergeablePrApplyBlockReasonSafe(...args),
+            ),
+        },
+        {
         applyCloseReasons,
         applyKind,
         archiveClosed,
@@ -2299,7 +2351,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         runtimeBudget,
         setMarkdown: (value) => { markdown = value; },
         staleMinAgeDays,
-      });
+        },
+      );
       if (closeFlow === "yield") return;
       if (closeFlow === "stop") break;
       continue;
@@ -2318,6 +2371,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       } finally {
         discardIssueLabelBatch();
         releaseActiveApplyMutationLease();
+        setGuardReadGeneration(null);
         dependencies.activeApplyMutationRunner = previousApplyMutationRunner;
         if (!applyItemFailed) {
           const state = applyLedger.items.get(actionLedgerItemKey(entry));
