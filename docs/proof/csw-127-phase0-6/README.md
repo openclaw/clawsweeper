@@ -1,19 +1,19 @@
 # CSW-127 Phase 0.6 proof receipt
 
 The product-and-proof commit rebased onto merged PR #1169,
-`ef640c54c8f28cfa0bdab2b3f6f03927a2285907`
-(tree `7d750caaf9ddc1db1cad3f27a952edf12f68d458`), passed the production-shaped
+`92d91e812f810c5bf9f7e0f470cb017533aee43c`
+(tree `84f9205a89d0fafdd20e9796affb7b67bd534fe2`), passed the production-shaped
 boundary proof defined in [behavior-contract.md](behavior-contract.md).
 
 ## Environment
 
-- Provider: Crabbox `local-container`, lease `cbx_a6feceb049e8` (`violet-hermit`)
+- Provider: Crabbox `local-container`, lease `cbx_b188010777d1` (`swift-krill-16ae`)
 - Image: `node:24-bookworm`
 - Runtime boundary: `wrangler@4.107.0 --local` plus the real SQLite-backed
   `ExactReviewQueue` Durable Object
-- Result: exit `0`; lease stopped; 276,521 ms total
+- Result: exit `0`; lease stopped; 272,317 ms total
 - Source identity: the container reconstructed the immutable `git archive` and
-  asserted tree `7d750caaf9ddc1db1cad3f27a952edf12f68d458` before running proof
+  asserted tree `84f9205a89d0fafdd20e9796affb7b67bd534fe2` before running proof
 
 The proof used [run-crabbox-bind.sh](run-crabbox-bind.sh) as the local-container
 entry point and [run-proof.sh](run-proof.sh) as the in-container harness. The
@@ -23,7 +23,7 @@ disposable proof container because the selected Node image does not include it.
 
 ## Observed result
 
-- All 233 focused telemetry, queue, batch-publication, and batch-CLI tests passed.
+- All 235 focused telemetry, queue, batch-publication, and batch-CLI tests passed.
 - The Worker accepted signed queue transitions and the SQLite Durable Object
   exposed independently reconciled, closed-dimension retry and refresh causes.
 - The proof seeded the production caps of 50,000 rollup rows and 10,000
@@ -40,8 +40,10 @@ disposable proof container because the selected Node image does not include it.
 - Public output passed the privacy assertions. A follow-up scan of the bounded
   receipts and redacted Worker log found no token, authorization header, private
   key, database URL, API-key, or token-assignment patterns.
-- The full Linux `pnpm run check` gate passed. Coverage was 81.49% lines, 74.13%
-  branches, and 87.33% functions.
+- Fallback `complete` and `release` paths preserved a `target_app` circuit as
+  `pool_class=target_app` rather than falling back to `repository_actions`.
+- The full Linux `pnpm run check` gate passed. Coverage was 81.49% lines, 74.08%
+  branches, and 87.35% functions.
 
 ## Rebased contract reconciliation
 
@@ -63,6 +65,12 @@ The first rebased local ClawSweeper range review found one P2 observer-only
 defect: terminal batch outcomes advanced the attempt bucket after an earlier
 failure. The rebased fix commit `3f3793dfff6a959a36cc3767101d902d7ff6e154` aligned the batch path
 with direct completion and added the retry-then-publish regression above.
+
+The committed Codex review then found one P2 owner-isolation defect in fallback
+rate-limit completions. Commit `92d91e812f810c5bf9f7e0f470cb017533aee43c`
+carries the active circuit scope through both batch `complete` and `release` and
+adds regressions for the `target_app` path. The complete proof above was rerun
+after this fix.
 
 Two discarded Docker leases stopped before test execution. Lease
 `cbx_42cd4a3fdb12` rejected the CRLF-mounted wrapper, and lease
