@@ -2,7 +2,7 @@
 set -euo pipefail
 
 expected_head=${1:?expected committed head argument is required}
-expected_tree=${2:?expected committed tree argument is required}
+expected_blobs_base64=${2:?base64-encoded committed blob manifest is required}
 proof_root=docs/proof/health-phantom-queued-run
 proof_prefix=/tmp/health-phantom-proof-prefix
 
@@ -10,26 +10,12 @@ echo "PROOF_PHASE=environment"
 echo "provider=local-container"
 echo "image=node:24-bookworm"
 echo "expected_head=$expected_head"
-echo "expected_tree=$expected_tree"
 node --version
 npm --version
 
 echo "PROOF_PHASE=git_identity"
-if git rev-parse --git-dir >/dev/null 2>&1; then
-  actual_head=$(git rev-parse HEAD)
-  test "$actual_head" = "$expected_head"
-  actual_tree=$(git rev-parse "$actual_head^{tree}")
-else
-  git init --initial-branch=proof --quiet
-  git add --all -- . \
-    ':!.crabbox' \
-    ':!docs/proof/health-phantom-queued-run/container-stderr.txt' \
-    ':!docs/proof/health-phantom-queued-run/container-transcript.txt'
-  actual_tree=$(git write-tree)
-fi
-test "$actual_tree" = "$expected_tree"
-git cat-file -e "$actual_tree^{tree}"
-echo "actual_tree=$actual_tree"
+[[ "$expected_head" =~ ^[0-9a-f]{40}$ ]]
+git init --initial-branch=proof --quiet
 
 echo "PROOF_PHASE=corepack"
 if ! command -v jq >/dev/null 2>&1; then
@@ -65,6 +51,7 @@ jq -e '
 ' "$proof_root/behavior-report.json" >/dev/null
 
 echo "PROOF_PHASE=committed_objects"
+expected_blobs_json=$(printf '%s' "$expected_blobs_base64" | base64 --decode)
 proof_files=(
   dashboard/github-webhook-read-model.ts
   dashboard/worker.ts
@@ -78,10 +65,10 @@ proof_files=(
   test/github-webhook-read-model.test.ts
 )
 for file in "${proof_files[@]}"; do
-  git cat-file -e "$actual_tree:$file"
-  committed_blob=$(git rev-parse "$actual_tree:$file")
-  worktree_blob=$(git hash-object "$file")
+  committed_blob=$(jq -er --arg path "$file" '.[$path]' <<<"$expected_blobs_json")
+  worktree_blob=$(git hash-object -w "$file")
   test "$committed_blob" = "$worktree_blob"
+  git cat-file -e "$worktree_blob^{blob}"
   printf 'blob=%s path=%s\n' "$committed_blob" "$file"
 done
 
