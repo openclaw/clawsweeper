@@ -85,6 +85,18 @@ test("public GitHub egress observability normalizes its query and withholds revi
   assert.equal(serialized.includes("deployment_revision"), false);
   assert.equal(serialized.includes("config_revision"), false);
   assert.equal(body.privacy.revision_digests, "withheld");
+
+  const sevenDayResponse = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/github-egress-observability?hours=168"),
+    { EXACT_REVIEW_QUEUE: namespace },
+  );
+  const sevenDayBody = await sevenDayResponse.json();
+  assert.equal(sevenDayResponse.status, 200);
+  assert.equal(requestedPath, "/github-egress-observability?hours=168");
+  assert.equal(sevenDayBody.window.hours, 168);
+  assert.equal(sevenDayBody.retention.rate_limit_detail_hours, 24);
+  assert.equal(Array.isArray(sevenDayBody.throttle_series.rows), true);
+  assert.equal(JSON.stringify(sevenDayBody).includes(privateMarker), false);
 });
 
 test("public telemetry routes contain malformed and rejecting durable reads", async () => {

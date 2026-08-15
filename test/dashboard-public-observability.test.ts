@@ -475,6 +475,65 @@ function githubEgressFixture() {
   };
 }
 
+function githubThrottleEgressFixture() {
+  const fixture = githubEgressFixture();
+  return {
+    ...fixture,
+    window: { hours: 168, bucket_minutes: 60 },
+    units: { ...fixture.units, wire_attempt: 5 },
+    rows: [
+      ...fixture.rows,
+      githubRollup({
+        bucket_start: "2026-08-15T10:00:00.000Z",
+        unit: "wire_attempt",
+        outcome: "throttle",
+        status_bucket: "403",
+        count: 2,
+      }),
+      githubRollup({
+        bucket_start: "2026-08-15T11:00:00.000Z",
+        pool_class: "target_app",
+        unit: "wire_attempt",
+        outcome: "throttle",
+        status_bucket: "429",
+        count: 3,
+      }),
+    ],
+    throttle_series: {
+      unit: "wire_attempt",
+      closed_through: NOW,
+      first_available_bucket_start: "2026-08-08T11:00:00.000Z",
+      rows: [
+        {
+          bucket_start: "2026-08-15T10:00:00.000Z",
+          pool_class: "repository_actions",
+          status_bucket: "403",
+          count: 2,
+          nested: PRIVATE_MARKERS,
+        },
+        {
+          bucket_start: "2026-08-15T11:00:00.000Z",
+          pool_class: "target_app",
+          status_bucket: "429",
+          count: 3,
+        },
+      ],
+      rows_truncated: false,
+      excluded_incomplete_count: 0,
+      coverage_complete: true,
+      complete: true,
+      private_pool: PRIVATE_MARKERS.token,
+    },
+    retention: { ...fixture.retention, rate_limit_detail_hours: 24 },
+    completeness: {
+      ...fixture.completeness,
+      complete: 10,
+      rate_limit_window_complete: false,
+      query_complete: false,
+    },
+  };
+}
+
 test("GitHub egress rollups aggregate across revisions and rate-limit rows", () => {
   const projected = publicGithubEgressObservabilityProjection(githubEgressFixture());
   assert.ok(projected);
@@ -539,6 +598,64 @@ test("GitHub egress rollups aggregate across revisions and rate-limit rows", () 
     2_000,
   );
   assert.equal(truncatedProjection.completeness.query_complete, false);
+});
+
+test("GitHub throttle history survives the strict public projection as bounded closed aggregates", () => {
+  const fixture = githubThrottleEgressFixture();
+  const projected = publicGithubEgressObservabilityProjection(fixture);
+  assert.ok(projected);
+  assert.equal(projected.window.hours, 168);
+  assert.equal(projected.retention.rate_limit_detail_hours, 24);
+  assert.deepEqual(projected.throttle_series.rows, [
+    {
+      bucket_start: "2026-08-15T10:00:00.000Z",
+      pool_class: "repository_actions",
+      status_bucket: "403",
+      count: 2,
+    },
+    {
+      bucket_start: "2026-08-15T11:00:00.000Z",
+      pool_class: "target_app",
+      status_bucket: "429",
+      count: 3,
+    },
+  ]);
+  assert.equal(projected.throttle_series.complete, true);
+  assertPrivateMarkersAbsent(projected);
+  assert.deepEqual(publicGithubEgressObservabilityProjection(projected), projected);
+
+  const partialFirstBucket = structuredClone(fixture);
+  partialFirstBucket.throttle_series.first_available_bucket_start = "2026-08-08T12:00:00.000Z";
+  partialFirstBucket.throttle_series.coverage_complete = false;
+  partialFirstBucket.throttle_series.complete = false;
+  const partialFirstBucketProjection =
+    publicGithubEgressObservabilityProjection(partialFirstBucket);
+  assert.ok(partialFirstBucketProjection);
+  assert.equal(partialFirstBucketProjection.throttle_series.coverage_complete, false);
+  assert.equal(partialFirstBucketProjection.throttle_series.complete, false);
+
+  const duplicate = structuredClone(fixture);
+  duplicate.throttle_series.rows.push({ ...duplicate.throttle_series.rows[0]! });
+  assert.equal(publicGithubEgressObservabilityProjection(duplicate), null);
+
+  const invalidPool = structuredClone(fixture);
+  invalidPool.throttle_series.rows[0]!.pool_class = PRIVATE_MARKERS.token;
+  assert.equal(publicGithubEgressObservabilityProjection(invalidPool), null);
+
+  const overCap = structuredClone(fixture);
+  overCap.throttle_series.rows = Array.from({ length: 1_345 }, () => ({
+    ...fixture.throttle_series.rows[0]!,
+  }));
+  assert.equal(publicGithubEgressObservabilityProjection(overCap), null);
+
+  const falseCompleteness = structuredClone(fixture);
+  falseCompleteness.throttle_series.complete = false;
+  assert.equal(publicGithubEgressObservabilityProjection(falseCompleteness), null);
+
+  const impossibleExcludedCount = structuredClone(fixture);
+  impossibleExcludedCount.throttle_series.excluded_incomplete_count = 1;
+  impossibleExcludedCount.throttle_series.complete = false;
+  assert.equal(publicGithubEgressObservabilityProjection(impossibleExcludedCount), null);
 });
 
 function publicationBuckets(outcomes: readonly string[], populated?: string) {

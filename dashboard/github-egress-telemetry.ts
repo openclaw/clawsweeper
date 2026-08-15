@@ -24,6 +24,7 @@ const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_ROLLUP_ROWS = 50_000;
 const MAX_RATE_LIMIT_ROWS = 10_000;
 const MAX_PUBLIC_ROWS = 2_000;
+const MAX_PUBLIC_THROTTLE_ROWS = 7 * 24 * GITHUB_EGRESS_POOL_CLASSES.length * 2;
 const MAX_METRICS_PER_SUBMISSION = 128;
 const MAX_RATE_LIMITS_PER_SUBMISSION = 16;
 const MAX_RATE_LIMIT_INTEGER = 10_000_000_000;
@@ -517,11 +518,12 @@ export class GithubEgressTelemetryStore {
 
   publicObservability(hours: number, now = Date.now()) {
     const boundedHours =
-      hours === 0.25 || hours === 1 || hours === 6 || hours === 24 ? hours : null;
+      hours === 0.25 || hours === 1 || hours === 6 || hours === 24 || hours === 168 ? hours : null;
     if (!boundedHours) return null;
     const bucketKind = boundedHours <= 6 ? "five_minute" : "hour";
     const windowStart = now - boundedHours * 60 * 60 * 1000;
     const bucketStart = alignedBucketStart(bucketKind, windowStart);
+    const closedThrough = alignedBucketStart(bucketKind, now);
     const rows = Array.from(
       this.storage.sql.exec(
         `SELECT bucket_start, deployment_revision, config_revision, pool_class,
@@ -586,7 +588,59 @@ export class GithubEgressTelemetryStore {
     const completeness = this.completenessSince(bucketKind, bucketStart);
     const diagnostics = this.diagnostics();
     const rollupWindowIsComplete = rollupWindowComplete(diagnostics, bucketKind, bucketStart);
-    const rateLimitWindowIsComplete = rateLimitWindowComplete(diagnostics, windowStart);
+    const rateLimitDetailCoversWindow = boundedHours <= RATE_LIMIT_RETENTION_MS / 3_600_000;
+    const rateLimitWindowIsComplete =
+      rateLimitDetailCoversWindow && rateLimitWindowComplete(diagnostics, windowStart);
+    const firstAvailableRows = Array.from(
+      this.storage.sql.exec(
+        `SELECT MIN(bucket_start) AS bucket_start
+           FROM ${ROLLUP_TABLE}
+          WHERE bucket_kind = ?`,
+        bucketKind,
+      ),
+    ) as Array<Record<string, unknown>>;
+    const firstAvailableBucket = finiteTimestamp(firstAvailableRows[0]?.bucket_start);
+    const throttleRows = Array.from(
+      this.storage.sql.exec(
+        `SELECT bucket_start, pool_class, status_bucket, SUM(count) AS count
+           FROM ${ROLLUP_TABLE}
+          WHERE bucket_kind = ? AND bucket_start >= ? AND bucket_start < ?
+            AND unit = 'wire_attempt' AND outcome = 'throttle'
+            AND attempted = 1 AND telemetry_complete = 1
+            AND status_bucket IN ('403', '429')
+          GROUP BY bucket_start, pool_class, status_bucket
+          ORDER BY bucket_start ASC, pool_class, status_bucket
+          LIMIT ?`,
+        bucketKind,
+        bucketStart,
+        closedThrough,
+        MAX_PUBLIC_THROTTLE_ROWS + 1,
+      ),
+    ) as Array<Record<string, unknown>>;
+    const throttleRowsTruncated = throttleRows.length > MAX_PUBLIC_THROTTLE_ROWS;
+    const incompleteThrottleRows = Array.from(
+      this.storage.sql.exec(
+        `SELECT SUM(count) AS count
+           FROM ${ROLLUP_TABLE}
+          WHERE bucket_kind = ? AND bucket_start >= ? AND bucket_start < ?
+            AND unit = 'wire_attempt' AND outcome = 'throttle'
+            AND attempted = 1 AND telemetry_complete = 0
+            AND status_bucket IN ('403', '429')`,
+        bucketKind,
+        bucketStart,
+        closedThrough,
+      ),
+    ) as Array<Record<string, unknown>>;
+    const excludedIncompleteThrottleCount = Number(incompleteThrottleRows[0]?.count || 0);
+    // A first observation only proves coverage from somewhere inside its rollup
+    // bucket. Require an earlier bucket before zero-filling the requested edge.
+    const throttleCoverageComplete =
+      firstAvailableBucket !== null && firstAvailableBucket < bucketStart;
+    const throttleSeriesComplete =
+      !throttleRowsTruncated &&
+      excludedIncompleteThrottleCount === 0 &&
+      rollupWindowIsComplete &&
+      throttleCoverageComplete;
     return {
       version: 2,
       generated_at: new Date(now).toISOString(),
@@ -594,7 +648,24 @@ export class GithubEgressTelemetryStore {
       units: completeness.byUnit,
       rows: publicRows,
       rate_limit_observations: rateLimits,
+      throttle_series: {
+        unit: "wire_attempt",
+        closed_through: new Date(closedThrough).toISOString(),
+        first_available_bucket_start:
+          firstAvailableBucket === null ? null : new Date(firstAvailableBucket).toISOString(),
+        rows: throttleRows.slice(0, MAX_PUBLIC_THROTTLE_ROWS).map((row) => ({
+          bucket_start: new Date(Number(row.bucket_start)).toISOString(),
+          pool_class: row.pool_class,
+          status_bucket: row.status_bucket,
+          count: Number(row.count),
+        })),
+        rows_truncated: throttleRowsTruncated,
+        excluded_incomplete_count: excludedIncompleteThrottleCount,
+        coverage_complete: throttleCoverageComplete,
+        complete: throttleSeriesComplete,
+      },
       retention: {
+        rate_limit_detail_hours: RATE_LIMIT_RETENTION_MS / 3_600_000,
         rollup_evicted_rows_total: Number(
           diagnostics[
             bucketKind === "five_minute"

@@ -26,14 +26,32 @@ curl --fail --silent --show-error \
   'https://clawsweeper.openclaw.ai/api/github-egress-observability?hours=6'
 ```
 
-`hours` accepts only `0.25` (15 minutes), `1`, `6`, or `24`. Use the 15-minute
-view for periodic collection when a high-cardinality one-hour aggregate would
-reach the public row cap. The response contains revision-independent closed
-rollup dimensions and aggregate rate-limit counts. It never contains private
-pool identities, repository or item identifiers, deployment or configuration
-revision digests, branches, raw SHAs, paths, queries, cursors, URLs, request
-IDs, ETags, bodies, tokens, installation IDs, individual rate-limit rows, or raw
-header/reset values.
+`hours` accepts only `0.25` (15 minutes), `1`, `6`, `24`, or `168` (7 days).
+Use the 15-minute view for periodic collection when a high-cardinality one-hour
+aggregate would reach the public row cap. The response contains
+revision-independent closed rollup dimensions, a bounded `throttle_series`,
+and aggregate rate-limit counts. It never contains private pool identities,
+repository or item identifiers, deployment or configuration revision digests,
+branches, raw SHAs, paths, queries, cursors, URLs, request IDs, ETags, bodies,
+tokens, installation IDs, individual rate-limit rows, or raw header/reset
+values.
+
+`throttle_series.rows` is the operational chart projection. It re-aggregates
+the existing rollup store by closed bucket, `pool_class`, and exact `403` or
+`429` status for complete, attempted `wire_attempt` rows whose outcome is
+`throttle`. It does not include invocations, pagination metadata, circuit
+deferrals, avoided requests, or raw rate-limit observations. The seven-day
+maximum is bounded at 1,344 rows: 168 hourly buckets, four closed pool classes,
+and two statuses. `closed_through` excludes the still-open clock bucket.
+`first_available_bucket_start`, `coverage_complete`, `rows_truncated`, and
+`complete` identify pre-instrumentation, retention, and cardinality boundaries
+without inventing zero-count history. Coverage is complete only when a retained
+bucket predates the requested lower-bound bucket; a first observation in that
+boundary bucket is conservatively treated as partial. A parsed 403/429 whose
+attribution is incomplete is omitted from the trustworthy pool split but increments
+`excluded_incomplete_count` and makes `complete=false`, so its bucket cannot be
+rendered as zero. Older cached version-2 responses without this projection
+remain readable through their detailed `rows` array.
 
 The binding-only exact-review queue status retains a compact six-hour
 `publication.github_egress_metrics_v2` summary for internal workflows. The
@@ -236,11 +254,14 @@ method/status, and response receive time. Unsafe parsing emits or uploads an
 incomplete bounded marker. It never uploads a partially parsed raw frame.
 
 Completeness is computed independently for each requested 15-minute, one-,
-six-, or 24-hour window. Rollup queries include the complete five-minute or
-hourly bucket that overlaps the window's lower boundary, so totals can include at
-most one bucket of observations immediately before the exact cutoff. Private
-rate-limit source selection uses the exact cutoff before aggregation.
-`rows_truncated` and
+six-, 24-hour, or seven-day window. Rollup queries include the complete
+five-minute or hourly bucket that overlaps the window's lower boundary, so
+totals can include at most one bucket of observations immediately before the
+exact cutoff. Private rate-limit source selection uses the exact cutoff before
+aggregation and is retained for only 24 hours; a seven-day response therefore
+always reports
+`rate_limit_window_complete=false` and `query_complete=false` even when its
+rollup-backed `throttle_series.complete` is true. `rows_truncated` and
 `rate_limit_rows_truncated` identify a bounded public response, while
 `rollup_window_complete` and `rate_limit_window_complete` compare the requested
 lower boundary with the latest timestamp actually removed by a cap. Running a

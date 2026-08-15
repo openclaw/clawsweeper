@@ -4520,7 +4520,7 @@ async function publicReviewCoverageJson(env) {
 
 async function publicGithubEgressObservabilityJson(env, params: URLSearchParams) {
   const requested = Number(params.get("hours") || 6);
-  const hours = [0.25, 1, 6, 24].includes(requested) ? requested : 6;
+  const hours = [0.25, 1, 6, 24, 168].includes(requested) ? requested : 6;
   return publicExactReviewProjectionJson(
     env,
     `/github-egress-observability?hours=${hours}`,

@@ -3195,6 +3195,17 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /Result publication/);
   assert.doesNotMatch(body, /renderBayPublicationQuotaContext/);
   assert.doesNotMatch(body, /credential_circuits|github_request_metrics|credential-blocked/);
+  assert.match(body, /function bayThrottleCard/);
+  assert.match(body, /GitHub throttles/);
+  assert.match(body, /github-egress-observability\?hours=/);
+  assert.match(body, /wire_attempt/);
+  assert.match(body, /status-403/);
+  assert.match(body, /status-429/);
+  assert.match(body, /Only closed time buckets are graphed/);
+  assert.match(body, /Incomplete \/ truncated evidence/);
+  assert.match(body, /series incomplete/);
+  assert.match(body, /window:\{hours:hours,bucket_minutes:hours>6\?60:5\}/);
+  assert.doesNotMatch(body, /github_request_metrics/);
   assert.match(body, /State writer/);
   assert.match(body, /Queue handoff/);
   assert.match(body, /HANDOFF_RECOVERY_REASONS/);

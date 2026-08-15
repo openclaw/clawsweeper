@@ -578,6 +578,137 @@ test("signed upload, SQLite restart, retention, cardinality, and public privacy 
     const oneDayView = windowStore.publicObservability(24, unalignedDayNow);
     assert.equal(oneDayView?.completeness.observed, true);
     assert.equal(oneDayView?.units.wire_attempt, 4);
+    const sevenDayView = windowStore.publicObservability(168, unalignedDayNow);
+    assert.equal(sevenDayView?.window.hours, 168);
+    assert.equal(sevenDayView?.window.bucket_minutes, 60);
+    assert.equal(sevenDayView?.units.wire_attempt, 4);
+    assert.equal(sevenDayView?.retention.rate_limit_detail_hours, 24);
+    assert.equal(sevenDayView?.completeness.rate_limit_window_complete, false);
+    assert.equal(sevenDayView?.completeness.query_complete, false);
+    assert.equal(windowStore.publicObservability(48, unalignedDayNow), null);
+
+    const historyStorage = new MemoryDurableStorage();
+    const historyStore = new GithubEgressTelemetryStore(historyStorage);
+    historyStore.ensureSchemaSync();
+    const eightDaysAgo = NOW - 8 * 24 * 60 * 60 * 1_000;
+    const sevenHoursAgo = NOW - 7 * 60 * 60 * 1_000;
+    assert.equal(
+      historyStore.ingest(telemetryBody("1".repeat(64), eightDaysAgo), eightDaysAgo).ok,
+      true,
+    );
+    assert.equal(
+      historyStore.ingest(telemetryBody("2".repeat(64), sevenHoursAgo), sevenHoursAgo).ok,
+      true,
+    );
+    const repositoryThrottle = throttleTelemetryBody(
+      "3".repeat(64),
+      NOW - 75 * 60 * 1_000,
+      "repository_actions",
+      403,
+      2,
+    );
+    assert.equal(historyStore.ingest(repositoryThrottle, NOW - 75 * 60 * 1_000).ok, true);
+    assert.equal(historyStore.ingest(repositoryThrottle, NOW - 74 * 60 * 1_000).deduped, true);
+    assert.equal(
+      historyStore.ingest(
+        throttleTelemetryBody("4".repeat(64), NOW - 45 * 60 * 1_000, "target_app", 429, 3),
+        NOW - 45 * 60 * 1_000,
+      ).ok,
+      true,
+    );
+    assert.equal(
+      historyStore.ingest(
+        throttleTelemetryBody(
+          "5".repeat(64),
+          NOW - 15 * 60 * 1_000,
+          "public_read_fallback",
+          403,
+          1,
+        ),
+        NOW - 15 * 60 * 1_000,
+      ).ok,
+      true,
+    );
+    const throttleView = historyStore.publicObservability(6, NOW);
+    assert.equal(throttleView?.throttle_series.unit, "wire_attempt");
+    assert.equal(throttleView?.throttle_series.coverage_complete, true);
+    assert.equal(throttleView?.throttle_series.complete, true);
+    assert.equal(throttleView?.throttle_series.rows_truncated, false);
+    assert.deepEqual(
+      throttleView?.throttle_series.rows.map((row) => [
+        row.pool_class,
+        row.status_bucket,
+        row.count,
+      ]),
+      [
+        ["repository_actions", "403", 2],
+        ["target_app", "429", 3],
+        ["public_read_fallback", "403", 1],
+      ],
+    );
+    assert.equal(JSON.stringify(throttleView).includes("c".repeat(24)), false);
+    const sevenDayThrottleView = historyStore.publicObservability(168, NOW);
+    assert.equal(sevenDayThrottleView?.throttle_series.coverage_complete, true);
+    assert.equal(sevenDayThrottleView?.throttle_series.complete, true);
+    assert.equal(sevenDayThrottleView?.completeness.rate_limit_window_complete, false);
+    assert.equal(sevenDayThrottleView?.completeness.query_complete, false);
+
+    const partialHistoryStorage = new MemoryDurableStorage();
+    const partialHistoryStore = new GithubEgressTelemetryStore(partialHistoryStorage);
+    partialHistoryStore.ensureSchemaSync();
+    assert.equal(
+      partialHistoryStore.ingest(
+        throttleTelemetryBody("6".repeat(64), NOW - 15 * 60 * 1_000, "repository_actions", 403, 1),
+        NOW - 15 * 60 * 1_000,
+      ).ok,
+      true,
+    );
+    const partialThrottleView = partialHistoryStore.publicObservability(6, NOW);
+    assert.equal(partialThrottleView?.throttle_series.coverage_complete, false);
+    assert.equal(partialThrottleView?.throttle_series.complete, false);
+
+    const partialFirstBucketStorage = new MemoryDurableStorage();
+    const partialFirstBucketStore = new GithubEgressTelemetryStore(partialFirstBucketStorage);
+    partialFirstBucketStore.ensureSchemaSync();
+    const partialFirstBucketAt = NOW - 6 * 60 * 60 * 1_000 + 4 * 60 * 1_000;
+    assert.equal(
+      partialFirstBucketStore.ingest(
+        throttleTelemetryBody("7".repeat(64), partialFirstBucketAt, "repository_actions", 403, 1),
+        partialFirstBucketAt,
+      ).ok,
+      true,
+    );
+    const partialFirstBucketView = partialFirstBucketStore.publicObservability(6, NOW);
+    assert.equal(partialFirstBucketView?.throttle_series.rows.length, 1);
+    assert.equal(partialFirstBucketView?.throttle_series.coverage_complete, false);
+    assert.equal(partialFirstBucketView?.throttle_series.complete, false);
+
+    const incompleteHistoryStorage = new MemoryDurableStorage();
+    const incompleteHistoryStore = new GithubEgressTelemetryStore(incompleteHistoryStorage);
+    incompleteHistoryStore.ensureSchemaSync();
+    assert.equal(
+      incompleteHistoryStore.ingest(telemetryBody("a".repeat(64), sevenHoursAgo), sevenHoursAgo).ok,
+      true,
+    );
+    assert.equal(
+      incompleteHistoryStore.ingest(
+        throttleTelemetryBody(
+          "b".repeat(64),
+          NOW - 15 * 60 * 1_000,
+          "repository_actions",
+          403,
+          1,
+          false,
+        ),
+        NOW - 15 * 60 * 1_000,
+      ).ok,
+      true,
+    );
+    const incompleteThrottleView = incompleteHistoryStore.publicObservability(6, NOW);
+    assert.equal(incompleteThrottleView?.throttle_series.coverage_complete, true);
+    assert.equal(incompleteThrottleView?.throttle_series.excluded_incomplete_count, 1);
+    assert.equal(incompleteThrottleView?.throttle_series.rows.length, 0);
+    assert.equal(incompleteThrottleView?.throttle_series.complete, false);
 
     const highCardinalityStorage = new MemoryDurableStorage();
     const highCardinalityStore = new GithubEgressTelemetryStore(highCardinalityStorage);
@@ -691,6 +822,7 @@ test("cap eviction watermarks preserve intact short windows without synthesizing
   assert.equal(oneHour.rows.length, 1, "a traffic-free bucket is not fabricated");
   assert.equal(oneHour.units.wire_attempt, 1);
   assert.deepEqual(oneHour.retention, {
+    rate_limit_detail_hours: 24,
     rollup_evicted_rows_total: 1,
     rollup_eviction_count_exact: true,
     rate_limit_evicted_rows_total: 1,
@@ -977,6 +1109,26 @@ function telemetryBody(receiptId: string, now: number) {
     ],
     rate_limit_observations: [],
   };
+}
+
+function throttleTelemetryBody(
+  receiptId: string,
+  now: number,
+  poolClass: "repository_actions" | "target_app" | "public_read_fallback",
+  status: 403 | 429,
+  count: number,
+  telemetryComplete = true,
+) {
+  const body = telemetryBody(receiptId, now);
+  body.metrics[0] = {
+    ...body.metrics[0]!,
+    pool_class: poolClass,
+    outcome: "throttle",
+    status_bucket: String(status),
+    telemetry_complete: telemetryComplete,
+    count,
+  };
+  return body;
 }
 
 function rateLimitObservation(

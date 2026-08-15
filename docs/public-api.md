@@ -14,24 +14,24 @@ ingest, and the GitHub webhook are mutation or trust-boundary surfaces and are
 deliberately not public API. `ANY` records a current method-agnostic routing
 branch, not a promise that every method will remain supported.
 
-| Route                                    | Method | Purpose and authoritative source                                                        |
-| ---------------------------------------- | ------ | --------------------------------------------------------------------------------------- |
-| `/api/health`                            | `ANY`  | Service liveness and deployed source marker from the Worker environment.                |
-| `/api/exact-review-queue`                | `GET`  | Closed queue counts, capacities, ages, health, pressure, and Bay aggregates.            |
-| `/api/durable-lifecycle-bay`             | `GET`  | Aggregate lifecycle inventory and six closed lane counts; no target cards.              |
-| `/api/live-activity-bay`                 | `GET`  | Five closed live-activity kind counts; fails closed for an incomplete census.           |
-| `/api/recent-durable-publication-events` | `GET`  | Closed outcome counts in a normalized `6h`, `24h`, or `7d` window.                      |
-| `/api/exact-review-queue/item`           | `GET`  | Stable aggregate-only unavailable response; does not perform a per-item lookup.         |
-| `/api/exact-review-queue/reviews`        | `GET`  | Stable empty aggregate-only envelope; ignores identifying query parameters.             |
-| `/api/review-observability`              | `GET`  | Global closed lane aggregates for a normalized `6h`, `24h`, or `7d` range.              |
-| `/api/github-egress-observability`       | `GET`  | Revision-independent closed egress rollups for `hours=0.25`, `1`, `6`, or `24`.         |
-| `/api/review-coverage`                   | `GET`  | Fleet-wide coverage counts; repository rows are retained only in the private store.     |
-| `/api/apply-observability`               | `GET`  | Global closed apply-lane counts and failure categories without repository or run links. |
-| `/api/health-history`                    | `GET`  | Historical health from `healthHistoryJson`.                                             |
-| `/api/automerge-metrics`                 | `GET`  | Global automerge counts, rates, buckets, and outcomes without filters or session rows.  |
-| `/api/status`                            | `ANY`  | Closed main status projection, re-applied to fresh, stale, and durable cached bodies.   |
-| `/api/triage`                            | `ANY`  | Closed issue-triage view descriptors, bounded counts, and completeness only.            |
-| `/api/pr-proof-triage`                   | `ANY`  | Closed proof-triage view descriptors, bounded counts, and completeness only.            |
+| Route                                    | Method | Purpose and authoritative source                                                                       |
+| ---------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------ |
+| `/api/health`                            | `ANY`  | Service liveness and deployed source marker from the Worker environment.                               |
+| `/api/exact-review-queue`                | `GET`  | Closed queue counts, capacities, ages, health, pressure, and Bay aggregates.                           |
+| `/api/durable-lifecycle-bay`             | `GET`  | Aggregate lifecycle inventory and six closed lane counts; no target cards.                             |
+| `/api/live-activity-bay`                 | `GET`  | Five closed live-activity kind counts; fails closed for an incomplete census.                          |
+| `/api/recent-durable-publication-events` | `GET`  | Closed outcome counts in a normalized `6h`, `24h`, or `7d` window.                                     |
+| `/api/exact-review-queue/item`           | `GET`  | Stable aggregate-only unavailable response; does not perform a per-item lookup.                        |
+| `/api/exact-review-queue/reviews`        | `GET`  | Stable empty aggregate-only envelope; ignores identifying query parameters.                            |
+| `/api/review-observability`              | `GET`  | Global closed lane aggregates for a normalized `6h`, `24h`, or `7d` range.                             |
+| `/api/github-egress-observability`       | `GET`  | Closed egress rollups and bounded throttle series for `hours=0.25`, `1`, `6`, `24`, or `168`.          |
+| `/api/review-coverage`                   | `GET`  | Fleet-wide coverage counts; repository rows are retained only in the private store.                    |
+| `/api/apply-observability`               | `GET`  | Global closed apply-lane counts and failure categories without repository or run links.                |
+| `/api/health-history`                    | `GET`  | Historical health from `healthHistoryJson`.                                                            |
+| `/api/automerge-metrics`                 | `GET`  | Global automerge counts, rates, buckets, and outcomes without filters or session rows.                 |
+| `/api/status`                            | `ANY`  | Closed main status projection, re-applied to fresh, stale, and durable cached bodies.                  |
+| `/api/triage`                            | `ANY`  | Closed issue-triage view descriptors, bounded counts, and completeness only.                           |
+| `/api/pr-proof-triage`                   | `ANY`  | Closed proof-triage view descriptors, bounded counts, and completeness only.                           |
 
 `config/operator-documentation.json` is the checked route inventory. Adding or
 removing a literal observer route in `dashboard/worker.ts` requires updating

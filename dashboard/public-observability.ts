@@ -18,6 +18,7 @@ const MAX_GITHUB_COUNT = 10_000_000_000;
 const MAX_DURATION_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_GITHUB_ROLLUP_ROWS = 2_000;
 const MAX_GITHUB_RATE_LIMIT_ROWS = 256;
+const MAX_GITHUB_THROTTLE_ROWS = 7 * 24 * GITHUB_EGRESS_POOL_CLASSES.length * 2;
 
 const REVIEW_RANGES = ["6h", "24h", "7d"] as const;
 const REVIEW_LANES = ["exact_event", "hot_intake", "normal_backfill", "recovery"] as const;
@@ -860,6 +861,118 @@ function publicGithubRateLimits(value: unknown) {
   };
 }
 
+function publicGithubThrottleSeries(
+  value: unknown,
+  hours: number,
+  bucketMinutes: number,
+  generatedAt: string,
+  rollupWindowComplete: boolean,
+  wireAttemptTotal: number,
+  incompleteTotal: number,
+) {
+  if (value === undefined) return undefined;
+  const source = objectValue(value);
+  const rawRows = Array.isArray(source?.rows) ? source.rows : null;
+  const closedThrough = timestamp(source?.closed_through);
+  const firstAvailableBucketStart = nullableTimestamp(source?.first_available_bucket_start);
+  const excludedIncompleteCount = count(source?.excluded_incomplete_count, MAX_GITHUB_COUNT);
+  if (
+    !source ||
+    source.unit !== "wire_attempt" ||
+    !rawRows ||
+    rawRows.length > MAX_GITHUB_THROTTLE_ROWS ||
+    !closedThrough ||
+    firstAvailableBucketStart === undefined ||
+    excludedIncompleteCount === null ||
+    excludedIncompleteCount > incompleteTotal ||
+    typeof source.rows_truncated !== "boolean" ||
+    typeof source.coverage_complete !== "boolean" ||
+    typeof source.complete !== "boolean" ||
+    (source.rows_truncated && rawRows.length !== MAX_GITHUB_THROTTLE_ROWS)
+  ) {
+    return null;
+  }
+  const bucketMs = bucketMinutes * 60_000;
+  const generatedMs = Date.parse(generatedAt);
+  const closedMs = Date.parse(closedThrough);
+  const firstAvailableMs =
+    firstAvailableBucketStart === null ? null : Date.parse(firstAvailableBucketStart);
+  const windowStart = Math.floor((generatedMs - hours * 3_600_000) / bucketMs) * bucketMs;
+  if (
+    closedMs !== Math.floor(generatedMs / bucketMs) * bucketMs ||
+    (firstAvailableMs !== null &&
+      (firstAvailableMs % bucketMs !== 0 || firstAvailableMs > closedMs))
+  ) {
+    return null;
+  }
+  const rows = [];
+  const seen = new Set<string>();
+  let total = 0;
+  let earliestRow = Number.POSITIVE_INFINITY;
+  for (const entry of rawRows) {
+    const row = objectValue(entry);
+    const bucketStart = timestamp(row?.bucket_start);
+    const rowCount = positiveCount(row?.count, MAX_GITHUB_COUNT);
+    if (
+      !row ||
+      !bucketStart ||
+      !member(GITHUB_EGRESS_POOL_CLASSES, row.pool_class) ||
+      !member(["403", "429"], row.status_bucket) ||
+      rowCount === null
+    ) {
+      return null;
+    }
+    const bucketStartMs = Date.parse(bucketStart);
+    const key = `${bucketStart}|${row.pool_class}|${row.status_bucket}`;
+    total += rowCount;
+    if (
+      bucketStartMs % bucketMs !== 0 ||
+      bucketStartMs < windowStart ||
+      bucketStartMs >= closedMs ||
+      seen.has(key) ||
+      total > wireAttemptTotal
+    ) {
+      return null;
+    }
+    seen.add(key);
+    earliestRow = Math.min(earliestRow, bucketStartMs);
+    rows.push({
+      bucket_start: bucketStart,
+      pool_class: row.pool_class,
+      status_bucket: row.status_bucket,
+      count: rowCount,
+    });
+  }
+  if (
+    (rows.length > 0 && firstAvailableMs === null) ||
+    (firstAvailableMs !== null && firstAvailableMs > earliestRow)
+  ) {
+    return null;
+  }
+  const coverageComplete = firstAvailableMs !== null && firstAvailableMs < windowStart;
+  const complete =
+    !source.rows_truncated &&
+    excludedIncompleteCount === 0 &&
+    rollupWindowComplete &&
+    coverageComplete;
+  if (source.coverage_complete !== coverageComplete || source.complete !== complete) return null;
+  rows.sort((left, right) =>
+    `${left.bucket_start}|${left.pool_class}|${left.status_bucket}`.localeCompare(
+      `${right.bucket_start}|${right.pool_class}|${right.status_bucket}`,
+    ),
+  );
+  return {
+    unit: "wire_attempt",
+    closed_through: closedThrough,
+    first_available_bucket_start: firstAvailableBucketStart,
+    rows,
+    rows_truncated: source.rows_truncated,
+    excluded_incomplete_count: excludedIncompleteCount,
+    coverage_complete: coverageComplete,
+    complete,
+  };
+}
+
 export function publicGithubEgressObservabilityProjection(value: unknown) {
   const source = objectValue(value);
   const privacySource = objectValue(source?.privacy);
@@ -892,7 +1005,7 @@ export function publicGithubEgressObservabilityProjection(value: unknown) {
   if (
     source.version !== 2 ||
     !generatedAt ||
-    !member([0.25, 1, 6, 24], hours) ||
+    !member([0.25, 1, 6, 24, 168], hours) ||
     window.bucket_minutes !== (Number(hours) <= 6 ? 5 : 60)
   ) {
     return null;
@@ -963,13 +1076,25 @@ export function publicGithubEgressObservabilityProjection(value: unknown) {
     (alreadyPublic
       ? rateLimits.total === MAX_GITHUB_RATE_LIMIT_ROWS
       : rawRateLimits?.length === MAX_GITHUB_RATE_LIMIT_ROWS);
+  const throttleSeries = publicGithubThrottleSeries(
+    source.throttle_series,
+    Number(hours),
+    Number(window.bucket_minutes),
+    generatedAt,
+    completenessSource.rollup_window_complete,
+    units.wire_attempt,
+    incompleteCount,
+  );
+  const rateLimitDetailHours = retentionSource.rate_limit_detail_hours;
   if (
     completenessSource.observed !== expectedObserved ||
     completenessSource.telemetry_complete !== expectedTelemetryComplete ||
     completenessSource.query_complete !== expectedQueryComplete ||
     unitTotal !== completenessTotal ||
     !rowsConserved ||
-    !rateLimitTruncationValid
+    !rateLimitTruncationValid ||
+    throttleSeries === null ||
+    (rateLimitDetailHours !== undefined && rateLimitDetailHours !== 24)
   ) {
     return null;
   }
@@ -980,7 +1105,9 @@ export function publicGithubEgressObservabilityProjection(value: unknown) {
     units,
     rows,
     rate_limits: rateLimits,
+    ...(throttleSeries === undefined ? {} : { throttle_series: throttleSeries }),
     retention: {
+      ...(rateLimitDetailHours === undefined ? {} : { rate_limit_detail_hours: 24 }),
       rollup_evicted_rows_total: rollupEvictedRows,
       rollup_eviction_count_exact: retentionSource.rollup_eviction_count_exact,
       rate_limit_evicted_rows_total: rateLimitEvictedRows,
