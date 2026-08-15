@@ -840,6 +840,9 @@ export class ExactReviewQueue {
           accepted: admitted.accepted,
           ...(admitted.accepted ? { deduped: admitted.deduped } : { reason: admitted.reason }),
           command_version_id: admitted.commandVersionId,
+          ...(admitted.accepted && admitted.bayJourneyDeliveryId
+            ? { bay_journey_delivery_id: admitted.bayJourneyDeliveryId }
+            : {}),
         },
         202,
       );
@@ -6749,6 +6752,9 @@ export class ExactReviewQueue {
       ...(commandDecision.sourceDeliveryId
         ? { sourceDeliveryId: commandDecision.sourceDeliveryId }
         : {}),
+      ...(commandDecision.bayJourneyDeliveryId
+        ? { bayJourneyDeliveryId: commandDecision.bayJourneyDeliveryId }
+        : {}),
       observedAt: now,
     });
   }
@@ -7652,6 +7658,10 @@ export class ExactReviewQueue {
         ...((fenceKey !== undefined || includeDeliveryIdentity === true) &&
         result.projection?.admission.sourceDeliveryId
           ? { source_delivery_id: result.projection.admission.sourceDeliveryId }
+          : {}),
+        ...((fenceKey !== undefined || includeDeliveryIdentity === true) &&
+        result.projection?.admission.bayJourneyDeliveryId
+          ? { bay_journey_delivery_id: result.projection.admission.bayJourneyDeliveryId }
           : {}),
       });
     } catch (error) {

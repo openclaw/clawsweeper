@@ -7,9 +7,12 @@ import { directReReviewIntake } from "../src/repair/direct-re-review-admission.t
 import {
   assert,
   ExactReviewQueue,
+  ExactReviewLifecycleProjectionStore,
+  MemoryKv,
   MemoryDurableNamespace,
   MemoryDurableStorage,
   test,
+  summarizeBayJourneyTimings,
   worker,
 } from "./dashboard-worker-harness.ts";
 
@@ -159,6 +162,7 @@ test("durable command intake survives target throttling before queue admission",
     accepted: true,
     deduped: false,
     command_version_id: commandVersionId(),
+    bay_journey_delivery_id: "delivery-command-1",
   });
   assert.equal(fixture.acknowledgements.length, 0);
 
@@ -227,6 +231,238 @@ test("durable command intake survives target throttling before queue admission",
   assert.equal(redelivery.status, 202);
   assert.equal((await redelivery.json()).deduped, true);
   assert.equal(fixture.acknowledgements.length, 1);
+});
+
+test("hosted durable command intake keeps the GitHub delivery identity for Bay journey completion", async (t) => {
+  const fixture = await startGithubLoopback();
+  t.after(() => fixture.close());
+  const storage = new MemoryDurableStorage();
+  const statusStore = new MemoryKv();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const env = {
+    GITHUB_API_URL: fixture.origin,
+    CLAWSWEEPER_WEBHOOK_SECRET: "bay-journey-command-intake-test-secret",
+    CLAWSWEEPER_APP_CLIENT_ID: "Iv23bay-journey-command-intake-test",
+    CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
+    STATUS_STORE: statusStore,
+  };
+  const queue = new ExactReviewQueue({ storage }, env);
+  const namespace = new MemoryDurableNamespace(queue);
+  const payload = commandWebhookPayload();
+  const commandAt = new Date(Date.now() - 120_000).toISOString();
+  payload.comment.created_at = commandAt;
+  payload.comment.updated_at = commandAt;
+  const body = JSON.stringify(payload);
+  const signature = `sha256=${createHmac("sha256", env.CLAWSWEEPER_WEBHOOK_SECRET)
+    .update(body)
+    .digest("hex")}`;
+  const commandDeliveryId = "github-command-delivery-1";
+  const { STATUS_STORE: _statusStore, ...envWithoutStatusStore } = env;
+
+  const accepted = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/github/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": "issue_comment",
+        "x-github-delivery": commandDeliveryId,
+        "x-hub-signature-256": signature,
+      },
+      body,
+    }),
+    { ...envWithoutStatusStore, EXACT_REVIEW_QUEUE: namespace },
+    {},
+  );
+  assert.equal(accepted.status, 202);
+  const redelivery = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/github/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": "issue_comment",
+        "x-github-delivery": "github-command-delivery-1-redelivery",
+        "x-hub-signature-256": signature,
+      },
+      body,
+    }),
+    { ...env, EXACT_REVIEW_QUEUE: namespace },
+    {},
+  );
+  assert.equal(redelivery.status, 202);
+  const redeliveryResult = await redelivery.json();
+  assert.equal(redeliveryResult.deduped, true);
+  assert.equal(redeliveryResult.bay_journey_delivery_id, commandDeliveryId);
+  const stateAfterRedelivery = JSON.parse(
+    (await statusStore.get("openclaw-bay:journey-state:v1")) || "{}",
+  );
+  assert.equal(stateAfterRedelivery.journeys.length, 1);
+  assert.equal(stateAfterRedelivery.journeys[0]?.source_delivery_id, commandDeliveryId);
+  const intake = directReReviewIntake({
+    targetRepo: "openclaw/openclaw",
+    targetBranch: "main",
+    itemNumber: ITEM_NUMBER,
+    itemKind: "pull_request",
+    installationId: 123,
+    sourceCommentId: COMMAND_COMMENT_ID,
+    sourceCommentUpdatedAt: commandAt,
+    commandBodyDigest: createHash("sha256").update(COMMAND_BODY).digest("hex"),
+    commandOrigin: "hosted_webhook",
+    additionalPrompt: "",
+    bayJourneyDeliveryId: commandDeliveryId,
+  });
+  assert.equal(
+    new ExactReviewCommandIntakeStore(storage).read(intake.commandVersionId)?.intake.decision
+      .bayJourneyDeliveryId,
+    commandDeliveryId,
+  );
+
+  fixture.sourceCommentUpdatedAt = commandAt;
+  await queue.alarm();
+  await queue.alarm();
+  const queueState = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { key: string; revision: number }>;
+  };
+  const item = queueState.items[`openclaw/openclaw#${ITEM_NUMBER}`];
+  assert.ok(item);
+  const identity = {
+    canonicalTargetKey: `openclaw/openclaw#${ITEM_NUMBER}`,
+    fenceKey: item.key,
+    revision: item.revision,
+  };
+  const projection = lifecycle.read(
+    identity.canonicalTargetKey,
+    identity.fenceKey,
+    identity.revision,
+  );
+  assert.equal(projection?.admission.bayJourneyDeliveryId, commandDeliveryId);
+  const completionCommentId = 90_002;
+  lifecycle.recordCanonicalReceipt({
+    ...identity,
+    outcome: "accepted",
+    receiptId: "canonical:fixture",
+    observedAt: Date.parse(commandAt) + 1,
+  });
+  lifecycle.recordRouterReceipt({
+    ...identity,
+    outcome: "durable",
+    receiptId: "router:fixture",
+    observedAt: Date.parse(commandAt) + 2,
+  });
+  lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: Date.parse(commandAt) + 3,
+  });
+  const authorized = lifecycle.authorizeCommandAcknowledgement({
+    ...identity,
+    statusMarker: intake.decision.commandStatusMarker,
+    statusCommentId: projection?.admission.statusCommentId ?? null,
+    observedAt: Date.parse(commandAt) + 4,
+  });
+  assert.equal(authorized.allowed, true);
+
+  const completedAt = new Date(Date.now() - 60_000).toISOString();
+  const acknowledgementBody = JSON.stringify({
+    canonical_target_key: identity.canonicalTargetKey,
+    fence_key: identity.fenceKey,
+    revision: identity.revision,
+    status_marker: intake.decision.commandStatusMarker,
+    ...(projection?.admission.statusCommentId
+      ? { status_comment_id: projection.admission.statusCommentId }
+      : {}),
+    command_comment_id: COMMAND_COMMENT_ID,
+    completion_comment_id: completionCommentId,
+    completed_at: completedAt,
+    observed_at: Date.now(),
+  });
+  const acknowledgementSignature = `sha256=${createHmac("sha256", env.CLAWSWEEPER_WEBHOOK_SECRET)
+    .update(acknowledgementBody)
+    .digest("hex")}`;
+  const acknowledgement = await worker.fetch(
+    new Request(
+      "https://clawsweeper.openclaw.ai/internal/exact-review/lifecycle/command-ack/observed",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": acknowledgementSignature,
+        },
+        body: acknowledgementBody,
+      },
+    ),
+    { ...env, EXACT_REVIEW_QUEUE: namespace },
+    {},
+  );
+  assert.equal(acknowledgement.status, 200);
+  assert.equal((await acknowledgement.json()).bay_journey_delivery_id, commandDeliveryId);
+  const stateAfterAcknowledgement = JSON.parse(
+    (await statusStore.get("openclaw-bay:journey-state:v1")) || "{}",
+  );
+  assert.equal(stateAfterAcknowledgement.journeys.length, 1);
+  assert.equal(stateAfterAcknowledgement.journeys[0]?.source_delivery_id, commandDeliveryId);
+  assert.equal(
+    summarizeBayJourneyTimings(stateAfterAcknowledgement.journeys, new Date().toISOString()).overall
+      .samples,
+    1,
+  );
+
+  const completionBody = JSON.stringify({
+    action: "edited",
+    repository: payload.repository,
+    issue: payload.issue,
+    comment: {
+      id: completionCommentId,
+      body: [
+        `<!-- clawsweeper-command-ack:${COMMAND_COMMENT_ID} -->`,
+        intake.decision.commandStatusMarker,
+        "<!-- clawsweeper-command-progress:start -->",
+        "- State: Complete",
+        "<!-- clawsweeper-command-progress:end -->",
+      ].join("\n"),
+      created_at: completedAt,
+      updated_at: completedAt,
+      user: { login: "clawsweeper[bot]" },
+    },
+  });
+  const completionSignature = `sha256=${createHmac("sha256", env.CLAWSWEEPER_WEBHOOK_SECRET)
+    .update(completionBody)
+    .digest("hex")}`;
+  const completion = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/github/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": "issue_comment",
+        "x-github-delivery": "github-completion-delivery-1",
+        "x-hub-signature-256": completionSignature,
+      },
+      body: completionBody,
+    }),
+    { ...env, EXACT_REVIEW_QUEUE: namespace },
+    {},
+  );
+  assert.equal(completion.status, 202);
+  assert.deepEqual(await completion.json(), {
+    ok: true,
+    accepted: false,
+    reason: "recorded Bay journey completion",
+  });
+
+  const state = JSON.parse((await statusStore.get("openclaw-bay:journey-state:v1")) || "{}");
+  assert.equal(state.journeys.length, 1);
+  assert.equal(state.journeys[0]?.source_delivery_id, commandDeliveryId);
+  assert.ok(state.journeys[0]?.triggered_at);
+  assert.ok(state.journeys[0]?.completed_at);
+  assert.equal(
+    summarizeBayJourneyTimings(state.journeys, new Date().toISOString()).overall.samples,
+    1,
+  );
 });
 
 test("command acknowledgement ignores forged markers and paginates to the trusted receipt", async (t) => {
@@ -372,6 +608,7 @@ async function startGithubLoopback() {
     durableIntakes: 0,
     throttleSourceComment: false,
     sourceCommentReads: 0,
+    sourceCommentUpdatedAt: COMMAND_UPDATED_AT,
     reactions: 0,
   };
   const server = http.createServer(async (request, response) => {
@@ -391,7 +628,7 @@ async function startGithubLoopback() {
       return sendJson(response, 200, {
         id: COMMAND_COMMENT_ID,
         body: COMMAND_BODY,
-        updated_at: COMMAND_UPDATED_AT,
+        updated_at: state.sourceCommentUpdatedAt,
         issue_url: `https://api.github.com/repos/openclaw/openclaw/issues/${ITEM_NUMBER}`,
       });
     }

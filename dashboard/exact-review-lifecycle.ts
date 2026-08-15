@@ -173,6 +173,7 @@ export type ExactReviewLifecycleProjection = {
   admission: {
     deliveryId: string;
     sourceDeliveryId?: string;
+    bayJourneyDeliveryId?: string;
     sourceAction: string;
     commandOriginated: boolean;
     statusMarker: string | null;
@@ -231,6 +232,7 @@ type ProjectionIdentity = {
 type LifecycleAdmissionInput = ProjectionIdentity & {
   deliveryId: string;
   sourceDeliveryId?: string;
+  bayJourneyDeliveryId?: string;
   sourceAction: string;
   commandOriginated: boolean;
   statusMarker: string | null;
@@ -283,6 +285,12 @@ export class ExactReviewLifecycleProjectionStore {
     if (input.sourceDeliveryId !== undefined && !validText(input.sourceDeliveryId, 1, 200)) {
       throw new Error("invalid lifecycle source delivery identity");
     }
+    if (
+      input.bayJourneyDeliveryId !== undefined &&
+      !validText(input.bayJourneyDeliveryId, 1, 200)
+    ) {
+      throw new Error("invalid lifecycle Bay journey delivery identity");
+    }
     if (input.statusMarker !== null && !validText(input.statusMarker, 1, 300)) {
       throw new Error("invalid lifecycle status marker");
     }
@@ -297,6 +305,7 @@ export class ExactReviewLifecycleProjectionStore {
       if (
         admission.deliveryId !== input.deliveryId ||
         admission.sourceDeliveryId !== input.sourceDeliveryId ||
+        admission.bayJourneyDeliveryId !== input.bayJourneyDeliveryId ||
         admission.sourceAction !== input.sourceAction ||
         admission.commandOriginated !== input.commandOriginated ||
         admission.statusMarker !== input.statusMarker ||
@@ -314,6 +323,7 @@ export class ExactReviewLifecycleProjectionStore {
       admission: {
         deliveryId: input.deliveryId,
         ...(input.sourceDeliveryId ? { sourceDeliveryId: input.sourceDeliveryId } : {}),
+        ...(input.bayJourneyDeliveryId ? { bayJourneyDeliveryId: input.bayJourneyDeliveryId } : {}),
         sourceAction: input.sourceAction,
         commandOriginated: input.commandOriginated,
         statusMarker: input.statusMarker,
@@ -1557,6 +1567,8 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
     !validText(value.admission.deliveryId, 1, 300) ||
     (value.admission.sourceDeliveryId !== undefined &&
       !validText(value.admission.sourceDeliveryId, 1, 200)) ||
+    (value.admission.bayJourneyDeliveryId !== undefined &&
+      !validText(value.admission.bayJourneyDeliveryId, 1, 200)) ||
     !validText(value.admission.sourceAction, 1, 200) ||
     (value.admission.statusMarker !== null && !validText(value.admission.statusMarker, 1, 300)) ||
     (value.admission.statusCommentId !== null &&

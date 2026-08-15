@@ -1694,8 +1694,12 @@ async function githubWebhook(request, env, ctx) {
       ctx,
       [],
       [
-        acknowledgement.sourceDeliveryId
-          ? { ...completion, source_delivery_id: acknowledgement.sourceDeliveryId }
+        acknowledgement.bayJourneyDeliveryId || acknowledgement.sourceDeliveryId
+          ? {
+              ...completion,
+              source_delivery_id:
+                acknowledgement.bayJourneyDeliveryId ?? acknowledgement.sourceDeliveryId,
+            }
           : completion,
       ],
     );
@@ -1820,7 +1824,6 @@ async function githubWebhook(request, env, ctx) {
     payload,
     deliveryId: deliveryHeaders.deliveryId,
   });
-  if (trigger) await recordBayJourneyTelemetry(env, ctx, [trigger], []);
 
   const commentDecision = decision;
   if (
@@ -1839,6 +1842,7 @@ async function githubWebhook(request, env, ctx) {
       sourceCommentUpdatedAt: commentDecision.commentUpdatedAt,
       commandBodyDigest: await sha256Text(commentDecision.commentBody),
       commandOrigin: "hosted_webhook",
+      ...(trigger?.source_delivery_id ? { bayJourneyDeliveryId: trigger.source_delivery_id } : {}),
       additionalPrompt: directReReviewAdditionalPrompt({
         body: commentDecision.commentBody,
         maintainerAuthorized: commentDecision.maintainerAuthorized,
@@ -1848,14 +1852,32 @@ async function githubWebhook(request, env, ctx) {
     });
     const queue = exactReviewQueueStub(env);
     if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
-    return queue.fetch(
+    const intakeResponse = await queue.fetch(
       new Request("https://clawsweeper-exact-review-queue/command-intake", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(intake),
       }),
     );
+    const intakeResult = objectValue(
+      await intakeResponse
+        .clone()
+        .json()
+        .catch(() => null),
+    );
+    const bayJourneyDeliveryId = nullableString(intakeResult.bay_journey_delivery_id);
+    if (trigger && intakeResult.accepted === true && bayJourneyDeliveryId) {
+      await recordBayJourneyTelemetry(
+        env,
+        ctx,
+        [{ ...trigger, source_delivery_id: bayJourneyDeliveryId }],
+        [],
+      );
+    }
+    return intakeResponse;
   }
+
+  if (trigger) await recordBayJourneyTelemetry(env, ctx, [trigger], []);
 
   const credentials = githubAppCredentials(env);
   if (!credentials) return json({ error: "github_app_not_configured" }, 503);
@@ -2663,7 +2685,7 @@ function exactReviewQueueStub(env): DurableObjectStub | null {
 
 async function recordLifecycleCommandAcknowledgement(env, completion) {
   const queue = exactReviewQueueStub(env);
-  if (!queue) return { accepted: true, sourceDeliveryId: null };
+  if (!queue) return { accepted: true, sourceDeliveryId: null, bayJourneyDeliveryId: null };
   const observedAt = Date.parse(String(completion.completed_at || ""));
   const response = await queue.fetch(
     new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
@@ -2685,6 +2707,7 @@ async function recordLifecycleCommandAcknowledgement(env, completion) {
   return {
     accepted: result.accepted !== false,
     sourceDeliveryId: nullableString(result.source_delivery_id),
+    bayJourneyDeliveryId: nullableString(result.bay_journey_delivery_id),
   };
 }
 
@@ -3065,8 +3088,13 @@ async function authenticatedLifecycleCommandAcknowledgement(request, env, ctx) {
               repository: target[1],
               number: Number(target[2]),
               source_comment_id: Number(receipt.command_comment_id),
-              ...(nullableString(result.source_delivery_id)
-                ? { source_delivery_id: nullableString(result.source_delivery_id) }
+              ...(nullableString(result.bay_journey_delivery_id) ||
+              nullableString(result.source_delivery_id)
+                ? {
+                    source_delivery_id:
+                      nullableString(result.bay_journey_delivery_id) ??
+                      nullableString(result.source_delivery_id),
+                  }
                 : {}),
               completed_at: completedAt,
               completion_kind: "final_command_status",
