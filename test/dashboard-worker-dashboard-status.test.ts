@@ -3046,24 +3046,34 @@ test("dashboard reports worker error and recovery rates from completed job steps
             }`,
             started_at: jobStartedAt,
             completed_at: run?.updated_at,
-            steps: [
-              {
-                number: 1,
-                name: "Run ./clawsweeper/.github/actions/setup-codex",
-                status: "completed",
-                conclusion: "success",
-                started_at: jobStartedAt,
-                completed_at: reviewStartedAt,
-              },
-              {
-                number: 2,
-                name: "Review shard",
-                status: "completed",
-                conclusion: failed ? "failure" : "success",
-                started_at: reviewStartedAt,
-                completed_at: run?.updated_at,
-              },
-            ],
+            steps:
+              runId === 4
+                ? Array.from({ length: 101 }, (_, index) => ({
+                    number: index + 1,
+                    name: `Review shard ${index + 1}`,
+                    status: "completed",
+                    conclusion: "success",
+                    started_at: jobStartedAt,
+                    completed_at: run?.updated_at,
+                  }))
+                : [
+                    {
+                      number: 1,
+                      name: "Run ./clawsweeper/.github/actions/setup-codex",
+                      status: "completed",
+                      conclusion: "success",
+                      started_at: jobStartedAt,
+                      completed_at: reviewStartedAt,
+                    },
+                    {
+                      number: 2,
+                      name: "Review shard",
+                      status: "completed",
+                      conclusion: failed ? "failure" : "success",
+                      started_at: reviewStartedAt,
+                      completed_at: run?.updated_at,
+                    },
+                  ],
           },
         ],
       });
@@ -3083,6 +3093,7 @@ test("dashboard reports worker error and recovery rates from completed job steps
     const env = {
       CLAWSWEEPER_REPO: "openclaw/clawsweeper",
       TARGET_REPOS: "openclaw/openclaw",
+      PUBLIC_BAY_REPOS: "openclaw/openclaw,openclaw/clawsweeper",
       CACHE_TTL_SECONDS: "0",
       STATUS_STORE: new MemoryKv(),
     };
@@ -3109,6 +3120,12 @@ test("dashboard reports worker error and recovery rates from completed job steps
       samples: 0,
     });
     assert.equal(status.bay.terminal_buffer.length, 3);
+    const overLimitTimeline = status.bay.terminal_buffer.find((item) => item.item_number === 300);
+    assert.ok(overLimitTimeline);
+    assert.equal(overLimitTimeline.action.run_id, 4);
+    assert.equal(overLimitTimeline.action.job_id, 40);
+    assert.equal(overLimitTimeline.action.steps_complete, false);
+    assert.deepEqual(overLimitTimeline.action.steps, []);
     assert.equal(status.health.recent_attempts, undefined);
     assert.equal(status.health.failures.length, 2);
     assert.equal(status.health.failures[0].recovered, false);

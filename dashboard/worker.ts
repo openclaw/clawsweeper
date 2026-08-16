@@ -7916,12 +7916,15 @@ function workerHealthAttempt(run, job) {
           .trim()}`;
   const startedAt = job?.started_at || run.created_at || null;
   const completedAt = job?.completed_at || run.updated_at || startedAt;
-  const actionSteps = steps.slice(0, PUBLIC_BAY_ACTION_STEP_LIMIT).map((step, index) => ({
-    number: step?.number ?? index + 1,
-    name: String(step?.name || ""),
-    status: String(step?.status || ""),
-    conclusion: step?.conclusion ?? null,
-  }));
+  const actionSteps =
+    steps.length <= PUBLIC_BAY_ACTION_STEP_LIMIT
+      ? steps.map((step, index) => ({
+          number: step?.number ?? index + 1,
+          name: String(step?.name || ""),
+          status: String(step?.status || ""),
+          conclusion: step?.conclusion ?? null,
+        }))
+      : undefined;
   return {
     key: targetKey,
     outcome,
@@ -8197,7 +8200,7 @@ function bayTerminalCandidates(attempts, closedItems) {
         run_id: attempt?.run_id || null,
         job_id: attempt?.job_id || null,
         started_at: nullableString(attempt?.started_at),
-        steps: Array.isArray(attempt?.steps) ? attempt.steps : [],
+        steps: Array.isArray(attempt?.steps) ? attempt.steps : undefined,
         completed_at: completedAt,
         current_step: nullableString(attempt?.failed_step || attempt?.conclusion),
         source: "worker_attempt",
