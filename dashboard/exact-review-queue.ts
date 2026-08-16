@@ -774,7 +774,19 @@ export class ExactReviewQueue {
     // before storage initialization. It must stay a pure reader: no schema
     // creation, cleanup, queue reclamation, alarm scheduling, or GitHub work.
     if (request.method === "GET" && url.pathname === "/lifecycle-bay") {
-      return json({ durable_lifecycle_bay: this.lifecycleProjectionStore.readBaySnapshot() });
+      const publicRepositories = url.searchParams
+        .getAll("public_repo")
+        .map((value) => value.trim().toLowerCase());
+      const validPublicRepositories =
+        publicRepositories.length <= 32 &&
+        publicRepositories.every((value) => /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(value));
+      return json({
+        durable_lifecycle_bay: !url.searchParams.has("public_repo")
+          ? this.lifecycleProjectionStore.readBaySnapshot()
+          : validPublicRepositories
+            ? this.lifecycleProjectionStore.readBaySnapshot(Date.now(), new Set(publicRepositories))
+            : this.lifecycleProjectionStore.readBaySnapshot(Date.now(), new Set()),
+      });
     }
     if (request.method === "POST" && url.pathname === "/lifecycle-audit/inventory") {
       return this.readLifecycleAuditInventory(await request.json().catch(() => null));

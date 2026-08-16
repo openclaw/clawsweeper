@@ -453,6 +453,33 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
               stage: "arriving",
               title: marker,
               url: `https://example.invalid/private?token=${marker}`,
+              action: {
+                repository: "OpenClaw/ClawSweeper",
+                run_id: 7001,
+                job_id: 8001,
+                status: "in_progress",
+                started_at: STATUS_NOW,
+                steps_complete: true,
+                steps: [
+                  {
+                    sequence: 1,
+                    kind: "setup",
+                    status: "completed",
+                    conclusion: "success",
+                    name: marker,
+                    url: `https://example.invalid/private?token=${marker}`,
+                  },
+                  {
+                    sequence: 2,
+                    kind: "review",
+                    status: "in_progress",
+                    conclusion: null,
+                    name: marker,
+                  },
+                ],
+                title: marker,
+                run_url: `https://example.invalid/private?token=${marker}`,
+              },
             },
             {
               repository: "private-owner/private-repo",
@@ -491,6 +518,19 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
             repository: "OpenClaw/OpenClaw",
             number: 45,
             title: marker,
+            job_url: "https://github.com/OpenClaw/ClawSweeper/actions/runs/7002/job/8002",
+            run_id: 7002,
+            job_id: 8002,
+            started_at: STATUS_NOW,
+            steps: [
+              {
+                number: 1,
+                name: "Publish result",
+                status: "completed",
+                conclusion: "success",
+                detail: marker,
+              },
+            ],
           },
           {
             outcome: "failure",
@@ -503,7 +543,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
       recent: {},
       diagnostics: { errors: [], error_count: 0 },
     },
-    new Set(["openclaw/openclaw"]),
+    new Set(["openclaw/openclaw", "openclaw/clawsweeper"]),
   );
 
   assert.deepEqual(projected.exact_review_queue.bay_projection.items, [
@@ -512,6 +552,18 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
       item_number: 41,
       stage: "arriving",
       source: "queue",
+      action: {
+        repository: "openclaw/clawsweeper",
+        run_id: 7001,
+        job_id: 8001,
+        status: "in_progress",
+        started_at: STATUS_NOW,
+        steps_complete: true,
+        steps: [
+          { sequence: 1, kind: "setup", status: "completed", conclusion: "success" },
+          { sequence: 2, kind: "review", status: "in_progress", conclusion: null },
+        ],
+      },
     },
   ]);
   assert.deepEqual(projected.exact_review_queue.bay_projection.activity.items, [
@@ -523,7 +575,20 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
     },
   ]);
   assert.deepEqual(projected.bay.terminal_buffer, [
-    { repository: "openclaw/openclaw", item_number: 45, outcome: "success" },
+    {
+      repository: "openclaw/openclaw",
+      item_number: 45,
+      outcome: "success",
+      action: {
+        repository: "openclaw/clawsweeper",
+        run_id: 7002,
+        job_id: 8002,
+        status: "completed",
+        started_at: STATUS_NOW,
+        steps_complete: true,
+        steps: [{ sequence: 1, kind: "publish", status: "completed", conclusion: "success" }],
+      },
+    },
     { outcome: "failure" },
   ]);
   const serialized = JSON.stringify(projected);
@@ -531,7 +596,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
   assert.equal(serialized.includes(marker), false);
   assert.equal(serialized.includes("example.invalid"), false);
   assert.deepEqual(
-    strictPublicStatusProjection(projected, new Set(["openclaw/openclaw"])),
+    strictPublicStatusProjection(projected, new Set(["openclaw/openclaw", "openclaw/clawsweeper"])),
     projected,
   );
   const noAllowlist = strictPublicStatusProjection(projected);
@@ -573,6 +638,93 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
     new Set(["openclaw/openclaw"]),
   );
   assert.equal("items" in malformed.exact_review_queue.bay_projection, false);
+});
+
+test("public Bay actions fail closed for malformed, private, and over-cap shapes", () => {
+  const marker = "synthetic-action-private-marker";
+  const stages = {
+    arriving: 1,
+    "setting-up": 0,
+    reviewing: 0,
+    publishing: 0,
+    applying: 0,
+    repairing: 0,
+  };
+  const safeAction = {
+    repository: "openclaw/clawsweeper",
+    run_id: 7001,
+    job_id: 8001,
+    status: "in_progress",
+    started_at: STATUS_NOW,
+    steps_complete: true,
+    steps: [{ sequence: 1, kind: "review", status: "in_progress", conclusion: null }],
+  };
+  const project = (action: Record<string, unknown>) =>
+    strictPublicStatusProjection(
+      {
+        schema_version: 1,
+        generated_at: STATUS_NOW,
+        source: { target_repository_count: 1 },
+        fleet: {},
+        workers: [],
+        automatic_work: [],
+        pipeline: [],
+        exact_review_queue: {
+          bay_projection: {
+            complete: true,
+            sample_limit: 24,
+            total: 1,
+            stages,
+            items: [
+              {
+                repository: "openclaw/openclaw",
+                item_number: 41,
+                stage: "arriving",
+                action,
+              },
+            ],
+          },
+        },
+        bay: {},
+        recent: {},
+        diagnostics: { errors: [], error_count: 0 },
+      },
+      new Set(["openclaw/openclaw", "openclaw/clawsweeper"]),
+    );
+
+  const malformedActions = [
+    { ...safeAction, repository: "private-owner/private-repo" },
+    { ...safeAction, run_id: "7001" },
+    { ...safeAction, started_at: marker },
+    { ...safeAction, steps: [{ ...safeAction.steps[0], kind: marker }] },
+    {
+      ...safeAction,
+      steps: [safeAction.steps[0], { ...safeAction.steps[0], conclusion: marker }],
+    },
+    {
+      ...safeAction,
+      steps: Array.from({ length: 101 }, (_, index) => ({
+        sequence: index + 1,
+        kind: "review",
+        status: "queued",
+        conclusion: null,
+      })),
+    },
+    { ...safeAction, steps_complete: false },
+    { ...safeAction, nested: { token: marker, url: `https://example.invalid/?token=${marker}` } },
+  ];
+
+  for (const [index, action] of malformedActions.entries()) {
+    const item = project(action).exact_review_queue.bay_projection.items[0];
+    if (index === malformedActions.length - 1) {
+      assert.deepEqual(item.action, safeAction);
+    } else {
+      assert.equal("action" in item, false);
+    }
+    assert.equal(JSON.stringify(item).includes(marker), false);
+    assert.equal(JSON.stringify(item).includes("private-owner"), false);
+    assert.equal(JSON.stringify(item).includes("example.invalid"), false);
+  }
 });
 
 test("public status rejects supplied live counts from incomplete worker censuses", () => {

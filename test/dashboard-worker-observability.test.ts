@@ -152,7 +152,7 @@ test("public telemetry routes contain malformed and rejecting durable reads", as
   }
 });
 
-test("durable lifecycle Bay is a pure, redacted per-target-revision reducer snapshot", async () => {
+test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot", async () => {
   const now = Date.now();
   const storage = new MemoryDurableStorage();
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
@@ -162,14 +162,16 @@ test("durable lifecycle Bay is a pure, redacted per-target-revision reducer snap
     revision = 1,
     terminal,
     command = false,
+    repository = "openclaw/openclaw",
   }: {
     number: number;
     revision?: number;
     terminal?: "review_completed_routed" | "superseded" | "requeue" | "dead_letter";
     command?: boolean;
+    repository?: string;
   }) => {
     const identity = {
-      canonicalTargetKey: `openclaw/openclaw#${number}`,
+      canonicalTargetKey: `${repository}#${number}`,
       fenceKey: `fence-secret-${number}-${revision}`,
       revision,
     };
@@ -213,6 +215,7 @@ test("durable lifecycle Bay is a pure, redacted per-target-revision reducer snap
   record({ number: 912, terminal: "review_completed_routed" });
   record({ number: 913, terminal: "requeue" });
   record({ number: 914, terminal: "dead_letter" });
+  record({ number: 915, repository: "private-owner/private-repo" });
 
   let initialized = 0;
   const queue = new ExactReviewQueue(
@@ -230,20 +233,28 @@ test("durable lifecycle Bay is a pure, redacted per-target-revision reducer snap
   storage.sql.exec = (query: string, ...bindings: unknown[]) => {
     queries.push(query);
     assert.match(query, /^\s*SELECT\s+projection_json\b/i, "Bay route must be read-only");
-    assert.deepEqual(bindings, [513]);
+    assert.deepEqual(bindings, [10_001]);
     return exec(query, ...bindings);
   };
 
   const response = await worker.fetch(
     new Request("https://clawsweeper.openclaw.ai/api/durable-lifecycle-bay"),
-    { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) },
+    {
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      PUBLIC_BAY_REPOS: "openclaw/openclaw",
+    },
   );
   const body = (await response.json()) as {
     durable_lifecycle_bay: {
       collection: { state: string };
       inventory: { lifecycle_records: number } | null;
       lanes: Record<string, number> | null;
-      sample: { limit: number; returned: number; omitted: number; cards: [] } | null;
+      sample: {
+        limit: number;
+        returned: number;
+        omitted: number;
+        cards: Array<Record<string, unknown>>;
+      } | null;
     };
   };
   const snapshot = body.durable_lifecycle_bay;
@@ -261,7 +272,21 @@ test("durable lifecycle Bay is a pure, redacted per-target-revision reducer snap
     requeued: 1,
     terminal_attention: 1,
   });
-  assert.deepEqual(snapshot.sample, { limit: 0, returned: 0, omitted: 6, cards: [] });
+  assert.equal(snapshot.sample?.limit, 24);
+  assert.equal(snapshot.sample?.returned, 6);
+  assert.equal(snapshot.sample?.omitted, 0);
+  assert.equal(snapshot.sample?.cards.length, 6);
+  for (const card of snapshot.sample?.cards || []) {
+    assert.deepEqual(Object.keys(card).sort(), [
+      "current_revision",
+      "item_number",
+      "lane",
+      "repository",
+      "state",
+      "updated_at",
+    ]);
+    assert.equal(card.repository, "openclaw/openclaw");
+  }
   const publicText = JSON.stringify(body);
   for (const secret of [
     "fence-secret",
@@ -269,10 +294,12 @@ test("durable lifecycle Bay is a pure, redacted per-target-revision reducer snap
     "status-secret",
     "receipt-secret",
     "router-secret",
+    "private-owner",
   ]) {
     assert.doesNotMatch(publicText, new RegExp(secret));
   }
-  assert.doesNotMatch(publicText, /openclaw\/openclaw|\/issues\//i);
+  assert.match(publicText, /openclaw\/openclaw/i);
+  assert.doesNotMatch(publicText, /\/issues\/|https?:\/\//i);
   assert.doesNotMatch(publicText, /claimGeneration|commentId|digest|cursor/i);
 });
 
@@ -593,8 +620,43 @@ test("durable lifecycle Bay fail-closes unknown snapshots without partial cards 
     assertUnknown(invalidTimestampBody.durable_lifecycle_bay, "malformed");
   }
 
+  const formerlyCappedQueue = {
+    fetch: async () =>
+      jsonResponse({
+        durable_lifecycle_bay: {
+          version: 1,
+          source: "exact-review-lifecycle-projection-v1",
+          generated_at: new Date().toISOString(),
+          freshness: { maximum_age_ms: 60_000 },
+          collection: { state: "complete" },
+          inventory: { lifecycle_records: 513, target_revisions: 513, unique_targets: 513 },
+          lanes: {
+            pending: 513,
+            acknowledgement_pending: 0,
+            completed: 0,
+            superseded: 0,
+            requeued: 0,
+            terminal_attention: 0,
+          },
+          sample: { limit: 24, returned: 0, omitted: 513, cards: [] },
+        },
+      }),
+  };
+  const formerlyCapped = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/durable-lifecycle-bay"),
+    { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(formerlyCappedQueue) },
+  );
+  const formerlyCappedBody = (await formerlyCapped.json()) as {
+    durable_lifecycle_bay: {
+      collection: { state: string };
+      inventory: { lifecycle_records: number };
+    };
+  };
+  assert.equal(formerlyCappedBody.durable_lifecycle_bay.collection.state, "complete");
+  assert.equal(formerlyCappedBody.durable_lifecycle_bay.inventory.lifecycle_records, 513);
+
   for (const inventory of [
-    { lifecycle_records: 513, target_revisions: 513, unique_targets: 513 },
+    { lifecycle_records: 10_001, target_revisions: 10_001, unique_targets: 10_001 },
     { lifecycle_records: 1, target_revisions: 2, unique_targets: 3 },
   ]) {
     const lifecycleRecords = Number(inventory.lifecycle_records);
@@ -728,7 +790,7 @@ test("durable lifecycle Bay fail-closes unknown snapshots without partial cards 
   const cappedStorage = new MemoryDurableStorage();
   const cappedLifecycle = new ExactReviewLifecycleProjectionStore(cappedStorage);
   cappedLifecycle.ensureSchemaSync();
-  for (let index = 1; index <= 513; index += 1) {
+  for (let index = 1; index <= 10_001; index += 1) {
     cappedLifecycle.recordAdmission({
       canonicalTargetKey: `openclaw/openclaw#${10_000 + index}`,
       fenceKey: `cap-fence-${index}`,

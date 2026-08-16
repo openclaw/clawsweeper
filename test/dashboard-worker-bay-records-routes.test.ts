@@ -13,6 +13,8 @@ import {
   exactReviewQueueStatusSnapshot,
   mergeBayJourneyState,
   mergeBayTerminalState,
+  recentWorkerHealthRunSample,
+  workerHealthSectionTimeoutMs,
   summarizeBayJourneyTimings,
   TRIAGE_ROUTING_GROUPS,
   triageRoutingGroupsForLabels,
@@ -29,6 +31,7 @@ import {
   signedStateAppendRequest,
   createExactReviewAdmissionHarness,
   buildExactReviewQueueRequest,
+  completedReviewRun,
   exactReviewPublicationOverrides,
   leasedExactReviewQueueItem,
   leasedExactReviewPublicationItem,
@@ -3192,8 +3195,8 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /owner\/repo#number/);
   assert.match(body, /id="drawer"/);
   assert.match(body, /function openDrawer\(id\)/);
-  assert.doesNotMatch(body, /id="queue-sample-drawer"/);
-  assert.match(body, /Aggregate terminal outcomes per tide/);
+  assert.match(body, /id="queue-sample-drawer"/);
+  assert.match(body, /Completed items per tide/);
   assert.match(body, /Master Sweeper/);
   assert.match(body, /id="bay-control-board"/);
   assert.match(body, /Review admission/);
@@ -3226,21 +3229,24 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /fetch\("\/api\/durable-lifecycle-bay"/);
   assert.match(body, /durableLifecycleLoading/);
   assert.match(body, /if\(state\.durableLifecycleLoading\)return/);
-  assert.match(body, /Aggregate counts from the exact-review lifecycle projection/);
-  assert.match(body, /Individual references are intentionally omitted/);
+  assert.match(body, /bounded sample of verified public GitHub references/);
+  assert.match(body, /Internal revisions and workflow details remain withheld/);
   assert.match(body, /Empty complete lifecycle snapshot/);
   assert.match(
     body,
-    /No aggregate counts are shown until a complete, fresh projection is available/,
+    /No lifecycle cards are shown until a complete, fresh projection is available/,
   );
-  assert.doesNotMatch(body, /function durableCard|class="durable-card"|public sample card/);
+  assert.match(body, /function durableCard|class="durable-card"/);
   const durableScriptStart = body.indexOf("function durableUnknown");
   const durableScriptEnd = body.indexOf("function hash", durableScriptStart);
   assert.ok(durableScriptStart > 0 && durableScriptEnd > durableScriptStart);
   const durableScript = body.slice(durableScriptStart, durableScriptEnd);
   assert.doesNotMatch(durableScript, /\/api\/status|workers|current_step|stageFor/);
-  assert.match(durableScript, /sample\.limit!==0/);
-  assert.doesNotMatch(durableScript, /target\.repository|target\.number|target\.url/);
+  assert.match(durableScript, /sample\.limit!==24/);
+  assert.doesNotMatch(
+    durableScript,
+    /target\.url|terminal_history|facts|claim_count|canonical_receipts/,
+  );
   const durableTarget = { innerHTML: "" };
   const durableProvenance = { textContent: "" };
   const durableState = { durableLifecycle: null as unknown };
@@ -3299,7 +3305,31 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
         terminal_attention: 1,
         private_lane_marker: 99,
       },
-      sample: { limit: 0, returned: 0, omitted: 6, cards: [] },
+      sample: {
+        limit: 24,
+        returned: 2,
+        omitted: 4,
+        cards: [
+          {
+            repository: "openclaw/openclaw",
+            item_number: 41,
+            lane: "pending",
+            state: "pending",
+            current_revision: true,
+            updated_at: generatedAt,
+            title: "must-not-surface",
+            url: "https://example.invalid/private?marker=1",
+          },
+          {
+            repository: "openclaw/clawhub",
+            item_number: 42,
+            lane: "completed",
+            state: "completed",
+            current_revision: true,
+            updated_at: generatedAt,
+          },
+        ],
+      },
       private_projection_marker: {
         repository: "private-owner/private-project",
         item: 77,
@@ -3315,10 +3345,27 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     unique_targets: 4,
   });
   assert.deepEqual(JSON.parse(JSON.stringify(closedLifecycle.sample)), {
-    limit: 0,
-    returned: 0,
-    omitted: 6,
-    cards: [],
+    limit: 24,
+    returned: 2,
+    omitted: 4,
+    cards: [
+      {
+        repository: "openclaw/openclaw",
+        item_number: 41,
+        lane: "pending",
+        state: "pending",
+        current_revision: true,
+        updated_at: new Date(generatedAt).toISOString(),
+      },
+      {
+        repository: "openclaw/clawhub",
+        item_number: 42,
+        lane: "completed",
+        state: "completed",
+        current_revision: true,
+        updated_at: new Date(generatedAt).toISOString(),
+      },
+    ],
   });
   assert.doesNotMatch(
     JSON.stringify(closedLifecycle),
@@ -3326,17 +3373,39 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   );
   durableState.durableLifecycle = closedLifecycle;
   durableRuntime.renderDurableLifecycle();
-  assert.match(durableTarget.innerHTML, /Aggregate inventory: 6 lifecycle records/);
+  assert.match(durableTarget.innerHTML, /Inventory: 6 lifecycle records/);
   assert.match(durableTarget.innerHTML, /Pending<span>1<\/span>/);
   assert.match(durableTarget.innerHTML, /Terminal attention<span>1<\/span>/);
   assert.doesNotMatch(
     durableTarget.innerHTML,
-    /private-owner|example\.invalid|href=|target revision card/,
+    /private-owner|example\.invalid|must-not-surface|target revision card/,
   );
+  assert.match(
+    durableTarget.innerHTML,
+    /href="https:\/\/github\.com\/openclaw\/openclaw\/issues\/41"/,
+  );
+  assert.match(durableTarget.innerHTML, /openclaw\/clawhub#42/);
+  const formerlyCapped = durableRuntime.durableSnapshot({
+    durable_lifecycle_bay: {
+      ...lifecyclePayload.durable_lifecycle_bay,
+      inventory: { lifecycle_records: 513, target_revisions: 513, unique_targets: 513 },
+      lanes: {
+        pending: 513,
+        acknowledgement_pending: 0,
+        completed: 0,
+        superseded: 0,
+        requeued: 0,
+        terminal_attention: 0,
+      },
+      sample: { limit: 24, returned: 0, omitted: 513, cards: [] },
+    },
+  });
+  assert.equal(formerlyCapped.collection.state, "complete");
+  assert.equal(formerlyCapped.inventory.lifecycle_records, 513);
   for (const malformed of [
     {
       ...lifecyclePayload.durable_lifecycle_bay,
-      inventory: { ...lifecyclePayload.durable_lifecycle_bay.inventory, lifecycle_records: 513 },
+      inventory: { ...lifecyclePayload.durable_lifecycle_bay.inventory, lifecycle_records: 10_001 },
     },
     {
       ...lifecyclePayload.durable_lifecycle_bay,
@@ -3345,7 +3414,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     {
       ...lifecyclePayload.durable_lifecycle_bay,
       sample: {
-        limit: 1,
+        limit: 24,
         returned: 1,
         omitted: 5,
         cards: [{ private_marker: "must-not-surface" }],
@@ -3563,9 +3632,9 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /Typical trigger → final review/);
   assert.match(body, /median; mean is shown for context/);
   assert.match(body, /Awaiting a completed journey/);
-  assert.doesNotMatch(body, /id="queue-sample-drawer"|function openQueueSampleDrawer/);
-  assert.match(body, /aggregate work unit/);
-  assert.doesNotMatch(body, /data-overflow-stage|var known=rows/);
+  assert.match(body, /id="queue-sample-drawer"|function openQueueSampleDrawer/);
+  assert.match(body, /more GitHub item/);
+  assert.match(body, /data-overflow-stage/);
   assert.match(body, /function laneHelp/);
   assert.match(body, /lane-nudge/);
   assert.match(body, /id="overall-average"/);
@@ -3597,7 +3666,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /OUTCOME_CONFIRM_MS=150000/);
   assert.match(body, /function reconcileConfirmingOutcomes/);
   assert.match(body, /confirming-flag/);
-  assert.match(body, /Aggregate terminal outcome/);
+  assert.match(body, /completed item/);
   assert.match(body, /data-key=/);
   assert.match(body, /aria-pressed=/);
   assert.match(body, /function laneChatCopy/);
@@ -3635,6 +3704,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     Number,
     String,
     BAY_OUTCOMES: ["success", "failure", "cancelled"],
+    strictBayAction: () => null,
     bayObject: (value: unknown) =>
       value && typeof value === "object" && !Array.isArray(value) ? value : null,
   });
@@ -3786,6 +3856,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     String,
     STAGES: ["arriving", "setting-up", "reviewing", "publishing", "applying", "repairing"],
     queueStageLabel: () => "aggregate queue stage",
+    strictBayAction: () => null,
   });
   const closedStages = {
     arriving: 0,
@@ -3908,7 +3979,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /renderRepos\(\)/);
   assert.match(body, /replacement\.focus/);
   assert.match(body, /history\.replaceState/);
-  const drawerSourceStart = body.indexOf("function publicReferenceSource(");
+  const drawerSourceStart = body.indexOf("var PUBLIC_ACTION_STEP_LABELS=");
   const drawerSourceEnd = body.indexOf("function laneChatCopy(", drawerSourceStart);
   assert.ok(drawerSourceStart > 0 && drawerSourceEnd > drawerSourceStart);
   const drawerElements = new Map<string, Record<string, any>>();
@@ -3944,6 +4015,33 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     history: { replaceState: () => undefined },
     location: drawerLocation,
     state: {
+      filter: "all",
+      data: {
+        exact_review_queue: {
+          bay_projection: {
+            complete: true,
+            activity: {
+              complete: true,
+              queue_stages: {
+                arriving: 0,
+                "setting-up": 0,
+                reviewing: 1,
+                publishing: 0,
+                applying: 0,
+                repairing: 0,
+              },
+              live_stages: {
+                arriving: 0,
+                "setting-up": 0,
+                reviewing: 0,
+                publishing: 0,
+                applying: 0,
+                repairing: 0,
+              },
+            },
+          },
+        },
+      },
       items: [
         {
           id: "queue:openclaw/openclaw#77",
@@ -3957,13 +4055,33 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
           item_url: "https://invalid.example/private?token=SYNTHETIC_BLADE_PRIVATE_TITLE",
           run_url: "https://invalid.example/run/SYNTHETIC_BLADE_PRIVATE_TITLE",
           failure_key: "SYNTHETIC_BLADE_PRIVATE_TITLE",
+          action: {
+            repository: "openclaw/clawsweeper",
+            run_id: 7001,
+            job_id: 8001,
+            status: "in_progress",
+            started_at: "2026-08-16T12:00:00.000Z",
+            steps_complete: true,
+            steps: [
+              {
+                sequence: 1,
+                kind: "setup",
+                status: "completed",
+                conclusion: "success",
+                name: "SYNTHETIC_BLADE_PRIVATE_STEP",
+              },
+              {
+                sequence: 2,
+                kind: "review",
+                status: "in_progress",
+                conclusion: null,
+                name: "SYNTHETIC_BLADE_PRIVATE_CURRENT_STEP",
+              },
+            ],
+          },
         },
       ],
     },
-    strictBayItemNumber: (value: unknown) =>
-      typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null,
-    strictBayRepository: (value: unknown) =>
-      typeof value === "string" && /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(value) ? value : null,
   });
   new Script(
     `${body.slice(drawerSourceStart, drawerSourceEnd)};openDrawer("queue:openclaw/openclaw#77");`,
@@ -3976,12 +4094,83 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(drawerText, /Bounded queue sample/);
   assert.match(drawerText, /https:\/\/github\.com\/openclaw\/openclaw\/issues\/77/);
   assert.match(drawerText, /https:\/\/github\.com\/openclaw\/openclaw/);
+  assert.match(
+    drawerText,
+    /https:\/\/github\.com\/openclaw\/clawsweeper\/actions\/runs\/7001\/job\/8001/,
+  );
+  assert.match(drawerText, /Set up job/);
+  assert.match(drawerText, /Run review/);
+  assert.match(drawerText, /class="current"/);
+  assert.match(drawerText, /1 \/ 2 steps/);
   assert.doesNotMatch(drawerText, /SYNTHETIC_BLADE_PRIVATE_TITLE|invalid\.example|token=/i);
   assert.equal(drawerElement("drawer").open, true);
+  drawerContext.state.items = Array.from({ length: 26 }, (_, index) => ({
+    id: `queue:openclaw/openclaw#${index + 1}`,
+    key: `openclaw/openclaw#${index + 1}`,
+    repository: "openclaw/openclaw",
+    number: index + 1,
+    stage: "reviewing",
+    status: "pending",
+    source: "queue",
+    queue_item: true,
+    outcome: null,
+  }));
+  drawerContext.state.data.exact_review_queue.bay_projection.activity.queue_stages.reviewing = 28;
+  new Script('openQueueSampleDrawer("reviewing", false);').runInContext(drawerContext);
+  assert.equal(drawerElement("queue-sample-drawer").open, true);
+  assert.match(drawerElement("queue-sample-body").innerHTML, /openclaw\/openclaw#25/);
+  assert.match(drawerElement("queue-sample-body").innerHTML, /openclaw\/openclaw#26/);
+  assert.match(
+    drawerElement("queue-sample-body").innerHTML,
+    /2 additional active items have no verified public GitHub reference/,
+  );
+  assert.match(drawerElement("queue-sample-body").innerHTML, /data-overflow-reference/);
+  drawerContext.state.items.push(
+    ...Array.from({ length: 2 }, (_, index) => ({
+      id: `queue:openclaw/clawsweeper#${index + 1}`,
+      key: `openclaw/clawsweeper#${index + 1}`,
+      repository: "openclaw/clawsweeper",
+      number: index + 1,
+      stage: "reviewing",
+      status: "pending",
+      source: "queue",
+      queue_item: true,
+      outcome: null,
+    })),
+  );
+  drawerContext.state.data.exact_review_queue.bay_projection.activity.queue_stages.reviewing = 30;
+  drawerContext.state.filter = "openclaw/openclaw";
+  new Script('openQueueSampleDrawer("reviewing", false);').runInContext(drawerContext);
+  assert.doesNotMatch(
+    drawerElement("queue-sample-body").innerHTML,
+    /additional active items have no verified public GitHub reference/,
+  );
+  assert.doesNotMatch(drawerElement("queue-sample-body").innerHTML, /openclaw\/clawsweeper/);
+  drawerContext.state.filter = "all";
+  drawerContext.state.items = [
+    {
+      id: "live:openclaw/openclaw#77",
+      key: "openclaw/openclaw#77",
+      repository: "openclaw/openclaw",
+      number: 77,
+      stage: "completed",
+      status: "pending",
+      source: "live",
+      action: {
+        repository: "openclaw/clawsweeper",
+        run_id: 7001,
+        job_id: 8001,
+        status: "in_progress",
+        started_at: "2026-08-16T12:00:00.000Z",
+        steps_complete: true,
+        steps: [
+          { sequence: 1, kind: "setup", status: "completed", conclusion: "success" },
+          { sequence: 2, kind: "review", status: "in_progress", conclusion: null },
+        ],
+      },
+    },
+  ];
   drawerLocation.hash = "#item-openclaw%2Fopenclaw%2377";
-  drawerContext.state.items[0].id = "live:openclaw/openclaw#77";
-  drawerContext.state.items[0].stage = "completed";
-  drawerContext.state.items[0].source = "live";
   new Script("openDrawerFromHash();").runInContext(drawerContext);
   assert.match(drawerElement("drawer-body").innerHTML, /Completed/);
   assert.match(drawerElement("drawer-body").innerHTML, /Bounded live sample/);
@@ -4070,11 +4259,11 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
   assert.doesNotMatch(body, new RegExp(marker, "i"));
 
   const projectionStart = body.indexOf("var MAX_BAY_COUNT");
-  const projectionEnd = body.indexOf("function hash", projectionStart);
+  const projectionEnd = body.indexOf("function terminalRows", projectionStart);
   assert.ok(projectionStart > 0 && projectionEnd > projectionStart);
   const projectionSource = body.slice(projectionStart, projectionEnd);
   const runtime = new Script(
-    `${projectionSource};({publicBayStatus,unavailableBayStatus})`,
+    `${projectionSource};({publicBayStatus,unavailableBayStatus,expandQueue})`,
   ).runInNewContext({
     Array,
     Date,
@@ -4116,6 +4305,31 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
               source: "live",
               title: marker,
               url: `https://example.invalid/item?query=${marker}`,
+              action: {
+                repository: "openclaw/clawsweeper",
+                run_id: 7001,
+                job_id: 8001,
+                status: "in_progress",
+                started_at: "2026-08-16T12:00:00.000Z",
+                steps_complete: true,
+                steps: [
+                  {
+                    sequence: 1,
+                    kind: "setup",
+                    status: "completed",
+                    conclusion: "success",
+                    name: marker,
+                  },
+                  {
+                    sequence: 2,
+                    kind: "review",
+                    status: "in_progress",
+                    conclusion: null,
+                    name: marker,
+                  },
+                ],
+                url: `https://example.invalid/action?token=${marker}`,
+              },
             },
             {
               repository: "openclaw/clawsweeper",
@@ -4207,6 +4421,18 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
         item_number: 81,
         stage: "reviewing",
         source: "live",
+        action: {
+          repository: "openclaw/clawsweeper",
+          run_id: 7001,
+          job_id: 8001,
+          status: "in_progress",
+          started_at: "2026-08-16T12:00:00.000Z",
+          steps_complete: true,
+          steps: [
+            { sequence: 1, kind: "setup", status: "completed", conclusion: "success" },
+            { sequence: 2, kind: "review", status: "in_progress", conclusion: null },
+          ],
+        },
       },
       {
         repository: "openclaw/clawsweeper",
@@ -4225,6 +4451,54 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
     { outcome: "failure" },
     { outcome: "cancelled" },
   ]);
+  const expanded = runtime.expandQueue(projected);
+  assert.equal(expanded[0].started_at, "2026-08-16T12:00:00.000Z");
+  assert.equal(expanded[0].run_id, 7001);
+  const chatStart = body.indexOf("function laneChatCopy(");
+  const chatEnd = body.indexOf("function runLaneChat(", chatStart);
+  const chatRuntime = new Script(
+    `${body.slice(chatStart, chatEnd)};laneChatCopy({getAttribute:function(){return "";}}, {getAttribute:function(){return "";}}, 37)`,
+  ).runInNewContext({
+    hash: () => 0,
+    state: { chatSequence: 0 },
+  });
+  assert.match(chatRuntime.answer, /37m/);
+  const chatRunEnd = body.indexOf("function updateTimingSummary(", chatStart);
+  const chatStartedAt = new Date(Date.now() - 37 * 60_000).toISOString();
+  const chatNodes = ["asking", "replying"].map((id, index) => ({
+    classList: { add: () => undefined },
+    getAttribute: () => id,
+    getBoundingClientRect: () => ({ left: index * 20, top: 20, width: 10, height: 10 }),
+  }));
+  let integratedChatAnswer = "";
+  new Script(`${body.slice(chatStart, chatRunEnd)};runLaneChat();`).runInNewContext({
+    Array,
+    Date,
+    Math,
+    Number,
+    STAGES: ["reviewing"],
+    clearLaneChat: () => undefined,
+    document: {
+      querySelectorAll: (selector: string) =>
+        selector.includes('data-stage="reviewing"') ? chatNodes : [],
+    },
+    hash: () => 0,
+    scheduleLaneChat: () => undefined,
+    setTimeout: () => 1,
+    showLaneChat: (_asking: unknown, _replying: unknown, _question: string, answer: string) => {
+      integratedChatAnswer = answer;
+    },
+    state: {
+      chatSequence: 0,
+      chatTimer: null,
+      items: chatNodes.map((node) => ({
+        id: node.getAttribute(),
+        started_at: chatStartedAt,
+      })),
+      lastChatStage: null,
+    },
+  });
+  assert.match(integratedChatAnswer, /37m/);
   const serialized = JSON.stringify(projected);
   assert.doesNotMatch(serialized, new RegExp(marker, "i"));
   assert.doesNotMatch(
@@ -4272,6 +4546,21 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
     assert.equal(rejected.bay.terminal_count, 0);
     assert.doesNotMatch(JSON.stringify(rejected), new RegExp(marker, "i"));
   }
+});
+
+test("OpenClaw Bay samples enough completed worker runs to fill a distinct 20-item tide", () => {
+  const sample = recentWorkerHealthRunSample(
+    Array.from({ length: 45 }, (_, index) =>
+      completedReviewRun(index + 1, 90_000 + index, "success", (index + 1) * 1_000),
+    ),
+  );
+  assert.equal(sample.length, 40);
+  assert.deepEqual(
+    sample.map((run) => run.id),
+    Array.from({ length: 40 }, (_, index) => index + 1),
+  );
+  assert.equal(workerHealthSectionTimeoutMs(10), 60_000);
+  assert.ok(workerHealthSectionTimeoutMs(10) >= Math.ceil(sample.length / 10) * 3 * 4_500);
 });
 
 test("OpenClaw Bay shares a bounded 20-outcome tide buffer", () => {

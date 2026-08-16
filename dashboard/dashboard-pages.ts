@@ -2080,9 +2080,65 @@ function dashboardPublicBayReferences(value) {
     const key = repository + "#" + itemNumber;
     if (seen.has(key)) continue;
     seen.add(key);
-    references.push({ repository, item_number: itemNumber, stage: entry.stage, source: entry.source });
+    const action = dashboardPublicBayAction(entry.action);
+    references.push({
+      repository,
+      item_number: itemNumber,
+      stage: entry.stage,
+      source: entry.source,
+      ...(action ? { action } : {})
+    });
   }
   return references;
+}
+const PUBLIC_ACTION_STEP_LABELS = {
+  setup: "Set up job",
+  checkout: "Check out repository",
+  dependencies: "Prepare dependencies",
+  lease: "Acquire work lease",
+  review: "Run review",
+  proof: "Verify proof",
+  test: "Run checks",
+  publish: "Publish result",
+  apply: "Apply result",
+  finalize: "Finalize",
+  cleanup: "Clean up",
+  workflow: "Workflow step"
+};
+function dashboardPublicBayAction(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const repository = typeof value.repository === "string" ? value.repository.trim().toLowerCase() : "";
+  const runId = value.run_id;
+  const jobId = value.job_id;
+  const statuses = new Set(["queued", "in_progress", "completed"]);
+  const conclusions = new Set(["success", "failure", "cancelled", "skipped", "neutral", "timed_out", "action_required", "startup_failure", "stale"]);
+  const startedAt = value.started_at === null ? null : dashboardObservabilityTimestamp(value.started_at);
+  if (
+    repository.length > 200 ||
+    !/^[a-z0-9_.-]+\\/[a-z0-9_.-]+$/.test(repository) ||
+    typeof runId !== "number" || !Number.isSafeInteger(runId) || runId <= 0 || runId > 1000000000000000 ||
+    (jobId !== undefined && (typeof jobId !== "number" || !Number.isSafeInteger(jobId) || jobId <= 0 || jobId > 1000000000000000)) ||
+    !statuses.has(value.status) ||
+    (value.started_at !== null && !startedAt) ||
+    typeof value.steps_complete !== "boolean" ||
+    !Array.isArray(value.steps) || value.steps.length > 100
+  ) return null;
+  const steps = [];
+  const seen = new Set();
+  for (const step of value.steps) {
+    if (!step || typeof step !== "object" || Array.isArray(step)) return null;
+    if (
+      typeof step.sequence !== "number" || !Number.isSafeInteger(step.sequence) || step.sequence <= 0 || step.sequence > 1000 || seen.has(step.sequence) ||
+      !Object.hasOwn(PUBLIC_ACTION_STEP_LABELS, step.kind) ||
+      !statuses.has(step.status) ||
+      (step.conclusion !== null && !conclusions.has(step.conclusion))
+    ) return null;
+    seen.add(step.sequence);
+    steps.push({ sequence: step.sequence, kind: step.kind, status: step.status, conclusion: step.conclusion });
+  }
+  if ((!value.steps_complete && steps.length) || (value.steps_complete && steps.length !== value.steps.length)) return null;
+  steps.sort((left, right) => left.sequence - right.sequence);
+  return { repository, run_id: runId, ...(jobId === undefined ? {} : { job_id: jobId }), status: value.status, started_at: startedAt, steps_complete: value.steps_complete, steps };
 }
 function dashboardStatusSnapshot(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -3667,6 +3723,14 @@ function renderPublicReferenceDialog(row, key) {
   const repositoryUrl = "https://github.com/" + row.repository;
   const itemUrl = repositoryUrl + "/issues/" + row.item_number;
   const source = row.source === "queue" ? "Bounded queue sample" : "Bounded live sample";
+  const action = dashboardPublicBayAction(row.action);
+  const completedSteps = action ? action.steps.filter(step => step.status === "completed").length : 0;
+  const actionRepositoryUrl = action ? "https://github.com/" + action.repository : null;
+  const runUrl = action ? actionRepositoryUrl + "/actions/runs/" + action.run_id : null;
+  const jobUrl = action?.job_id ? runUrl + "/job/" + action.job_id : null;
+  const stepRows = action?.steps.map(step =>
+    '<li class="step-row ' + esc(step.status) + '"><i class="step-mark"></i><strong>' + esc(PUBLIC_ACTION_STEP_LABELS[step.kind]) + '</strong><span>' + esc((step.conclusion || step.status).replaceAll("_", " ")) + '</span></li>'
+  ).join("") || "";
   document.getElementById("worker-dialog-heading").innerHTML =
     '<div><span class="pill">' + esc(row.source) + '</span> <span class="pill">' + esc(row.stage) + '</span></div>' +
     '<h3 id="worker-dialog-title">' + esc(key) + '</h3>' +
@@ -3677,13 +3741,17 @@ function renderPublicReferenceDialog(row, key) {
       '<div class="drawer-stat"><span>Source</span><strong>' + esc(source) + '</strong></div>' +
       '<div class="drawer-stat"><span>Repository</span><strong>' + esc(row.repository) + '</strong></div>' +
       '<div class="drawer-stat"><span>Reference</span><strong>#' + esc(row.item_number) + '</strong></div>' +
+      (action ? '<div class="drawer-stat"><span>Action status</span><strong>' + esc(action.status.replaceAll("_", " ")) + '</strong></div>' : '') +
+      (action ? '<div class="drawer-stat"><span>Progress</span><strong>' + esc(completedSteps) + ' / ' + esc(action.steps.length) + ' steps</strong></div>' : '') +
     '</div>' +
     '<div class="drawer-links">' +
       linkClass(itemUrl, "Open issue or pull request", "pill run-link") +
       linkClass(repositoryUrl, "Open repository", "pill run-link") +
+      linkClass(jobUrl, "Open job", "pill run-link") +
+      linkClass(runUrl, "Open workflow run", "pill run-link") +
     '</div>' +
-    '<h2>Public status</h2>' +
-    '<ol class="step-list"><li class="step-row"><i class="step-mark"></i><strong>Reference verified</strong><span>Public repository and item coordinates only</span></li><li class="step-row in_progress"><i class="step-mark"></i><strong>Current aggregate stage</strong><span>' + esc(row.stage) + '</span></li></ol>';
+    '<h2>' + (action ? 'Step timeline' : 'Public status') + '</h2>' +
+    (stepRows ? '<ol class="step-list">' + stepRows + '</ol>' : '<ol class="step-list"><li class="step-row completed"><i class="step-mark"></i><strong>Reference verified</strong><span>Verified public GitHub coordinates</span></li><li class="step-row in_progress"><i class="step-mark"></i><strong>Current Bay stage</strong><span>' + esc(row.stage) + '</span></li></ol>');
   if (!dialog.open) dialog.showModal();
   history.replaceState(null, "", "#public-reference-" + encodeURIComponent(key));
 }

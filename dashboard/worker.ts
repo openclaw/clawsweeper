@@ -410,9 +410,29 @@ const WORKER_JOB_CACHE_TTL_SECONDS = 60;
 const WORKER_JOB_IDLE_CACHE_TTL_SECONDS = 10;
 const WORKER_JOB_PAGE_LIMIT = 3;
 const DEFAULT_WORKER_JOB_FETCH_CONCURRENCY = 12;
-const RECENT_WORKER_HEALTH_RUN_LIMIT = 20;
+// The tide needs 20 distinct terminal items. Sampling exactly 20 runs leaves no
+// room for support/fallback jobs, repeated targets, or still-active items and can
+// strand the tide indefinitely just below its threshold.
+const RECENT_WORKER_HEALTH_RUN_LIMIT = BAY_TIDE_THRESHOLD * 2;
 const WORKER_HEALTH_CACHE_TTL_SECONDS = 120;
 const DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY = 10;
+
+function workerHealthFetchConcurrency(env) {
+  return Math.max(
+    1,
+    Math.floor(
+      numberFrom(env.WORKER_HEALTH_FETCH_CONCURRENCY, DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY),
+    ),
+  );
+}
+
+export function workerHealthSectionTimeoutMs(
+  fetchConcurrency = DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY,
+) {
+  const concurrency = Math.max(1, Math.floor(Number(fetchConcurrency) || 1));
+  const waves = Math.ceil(RECENT_WORKER_HEALTH_RUN_LIMIT / concurrency);
+  return waves * WORKER_JOB_PAGE_LIMIT * GITHUB_TIMEOUT_MS + OPTIONAL_SECTION_TIMEOUT_MS;
+}
 const WORKER_TARGET_CACHE_TTL_SECONDS = 900;
 const WORKER_TARGET_BATCH_SIZE = 50;
 const AUTOMERGE_CACHE_TTL_SECONDS = 300;
@@ -1826,12 +1846,255 @@ const PUBLIC_BAY_ITEM_NUMBER_LIMIT = 1_000_000_000;
 const PUBLIC_BAY_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const PUBLIC_BAY_REFERENCE_SOURCES = new Set(["queue", "live"]);
 const PUBLIC_BAY_OUTCOMES = new Set(["success", "failure", "cancelled"]);
+const PUBLIC_BAY_ACTION_CONCLUSIONS = new Set([
+  "success",
+  "failure",
+  "cancelled",
+  "skipped",
+  "neutral",
+  "timed_out",
+  "action_required",
+  "startup_failure",
+  "stale",
+]);
+const PUBLIC_BAY_STEP_KINDS = new Set([
+  "setup",
+  "checkout",
+  "dependencies",
+  "lease",
+  "review",
+  "proof",
+  "test",
+  "publish",
+  "apply",
+  "finalize",
+  "cleanup",
+  "workflow",
+]);
+const PUBLIC_BAY_ACTION_ID_LIMIT = 1_000_000_000_000_000;
+const PUBLIC_BAY_ACTION_STEP_LIMIT = 100;
+type PublicBayActionStep = {
+  sequence: number;
+  kind: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: string | null;
+};
+type PublicBayAction = {
+  repository: string;
+  run_id: number;
+  status: "queued" | "in_progress" | "completed";
+  started_at: string | null;
+  steps_complete: boolean;
+  steps: PublicBayActionStep[];
+  job_id?: number;
+};
 type PublicBayReference = {
   repository: string;
   item_number: number;
   stage: (typeof PUBLIC_BAY_STAGES)[number];
   source: "queue" | "live";
+  action?: PublicBayAction;
 };
+
+function publicBayActionId(value) {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value > 0 &&
+    value <= PUBLIC_BAY_ACTION_ID_LIMIT
+    ? value
+    : null;
+}
+
+function publicBayActionStatus(value) {
+  const status = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (["queued", "pending", "waiting", "requested"].includes(status)) return "queued" as const;
+  if (["in_progress", "running"].includes(status)) return "in_progress" as const;
+  if (status === "completed") return "completed" as const;
+  return null;
+}
+
+function publicBayActionConclusion(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const conclusion = String(value).trim().toLowerCase();
+  return PUBLIC_BAY_ACTION_CONCLUSIONS.has(conclusion) ? conclusion : undefined;
+}
+
+function publicBayStepKind(value) {
+  const name = String(value || "")
+    .slice(0, 256)
+    .trim()
+    .toLowerCase();
+  if (/post .*checkout|cleanup|clean up|tear down|stop (?:containers?|services?)/.test(name)) {
+    return "cleanup";
+  }
+  if (/checkout|check out/.test(name)) return "checkout";
+  if (/pnpm|npm|node|dependency|dependencies|install|hydrate|cache/.test(name)) {
+    return "dependencies";
+  }
+  if (/claim|lease|admission|reserve/.test(name)) return "lease";
+  if (/publish|upload|artifact|comment|report/.test(name)) return "publish";
+  if (/apply|merge|close|route|release/.test(name)) return "apply";
+  if (/final|complete|conclude|summary/.test(name)) return "finalize";
+  if (/proof|verify|verification|attest/.test(name)) return "proof";
+  if (/test|lint|format|build|check|validate/.test(name)) return "test";
+  if (/review|codex|analyse|analyze|inspect/.test(name)) return "review";
+  if (/setup|set up|prepare|initialize|initialise/.test(name)) return "setup";
+  return "workflow";
+}
+
+function publicBayActionSteps(value) {
+  if (value === undefined) return { complete: false, steps: [] as PublicBayActionStep[] };
+  if (!Array.isArray(value) || value.length > PUBLIC_BAY_ACTION_STEP_LIMIT) {
+    return { complete: false, steps: [] as PublicBayActionStep[] };
+  }
+  const steps: PublicBayActionStep[] = [];
+  const seen = new Set<number>();
+  for (const entry of value) {
+    const step = objectValue(entry);
+    const sequence = publicBayActionId(step.sequence ?? step.number);
+    const status = publicBayActionStatus(step.status);
+    const conclusion = publicBayActionConclusion(step.conclusion);
+    const projectedKind = typeof step.kind === "string" ? step.kind : publicBayStepKind(step.name);
+    if (
+      sequence === null ||
+      sequence > 1_000 ||
+      seen.has(sequence) ||
+      !status ||
+      conclusion === undefined ||
+      !PUBLIC_BAY_STEP_KINDS.has(projectedKind)
+    ) {
+      return { complete: false, steps: [] as PublicBayActionStep[] };
+    }
+    seen.add(sequence);
+    steps.push({ sequence, kind: projectedKind, status, conclusion });
+  }
+  steps.sort((left, right) => left.sequence - right.sequence);
+  return { complete: true, steps };
+}
+
+function publicBayProjectedAction(value, allowedRepositories: ReadonlySet<string>) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = objectValue(value);
+  const repository = String(source.repository || "")
+    .trim()
+    .toLowerCase();
+  const runId = publicBayActionId(source.run_id);
+  const jobId = source.job_id === undefined ? undefined : publicBayActionId(source.job_id);
+  const status = publicBayActionStatus(source.status);
+  const startedAt = source.started_at === null ? null : publicTimestamp(source.started_at);
+  const steps = publicBayActionSteps(source.steps);
+  if (
+    !PUBLIC_BAY_REPOSITORY_PATTERN.test(repository) ||
+    !allowedRepositories.has(repository) ||
+    runId === null ||
+    jobId === null ||
+    !status ||
+    (source.started_at !== null && startedAt === null) ||
+    typeof source.steps_complete !== "boolean" ||
+    (source.steps_complete && !steps.complete) ||
+    (!source.steps_complete && Array.isArray(source.steps) && source.steps.length > 0)
+  ) {
+    return null;
+  }
+  return {
+    repository,
+    run_id: runId,
+    ...(jobId === undefined ? {} : { job_id: jobId }),
+    status,
+    started_at: startedAt,
+    steps_complete: source.steps_complete && steps.complete,
+    steps: source.steps_complete && steps.complete ? steps.steps : [],
+  } satisfies PublicBayAction;
+}
+
+function githubActionUrl(value, kind: "run" | "job") {
+  if (typeof value !== "string" || value.length > 300) return null;
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "github.com" ||
+      url.username ||
+      url.password ||
+      url.hash
+    ) {
+      return null;
+    }
+    if (kind === "run" && url.search) return null;
+    if (kind === "job" && url.search && url.search !== "?check_suite_focus=true") return null;
+    if (kind === "run") {
+      const match = url.pathname.match(
+        /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/actions\/runs\/(\d+)\/?$/,
+      );
+      const id = match ? publicBayActionId(Number(match[3])) : null;
+      return !match || id === null
+        ? null
+        : { repository: `${match[1]}/${match[2]}`.toLowerCase(), id };
+    }
+    const actionJob = url.pathname.match(
+      /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/actions\/runs\/(\d+)\/job\/(\d+)\/?$/,
+    );
+    if (actionJob) {
+      const runId = publicBayActionId(Number(actionJob[3]));
+      const id = publicBayActionId(Number(actionJob[4]));
+      return runId === null || id === null
+        ? null
+        : {
+            repository: `${actionJob[1]}/${actionJob[2]}`.toLowerCase(),
+            run_id: runId,
+            id,
+          };
+    }
+    const legacyJob = url.pathname.match(
+      /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/runs\/(\d+)\/?$/,
+    );
+    const id = legacyJob ? publicBayActionId(Number(legacyJob[3])) : null;
+    return !legacyJob || id === null
+      ? null
+      : { repository: `${legacyJob[1]}/${legacyJob[2]}`.toLowerCase(), id };
+  } catch {
+    return null;
+  }
+}
+
+function publicBayActionFromWorker(value, allowedRepositories: ReadonlySet<string>) {
+  const source = objectValue(value);
+  if (source.action !== undefined)
+    return publicBayProjectedAction(source.action, allowedRepositories);
+  const run = githubActionUrl(source.run_url, "run");
+  const job = githubActionUrl(source.job_url, "job");
+  const runId = publicBayActionId(source.run_id);
+  const jobId = publicBayActionId(source.job_id ?? source.id);
+  const repository = run?.repository || job?.repository || "";
+  const status = publicBayActionStatus(source.status);
+  const startedAt = publicTimestamp(source.started_at);
+  if (
+    !repository ||
+    !allowedRepositories.has(repository) ||
+    runId === null ||
+    !status ||
+    (source.started_at !== null && source.started_at !== undefined && startedAt === null) ||
+    (run && (run.repository !== repository || run.id !== runId)) ||
+    (job && job.repository !== repository) ||
+    (job && "run_id" in job && job.run_id !== runId) ||
+    (job && jobId !== null && job.id !== jobId) ||
+    (!run && !job)
+  ) {
+    return null;
+  }
+  const steps = publicBayActionSteps(source.steps);
+  return {
+    repository,
+    run_id: runId,
+    ...(job ? { job_id: job.id } : {}),
+    status,
+    started_at: startedAt,
+    steps_complete: steps.complete,
+    steps: steps.complete ? steps.steps : [],
+  } satisfies PublicBayAction;
+}
 
 function publicBayReference(
   value,
@@ -1859,11 +2122,13 @@ function publicBayReference(
   }
   const canonicalRepository = repository.toLowerCase();
   if (!allowedRepositories.has(canonicalRepository)) return undefined;
+  const action = publicBayProjectedAction(source.action, allowedRepositories);
   return {
     repository: canonicalRepository,
     item_number: itemNumber,
     stage: stage as (typeof PUBLIC_BAY_STAGES)[number],
     source: referenceSource,
+    ...(action ? { action } : {}),
   };
 }
 
@@ -1911,7 +2176,16 @@ function publicBayTerminalOutcome(value, allowedRepositories: ReadonlySet<string
   ) {
     const canonicalRepository = repository.toLowerCase();
     if (allowedRepositories.has(canonicalRepository)) {
-      return { repository: canonicalRepository, item_number: itemNumber, outcome };
+      const action = publicBayActionFromWorker(
+        { ...source, status: "completed", run_url: source.run_url ?? source.job_url },
+        allowedRepositories,
+      );
+      return {
+        repository: canonicalRepository,
+        item_number: itemNumber,
+        outcome,
+        ...(action ? { action } : {}),
+      };
     }
   }
   return { outcome };
@@ -2178,12 +2452,16 @@ function publicWorkerTargetKeys(value) {
   return { complete: true, keys: [...keys] };
 }
 
-function publicBayActiveTargets(workers, producerComplete = false) {
+function publicBayActiveTargets(
+  workers,
+  producerComplete = false,
+  allowedRepositories: ReadonlySet<string> = new Set(),
+) {
   const workerList = Array.isArray(workers) ? workers : [];
   let complete = producerComplete === true && Array.isArray(workers) && workerList.length <= 100;
   const selected = new Map<
     string,
-    { stage: (typeof PUBLIC_BAY_STAGES)[number]; startedAt: number }
+    { stage: (typeof PUBLIC_BAY_STAGES)[number]; startedAt: number; action: PublicBayAction | null }
   >();
   for (const worker of workerList.slice(0, 100)) {
     if (!worker || typeof worker !== "object" || Array.isArray(worker)) {
@@ -2199,6 +2477,7 @@ function publicBayActiveTargets(workers, producerComplete = false) {
       continue;
     }
     const startedAt = Date.parse(String(record.started_at || ""));
+    const action = publicBayActionFromWorker(record, allowedRepositories);
     if (!Number.isFinite(startedAt)) complete = false;
     for (const itemKey of targets.keys) {
       const previous = selected.get(itemKey);
@@ -2209,7 +2488,11 @@ function publicBayActiveTargets(workers, producerComplete = false) {
           PUBLIC_BAY_STAGES.indexOf(stage as (typeof PUBLIC_BAY_STAGES)[number]) >
             PUBLIC_BAY_STAGES.indexOf(previous.stage as (typeof PUBLIC_BAY_STAGES)[number]))
       ) {
-        selected.set(itemKey, { stage, startedAt: Number.isFinite(startedAt) ? startedAt : 0 });
+        selected.set(itemKey, {
+          stage,
+          startedAt: Number.isFinite(startedAt) ? startedAt : 0,
+          action,
+        });
       }
     }
   }
@@ -2230,6 +2513,7 @@ function publicBayActiveTargets(workers, producerComplete = false) {
         item_number: Number(match[2]),
         stage: selectedItem.stage,
         source: "live" as const,
+        ...(selectedItem.action ? { action: selectedItem.action } : {}),
       },
     ];
   });
@@ -2310,6 +2594,7 @@ export function publicStatusProjection(
   const derivedActiveTargets = publicBayActiveTargets(
     sourceWorkers || [],
     sourceBay.active_census_complete === true,
+    allowedRepositories,
   );
   const suppliedActiveStages = publicBayStageCounts(sourceBay.active_stages, true);
   const currentProjectedCensus =
@@ -4451,8 +4736,14 @@ async function publicExactReviewQueueJson(env) {
 export async function durableLifecycleBaySnapshot(env, now = Date.now()) {
   let response: Response;
   let body: Record<string, unknown>;
+  const allowedRepositories = verifiedPublicBayRepositories(env);
+  const lifecycleQuery = new URLSearchParams();
+  for (const repository of [...allowedRepositories].sort()) {
+    lifecycleQuery.append("public_repo", repository);
+  }
+  if (allowedRepositories.size === 0) lifecycleQuery.append("public_repo", "");
   try {
-    response = await exactReviewQueueRequest(env, "/lifecycle-bay");
+    response = await exactReviewQueueRequest(env, `/lifecycle-bay?${lifecycleQuery.toString()}`);
     body = objectValue(await response.json().catch(() => null));
   } catch {
     return unknownDurableLifecycleBay("unavailable", now);
@@ -4471,7 +4762,7 @@ export async function durableLifecycleBaySnapshot(env, now = Date.now()) {
   if (!generatedAt || checkedAt - Date.parse(generatedAt) > 60_000) {
     return unknownDurableLifecycleBay("stale", checkedAt);
   }
-  return publicDurableLifecycleBaySnapshot(snapshot);
+  return publicDurableLifecycleBaySnapshot(snapshot, allowedRepositories);
 }
 
 export async function liveActivityBaySnapshotForRequest(
@@ -4539,11 +4830,11 @@ function validDurableLifecycleBaySnapshot(value, now = Date.now()) {
     "requeued",
     "terminal_attention",
   ];
-  const lifecycleRecords = publicQueueCount(inventory.lifecycle_records, 512);
-  const targetRevisions = publicQueueCount(inventory.target_revisions, 512);
-  const uniqueTargets = publicQueueCount(inventory.unique_targets, 512);
+  const lifecycleRecords = publicQueueCount(inventory.lifecycle_records, 10_000);
+  const targetRevisions = publicQueueCount(inventory.target_revisions, 10_000);
+  const uniqueTargets = publicQueueCount(inventory.unique_targets, 10_000);
   if (
-    !inventoryKeys.every((key) => publicQueueCount(inventory[key], 512) !== null) ||
+    !inventoryKeys.every((key) => publicQueueCount(inventory[key], 10_000) !== null) ||
     lifecycleRecords === null ||
     targetRevisions === null ||
     uniqueTargets === null ||
@@ -4564,11 +4855,68 @@ function validDurableLifecycleBaySnapshot(value, now = Date.now()) {
   return sample.cards.every(validDurableLifecycleBayCard);
 }
 
-function publicDurableLifecycleBaySnapshot(value) {
+function publicDurableLifecycleBaySnapshot(
+  value,
+  allowedRepositories: ReadonlySet<string> = new Set(),
+) {
   const snapshot = objectValue(value);
   const inventory = objectValue(snapshot.inventory);
   const lanes = objectValue(snapshot.lanes);
   const lifecycleRecords = publicQueueCount(inventory.lifecycle_records) ?? 0;
+  const cards = Array.isArray(objectValue(snapshot.sample).cards)
+    ? objectValue(snapshot.sample).cards.flatMap((value) => {
+        const card = objectValue(value);
+        const target = objectValue(card.target);
+        const repository = String(target.repository || "")
+          .trim()
+          .toLowerCase();
+        const itemNumber = publicQueueCount(target.number, PUBLIC_BAY_ITEM_NUMBER_LIMIT);
+        const lane = String(card.lane || "");
+        const state = String(card.state || "");
+        const updatedAt = publicQueueTimestamp(card.updated_at);
+        if (
+          !allowedRepositories.has(repository) ||
+          itemNumber === null ||
+          itemNumber <= 0 ||
+          ![
+            "pending",
+            "acknowledgement_pending",
+            "completed",
+            "superseded",
+            "requeued",
+            "terminal_attention",
+          ].includes(lane) ||
+          ![
+            "pending",
+            "completed",
+            "acknowledgement_pending",
+            "acknowledgement_skipped",
+            "superseded",
+            "requeue",
+            "dead_letter",
+            "target_closed",
+            "target_missing",
+            "policy_noop",
+            "guarded_open",
+            "failed",
+          ].includes(state) ||
+          typeof card.current_revision !== "boolean" ||
+          !updatedAt
+        ) {
+          return [];
+        }
+        return [
+          {
+            repository,
+            item_number: itemNumber,
+            lane,
+            state,
+            current_revision: card.current_revision,
+            updated_at: updatedAt,
+          },
+        ];
+      })
+    : [];
   return {
     version: 1,
     source: "exact-review-lifecycle-projection-v1",
@@ -4588,7 +4936,12 @@ function publicDurableLifecycleBaySnapshot(value) {
       "requeued",
       "terminal_attention",
     ]),
-    sample: { limit: 0, returned: 0, omitted: lifecycleRecords, cards: [] },
+    sample: {
+      limit: 24,
+      returned: cards.length,
+      omitted: Math.max(0, lifecycleRecords - cards.length),
+      cards,
+    },
   };
 }
 
@@ -5767,7 +6120,7 @@ async function statusSnapshot(env) {
   ] = await Promise.all([
     withTimeout(
       recentWorkerHealth(env, repo, completedWorkflowRuns, github, readModelJobs),
-      OPTIONAL_SECTION_TIMEOUT_MS * 2,
+      workerHealthSectionTimeoutMs(workerHealthFetchConcurrency(env)),
       "worker health",
     ).catch((error) => {
       errors.push(error.message);
@@ -5905,6 +6258,7 @@ async function attachExactReviewQueueStatus(snapshot, env) {
   const activeTargets = publicBayActiveTargets(
     snapshot.workers,
     bay.active_census_complete === true,
+    verifiedPublicBayRepositories(env),
   );
   const activeKeys = activeTargets.keys;
   const bayPriorityKeys = [
@@ -6929,6 +7283,16 @@ async function activeWorkerSnapshot(
   };
 }
 
+export function recentWorkerHealthRunSample(runs: WorkflowRunSummary[]) {
+  return runs
+    .filter(
+      (run) =>
+        run.status === "completed" && !isSupportWorkflowRun(run) && isCodexWorkflowFallback(run),
+    )
+    .sort(newestWorkflowRunFirst)
+    .slice(0, RECENT_WORKER_HEALTH_RUN_LIMIT);
+}
+
 async function recentWorkerHealth(
   env,
   repo,
@@ -6940,19 +7304,8 @@ async function recentWorkerHealth(
   const cached = await readStoredJson(env, cacheKey);
   if (cached) return workerHealthStorageProjection(cached);
 
-  const completedRuns = runs
-    .filter(
-      (run) =>
-        run.status === "completed" && !isSupportWorkflowRun(run) && isCodexWorkflowFallback(run),
-    )
-    .sort(newestWorkflowRunFirst)
-    .slice(0, RECENT_WORKER_HEALTH_RUN_LIMIT);
-  const fetchConcurrency = Math.max(
-    1,
-    Math.floor(
-      numberFrom(env.WORKER_HEALTH_FETCH_CONCURRENCY, DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY),
-    ),
-  );
+  const completedRuns = recentWorkerHealthRunSample(runs);
+  const fetchConcurrency = workerHealthFetchConcurrency(env);
   const results = await mapWithConcurrency(completedRuns, fetchConcurrency, async (run) => {
     try {
       return {
@@ -7012,7 +7365,7 @@ async function recentWorkerHealth(
           Date.parse(right.completed_at || right.started_at || "") -
           Date.parse(left.completed_at || left.started_at || ""),
       )
-      .slice(0, 50),
+      .slice(0, RECENT_WORKER_HEALTH_RUN_LIMIT * 2),
     failures: failures.slice(0, 10),
     errors: results.flatMap((result) => (result.error ? [result.error] : [])).slice(0, 10),
     updated_at: new Date().toISOString(),
@@ -7563,6 +7916,12 @@ function workerHealthAttempt(run, job) {
           .trim()}`;
   const startedAt = job?.started_at || run.created_at || null;
   const completedAt = job?.completed_at || run.updated_at || startedAt;
+  const actionSteps = steps.slice(0, PUBLIC_BAY_ACTION_STEP_LIMIT).map((step, index) => ({
+    number: step?.number ?? index + 1,
+    name: String(step?.name || ""),
+    status: String(step?.status || ""),
+    conclusion: step?.conclusion ?? null,
+  }));
   return {
     key: targetKey,
     outcome,
@@ -7578,6 +7937,7 @@ function workerHealthAttempt(run, job) {
     job_id: job?.id || null,
     started_at: startedAt,
     completed_at: completedAt,
+    steps: actionSteps,
     total_duration_ms: boundedBayTimingDuration(run.created_at || startedAt, completedAt),
   };
 }
@@ -7835,6 +8195,9 @@ function bayTerminalCandidates(attempts, closedItems) {
         item_url: `https://github.com/${repository}/issues/${number}`,
         job_url: nullableString(attempt?.url),
         run_id: attempt?.run_id || null,
+        job_id: attempt?.job_id || null,
+        started_at: nullableString(attempt?.started_at),
+        steps: Array.isArray(attempt?.steps) ? attempt.steps : [],
         completed_at: completedAt,
         current_step: nullableString(attempt?.failed_step || attempt?.conclusion),
         source: "worker_attempt",

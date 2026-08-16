@@ -1,6 +1,9 @@
 export const EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE = "exact_review_lifecycle_projection_v1";
 export const EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS = 5 * 60 * 1000;
-export const EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT = 512;
+// Keep the public reader bounded, but leave enough headroom for the durable
+// history between normal retention passes. The former 512-row ceiling turned
+// a healthy, append-only store into a permanently unknown public snapshot.
+export const EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT = 24;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_PAGE_MAX = 100;
@@ -791,7 +794,10 @@ export class ExactReviewLifecycleProjectionStore {
    * ensure schema, normalize legacy rows, or write an index: the public Bay
    * route must never turn an observation into queue maintenance.
    */
-  readBaySnapshot(now = Date.now()): DurableLifecycleBaySnapshot {
+  readBaySnapshot(
+    now = Date.now(),
+    allowedRepositories?: ReadonlySet<string>,
+  ): DurableLifecycleBaySnapshot {
     const unknown = (reason: DurableLifecycleBayUnknownReason): DurableLifecycleBaySnapshot => ({
       version: 1,
       source: "exact-review-lifecycle-projection-v1",
@@ -813,7 +819,7 @@ export class ExactReviewLifecycleProjectionStore {
           EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1,
         ),
       );
-      // The fixed 512+1 public source bound is deliberately fail-closed. Do
+      // The fixed bounded public source read is deliberately fail-closed. Do
       // not paginate, prune, or otherwise maintain storage while observing it.
       if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT) return unknown("over_cap");
     } catch {
@@ -830,6 +836,12 @@ export class ExactReviewLifecycleProjectionStore {
       if (!projections.every(validDurableLifecycleBayProjection)) return unknown("mixed");
     } catch {
       return unknown("mixed");
+    }
+    if (allowedRepositories) {
+      projections = projections.filter((projection) => {
+        const target = canonicalTarget(projection.canonicalTargetKey);
+        return Boolean(target && allowedRepositories.has(target.repository.toLowerCase()));
+      });
     }
 
     const maxRevisionByTarget = new Map<string, number>();

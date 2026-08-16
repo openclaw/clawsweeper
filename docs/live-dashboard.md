@@ -18,11 +18,12 @@ optionally accepts signed status events from workflows. The one identity
 exception is a bounded reference sample containing canonical repository and
 issue or pull-request numbers from the explicit verified-public
 `PUBLIC_BAY_REPOS` allowlist. Bay and Overview use that same sample for cards
-and search; clicking a card opens a local blade with the closed stage/source
-and canonical repository and issue/PR links. Public responses still exclude
-workflow and item titles, raw or source URLs, queries, raw failure keys and
-payloads, internal opaque keys, credentials, tokens, private or non-allowlisted
-repositories, and per-job diagnostic text.
+and search; clicking a card opens a local blade with the closed stage/source,
+canonical repository and issue/PR links, and, when available, canonical GitHub
+run/job links plus fixed action-step categories and states. Public responses
+still exclude workflow, item, and step titles, raw or source URLs, queries, raw
+failure keys and payloads, internal opaque keys, credentials, tokens, private
+or non-allowlisted repositories, and per-job diagnostic text.
 
 For the end-to-end relationship between GitHub Actions workers, durable jobs,
 CrabFleet action sessions, Codex steering, completion reasons, and dashboard
@@ -124,14 +125,15 @@ is absent or a cache event lands in another Cloudflare colo.
 ## What It Shows
 
 - bounded active-work counts and closed workflow, worker, status, stage, and
-  outcome categories; identifying titles, targets, links, keys, and job text are
-  omitted
+  outcome categories; arbitrary titles, targets, source links, keys, and job
+  text are omitted
 - six aggregate Bay stages from arrival through repair, split into disjoint
   queued and live counts only when both producer censuses are complete, plus a
-  bounded verified-public repository/item reference sample used by Bay and
-  Overview cards, search, and client-side public-reference blades
-- aggregate durable lifecycle inventory and six closed lane counts; the public
-  lifecycle response contains no item cards or samples
+  bounded verified-public repository/item/action reference sample used by Bay
+  and Overview cards, search, overflow lists, and client-side public-reference
+  blades
+- durable lifecycle inventory and six closed lane counts plus at most 24
+  minimal cards for verified-public repository/item references
 - a budget-sized capacity rail plus aggregate counts for issue-to-PR, PR repair,
   review, repair, commit, assist, and other worker classes
 - queued and waiting run counts
@@ -174,21 +176,29 @@ is absent or a cache event lands in another Cloudflare colo.
 
 The Worker fetches job details only for the bounded active-run set, limits that
 GitHub fanout to 12 concurrent requests, and caches each run's jobs for 60
-seconds. It separately samples 20 recent completed worker runs with ten-way
-fanout and caches error/recovery telemetry for 120 seconds. This bounds
+seconds. It separately samples up to 40 recent completed worker runs with
+ten-way fanout and caches error/recovery telemetry for 120 seconds. That leaves
+enough distinct completed-item evidence to drive a 20-outcome tide despite
+repeated targets or excluded runs while still bounding telemetry pressure.
+This bounds
 telemetry pressure without exceeding the 128-worker fleet budget. Worker details
 paginate up to 300 jobs per workflow run so 89-shard runs contribute to a
 complete internal census. Titles, job names, raw URLs, opaque target keys, and
 raw errors are removed before the status snapshot is persisted or returned.
-Only the allowlisted canonical repository/item reference tuple is retained for
-the bounded Bay sample. If the census is incomplete, the public activity
-projection fails closed instead of presenting partial counts as complete.
+Only the allowlisted canonical repository/item reference tuple and a validated
+action descriptor are retained for the bounded Bay sample. The action
+descriptor contains canonical repository/run/job identifiers, a canonical
+start time, and closed step kind/status/conclusion values; raw step names and
+URLs are discarded. If the census is incomplete, the public activity projection
+fails closed instead of presenting partial counts as complete.
 
 Automatic issue-build lifecycle events are retained privately for seven days so
 completed and blocked work can be reconciled after the worker leaves the active
 Actions set. The public lifecycle and recent-publication routes revalidate that
-state into bounded inventory, lane, bucket, and outcome counts without cards or
-item samples.
+state into bounded inventory, lane, bucket, and outcome counts. Lifecycle may
+also return at most 24 minimal cards filtered to `PUBLIC_BAY_REPOS`; it never
+returns private repositories, revision identifiers, target keys, facts, titles,
+raw URLs, or failure detail.
 
 Status responses use stale-while-revalidate delivery. After the 20-second fresh
 window expires, the Worker immediately returns the last good snapshot, marks it
