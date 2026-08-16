@@ -233,7 +233,8 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
   storage.sql.exec = (query: string, ...bindings: unknown[]) => {
     queries.push(query);
     assert.match(query, /^\s*SELECT\s+projection_json\b/i, "Bay route must be read-only");
-    assert.deepEqual(bindings, [10_001]);
+    assert.match(query, /WHERE LOWER\(SUBSTR\(canonical_target_key/);
+    assert.deepEqual(bindings, ["openclaw/openclaw", 10_001]);
     return exec(query, ...bindings);
   };
 
@@ -705,7 +706,10 @@ test("durable lifecycle Bay fail-closes unknown snapshots without partial cards 
   );
   const malformed = await worker.fetch(
     new Request("https://clawsweeper.openclaw.ai/api/durable-lifecycle-bay"),
-    { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(new ExactReviewQueue({ storage }, {})) },
+    {
+      PUBLIC_BAY_REPOS: "openclaw/openclaw",
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(new ExactReviewQueue({ storage }, {})),
+    },
   );
   const malformedBody = (await malformed.json()) as {
     durable_lifecycle_bay: Record<string, unknown>;
@@ -733,6 +737,7 @@ test("durable lifecycle Bay fail-closes unknown snapshots without partial cards 
   const nestedMalformed = await worker.fetch(
     new Request("https://clawsweeper.openclaw.ai/api/durable-lifecycle-bay"),
     {
+      PUBLIC_BAY_REPOS: "openclaw/openclaw",
       EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(
         new ExactReviewQueue({ storage: nestedMalformedStorage }, {}),
       ),
@@ -777,6 +782,7 @@ test("durable lifecycle Bay fail-closes unknown snapshots without partial cards 
   const missingGithubEffectResponse = await worker.fetch(
     new Request("https://clawsweeper.openclaw.ai/api/durable-lifecycle-bay"),
     {
+      PUBLIC_BAY_REPOS: "openclaw/openclaw",
       EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(
         new ExactReviewQueue({ storage: missingGithubEffectStorage }, {}),
       ),
@@ -803,9 +809,53 @@ test("durable lifecycle Bay fail-closes unknown snapshots without partial cards 
       observedAt: Date.now() - index,
     });
   }
+  cappedLifecycle.recordAdmission({
+    canonicalTargetKey: "openclaw/clawsweeper#990",
+    fenceKey: "allowlisted-fence",
+    revision: 1,
+    deliveryId: "allowlisted-delivery",
+    sourceAction: "re_review",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    observedAt: Date.now(),
+  });
+  const allowlisted = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/durable-lifecycle-bay"),
+    {
+      PUBLIC_BAY_REPOS: "openclaw/clawsweeper",
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(
+        new ExactReviewQueue({ storage: cappedStorage }, {}),
+      ),
+    },
+  );
+  const allowlistedBody = (await allowlisted.json()) as {
+    durable_lifecycle_bay: {
+      collection: { state: string };
+      inventory: { lifecycle_records: number; target_revisions: number; unique_targets: number };
+      sample: { returned: number; omitted: number; cards: Array<Record<string, unknown>> };
+    };
+  };
+  assert.deepEqual(allowlistedBody.durable_lifecycle_bay.collection, { state: "complete" });
+  assert.deepEqual(allowlistedBody.durable_lifecycle_bay.inventory, {
+    lifecycle_records: 1,
+    target_revisions: 1,
+    unique_targets: 1,
+  });
+  assert.equal(allowlistedBody.durable_lifecycle_bay.sample.returned, 1);
+  assert.equal(allowlistedBody.durable_lifecycle_bay.sample.omitted, 0);
+  assert.deepEqual(allowlistedBody.durable_lifecycle_bay.sample.cards[0], {
+    repository: "openclaw/clawsweeper",
+    item_number: 990,
+    lane: "pending",
+    state: "pending",
+    current_revision: true,
+    updated_at: allowlistedBody.durable_lifecycle_bay.sample.cards[0]?.updated_at,
+  });
   const overCap = await worker.fetch(
     new Request("https://clawsweeper.openclaw.ai/api/durable-lifecycle-bay"),
     {
+      PUBLIC_BAY_REPOS: "openclaw/openclaw",
       EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(
         new ExactReviewQueue({ storage: cappedStorage }, {}),
       ),
