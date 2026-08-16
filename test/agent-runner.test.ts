@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { agentRunner, codexAgentArgs, runAgentProcess } from "../dist/agent-runner.js";
+import {
+  agentRunner,
+  codexAgentArgs,
+  runAgentCheckoutInspection,
+  runAgentProcess,
+} from "../dist/agent-runner.js";
 
 test("agent runner defaults to Codex and fails closed on unknown values", () => {
   assert.equal(agentRunner({}), "codex");
@@ -152,4 +158,84 @@ test("OpenClaw runner requires a provider/model override", () => {
       }),
     /CLAWSWEEPER_OPENCLAW_MODEL is required/,
   );
+});
+
+test("OpenClaw checkout inspection uses a disposable path-bound challenge", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-agent-runner-test-"));
+  const binary = join(root, "fake-openclaw");
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "--allow-empty",
+      "-q",
+      "-m",
+      "empty",
+    ],
+    { cwd: root },
+  );
+  writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const prompt = fs.readFileSync(process.argv[process.argv.indexOf("--message-file") + 1], "utf8");
+const relativePath = JSON.parse(prompt.match(/^Path: (.+)$/m)[1]);
+const challenged = fs.readFileSync(path.join(process.env.OPENCLAW_WORKSPACE_DIR, relativePath), "utf8").trim();
+const text = process.env.OPENCLAW_TEST_DIFFERENT_PATH === "1" ? "content from another file" : challenged;
+process.stdout.write(JSON.stringify({
+  payloads: [{ text }],
+  meta: { stopReason: "stop", toolSummary: { calls: 1, tools: ["read"], failures: 0 } },
+}));
+`,
+  );
+  chmodSync(binary, 0o755);
+  const baseEnv = {
+    ...process.env,
+    CLAWSWEEPER_RUNNER: "openclaw",
+    CLAWSWEEPER_OPENCLAW_MODEL: "openai/test",
+    CLAWSWEEPER_OPENCLAW_BIN: binary,
+  };
+  try {
+    const verified = runAgentCheckoutInspection({ cwd: root, env: baseEnv, timeoutMs: 10_000 });
+    assert.equal(verified.status, 0, verified.error?.message);
+    assert.deepEqual(
+      readdirSync(root).filter((name) => name.startsWith(".clawsweeper-checkout-inspection-")),
+      [],
+    );
+
+    const wrongPath = runAgentCheckoutInspection({
+      cwd: root,
+      env: { ...baseEnv, OPENCLAW_TEST_DIFFERENT_PATH: "1" },
+      timeoutMs: 10_000,
+    });
+    assert.equal(wrongPath.status, 1);
+    assert.match(wrongPath.error?.message ?? "", /runner challenge/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("OpenClaw checkout inspection reports challenge setup failures", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-agent-runner-missing-test-"));
+  try {
+    const result = runAgentCheckoutInspection({
+      cwd: join(root, "missing"),
+      env: {
+        ...process.env,
+        CLAWSWEEPER_RUNNER: "openclaw",
+        CLAWSWEEPER_OPENCLAW_MODEL: "openai/test",
+      },
+      timeoutMs: 10_000,
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.error?.message ?? "", /ENOENT/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

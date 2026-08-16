@@ -243,8 +243,8 @@ function normalizeOpenclawResult(
         "OpenClaw checkout inspection did not return the runner challenge.",
       );
     }
-    // The runtime receipt proves the read tool ran; the withheld line proves
-    // that call observed the checkout selected by the host.
+    // The runtime receipt proves the read tool ran; the withheld random nonce
+    // proves that call observed the disposable path created by the host.
     const summary = parsed.toolSummary;
     if (
       !summary ||

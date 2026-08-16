@@ -469,11 +469,15 @@ test("runCodex rejects OpenClaw checkout text without structured read evidence",
     openclawPath,
     `#!/usr/bin/env node
 const fs = require("node:fs");
+const path = require("node:path");
 const count = fs.existsSync(process.env.OPENCLAW_TEST_INVOCATIONS_PATH)
   ? Number(fs.readFileSync(process.env.OPENCLAW_TEST_INVOCATIONS_PATH, "utf8"))
   : 0;
 fs.writeFileSync(process.env.OPENCLAW_TEST_INVOCATIONS_PATH, String(count + 1));
-const text = count === 0 ? "tracked checkout content" : ${JSON.stringify(JSON.stringify(expected))};
+const prompt = fs.readFileSync(process.argv[process.argv.indexOf("--message-file") + 1], "utf8");
+const relativePath = JSON.parse(prompt.match(/^Path: (.+)$/m)[1]);
+const challenged = fs.readFileSync(path.join(process.env.OPENCLAW_WORKSPACE_DIR, relativePath), "utf8").trim();
+const text = count === 0 ? challenged : ${JSON.stringify(JSON.stringify(expected))};
 process.stdout.write(JSON.stringify({ payloads: [{ text }], meta: { stopReason: "stop" } }));
 `,
   );
@@ -518,29 +522,49 @@ process.stdout.write(JSON.stringify({ payloads: [{ text }], meta: { stopReason: 
   }
 });
 
-test("runCodex reviews after an attested OpenClaw checkout read", () => {
+test("runCodex reviews after an attested OpenClaw checkout challenge", () => {
   const root = mkdtempSync(tmpPrefix);
   const openclawDir = join(root, "openclaw");
   const workDir = join(root, "review-work");
   const openclawPath = join(root, "fake-openclaw");
   const invocationsPath = join(root, "openclaw-invocations");
   mkdirSync(openclawDir, { recursive: true });
-  initTrackedRepo(openclawDir);
+  execFileSync("git", ["init"], { cwd: openclawDir, stdio: "ignore" });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "init",
+    ],
+    { cwd: openclawDir, stdio: "ignore" },
+  );
   const expected = closeDecision({ decision: "keep_open", summary: "Reviewed with OpenClaw." });
   writeFileSync(
     openclawPath,
     `#!/usr/bin/env node
 const fs = require("node:fs");
+const path = require("node:path");
 const count = fs.existsSync(process.env.OPENCLAW_TEST_INVOCATIONS_PATH)
   ? Number(fs.readFileSync(process.env.OPENCLAW_TEST_INVOCATIONS_PATH, "utf8"))
   : 0;
 fs.writeFileSync(process.env.OPENCLAW_TEST_INVOCATIONS_PATH, String(count + 1));
-const inspection = {
-  payloads: [{ text: "tracked checkout content" }],
-  meta: { stopReason: "stop", toolSummary: { calls: 1, tools: ["read"], failures: 0 } },
-};
 const review = { payloads: [{ text: ${JSON.stringify(JSON.stringify(expected))} }], meta: { stopReason: "stop" } };
-process.stdout.write(JSON.stringify(count === 0 ? inspection : review));
+if (count > 0) {
+  process.stdout.write(JSON.stringify(review));
+} else {
+  const prompt = fs.readFileSync(process.argv[process.argv.indexOf("--message-file") + 1], "utf8");
+  const relativePath = JSON.parse(prompt.match(/^Path: (.+)$/m)[1]);
+  process.stdout.write(JSON.stringify({
+    payloads: [{ text: fs.readFileSync(path.join(process.env.OPENCLAW_WORKSPACE_DIR, relativePath), "utf8").trim() }],
+    meta: { stopReason: "stop", toolSummary: { calls: 1, tools: ["read"], failures: 0 } },
+  }));
+}
 `,
   );
   chmodSync(openclawPath, 0o755);
