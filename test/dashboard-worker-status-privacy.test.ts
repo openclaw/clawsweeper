@@ -859,7 +859,30 @@ test("public queue projection retains only closed operational aggregates", () =>
   });
   assert.deepEqual(publicExactReviewQueueProjection(projected), projected);
 
-  const statusProjected = publicStatusProjection({ exact_review_queue: projected });
+  const statusProjected = strictPublicStatusProjection({
+    schema_version: 1,
+    generated_at: STATUS_NOW,
+    source: { target_repository_count: 0 },
+    fleet: {},
+    workers: [],
+    automatic_work: [],
+    pipeline: [],
+    bay: {},
+    recent: {
+      closed_items: [
+        {
+          repository: sentinel,
+          title: sentinel,
+          closed_at: "2026-08-15T11:59:00.000Z",
+        },
+      ],
+    },
+    diagnostics: { errors: [], error_count: 0 },
+    exact_review_queue: projected,
+  });
+  assert.equal(statusProjected.public_projection_complete, true);
+  assert.equal(JSON.stringify(statusProjected).includes(sentinel), false);
+  assert.deepEqual(statusProjected.recent.closed_items, []);
   assert.deepEqual(statusProjected.exact_review_queue.collection, { state: "complete" });
   assert.deepEqual(statusProjected.exact_review_queue.handoff_health.phases, {
     pending: { count: 7, oldest_at: null, oldest_age_seconds: null },
