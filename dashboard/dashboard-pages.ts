@@ -1075,6 +1075,26 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
   .apply-health-action { grid-template-columns: 1fr; }
 }
 .worker-toolbar { margin-top: 12px; }
+.public-reference-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}
+.public-reference-search input {
+  min-width: 260px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px 10px;
+}
+.public-reference-row mark {
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--amber) 24%, transparent);
+  color: inherit;
+  padding: 1px 3px;
+}
 .worker-filters {
   display: inline-flex;
   flex-wrap: wrap;
@@ -1763,6 +1783,17 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
       <span class="muted">Select a worker for its live step timeline.</span>
     </div>
     <div id="workers"></div>
+    <div class="workers-head">
+      <h2>Public GitHub work</h2>
+      <span class="muted" id="public-reference-summary"></span>
+    </div>
+    <form class="public-reference-search" id="public-reference-search" role="search">
+      <label class="sr-only" for="public-reference-input">Find a public issue or pull request</label>
+      <input id="public-reference-input" autocomplete="off" placeholder="Issue/PR number or owner/repo#number">
+      <button class="filter-button" type="submit">Find</button>
+      <button class="filter-button" id="public-reference-clear" type="button">Clear</button>
+    </form>
+    <div id="public-references"></div>
   </section>
   <h2 id="review-coverage-title">Fleet Review Coverage</h2>
   <details class="review-coverage">
@@ -2012,6 +2043,34 @@ function dashboardStatusValue(value, field, depth) {
   }
   return result;
 }
+function dashboardPublicBayReferences(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 124) return [];
+  const stages = new Set(["arriving", "setting-up", "reviewing", "publishing", "applying", "repairing"]);
+  const sources = new Set(["queue", "live"]);
+  const seen = new Set();
+  const references = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const repository = typeof entry.repository === "string" ? entry.repository.trim().toLowerCase() : "";
+    const itemNumber = entry.item_number;
+    if (
+      repository.length > 200 ||
+      !/^[a-z0-9_.-]+\\/[a-z0-9_.-]+$/.test(repository) ||
+      typeof itemNumber !== "number" ||
+      !Number.isSafeInteger(itemNumber) ||
+      itemNumber <= 0 ||
+      itemNumber > 1000000000 ||
+      !stages.has(entry.stage) ||
+      !sources.has(entry.source)
+    ) return [];
+    const key = repository + "#" + itemNumber;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    references.push({ repository, item_number: itemNumber, stage: entry.stage, source: entry.source });
+  }
+  return references;
+}
 function dashboardStatusSnapshot(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const projected = dashboardStatusValue(value, "root", 0);
@@ -2027,6 +2086,29 @@ function dashboardStatusSnapshot(value) {
     ? rawDiagnostics.error_count
     : 0;
   const errorCount = Math.max(rawErrorCount, declaredErrorCount);
+  const projectedQueue = source.exact_review_queue && typeof source.exact_review_queue === "object"
+    ? source.exact_review_queue
+    : null;
+  const projectedBay = projectedQueue?.bay_projection && typeof projectedQueue.bay_projection === "object"
+    ? projectedQueue.bay_projection
+    : null;
+  const projectedActivity = projectedBay?.activity && typeof projectedBay.activity === "object"
+    ? projectedBay.activity
+    : null;
+  const rawItems = value.exact_review_queue?.bay_projection?.activity?.items;
+  const publicReferences = dashboardPublicBayReferences(rawItems);
+  const exactReviewQueue = projectedQueue && projectedBay && projectedActivity
+    ? {
+        ...projectedQueue,
+        bay_projection: {
+          ...projectedBay,
+          activity: {
+            ...projectedActivity,
+            ...(publicReferences.length ? { items: publicReferences } : {})
+          }
+        }
+      }
+    : projectedQueue;
   return {
     schema_version: 1,
     generated_at: source.generated_at,
@@ -2047,7 +2129,7 @@ function dashboardStatusSnapshot(value) {
       error_count: errorCount,
     },
     dashboard_health: source.dashboard_health || { conclusion: "needs_attention", severity: "amber" },
-    exact_review_queue: source.exact_review_queue ?? null,
+    exact_review_queue: exactReviewQueue,
     recent_durable_publication_events: source.recent_durable_publication_events ?? null
   };
 }
@@ -2058,6 +2140,7 @@ let activeAutomergeChart = "success";
 let lastAutomergeMetrics = null;
 let automergeMetricsRequestGeneration = 0;
 let activeWorkerFilter = "all";
+let publicReferenceQuery = "";
 let workerIndex = new Map();
 let automaticIndex = new Map();
 let activeHealthRange = "6h";
@@ -3531,6 +3614,40 @@ function renderWorkers(rows) {
       '</button>';
   }).join("") + '</div>';
 }
+function publicReferenceSearch(value) {
+  const query = String(value || "").trim().toLowerCase();
+  if (!query) return null;
+  const qualified = query.match(/^([a-z0-9_.-]+\\/[a-z0-9_.-]+)#(\\d+)$/);
+  const numberOnly = query.match(/^#?(\\d+)$/);
+  const itemNumber = Number(qualified ? qualified[2] : numberOnly?.[1]);
+  if (!Number.isSafeInteger(itemNumber) || itemNumber <= 0 || itemNumber > 1000000000) return false;
+  return { repository: qualified?.[1] || null, item_number: itemNumber };
+}
+function renderPublicReferences(data) {
+  const target = document.getElementById("public-references");
+  const summary = document.getElementById("public-reference-summary");
+  const rows = dashboardPublicBayReferences(data?.exact_review_queue?.bay_projection?.activity?.items);
+  const search = publicReferenceSearch(publicReferenceQuery);
+  const visible = search && search !== false
+    ? rows.filter(row => row.item_number === search.item_number && (!search.repository || row.repository === search.repository))
+    : search === false ? [] : rows;
+  summary.textContent = search === false
+    ? "Enter a number or owner/repo#number"
+    : publicReferenceQuery
+      ? visible.length + " match" + (visible.length === 1 ? "" : "es")
+      : rows.length + " verified public reference" + (rows.length === 1 ? "" : "s");
+  if (!visible.length) {
+    target.innerHTML = '<div class="empty">' + (publicReferenceQuery ? "No matching public reference in this snapshot." : "No verified public references are in the bounded Bay sample.") + '</div>';
+    return;
+  }
+  target.innerHTML = '<div class="work-list">' + visible.map(row => {
+    const key = row.repository + "#" + row.item_number;
+    const label = esc(key);
+    const display = publicReferenceQuery ? "<mark>" + label + "</mark>" : label;
+    const url = "https://github.com/" + row.repository + "/issues/" + row.item_number;
+    return '<article class="work-row public-reference-row"><div class="work-main"><div class="row-top"><span class="pill">' + esc(row.source) + '</span><a class="item-link" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' + display + '</a></div><div class="muted work-title">Verified public repository and issue/PR reference only</div></div><div class="work-state"><div class="stage-block"><strong>' + esc(row.stage) + '</strong><span class="muted">Bay stage</span></div></div></article>';
+  }).join("") + '</div>';
+}
 function renderAutomaticWork(rows) {
   automaticIndex = new Map(rows.map((row, index) => [String(index), row]));
   const active = rows.filter(row => row.active || ["queued", "running", "in_progress"].includes(row.status)).length;
@@ -3752,6 +3869,7 @@ function renderDashboard(data, note) {
   renderApplyHealth(data);
   renderAutomaticWork(data.automatic_work || []);
   renderWorkers(data.workers || []);
+  renderPublicReferences(data);
   openWorkerFromHash();
   renderClusterRepair(data.recent?.cluster_repair);
   renderPipeline(data.pipeline || []);
@@ -4244,6 +4362,16 @@ document.getElementById("worker-filters").addEventListener("click", event => {
   if (!button) return;
   activeWorkerFilter = button.dataset.workerFilter || "all";
   renderWorkers(lastData?.workers || []);
+});
+document.getElementById("public-reference-search").addEventListener("submit", event => {
+  event.preventDefault();
+  publicReferenceQuery = document.getElementById("public-reference-input").value;
+  renderPublicReferences(lastData || {});
+});
+document.getElementById("public-reference-clear").addEventListener("click", () => {
+  publicReferenceQuery = "";
+  document.getElementById("public-reference-input").value = "";
+  renderPublicReferences(lastData || {});
 });
 document.getElementById("trend-ranges").addEventListener("click", event => {
   const button = event.target.closest("button[data-trend-range]");

@@ -9,11 +9,13 @@
   rules, private-state ownership, routes, or navigation changes
 
 OpenClaw Bay is a public, indexable, read-only visualisation of the live
-ClawSweeper pipeline. It lives at `/bay` on the existing dashboard Worker
-and turns bounded aggregate activity into anonymous animated rows moving across
-a shoreline. The animation represents counts, not stable repository items or
-workflow runs. It is linked from the Overview, issue-triage, and PR-proof
-headers as a normal ClawSweeper web-page destination.
+ClawSweeper pipeline. It lives at `/bay` on the existing dashboard Worker and
+turns bounded aggregate activity into animated rows moving across a shoreline.
+The count maps remain the authoritative pipeline view. A bounded card sample
+may also show a canonical repository and issue or pull-request number when the
+repository is on the deployment's verified-public allowlist. It is linked from
+the Overview, issue-triage, and PR-proof headers as a normal ClawSweeper
+web-page destination.
 
 Bay is an observer-only surface: it displays bounded public status but never
 triggers or offers queue, workflow, GitHub, DLQ, recovery, deploy, or rollback
@@ -60,16 +62,27 @@ active overlaps from the queue counts. It drops that correlation material
 before serialization, so the two public maps are disjoint without publishing a
 join key.
 
-The page expands those counts into anonymous decorative rows. A row has no
-stable target identity and cannot expose or open a repository, item, workflow,
-failure detail, URL, or query. The public surface therefore has no repository
-filter, target finder, per-target card, link, or overflow-reference list.
+The page draws the bounded verified-public reference sample as cards. Each card
+contains only a canonical `owner/repository`, positive issue or pull-request
+number, closed Bay stage, and closed queue/live source. The browser constructs
+the canonical GitHub issue URL from those fields; GitHub resolves pull-request
+numbers on that route. Repository filters and the finder accept an item number
+or `owner/repository#number`. They search only the current bounded sample and do
+not call GitHub.
 
-Completed, failed, and cancelled pools contain only anonymous, explicitly
-observed terminal outcomes. A disappearing worker is never treated as
-successful. Because completed-job evidence can trail the active feed, an
-unconfirmed disappearance remains in the checking state for up to 150 seconds
-and enters a terminal pool only after explicit outcome evidence arrives.
+The reference exception is intentionally narrow. Workflow titles, item titles,
+source URLs, query strings, raw failure payloads, failure keys, credentials,
+tokens, internal queue keys, and repositories outside `PUBLIC_BAY_REPOS` remain
+excluded. Invalid configuration yields no public references. Malformed or
+over-cap samples fail closed without weakening the aggregate counts.
+
+Completed, failed, and cancelled pools contain explicitly observed terminal
+outcomes. A terminal card carries the same minimal verified-public repository
+and item reference when available; otherwise it remains aggregate-only. A
+disappearing worker is never treated as successful. Because completed-job
+evidence can trail the active feed, an unconfirmed disappearance remains in the
+checking state for up to 150 seconds and enters a terminal pool only after
+explicit outcome evidence arrives.
 
 The terminal buffer is deliberately small. At 20 proved outcomes, the tide
 animation clears the visible pools. Private Bay state retains fewer than 20
@@ -116,9 +129,11 @@ public or cache-serializable identity surface.
 Bay is a presentation over the cache-backed public `/api/status` snapshot and
 the aggregate `/api/durable-lifecycle-bay` projection. It adds no
 browser-to-GitHub requests and no new GitHub REST or GraphQL query path. Active
-stage counts, explicit terminal outcomes, and observed completion timing are
-derived from data already collected for the Overview page, but the private
-correlation fields used during collection are not part of either Bay response.
+stage counts, the bounded verified-public reference sample, explicit terminal
+outcomes, and observed completion timing are derived from data already
+collected for the Overview page. Overview uses the same projected reference
+sample for its public-work cards and search. Private correlation fields used
+during collection are not part of either rendered surface.
 
 Bay polls the Worker every 20 seconds, compared with Overview every 15 seconds:
 three rather than four browser status requests per minute after initial load.
@@ -146,8 +161,7 @@ The page, status API, and image assets all belong to `openclaw/clawsweeper`:
 
 The Bay HTML is `no-store`, frame-blocked, and protected by a content security
 policy. `/bay` is the single canonical public route; `/bay-demo` is retained
-only as a query-preserving permanent redirect for compatibility with existing
-links.
+only as a permanent redirect to the query-free canonical route.
 
 ## Local Proof
 

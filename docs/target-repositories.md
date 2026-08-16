@@ -31,6 +31,13 @@ Dashboard targets are configured separately with `TARGET_REPOS` in
 `APPLY_TARGET_REPOS` and `APPLY_OPTIONAL_TARGET_REPOS`. A runtime profile alone
 does not enable any of those surfaces.
 
+`PUBLIC_BAY_REPOS` is a separate public-output allowlist for the minimal
+repository/item reference cards shown by OpenClaw Bay and Overview. Add a
+repository only after confirming that it is public and intended to be visible
+on the unauthenticated dashboard. The Worker treats an absent or malformed
+allowlist as empty. Membership does not authorize titles, URLs, queries,
+failure data, opaque keys, credentials, tokens, or any private-repository data.
+
 ## Generic Fallbacks
 
 The fallback lets a newly installed repository dispatch to ClawSweeper

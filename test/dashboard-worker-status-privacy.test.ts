@@ -420,6 +420,161 @@ test("public status canonicalizes the disjoint Bay activity contract", () => {
   }
 });
 
+test("public Bay references retain only allowlisted canonical GitHub coordinates", () => {
+  const marker = "generated-untrusted-detail";
+  const stages = {
+    arriving: 1,
+    "setting-up": 0,
+    reviewing: 0,
+    publishing: 0,
+    applying: 0,
+    repairing: 0,
+  };
+  const projected = strictPublicStatusProjection(
+    {
+      schema_version: 1,
+      generated_at: STATUS_NOW,
+      source: { target_repository_count: 1 },
+      fleet: {},
+      workers: [],
+      automatic_work: [],
+      pipeline: [],
+      exact_review_queue: {
+        bay_projection: {
+          complete: true,
+          sample_limit: 24,
+          total: 1,
+          stages,
+          items: [
+            {
+              item_key: marker,
+              repository: "OpenClaw/OpenClaw",
+              item_number: 41,
+              stage: "arriving",
+              title: marker,
+              url: `https://example.invalid/private?token=${marker}`,
+            },
+            {
+              repository: "private-owner/private-repo",
+              item_number: 42,
+              stage: "arriving",
+              failure_key: marker,
+            },
+          ],
+          activity: {
+            complete: true,
+            queue_stages: stages,
+            live_stages: { ...stages, arriving: 0, reviewing: 1 },
+            total: 2,
+            items: [
+              {
+                repository: "OPENCLAW/OPENCLAW",
+                item_number: 43,
+                stage: "reviewing",
+                source: "live",
+                workflow_title: marker,
+              },
+              {
+                repository: "private-owner/private-repo",
+                item_number: 44,
+                stage: "arriving",
+                source: "queue",
+              },
+            ],
+          },
+        },
+      },
+      bay: {
+        terminal_buffer: [
+          {
+            outcome: "success",
+            repository: "OpenClaw/OpenClaw",
+            number: 45,
+            title: marker,
+          },
+          {
+            outcome: "failure",
+            repository: "private-owner/private-repo",
+            number: 46,
+          },
+        ],
+        recently_washed: [],
+      },
+      recent: {},
+      diagnostics: { errors: [], error_count: 0 },
+    },
+    new Set(["openclaw/openclaw"]),
+  );
+
+  assert.deepEqual(projected.exact_review_queue.bay_projection.items, [
+    {
+      repository: "openclaw/openclaw",
+      item_number: 41,
+      stage: "arriving",
+      source: "queue",
+    },
+  ]);
+  assert.deepEqual(projected.exact_review_queue.bay_projection.activity.items, [
+    {
+      repository: "openclaw/openclaw",
+      item_number: 43,
+      stage: "reviewing",
+      source: "live",
+    },
+  ]);
+  assert.deepEqual(projected.bay.terminal_buffer, [
+    { repository: "openclaw/openclaw", item_number: 45, outcome: "success" },
+    { outcome: "failure" },
+  ]);
+  const serialized = JSON.stringify(projected);
+  assert.equal(serialized.includes("private-owner"), false);
+  assert.equal(serialized.includes(marker), false);
+  assert.equal(serialized.includes("example.invalid"), false);
+  assert.deepEqual(
+    strictPublicStatusProjection(projected, new Set(["openclaw/openclaw"])),
+    projected,
+  );
+  const noAllowlist = strictPublicStatusProjection(projected);
+  assert.equal("items" in noAllowlist.exact_review_queue.bay_projection, false);
+  assert.equal("items" in noAllowlist.exact_review_queue.bay_projection.activity, false);
+  assert.deepEqual(noAllowlist.bay.terminal_buffer, [
+    { outcome: "success" },
+    { outcome: "failure" },
+  ]);
+
+  const malformed = strictPublicStatusProjection(
+    {
+      schema_version: 1,
+      generated_at: STATUS_NOW,
+      source: { target_repository_count: 1 },
+      fleet: {},
+      workers: [],
+      automatic_work: [],
+      pipeline: [],
+      exact_review_queue: {
+        bay_projection: {
+          complete: true,
+          sample_limit: 24,
+          total: 1,
+          stages,
+          items: [
+            {
+              repository: "openclaw/openclaw",
+              item_number: "41",
+              stage: "arriving",
+            },
+          ],
+        },
+      },
+      bay: {},
+      recent: {},
+      diagnostics: { errors: [], error_count: 0 },
+    },
+    new Set(["openclaw/openclaw"]),
+  );
+  assert.equal("items" in malformed.exact_review_queue.bay_projection, false);
+});
+
 test("public status rejects supplied live counts from incomplete worker censuses", () => {
   const projected = publicStatusProjection({
     workers: Array.from({ length: 101 }, () => ({ stage: "reviewing" })),
@@ -1100,7 +1255,20 @@ test("public queue HTTP route applies the closed projector before serialization"
               applying: 0,
               repairing: 0,
             },
-            items: [{ item_key: marker }],
+            items: [
+              {
+                item_key: marker,
+                repository: "openclaw/openclaw",
+                item_number: 47,
+                stage: "arriving",
+                title: marker,
+              },
+              {
+                repository: "private-owner/private-repo",
+                item_number: 48,
+                stage: "arriving",
+              },
+            ],
           },
         }),
         { headers: { "content-type": "application/json" } },
@@ -1118,6 +1286,7 @@ test("public queue HTTP route applies the closed projector before serialization"
           return queue;
         },
       },
+      PUBLIC_BAY_REPOS: "openclaw/openclaw",
     },
   );
   const body = await response.json();
@@ -1130,5 +1299,13 @@ test("public queue HTTP route applies the closed projector before serialization"
   assert.equal(serialized.includes("target_stats"), false);
   assert.equal(serialized.includes("arbitrary_count"), false);
   assert.equal(serialized.includes("active_overlaps"), false);
-  assert.equal(serialized.includes("items"), false);
+  assert.deepEqual(body.bay_projection.items, [
+    {
+      repository: "openclaw/openclaw",
+      item_number: 47,
+      stage: "arriving",
+      source: "queue",
+    },
+  ]);
+  assert.equal(serialized.includes("private-owner"), false);
 });

@@ -39,6 +39,9 @@ CLAWSWEEPER_REPO = "openclaw/clawsweeper"
 CLAWSWEEPER_APP_CLIENT_ID = "Iv23liOECG0slfuhz093"
 CLAWSWEEPER_CRABFLEET_URL = "https://crabfleet.openclaw.ai"
 TARGET_REPOS = "openclaw/openclaw,openclaw/clawhub,openclaw/clawsweeper,openclaw/fs-safe"
+# Explicit public-only allowlist for canonical repository + issue/PR references
+# rendered in OpenClaw Bay. Repositories must be verified public before addition.
+PUBLIC_BAY_REPOS = "openclaw/openclaw,openclaw/clawhub,openclaw/clawsweeper,openclaw/fs-safe"
 APPLY_TARGET_REPOS = "openclaw/openclaw"
 APPLY_OPTIONAL_TARGET_REPOS = "openclaw/clawhub"
 CLAWSWEEPER_ENABLE_CLAWHUB = "1"

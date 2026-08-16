@@ -1187,17 +1187,17 @@ export default {
 async function statusJson(request, env, ctx) {
   const cache = caches.default;
   const cached = await cache.match(statusCacheRequest(request, "fresh"));
-  if (cached) return cachedStatusResponse(cached, "fresh");
+  if (cached) return cachedStatusResponse(cached, "fresh", env);
 
   const stale = await cache.match(statusCacheRequest(request, "stale"));
   if (stale && ctx?.waitUntil) {
     ctx.waitUntil(refreshStatus(request, env).catch(() => undefined));
-    return cachedStatusResponse(stale, "stale");
+    return cachedStatusResponse(stale, "stale", env);
   }
 
   const refreshed = await refreshStatus(request, env);
-  if (refreshed.looksEmpty && stale) return cachedStatusResponse(stale, "stale");
-  return statusSnapshotResponse(refreshed.snapshot, "miss");
+  if (refreshed.looksEmpty && stale) return cachedStatusResponse(stale, "stale", env);
+  return statusSnapshotResponse(refreshed.snapshot, "miss", env);
 }
 
 async function healthHistoryJson(request: Request, env: DashboardEnv) {
@@ -1820,7 +1820,109 @@ function emptyPublicBayStageCounts() {
   >;
 }
 
-function publicBayActivity(value) {
+const PUBLIC_BAY_QUEUE_REFERENCE_LIMIT = 24;
+const PUBLIC_BAY_ACTIVITY_REFERENCE_LIMIT = 124;
+const PUBLIC_BAY_ITEM_NUMBER_LIMIT = 1_000_000_000;
+const PUBLIC_BAY_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const PUBLIC_BAY_REFERENCE_SOURCES = new Set(["queue", "live"]);
+const PUBLIC_BAY_OUTCOMES = new Set(["success", "failure", "cancelled"]);
+type PublicBayReference = {
+  repository: string;
+  item_number: number;
+  stage: (typeof PUBLIC_BAY_STAGES)[number];
+  source: "queue" | "live";
+};
+
+function publicBayReference(
+  value,
+  allowedRepositories: ReadonlySet<string>,
+  fallbackSource?: "queue" | "live",
+) {
+  const source = objectValue(value);
+  const repository = typeof source.repository === "string" ? source.repository.trim() : "";
+  const itemNumber = source.item_number;
+  const stage = typeof source.stage === "string" ? source.stage : "";
+  const referenceSource =
+    typeof source.source === "string" && PUBLIC_BAY_REFERENCE_SOURCES.has(source.source)
+      ? source.source
+      : fallbackSource;
+  if (
+    !PUBLIC_BAY_REPOSITORY_PATTERN.test(repository) ||
+    typeof itemNumber !== "number" ||
+    !Number.isSafeInteger(itemNumber) ||
+    itemNumber <= 0 ||
+    itemNumber > PUBLIC_BAY_ITEM_NUMBER_LIMIT ||
+    !PUBLIC_BAY_STAGE_SET.has(stage) ||
+    !referenceSource
+  ) {
+    return null;
+  }
+  const canonicalRepository = repository.toLowerCase();
+  if (!allowedRepositories.has(canonicalRepository)) return undefined;
+  return {
+    repository: canonicalRepository,
+    item_number: itemNumber,
+    stage: stage as (typeof PUBLIC_BAY_STAGES)[number],
+    source: referenceSource,
+  };
+}
+
+function publicBayReferences(
+  value,
+  limit,
+  allowedRepositories: ReadonlySet<string>,
+  fallbackSource?: "queue" | "live",
+) {
+  if (!Array.isArray(value) || value.length > limit) return [];
+  const references: PublicBayReference[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const reference = publicBayReference(entry, allowedRepositories, fallbackSource);
+    if (reference === null) return [];
+    if (reference === undefined) continue;
+    const key = `${reference.repository}#${reference.item_number}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    references.push(reference);
+  }
+  return references;
+}
+
+function publicBayTerminalOutcome(value, allowedRepositories: ReadonlySet<string>) {
+  const source = objectValue(value);
+  const outcome = typeof source.outcome === "string" ? source.outcome : "";
+  if (!PUBLIC_BAY_OUTCOMES.has(outcome)) return null;
+  const explicitRepository = typeof source.repository === "string" ? source.repository.trim() : "";
+  const explicitNumber = source.item_number ?? source.number;
+  const itemKey = typeof source.item_key === "string" ? source.item_key.trim() : "";
+  const keyMatch = itemKey.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
+  const repository = explicitRepository || keyMatch?.[1] || "";
+  const itemNumber = explicitNumber ?? (keyMatch ? Number(keyMatch[2]) : Number.NaN);
+  const explicitMatchesKey =
+    !keyMatch ||
+    (repository.toLowerCase() === keyMatch[1].toLowerCase() && itemNumber === Number(keyMatch[2]));
+  if (
+    explicitMatchesKey &&
+    PUBLIC_BAY_REPOSITORY_PATTERN.test(repository) &&
+    typeof itemNumber === "number" &&
+    Number.isSafeInteger(itemNumber) &&
+    itemNumber > 0 &&
+    itemNumber <= PUBLIC_BAY_ITEM_NUMBER_LIMIT
+  ) {
+    const canonicalRepository = repository.toLowerCase();
+    if (allowedRepositories.has(canonicalRepository)) {
+      return { repository: canonicalRepository, item_number: itemNumber, outcome };
+    }
+  }
+  return { outcome };
+}
+
+function publicBayTerminalOutcomes(value, limit, allowedRepositories: ReadonlySet<string>) {
+  if (!Array.isArray(value) || value.length > limit) return [];
+  return value.map((entry) => publicBayTerminalOutcome(entry, allowedRepositories)).filter(Boolean);
+}
+
+function publicBayActivity(value, allowedRepositories: ReadonlySet<string>) {
   const source = objectValue(value);
   if (source.complete !== true) {
     return { complete: false, queue_stages: null, live_stages: null, total: null };
@@ -1835,10 +1937,16 @@ function publicBayActivity(value) {
   if (!queueStages || !liveStages || !Number.isSafeInteger(total) || total !== expected) {
     return { complete: false, queue_stages: null, live_stages: null, total: null };
   }
-  return { complete: true, queue_stages: queueStages, live_stages: liveStages, total };
+  const result = { complete: true, queue_stages: queueStages, live_stages: liveStages, total };
+  const items = publicBayReferences(
+    source.items,
+    PUBLIC_BAY_ACTIVITY_REFERENCE_LIMIT,
+    allowedRepositories,
+  );
+  return items.length ? { ...result, items } : result;
 }
 
-function publicBayProjectionValue(value) {
+function publicBayProjectionValue(value, allowedRepositories: ReadonlySet<string> = new Set()) {
   const source = objectValue(value);
   const stages = publicBayStageCounts(source.stages, true);
   const sampleLimit = typeof source.sample_limit === "number" ? source.sample_limit : Number.NaN;
@@ -1861,18 +1969,29 @@ function publicBayProjectionValue(value) {
       activity: { complete: false, queue_stages: null, live_stages: null, total: null },
     };
   }
-  return {
+  const result = {
     complete: true,
     sample_limit: sampleLimit,
     total,
     stages,
     activity: hasActivity
-      ? publicBayActivity(source.activity)
+      ? publicBayActivity(source.activity, allowedRepositories)
       : { complete: false, queue_stages: null, live_stages: null, total: null },
   };
+  const items = publicBayReferences(
+    source.items,
+    PUBLIC_BAY_QUEUE_REFERENCE_LIMIT,
+    allowedRepositories,
+    "queue",
+  );
+  return items.length ? { ...result, items } : result;
 }
 
-function composePublicBayActivity(projection, activeTargets) {
+function composePublicBayActivity(
+  projection,
+  activeTargets,
+  allowedRepositories: ReadonlySet<string>,
+) {
   if (objectValue(projection).complete !== true || !activeTargets.complete) {
     return { complete: false, queue_stages: null, live_stages: null, total: null };
   }
@@ -1893,7 +2012,22 @@ function composePublicBayActivity(projection, activeTargets) {
     (sum, stage) => sum + queueStages[stage] + liveStages[stage],
     0,
   );
-  return { complete: true, queue_stages: queueStages, live_stages: liveStages, total };
+  const activeKeys = new Set(activeTargets.keys);
+  const queueItems = publicBayReferences(
+    objectValue(projection).items,
+    PUBLIC_BAY_QUEUE_REFERENCE_LIMIT,
+    allowedRepositories,
+    "queue",
+  ).filter((item) => !activeKeys.has(`${item.repository}#${item.item_number}`));
+  const liveItems = publicBayReferences(activeTargets.items, 100, allowedRepositories, "live");
+  const items = [...liveItems, ...queueItems].slice(0, PUBLIC_BAY_ACTIVITY_REFERENCE_LIMIT);
+  return {
+    complete: true,
+    queue_stages: queueStages,
+    live_stages: liveStages,
+    total,
+    ...(items.length ? { items } : {}),
+  };
 }
 
 function publicWorkerBayStage(value): (typeof PUBLIC_BAY_STAGES)[number] | undefined {
@@ -2085,7 +2219,21 @@ function publicBayActiveTargets(workers, producerComplete = false) {
     number
   >;
   for (const { stage } of selected.values()) counts[stage] += 1;
-  return { complete, keys: [...selected.keys()].slice(0, 100), stages: counts };
+  const keys = [...selected.keys()].slice(0, 100);
+  const items = keys.flatMap((key) => {
+    const match = key.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
+    const selectedItem = selected.get(key);
+    if (!match || !selectedItem) return [];
+    return [
+      {
+        repository: match[1],
+        item_number: Number(match[2]),
+        stage: selectedItem.stage,
+        source: "live" as const,
+      },
+    ];
+  });
+  return { complete, keys, stages: counts, items };
 }
 
 function unavailablePublicStatusProjection() {
@@ -2111,7 +2259,24 @@ function unavailablePublicStatusProjection() {
   };
 }
 
-export function publicStatusProjection(snapshot) {
+function verifiedPublicBayRepositories(env) {
+  const repositories = String(env?.PUBLIC_BAY_REPOS || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  if (
+    repositories.length > 32 ||
+    repositories.some((repository) => !PUBLIC_BAY_REPOSITORY_PATTERN.test(repository))
+  ) {
+    return new Set<string>();
+  }
+  return new Set<string>(repositories);
+}
+
+export function publicStatusProjection(
+  snapshot,
+  allowedRepositories: ReadonlySet<string> = new Set(),
+) {
   if (
     !snapshot ||
     typeof snapshot !== "object" ||
@@ -2163,7 +2328,7 @@ export function publicStatusProjection(snapshot) {
     Boolean(source.exact_review_queue) &&
     typeof source.exact_review_queue === "object" &&
     !Array.isArray(source.exact_review_queue);
-  const publicBayProjection = publicBayProjectionValue(sourceBayProjection);
+  const publicBayProjection = publicBayProjectionValue(sourceBayProjection, allowedRepositories);
   const projectionSource = {
     ...source,
     public_projection_complete: true,
@@ -2179,10 +2344,13 @@ export function publicStatusProjection(snapshot) {
       : {}),
     ...(hasExactReviewQueueObject
       ? {
-          exact_review_queue: publicExactReviewQueueProjection({
-            ...sourceExactReviewQueue,
-            bay_projection: publicBayProjection,
-          }),
+          exact_review_queue: publicExactReviewQueueProjection(
+            {
+              ...sourceExactReviewQueue,
+              bay_projection: publicBayProjection,
+            },
+            allowedRepositories,
+          ),
         }
       : {}),
   };
@@ -2203,6 +2371,27 @@ export function publicStatusProjection(snapshot) {
     errors: Array.from({ length: Math.min(errorCount, 20) }, () => "telemetry_unavailable"),
     error_count: errorCount,
   };
+  const documentBay = objectValue(document.bay);
+  if (Array.isArray(sourceBay.terminal_buffer)) {
+    documentBay.terminal_buffer = publicBayTerminalOutcomes(
+      sourceBay.terminal_buffer,
+      100,
+      allowedRepositories,
+    );
+  }
+  if (Array.isArray(sourceBay.recently_washed)) {
+    documentBay.recently_washed = publicBayTerminalOutcomes(
+      sourceBay.recently_washed,
+      100,
+      allowedRepositories,
+    );
+  }
+  document.bay = documentBay;
+  if (hasExactReviewQueueObject) {
+    const documentQueue = objectValue(document.exact_review_queue);
+    documentQueue.bay_projection = publicBayProjection;
+    document.exact_review_queue = documentQueue;
+  }
   return document;
 }
 
@@ -2269,26 +2458,29 @@ function publicStatusText(value, field) {
   return PUBLIC_STATUS_TEXT_VALUES.has(normalized) ? normalized : undefined;
 }
 
-async function cachedStatusResponse(cached, cacheState) {
+async function cachedStatusResponse(cached, cacheState, env) {
   let snapshot = null;
   try {
     snapshot = await cached.clone().json();
   } catch {
     snapshot = { schema_version: 1 };
   }
-  return statusSnapshotResponse(publicStatusProjection(snapshot), cacheState);
+  return statusSnapshotResponse(snapshot, cacheState, env);
 }
 
-function statusSnapshotResponse(snapshot, cacheState) {
+function statusSnapshotResponse(snapshot, cacheState, env) {
   const responseHeaders = new Headers();
   responseHeaders.set("content-type", "application/json; charset=utf-8");
   responseHeaders.set("cache-control", "no-store");
   responseHeaders.set("x-clawsweeper-cache", cacheState);
   return cors(
-    new Response(JSON.stringify(publicStatusProjection(snapshot), null, 2), {
-      status: 200,
-      headers: responseHeaders,
-    }),
+    new Response(
+      JSON.stringify(publicStatusProjection(snapshot, verifiedPublicBayRepositories(env)), null, 2),
+      {
+        status: 200,
+        headers: responseHeaders,
+      },
+    ),
   );
 }
 
@@ -2297,6 +2489,7 @@ function refreshStatus(request, env) {
     new URL(request.url).origin,
     env.CLAWSWEEPER_REPO || "openclaw/clawsweeper",
     env.TARGET_REPOS || "openclaw/openclaw",
+    env.PUBLIC_BAY_REPOS || "",
     env.CLAWSWEEPER_STATE_REPO || CLAWSWEEPER_STATE_REPO,
     env.WORKER_BUDGET || "",
     env.WORKER_DETAIL_RUN_LIMIT || "",
@@ -2323,7 +2516,10 @@ async function refreshStatusCaches(request, env) {
   // Queue stats and the GitHub-backed global lease are operational observations, not
   // request-specific data. Cache the composed document so a cache hit never waits on
   // those remote probes; the existing stale-while-revalidate path refreshes them safely.
-  const snapshot = publicStatusProjection(await attachExactReviewQueueStatus(baseSnapshot, env));
+  const snapshot = publicStatusProjection(
+    await attachExactReviewQueueStatus(baseSnapshot, env),
+    verifiedPublicBayRepositories(env),
+  );
   const body = JSON.stringify(snapshot, null, 2);
   const hasErrors = Number(snapshot.diagnostics?.error_count || 0) > 0;
   const looksEmpty =
@@ -4119,7 +4315,10 @@ function publicExactReviewPressure(value) {
   };
 }
 
-export function publicExactReviewQueueProjection(value) {
+export function publicExactReviewQueueProjection(
+  value,
+  allowedRepositories: ReadonlySet<string> = new Set(),
+) {
   const source = objectValue(value);
   const sourceLanes = objectValue(source.lanes);
   const reviewLane = objectValue(sourceLanes.review);
@@ -4232,7 +4431,7 @@ export function publicExactReviewQueueProjection(value) {
       review: projectedReviewLane.value,
       publication: projectedPublicationLane.value,
     },
-    bay_projection: publicBayProjectionValue(source.bay_projection),
+    bay_projection: publicBayProjectionValue(source.bay_projection, allowedRepositories),
   };
   return result;
 }
@@ -4242,7 +4441,7 @@ async function publicExactReviewQueueJson(env) {
     const response = await exactReviewQueueRequest(env, "/stats");
     if (!response.ok) return json({ error: "exact_review_queue_unavailable" }, 503);
     const body = await response.json().catch(() => null);
-    const projected = publicExactReviewQueueProjection(body);
+    const projected = publicExactReviewQueueProjection(body, verifiedPublicBayRepositories(env));
     return json(projected, projected.collection.state === "complete" ? 200 : 503);
   } catch {
     return json({ error: "exact_review_queue_unavailable" }, 503);
@@ -5428,7 +5627,7 @@ async function statusSnapshot(env) {
   const ttl = numberFrom(env.CACHE_TTL_SECONDS, 20);
   const cached = await readCachedSnapshot(env, ttl);
   if (cached?.bay?.timings?.sample_kind === "completed_review_journeys") {
-    return publicStatusProjection(cached);
+    return publicStatusProjection(cached, verifiedPublicBayRepositories(env));
   }
 
   const github = createGithubJsonCache(env);
@@ -5734,14 +5933,15 @@ async function attachExactReviewQueueStatus(snapshot, env) {
   if (eventsResult.status === "fulfilled") recentDurablePublicationEvents = eventsResult.value;
   const priorExactReviewQueue = objectValue(snapshot.exact_review_queue);
   const priorProjection = objectValue(priorExactReviewQueue.bay_projection);
-  const priorActivity = publicBayActivity(priorProjection.activity);
+  const allowedRepositories = verifiedPublicBayRepositories(env);
+  const priorActivity = publicBayActivity(priorProjection.activity, allowedRepositories);
   if (!activeTargets.complete && priorActivity.complete) {
     // A projected cache no longer has correlation keys. Keep its same-generation
     // queue/live aggregate intact instead of combining it with a newer queue census.
     exactReviewQueue = priorExactReviewQueue;
   } else if (exactReviewQueue) {
     const projection = objectValue(exactReviewQueue.bay_projection);
-    projection.activity = composePublicBayActivity(projection, activeTargets);
+    projection.activity = composePublicBayActivity(projection, activeTargets, allowedRepositories);
   }
   const attached = {
     ...snapshot,

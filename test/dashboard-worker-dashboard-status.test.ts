@@ -1237,6 +1237,56 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
           leased: { count: 24, oldest_age_seconds: 240 },
         },
       },
+      bay_projection: {
+        complete: true,
+        sample_limit: 24,
+        total: 2,
+        stages: {
+          arriving: 0,
+          "setting-up": 0,
+          reviewing: 1,
+          publishing: 1,
+          applying: 0,
+          repairing: 0,
+        },
+        activity: {
+          complete: true,
+          total: 2,
+          queue_stages: {
+            arriving: 0,
+            "setting-up": 0,
+            reviewing: 1,
+            publishing: 0,
+            applying: 0,
+            repairing: 0,
+          },
+          live_stages: {
+            arriving: 0,
+            "setting-up": 0,
+            reviewing: 0,
+            publishing: 1,
+            applying: 0,
+            repairing: 0,
+          },
+          items: [
+            {
+              repository: "OpenClaw/OpenClaw",
+              item_number: 123,
+              stage: "reviewing",
+              source: "queue",
+              title: "SYNTHETIC_OVERVIEW_PRIVATE_TITLE",
+              url: "https://invalid.example/SYNTHETIC_OVERVIEW_PRIVATE_URL?token=1",
+              failure_key: "SYNTHETIC_OVERVIEW_PRIVATE_FAILURE",
+            },
+            {
+              repository: "openclaw/clawhub",
+              item_number: 456,
+              stage: "publishing",
+              source: "live",
+            },
+          ],
+        },
+      },
     },
     diagnostics: { errors: [], exact_review_queue_error: null as string | null },
     recent: {
@@ -1395,6 +1445,70 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
 
   assert.equal(elementFor("hero-dot").className, "hero-dot amber");
   assert.match(elementFor("hero-headline").textContent, /^Needs attention/);
+  assert.match(elementFor("public-reference-summary").textContent, /2 verified public references/);
+  const publicReferenceHtml = elementFor("public-references").innerHTML;
+  assert.match(publicReferenceHtml, /openclaw\/openclaw#123/);
+  assert.match(publicReferenceHtml, /openclaw\/clawhub#456/);
+  assert.match(publicReferenceHtml, /https:\/\/github\.com\/openclaw\/openclaw\/issues\/123/);
+  assert.match(publicReferenceHtml, /https:\/\/github\.com\/openclaw\/clawhub\/issues\/456/);
+  assert.doesNotMatch(publicReferenceHtml, /SYNTHETIC_OVERVIEW_PRIVATE/i);
+  assert.doesNotMatch(publicReferenceHtml, /invalid\.example|token=/i);
+  const projectedPublicReferences = context.dashboardStatusSnapshot(status);
+  assert.equal(
+    JSON.stringify(projectedPublicReferences.exact_review_queue.bay_projection.activity.items),
+    JSON.stringify([
+      {
+        repository: "openclaw/openclaw",
+        item_number: 123,
+        stage: "reviewing",
+        source: "queue",
+      },
+      {
+        repository: "openclaw/clawhub",
+        item_number: 456,
+        stage: "publishing",
+        source: "live",
+      },
+    ]),
+  );
+  assert.doesNotMatch(JSON.stringify(projectedPublicReferences), /SYNTHETIC_OVERVIEW_PRIVATE/i);
+  assert.equal(
+    context.dashboardPublicBayReferences([
+      { repository: "openclaw/openclaw", item_number: "123", stage: "reviewing", source: "queue" },
+    ]).length,
+    0,
+  );
+  assert.equal(
+    context.dashboardPublicBayReferences(
+      Array.from({ length: 125 }, (_, index) => ({
+        repository: "openclaw/openclaw",
+        item_number: index + 1,
+        stage: "reviewing",
+        source: "queue",
+      })),
+    ).length,
+    0,
+  );
+  new Script('publicReferenceQuery = "123"; renderPublicReferences(lastData);').runInContext(
+    context,
+  );
+  assert.match(elementFor("public-reference-summary").textContent, /1 match/);
+  assert.match(elementFor("public-references").innerHTML, /openclaw\/openclaw#123/);
+  assert.doesNotMatch(elementFor("public-references").innerHTML, /openclaw\/clawhub#456/);
+  new Script(
+    'publicReferenceQuery = "openclaw/clawhub#456"; renderPublicReferences(lastData);',
+  ).runInContext(context);
+  assert.match(elementFor("public-references").innerHTML, /openclaw\/clawhub#456/);
+  assert.doesNotMatch(elementFor("public-references").innerHTML, /openclaw\/openclaw#123/);
+  new Script(
+    'publicReferenceQuery = "not-a-reference"; renderPublicReferences(lastData);',
+  ).runInContext(context);
+  assert.match(
+    elementFor("public-reference-summary").textContent,
+    /Enter a number or owner\/repo#number/,
+  );
+  assert.match(elementFor("public-references").innerHTML, /No matching public reference/);
+  new Script('publicReferenceQuery = ""; renderPublicReferences(lastData);').runInContext(context);
   assert.match(elementFor("apply-health").innerHTML, /Pruning sweep blocked/);
   status.recent.closed_items = {};
   assert.doesNotThrow(() => context.renderDashboard(status, ""));

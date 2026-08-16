@@ -13,10 +13,15 @@ operator-facing ClawSweeper observability.
 
 The live dashboard is observer-only. ClawSweeper still owns review, repair,
 apply, merge, comments, labels, and all GitHub mutations. The Cloudflare Worker
-reads GitHub workflow state, projects it into closed aggregate status and Bay
-views, and optionally accepts signed status events from workflows. Public
-status and observability responses do not expose workflow titles, repository or
-item identity, raw failure keys, URLs, or per-job diagnostic text.
+reads GitHub workflow state, projects it into closed status and Bay views, and
+optionally accepts signed status events from workflows. The one identity
+exception is a bounded reference sample containing canonical repository and
+issue or pull-request numbers from the explicit verified-public
+`PUBLIC_BAY_REPOS` allowlist. Bay and Overview use that same sample for cards
+and search. Public responses still exclude workflow and item titles, raw or
+source URLs, queries, raw failure keys and payloads, internal opaque keys,
+credentials, tokens, private or non-allowlisted repositories, and per-job
+diagnostic text.
 
 For the end-to-end relationship between GitHub Actions workers, durable jobs,
 CrabFleet action sessions, Codex steering, completion reasons, and dashboard
@@ -121,7 +126,9 @@ is absent or a cache event lands in another Cloudflare colo.
   outcome categories; identifying titles, targets, links, keys, and job text are
   omitted
 - six aggregate Bay stages from arrival through repair, split into disjoint
-  queued and live counts only when both producer censuses are complete
+  queued and live counts only when both producer censuses are complete, plus a
+  bounded verified-public repository/item reference sample used by Bay and
+  Overview cards and search
 - aggregate durable lifecycle inventory and six closed lane counts; the public
   lifecycle response contains no item cards or samples
 - a budget-sized capacity rail plus aggregate counts for issue-to-PR, PR repair,
@@ -170,10 +177,11 @@ seconds. It separately samples 20 recent completed worker runs with ten-way
 fanout and caches error/recovery telemetry for 120 seconds. This bounds
 telemetry pressure without exceeding the 128-worker fleet budget. Worker details
 paginate up to 300 jobs per workflow run so 89-shard runs contribute to a
-complete internal census. Titles, target identity, job names, URLs, and raw
-errors are removed before the status snapshot is persisted or returned. If the
-census is incomplete, the public activity projection fails closed instead of
-presenting partial counts as complete.
+complete internal census. Titles, job names, raw URLs, opaque target keys, and
+raw errors are removed before the status snapshot is persisted or returned.
+Only the allowlisted canonical repository/item reference tuple is retained for
+the bounded Bay sample. If the census is incomplete, the public activity
+projection fails closed instead of presenting partial counts as complete.
 
 Automatic issue-build lifecycle events are retained privately for seven days so
 completed and blocked work can be reconciled after the worker leaves the active
@@ -220,6 +228,9 @@ Rich workflow, queue, item, repository, session, revision, and failure records
 may remain in the queue and status Durable Objects when binding-authenticated
 workers need them. They must pass through the corresponding public projector
 before they reach a public response, edge cache, or ordinary status snapshot.
+The projector may retain only the narrow `PUBLIC_BAY_REPOS` reference tuple
+described above; this is not permission to expose arbitrary public-repository
+metadata or untrusted text.
 
 ## Exact Review history
 

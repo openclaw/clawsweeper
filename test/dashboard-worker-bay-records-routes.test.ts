@@ -3186,8 +3186,11 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.doesNotMatch(body, /<meta name="robots"/);
   assert.doesNotMatch(body, /Experimental demo/);
   assert.match(body, /href="\/bay" aria-current="page"/);
-  assert.match(body, /Aggregate-only shoreline/);
-  assert.doesNotMatch(body, /id="finder"|id="finder-input"|id="drawer"|id="queue-sample-drawer"/);
+  assert.match(body, /Verified public GitHub work/);
+  assert.match(body, /id="finder"/);
+  assert.match(body, /id="finder-input"/);
+  assert.match(body, /owner\/repo#number/);
+  assert.doesNotMatch(body, /id="drawer"|id="queue-sample-drawer"/);
   assert.match(body, /Aggregate terminal outcomes per tide/);
   assert.match(body, /Master Sweeper/);
   assert.match(body, /id="bay-control-board"/);
@@ -3586,7 +3589,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /loadInFlight/);
   assert.match(body, /replaceChildren\(journey\)/);
   assert.match(body, /master\.getAnimations\(\)/);
-  assert.doesNotMatch(body, /Let the current beach movement finish first/);
+  assert.match(body, /Let the current beach movement finish first/);
   assert.match(body, /function visualTransitionKey/);
   assert.match(body, /pendingItems/);
   assert.match(body, /OUTCOME_CONFIRM_MS=150000/);
@@ -3641,14 +3644,22 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
             terminal_buffer: [
               {
                 outcome: "success",
+                repository: "openclaw/openclaw",
+                item_number: 71,
                 workflow_title: "synthetic private workflow title",
                 item_url: "https://example.invalid/private?token=synthetic",
               },
-              { outcome: "failure" },
+              { outcome: "failure", repository: "openclaw/clawsweeper", item_number: 72 },
+              {
+                outcome: "cancelled",
+                workflow_title: "synthetic private terminal title",
+              },
               { terminal_outcome: "cancelled" },
               { outcome: "unrecognized" },
             ],
-            recently_washed: [{ outcome: "success" }],
+            recently_washed: [
+              { outcome: "success", repository: "openclaw/clawhub", item_number: 73 },
+            ],
           },
         },
         {},
@@ -3666,18 +3677,36 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
       { stage: "completed", status: "success", outcome: "success" },
       { stage: "completed", status: "success", outcome: "success" },
       { stage: "failed", status: "failure", outcome: "failure" },
+      { stage: "cancelled", status: "cancelled", outcome: "cancelled" },
     ],
   );
-  assert.ok(
-    terminalRows.every(
-      (row: Record<string, unknown>) =>
-        !Object.hasOwn(row, "repository") &&
-        !Object.hasOwn(row, "number") &&
-        !Object.hasOwn(row, "item_url") &&
-        !Object.hasOwn(row, "source"),
-    ),
+  assert.deepEqual(
+    terminalRows.map((row: Record<string, unknown>) => ({
+      repository: row.repository,
+      number: row.number,
+      item_url: row.item_url,
+    })),
+    [
+      {
+        repository: "openclaw/clawhub",
+        number: 73,
+        item_url: "https://github.com/openclaw/clawhub/issues/73",
+      },
+      {
+        repository: "openclaw/openclaw",
+        number: 71,
+        item_url: "https://github.com/openclaw/openclaw/issues/71",
+      },
+      {
+        repository: "openclaw/clawsweeper",
+        number: 72,
+        item_url: "https://github.com/openclaw/clawsweeper/issues/72",
+      },
+      { repository: undefined, number: undefined, item_url: undefined },
+    ],
   );
   assert.equal(JSON.stringify(terminalRows).includes("synthetic private workflow title"), false);
+  assert.equal(JSON.stringify(terminalRows).includes("synthetic private terminal title"), false);
   assert.equal(JSON.stringify(terminalRows).includes("example.invalid"), false);
   assert.equal(
     aggregateTerminalRows(
@@ -3685,7 +3714,9 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
         bay: {
           terminal_count: 12,
           terminal_buffer: [null, {}, { outcome: { nested: "failure" } }],
-          recently_washed: [{ outcome: "success" }],
+          recently_washed: [
+            { outcome: "success", repository: "openclaw/openclaw", item_number: 1 },
+          ],
         },
       },
       {},
@@ -3698,7 +3729,11 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
       bay: {
         terminal_buffer: [
           ...Array.from({ length: 10 }, () => ({ outcome: "unknown" })),
-          ...Array.from({ length: 30 }, () => ({ outcome: "success" })),
+          ...Array.from({ length: 30 }, (_, index) => ({
+            outcome: "success",
+            repository: "openclaw/openclaw",
+            item_number: 100 + index,
+          })),
         ],
       },
     },
@@ -3710,8 +3745,16 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   const tideRows = aggregateTerminalRows(
     {
       bay: {
-        recently_washed: Array.from({ length: 20 }, () => ({ outcome: "failure" })),
-        terminal_buffer: Array.from({ length: 5 }, () => ({ outcome: "success" })),
+        recently_washed: Array.from({ length: 20 }, (_, index) => ({
+          outcome: "failure",
+          repository: "openclaw/openclaw",
+          item_number: 200 + index,
+        })),
+        terminal_buffer: Array.from({ length: 5 }, (_, index) => ({
+          outcome: "success",
+          repository: "openclaw/clawsweeper",
+          item_number: 300 + index,
+        })),
       },
     },
     {},
@@ -3766,6 +3809,27 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
           queue_stages: { ...closedStages, arriving: 2 },
           live_stages: { ...closedStages, reviewing: 1 },
           total: 3,
+          items: [
+            {
+              repository: "openclaw/openclaw",
+              item_number: 77,
+              stage: "reviewing",
+              source: "live",
+              workflow_title: "synthetic private workflow title",
+            },
+            {
+              repository: "openclaw/clawsweeper",
+              item_number: 78,
+              stage: "arriving",
+              source: "queue",
+            },
+            {
+              repository: "openclaw/clawhub",
+              item_number: 79,
+              stage: "arriving",
+              source: "queue",
+            },
+          ],
         },
       },
     },
@@ -3779,6 +3843,11 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     { reviewing: 1, arriving: 2 },
   );
   assert.equal(JSON.stringify(renderedAggregateRows).includes("synthetic private"), false);
+  assert.deepEqual(renderedAggregateRows.map((row) => row.item_url).sort(), [
+    "https://github.com/openclaw/clawhub/issues/79",
+    "https://github.com/openclaw/clawsweeper/issues/78",
+    "https://github.com/openclaw/openclaw/issues/77",
+  ]);
   const incompleteRows = aggregateRows.expandActive({
     ...aggregateData,
     bay: { active_stages: { ...closedStages, reviewing: 1 } },
@@ -3833,7 +3902,8 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.doesNotMatch(body, /api\.github\.com|fetch\("\/repos\//);
   assert.match(body, /Disappearing workers remain CHECKING/);
   assert.match(body, /renderRepos\(\)/);
-  assert.doesNotMatch(body, /replacement\.focus|history\.replaceState/);
+  assert.match(body, /replacement\.focus/);
+  assert.doesNotMatch(body, /history\.replaceState/);
   const script = [...body.matchAll(/<script>\n([\s\S]*?)\n<\/script>/g)].at(-1)?.[1];
   assert.ok(script);
   assert.doesNotThrow(() => new Script(script));
@@ -3913,8 +3983,9 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
   const body = await response.text();
   assert.doesNotMatch(
     body,
-    /history\.replaceState|URLSearchParams|location\.search|item_url|run_url|workflow_title|failure_key/,
+    /history\.replaceState|URLSearchParams|location\.search|run_url|workflow_title|failure_key/,
   );
+  assert.match(body, /item_url/);
   assert.doesNotMatch(body, new RegExp(marker, "i"));
 
   const projectionStart = body.indexOf("var MAX_BAY_COUNT");
@@ -3956,6 +4027,23 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
           queue_stages: { ...emptyStages, arriving: 2 },
           live_stages: { ...emptyStages, reviewing: 1 },
           total: 3,
+          items: [
+            {
+              repository: "openclaw/openclaw",
+              item_number: 81,
+              stage: "reviewing",
+              source: "live",
+              title: marker,
+              url: `https://example.invalid/item?query=${marker}`,
+            },
+            {
+              repository: "openclaw/clawsweeper",
+              item_number: 82,
+              stage: "arriving",
+              source: "queue",
+              failure_key: marker,
+            },
+          ],
           nested: { key: marker },
         },
       },
@@ -4007,7 +4095,12 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
       tide_threshold: 20,
       terminal_count: 3,
       terminal_buffer: [
-        { outcome: "success", title: marker },
+        {
+          outcome: "success",
+          repository: "openclaw/openclaw",
+          item_number: 83,
+          title: marker,
+        },
         { outcome: "failure", url: `https://example.invalid/item?query=${marker}` },
         { outcome: "cancelled", nested: { token: marker } },
       ],
@@ -4025,8 +4118,29 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
   const projected = runtime.publicBayStatus(valid);
   assert.equal(projected.privacy.state, "complete");
   assert.equal(projected.exact_review_queue.bay_projection.activity.total, 3);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(projected.exact_review_queue.bay_projection.activity.items)),
+    [
+      {
+        repository: "openclaw/openclaw",
+        item_number: 81,
+        stage: "reviewing",
+        source: "live",
+      },
+      {
+        repository: "openclaw/clawsweeper",
+        item_number: 82,
+        stage: "arriving",
+        source: "queue",
+      },
+    ],
+  );
   assert.deepEqual(JSON.parse(JSON.stringify(projected.bay.terminal_buffer)), [
-    { outcome: "success" },
+    {
+      outcome: "success",
+      repository: "openclaw/openclaw",
+      item_number: 83,
+    },
     { outcome: "failure" },
     { outcome: "cancelled" },
   ]);
@@ -4034,7 +4148,7 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
   assert.doesNotMatch(serialized, new RegExp(marker, "i"));
   assert.doesNotMatch(
     serialized,
-    /example\.invalid|"workers"|"recent"|"message"|"title"|"url"|"query"|"token"/,
+    /example\.invalid|"workers"|"recent"|"message"|"title"|"query"|"token"/,
   );
 
   for (const malformed of [
