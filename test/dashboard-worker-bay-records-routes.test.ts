@@ -3434,8 +3434,17 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
         at: new Date(bayAt).toISOString(),
         exact_review: {
           collection_ok: true,
-          review: { pending: 4, enqueued_total: 20, completed_total: 16, shed_total: 1 },
-          publication: { pending: 2, enqueued_total: 18, completed_total: 16 },
+          review: {
+            pending: 4,
+            enqueued_total: 10_000_020,
+            completed_total: 10_000_016,
+            shed_total: 1,
+          },
+          publication: {
+            pending: 2,
+            enqueued_total: 10_000_018,
+            completed_total: 10_000_016,
+          },
           handoff: { status: "healthy", pending: 4, dispatching: 1, leased: 2 },
         },
         state_writer: {
@@ -3459,6 +3468,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   bayPayload = validBayHistory;
   await bayHistoryRuntime.loadBayHistory();
   assert.equal(bayHistoryRuntime.bayHistory("review")[0].pending, 4);
+  assert.equal(bayHistoryRuntime.bayHistory("review")[0].enqueued, 10_000_020);
   assert.equal(bayHistoryRuntime.bayHandoffHistory()[0].dispatching, 1);
   assert.equal(bayHistoryRuntime.bayStateWriterHistory()[0].pending, 2);
   const projectedBayHistory = bayHistoryRuntime.bayHealthHistorySnapshot(validBayHistory, "6h");

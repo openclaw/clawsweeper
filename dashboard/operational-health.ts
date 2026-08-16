@@ -5,6 +5,7 @@ export const OPERATIONAL_RUNNING_STALLED_MS = 150 * 60 * 1000;
 export const HEALTH_HISTORY_SAMPLE_MS = 5 * 60 * 1000;
 export const HEALTH_HISTORY_RETENTION_DAYS = 7;
 const HEALTH_HISTORY_MAX_COUNT = 10_000_000;
+const HEALTH_HISTORY_MAX_TOTAL = 1_000_000_000_000;
 const HEALTH_HISTORY_TIMESTAMP_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
 const HEALTH_HISTORY_TIMESTAMP_MIN_MS = Date.UTC(2020, 0, 1);
@@ -435,8 +436,8 @@ function laneHistorySample(
   shedValue: unknown,
 ): ExactReviewLaneHistorySample | null {
   const pending = nonNegativeInteger(pendingValue);
-  const enqueuedTotal = optionalNonNegativeInteger(enqueuedValue);
-  const completedTotal = optionalNonNegativeInteger(completedValue);
+  const enqueuedTotal = optionalNonNegativeInteger(enqueuedValue, HEALTH_HISTORY_MAX_TOTAL);
+  const completedTotal = optionalNonNegativeInteger(completedValue, HEALTH_HISTORY_MAX_TOTAL);
   const shedTotal = optionalNonNegativeInteger(shedValue);
   if (pending === null || enqueuedTotal === null || completedTotal === null || shedTotal === null) {
     return null;
@@ -484,17 +485,14 @@ function ageMs(value: string | undefined, now: number) {
   return Number.isFinite(timestamp) ? Math.max(0, now - timestamp) : null;
 }
 
-function nonNegativeInteger(value: unknown) {
-  return typeof value === "number" &&
-    Number.isSafeInteger(value) &&
-    value >= 0 &&
-    value <= HEALTH_HISTORY_MAX_COUNT
+function nonNegativeInteger(value: unknown, maximum = HEALTH_HISTORY_MAX_COUNT) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum
     ? value
     : null;
 }
 
-function optionalNonNegativeInteger(value: unknown) {
-  return value === undefined ? undefined : nonNegativeInteger(value);
+function optionalNonNegativeInteger(value: unknown, maximum = HEALTH_HISTORY_MAX_COUNT) {
+  return value === undefined ? undefined : nonNegativeInteger(value, maximum);
 }
 
 function canonicalHistoryTimestamp(value: unknown) {

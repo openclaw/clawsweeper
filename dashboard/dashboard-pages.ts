@@ -2479,11 +2479,12 @@ const DASHBOARD_HEALTH_HISTORY_RANGE_MS = {
 };
 const DASHBOARD_HEALTH_HISTORY_SAMPLE_MS = 5 * 60 * 1000;
 const DASHBOARD_HEALTH_HISTORY_RETENTION_DAYS = 7;
+const DASHBOARD_HEALTH_HISTORY_MAX_TOTAL = 1000000000000;
 const DASHBOARD_HEALTH_HISTORY_STATUSES = ["healthy", "degraded", "stalled", "unknown"];
 const DASHBOARD_HEALTH_HISTORY_HANDOFF_STATUSES = ["idle", "healthy", "degraded", "stalled"];
 const DASHBOARD_HEALTH_HISTORY_WRITER_MODES = ["single_item", "batch", "mixed", "unknown"];
-function dashboardHealthHistoryOptionalCount(value) {
-  return value === undefined ? undefined : dashboardObservabilityCount(value);
+function dashboardHealthHistoryOptionalCount(value, maximum = DASHBOARD_OBSERVABILITY_MAX_COUNT) {
+  return value === undefined ? undefined : dashboardObservabilityCount(value, maximum);
 }
 function dashboardHealthHistoryPercentiles(value) {
   const source = dashboardObservabilityObject(value);
@@ -2503,8 +2504,8 @@ function dashboardHealthHistoryLane(value, includeShed) {
   const source = dashboardObservabilityObject(value);
   if (!source) return null;
   const pending = dashboardObservabilityCount(source.pending);
-  const enqueuedTotal = dashboardHealthHistoryOptionalCount(source.enqueued_total);
-  const completedTotal = dashboardHealthHistoryOptionalCount(source.completed_total);
+  const enqueuedTotal = dashboardHealthHistoryOptionalCount(source.enqueued_total, DASHBOARD_HEALTH_HISTORY_MAX_TOTAL);
+  const completedTotal = dashboardHealthHistoryOptionalCount(source.completed_total, DASHBOARD_HEALTH_HISTORY_MAX_TOTAL);
   const shedTotal = includeShed ? dashboardHealthHistoryOptionalCount(source.shed_total) : undefined;
   if (
     pending === null || enqueuedTotal === null || completedTotal === null || shedTotal === null ||

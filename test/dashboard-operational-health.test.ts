@@ -211,11 +211,15 @@ test("health history preserves legacy samples and normalizes exact-review backlo
     lanes: {
       review: {
         pending: 317,
-        enqueued_total: 90,
-        completed_total: 70,
+        enqueued_total: 10_000_090,
+        completed_total: 10_000_070,
         shed_since_reset: 3,
       },
-      publication: { pending: 1502, enqueued_total: 50, completed_total: 42 },
+      publication: {
+        pending: 1502,
+        enqueued_total: 10_000_050,
+        completed_total: 10_000_042,
+      },
     },
     handoff_health: {
       status: "degraded",
@@ -229,8 +233,17 @@ test("health history preserves legacy samples and normalizes exact-review backlo
   const normalized = normalizeHealthHistorySample({ ...legacy, exact_review: exactReview });
   assert.deepEqual(normalized?.exact_review, {
     collection_ok: true,
-    review: { pending: 317, enqueued_total: 90, completed_total: 70, shed_total: 3 },
-    publication: { pending: 1502, enqueued_total: 50, completed_total: 42 },
+    review: {
+      pending: 317,
+      enqueued_total: 10_000_090,
+      completed_total: 10_000_070,
+      shed_total: 3,
+    },
+    publication: {
+      pending: 1502,
+      enqueued_total: 10_000_050,
+      completed_total: 10_000_042,
+    },
     handoff: { status: "degraded", pending: 317, dispatching: 8, leased: 34 },
   });
   assert.deepEqual(normalizeHealthHistorySample({ at: CHECKED_AT, exact_review: exactReview }), {
@@ -266,6 +279,17 @@ test("health history preserves legacy samples and normalizes exact-review backlo
       exact_review: {
         collection_ok: true,
         review: { pending: 1, enqueued_total: -1, completed_total: 0 },
+        publication: { pending: 1, enqueued_total: 0, completed_total: 0 },
+      },
+    }),
+    null,
+  );
+  assert.equal(
+    normalizeHealthHistorySample({
+      at: CHECKED_AT,
+      exact_review: {
+        collection_ok: true,
+        review: { pending: 1, enqueued_total: 1_000_000_000_001, completed_total: 0 },
         publication: { pending: 1, enqueued_total: 0, completed_total: 0 },
       },
     }),

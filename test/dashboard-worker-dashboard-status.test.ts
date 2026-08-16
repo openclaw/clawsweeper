@@ -254,8 +254,17 @@ function dashboardHealthHistoryFixture(range = "6h") {
         at: new Date(at).toISOString(),
         exact_review: {
           collection_ok: true,
-          review: { pending: 4, enqueued_total: 20, completed_total: 16, shed_total: 1 },
-          publication: { pending: 2, enqueued_total: 18, completed_total: 16 },
+          review: {
+            pending: 4,
+            enqueued_total: 10_000_020,
+            completed_total: 10_000_016,
+            shed_total: 1,
+          },
+          publication: {
+            pending: 2,
+            enqueued_total: 10_000_018,
+            completed_total: 10_000_016,
+          },
           handoff: { status: "healthy", pending: 4, dispatching: 1, leased: 2 },
         },
         state_writer: {
@@ -1756,14 +1765,14 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
       collection_ok: true,
       review: {
         pending: 100 + index,
-        enqueued_total: index * 8,
-        completed_total: index * 5,
+        enqueued_total: 10_000_000 + index * 8,
+        completed_total: 10_000_000 + index * 5,
         shed_total: 0,
       },
       publication: {
         pending: 200 - index,
-        enqueued_total: index * 4,
-        completed_total: index * 10,
+        enqueued_total: 10_000_000 + index * 4,
+        completed_total: 10_000_000 + index * 10,
       },
     },
   }));
