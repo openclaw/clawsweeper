@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   DEFAULT_CODEX_OUTPUT_FILE_BYTES,
@@ -35,13 +35,7 @@ export interface OpenClawProcessOptions {
   outputFileBytes?: number;
   stdoutPath?: string;
   stderrPath?: string;
-  checkoutInspection?: { expectedText: string };
-}
-
-interface OpenClawToolSummary {
-  calls: number;
-  tools: string[];
-  failures?: number;
+  checkoutInspection?: { expectedText: string; expectedPath: string };
 }
 
 export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProcessResult {
@@ -63,13 +57,14 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
       },
     );
     writeFileSync(promptPath, options.prompt, { encoding: "utf8", mode: 0o600 });
+    const sessionId = openclawSessionId(options.label);
     const args = [
       "agent",
       "--local",
       "--agent",
       "main",
       "--session-id",
-      openclawSessionId(options.label),
+      sessionId,
       "--model",
       options.model,
       "--message-file",
@@ -131,6 +126,12 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
       processResult,
       readFileSync(stdoutPath, "utf8"),
       options.checkoutInspection,
+      {
+        cwd: options.cwd,
+        // OpenClaw persists an explicit local session under this agent-owned
+        // path; inspect it before the isolated state directory is removed.
+        transcriptPath: join(stateDir, "agents", "main", "sessions", `${sessionId}.jsonl`),
+      },
     );
   } catch (error) {
     return failedResult(error instanceof Error ? error : new Error(String(error)));
@@ -142,7 +143,7 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
 export function parseOpenclawJsonEnvelope(
   stdout: string,
   stderr = "",
-): { text: string; toolSummary?: OpenClawToolSummary; failure?: Error } {
+): { text: string; failure?: Error } {
   let envelope: unknown;
   try {
     envelope = JSON.parse(stdout);
@@ -165,11 +166,8 @@ export function parseOpenclawJsonEnvelope(
     .filter(Boolean)
     .join("\n");
   const failureDetail = openclawFailureDetail(envelope, result, payloads);
-  const meta = isRecord(result.meta) ? result.meta : {};
-  const toolSummary = parseToolSummary(meta.toolSummary);
   return {
     text,
-    ...(toolSummary ? { toolSummary } : {}),
     ...(failureDetail ? { failure: new Error(`OpenClaw agent failed: ${failureDetail}`) } : {}),
   };
 }
@@ -231,7 +229,8 @@ function openclawConfig(
 function normalizeOpenclawResult(
   processResult: CodexProcessResult,
   completeStdout: string,
-  checkoutInspection?: { expectedText: string },
+  checkoutInspection?: { expectedText: string; expectedPath: string },
+  receipt?: { cwd: string; transcriptPath: string },
 ): CodexProcessResult {
   if (processResult.error || processResult.status !== 0) return processResult;
   const parsed = parseOpenclawJsonEnvelope(completeStdout, processResult.stderr);
@@ -243,19 +242,18 @@ function normalizeOpenclawResult(
         "OpenClaw checkout inspection did not return the runner challenge.",
       );
     }
-    // The runtime receipt proves the read tool ran; the withheld random nonce
-    // proves that call observed the disposable path created by the host.
-    const summary = parsed.toolSummary;
+    // The runtime-owned session receipt binds the successful read to the
+    // host-selected tracked path, whose expected line never enters the prompt.
     if (
-      !summary ||
-      summary.calls < 1 ||
-      summary.tools.length !== 1 ||
-      summary.tools[0] !== "read" ||
-      (summary.failures ?? 0) !== 0
+      !receipt ||
+      !hasSuccessfulReadReceipt({
+        ...receipt,
+        expectedPath: checkoutInspection.expectedPath,
+      })
     ) {
       return failedInspectionResult(
         processResult,
-        "OpenClaw checkout inspection did not report a successful read tool call.",
+        "OpenClaw checkout inspection did not read the exact challenged path.",
       );
     }
     return { ...processResult, stdout: "" };
@@ -266,25 +264,61 @@ function normalizeOpenclawResult(
   return { ...processResult, status: 1, error: parsed.failure, stdout: parsed.text };
 }
 
-function parseToolSummary(value: unknown): OpenClawToolSummary | undefined {
-  if (!isRecord(value)) return undefined;
-  if (typeof value.calls !== "number" || !Number.isInteger(value.calls) || value.calls < 0) {
-    return undefined;
+function hasSuccessfulReadReceipt(options: {
+  cwd: string;
+  transcriptPath: string;
+  expectedPath: string;
+}): boolean {
+  let transcript: string;
+  try {
+    transcript = readFileSync(options.transcriptPath, "utf8");
+  } catch {
+    return false;
   }
-  if (!Array.isArray(value.tools) || !value.tools.every((tool) => typeof tool === "string")) {
-    return undefined;
+  const matchingCallIds = new Set<string>();
+  for (const line of transcript.split("\n")) {
+    if (!line.trim()) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isRecord(entry) || !isRecord(entry.message)) continue;
+    const message = entry.message;
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (
+          !isRecord(block) ||
+          block.type !== "toolCall" ||
+          block.name !== "read" ||
+          typeof block.id !== "string" ||
+          !isRecord(block.arguments) ||
+          typeof block.arguments.path !== "string"
+        ) {
+          continue;
+        }
+        if (
+          resolve(options.cwd, block.arguments.path) === resolve(options.cwd, options.expectedPath)
+        ) {
+          matchingCallIds.add(block.id);
+        } else {
+          matchingCallIds.delete(block.id);
+        }
+      }
+      continue;
+    }
+    if (
+      message.role === "toolResult" &&
+      message.toolName === "read" &&
+      typeof message.toolCallId === "string" &&
+      matchingCallIds.has(message.toolCallId)
+    ) {
+      matchingCallIds.delete(message.toolCallId);
+      if (message.isError === false) return true;
+    }
   }
-  if (
-    value.failures !== undefined &&
-    (typeof value.failures !== "number" || !Number.isInteger(value.failures) || value.failures < 0)
-  ) {
-    return undefined;
-  }
-  return {
-    calls: value.calls,
-    tools: value.tools,
-    ...(typeof value.failures === "number" ? { failures: value.failures } : {}),
-  };
+  return false;
 }
 
 function failedInspectionResult(

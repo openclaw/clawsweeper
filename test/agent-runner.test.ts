@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -160,10 +160,13 @@ test("OpenClaw runner requires a provider/model override", () => {
   );
 });
 
-test("OpenClaw checkout inspection uses a disposable path-bound challenge", () => {
+test("OpenClaw checkout inspection attests the exact tracked path without checkout writes", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-agent-runner-test-"));
   const binary = join(root, "fake-openclaw");
   execFileSync("git", ["init", "-q"], { cwd: root });
+  const trackedPath = join(root, "tracked.txt");
+  writeFileSync(trackedPath, "first line\ntracked checkout content\nlast line\n");
+  execFileSync("git", ["add", "tracked.txt"], { cwd: root });
   execFileSync(
     "git",
     [
@@ -172,10 +175,9 @@ test("OpenClaw checkout inspection uses a disposable path-bound challenge", () =
       "-c",
       "user.email=test@example.com",
       "commit",
-      "--allow-empty",
       "-q",
       "-m",
-      "empty",
+      "tracked text",
     ],
     { cwd: root },
   );
@@ -186,11 +188,23 @@ const fs = require("node:fs");
 const path = require("node:path");
 const prompt = fs.readFileSync(process.argv[process.argv.indexOf("--message-file") + 1], "utf8");
 const relativePath = JSON.parse(prompt.match(/^Path: (.+)$/m)[1]);
-const challenged = fs.readFileSync(path.join(process.env.OPENCLAW_WORKSPACE_DIR, relativePath), "utf8").trim();
-const text = process.env.OPENCLAW_TEST_DIFFERENT_PATH === "1" ? "content from another file" : challenged;
+const lineNumber = Number(prompt.match(/^Return exactly line (\\d+)/m)[1]);
+const challenged = fs.readFileSync(path.join(process.env.OPENCLAW_WORKSPACE_DIR, relativePath), "utf8").split(/\\r?\\n/)[lineNumber - 1].trim();
+const sessionId = process.argv[process.argv.indexOf("--session-id") + 1];
+const sessionFile = path.join(process.env.OPENCLAW_STATE_DIR, "agents", "main", "sessions", sessionId + ".jsonl");
+fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+if (process.env.OPENCLAW_TEST_NO_RECEIPT !== "1") {
+  const toolCallId = "read-checkout";
+  const readPath = process.env.OPENCLAW_TEST_DIFFERENT_PATH === "1" ? "different.txt" : relativePath;
+  const entries = [
+    { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: toolCallId, name: "read", arguments: { path: readPath } }] } },
+    { type: "message", message: { role: "toolResult", toolCallId, toolName: "read", isError: false, content: [{ type: "text", text: challenged }] } },
+  ];
+  fs.writeFileSync(sessionFile, entries.map((entry) => JSON.stringify(entry)).join("\\n") + "\\n");
+}
 process.stdout.write(JSON.stringify({
-  payloads: [{ text }],
-  meta: { stopReason: "stop", toolSummary: { calls: 1, tools: ["read"], failures: 0 } },
+  payloads: [{ text: challenged }],
+  meta: { stopReason: "stop" },
 }));
 `,
   );
@@ -202,12 +216,10 @@ process.stdout.write(JSON.stringify({
     CLAWSWEEPER_OPENCLAW_BIN: binary,
   };
   try {
+    chmodSync(trackedPath, 0o444);
+    chmodSync(root, 0o555);
     const verified = runAgentCheckoutInspection({ cwd: root, env: baseEnv, timeoutMs: 10_000 });
     assert.equal(verified.status, 0, verified.error?.message);
-    assert.deepEqual(
-      readdirSync(root).filter((name) => name.startsWith(".clawsweeper-checkout-inspection-")),
-      [],
-    );
 
     const wrongPath = runAgentCheckoutInspection({
       cwd: root,
@@ -215,8 +227,18 @@ process.stdout.write(JSON.stringify({
       timeoutMs: 10_000,
     });
     assert.equal(wrongPath.status, 1);
-    assert.match(wrongPath.error?.message ?? "", /runner challenge/);
+    assert.match(wrongPath.error?.message ?? "", /exact challenged path/);
+
+    const missingReceipt = runAgentCheckoutInspection({
+      cwd: root,
+      env: { ...baseEnv, OPENCLAW_TEST_NO_RECEIPT: "1" },
+      timeoutMs: 10_000,
+    });
+    assert.equal(missingReceipt.status, 1);
+    assert.match(missingReceipt.error?.message ?? "", /exact challenged path/);
   } finally {
+    chmodSync(root, 0o755);
+    chmodSync(trackedPath, 0o644);
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -233,7 +255,7 @@ test("OpenClaw checkout inspection reports challenge setup failures", () => {
       },
       timeoutMs: 10_000,
     });
-    assert.equal(result.status, 1);
+    assert.notEqual(result.status, 0);
     assert.match(result.error?.message ?? "", /ENOENT/);
   } finally {
     rmSync(root, { recursive: true, force: true });
