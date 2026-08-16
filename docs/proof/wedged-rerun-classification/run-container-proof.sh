@@ -51,7 +51,12 @@ printf 'commit_object_cross_check=pass\n'
 
 corepack enable --install-directory "${PNPM_HOME}"
 corepack install --global pnpm@11.10.0
+if ! command -v jq >/dev/null 2>&1; then
+  sudo apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq
+fi
 printf 'pnpm=%s\n' "$(pnpm --version)"
+printf 'jq=%s\n' "$(jq --version)"
 printf 'docker=%s\n' "$(docker --version 2>/dev/null || printf 'host-backed local-container')"
 
 printf '\nCRABBOX_PHASE:install\n'
