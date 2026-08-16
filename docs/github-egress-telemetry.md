@@ -47,11 +47,13 @@ and two statuses. `closed_through` excludes the still-open clock bucket.
 `complete` identify pre-instrumentation, retention, and cardinality boundaries
 without inventing zero-count history. Coverage is complete only when a retained
 bucket predates the requested lower-bound bucket; a first observation in that
-boundary bucket is conservatively treated as partial. A parsed 403/429 whose
-attribution is incomplete is omitted from the trustworthy pool split but increments
-`excluded_incomplete_count` and makes `complete=false`, so its bucket cannot be
-rendered as zero. Older cached version-2 responses without this projection
-remain readable through their detailed `rows` array.
+boundary bucket is conservatively treated as partial. Any incomplete egress
+evidence in the displayed closed window increments `excluded_incomplete_count`
+and makes `complete=false`, including an opaque invocation whose wire status
+could not be parsed. A parsed 403/429 whose attribution is incomplete is
+likewise omitted from the trustworthy pool split. Neither case can be rendered
+as a zero-throttle interval. Older cached version-2 responses without this
+projection remain readable through their detailed `rows` array.
 
 The binding-only exact-review queue status retains a compact six-hour
 `publication.github_egress_metrics_v2` summary for internal workflows. The

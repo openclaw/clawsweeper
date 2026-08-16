@@ -618,27 +618,25 @@ export class GithubEgressTelemetryStore {
       ),
     ) as Array<Record<string, unknown>>;
     const throttleRowsTruncated = throttleRows.length > MAX_PUBLIC_THROTTLE_ROWS;
-    const incompleteThrottleRows = Array.from(
+    const incompleteEgressRows = Array.from(
       this.storage.sql.exec(
         `SELECT SUM(count) AS count
            FROM ${ROLLUP_TABLE}
           WHERE bucket_kind = ? AND bucket_start >= ? AND bucket_start < ?
-            AND unit = 'wire_attempt' AND outcome = 'throttle'
-            AND attempted = 1 AND telemetry_complete = 0
-            AND status_bucket IN ('403', '429')`,
+            AND telemetry_complete = 0`,
         bucketKind,
         bucketStart,
         closedThrough,
       ),
     ) as Array<Record<string, unknown>>;
-    const excludedIncompleteThrottleCount = Number(incompleteThrottleRows[0]?.count || 0);
+    const excludedIncompleteEgressCount = Number(incompleteEgressRows[0]?.count || 0);
     // A first observation only proves coverage from somewhere inside its rollup
     // bucket. Require an earlier bucket before zero-filling the requested edge.
     const throttleCoverageComplete =
       firstAvailableBucket !== null && firstAvailableBucket < bucketStart;
     const throttleSeriesComplete =
       !throttleRowsTruncated &&
-      excludedIncompleteThrottleCount === 0 &&
+      excludedIncompleteEgressCount === 0 &&
       rollupWindowIsComplete &&
       throttleCoverageComplete;
     return {
@@ -660,7 +658,7 @@ export class GithubEgressTelemetryStore {
           count: Number(row.count),
         })),
         rows_truncated: throttleRowsTruncated,
-        excluded_incomplete_count: excludedIncompleteThrottleCount,
+        excluded_incomplete_count: excludedIncompleteEgressCount,
         coverage_complete: throttleCoverageComplete,
         complete: throttleSeriesComplete,
       },

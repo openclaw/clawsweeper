@@ -710,6 +710,30 @@ test("signed upload, SQLite restart, retention, cardinality, and public privacy 
     assert.equal(incompleteThrottleView?.throttle_series.rows.length, 0);
     assert.equal(incompleteThrottleView?.throttle_series.complete, false);
 
+    const ambiguousHistoryStorage = new MemoryDurableStorage();
+    const ambiguousHistoryStore = new GithubEgressTelemetryStore(ambiguousHistoryStorage);
+    ambiguousHistoryStore.ensureSchemaSync();
+    assert.equal(
+      ambiguousHistoryStore.ingest(telemetryBody("c".repeat(64), sevenHoursAgo), sevenHoursAgo)
+        .ok,
+      true,
+    );
+    const ambiguousBody = telemetryBody("d".repeat(64), NOW - 10 * 60 * 1_000);
+    ambiguousBody.metrics[0] = {
+      ...ambiguousBody.metrics[0]!,
+      unit: "invocation",
+      outcome: "ambiguous",
+      status_bucket: "none",
+      attempted: false,
+      telemetry_complete: false,
+    };
+    assert.equal(ambiguousHistoryStore.ingest(ambiguousBody, NOW - 10 * 60 * 1_000).ok, true);
+    const ambiguousThrottleView = ambiguousHistoryStore.publicObservability(6, NOW);
+    assert.equal(ambiguousThrottleView?.throttle_series.coverage_complete, true);
+    assert.equal(ambiguousThrottleView?.throttle_series.excluded_incomplete_count, 1);
+    assert.equal(ambiguousThrottleView?.throttle_series.rows.length, 0);
+    assert.equal(ambiguousThrottleView?.throttle_series.complete, false);
+
     const highCardinalityStorage = new MemoryDurableStorage();
     const highCardinalityStore = new GithubEgressTelemetryStore(highCardinalityStorage);
     highCardinalityStore.ensureSchemaSync();
