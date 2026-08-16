@@ -1934,8 +1934,8 @@ function publicBayStepKind(value) {
     return "dependencies";
   }
   if (/claim|lease|admission|reserve/.test(name)) return "lease";
-  if (/publish|upload|artifact|comment|report/.test(name)) return "publish";
   if (/apply|merge|close|route|release/.test(name)) return "apply";
+  if (/publish|upload|artifact|comment|report/.test(name)) return "publish";
   if (/final|complete|conclude|summary/.test(name)) return "finalize";
   if (/proof|verify|verification|attest/.test(name)) return "proof";
   if (/test|lint|format|build|check|validate/.test(name)) return "test";

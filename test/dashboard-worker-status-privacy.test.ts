@@ -476,6 +476,12 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
                     conclusion: null,
                     name: marker,
                   },
+                  {
+                    sequence: 3,
+                    name: "Apply review artifacts",
+                    status: "queued",
+                    conclusion: null,
+                  },
                 ],
                 title: marker,
                 run_url: `https://example.invalid/private?token=${marker}`,
@@ -562,6 +568,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
         steps: [
           { sequence: 1, kind: "setup", status: "completed", conclusion: "success" },
           { sequence: 2, kind: "review", status: "in_progress", conclusion: null },
+          { sequence: 3, kind: "apply", status: "queued", conclusion: null },
         ],
       },
     },
