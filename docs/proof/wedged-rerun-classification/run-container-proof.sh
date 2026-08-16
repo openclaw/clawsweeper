@@ -9,14 +9,27 @@ source_files=(
   scripts/stuck-queued-run-remediation.mjs
 )
 scratch_dir="$(mktemp -d)"
+bundle_checkout=""
 
 cleanup() {
   for source_file in "${source_files[@]}"; do
     git show "${expected_head}:${source_file}" >"${source_file}"
   done
   rm -rf "${scratch_dir}"
+  if [[ -n "${bundle_checkout}" ]]; then
+    rm -rf "${bundle_checkout}"
+  fi
 }
 trap cleanup EXIT
+
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  bundle_path="${PWD}/.crabbox-source.bundle"
+  test -f "${bundle_path}"
+  bundle_checkout="$(mktemp -d)"
+  rmdir "${bundle_checkout}"
+  git clone --quiet "${bundle_path}" "${bundle_checkout}"
+  cd "${bundle_checkout}"
+fi
 
 export PNPM_HOME="${HOME}/.local/bin"
 export PATH="${PNPM_HOME}:${PATH}"
