@@ -66,7 +66,9 @@ The page draws the bounded verified-public reference sample as cards. Each card
 contains only a canonical `owner/repository`, positive issue or pull-request
 number, closed Bay stage, and closed queue/live source. The browser constructs
 the canonical GitHub issue URL from those fields; GitHub resolves pull-request
-numbers on that route. Repository filters and the finder accept an item number
+numbers on that route. Clicking a referenced card opens a local detail blade
+with the closed stage and source plus canonical links to the repository and
+issue or pull request. Repository filters and the finder accept an item number
 or `owner/repository#number`. They search only the current bounded sample and do
 not call GitHub.
 
@@ -132,8 +134,9 @@ browser-to-GitHub requests and no new GitHub REST or GraphQL query path. Active
 stage counts, the bounded verified-public reference sample, explicit terminal
 outcomes, and observed completion timing are derived from data already
 collected for the Overview page. Overview uses the same projected reference
-sample for its public-work cards and search. Private correlation fields used
-during collection are not part of either rendered surface.
+sample for its public-work cards, search, and equivalent public-reference
+blade. Private correlation fields used during collection are not part of
+either rendered surface or blade.
 
 Bay polls the Worker every 20 seconds, compared with Overview every 15 seconds:
 three rather than four browser status requests per minute after initial load.

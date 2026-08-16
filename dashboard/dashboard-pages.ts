@@ -1095,6 +1095,19 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
   color: inherit;
   padding: 1px 3px;
 }
+.public-reference-row {
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.public-reference-row:hover,
+.public-reference-row:focus-visible {
+  background: color-mix(in srgb, var(--claw) 5%, transparent);
+  outline: 2px solid var(--claw);
+  outline-offset: 2px;
+}
 .worker-filters {
   display: inline-flex;
   flex-wrap: wrap;
@@ -1852,7 +1865,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   <div class="drawer">
     <div class="drawer-head">
       <div id="worker-dialog-heading"></div>
-      <button class="drawer-close" id="worker-dialog-close" type="button" aria-label="Close worker details">×</button>
+      <button class="drawer-close" id="worker-dialog-close" type="button" aria-label="Close details">×</button>
     </div>
     <div class="drawer-body" id="worker-dialog-body"></div>
   </div>
@@ -2141,6 +2154,7 @@ let lastAutomergeMetrics = null;
 let automergeMetricsRequestGeneration = 0;
 let activeWorkerFilter = "all";
 let publicReferenceQuery = "";
+let publicReferenceIndex = new Map();
 let workerIndex = new Map();
 let automaticIndex = new Map();
 let activeHealthRange = "6h";
@@ -3627,6 +3641,7 @@ function renderPublicReferences(data) {
   const target = document.getElementById("public-references");
   const summary = document.getElementById("public-reference-summary");
   const rows = dashboardPublicBayReferences(data?.exact_review_queue?.bay_projection?.activity?.items);
+  publicReferenceIndex = new Map(rows.map(row => [row.repository + "#" + row.item_number, row]));
   const search = publicReferenceSearch(publicReferenceQuery);
   const visible = search && search !== false
     ? rows.filter(row => row.item_number === search.item_number && (!search.repository || row.repository === search.repository))
@@ -3644,9 +3659,33 @@ function renderPublicReferences(data) {
     const key = row.repository + "#" + row.item_number;
     const label = esc(key);
     const display = publicReferenceQuery ? "<mark>" + label + "</mark>" : label;
-    const url = "https://github.com/" + row.repository + "/issues/" + row.item_number;
-    return '<article class="work-row public-reference-row"><div class="work-main"><div class="row-top"><span class="pill">' + esc(row.source) + '</span><a class="item-link" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' + display + '</a></div><div class="muted work-title">Verified public repository and issue/PR reference only</div></div><div class="work-state"><div class="stage-block"><strong>' + esc(row.stage) + '</strong><span class="muted">Bay stage</span></div></div></article>';
+    return '<button type="button" class="work-row public-reference-row" data-public-reference-key="' + esc(key) + '" aria-label="Open public reference details for ' + esc(key) + '"><div class="work-main"><div class="row-top"><span class="pill">' + esc(row.source) + '</span><span class="item-link">' + display + '</span></div><div class="muted work-title">Verified public repository and issue/PR reference only</div></div><div class="work-state"><div class="stage-block"><strong>' + esc(row.stage) + '</strong><span class="muted">Bay stage</span></div></div></button>';
   }).join("") + '</div>';
+}
+function renderPublicReferenceDialog(row, key) {
+  const dialog = document.getElementById("worker-dialog");
+  const repositoryUrl = "https://github.com/" + row.repository;
+  const itemUrl = repositoryUrl + "/issues/" + row.item_number;
+  const source = row.source === "queue" ? "Bounded queue sample" : "Bounded live sample";
+  document.getElementById("worker-dialog-heading").innerHTML =
+    '<div><span class="pill">' + esc(row.source) + '</span> <span class="pill">' + esc(row.stage) + '</span></div>' +
+    '<h3 id="worker-dialog-title">' + esc(key) + '</h3>' +
+    '<div class="muted">Verified public GitHub issue or pull request</div>';
+  document.getElementById("worker-dialog-body").innerHTML =
+    '<div class="drawer-grid">' +
+      '<div class="drawer-stat"><span>Current stage</span><strong>' + esc(row.stage) + '</strong></div>' +
+      '<div class="drawer-stat"><span>Source</span><strong>' + esc(source) + '</strong></div>' +
+      '<div class="drawer-stat"><span>Repository</span><strong>' + esc(row.repository) + '</strong></div>' +
+      '<div class="drawer-stat"><span>Reference</span><strong>#' + esc(row.item_number) + '</strong></div>' +
+    '</div>' +
+    '<div class="drawer-links">' +
+      linkClass(itemUrl, "Open issue or pull request", "pill run-link") +
+      linkClass(repositoryUrl, "Open repository", "pill run-link") +
+    '</div>' +
+    '<h2>Public status</h2>' +
+    '<ol class="step-list"><li class="step-row"><i class="step-mark"></i><strong>Reference verified</strong><span>Public repository and item coordinates only</span></li><li class="step-row in_progress"><i class="step-mark"></i><strong>Current aggregate stage</strong><span>' + esc(row.stage) + '</span></li></ol>';
+  if (!dialog.open) dialog.showModal();
+  history.replaceState(null, "", "#public-reference-" + encodeURIComponent(key));
 }
 function renderAutomaticWork(rows) {
   automaticIndex = new Map(rows.map((row, index) => [String(index), row]));
@@ -3743,19 +3782,33 @@ function renderAutomaticDialog(row, viewKey) {
 function closeWorkerDialog() {
   const dialog = document.getElementById("worker-dialog");
   if (dialog.open) dialog.close();
-  if (location.hash.startsWith("#worker-") || location.hash.startsWith("#automatic-")) {
+  if (location.hash.startsWith("#worker-") || location.hash.startsWith("#automatic-") || location.hash.startsWith("#public-reference-")) {
     history.replaceState(null, "", location.pathname + location.search);
+  }
+}
+function decodedHashValue(prefix) {
+  try {
+    return decodeURIComponent(location.hash.slice(prefix.length));
+  } catch {
+    return null;
   }
 }
 function openWorkerFromHash() {
   if (location.hash.startsWith("#worker-")) {
-    const worker = workerIndex.get(decodeURIComponent(location.hash.slice(8)));
-    if (worker) renderWorkerDialog(worker, decodeURIComponent(location.hash.slice(8)));
-    else if (document.getElementById("worker-dialog").open) closeWorkerDialog();
+    const key = decodedHashValue("#worker-");
+    const worker = key === null ? null : workerIndex.get(key);
+    if (worker) renderWorkerDialog(worker, key);
+    else closeWorkerDialog();
   } else if (location.hash.startsWith("#automatic-")) {
-    const row = automaticIndex.get(decodeURIComponent(location.hash.slice(11)));
-    if (row) renderAutomaticDialog(row, decodeURIComponent(location.hash.slice(11)));
-    else if (document.getElementById("worker-dialog").open) closeWorkerDialog();
+    const key = decodedHashValue("#automatic-");
+    const row = key === null ? null : automaticIndex.get(key);
+    if (row) renderAutomaticDialog(row, key);
+    else closeWorkerDialog();
+  } else if (location.hash.startsWith("#public-reference-")) {
+    const key = decodedHashValue("#public-reference-");
+    const row = key === null ? null : publicReferenceIndex.get(key);
+    if (row) renderPublicReferenceDialog(row, key);
+    else closeWorkerDialog();
   }
 }
 
@@ -4373,6 +4426,13 @@ document.getElementById("public-reference-clear").addEventListener("click", () =
   document.getElementById("public-reference-input").value = "";
   renderPublicReferences(lastData || {});
 });
+document.getElementById("public-references").addEventListener("click", event => {
+  const button = event.target.closest("button[data-public-reference-key]");
+  if (!button) return;
+  const key = String(button.dataset.publicReferenceKey || "");
+  const row = publicReferenceIndex.get(key);
+  if (row) renderPublicReferenceDialog(row, key);
+});
 document.getElementById("trend-ranges").addEventListener("click", event => {
   const button = event.target.closest("button[data-trend-range]");
   if (!button) return;
@@ -4437,7 +4497,7 @@ document.getElementById("worker-dialog").addEventListener("click", event => {
   if (event.target === event.currentTarget) closeWorkerDialog();
 });
 document.getElementById("worker-dialog").addEventListener("close", () => {
-  if (location.hash.startsWith("#worker-") || location.hash.startsWith("#automatic-")) {
+  if (location.hash.startsWith("#worker-") || location.hash.startsWith("#automatic-") || location.hash.startsWith("#public-reference-")) {
     history.replaceState(null, "", location.pathname + location.search);
   }
 });

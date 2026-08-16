@@ -692,6 +692,12 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /Lifecycle Timeline/);
   assert.match(html, /Active Workers/);
   assert.match(html, /id="worker-dialog"/);
+  assert.match(html, /function renderPublicReferenceDialog/);
+  assert.match(html, /data-public-reference-key/);
+  assert.match(
+    html,
+    /\.public-reference-row:focus-visible \{[\s\S]*?outline: 2px solid var\(--claw\)/,
+  );
   assert.match(html, /Step Timeline/);
   assert.match(html, /worker-target-title/);
   assert.match(html, /Refreshing live status in the background/);
@@ -1375,6 +1381,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     },
   };
 
+  const dashboardLocation = { hash: "", pathname: "/", search: "" };
   const context = createContext({
     console,
     document: {
@@ -1396,7 +1403,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
       getItem: () => null,
       setItem: () => undefined,
     },
-    location: { hash: "", pathname: "/", search: "" },
+    location: dashboardLocation,
     navigator: { clipboard: { writeText: async () => undefined } },
     setInterval: () => 1,
     setTimeout: () => 1,
@@ -1449,10 +1456,36 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   const publicReferenceHtml = elementFor("public-references").innerHTML;
   assert.match(publicReferenceHtml, /openclaw\/openclaw#123/);
   assert.match(publicReferenceHtml, /openclaw\/clawhub#456/);
-  assert.match(publicReferenceHtml, /https:\/\/github\.com\/openclaw\/openclaw\/issues\/123/);
-  assert.match(publicReferenceHtml, /https:\/\/github\.com\/openclaw\/clawhub\/issues\/456/);
+  assert.doesNotMatch(publicReferenceHtml, /https:\/\/github\.com/);
+  assert.match(publicReferenceHtml, /data-public-reference-key/);
   assert.doesNotMatch(publicReferenceHtml, /SYNTHETIC_OVERVIEW_PRIVATE/i);
   assert.doesNotMatch(publicReferenceHtml, /invalid\.example|token=/i);
+  context.renderPublicReferenceDialog(
+    {
+      repository: "openclaw/openclaw",
+      item_number: 123,
+      stage: "reviewing",
+      source: "queue",
+      title: "SYNTHETIC_OVERVIEW_PRIVATE_BLADE",
+      item_url: "https://invalid.example/private?token=SYNTHETIC_OVERVIEW_PRIVATE_BLADE",
+      failure_key: "SYNTHETIC_OVERVIEW_PRIVATE_BLADE",
+    },
+    "openclaw/openclaw#123",
+  );
+  const publicReferenceBlade =
+    elementFor("worker-dialog-heading").innerHTML + elementFor("worker-dialog-body").innerHTML;
+  assert.equal(elementFor("worker-dialog").open, true);
+  assert.match(publicReferenceBlade, /openclaw\/openclaw#123/);
+  assert.match(publicReferenceBlade, /Bounded queue sample/);
+  assert.match(publicReferenceBlade, /https:\/\/github\.com\/openclaw\/openclaw\/issues\/123/);
+  assert.match(publicReferenceBlade, /https:\/\/github\.com\/openclaw\/openclaw/);
+  assert.doesNotMatch(
+    publicReferenceBlade,
+    /SYNTHETIC_OVERVIEW_PRIVATE_BLADE|invalid\.example|token=/i,
+  );
+  dashboardLocation.hash = "#public-reference-%";
+  assert.doesNotThrow(() => context.openWorkerFromHash());
+  assert.equal(elementFor("worker-dialog").open, false);
   const projectedPublicReferences = context.dashboardStatusSnapshot(status);
   assert.equal(
     JSON.stringify(projectedPublicReferences.exact_review_queue.bay_projection.activity.items),

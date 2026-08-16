@@ -18,10 +18,11 @@ optionally accepts signed status events from workflows. The one identity
 exception is a bounded reference sample containing canonical repository and
 issue or pull-request numbers from the explicit verified-public
 `PUBLIC_BAY_REPOS` allowlist. Bay and Overview use that same sample for cards
-and search. Public responses still exclude workflow and item titles, raw or
-source URLs, queries, raw failure keys and payloads, internal opaque keys,
-credentials, tokens, private or non-allowlisted repositories, and per-job
-diagnostic text.
+and search; clicking a card opens a local blade with the closed stage/source
+and canonical repository and issue/PR links. Public responses still exclude
+workflow and item titles, raw or source URLs, queries, raw failure keys and
+payloads, internal opaque keys, credentials, tokens, private or non-allowlisted
+repositories, and per-job diagnostic text.
 
 For the end-to-end relationship between GitHub Actions workers, durable jobs,
 CrabFleet action sessions, Codex steering, completion reasons, and dashboard
@@ -128,7 +129,7 @@ is absent or a cache event lands in another Cloudflare colo.
 - six aggregate Bay stages from arrival through repair, split into disjoint
   queued and live counts only when both producer censuses are complete, plus a
   bounded verified-public repository/item reference sample used by Bay and
-  Overview cards and search
+  Overview cards, search, and client-side public-reference blades
 - aggregate durable lifecycle inventory and six closed lane counts; the public
   lifecycle response contains no item cards or samples
 - a budget-sized capacity rail plus aggregate counts for issue-to-PR, PR repair,

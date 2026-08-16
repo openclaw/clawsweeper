@@ -3190,7 +3190,9 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /id="finder"/);
   assert.match(body, /id="finder-input"/);
   assert.match(body, /owner\/repo#number/);
-  assert.doesNotMatch(body, /id="drawer"|id="queue-sample-drawer"/);
+  assert.match(body, /id="drawer"/);
+  assert.match(body, /function openDrawer\(id\)/);
+  assert.doesNotMatch(body, /id="queue-sample-drawer"/);
   assert.match(body, /Aggregate terminal outcomes per tide/);
   assert.match(body, /Master Sweeper/);
   assert.match(body, /id="bay-control-board"/);
@@ -3899,11 +3901,93 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /fetch\("\/api\/status"/);
   assert.doesNotMatch(body, /exact_review_queue=live\.exact_review_queue|recent=live\.recent/);
   assert.match(body, /setInterval\(load,20000\)/);
+  assert.match(body, /applyPendingItems\(\)[\s\S]*?openDrawerFromHash\(\)/);
+  assert.match(body, /state\.items=nextItems;renderRepos\(\);render\(\);openDrawerFromHash\(\)/);
   assert.doesNotMatch(body, /api\.github\.com|fetch\("\/repos\//);
   assert.match(body, /Disappearing workers remain CHECKING/);
   assert.match(body, /renderRepos\(\)/);
   assert.match(body, /replacement\.focus/);
-  assert.doesNotMatch(body, /history\.replaceState/);
+  assert.match(body, /history\.replaceState/);
+  const drawerSourceStart = body.indexOf("function publicReferenceSource(");
+  const drawerSourceEnd = body.indexOf("function laneChatCopy(", drawerSourceStart);
+  assert.ok(drawerSourceStart > 0 && drawerSourceEnd > drawerSourceStart);
+  const drawerElements = new Map<string, Record<string, any>>();
+  const drawerElement = (id: string) => {
+    if (!drawerElements.has(id)) {
+      drawerElements.set(id, {
+        innerHTML: "",
+        open: false,
+        textContent: "",
+        showModal() {
+          this.open = true;
+        },
+        close() {
+          this.open = false;
+        },
+      });
+    }
+    return drawerElements.get(id)!;
+  };
+  const drawerLocation = { hash: "", pathname: "/bay", search: "" };
+  const drawerContext = createContext({
+    LABELS: {
+      reviewing: "Reviewing",
+      completed: "Completed",
+    },
+    document: { getElementById: drawerElement },
+    encodeURIComponent,
+    esc: (value: unknown) =>
+      String(value ?? "").replace(
+        /[&<>"]/g,
+        (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character],
+      ),
+    history: { replaceState: () => undefined },
+    location: drawerLocation,
+    state: {
+      items: [
+        {
+          id: "queue:openclaw/openclaw#77",
+          key: "openclaw/openclaw#77",
+          repository: "openclaw/openclaw",
+          number: 77,
+          stage: "reviewing",
+          status: "pending",
+          source: "queue",
+          title: "SYNTHETIC_BLADE_PRIVATE_TITLE",
+          item_url: "https://invalid.example/private?token=SYNTHETIC_BLADE_PRIVATE_TITLE",
+          run_url: "https://invalid.example/run/SYNTHETIC_BLADE_PRIVATE_TITLE",
+          failure_key: "SYNTHETIC_BLADE_PRIVATE_TITLE",
+        },
+      ],
+    },
+    strictBayItemNumber: (value: unknown) =>
+      typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null,
+    strictBayRepository: (value: unknown) =>
+      typeof value === "string" && /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(value) ? value : null,
+  });
+  new Script(
+    `${body.slice(drawerSourceStart, drawerSourceEnd)};openDrawer("queue:openclaw/openclaw#77");`,
+  ).runInContext(drawerContext);
+  const drawerText = [...drawerElements.values()]
+    .map((element) => `${element.textContent} ${element.innerHTML}`)
+    .join(" ");
+  assert.match(drawerText, /openclaw\/openclaw#77/);
+  assert.match(drawerText, /Current stage/);
+  assert.match(drawerText, /Bounded queue sample/);
+  assert.match(drawerText, /https:\/\/github\.com\/openclaw\/openclaw\/issues\/77/);
+  assert.match(drawerText, /https:\/\/github\.com\/openclaw\/openclaw/);
+  assert.doesNotMatch(drawerText, /SYNTHETIC_BLADE_PRIVATE_TITLE|invalid\.example|token=/i);
+  assert.equal(drawerElement("drawer").open, true);
+  drawerLocation.hash = "#item-openclaw%2Fopenclaw%2377";
+  drawerContext.state.items[0].id = "live:openclaw/openclaw#77";
+  drawerContext.state.items[0].stage = "completed";
+  drawerContext.state.items[0].source = "live";
+  new Script("openDrawerFromHash();").runInContext(drawerContext);
+  assert.match(drawerElement("drawer-body").innerHTML, /Completed/);
+  assert.match(drawerElement("drawer-body").innerHTML, /Bounded live sample/);
+  drawerLocation.hash = "#item-%";
+  assert.doesNotThrow(() => new Script("openDrawerFromHash();").runInContext(drawerContext));
+  assert.equal(drawerElement("drawer").open, false);
   const script = [...body.matchAll(/<script>\n([\s\S]*?)\n<\/script>/g)].at(-1)?.[1];
   assert.ok(script);
   assert.doesNotThrow(() => new Script(script));
@@ -3981,10 +4065,7 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
     {},
   );
   const body = await response.text();
-  assert.doesNotMatch(
-    body,
-    /history\.replaceState|URLSearchParams|location\.search|run_url|workflow_title|failure_key/,
-  );
+  assert.doesNotMatch(body, /URLSearchParams|run_url|workflow_title|failure_key/);
   assert.match(body, /item_url/);
   assert.doesNotMatch(body, new RegExp(marker, "i"));
 
