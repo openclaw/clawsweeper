@@ -151,6 +151,24 @@ test("public status projection drops over-depth values and retains closed health
   assert.equal(JSON.stringify(projected).includes("synthetic-over-depth-token"), false);
 });
 
+test("public status projection drops fully sanitized array placeholders", () => {
+  const projected = publicStatusProjection({
+    recent: {
+      closed_items: [
+        {
+          repository: "synthetic-owner/synthetic-repository",
+          number: 42,
+          title: "synthetic private title",
+          closed_at: "2026-08-15T11:59:00.000Z",
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(projected.recent.closed_items, []);
+  assert.equal(JSON.stringify(projected).includes("synthetic"), false);
+});
+
 test("public status projection retains wedged rerun aggregates without run identities", () => {
   const projected = publicStatusProjection({
     operational_health: {
@@ -840,6 +858,28 @@ test("public queue projection retains only closed operational aggregates", () =>
     total: null,
   });
   assert.deepEqual(publicExactReviewQueueProjection(projected), projected);
+
+  const statusProjected = publicStatusProjection({ exact_review_queue: projected });
+  assert.deepEqual(statusProjected.exact_review_queue.collection, { state: "complete" });
+  assert.deepEqual(statusProjected.exact_review_queue.handoff_health.phases, {
+    pending: { count: 7, oldest_at: null, oldest_age_seconds: null },
+    dispatching: { count: 2, oldest_at: null, oldest_age_seconds: null },
+    leased: { count: 1, oldest_at: null, oldest_age_seconds: null },
+  });
+
+  const highTotals = publicExactReviewQueueProjection({
+    ...projected,
+    lanes: {
+      ...projected.lanes,
+      review: {
+        ...projected.lanes.review,
+        enqueued_total: 1_120_211,
+        completed_total: 1_120_299,
+      },
+    },
+  });
+  assert.equal(highTotals.lanes.review.enqueued_total, 1_120_211);
+  assert.equal(highTotals.lanes.review.completed_total, 1_120_299);
 
   const mismatches = [
     (value) => {

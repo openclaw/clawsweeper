@@ -1403,6 +1403,7 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
   "background-review",
   "cancelled",
   "closing",
+  "complete",
   "congested",
   "commit-review",
   "completed",
@@ -1748,6 +1749,12 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "publication",
   "handoff_health",
   "phases",
+  // Queue phase names are both scalar counters at the queue root and closed
+  // aggregate objects under handoff_health.phases. Admit the object form so a
+  // second public projection (fresh/cache/durable reuse) remains idempotent.
+  "pending",
+  "dispatching",
+  "leased",
   "pressure",
   "bay_projection",
   "activity",
@@ -2219,7 +2226,17 @@ function publicStatusValue(value, field, depth) {
     return value
       .slice(0, 100)
       .map((entry) => publicStatusValue(entry, field, depth + 1))
-      .filter((entry) => entry !== undefined);
+      .filter(
+        (entry) =>
+          entry !== undefined &&
+          !(
+            field === "closed_items" &&
+            entry !== null &&
+            typeof entry === "object" &&
+            !Array.isArray(entry) &&
+            Object.keys(entry).length === 0
+          ),
+      );
   }
   if (!value || typeof value !== "object") return undefined;
   if (!PUBLIC_STATUS_CONTAINER_FIELDS.has(field)) return undefined;
@@ -3872,6 +3889,7 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
 }
 
 const PUBLIC_QUEUE_COUNT_LIMIT = 1_000_000;
+const PUBLIC_QUEUE_TOTAL_LIMIT = 1_000_000_000_000;
 const PUBLIC_QUEUE_BACKOFF_REASONS = [
   "dispatch_debounce",
   "dispatcher_backoff",
@@ -3970,7 +3988,10 @@ function publicExactReviewQueueLane(value) {
   ];
   const result: Record<string, unknown> = {};
   for (const key of counts) {
-    const count = publicQueueCount(source[key]);
+    const count = publicQueueCount(
+      source[key],
+      key.endsWith("_total") ? PUBLIC_QUEUE_TOTAL_LIMIT : PUBLIC_QUEUE_COUNT_LIMIT,
+    );
     if (count !== null) result[key] = count;
   }
   for (const key of [

@@ -1839,7 +1839,9 @@ function elapsed(ms) {
   return Math.round(m / 60) + "h";
 }
 function since(iso) {
-  const diff = Date.parse(iso) - Date.now();
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return "";
+  const diff = timestamp - Date.now();
   const minutes = Math.round(diff / 60000);
   if (Math.abs(minutes) < 90) return rel.format(minutes, "minute");
   return rel.format(Math.round(minutes / 60), "hour");
@@ -1899,7 +1901,7 @@ const STATUS_CONTAINER_FIELDS = new Set([
   "comment_sync", "automerge", "automerge_reliability", "closed_items", "closed_stats",
   "operation_counts", "events", "reasons", "cursor", "exact_review_queue",
   "recent_durable_publication_events", "collection", "review", "publication", "handoff_health",
-  "phases", "pressure", "bay_projection", "activity", "queue_stages", "live_stages", "stages",
+  "phases", "pending", "dispatching", "leased", "pressure", "bay_projection", "activity", "queue_stages", "live_stages", "stages",
   "active_stages", "window", "direct", "batch", "counts", "buckets", "provenance",
   "backoff_reasons", "parked_reasons", "recovery_reasons", "errors"
 ]);
@@ -1914,7 +1916,7 @@ const STATUS_TEXT_FIELDS = new Set([
 ]);
 const STATUS_TEXT_VALUES = new Set([
   "active", "apply", "applying", "arriving", "all_clear", "amber", "assist", "automerge",
-  "background-review", "cancelled", "closing", "congested", "commit-review", "completed",
+  "background-review", "cancelled", "closing", "complete", "congested", "commit-review", "completed",
   "completed_review_journeys", "degraded", "exact-review", "failure", "github-checks", "green",
   "healthy", "hot-review", "in_progress", "idle", "issue_to_pr", "job", "live", "neutral",
   "needs_attention", "other", "pending", "processed", "publishing", "pr_repair", "queued",
@@ -4197,11 +4199,14 @@ function automergeWorkerHealthHtml(reliability) {
   return '<section class="worker-health-section" aria-labelledby="automerge-worker-health-title"><div class="worker-health-subhead"><strong id="automerge-worker-health-title">Automerge worker operations</strong><span class="muted">Repair workflow reliability only · separate from Automerge Product Health success rate.</span></div>' + stats + sample + (rows ? '<div class="side-list">' + rows + '</div>' : '<div class="empty">No automerge worker failures in the recent sample.</div>') + '</section>';
 }
 function renderClosedItems(rows) {
-  if (!rows.length) {
-    document.getElementById("closed").innerHTML = '<div class="empty">No ClawSweeper closes found...</div>';
+  const visible = (Array.isArray(rows) ? rows : []).filter(row =>
+    Number.isFinite(Date.parse(row?.closed_at || ""))
+  );
+  if (!visible.length) {
+    document.getElementById("closed").innerHTML = '<div class="empty">Individual close details are unavailable; aggregate counts remain above.</div>';
     return;
   }
-  document.getElementById("closed").innerHTML = '<div class="side-list">' + rows.map(row => '<article class="side-row"><div class="side-main"><div class="row-top"><span class="pill">' + esc(row.type) + '</span>' + linkClass(row.url, row.repository + "#" + row.number, "item-link") + '</div><div class="muted side-title">' + esc(row.title) + '</div></div><div class="side-meta">' + since(row.closed_at) + '</div></article>').join("") + '</div>';
+  document.getElementById("closed").innerHTML = '<div class="side-list">' + visible.map(row => '<article class="side-row"><div class="side-main"><div class="row-top"><span class="pill">' + esc(row.type) + '</span>' + linkClass(row.url, row.repository + "#" + row.number, "item-link") + '</div><div class="muted side-title">' + esc(row.title) + '</div></div><div class="side-meta">' + since(row.closed_at) + '</div></article>').join("") + '</div>';
 }
 function renderClosedStats(stats) {
   const safe = stats || { total: 0, issues: 0, prs: 0, window_hours: 24 };
