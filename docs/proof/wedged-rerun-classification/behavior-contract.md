@@ -15,13 +15,15 @@ Unremediable GitHub Actions reruns stuck before queue admission must remain visi
 1. Read status with one 90-minute `pending` attempt-2 run. Status is `healthy`, `queued_over_threshold` is zero, `wedged_rerun_runs` is one, and `oldest_wedged_rerun_minutes` is 90.
 2. Read status with a two-minute `pending` attempt-2 run. It remains ordinary live queue telemetry and is not wedged.
 3. Read status with a genuinely queued over-threshold run. Status remains `degraded`.
-4. Run remediation when cancellation returns HTTP 409 with `Cannot cancel a workflow re-run that has not yet queued`. The command exits zero and writes `skip_reasons.wedged_rerun: 1` plus a run-ID sample.
-5. Project public status. Aggregate wedged count and age remain, while synthetic run IDs and diagnostic URLs are absent.
+4. Run remediation with an aged pending attempt-2 rerun. Discovery includes the pending inventory, the fresh pending read produces `skip_reasons.wedged_rerun: 1` plus a run-ID sample, no cancellation POST is sent, and the command exits zero.
+5. Run remediation when a queued-looking run's cancellation returns HTTP 409 with `Cannot cancel a workflow re-run that has not yet queued`. The command also exits zero with the same structured skip taxonomy.
+6. Project public status. Aggregate wedged count and age remain, while synthetic run IDs and diagnostic URLs are absent.
 
 ## Anti-cheat probes
 
 - Exactly 60 minutes is not wedged because the threshold is strictly exceeded.
 - Attempt 1 and non-`pending` statuses are never classified as wedged.
+- Exactly 90 minutes is not selected by the remediation CLI because its existing stuck-run threshold is also strict.
 - The force-cancel path recognizes the same exact 409 signature after an initial HTTP 500 and does not record a permanent zombie.
 - A non-signature cancellation failure remains a normal remediation failure.
 

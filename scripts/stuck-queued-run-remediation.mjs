@@ -64,7 +64,9 @@ export function selectStuckQueuedRuns({
       reason: "",
     };
 
-    if (String(run.status || "") !== "queued") return { ...base, reason: "not_queued" };
+    const status = String(run.status || "");
+    const pendingRerun = status === "pending" && Number(run.run_attempt) > 1;
+    if (status !== "queued" && !pendingRerun) return { ...base, reason: "not_queued" };
     if (!runId || !workflowId || ageMs === null) {
       return { ...base, reason: "invalid_run_identity" };
     }
@@ -73,6 +75,7 @@ export function selectStuckQueuedRuns({
       return { ...base, reason: "expected_long_queue_workflow" };
     }
     if (ageMs <= staleAgeMs) return { ...base, reason: "younger_than_threshold" };
+    if (pendingRerun) return { ...base, selected: true, reason: "wedged_rerun" };
 
     const history = historyByWorkflow.get(workflowId);
     if (!Array.isArray(history)) {
@@ -318,6 +321,7 @@ Options:
       workflowId &&
       Number.isFinite(createdAtMs) &&
       nowMs - createdAtMs > STALE_QUEUED_AGE_MS &&
+      !isAgedPendingRerun(run, nowMs) &&
       !zombieState.has(normalizeRunId(run.id)) &&
       !EXPECTED_LONG_QUEUE_WORKFLOWS.has(String(run.path || ""))
     ) {
@@ -390,6 +394,22 @@ Options:
         }
         break;
       }
+      if (isAgedPendingRerun(current, nowMs)) {
+        const action = {
+          run_id: candidate.run_id,
+          outcome: "wedged_rerun_skipped",
+          cancel_status: null,
+          force_cancel_status: null,
+        };
+        actions.push(action);
+        recordWedgedRerunSkip({
+          runId: candidate.run_id,
+          skipReasons,
+          skipSamples,
+        });
+        logAction(action, candidate);
+        continue;
+      }
       if (String(current.status || "") !== "queued") {
         const action = {
           run_id: candidate.run_id,
@@ -450,6 +470,7 @@ Options:
       max_runtime_ms: REMEDIATION_MAX_RUNTIME_MS,
       dead_letter_reserved_ms: DEAD_LETTER_RESERVED_MS,
       expected_long_queue_workflows: [...EXPECTED_LONG_QUEUE_WORKFLOWS],
+      remediation_statuses: ["queued", "pending"],
     },
     deadline: deadline,
     deadline_reached: deadlineReached,
@@ -532,8 +553,24 @@ function githubApi({ repository, token, deadlineAtMs }) {
     return { runs, complete };
   };
   return {
-    listQueuedRuns: () =>
-      listRuns((page) => `/actions/runs?status=queued&per_page=${PER_PAGE}&page=${page}`),
+    listQueuedRuns: async () => {
+      const queued = await listRuns(
+        (page) => `/actions/runs?status=queued&per_page=${PER_PAGE}&page=${page}`,
+      );
+      const pending = await listRuns(
+        (page) => `/actions/runs?status=pending&per_page=${PER_PAGE}&page=${page}`,
+      );
+      const seen = new Set();
+      const runs = [...queued.runs, ...pending.runs].filter((run) => {
+        const runId = normalizeRunId(run.id);
+        if (!runId || !seen.has(runId)) {
+          if (runId) seen.add(runId);
+          return true;
+        }
+        return false;
+      });
+      return { runs, complete: queued.complete && pending.complete };
+    },
     listWorkflowRuns: ({ workflowId, earliestCreatedAtMs }) => {
       const created = encodeURIComponent(`>=${new Date(earliestCreatedAtMs).toISOString()}`);
       return listRuns(
@@ -606,6 +643,16 @@ function normalizeRunId(value) {
 
 function isWedgedRerunConflict(response) {
   return response.status === 409 && String(response.body || "").includes(PRE_QUEUE_RERUN_CONFLICT);
+}
+
+function isAgedPendingRerun(run, nowMs) {
+  const createdAtMs = Date.parse(String(run?.created_at || ""));
+  return (
+    String(run?.status || "") === "pending" &&
+    Number(run?.run_attempt) > 1 &&
+    Number.isFinite(createdAtMs) &&
+    nowMs - createdAtMs > STALE_QUEUED_AGE_MS
+  );
 }
 
 function logAction(action, candidate) {

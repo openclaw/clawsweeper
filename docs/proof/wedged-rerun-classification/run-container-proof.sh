@@ -3,7 +3,7 @@ set -euo pipefail
 
 expected_head="${1:?expected source head is required}"
 base_head="${2:?merge-base head is required}"
-proof_pattern='operational health excludes wedged|pre-queue rerun cancellation conflict exits successfully|public status projection retains wedged|dashboard surfaces stale queue ghosts|dashboard hero treats apply'
+proof_pattern='operational health excludes wedged|pre-queue rerun cancellation conflict exits successfully|aged pending rerun exits successfully|public status projection retains wedged|dashboard surfaces stale queue ghosts|dashboard hero treats apply'
 source_files=(
   dashboard/operational-health.ts
   scripts/stuck-queued-run-remediation.mjs
@@ -68,7 +68,7 @@ for source_file in "${source_files[@]}"; do
 done
 set +e
 node --test \
-  --test-name-pattern='operational health excludes wedged|pre-queue rerun cancellation conflict exits successfully' \
+  --test-name-pattern='operational health excludes wedged|pre-queue rerun cancellation conflict exits successfully|aged pending rerun exits successfully' \
   test/dashboard-operational-health.test.ts \
   test/stuck-queued-run-remediation.test.ts \
   >"${scratch_dir}/red.log" 2>&1
@@ -96,7 +96,7 @@ node --test \
   test/dashboard-worker-dashboard-status.test.ts \
   >"${scratch_dir}/green.log" 2>&1
 sed -n '1,240p' "${scratch_dir}/green.log"
-grep -Fq 'ℹ pass 5' "${scratch_dir}/green.log"
+grep -Fq 'ℹ pass 6' "${scratch_dir}/green.log"
 grep -Fq 'ℹ fail 0' "${scratch_dir}/green.log"
 printf 'green_test_exit=0\n'
 

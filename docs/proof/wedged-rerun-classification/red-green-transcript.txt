@@ -17,7 +17,9 @@ GREEN result after implementation:
 - exactly 60 minutes and genuine queued over-threshold runs: degraded
 - exact pre-queue 409: structured wedged_rerun skip, no force-cancel, exit 0
 - force-cancel 409 after cancel 500: structured skip, no permanent zombie
-- tests: 31; pass: 31; fail: 0; exit: 0
+- review-round red: an aged pending attempt-2 run was not discovered or selected
+- review-round green: pending inventory is discovered, fresh pending state becomes a structured skip before cancellation, and no POST is sent
+- tests: 33; pass: 33; fail: 0; exit: 0
 
 Supporting focused gate:
 - dashboard-strict: pass
