@@ -3,6 +3,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { isGitHubApiHostname } from "./network-policy.mjs";
+
 const playwrightModule = process.env.PLAYWRIGHT_MODULE || "playwright";
 const { chromium } = await import(playwrightModule);
 
@@ -719,6 +721,7 @@ function sanitizeUrl(value) {
   const url = new URL(value);
   return {
     host: url.host,
+    hostname: url.hostname,
     path: url.pathname,
     search:
       url.pathname === "/api/health-history" || url.pathname === "/api/github-egress-observability"
@@ -791,6 +794,7 @@ context.on("request", (request) => {
   requests.push({
     method: request.method(),
     host: safe.host,
+    hostname: safe.hostname,
     path: safe.path,
     search: safe.search,
     resource_type: request.resourceType(),
@@ -801,6 +805,7 @@ context.on("response", (response) => {
   responses.push({
     status: response.status(),
     host: safe.host,
+    hostname: safe.hostname,
     path: safe.path,
     search: safe.search,
   });
@@ -1028,7 +1033,7 @@ try {
       .map((request) => request.search);
     const mutatingRequests = requests.filter((request) => !["GET", "HEAD"].includes(request.method));
     const directGitHubRequests = requests.filter((request) =>
-      request.host.toLowerCase().startsWith("api.github.com"),
+      isGitHubApiHostname(request.hostname),
     );
     assertProof(
       "range switching fetches only the bounded 6h, 24h, and 7d throttle windows",
@@ -2227,7 +2232,7 @@ try {
     );
   const mutatingRequests = requests.filter((request) => !["GET", "HEAD"].includes(request.method));
   const directGitHubRequests = requests.filter((request) =>
-    request.host.toLowerCase().startsWith("api.github.com"),
+    isGitHubApiHostname(request.hostname),
   );
   assertProof(
     "preview tide preserves live outcome data",
@@ -2351,7 +2356,7 @@ const manifest = {
     requests,
     responses,
     direct_github_api_requests: requests.filter((request) =>
-      request.host.toLowerCase().startsWith("api.github.com"),
+      isGitHubApiHostname(request.hostname),
     ).length,
     mutating_requests: requests.filter((request) => !["GET", "HEAD"].includes(request.method))
       .length,
