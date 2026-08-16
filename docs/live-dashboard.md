@@ -129,8 +129,9 @@ is absent or a cache event lands in another Cloudflare colo.
 - queued and waiting run counts
 - operational health derived from queue age and running age: queued runs from
   30 through 1440 minutes old degrade operational health; queued runs older
-  than 1440 minutes are reported separately as zombies; approval-gated runs are
-  also reported separately; in-progress runs become stalled after 150 minutes
+  than 1440 minutes are reported separately as zombies; pre-queue pending reruns
+  older than 60 minutes are reported separately as wedged; approval-gated runs
+  are also reported separately; in-progress runs become stalled after 150 minutes
 - 24-hour and seven-day health trends for total queue depth, over-age queue
   depth, and the oldest queued/running ages
 - aggregate worker-attempt error, recovery, and unresolved-failure counts,
@@ -298,6 +299,12 @@ therefore do not make an otherwise healthy snapshot degraded. The API exposes
 them as `zombie_queued_runs` and `oldest_zombie_queued_minutes`. Runs waiting on
 deployment approval are also excluded from queue pressure and exposed as
 `approval_gated_runs` and `oldest_approval_gated_minutes`.
+
+Pre-queue pending reruns older than 60 minutes are also excluded from queue
+pressure because GitHub cannot cancel or rerun them. The API exposes aggregate
+counts and ages only, as `wedged_rerun_runs` and
+`oldest_wedged_rerun_minutes`; it does not add run identifiers to the public
+status payload.
 
 ## Boundaries
 

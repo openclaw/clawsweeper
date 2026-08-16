@@ -151,6 +151,27 @@ test("public status projection drops over-depth values and retains closed health
   assert.equal(JSON.stringify(projected).includes("synthetic-over-depth-token"), false);
 });
 
+test("public status projection retains wedged rerun aggregates without run identities", () => {
+  const projected = publicStatusProjection({
+    operational_health: {
+      status: "healthy",
+      telemetry_complete: true,
+      wedged_rerun_runs: 1,
+      oldest_wedged_rerun_minutes: 90,
+      wedged_rerun_run_ids: [31910632853],
+      diagnostic_url: "https://example.invalid/actions/runs/31910632853",
+    },
+  });
+
+  assert.deepEqual(projected.operational_health, {
+    status: "healthy",
+    telemetry_complete: true,
+    wedged_rerun_runs: 1,
+    oldest_wedged_rerun_minutes: 90,
+  });
+  assert.equal(JSON.stringify(projected).includes("31910632853"), false);
+});
+
 test("public status projection retains every closed Bay stage count", () => {
   const projected = publicStatusProjection({
     exact_review_queue: {

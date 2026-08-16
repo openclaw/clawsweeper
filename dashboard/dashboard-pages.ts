@@ -1944,7 +1944,7 @@ const STATUS_NUMBER_FIELDS = new Set([
   "failed_review_retries", "failed_review_retry_exhaustions", "failed_attempts", "failed_recent_runs",
   "failing", "fallbacks", "guarded_retry", "inherited_label_cleanups", "inconsistent_or_stale",
   "issues", "leased", "measured_attempts", "oldest_queued_minutes", "oldest_running_minutes",
-  "oldest_zombie_queued_minutes", "pending", "pending_depth", "processed", "publishing",
+  "oldest_wedged_rerun_minutes", "oldest_zombie_queued_minutes", "pending", "pending_depth", "processed", "publishing",
   "promotion_cooldown_eligible", "promotion_eligible", "promotion_total", "cooldown_eligible_total",
   "proof_required", "prs", "queued_over_threshold", "queued_runs", "queued_workflow_runs",
   "recovered_failures", "recovery_rate_percent", "review_refresh", "repairing", "reviewing",
@@ -1953,7 +1953,7 @@ const STATUS_NUMBER_FIELDS = new Set([
   "stalled_after_seconds", "successful_attempts", "skipped", "skipped_changed_since_review",
   "tide_generation", "tide_threshold", "target_repository_count", "total", "unresolved_failures",
   "worker_budget", "worker_detail_fallbacks", "worker_detail_runs", "waiting", "window_minutes",
-  "window_hours", "zombie_queued_runs", "apply_ready_count", "attention_count",
+  "window_hours", "wedged_rerun_runs", "zombie_queued_runs", "apply_ready_count", "attention_count",
   "automerge_command_to_merge_ms", "average_duration_ms", "average_ms", "candidate_count",
   "completed_attempts", "duration_ms", "elapsed_ms", "error_count", "estimated_full_cycle_minutes",
   "failure_rate_percent", "generated_count", "longest_duration_ms", "maximum_age_ms", "median_ms",
@@ -2345,7 +2345,8 @@ function renderExecutionAlert(current) {
   if (running) parts.push(fmt.format(running) + " execution" + (running === 1 ? "" : "s") + " over 150m");
   if (incomplete) parts.push("work execution telemetry is incomplete");
   const approvalGated = Number(current?.approval_gated_runs) || 0;
-  const details = "Total GitHub queued " + fmt.format(Number(current?.queued_runs) || 0) + " · oldest queued " + formatAgeMinutes(current?.oldest_queued_minutes) + " · oldest running " + formatAgeMinutes(current?.oldest_running_minutes) + (approvalGated ? " · " + fmt.format(approvalGated) + " awaiting deployment approval (oldest " + formatAgeMinutes(current?.oldest_approval_gated_minutes) + ")" : "");
+  const wedgedReruns = Number(current?.wedged_rerun_runs) || 0;
+  const details = "Total GitHub queued " + fmt.format(Number(current?.queued_runs) || 0) + " · oldest queued " + formatAgeMinutes(current?.oldest_queued_minutes) + " · oldest running " + formatAgeMinutes(current?.oldest_running_minutes) + (wedgedReruns ? " · " + fmt.format(wedgedReruns) + " wedged pre-queue re-run" + (wedgedReruns === 1 ? "" : "s") + " excluded from health (oldest " + formatAgeMinutes(current?.oldest_wedged_rerun_minutes) + ")" : "") + (approvalGated ? " · " + fmt.format(approvalGated) + " awaiting deployment approval (oldest " + formatAgeMinutes(current?.oldest_approval_gated_minutes) + ")" : "");
   target.innerHTML = '<details class="execution-alert"><summary><span class="execution-alert-title"><strong>⚠ Work execution needs attention</strong><span>' + esc(parts.join(" · ")) + '</span></span><span class="execution-alert-toggle">Details ▾</span></summary><div class="execution-alert-body">' + esc(details) + '</div></details>';
 }
 

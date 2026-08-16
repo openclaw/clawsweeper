@@ -1,4 +1,5 @@
 export const OPERATIONAL_QUEUE_DEGRADED_MS = 30 * 60 * 1000;
+export const OPERATIONAL_WEDGED_RERUN_MS = 60 * 60 * 1000;
 export const OPERATIONAL_QUEUE_ZOMBIE_MS = 24 * 60 * 60 * 1000;
 export const OPERATIONAL_RUNNING_STALLED_MS = 150 * 60 * 1000;
 export const HEALTH_HISTORY_SAMPLE_MS = 5 * 60 * 1000;
@@ -20,6 +21,7 @@ type WorkflowRun = {
   status?: string;
   created_at?: string;
   run_started_at?: string;
+  run_attempt?: number;
 };
 
 export type OperationalHealth = {
@@ -32,6 +34,8 @@ export type OperationalHealth = {
   oldest_queued_minutes: number;
   zombie_queued_runs: number;
   oldest_zombie_queued_minutes: number;
+  wedged_rerun_runs: number;
+  oldest_wedged_rerun_minutes: number;
   approval_gated_runs: number;
   oldest_approval_gated_minutes: number;
   running_runs: number;
@@ -103,20 +107,48 @@ export function summarizeOperationalHealth(
     APPROVAL_GATED_STATUSES.has(String(run.status || "")),
   );
   const runningRuns = runs.filter((run) => run.status === "in_progress");
-  const queuedAges = queuedRuns.map((run) => ageMs(run.created_at, now));
+  const queuedAgeRecords = queuedRuns.map((run) => ({
+    run,
+    age: ageMs(run.created_at, now),
+  }));
   const runningAges = runningRuns
     // GitHub exposes queue admission and execution start separately. Falling
     // back keeps older payloads observable without charging queue time when
     // the authoritative execution timestamp is present.
     .map((run) => ageMs(run.run_started_at || run.created_at, now));
-  const validQueuedAges = queuedAges.filter((age): age is number => age !== null);
+  const validQueuedAgeRecords = queuedAgeRecords.filter(
+    (record): record is { run: WorkflowRun; age: number } => record.age !== null,
+  );
+  const validQueuedAges = validQueuedAgeRecords.map((record) => record.age);
+  // Pre-queue reruns normally leave pending within seconds. After an hour,
+  // GitHub cannot cancel or rerun them, so they are not live queue pressure.
+  const wedgedRerunAges = validQueuedAgeRecords
+    .filter(
+      ({ run, age }) =>
+        run.status === "pending" &&
+        Number(run.run_attempt) > 1 &&
+        age > OPERATIONAL_WEDGED_RERUN_MS,
+    )
+    .map(({ age }) => age);
+  const liveQueuedAgeRecords = validQueuedAgeRecords.filter(
+    ({ run, age }) =>
+      !(
+        run.status === "pending" &&
+        Number(run.run_attempt) > 1 &&
+        age > OPERATIONAL_WEDGED_RERUN_MS
+      ),
+  );
   // Normal queue waits are measured in minutes. Seventeen production runs are
   // stranded past 24 hours (three from Jul 13/17 and fourteen from one Aug 7
   // incident), and both cancel and force-cancel return HTTP 500 for every one.
   // Excluding those unremediable zombies is the only way to keep live queue
   // pressure observable without pinning operational health indefinitely.
-  const zombieQueuedAges = validQueuedAges.filter((age) => age > OPERATIONAL_QUEUE_ZOMBIE_MS);
-  const liveQueuedAges = validQueuedAges.filter((age) => age <= OPERATIONAL_QUEUE_ZOMBIE_MS);
+  const zombieQueuedAges = liveQueuedAgeRecords
+    .filter(({ age }) => age > OPERATIONAL_QUEUE_ZOMBIE_MS)
+    .map(({ age }) => age);
+  const liveQueuedAges = liveQueuedAgeRecords
+    .filter(({ age }) => age <= OPERATIONAL_QUEUE_ZOMBIE_MS)
+    .map(({ age }) => age);
   const validRunningAges = runningAges.filter((age): age is number => age !== null);
   const hasCompleteAges =
     validQueuedAges.length === queuedRuns.length && validRunningAges.length === runningRuns.length;
@@ -144,6 +176,8 @@ export function summarizeOperationalHealth(
     oldest_queued_minutes: oldestMinutes(liveQueuedAges),
     zombie_queued_runs: zombieQueuedAges.length,
     oldest_zombie_queued_minutes: oldestMinutes(zombieQueuedAges),
+    wedged_rerun_runs: wedgedRerunAges.length,
+    oldest_wedged_rerun_minutes: oldestMinutes(wedgedRerunAges),
     approval_gated_runs: approvalGatedRuns.length,
     oldest_approval_gated_minutes: oldestMinutes(
       approvalGatedRuns

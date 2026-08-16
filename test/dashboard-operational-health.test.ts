@@ -12,8 +12,8 @@ import {
 
 const CHECKED_AT = "2026-07-15T14:00:00.000Z";
 
-function run(status: string, createdAt: string) {
-  return { status, created_at: createdAt };
+function run(status: string, createdAt: string, runAttempt?: number) {
+  return { status, created_at: createdAt, ...(runAttempt ? { run_attempt: runAttempt } : {}) };
 }
 
 function legacyHistorySample() {
@@ -110,6 +110,49 @@ test("operational health treats exactly 24 hours as live queue pressure", () => 
   assert.equal(health.oldest_queued_minutes, 24 * 60);
   assert.equal(health.zombie_queued_runs, 0);
   assert.equal(health.oldest_zombie_queued_minutes, 0);
+});
+
+test("operational health excludes wedged pre-queue reruns without hiding real queue pressure", () => {
+  const wedged = summarizeOperationalHealth(
+    [run("pending", "2026-07-15T12:30:00Z", 2)],
+    CHECKED_AT,
+    true,
+  );
+  assert.equal(wedged.status, "healthy");
+  assert.equal(wedged.queued_runs, 1);
+  assert.equal(wedged.queued_over_threshold, 0);
+  assert.equal(wedged.oldest_queued_minutes, 0);
+  assert.equal(wedged.wedged_rerun_runs, 1);
+  assert.equal(wedged.oldest_wedged_rerun_minutes, 90);
+
+  const freshRerun = summarizeOperationalHealth(
+    [run("pending", "2026-07-15T13:58:00Z", 2)],
+    CHECKED_AT,
+    true,
+  );
+  assert.equal(freshRerun.status, "healthy");
+  assert.equal(freshRerun.queued_runs, 1);
+  assert.equal(freshRerun.oldest_queued_minutes, 2);
+  assert.equal(freshRerun.wedged_rerun_runs, 0);
+  assert.equal(freshRerun.oldest_wedged_rerun_minutes, 0);
+
+  const thresholdRerun = summarizeOperationalHealth(
+    [run("pending", "2026-07-15T13:00:00Z", 2)],
+    CHECKED_AT,
+    true,
+  );
+  assert.equal(thresholdRerun.status, "degraded");
+  assert.equal(thresholdRerun.queued_over_threshold, 1);
+  assert.equal(thresholdRerun.wedged_rerun_runs, 0);
+
+  const genuinelyQueued = summarizeOperationalHealth(
+    [run("queued", "2026-07-15T12:30:00Z", 2)],
+    CHECKED_AT,
+    true,
+  );
+  assert.equal(genuinelyQueued.status, "degraded");
+  assert.equal(genuinelyQueued.queued_over_threshold, 1);
+  assert.equal(genuinelyQueued.wedged_rerun_runs, 0);
 });
 
 test("operational health fails closed when active-run telemetry is incomplete", () => {

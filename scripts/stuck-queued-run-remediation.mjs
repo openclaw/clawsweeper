@@ -28,6 +28,7 @@ const DEADLINE_SETTLE_MS = 25;
 const RUN_ID = /^[1-9]\d*$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const STARTED_STATUSES = new Set(["in_progress", "completed"]);
+const PRE_QUEUE_RERUN_CONFLICT = "Cannot cancel a workflow re-run that has not yet queued";
 
 export function selectStuckQueuedRuns({
   queuedRuns,
@@ -138,6 +139,14 @@ export async function remediateCandidate({ candidate, postCancellation, zombieSt
       force_cancel_status: null,
     };
   }
+  if (isWedgedRerunConflict(regular)) {
+    return {
+      run_id: candidate.run_id,
+      outcome: "wedged_rerun_skipped",
+      cancel_status: regular.status,
+      force_cancel_status: null,
+    };
+  }
   if (regular.status !== 500) {
     return {
       run_id: candidate.run_id,
@@ -152,6 +161,14 @@ export async function remediateCandidate({ candidate, postCancellation, zombieSt
     return {
       run_id: candidate.run_id,
       outcome: "force_cancel_requested",
+      cancel_status: regular.status,
+      force_cancel_status: forced.status,
+    };
+  }
+  if (isWedgedRerunConflict(forced)) {
+    return {
+      run_id: candidate.run_id,
+      outcome: "wedged_rerun_skipped",
       cancel_status: regular.status,
       force_cancel_status: forced.status,
     };
@@ -404,6 +421,13 @@ Options:
         break;
       }
       actions.push(action);
+      if (action.outcome === "wedged_rerun_skipped") {
+        recordWedgedRerunSkip({
+          runId: candidate.run_id,
+          skipReasons,
+          skipSamples,
+        });
+      }
       logAction(action, candidate);
     }
   }
@@ -521,10 +545,11 @@ function githubApi({ repository, token, deadlineAtMs }) {
     postCancellation: async (runId, endpoint) => {
       const path = `/actions/runs/${runId}/${endpoint}`;
       const response = await request(path, { method: "POST" });
+      const body = response.ok ? "" : await response.text();
       if ([401, 403, 429].includes(response.status)) {
-        throw new GitHubRequestError("POST", path, response.status, await response.text());
+        throw new GitHubRequestError("POST", path, response.status, body);
       }
-      return { ok: response.ok, status: response.status };
+      return { ok: response.ok, status: response.status, body };
     },
   };
 }
@@ -579,6 +604,10 @@ function normalizeRunId(value) {
   return RUN_ID.test(text) ? text : "";
 }
 
+function isWedgedRerunConflict(response) {
+  return response.status === 409 && String(response.body || "").includes(PRE_QUEUE_RERUN_CONFLICT);
+}
+
 function logAction(action, candidate) {
   process.stdout.write(
     `stuck-queued remediation action=${action.outcome} run_id=${action.run_id} age_minutes=${candidate.age_minutes} newer_started=${candidate.discriminator.newer_started_run_count} evidence_ids=${candidate.discriminator.evidence.map((entry) => entry.run_id).join(",")}\n`,
@@ -598,6 +627,19 @@ function recordGitHubThrottleSkip({ error, phase, skipReasons, skipSamples }) {
       skip_reasons: { github_throttled: 1 },
       phase,
       request_path: requestPath,
+    })}\n`,
+  );
+}
+
+function recordWedgedRerunSkip({ runId, skipReasons, skipSamples }) {
+  skipReasons.wedged_rerun = (skipReasons.wedged_rerun || 0) + 1;
+  skipSamples.push({ phase: "remediation", run_id: runId });
+  process.stdout.write(
+    `${JSON.stringify({
+      event: "stuck_queued_remediation_skipped",
+      skip_reasons: { wedged_rerun: 1 },
+      phase: "remediation",
+      run_id: runId,
     })}\n`,
   );
 }

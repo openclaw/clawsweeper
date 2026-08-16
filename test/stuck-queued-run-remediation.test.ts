@@ -193,6 +193,119 @@ test("does not force-cancel when regular cancellation fails with a non-500 statu
   assert.equal(action.outcome, "cancel_failed");
 });
 
+test("classifies the pre-queue conflict after force-cancel without recording a zombie", async () => {
+  const candidate = queuedRun(100, 180);
+  const plan = selection(
+    [candidate],
+    [
+      newerRun(1, candidate, "completed"),
+      newerRun(2, candidate, "completed"),
+      newerRun(3, candidate, "completed"),
+    ],
+  );
+  const zombieState = new Map();
+  const calls: string[] = [];
+  const action = await remediateCandidate({
+    candidate: plan.selected[0],
+    zombieState,
+    now: "2026-08-12T04:00:00Z",
+    postCancellation: async (_runId: string, endpoint: string) => {
+      calls.push(endpoint);
+      return endpoint === "cancel"
+        ? { ok: false, status: 500, body: "Internal Server Error" }
+        : {
+            ok: false,
+            status: 409,
+            body: '{"message":"Cannot cancel a workflow re-run that has not yet queued"}',
+          };
+    },
+  });
+  assert.deepEqual(calls, ["cancel", "force-cancel"]);
+  assert.deepEqual(action, {
+    run_id: "100",
+    outcome: "wedged_rerun_skipped",
+    cancel_status: 500,
+    force_cancel_status: 409,
+  });
+  assert.equal(zombieState.size, 0);
+});
+
+test("pre-queue rerun cancellation conflict exits successfully as a structured skip", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "clawsweeper-stuck-wedged-rerun-"));
+  const output = join(scratch, "summary.json");
+  const zombieOutput = join(scratch, "zombies.json");
+  const zombieSeed = join(scratch, "seed.json");
+  await writeFile(zombieSeed, '{"schema_version":1,"zombies":[]}\n', "utf8");
+  const candidate = queuedRun(100, 180);
+  const history = [
+    newerRun(1, candidate, "completed"),
+    newerRun(2, candidate, "in_progress"),
+    newerRun(3, candidate, "completed"),
+  ];
+  const requests: string[] = [];
+  const server = createServer((request, response) => {
+    const url = new URL(request.url || "/", "http://loopback.invalid");
+    requests.push(`${request.method} ${url.pathname}`);
+    const base = "/repos/openclaw/clawsweeper";
+    if (request.method === "GET" && url.pathname === `${base}/actions/runs`) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ total_count: 1, workflow_runs: [candidate] }));
+      return;
+    }
+    if (request.method === "GET" && url.pathname === `${base}/actions/workflows/42/runs`) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ total_count: history.length, workflow_runs: history }));
+      return;
+    }
+    if (request.method === "GET" && url.pathname === `${base}/actions/runs/100`) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(candidate));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === `${base}/actions/runs/100/cancel`) {
+      response.writeHead(409, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({ message: "Cannot cancel a workflow re-run that has not yet queued" }),
+      );
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  try {
+    const result = await runProduction({
+      apiUrl: `http://127.0.0.1:${address.port}`,
+      sharedDeadlineMs: Date.now() + DEAD_LETTER_RESERVED_MS + 30_000,
+      output,
+      zombieOutput,
+      zombieSeed,
+      execute: true,
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+    const summary = JSON.parse(await readFile(output, "utf8"));
+    assert.deepEqual(summary.skip_reasons, { wedged_rerun: 1 });
+    assert.deepEqual(summary.skip_samples, [{ phase: "remediation", run_id: "100" }]);
+    assert.deepEqual(summary.actions, [
+      {
+        run_id: "100",
+        outcome: "wedged_rerun_skipped",
+        cancel_status: 409,
+        force_cancel_status: null,
+      },
+    ]);
+    assert.equal(requests.filter((entry) => entry.endsWith("/force-cancel")).length, 0);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
 test("discovery GitHub throttling exits successfully with a structured skip reason", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "clawsweeper-stuck-throttle-"));
   const output = join(scratch, "summary.json");

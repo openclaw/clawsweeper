@@ -162,6 +162,7 @@ type GithubWebhookReviewPayload = {
 type GithubWebhookWorkflowObjectPayload = {
   readonly id?: unknown;
   readonly run_id?: unknown;
+  readonly run_attempt?: unknown;
   readonly created_at?: unknown;
   readonly started_at?: unknown;
   readonly completed_at?: unknown;
@@ -303,7 +304,9 @@ type WorkflowRunSummary = {
   conclusion?: string | null;
   html_url?: string;
   created_at?: string;
+  run_started_at?: string;
   updated_at?: string;
+  run_attempt?: number;
 };
 
 declare global {
@@ -1567,6 +1570,7 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "measured_attempts",
   "oldest_queued_minutes",
   "oldest_running_minutes",
+  "oldest_wedged_rerun_minutes",
   "oldest_zombie_queued_minutes",
   "pending",
   "pending_depth",
@@ -1610,6 +1614,7 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "waiting",
   "window_minutes",
   "window_hours",
+  "wedged_rerun_runs",
   "zombie_queued_runs",
   "apply_ready_count",
   "attention_count",

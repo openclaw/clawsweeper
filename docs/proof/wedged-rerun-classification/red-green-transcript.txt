@@ -1,0 +1,33 @@
+Wedged rerun classification red/green
+
+RED command:
+node --test test/dashboard-operational-health.test.ts test/stuck-queued-run-remediation.test.ts
+
+RED result against origin/main production code with the new fixtures:
+- operational health fixture: expected healthy, observed degraded
+- remediation fixture: expected skip_reasons.wedged_rerun=1, observed {}
+- tests: 30; pass: 28; fail: 2; exit: 1
+
+GREEN command:
+node --test test/dashboard-operational-health.test.ts test/stuck-queued-run-remediation.test.ts
+
+GREEN result after implementation:
+- 90-minute pending attempt-2: healthy, wedged_rerun_runs=1
+- two-minute pending attempt-2: ordinary live queue telemetry
+- exactly 60 minutes and genuine queued over-threshold runs: degraded
+- exact pre-queue 409: structured wedged_rerun skip, no force-cancel, exit 0
+- force-cancel 409 after cancel 500: structured skip, no permanent zombie
+- tests: 31; pass: 31; fail: 0; exit: 0
+
+Supporting focused gate:
+- dashboard-strict: pass
+- docs synchronization: pass
+- format: pass
+- dashboard and scripts lint: pass
+- dashboard/public-containment/render plus focused behavior: 127 tests passed
+
+Full local gate:
+- 3533 tests; 3523 passed; 1 failed; 9 skipped
+- unrelated saturated-host timing failure: changed validation shares one timeout with checkout identity proof
+- exact isolated rerun: 1 passed, 0 failed, 953ms
+- authoritative clean full-gate result is required from the Docker-backed Crabbox receipt.

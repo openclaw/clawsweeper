@@ -1685,6 +1685,17 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   );
   context.renderExecutionAlert({
     ...healthyOperational,
+    queued_runs: 2,
+    queued_over_threshold: 1,
+    wedged_rerun_runs: 1,
+    oldest_wedged_rerun_minutes: 90,
+  });
+  assert.match(
+    elementFor("execution-alert").innerHTML,
+    /1 wedged pre-queue re-run excluded from health \(oldest 1h 30m\)/,
+  );
+  context.renderExecutionAlert({
+    ...healthyOperational,
     running_runs: 1,
     running_over_threshold: 1,
   });
@@ -4150,6 +4161,23 @@ test("dashboard surfaces stale queue ghosts as zombies without active cards", as
           ],
         });
       }
+      if (status === "pending") {
+        return jsonResponse({
+          workflow_runs: [
+            {
+              id: 3,
+              run_attempt: 2,
+              name: "repair publish cluster results",
+              display_title: "repair publish cluster results",
+              status: "pending",
+              conclusion: null,
+              html_url: "https://github.com/openclaw/clawsweeper/actions/runs/3",
+              created_at: isoAgo(90 * 60_000),
+              updated_at: isoAgo(90 * 60_000),
+            },
+          ],
+        });
+      }
       return jsonResponse({ workflow_runs: [] });
     }
     if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
@@ -4169,15 +4197,17 @@ test("dashboard surfaces stale queue ghosts as zombies without active cards", as
       },
     );
     const status = await response.json();
-    assert.equal(status.fleet.active_workflow_runs, 1);
-    assert.equal(status.fleet.queued_workflow_runs, 1);
-    assert.equal(status.operational_health.queued_runs, 2);
+    assert.equal(status.fleet.active_workflow_runs, 2);
+    assert.equal(status.fleet.queued_workflow_runs, 2);
+    assert.equal(status.operational_health.queued_runs, 3);
     assert.equal(status.operational_health.queued_over_threshold, 0);
     assert.equal(status.operational_health.oldest_queued_minutes, 10);
     assert.equal(status.operational_health.zombie_queued_runs, 1);
     assert.equal(status.operational_health.oldest_zombie_queued_minutes, 7 * 24 * 60);
+    assert.equal(status.operational_health.wedged_rerun_runs, 1);
+    assert.equal(status.operational_health.oldest_wedged_rerun_minutes, 90);
     assert.equal(status.operational_health.status, "healthy");
-    assert.equal(status.pipeline.length, 1);
+    assert.equal(status.pipeline.length, 2);
     assert.equal(status.pipeline[0].id, undefined);
   } finally {
     globalThis.fetch = originalFetch;
