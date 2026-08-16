@@ -30,12 +30,25 @@
       "confidence": 0.97
     },
     {
+      "contract_clause": "Aged pending attempt-2 rerun is discovered and becomes a structured skip before cancellation",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The production CLI queried the pending inventory, rechecked the run as pending, emitted the structured skip, sent no POST, and exited zero after the merge-base scenario failed.",
+      "reproduction_steps": [
+        "Locate the aged pending rerun scenario's merge-base failure",
+        "Locate the same production-CLI scenario's source-head pass",
+        "Confirm the scenario asserts a pending inventory request and no POST",
+        "Confirm green_test_exit=0"
+      ],
+      "confidence": 0.99
+    },
+    {
       "contract_clause": "Exact pre-queue cancellation 409 is a structured exit-zero remediation skip",
       "status": "pass",
       "severity": null,
-      "evidence": "The production-script loopback scenario passed after its merge-base failure, and the full gate repeated it successfully.",
+      "evidence": "The queued-looking production-script loopback scenario passed after its merge-base failure, and the full gate repeated it successfully.",
       "reproduction_steps": [
-        "Locate the remediation scenario's merge-base failure",
+        "Locate the cancellation-conflict scenario's merge-base failure",
         "Locate the same scenario's source-head pass",
         "Confirm green_test_exit=0"
       ],
@@ -74,6 +87,10 @@
       "result": "Pass within the combined operational-health behavior scenario."
     },
     {
+      "probe": "Exactly 90 minutes and pending attempt 1 are excluded from remediation selection",
+      "result": "Pass in the complete full gate."
+    },
+    {
       "probe": "Force-cancel 409 after initial cancel 500 does not become a permanent zombie",
       "result": "Pass in the complete full gate."
     },
@@ -82,8 +99,8 @@
       "result": "Pass in the focused public-containment scenario."
     },
     {
-      "probe": "Merge-base implementation fails the two new claims",
-      "result": "Both red scenarios failed as expected; source files were hash-restored before green."
+      "probe": "Merge-base implementation fails the three new claims",
+      "result": "All three red scenarios failed as expected; source files were hash-restored before green."
     }
   ],
   "blockers": []

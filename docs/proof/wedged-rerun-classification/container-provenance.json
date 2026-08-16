@@ -1,20 +1,20 @@
 {
   "schema": "clawsweeper-crabbox-proof-provenance/v1",
-  "claim": "Wedged pre-queue reruns remain visible as aggregate diagnostics without degrading operational health, and the exact GitHub cancellation conflict is an exit-zero structured remediation skip.",
-  "tested_source_head": "e00105a696c6e7c8144fc754035447bd69499067",
+  "claim": "Wedged pre-queue reruns remain visible as aggregate diagnostics without degrading operational health; an aged pending attempt-2 run is discovered and skipped before cancellation, and the exact GitHub cancellation conflict uses the same exit-zero structured taxonomy.",
+  "tested_source_head": "0b677cbcca1651b7ea73f83f4f12a0fbf56589c9",
   "merge_base": "43799a11fc2612df7d80918e0012d6f03b339747",
   "host_commit_cross_check": true,
   "container_commit_cross_check": true,
   "crabbox": {
     "cli_version": "0.41.6-7-g07f4358e",
     "provider": "local-container",
-    "lease_id": "cbx_816c6b8c6a74",
-    "lease_slug": "pearl-shrimp-c16f",
-    "run_id": "run_c5afcb37bf92",
+    "lease_id": "cbx_f7e8db6e9e13",
+    "lease_slug": "tidal-shrimp-7cbb",
+    "run_id": "run_463709e0dc4a",
     "machine_type": "node_24-bookworm",
     "container_image": "node:24-bookworm",
     "container_engine": "Docker 29.4.0",
-    "workdir": "/work/crabbox/cbx_816c6b8c6a74/clawsweeper",
+    "workdir": "/work/crabbox/cbx_f7e8db6e9e13/clawsweeper",
     "exit_code": 0,
     "run_status": "succeeded",
     "lease_stopped": true
@@ -25,68 +25,68 @@
     "jq": "jq-1.6"
   },
   "timing_ms": {
-    "lease": 31650,
-    "bootstrap": 351,
-    "sync": 4393,
-    "command": 578076,
-    "total": 583298,
-    "end_to_end": 615066,
+    "lease": 13501,
+    "bootstrap": 360,
+    "sync": 3879,
+    "command": 496906,
+    "total": 501165,
+    "end_to_end": 514787,
     "command_phases": [
       {
         "name": "user-command",
-        "ms": 5317
+        "ms": 4789
       },
       {
         "name": "install",
-        "ms": 4081
+        "ms": 6831
       },
       {
         "name": "red",
-        "ms": 200
+        "ms": 281
       },
       {
         "name": "green",
-        "ms": 2016
+        "ms": 3001
       },
       {
         "name": "dashboard-strict",
-        "ms": 482
+        "ms": 502
       },
       {
         "name": "full-gate",
-        "ms": 565976
+        "ms": 481501
       }
     ]
   },
   "result": {
     "red_test_exit": 1,
-    "red_scenarios": 2,
-    "red_failures": 2,
+    "red_scenarios": 3,
+    "red_failures": 3,
     "production_sources_restored": true,
     "green_test_exit": 0,
-    "focused_scenarios": 5,
-    "focused_scenarios_passed": 5,
+    "focused_scenarios": 6,
+    "focused_scenarios_passed": 6,
     "dashboard_strict": "pass",
     "full_gate": "pass",
-    "full_gate_tests": 3533,
-    "full_gate_passed": 3525,
+    "full_gate_tests": 3535,
+    "full_gate_passed": 3527,
     "full_gate_failed": 0,
     "full_gate_skipped": 8,
     "proof_marker": "PROOF_EXIT=0",
     "transcript": {
       "path": "docs/proof/wedged-rerun-classification/container-transcript.txt",
-      "bytes": 645045,
-      "sha256": "e9ff9a0665ca6ce21154ea0521ac86953cbd29bf1882a05f68b11b9b9369d0fb"
+      "bytes": 646235,
+      "sha256": "0e683835f013a44fd7f309ded349003a0a1dd321bbfc821b5673fa270b393eff"
     },
     "stderr": {
       "path": "docs/proof/wedged-rerun-classification/container-stderr.txt",
       "bytes": 1915,
-      "sha256": "a9c58e2ca5267df86b0c83da18c43e236f0769c81a192954a591c46e2a9d370d"
+      "sha256": "19842c156471a66e140ce796da7da9bae48ee793a66abd404fd55e9438091cd0"
     },
     "launcher": {
       "path": "docs/proof/wedged-rerun-classification/run-container-proof.sh",
-      "bytes": 3791,
-      "sha256": "ae32f4b6b012acb9714102332e755c7c6a204eb8713092e1c0f2d70e3723538b"
+      "bytes": 3867,
+      "sha256": "5b9424162a34a2206ac84d86c18578c3c5ac6d6e29e207aeccf56e16213bbdcc"
     }
   },
   "discarded_attempts": [
