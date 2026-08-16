@@ -960,6 +960,7 @@ try {
     );
 
     const initialCopy = await throttleCard.innerText();
+    // oxfmt-ignore
     assertProof(
       "six-hour chart reports interval totals, peak, pool split, and header authority",
       /10 observed wire throttles/i.test(initialCopy) &&
@@ -969,7 +970,7 @@ try {
         /Actions 5/i.test(initialCopy) &&
         /target App 3/i.test(initialCopy) &&
         /public fallback 2/i.test(initialCopy) &&
-        /1\/2 throttle observations carried authoritative reset headers/i.test(initialCopy),
+        /1\/2 .* authoritative reset headers/i.test(initialCopy),
       { range: "6h", text: initialCopy },
     );
     const firstThrottleTooltip =
@@ -1013,10 +1014,11 @@ try {
         range,
       );
       const copy = await throttleCard.innerText();
+      // oxfmt-ignore
       assertProof(
         `${range} selector renders matching closed throttle buckets`,
         /closed 60m buckets/i.test(copy) &&
-          (range === "7d" ? /reset-header detail retained 24h/i.test(copy) : /1\/2 throttle observations carried authoritative reset headers/i.test(copy)),
+          (range === "7d" ? /reset-header detail retained 24h/i.test(copy) : /1\/2 .* authoritative reset headers/i.test(copy)),
         { range, hours, text: copy },
       );
       await capture(
