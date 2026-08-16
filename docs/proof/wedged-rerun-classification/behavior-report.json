@@ -1,0 +1,90 @@
+{
+  "overall_behavior": "satisfies_contract",
+  "overall_confidence": 0.98,
+  "target": {
+    "type": "status API, dashboard render, and operator CLI artifacts",
+    "access": "source-blind validation of the Docker-backed container transcript and provenance"
+  },
+  "checks": [
+    {
+      "contract_clause": "90-minute pending attempt-2 rerun is aggregate wedged telemetry and does not degrade health",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The focused status behavior scenario passed on the source head after failing on the merge base; the full gate repeated it successfully.",
+      "reproduction_steps": [
+        "Read the captured red status scenario",
+        "Read the captured green status scenario",
+        "Confirm red_test_exit=1 and green_test_exit=0"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Fresh reruns remain ordinary telemetry and genuine queued pressure still degrades",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The combined operational-health scenario covering fresh, exact-boundary, wedged, and genuinely queued inputs passed in both the focused and full gates.",
+      "reproduction_steps": [
+        "Locate the passing operational-health scenario in the transcript",
+        "Confirm the full gate reports zero failures"
+      ],
+      "confidence": 0.97
+    },
+    {
+      "contract_clause": "Exact pre-queue cancellation 409 is a structured exit-zero remediation skip",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The production-script loopback scenario passed after its merge-base failure, and the full gate repeated it successfully.",
+      "reproduction_steps": [
+        "Locate the remediation scenario's merge-base failure",
+        "Locate the same scenario's source-head pass",
+        "Confirm green_test_exit=0"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Public status retains aggregate wedged fields without run identities",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The public-containment scenario passed in the focused and full gates.",
+      "reproduction_steps": [
+        "Locate the public status containment scenario",
+        "Confirm the focused suite and full gate both pass"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Dashboard details distinguish wedged reruns without opening a healthy-only alert",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The dashboard render and status scenarios both passed in the focused and full gates.",
+      "reproduction_steps": [
+        "Locate both dashboard scenarios",
+        "Confirm dashboard_strict=pass"
+      ],
+      "confidence": 0.98
+    }
+  ],
+  "anti_cheat_probes": [
+    {
+      "probe": "Exactly 60 minutes remains ordinary queue pressure",
+      "result": "Pass within the combined operational-health behavior scenario."
+    },
+    {
+      "probe": "Non-pending queued attempt-2 remains genuine queue pressure",
+      "result": "Pass within the combined operational-health behavior scenario."
+    },
+    {
+      "probe": "Force-cancel 409 after initial cancel 500 does not become a permanent zombie",
+      "result": "Pass in the complete full gate."
+    },
+    {
+      "probe": "Synthetic run ID and diagnostic URL do not survive public projection",
+      "result": "Pass in the focused public-containment scenario."
+    },
+    {
+      "probe": "Merge-base implementation fails the two new claims",
+      "result": "Both red scenarios failed as expected; source files were hash-restored before green."
+    }
+  ],
+  "blockers": []
+}

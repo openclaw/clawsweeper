@@ -1,0 +1,115 @@
+{
+  "schema": "clawsweeper-crabbox-proof-provenance/v1",
+  "claim": "Wedged pre-queue reruns remain visible as aggregate diagnostics without degrading operational health, and the exact GitHub cancellation conflict is an exit-zero structured remediation skip.",
+  "tested_source_head": "e00105a696c6e7c8144fc754035447bd69499067",
+  "merge_base": "43799a11fc2612df7d80918e0012d6f03b339747",
+  "host_commit_cross_check": true,
+  "container_commit_cross_check": true,
+  "crabbox": {
+    "cli_version": "0.41.6-7-g07f4358e",
+    "provider": "local-container",
+    "lease_id": "cbx_816c6b8c6a74",
+    "lease_slug": "pearl-shrimp-c16f",
+    "run_id": "run_c5afcb37bf92",
+    "machine_type": "node_24-bookworm",
+    "container_image": "node:24-bookworm",
+    "container_engine": "Docker 29.4.0",
+    "workdir": "/work/crabbox/cbx_816c6b8c6a74/clawsweeper",
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0",
+    "jq": "jq-1.6"
+  },
+  "timing_ms": {
+    "lease": 31650,
+    "bootstrap": 351,
+    "sync": 4393,
+    "command": 578076,
+    "total": 583298,
+    "end_to_end": 615066,
+    "command_phases": [
+      {
+        "name": "user-command",
+        "ms": 5317
+      },
+      {
+        "name": "install",
+        "ms": 4081
+      },
+      {
+        "name": "red",
+        "ms": 200
+      },
+      {
+        "name": "green",
+        "ms": 2016
+      },
+      {
+        "name": "dashboard-strict",
+        "ms": 482
+      },
+      {
+        "name": "full-gate",
+        "ms": 565976
+      }
+    ]
+  },
+  "result": {
+    "red_test_exit": 1,
+    "red_scenarios": 2,
+    "red_failures": 2,
+    "production_sources_restored": true,
+    "green_test_exit": 0,
+    "focused_scenarios": 5,
+    "focused_scenarios_passed": 5,
+    "dashboard_strict": "pass",
+    "full_gate": "pass",
+    "full_gate_tests": 3533,
+    "full_gate_passed": 3525,
+    "full_gate_failed": 0,
+    "full_gate_skipped": 8,
+    "proof_marker": "PROOF_EXIT=0",
+    "transcript": {
+      "path": "docs/proof/wedged-rerun-classification/container-transcript.txt",
+      "bytes": 645045,
+      "sha256": "e9ff9a0665ca6ce21154ea0521ac86953cbd29bf1882a05f68b11b9b9369d0fb"
+    },
+    "stderr": {
+      "path": "docs/proof/wedged-rerun-classification/container-stderr.txt",
+      "bytes": 1915,
+      "sha256": "a9c58e2ca5267df86b0c83da18c43e236f0769c81a192954a591c46e2a9d370d"
+    },
+    "launcher": {
+      "path": "docs/proof/wedged-rerun-classification/run-container-proof.sh",
+      "bytes": 3791,
+      "sha256": "ae32f4b6b012acb9714102332e755c7c6a204eb8713092e1c0f2d70e3723538b"
+    }
+  },
+  "discarded_attempts": [
+    {
+      "lease_id": "cbx_ae3ec15f1935",
+      "lease_slug": "silver-crayfish-0cc3",
+      "run_id": "run_77e74c1a198b",
+      "exit_code": 128,
+      "reason": "Raw local-container sync omitted Git metadata; the commit-object guard stopped before tests.",
+      "lease_stopped": true
+    },
+    {
+      "lease_id": "cbx_8adc76de187d",
+      "lease_slug": "coral-krill-0696",
+      "run_id": "run_8f32bbae212a",
+      "exit_code": 1,
+      "reason": "The base image lacked jq; task-focused green and dashboard-strict passed, but jq-backed full-gate shell fixtures failed.",
+      "lease_stopped": true
+    }
+  ],
+  "limits": [
+    "GitHub API behavior uses loopback fixtures; production run 31910632853 was not mutated.",
+    "The evidence commit changes proof files only after the tested source head.",
+    "OpenClaw Bay does not consume operational_health and was not changed."
+  ]
+}
