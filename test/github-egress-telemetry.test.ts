@@ -714,8 +714,7 @@ test("signed upload, SQLite restart, retention, cardinality, and public privacy 
     const ambiguousHistoryStore = new GithubEgressTelemetryStore(ambiguousHistoryStorage);
     ambiguousHistoryStore.ensureSchemaSync();
     assert.equal(
-      ambiguousHistoryStore.ingest(telemetryBody("c".repeat(64), sevenHoursAgo), sevenHoursAgo)
-        .ok,
+      ambiguousHistoryStore.ingest(telemetryBody("c".repeat(64), sevenHoursAgo), sevenHoursAgo).ok,
       true,
     );
     const ambiguousBody = telemetryBody("d".repeat(64), NOW - 10 * 60 * 1_000);
