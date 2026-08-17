@@ -18,7 +18,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
-- Live-proof attachment now retries canonical publication conflicts from fresh single-record state and updates the public review comment only after the record lands.
+- Live-proof attachment now captures each freshly hydrated canonical single-record revision as the publication baseline before retrying conflicts, then updates the public review comment only after the record lands.
 - Short live-proof recordings fall back to a single poster frame when the contact-sheet tile cannot emit one.
 - Terminal recorders flush WebM packets immediately and treat a live ffmpeg session as healthy while the muxer buffers.
 - Terminal live-proof recordings tune VP9 for realtime capture and accept the recorder once any payload is written, matching the encoder's bursty muxer output.

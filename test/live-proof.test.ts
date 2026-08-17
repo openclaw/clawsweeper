@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import YAML from "yaml";
@@ -18,6 +18,7 @@ import {
 import { executeLiveProof } from "../dist/live-proof/execute.js";
 import { parseLiveProofManifest } from "../dist/live-proof/manifest.js";
 import {
+  captureLiveProofCanonicalBaseline,
   isCanonicalPublicationConflict,
   publishLiveProofAttachment,
 } from "../dist/live-proof/publication.js";
@@ -433,18 +434,23 @@ test("live-proof attach publishes the record before syncing its marker-backed co
   assert.match(publishedBody, /<!-- clawsweeper-review item=42 -->/);
 });
 
-test("live-proof publication rehydrates and retries a canonical conflict without duplicate comment upserts", async () => {
+test("live-proof publication retries from a lagged hydration and publishes the fresh canonical baseline", async () => {
   const calls: string[] = [];
+  const hydratedRevisions = ["revision-5", "revision-6"];
+  let hydratedRevision = "";
   let publications = 0;
   let commentUpserts = 0;
   const result = await publishLiveProofAttachment({
-    hydrateRecord: () => calls.push("hydrate"),
-    attachRecord: async () => {
-      calls.push("attach");
+    hydrateRecord: (attempt) => {
+      hydratedRevision = hydratedRevisions[attempt - 1] ?? "";
+      calls.push(`hydrate:${hydratedRevision}`);
+    },
+    attachRecord: async (attempt) => {
+      calls.push(`attach:${attempt}`);
       return "attached";
     },
-    publishRecord: () => {
-      calls.push("publish");
+    publishRecord: (attempt) => {
+      calls.push(`publish:${attempt}:${hydratedRevision}`);
       publications += 1;
       if (publications === 1) throw canonicalPublicationConflict();
     },
@@ -459,15 +465,46 @@ test("live-proof publication rehydrates and retries a canonical conflict without
 
   assert.equal(result, "attached");
   assert.deepEqual(calls, [
-    "hydrate",
-    "attach",
-    "publish",
-    "hydrate",
-    "attach",
-    "publish",
+    "hydrate:revision-5",
+    "attach:1",
+    "publish:1:revision-5",
+    "hydrate:revision-6",
+    "attach:2",
+    "publish:2:revision-6",
     "comment",
   ]);
   assert.equal(commentUpserts, 1);
+});
+
+test("live-proof publication captures each hydrated canonical revision in a fresh baseline", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-baseline-"));
+  const recordPath = join(root, "records", "openclaw-openclaw", "items", "42.md");
+  mkdirSync(dirname(recordPath), { recursive: true });
+  writeFileSync(recordPath, "canonical revision 5\n");
+
+  const first = captureLiveProofCanonicalBaseline({
+    root,
+    repositorySlug: "openclaw-openclaw",
+    itemNumber: 42,
+    attempt: 1,
+  });
+  writeFileSync(recordPath, "canonical revision 6\n");
+  const second = captureLiveProofCanonicalBaseline({
+    root,
+    repositorySlug: "openclaw-openclaw",
+    itemNumber: 42,
+    attempt: 2,
+  });
+
+  assert.notEqual(first, second);
+  assert.equal(
+    readFileSync(join(first, "records", "openclaw-openclaw", "items", "42.md"), "utf8"),
+    "canonical revision 5\n",
+  );
+  assert.equal(
+    readFileSync(join(second, "records", "openclaw-openclaw", "items", "42.md"), "utf8"),
+    "canonical revision 6\n",
+  );
 });
 
 test("live-proof publication fails loudly after three canonical conflicts", async () => {

@@ -68,6 +68,7 @@ import {
 import { createLabelPolicy } from "./clawsweeper-label-policy.js";
 import { createLiveProofCommands } from "./live-proof/commands.js";
 import {
+  captureLiveProofCanonicalBaseline,
   isCanonicalPublicationConflict,
   publishLiveProofAttachment,
 } from "./live-proof/publication.js";
@@ -1509,9 +1510,10 @@ async function liveProofAttachPublishCommand(args: Args): Promise<void> {
     throw new Error("--item requires a positive safe integer");
   }
   const recordsUrl = process.env.QUEUE_URL?.trim() || "https://clawsweeper.openclaw.ai";
+  const canonicalBaselineRoots = new Map<number, string>();
 
   await publishLiveProofAttachment({
-    hydrateRecord: () => {
+    hydrateRecord: (attempt) => {
       runText(
         process.execPath,
         [
@@ -1529,6 +1531,15 @@ async function liveProofAttachPublishCommand(args: Args): Promise<void> {
         ],
         { cwd: ROOT, trim: "none" },
       );
+      canonicalBaselineRoots.set(
+        attempt,
+        captureLiveProofCanonicalBaseline({
+          root: ROOT,
+          repositorySlug: repoSlug,
+          itemNumber: item,
+          attempt,
+        }),
+      );
     },
     attachRecord: async () => {
       const markdown = readFileSync(resolve(recordPath), "utf8");
@@ -1536,7 +1547,11 @@ async function liveProofAttachPublishCommand(args: Args): Promise<void> {
       if (repo) setTargetRepo(repo);
       return liveProofCommands.liveProofAttachCommand(args);
     },
-    publishRecord: () => {
+    publishRecord: (attempt) => {
+      const canonicalBaselineRoot = canonicalBaselineRoots.get(attempt);
+      if (!canonicalBaselineRoot) {
+        throw new Error(`Missing canonical live-proof baseline for attempt ${attempt}`);
+      }
       runText(
         "pnpm",
         [
@@ -1550,7 +1565,13 @@ async function liveProofAttachPublishCommand(args: Args): Promise<void> {
           "--rebase-strategy",
           "normal",
         ],
-        { cwd: ROOT, trim: "none" },
+        {
+          cwd: ROOT,
+          env: {
+            CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: canonicalBaselineRoot,
+          },
+          trim: "none",
+        },
       );
     },
     syncComment: () => liveProofCommands.liveProofCommentCommand(args),

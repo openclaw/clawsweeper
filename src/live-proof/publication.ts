@@ -1,12 +1,16 @@
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
+
+import { captureCanonicalRecordBaseline } from "../repair/canonical-record-baseline.js";
 import type { LiveProofAttachResult } from "./attach.js";
 
 export const LIVE_PROOF_PUBLICATION_ATTEMPTS = 3;
 export const LIVE_PROOF_PUBLICATION_BACKOFF_MS = 1_000;
 
 export interface LiveProofPublicationDependencies {
-  hydrateRecord: () => Promise<void> | void;
-  attachRecord: () => Promise<LiveProofAttachResult>;
-  publishRecord: () => Promise<void> | void;
+  hydrateRecord: (attempt: number) => Promise<void> | void;
+  attachRecord: (attempt: number) => Promise<LiveProofAttachResult>;
+  publishRecord: (attempt: number) => Promise<void> | void;
   syncComment: () => Promise<void> | void;
   isCanonicalConflict: (error: unknown) => boolean;
   delay?: (milliseconds: number) => Promise<void>;
@@ -22,12 +26,12 @@ export async function publishLiveProofAttachment(
   const log = dependencies.log ?? console.log;
 
   for (let attempt = 1; attempt <= LIVE_PROOF_PUBLICATION_ATTEMPTS; attempt += 1) {
-    await dependencies.hydrateRecord();
-    const outcome = await dependencies.attachRecord();
+    await dependencies.hydrateRecord(attempt);
+    const outcome = await dependencies.attachRecord(attempt);
     if (outcome !== "attached") return outcome;
 
     try {
-      await dependencies.publishRecord();
+      await dependencies.publishRecord(attempt);
     } catch (error) {
       if (!dependencies.isCanonicalConflict(error) || attempt === LIVE_PROOF_PUBLICATION_ATTEMPTS) {
         throw error;
@@ -44,6 +48,35 @@ export async function publishLiveProofAttachment(
   }
 
   throw new Error("live proof publication exhausted its retry loop");
+}
+
+export function captureLiveProofCanonicalBaseline(options: {
+  root: string;
+  repositorySlug: string;
+  itemNumber: number;
+  attempt: number;
+}): string {
+  const itemName = `${options.itemNumber}.md`;
+  const baselineParent = join(options.root, ".artifacts", "live-proof-canonical-baseline");
+  mkdirSync(baselineParent, { recursive: true });
+  const baselineRoot = mkdtempSync(join(baselineParent, `attempt-${options.attempt}-`));
+  const repositoryRoot = join(options.root, "records", options.repositorySlug);
+  captureCanonicalRecordBaseline({
+    baselineRoot,
+    repositorySlug: options.repositorySlug,
+    itemNumber: options.itemNumber,
+    sources: [
+      { section: "items", name: itemName, path: join(repositoryRoot, "items", itemName) },
+      { section: "closed", name: itemName, path: join(repositoryRoot, "closed", itemName) },
+      { section: "plans", name: itemName, path: join(repositoryRoot, "plans", itemName) },
+      {
+        section: "decision-packets",
+        name: `${options.itemNumber}.json`,
+        path: join(repositoryRoot, "decision-packets", `${options.itemNumber}.json`),
+      },
+    ],
+  });
+  return baselineRoot;
 }
 
 export function isCanonicalPublicationConflict(error: unknown): boolean {
