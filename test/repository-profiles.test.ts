@@ -249,7 +249,15 @@ test("schema v2 generic fallbacks strictly validate and inherit optional live_te
 });
 
 test("configured and fallback-owned repositories expose their enabled live-proof surfaces", () => {
-  assert.deepEqual(repositoryProfileFor("openclaw/openclaw").liveTest, TERMINAL_LIVE_TEST);
+  assert.deepEqual(repositoryProfileFor("openclaw/openclaw").liveTest, {
+    enabled: true,
+    surfaceDefault: "browser",
+    setup: ["pnpm install --frozen-lockfile", "pnpm ui:install"],
+    start: "pnpm dev:ui:mock",
+    url: "http://127.0.0.1:5187",
+    readyTimeoutSeconds: 300,
+    maxRecordingSeconds: 90,
+  });
   assert.deepEqual(repositoryProfileFor("openclaw/openclaw-facetime").liveTest, TERMINAL_LIVE_TEST);
   assert.deepEqual(repositoryProfileFor("openclaw/fs-safe").liveTest, TERMINAL_LIVE_TEST);
   assert.deepEqual(repositoryProfileFor("openclaw/clawhub").liveTest, {

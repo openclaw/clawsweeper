@@ -18,6 +18,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- OpenClaw browser live proofs run against the repository's mock control-UI dev server.
 - Folder reconciliation now defers with a zero-mutation result when the open-state scan hits GitHub rate limiting, so throttled proof/apply/publish runs proceed to their close and publication work instead of failing before `Apply close proposals` can run.
 - Comment-only sync now defers its remaining batch as a runtime-budget-style yield when GitHub rate limits a live read, instead of failing the scheduled run; the next 15-minute cycle resumes the interrupted item, and close-mode apply keeps its loud failure.
 - Close-mode apply now takes the same rate-limit yield as comment sync: a throttled live read mid-scan defers the remaining window to the next cycle instead of failing the run, after production runs kept losing 600-record scan windows to mid-run 403s.

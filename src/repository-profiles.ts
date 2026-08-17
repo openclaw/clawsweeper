@@ -117,6 +117,17 @@ const CORE_OPENCLAW_PROFILE: RepositoryProfile = {
         reason !== "stale_version_bug",
     ),
   },
+  // Browser live proofs run against the repository's self-contained mock
+  // control-UI dev server, which needs no gateway, accounts, or credentials.
+  liveTest: {
+    enabled: true,
+    surfaceDefault: "browser",
+    setup: ["pnpm install --frozen-lockfile", "pnpm ui:install"],
+    start: "pnpm dev:ui:mock",
+    url: "http://127.0.0.1:5187",
+    readyTimeoutSeconds: 300,
+    maxRecordingSeconds: 90,
+  },
 };
 
 const TARGET_REPOSITORY_CONFIG = readTargetRepositoryConfig();
