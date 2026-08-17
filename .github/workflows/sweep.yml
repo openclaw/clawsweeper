@@ -1433,48 +1433,15 @@ jobs:
           EXACT_REVIEW_BATCH_MUTATION_OUTPUT: .artifacts/direct-publication-outcome.json
         run: pnpm run --silent repair:publish-event-result
 
-      - name: Create live-proof dispatch token
-        id: live-proof-dispatch-token
+      - name: Dispatch recommended live proofs
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.prepare-direct-exact-review-publication.outcome == 'success' }}
-        continue-on-error: true
-        uses: ./.github/actions/create-target-write-token
+        uses: ./.github/actions/dispatch-live-proofs
         with:
+          target-repo: ${{ steps.target.outputs.target_repo }}
+          item-numbers: ${{ steps.target.outputs.item_number }}
+          records-root: records
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: openclaw
-          repository: clawsweeper
-
-      - name: Dispatch recommended live proofs
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.prepare-direct-exact-review-publication.outcome == 'success' && steps.live-proof-dispatch-token.outcome == 'success' && steps.live-proof-dispatch-token.outputs.token != '' }}
-        env:
-          GH_TOKEN: ${{ steps.live-proof-dispatch-token.outputs.token }}
-          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
-          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-        run: |
-          set -euo pipefail
-          item_numbers="$ITEM_NUMBER"
-          ITEM_NUMBERS="$item_numbers" RECORDS_ROOT=records pnpm run --silent repair:live-proof-candidates > /tmp/live-proof-candidates.jsonl
-          if [ ! -s /tmp/live-proof-candidates.jsonl ]; then
-            echo "No published review requested an enabled live proof."
-            exit 0
-          fi
-          while IFS= read -r candidate; do
-            item="$(jq -r '.item' <<<"$candidate")"
-            plan="$(jq -c '.plan' <<<"$candidate")"
-            jq -n \
-              --arg repo "$TARGET_REPO" \
-              --arg item "$item" \
-              --argjson plan "$plan" \
-              '{
-                event_type: "clawsweeper_live_proof",
-                client_payload: {
-                  repo: $repo,
-                  item: $item,
-                  live_proof_plan: $plan
-                }
-              }' | gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" --input -
-            echo "Dispatched live proof for $TARGET_REPO#$item."
-          done < /tmp/live-proof-candidates.jsonl
 
       - name: Post direct exact review publication result
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.prepare-direct-exact-review-publication.outcome == 'success' }}
@@ -2628,6 +2595,16 @@ jobs:
             exit "$publication_status"
           fi
           rm -f "$publication_error"
+
+      - name: Dispatch recommended live proofs
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' && steps.publish-event-result.outcome == 'success' && (steps.publish-event-result.outputs.remote_tuple_verified == 'true' || (steps.publish-event-result.outputs.completion_kind == 'deferred' && steps.publish-event-result.outputs.reason_code == 'close_coverage_deferred')) }}
+        uses: ./.github/actions/dispatch-live-proofs
+        with:
+          target-repo: ${{ steps.publication-context.outputs.target_repo }}
+          item-numbers: ${{ steps.publication-context.outputs.item_number }}
+          records-root: records
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - name: Record fallback canonical exact review lifecycle receipt
         id: record-fallback-canonical-lifecycle-receipt
@@ -4788,36 +4765,23 @@ jobs:
             --artifact-dir artifacts \
             --report-dir "records/$target_slug/items"
 
-      - name: Dispatch recommended live proofs
+      - name: Collect published review item numbers
+        id: published-review-items
         if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
         run: |
           set -euo pipefail
           item_numbers="$(pnpm run --silent workflow -- artifact-item-numbers --artifact-dir artifacts)"
-          ITEM_NUMBERS="$item_numbers" RECORDS_ROOT=records pnpm run --silent repair:live-proof-candidates > /tmp/live-proof-candidates.jsonl
-          if [ ! -s /tmp/live-proof-candidates.jsonl ]; then
-            echo "No published review requested an enabled live proof."
-            exit 0
-          fi
-          while IFS= read -r candidate; do
-            item="$(jq -r '.item' <<<"$candidate")"
-            plan="$(jq -c '.plan' <<<"$candidate")"
-            jq -n \
-              --arg repo "$TARGET_REPO" \
-              --arg item "$item" \
-              --argjson plan "$plan" \
-              '{
-                event_type: "clawsweeper_live_proof",
-                client_payload: {
-                  repo: $repo,
-                  item: $item,
-                  live_proof_plan: $plan
-                }
-              }' | gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" --input -
-            echo "Dispatched live proof for $TARGET_REPO#$item."
-          done < /tmp/live-proof-candidates.jsonl
+          echo "item_numbers=$item_numbers" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch recommended live proofs
+        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.published-review-items.outcome == 'success' }}
+        uses: ./.github/actions/dispatch-live-proofs
+        with:
+          target-repo: ${{ needs.plan.outputs.target_repo }}
+          item-numbers: ${{ steps.published-review-items.outputs.item_numbers }}
+          records-root: records
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
       - name: Dispatch vision-fit implementation candidates
         if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && needs.plan.outputs.target_repo == 'openclaw/openclaw' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT == '1' }}

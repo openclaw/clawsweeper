@@ -57,9 +57,10 @@ function packageScripts(): Record<string, string> {
 function resolveScriptClosure(script: string): Set<string> {
   const scripts = packageScripts();
   const value = script.trim().replace(/^["']|["']$/g, "");
+  const expressionScripts = [...script.matchAll(/["']([\w:.-]+)["']/g)].map((match) => match[1]!);
   const pending = /^\/(.+)\/$/.exec(value)
     ? Object.keys(scripts).filter((name) => new RegExp(/^\/(.+)\/$/.exec(value)![1]!).test(name))
-    : [value];
+    : [value, ...expressionScripts];
   const closure = new Set<string>();
   while (pending.length > 0) {
     const name = pending.pop();

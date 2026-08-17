@@ -336,6 +336,68 @@ test("live-proof workflow keeps execute secretless and attach trusted", () => {
   assert.match(source, /setsid timeout --kill-after=30s 1500s/);
   assert.match(source, /--record \.\.\/live-proof-report\.md/);
   assert.doesNotMatch(source, /--plan \.\.\/live-proof/);
+
+  const dispatchActionSource = readFileSync(
+    ".github/actions/dispatch-live-proofs/action.yml",
+    "utf8",
+  );
+  const dispatchAction = YAML.parse(dispatchActionSource) as {
+    inputs: Record<string, { required?: boolean }>;
+    runs: {
+      steps: Array<{
+        id?: string;
+        if?: string;
+        uses?: string;
+        with?: Record<string, string>;
+        run?: string;
+      }>;
+    };
+  };
+  assert.deepEqual(Object.keys(dispatchAction.inputs), [
+    "target-repo",
+    "item-numbers",
+    "records-root",
+    "client-id",
+    "private-key",
+  ]);
+  assert.ok(Object.values(dispatchAction.inputs).every((input) => input.required === true));
+  const candidateStep = dispatchAction.runs.steps.find((step) => step.id === "candidates");
+  const tokenStep = dispatchAction.runs.steps.find((step) => step.id === "dispatch-token");
+  const dispatchStep = dispatchAction.runs.steps.at(-1);
+  assert.match(candidateStep?.run ?? "", /\[ ! -d "\$RECORDS_ROOT" \]/);
+  assert.match(candidateStep?.run ?? "", /\[ -z "\$\{ITEM_NUMBERS\/\//);
+  assert.match(
+    candidateStep?.run ?? "",
+    /\[ ! -f dist\/repair\/live-proof-dispatch-candidates\.js \]/,
+  );
+  assert.match(candidateStep?.run ?? "", /pnpm run --silent repair:live-proof-candidates/);
+  assert.equal(tokenStep?.uses, "./.github/actions/create-target-write-token");
+  assert.equal(tokenStep?.with?.owner, "openclaw");
+  assert.equal(tokenStep?.with?.repository, "clawsweeper");
+  assert.match(dispatchStep?.run ?? "", /event_type: "clawsweeper_live_proof"/);
+  assert.match(dispatchStep?.run ?? "", /repos\/\$GITHUB_REPOSITORY\/dispatches/);
+  const noOpFixture = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-dispatch-noop-"));
+  const runCandidateStep = (recordsRoot: string, itemNumbers: string, outputName: string) => {
+    const outputPath = join(noOpFixture, outputName);
+    const result = spawnSync("bash", ["-c", candidateStep?.run ?? ""], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: outputPath,
+        ITEM_NUMBERS: itemNumbers,
+        RECORDS_ROOT: recordsRoot,
+        RUNNER_TEMP: noOpFixture,
+        TARGET_REPO: "openclaw/clawsweeper",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(readFileSync(outputPath, "utf8"), /available=false/);
+  };
+  runCandidateStep(join(noOpFixture, "missing-records"), "42", "missing-root-output.txt");
+  const emptyRecords = join(noOpFixture, "records");
+  mkdirSync(emptyRecords);
+  runCandidateStep(emptyRecords, " , ", "missing-items-output.txt");
+
   const sweep = readFileSync(".github/workflows/sweep.yml", "utf8");
   const sweepWorkflow = YAML.parse(sweep) as {
     jobs: Record<
@@ -361,36 +423,112 @@ test("live-proof workflow keeps execute secretless and attach trusted", () => {
     (step) => step.name === "Dispatch recommended live proofs",
   );
   const directDispatch = directSteps[directDispatchIndex];
-  const dispatchToken = directSteps.find((step) => step.id === "live-proof-dispatch-token");
   assert.ok(directDeliveryIndex >= 0);
   assert.ok(directDispatchIndex > directDeliveryIndex);
-  assert.equal(dispatchToken?.uses, "./.github/actions/create-target-write-token");
-  assert.equal(dispatchToken?.with?.owner, "openclaw");
-  assert.equal(dispatchToken?.with?.repository, "clawsweeper");
+  assert.equal(directDispatch?.uses, "./.github/actions/dispatch-live-proofs");
   assert.match(
     directDispatch?.if ?? "",
     /prepare-direct-exact-review-publication\.outcome == 'success'/,
   );
+  assert.equal(directDispatch?.with?.["target-repo"], "${{ steps.target.outputs.target_repo }}");
+  assert.equal(directDispatch?.with?.["item-numbers"], "${{ steps.target.outputs.item_number }}");
+
+  const fallbackSteps = sweepWorkflow.jobs["event-review-publish"]?.steps ?? [];
+  const fallbackPublicationIndex = fallbackSteps.findIndex(
+    (step) => step.name === "Publish event result and apply safe close",
+  );
+  const fallbackDispatchIndex = fallbackSteps.findIndex(
+    (step) => step.uses === "./.github/actions/dispatch-live-proofs",
+  );
+  assert.ok(fallbackPublicationIndex >= 0);
+  assert.ok(fallbackDispatchIndex > fallbackPublicationIndex);
+  assert.match(fallbackSteps[fallbackDispatchIndex]?.if ?? "", /remote_tuple_verified/);
+
+  const scheduledSteps = sweepWorkflow.jobs.publish?.steps ?? [];
+  const scheduledPublicationIndex = scheduledSteps.findIndex(
+    (step) => step.id === "commit-review-records",
+  );
+  const scheduledDispatchIndex = scheduledSteps.findIndex(
+    (step) => step.uses === "./.github/actions/dispatch-live-proofs",
+  );
+  assert.ok(scheduledPublicationIndex >= 0);
+  assert.ok(scheduledDispatchIndex > scheduledPublicationIndex);
   assert.equal(
-    directDispatch?.env?.GH_TOKEN,
-    "${{ steps.live-proof-dispatch-token.outputs.token }}",
+    scheduledSteps[scheduledDispatchIndex]?.with?.["item-numbers"],
+    "${{ steps.published-review-items.outputs.item_numbers }}",
   );
-  assert.equal(directDispatch?.env?.ITEM_NUMBER, "${{ steps.target.outputs.item_number }}");
-  assert.match(
-    directDispatch?.run ?? "",
-    /ITEM_NUMBERS="\$item_numbers" RECORDS_ROOT=records pnpm run --silent repair:live-proof-candidates/,
-  );
-  assert.doesNotMatch(directDispatch?.run ?? "", /dist\/clawsweeper\.js/);
-  assert.match(directDispatch?.run ?? "", /event_type: "clawsweeper_live_proof"/);
-  assert.match(directDispatch?.run ?? "", /repos\/\$GITHUB_REPOSITORY\/dispatches/);
   assert.equal(
     Object.values(sweepWorkflow.jobs)
       .flatMap((job) => job.steps)
-      .filter((step) => step.name === "Dispatch recommended live proofs").length,
-    2,
+      .filter((step) => step.uses === "./.github/actions/dispatch-live-proofs").length,
+    3,
   );
-  assert.equal(sweep.match(/pnpm run --silent repair:live-proof-candidates/g)?.length, 2);
-  assert.doesNotMatch(sweep, /node --input-type=module <<'NODE' > \/tmp\/live-proof-candidates/);
+
+  const batchWorkflow = YAML.parse(
+    readFileSync(".github/workflows/exact-review-batch-publish.yml", "utf8"),
+  ) as {
+    jobs: Record<
+      string,
+      {
+        needs?: string;
+        strategy?: { matrix?: string };
+        steps: Array<{ id?: string; uses?: string; run?: string; with?: Record<string, string> }>;
+      }
+    >;
+  };
+  const matrixStep = batchWorkflow.jobs.publish?.steps.find(
+    (step) => step.id === "live-proof-dispatch-matrix",
+  );
+  assert.match(matrixStep?.run ?? "", /\.outcome == "accepted" or \.outcome == "deduped"/);
+  assert.match(matrixStep?.run ?? "", /group_by\(\.target_repo\)/);
+  const matrixFixture = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-matrix-"));
+  const matrixOutput = join(matrixFixture, "github-output.txt");
+  writeFileSync(
+    join(matrixFixture, "state-receipt.json"),
+    JSON.stringify({
+      outcomes: [
+        { outcome: "accepted", canonicalTargetKey: "openclaw/second#10" },
+        { outcome: "retryable", canonicalTargetKey: "openclaw/ignored#3" },
+        { outcome: "deduped", canonicalTargetKey: "openclaw/second#2" },
+        { outcome: "accepted", canonicalTargetKey: "openclaw/first#7" },
+      ],
+    }),
+  );
+  const matrixResult = spawnSync("bash", ["-c", matrixStep?.run ?? ""], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      EXACT_REVIEW_BATCH_MANIFEST: join(matrixFixture, "manifest.json"),
+      GITHUB_OUTPUT: matrixOutput,
+    },
+  });
+  assert.equal(matrixResult.status, 0, matrixResult.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(matrixOutput, "utf8").trim().slice("matrix=".length)), {
+    include: [
+      {
+        target_repo: "openclaw/first",
+        target_slug: "openclaw-first",
+        item_numbers: "7",
+      },
+      {
+        target_repo: "openclaw/second",
+        target_slug: "openclaw-second",
+        item_numbers: "2,10",
+      },
+    ],
+  });
+  const batchDispatchJob = batchWorkflow.jobs["dispatch-live-proofs"];
+  assert.equal(batchDispatchJob?.needs, "publish");
+  assert.equal(
+    batchDispatchJob?.strategy?.matrix,
+    "${{ fromJSON(needs.publish.outputs.live_proof_matrix) }}",
+  );
+  const batchDispatch = batchDispatchJob?.steps.find(
+    (step) => step.uses === "./.github/actions/dispatch-live-proofs",
+  );
+  assert.equal(batchDispatch?.with?.["target-repo"], "${{ matrix.target_repo }}");
+  assert.equal(batchDispatch?.with?.["item-numbers"], "${{ matrix.item_numbers }}");
+
   const candidateSource = readFileSync("src/repair/live-proof-dispatch-candidates.ts", "utf8");
   assert.match(candidateSource, /profile\.liveTest\?\.enabled/);
   assert.match(candidateSource, /plan\.status === "recommended"/);

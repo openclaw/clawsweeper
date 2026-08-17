@@ -27,6 +27,7 @@ const REPAIR_RUNTIME_PATHS = [
 
 const MAIN_BUNDLE = "dist/clawsweeper.js";
 const RUNTIME_DIST_ARTIFACT = "clawsweeper-runtime-dist";
+const DISPATCH_LIVE_PROOFS_ACTION = "./.github/actions/dispatch-live-proofs";
 
 test("repair planning and execution use a Node runtime accepted by current OpenClaw", () => {
   const workflow = parse(
@@ -125,6 +126,77 @@ test("every workflow job that runs the main bundle directly obtains it", () => {
     }
   }
   assert.ok(audited.length > 0, `no job invoking ${MAIN_BUNDLE} was audited`);
+});
+
+test("every workflow job that runs the repair bundle through dispatch-live-proofs obtains it", () => {
+  const audited: string[] = [];
+  for (const workflowPath of fs.globSync(".github/workflows/*.yml").sort()) {
+    const workflow = parse(fs.readFileSync(workflowPath, "utf8")) as {
+      jobs?: Record<string, { steps?: { uses?: unknown; with?: Record<string, unknown> }[] }>;
+    };
+    for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+      const steps = job.steps ?? [];
+      if (!steps.some((step) => step.uses === DISPATCH_LIVE_PROOFS_ACTION)) continue;
+      const site = `${workflowPath}:${jobName}`;
+      audited.push(site);
+      const buildScripts = steps
+        .filter((step) => String(step.uses ?? "").includes("actions/setup-pnpm"))
+        .map((step) => String(step.with?.["build-script"] ?? ""));
+      assert.ok(
+        buildScripts.some(buildScriptEmitsRepairBundle),
+        `${site} invokes ${DISPATCH_LIVE_PROOFS_ACTION} but no build-script emits the repair bundle: ${JSON.stringify(buildScripts)}`,
+      );
+    }
+  }
+  assert.equal(audited.length, 4, JSON.stringify(audited));
+});
+
+test("every durable review-record publication lane invokes dispatch-live-proofs", () => {
+  const publicationSites: string[] = [];
+  for (const workflowPath of fs.globSync(".github/workflows/*.yml").sort()) {
+    const workflow = parse(fs.readFileSync(workflowPath, "utf8")) as {
+      jobs?: Record<
+        string,
+        {
+          needs?: unknown;
+          steps?: { id?: unknown; uses?: unknown; run?: unknown }[];
+        }
+      >;
+    };
+    const jobs = workflow.jobs ?? {};
+    for (const [jobName, job] of Object.entries(jobs)) {
+      const steps = job.steps ?? [];
+      const runs = steps.map((step) => String(step.run ?? ""));
+      const directPublication = runs.some(
+        (run) =>
+          run.includes("repair:publish-event-result") ||
+          run.includes("repair:exact-review-batch commit"),
+      );
+      const artifactPublication =
+        runs.some((run) => run.includes("pnpm run apply-artifacts")) &&
+        runs.some((run) => /repair:publish-main[\s\S]*--path ["']records\//.test(run));
+      if (!directPublication && !artifactPublication) continue;
+      const site = `${workflowPath}:${jobName}`;
+      publicationSites.push(site);
+      const dispatchesInJob = steps.some(
+        (candidate) => candidate.uses === DISPATCH_LIVE_PROOFS_ACTION,
+      );
+      const dispatchesInDependentJob = Object.values(jobs).some((candidate) => {
+        const needs = Array.isArray(candidate.needs) ? candidate.needs : [candidate.needs];
+        return (
+          needs.includes(jobName) &&
+          (candidate.steps ?? []).some(
+            (candidateStep) => candidateStep.uses === DISPATCH_LIVE_PROOFS_ACTION,
+          )
+        );
+      });
+      assert.ok(
+        dispatchesInJob || dispatchesInDependentJob,
+        `${site} durably publishes review records without ${DISPATCH_LIVE_PROOFS_ACTION}`,
+      );
+    }
+  }
+  assert.equal(publicationSites.length, 4, JSON.stringify(publicationSites));
 });
 
 test("state-hydrating sparse repair workflows keep hydration dependencies", () => {
