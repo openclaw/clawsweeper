@@ -54,6 +54,19 @@ function reviewStartLeaseCommentUpdatedAt(
   return undefined;
 }
 
+export function withRunnerPreflightProvenance(
+  markdown: string,
+  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string,
+): string {
+  let promoted = replaceFrontMatterValue(markdown, "local_checkout_access", "verified");
+  promoted = replaceFrontMatterValue(
+    promoted,
+    "local_checkout_access_source",
+    "runner_preflight_v1",
+  );
+  return promoted;
+}
+
 export function localExactBootstrapReviewCommentBody(
   markdown: string,
   item: Pick<Item, "repo" | "number">,
@@ -770,6 +783,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
                 carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
                 carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
+                carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
                 writeFileSync(reportPath, carried, "utf8");
                 finishReviewActionLedgerItem({
                   ledger: reviewLedger,
@@ -1352,6 +1366,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
           carried = updateReviewStructuralFrontMatter(carried, structuralRecord, false);
           carried = updateReviewSemanticFrontMatter(carried, semanticRecord, true);
+          carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
           writeFileSync(reportPath, carried, "utf8");
           finishReviewActionLedgerItem({
             ledger: reviewLedger,
@@ -1429,6 +1444,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
             : replaceFrontMatterValue(carried, "review_structural_cache_hit", "false");
           carried = updateReviewSemanticFrontMatter(carried, semanticRecord, false);
+          carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
           writeFileSync(reportPath, carried, "utf8");
           finishReviewActionLedgerItem({
             ledger: reviewLedger,

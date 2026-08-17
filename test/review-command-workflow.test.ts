@@ -9,6 +9,7 @@ import { parseArgs } from "../dist/clawsweeper-args.js";
 import {
   createReviewCommandWorkflow,
   localExactBootstrapReviewCommentBody,
+  withRunnerPreflightProvenance,
 } from "../dist/clawsweeper-review-command-workflow.js";
 import {
   isSuppliedReviewStartLease,
@@ -30,6 +31,14 @@ const RESERVED_AT = "2026-08-07T10:05:00Z";
 
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function replaceFrontMatterValue(markdown: string, key: string, value: string): string {
+  const line = `${key}: ${value}`;
+  const pattern = new RegExp(`^${key}:\\s*.*$`, "m");
+  return pattern.test(markdown)
+    ? markdown.replace(pattern, line)
+    : markdown.replace(/^---\n/, `---\n${line}\n`);
 }
 
 function structuralRecord(activityUpdatedAt: string) {
@@ -110,6 +119,15 @@ test("exact local bootstrap rejects a same-number report from another repository
     "",
   );
   assert.equal(renderCalls, 1);
+});
+
+test("cache preflight promotes legacy carried reports to runner-owned provenance", () => {
+  const legacy = "---\nreview_status: complete\nlocal_checkout_access: unverified\n---\nLegacy";
+
+  const promoted = withRunnerPreflightProvenance(legacy, replaceFrontMatterValue);
+
+  assert.match(promoted, /^local_checkout_access: verified$/m);
+  assert.match(promoted, /^local_checkout_access_source: runner_preflight_v1$/m);
 });
 
 test("scheduled delivery serves an unchanged item from the structural cache", () => {
@@ -274,7 +292,7 @@ test("scheduled delivery serves an unchanged item from the structural cache", ()
       throw new Error("scheduled delivery must not post a second lease");
     },
     previousClawSweeperReviewDigestFromReport: () => "same-review",
-    replaceFrontMatterValue: (markdown: string) => markdown,
+    replaceFrontMatterValue,
     repoFromArgs: () => ({ owner: "openclaw", repo: "openclaw" }),
     reportFileName: () => `${ITEM_NUMBER}.md`,
     reportReviewFindings: () => [],
@@ -329,7 +347,11 @@ test("scheduled delivery serves an unchanged item from the structural cache", ()
     assert.equal(structuralFetches, 2);
     assert.equal(cachedCompletions, 1);
     assert.equal(checkoutInspectionCalls, 1);
-    assert.equal(existsSync(join(artifactDir, `${ITEM_NUMBER}.md`)), true);
+    const carriedReportPath = join(artifactDir, `${ITEM_NUMBER}.md`);
+    assert.equal(existsSync(carriedReportPath), true);
+    const carriedReport = readFileSync(carriedReportPath, "utf8");
+    assert.match(carriedReport, /^local_checkout_access: verified$/m);
+    assert.match(carriedReport, /^local_checkout_access_source: runner_preflight_v1$/m);
     const metrics = JSON.parse(
       readFileSync(join(artifactDir, "review-cache-metrics.json"), "utf8"),
     );
