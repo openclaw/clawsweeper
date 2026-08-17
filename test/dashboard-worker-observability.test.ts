@@ -2064,6 +2064,24 @@ test("optional queue status failure retains the last complete public Bay queue s
       source: "queue",
     },
   ]);
+  const emptyActivityStages = Object.fromEntries(
+    Object.keys(priorExactReviewQueue.bay_projection.stages).map((stage) => [stage, 0]),
+  );
+  priorExactReviewQueue.bay_projection.activity = {
+    complete: true,
+    queue_stages: { ...emptyActivityStages, arriving: 1 },
+    live_stages: { ...emptyActivityStages, reviewing: 1 },
+    total: 2,
+    items: [
+      {
+        repository: "openclaw/openclaw",
+        item_number: 125_204,
+        stage: "reviewing",
+        source: "worker",
+      },
+    ],
+  };
+  assert.equal(priorExactReviewQueue.bay_projection.activity.complete, true);
 
   const statusStore = new MemoryKv();
   await statusStore.put(
@@ -2122,7 +2140,12 @@ test("optional queue status failure retains the last complete public Bay queue s
         source: "queue",
       },
     ]);
-    assert.equal(status.exact_review_queue.bay_projection.activity.complete, false);
+    assert.deepEqual(status.exact_review_queue.bay_projection.activity, {
+      complete: false,
+      queue_stages: null,
+      live_stages: null,
+      total: null,
+    });
     assert.equal(status.dashboard_health.conclusion, "needs_attention");
     assert.equal(status.dashboard_health.severity, "amber");
     assert.equal(JSON.stringify(status).includes(rejectionMarker), false);
@@ -2133,6 +2156,10 @@ test("optional queue status failure retains the last complete public Bay queue s
     assert.deepEqual(
       persistedSnapshot.exact_review_queue.bay_projection.items,
       status.exact_review_queue.bay_projection.items,
+    );
+    assert.deepEqual(
+      persistedSnapshot.exact_review_queue.bay_projection.activity,
+      status.exact_review_queue.bay_projection.activity,
     );
     assert.equal(persisted.includes(rejectionMarker), false);
 
@@ -2146,6 +2173,10 @@ test("optional queue status failure retains the last complete public Bay queue s
     assert.deepEqual(
       cachedStatus.exact_review_queue.bay_projection.items,
       status.exact_review_queue.bay_projection.items,
+    );
+    assert.deepEqual(
+      cachedStatus.exact_review_queue.bay_projection.activity,
+      status.exact_review_queue.bay_projection.activity,
     );
     assert.equal(queueReads, 2);
 

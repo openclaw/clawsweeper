@@ -6328,7 +6328,15 @@ async function attachExactReviewQueueStatus(snapshot, env) {
     // The optional queue probe can fail while its direct endpoint and the review
     // pipeline remain healthy. Retain the last internally consistent, public-only
     // queue document rather than caching a null projection that empties the Bay.
-    exactReviewQueue = projectedPriorExactReviewQueue;
+    // Live activity is generation-coupled to the failed probe, so never preserve
+    // a prior complete activity aggregate as current evidence.
+    exactReviewQueue = {
+      ...projectedPriorExactReviewQueue,
+      bay_projection: {
+        ...projectedPriorExactReviewQueue.bay_projection,
+        activity: publicBayActivity(null, allowedRepositories),
+      },
+    };
   } else if (!activeTargets.complete && priorActivity.complete) {
     // A projected cache no longer has correlation keys. Keep its same-generation
     // queue/live aggregate intact instead of combining it with a newer queue census.
