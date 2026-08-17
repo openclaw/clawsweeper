@@ -54,6 +54,19 @@ function reviewStartLeaseCommentUpdatedAt(
   return undefined;
 }
 
+export function withRunnerPreflightProvenance(
+  markdown: string,
+  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string,
+): string {
+  let promoted = replaceFrontMatterValue(markdown, "local_checkout_access", "verified");
+  promoted = replaceFrontMatterValue(
+    promoted,
+    "local_checkout_access_source",
+    "runner_preflight_v1",
+  );
+  return promoted;
+}
+
 export function localExactBootstrapReviewCommentBody(
   markdown: string,
   item: Pick<Item, "repo" | "number">,
@@ -115,6 +128,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     displayDurationMs,
     displayPath,
     enforceExpectedIssueSourceRevision,
+    ensureDir,
     exactLocalReviewNoCandidateError,
     extractClawSweeperReviewCommentBody,
     existingReview,
@@ -135,6 +149,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     localExactReviewHistoryPath,
     localRangeHistoryApplies,
     makeTreeReadOnly,
+    materializePullRequestReviewTree,
     markdownFor,
     postReviewStartStatusComment,
     previousClawSweeperReviewDigestFromReport,
@@ -142,6 +157,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     pullHeadShaFromContext,
     pullRequestHeadSha,
     recordReviewLogPublication,
+    removePullRequestReviewTree,
     refreshRelatedItemsContext,
     replaceFrontMatterValue,
     renderReviewCommentFromReport,
@@ -152,6 +168,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     reviewLeaseStillMatchesContext,
     reviewMutationRunner,
     reviewStructuralPullStateFromContext,
+    runReviewCheckoutInspection,
     runCodex,
     selectCandidates,
     startReviewActionLedger,
@@ -333,8 +350,71 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const semanticCacheRevalidationReasons = new Map<string, number>();
       const codexFailureReports: string[] = [];
       const leaseAcquisitionFailureDetails: string[] = [];
+      const reviewTreeCleanupFailures: string[] = [];
       // oxfmt-ignore
       for (const item of candidates) {
+        const itemReadonlyModeSnapshots: ReturnType<typeof makeTreeReadOnly> = [];
+        let reviewOpenclawDir = openclawDir;
+        let pullRequestReviewTreeDir: string | null = null;
+        let pullRequestReviewTreeSha: string | null = null;
+        let pullRequestReviewTreeFailure: Error | null = null;
+        let cachePreflightState: "not_run" | "passed" | "failed" = "not_run";
+        const preparePullRequestReviewTree = (headSha: string): boolean => {
+          if (item.kind !== "pull_request") return true;
+          if (pullRequestReviewTreeDir && pullRequestReviewTreeSha === headSha) return true;
+          if (pullRequestReviewTreeDir) {
+            restoreTreeModes(itemReadonlyModeSnapshots);
+            itemReadonlyModeSnapshots.length = 0;
+            if (
+              !removePullRequestReviewTree({
+                targetDir: openclawDir,
+                worktreeDir: pullRequestReviewTreeDir,
+              })
+            ) {
+              return false;
+            }
+          }
+          const reviewTreesDir = join(artifactDir, "review-trees");
+          ensureDir(reviewTreesDir);
+          pullRequestReviewTreeDir = join(reviewTreesDir, String(item.number));
+          pullRequestReviewTreeSha = null;
+          reviewOpenclawDir = openclawDir;
+          if (
+            !materializePullRequestReviewTree({
+              targetDir: openclawDir,
+              worktreeDir: pullRequestReviewTreeDir,
+              itemNumber: item.number,
+              headSha,
+            })
+          ) {
+            return false;
+          }
+          pullRequestReviewTreeSha = headSha;
+          reviewOpenclawDir = pullRequestReviewTreeDir;
+          if (readonlyOpenclaw) {
+            makeTreeReadOnly(reviewOpenclawDir, itemReadonlyModeSnapshots);
+          }
+          return true;
+        };
+        const cachePreflightPasses = (headSha: string | null): boolean => {
+          if (cachePreflightState !== "not_run") return cachePreflightState === "passed";
+          if (item.kind === "pull_request" && (!headSha || !preparePullRequestReviewTree(headSha))) {
+            cachePreflightState = "failed";
+          } else {
+            const inspection = runReviewCheckoutInspection({
+              itemNumber: item.number,
+              openclawDir: reviewOpenclawDir,
+              preserveCodexAuth: localOnly,
+              timeoutMs,
+            });
+            cachePreflightState =
+              !inspection.error && inspection.status === 0 ? "passed" : "failed";
+          }
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} cache-checkout-preflight=${cachePreflightState} #${item.number}`,
+          );
+          return cachePreflightState === "passed";
+        };
         const restoredMaintainerAssociation =
           !localOnly &&
           restoreVerifiedMaintainerPullRequestAuthorAssociation(item, (author) =>
@@ -678,6 +758,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 const confirmedStructuralRecord = revalidatedStructuralRecord!;
                 structuralRecord = confirmedStructuralRecord;
                 item.updatedAt = confirmedStructuralRecord.activityUpdatedAt;
+                if (
+                  !cachePreflightPasses(
+                    item.kind === "pull_request" ? confirmedStructuralRecord.pullHeadSha : null,
+                  )
+                ) {
+                  console.error(
+                    `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=checkout-preflight-miss hydrate #${item.number}`,
+                  );
+                } else {
                 const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
                 let carried = priorReview!.markdown;
                 carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
@@ -695,6 +784,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
                 carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
                 carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
+                carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
                 writeFileSync(reportPath, carried, "utf8");
                 finishReviewActionLedgerItem({
                   ledger: reviewLedger,
@@ -732,11 +822,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                   );
                 }
                 continue;
+                }
               }
             }
           }
         }
-        if (!skipStartComment && item.kind === "pull_request") {
+        if (!skipStartComment && !acquiredReviewLease && item.kind === "pull_request") {
           try {
             const startComment = postReviewStartStatusComment({
               item,
@@ -789,6 +880,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 : null,
               prCommentActivityRevision: prCommentActivityRevisions.get(item.number) ?? null,
             });
+        if (!localRangeData && item.kind === "pull_request") {
+          const headSha = pullHeadShaFromContext(context);
+          if (!headSha || !preparePullRequestReviewTree(headSha)) {
+            pullRequestReviewTreeFailure = new Error(
+              `Read-only checkout inspection failed: pull request #${item.number} head ${headSha ?? "unknown"} was unavailable in the restricted review checkout`,
+            );
+            cachePreflightState = "failed";
+          }
+        }
         if (previousLocalReviewCommentBody) {
           const previousLocalReview = extractClawSweeperReviewCommentBody(
             previousLocalReviewCommentBody,
@@ -1089,6 +1189,14 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             (semanticCacheReasons.get(semanticDecision.reason) ?? 0) + 1,
           );
         }
+        if (
+          semanticDecision?.hit &&
+          !cachePreflightPasses(
+            item.kind === "pull_request" ? pullHeadShaFromContext(context) : null,
+          )
+        ) {
+          semanticDecision = null;
+        }
         if (semanticDecision?.hit) {
           semanticCacheRevalidations += 1;
           const initialSemanticRecord = semanticRecord;
@@ -1260,6 +1368,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
           carried = updateReviewStructuralFrontMatter(carried, structuralRecord, false);
           carried = updateReviewSemanticFrontMatter(carried, semanticRecord, true);
+          carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
           writeFileSync(reportPath, carried, "utf8");
           finishReviewActionLedgerItem({
             ledger: reviewLedger,
@@ -1297,15 +1406,19 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           (item.kind === "pull_request" && !completePullChecksContext(context.pullChecks))
             ? null
             : priorReview;
-        if (
-          reviewContentCacheHit({
+        const contentCacheHit = reviewContentCacheHit({
             review: contentCacheReview,
             reviewPolicy,
             contentDigest,
             now: Date.now(),
             explicitDispatch,
             maintainerRequest,
-          })
+          });
+        if (
+          contentCacheHit &&
+          cachePreflightPasses(
+            item.kind === "pull_request" ? pullHeadShaFromContext(context) : null,
+          )
         ) {
           structuralRecord = refreshStructuralRecordForVerdict();
           const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
@@ -1333,6 +1446,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
             : replaceFrontMatterValue(carried, "review_structural_cache_hit", "false");
           carried = updateReviewSemanticFrontMatter(carried, semanticRecord, false);
+          carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
           writeFileSync(reportPath, carried, "utf8");
           finishReviewActionLedgerItem({
             ledger: reviewLedger,
@@ -1387,6 +1501,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           null;
         const codexStartedAt = Date.now();
         try {
+          if (pullRequestReviewTreeFailure) throw pullRequestReviewTreeFailure;
           if (humanLocalReview) {
             console.error("");
             console.error("Running Codex review");
@@ -1403,7 +1518,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             context,
             git,
             model,
-            openclawDir,
+            openclawDir: reviewOpenclawDir,
             reasoningEffort,
             sandboxMode,
             serviceTier,
@@ -1449,7 +1564,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           context,
           existingPriorReview?.markdown,
         );
-        decision = verifyRegressionProvenance(decision, item, context, openclawDir, git);
+        decision = verifyRegressionProvenance(decision, item, context, reviewOpenclawDir, git);
         const runtime = {
           model: PUBLIC_CODEX_MODEL,
           reasoningEffort,
@@ -1558,7 +1673,25 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               activeReviewItem = null;
             }
           } finally {
-            dependencies.activeReviewMutationRunner = previousReviewMutationRunner;
+            try {
+              dependencies.activeReviewMutationRunner = previousReviewMutationRunner;
+            } finally {
+              restoreTreeModes(itemReadonlyModeSnapshots);
+              if (
+                pullRequestReviewTreeDir &&
+                !removePullRequestReviewTree({
+                  targetDir: openclawDir,
+                  worktreeDir: pullRequestReviewTreeDir,
+                })
+              ) {
+                const detail = [
+                  "could not remove restricted review checkout",
+                  pullRequestReviewTreeDir,
+                ].join(" ");
+                reviewTreeCleanupFailures.push(detail);
+                console.error(`[review] ${new Date().toISOString()} ${detail}`);
+              }
+            }
           }
         }
       }
@@ -1634,6 +1767,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             leaseAcquisitionFailures === 1 ? "" : "s"
           }; the workflow recovery lane can requeue the planned set. ${leaseAcquisitionFailureDetails.join("; ")}`,
         );
+      }
+      if (reviewTreeCleanupFailures.length > 0) {
+        throw new Error(reviewTreeCleanupFailures.join("; "));
       }
       if (codexFailures > 0) {
         for (const reportPath of codexFailureReports) {

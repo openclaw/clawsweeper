@@ -27,6 +27,11 @@ import {
   type LiveReadGeneration,
   type LiveReadOptions,
 } from "./live-read-generation.js";
+import {
+  githubReadModelItemObject,
+  githubReadModelRequestSync,
+  usableGithubReadModelResponse,
+} from "./github-webhook-read-model-client.js";
 
 export {
   PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
@@ -43,6 +48,7 @@ export interface PlannedPrActivityRevisions {
 export function createReviewPlanningInventory(dependencies: ReviewPlanningDependencies) {
   const { targetRepo, ghJson, ghJsonLines, normalizeAuthorAssociation, indexedExistingReview } =
     dependencies;
+  const readModelRequest = dependencies.githubReadModelRequestSync ?? githubReadModelRequestSync;
 
   function isFresh(
     review: { reviewedAt: string | undefined; reviewStatus: string | undefined } | null,
@@ -198,9 +204,44 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
           state?: string;
         }
       >(args);
-    const issue = options.liveReadGeneration
-      ? options.liveReadGeneration.read(generationReadKey("json", args), readIssue, options)
-      : readIssue();
+    const issue = (() => {
+      if (options.liveReadGeneration) {
+        return options.liveReadGeneration.read(generationReadKey("json", args), readIssue, options);
+      }
+      if (!options.bypassGenerationCache) {
+        const snapshot = readModelRequest("item", {
+          repository: targetRepo(),
+          number,
+        });
+        if (
+          usableGithubReadModelResponse(snapshot, "review_planning_item", "issues_or_pull_requests")
+        ) {
+          const value = snapshot.item;
+          if (value && typeof value === "object" && !Array.isArray(value)) {
+            return value as GitHubIssueListItem & {
+              active_lock_reason?: string | null;
+              locked?: boolean;
+              state?: string;
+            };
+          }
+        }
+      }
+      const live = readIssue();
+      if (!options.bypassGenerationCache) {
+        const object = githubReadModelItemObject(
+          targetRepo(),
+          live as unknown as Record<string, unknown>,
+        );
+        if (object) {
+          readModelRequest("repair", {
+            repository: targetRepo(),
+            repair_kind: "items",
+            objects: [object],
+          });
+        }
+      }
+      return live;
+    })();
     const labels = (issue.labels ?? []).flatMap((label: unknown) => {
       if (typeof label === "string") return [label];
       if (!label || typeof label !== "object" || Array.isArray(label)) return [];

@@ -331,6 +331,7 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
         ...(item.errorFingerprint ? { error_fingerprint: item.errorFingerprint } : {}),
         ...(item.retryAt ? { retry_at: item.retryAt } : {}),
         ...(item.attempted !== undefined ? { attempted: item.attempted } : {}),
+        ...(item.poolClass ? { pool_class: item.poolClass } : {}),
       })),
       ...(input.stateCommitSha ? { state_commit_sha: input.stateCommitSha } : {}),
       ...(input.failureFingerprint ? { failure_fingerprint: input.failureFingerprint } : {}),

@@ -211,21 +211,24 @@ test("public per-item review read contract returns a stable empty envelope", asy
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
     ok: true,
-    repo: "openclaw/openclaw",
-    item_number: 674,
+    collection: { state: "complete", scope: "aggregate_only" },
     reviews: [],
   });
 });
 
-test("public per-item review read contract rejects invalid queries", async () => {
+test("public per-item review read contract ignores identifying queries", async () => {
   const response = await worker.fetch(
     new Request(
       "https://clawsweeper.openclaw.ai/api/exact-review-queue/reviews?repo=openclaw&item_number=0&limit=101",
     ),
     {},
   );
-  assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { error: "invalid_review_telemetry_query" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    collection: { state: "complete", scope: "aggregate_only" },
+    reviews: [],
+  });
 });
 
 test("review observer write is signed while aggregate telemetry remains read-only", async () => {
@@ -268,8 +271,11 @@ test("review observer write is signed while aggregate telemetry remains read-onl
     env,
   );
   assert.equal(accepted.status, 200);
+  const publicQueryMarker = ["synthetic", "review", "filter"].join("_");
   const aggregate = await worker.fetch(
-    new Request("https://clawsweeper.openclaw.ai/api/review-observability?range=24h&repo=all"),
+    new Request(
+      `https://clawsweeper.openclaw.ai/api/review-observability?range=24h&repo=${publicQueryMarker}`,
+    ),
     env,
   );
   assert.equal(aggregate.status, 200);
@@ -279,4 +285,6 @@ test("review observer write is signed while aggregate telemetry remains read-onl
   };
   assert.equal(body.mode, "passive");
   assert.equal(body.sources.find((source) => source.lane === "normal_backfill")?.run_count, 1);
+  assert.equal(JSON.stringify(body).includes(publicQueryMarker), false);
+  assert.equal(Object.hasOwn(body, "repo"), false);
 });

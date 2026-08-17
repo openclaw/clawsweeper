@@ -571,6 +571,117 @@ test("review prompt classifies Telegram visible proof candidates", () => {
   assert.doesNotMatch(prompt, /`slack_desktop_smoke`/);
 });
 
+test("review prompt and schema classify deterministic live-proof plans in field order", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+  const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
+  const liveProofPlan = schema.properties.liveProofPlan;
+
+  assert.ok(
+    prompt.indexOf("For PRs, always fill `telegramVisibleProof`") <
+      prompt.indexOf("For PRs, always fill `liveProofPlan`"),
+  );
+  assert.match(prompt, /recording of at most 90 seconds/);
+  assert.match(prompt, /pure refactors, CI\/config changes, docs, tests/);
+  assert.match(prompt, /without\s+external accounts, credentials, or third-party services/);
+  assert.match(prompt, /reads environment variables or credential\s+stores/);
+  assert.match(prompt, /exfiltrate or display sensitive data on screen/);
+  assert.match(prompt, /`liveProofPlan\.status: "declined_suspicious"`/);
+  assert.match(prompt, /never\s+execute the PR or claim that a recording exists/);
+
+  assert.deepEqual(liveProofPlan.required, ["status", "surface", "reason", "entry", "steps"]);
+  assert.deepEqual(Object.keys(liveProofPlan.properties), [
+    "status",
+    "surface",
+    "reason",
+    "entry",
+    "steps",
+  ]);
+  assert.deepEqual(liveProofPlan.properties.status.enum, [
+    "recommended",
+    "not_applicable",
+    "declined_suspicious",
+  ]);
+  assert.deepEqual(liveProofPlan.properties.surface.enum, ["browser", "terminal", "none"]);
+  assert.equal(liveProofPlan.properties.steps.maxItems, 10);
+  const requiredOrder = schema.required;
+  const liveProofIndex = requiredOrder.indexOf("liveProofPlan");
+  assert.equal(requiredOrder[liveProofIndex - 1], "telegramVisibleProof");
+  assert.equal(requiredOrder[liveProofIndex + 1], "mantisRecommendation");
+});
+
+test("pull request comments render live proof only after a recording is attached", () => {
+  const planOnly = `${reportFrontMatter({
+    type: "pull_request",
+    number: "83150",
+    decision: "keep_open",
+    close_reason: "none",
+    work_candidate: "none",
+    pull_head_sha: "abc123def456",
+  })}
+
+## Summary
+
+Keep this browser PR open for maintainer review.
+
+## Live Proof
+
+Status: recommended
+
+Surface: browser
+
+Reason: The settings confirmation is visible in the browser.
+
+Entry: /settings
+
+Steps:
+
+- {"action":"goto","path":"/settings"}
+- {"action":"expect_text","text":"Saved"}
+
+## Work Candidate
+
+Candidate: none
+
+Confidence: low
+
+Priority: low
+
+Status: none
+`;
+  const planOnlyComment = renderReviewCommentFromReport(planOnly, "none");
+  assert.doesNotMatch(planOnlyComment, /### Live Proof/);
+  assert.doesNotMatch(planOnlyComment, /Live proof recording/);
+
+  const recordingBlock = [
+    "<!-- clawsweeper-live-proof-recording -->",
+    "",
+    "[![Live proof recording](https://artifacts.example.test/proof.jpg)](https://artifacts.example.test/proof.mp4)",
+    "",
+    "*Recorded live on the PR head (`abc123def456`), 47s, browser surface.*",
+  ].join("\n");
+  const attachedComment = renderReviewCommentFromReport(
+    planOnly.replace("\n## Work Candidate", `\n${recordingBlock}\n\n## Work Candidate`),
+    "none",
+  );
+  assert.match(
+    attachedComment,
+    /### Live Proof\n\n\[!\[Live proof recording\]\(https:\/\/artifacts\.example\.test\/proof\.jpg\)\]\(https:\/\/artifacts\.example\.test\/proof\.mp4\)/,
+  );
+  assert.match(
+    attachedComment,
+    /\*Recorded live on the PR head \(`abc123def456`\), 47s, browser surface\.\*/,
+  );
+
+  const untrustedComment = renderReviewCommentFromReport(
+    planOnly.replace(
+      "\n## Work Candidate",
+      `\n${recordingBlock.replaceAll("https://", "http://")}\n\n## Work Candidate`,
+    ),
+    "none",
+  );
+  assert.doesNotMatch(untrustedComment, /### Live Proof/);
+});
+
 test("pull request review comments suggest copy-paste Mantis proof comments", () => {
   const comment = renderReviewCommentFromReport(
     `${reportFrontMatter({

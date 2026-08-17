@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   containsDirectGitHubApiUrl,
+  isCanonicalLegacyBayRedirect,
   waitForDashboardDeployment,
 } from "../scripts/dashboard-smoke.mjs";
 
@@ -46,6 +47,28 @@ test("dashboard smoke requires Bay's public indexability and overview navigation
   assert.match(source, /public: true/);
   assert.match(source, /indexable: true/);
   assert.doesNotMatch(source, /unlisted: true/);
+});
+
+test("dashboard smoke requires the legacy Bay redirect to strip query data", () => {
+  const baseUrl = "https://clawsweeper.example";
+
+  assert.equal(
+    isCanonicalLegacyBayRedirect(
+      new Response(null, { status: 308, headers: { location: `${baseUrl}/bay` } }),
+      baseUrl,
+    ),
+    true,
+  );
+  assert.equal(
+    isCanonicalLegacyBayRedirect(
+      new Response(null, {
+        status: 308,
+        headers: { location: `${baseUrl}/bay?repo=public%2Frepository&q=proof` },
+      }),
+      baseUrl,
+    ),
+    false,
+  );
 });
 
 test("dashboard smoke waits for the exact deployed revision", async () => {

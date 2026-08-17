@@ -441,7 +441,14 @@ async function complete() {
       const circuit = latestRateLimitObservation();
       completions.push(
         circuit
-          ? retryableCompletion(current, "github_rate_limit", undefined, circuit.retryAt, false)
+          ? retryableCompletion(
+              current,
+              "github_rate_limit",
+              undefined,
+              circuit.retryAt,
+              false,
+              circuit.scope,
+            )
           : retryableCompletion(current, "unknown_failure"),
       );
       continue;
@@ -523,7 +530,14 @@ async function release() {
     }
     const circuit = latestRateLimitObservation();
     return circuit
-      ? retryableCompletion(member, "github_rate_limit", undefined, circuit.retryAt, false)
+      ? retryableCompletion(
+          member,
+          "github_rate_limit",
+          undefined,
+          circuit.retryAt,
+          false,
+          circuit.scope,
+        )
       : retryableCompletion(member, "workflow_cancelled");
   });
   const result = await acknowledge(
@@ -639,6 +653,10 @@ function failureCompletion(
       ? new Date(Date.parse(outcome.retryAt)).toISOString()
       : undefined;
   const attempted = outcome.attempted === false ? false : undefined;
+  const poolClass =
+    outcome.rateLimitScope === "repository_actions" || outcome.rateLimitScope === "target_app"
+      ? outcome.rateLimitScope
+      : undefined;
   return {
     ...member,
     terminalOutcome,
@@ -646,6 +664,7 @@ function failureCompletion(
     ...(errorFingerprint ? { errorFingerprint } : {}),
     ...(retryAt ? { retryAt } : {}),
     ...(attempted !== undefined ? { attempted } : {}),
+    ...(poolClass ? { poolClass } : {}),
   };
 }
 
@@ -655,6 +674,7 @@ function retryableCompletion(
   errorFingerprint?: string,
   retryAt?: string,
   attempted?: boolean,
+  poolClass?: ExactReviewBatchCompletion["poolClass"],
 ): ExactReviewBatchCompletion {
   return {
     ...member,
@@ -663,6 +683,7 @@ function retryableCompletion(
     ...(errorFingerprint ? { errorFingerprint } : {}),
     ...(retryAt ? { retryAt } : {}),
     ...(attempted !== undefined ? { attempted } : {}),
+    ...(poolClass ? { poolClass } : {}),
   };
 }
 

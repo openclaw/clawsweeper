@@ -67,6 +67,7 @@ export function createReportCommentPresentation(
     reportAgentsPolicyStatus,
     reportEvidence,
     reportLikelyOwners,
+    reportLiveProofRecordingBlock,
     reportMantisRecommendation,
     reportOverallConfidenceScore,
     reportOverallCorrectness,
@@ -111,6 +112,7 @@ export function createReportCommentPresentation(
     const securityReview = reportSecurityReview(markdown);
     const realBehaviorProof = reportRealBehaviorProof(markdown);
     const prRating = reportPrRating(markdown);
+    const liveProofRecordingBlock = reportLiveProofRecordingBlock(markdown);
     const mantisRecommendation = reportMantisRecommendation(markdown);
     const agentsPolicyStatus = reportAgentsPolicyStatus(markdown);
     const rootCauseCluster = reportRootCauseCluster(markdown);
@@ -355,6 +357,9 @@ export function createReportCommentPresentation(
             securityReview,
           ),
         );
+      }
+      if (liveProofRecordingBlock) {
+        lines.push("", "### Live Proof", "", liveProofRecordingBlock);
       }
       if (systemContext && architectureDiagram) {
         appendHeadingSection(

@@ -3,12 +3,14 @@ import {
   normalizePrRating,
   normalizeRealBehaviorProof,
 } from "./clawsweeper-rating.js";
+import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import {
   AGENTS_POLICY_STATUSES,
   AUTO_IMPLEMENTATION_CANDIDATES,
   FEATURE_SHOWCASE_STATUSES,
   IMPLEMENTATION_COMPLEXITIES,
   IMPACT_LABEL_NAMES,
+  LIVE_PROOF_RECORDING_MARKER,
   MANTIS_RECOMMENDATION_SCENARIOS,
   MANTIS_RECOMMENDATION_STATUSES,
   MATURITY_LABEL_NAMES,
@@ -59,6 +61,7 @@ import type {
   SecurityReviewStatus,
   TelegramVisibleProof,
   TelegramVisibleProofStatus,
+  LiveProofPlan,
   TriagePriority,
   VisionFitStatus,
 } from "./clawsweeper-types.js";
@@ -106,6 +109,106 @@ interface ReportParsingDependencies {
     >,
   ) => string[];
   splitFileAndLine: (file: string) => { file: string; line?: number };
+}
+
+const LIVE_PROOF_SECTION_HEADING = REVIEW_SECTIONS.liveProof;
+const LIVE_PROOF_OWNED_HEADINGS = new Set(
+  Object.values(REVIEW_SECTIONS).map((heading) => heading.toLowerCase()),
+);
+const parseRecordedLiveProofPlan = createDecisionParser({
+  isMaintainerAuthorAssociation: () => false,
+  neutralizeOwnedSectionSpoofing: neutralizeLiveProofText,
+  sanitizeArchitectureDiagram: (value) => value,
+}).parseLiveProofPlan;
+
+export function reportLiveProofPlan(markdown: string): LiveProofPlan {
+  const section = reportSectionValue(markdown, LIVE_PROOF_SECTION_HEADING);
+  const rawSteps = reportSectionList(section, "Steps");
+  try {
+    return parseRecordedLiveProofPlan(
+      {
+        status: reportSectionLineValue(section, "Status"),
+        surface: reportSectionLineValue(section, "Surface"),
+        reason: reportSectionLineValue(section, "Reason"),
+        entry: reportSectionLineValue(section, "Entry") ?? "",
+        steps: rawSteps.map((step) => JSON.parse(step) as unknown),
+      },
+      "report.liveProofPlan",
+    );
+  } catch {
+    return {
+      status: "not_applicable",
+      surface: "none",
+      reason: "No live-proof plan was recorded in this report.",
+      entry: "",
+      steps: [],
+    };
+  }
+}
+
+function reportSectionValue(markdown: string, heading: string): string {
+  const match = markdown.match(
+    new RegExp(`(?:^|\\n)## ${heading}\\n\\n([\\s\\S]*?)(?=\\n## |\\n?$)`),
+  );
+  return match?.[1]?.trim() ?? "";
+}
+
+function reportSectionLineValue(section: string, label: string): string | undefined {
+  const prefix = `${label}:`;
+  for (const line of section.split("\n")) {
+    if (!line.startsWith(prefix)) continue;
+    const value = line.slice(prefix.length).trim();
+    return value || undefined;
+  }
+  return undefined;
+}
+
+function reportSectionList(section: string, label: string): string[] {
+  const lines = section.split("\n");
+  const start = lines.findIndex((line) => line.trim() === `${label}:`);
+  if (start === -1) return [];
+  const values: string[] = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (/^[A-Z][A-Za-z -]+:/.test(line)) break;
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith("- ")) continue;
+    const item = trimmed.slice(2).trim();
+    if (item) values.push(item);
+  }
+  return values;
+}
+
+function neutralizeLiveProofText(value: string): string {
+  return value
+    .replace(/\r\n?|[\u2028\u2029]/g, "\n")
+    .split("\n")
+    .map((line) => {
+      const containerPrefix =
+        line.match(/^[ \t]*(?:(?:>|(?:[-*+]|\d+[.)])[ \t])[ \t]*)*/)?.[0] ?? "";
+      const content = line.slice(containerPrefix.length).replace(/<(?!br\s*\/?>)/gi, "&lt;");
+      const trimmed = content.trim();
+      if (/^#{1,6}\s+\S/.test(trimmed)) {
+        return `${containerPrefix}${content.replace("#", "\\#")}`;
+      }
+      if (/^\*\*[^*\n]+\*\*:?\s*$/.test(trimmed)) {
+        return `${containerPrefix}${content.replace("**", "\\*\\*")}`;
+      }
+      if (/^(?:```|~~~)/.test(trimmed)) {
+        return `${containerPrefix}${content.replace(/[`~]/, "\\$&")}`;
+      }
+      if (/^(?:=+|-+)[ \t]*$/.test(trimmed)) {
+        return `${containerPrefix}${content.replace(/[=-]/, "\\$&")}`;
+      }
+      if (
+        trimmed.endsWith(":") &&
+        LIVE_PROOF_OWNED_HEADINGS.has(trimmed.slice(0, -1).trim().toLowerCase())
+      ) {
+        return `${containerPrefix}${content.trimEnd().slice(0, -1)}&#58;`;
+      }
+      return `${containerPrefix}${content}`;
+    })
+    .join("\n");
 }
 
 export function createReportParser({
@@ -522,6 +625,33 @@ export function createReportParser({
     };
   }
 
+  function reportLiveProofRecordingBlock(markdown: string): string {
+    const section = reviewSectionValue(markdown, "liveProof");
+    const markerIndex = section.lastIndexOf(LIVE_PROOF_RECORDING_MARKER);
+    if (markerIndex < 0) return "";
+    const lines = section
+      .slice(markerIndex + LIVE_PROOF_RECORDING_MARKER.length)
+      .trim()
+      .split("\n")
+      .map((line) => line.trimEnd());
+    if (lines.length !== 3 || lines[1] !== "") return "";
+    if (
+      !/^\[!\[Live proof recording\]\(https:\/\/[^)\s]+\)\]\(https:\/\/[^)\s]+\)$/.test(
+        lines[0] ?? "",
+      )
+    ) {
+      return "";
+    }
+    if (
+      !/^\*Recorded live on the PR head \(`(?:[0-9a-f]{7,40})`\), (?:0|[1-9][0-9]*)(?:\.[0-9]+)?s, (?:browser|terminal) surface\.\*$/.test(
+        lines[2] ?? "",
+      )
+    ) {
+      return "";
+    }
+    return lines.join("\n");
+  }
+
   function reportPrRating(markdown: string): PrRating {
     const section = reviewSectionValue(markdown, "prRating");
     const proof = reportRealBehaviorProof(markdown);
@@ -738,6 +868,8 @@ export function createReportParser({
     reportSecurityReview,
     reportRealBehaviorProof,
     reportTelegramVisibleProof,
+    reportLiveProofPlan,
+    reportLiveProofRecordingBlock,
     reportPrRating,
     reportMantisRecommendation,
     reportFeatureShowcase,

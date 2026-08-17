@@ -12,6 +12,12 @@ import {
   REVIEW_RECOVERY_STUCK_LABEL,
   runReviewRecoveryLabelBackfill,
 } from "./review-recovery-label-backfill.js";
+import {
+  githubReadModelCommentObject,
+  githubReadModelItemObject,
+  githubReadModelRequest,
+  usableGithubReadModelResponse,
+} from "./github-webhook-read-model-client.js";
 
 export const REVIEW_PLACEHOLDER_MARKER = "ClawSweeper status: review started.";
 export const DEFAULT_REVIEW_PLACEHOLDER_MAX_CHECKS = 20;
@@ -437,10 +443,68 @@ export async function runReviewPlaceholderRecovery(
   };
   const fetchPlaceholderComment = async (
     number: number,
-  ): Promise<ReviewPlaceholderComment | null> =>
-    selectReviewPlaceholderComment(number, (await fetchReviewComments(number, true)).comments);
+  ): Promise<ReviewPlaceholderComment | null> => {
+    const cached = readModelComments.get(number);
+    if (cached) return selectReviewPlaceholderComment(number, cached);
+    const fetched = await fetchReviewComments(number, true);
+    repairObjects.push(
+      ...fetched.comments.flatMap((comment) => {
+        const object = githubReadModelCommentObject(
+          repo,
+          number,
+          comment as Record<string, unknown>,
+        );
+        return object ? [object] : [];
+      }),
+    );
+    return selectReviewPlaceholderComment(number, fetched.comments);
+  };
 
   const candidates = new Map<number, { candidate: ReviewPlaceholderCandidate; closed: boolean }>();
+  const readModelComments = new Map<number, ReviewPlaceholderComment[]>();
+  const repairObjects: Record<string, unknown>[] = [];
+  let readModelUsable = true;
+  for (const state of ["open", "closed"] as const) {
+    const snapshot = await githubReadModelRequest(
+      "placeholders",
+      { repository: repo, state, limit: maximumChecks },
+      {
+        env: {
+          QUEUE_URL: queueUrl,
+          CLAWSWEEPER_WEBHOOK_SECRET: webhookSecret,
+        },
+        fetchImpl,
+      },
+    );
+    if (
+      !usableGithubReadModelResponse(snapshot, "review_placeholder_discovery", "issue_comments")
+    ) {
+      readModelUsable = false;
+      continue;
+    }
+    for (const value of Array.isArray(snapshot.candidates) ? snapshot.candidates : []) {
+      const entry = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      const number = Number((entry as Record<string, unknown>).number);
+      const itemValue = (entry as Record<string, unknown>).item;
+      const item =
+        itemValue && typeof itemValue === "object" && !Array.isArray(itemValue)
+          ? (itemValue as ReviewPlaceholderCandidate)
+          : null;
+      if (!Number.isSafeInteger(number) || number <= 0 || !item) continue;
+      const commentsValue = (entry as Record<string, unknown>).comments;
+      const comments = Array.isArray(commentsValue)
+        ? (commentsValue as ReviewPlaceholderComment[])
+        : [];
+      candidates.set(number, { candidate: item, closed: state === "closed" });
+      readModelComments.set(number, comments);
+      matched += 1;
+    }
+  }
+  if (!readModelUsable) {
+    candidates.clear();
+    readModelComments.clear();
+    matched = 0;
+  }
   const updatedSince = new Date(now.getTime() - lookbackHours * 60 * 60 * 1_000).toISOString();
   const cursors = new Map<
     ReviewPlaceholderState,
@@ -563,14 +627,19 @@ export async function runReviewPlaceholderRecovery(
     }
     cursorUpdates.set(state, reachedEnd || nextCursor >= SEARCH_RESULT_LIMIT ? 0 : nextCursor);
   };
-  for (const state of ["open", "closed"] as const) {
-    try {
-      await searchCandidates(state);
-    } catch (error) {
-      errors += 1;
-      console.warn(
-        `review-placeholder discovery (is:${state}) skipped: ${error instanceof Error ? error.message : String(error)}`,
-      );
+  let liveDiscoveryComplete = !readModelUsable;
+  if (!readModelUsable) {
+    liveDiscoveryComplete = true;
+    for (const state of ["open", "closed"] as const) {
+      try {
+        await searchCandidates(state);
+      } catch (error) {
+        liveDiscoveryComplete = false;
+        errors += 1;
+        console.warn(
+          `review-placeholder discovery (is:${state}) skipped: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 
@@ -678,6 +747,29 @@ export async function runReviewPlaceholderRecovery(
         }`,
       );
     }
+  }
+  if (!readModelUsable && liveDiscoveryComplete) {
+    for (const [number, { candidate }] of candidates) {
+      const object = githubReadModelItemObject(repo, candidate as Record<string, unknown>);
+      if (object) repairObjects.push(object);
+      if (!readModelComments.has(number)) continue;
+      for (const comment of readModelComments.get(number) ?? []) {
+        const commentObject = githubReadModelCommentObject(
+          repo,
+          number,
+          comment as Record<string, unknown>,
+        );
+        if (commentObject) repairObjects.push(commentObject);
+      }
+    }
+    await githubReadModelRequest(
+      "repair",
+      { repository: repo, repair_kind: "placeholders", objects: repairObjects },
+      {
+        env: { QUEUE_URL: queueUrl, CLAWSWEEPER_WEBHOOK_SECRET: webhookSecret },
+        fetchImpl,
+      },
+    );
   }
   if (cursorStoreUrl) {
     for (const state of ["open", "closed"] as const) {

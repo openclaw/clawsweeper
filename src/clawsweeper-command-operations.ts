@@ -592,16 +592,14 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
           runtimeBudget.onYield(error.reason);
           return;
         }
-        if (
-          error instanceof GitHubRateLimitError &&
-          boolArg(args.sync_comments_only) &&
-          runtimeBudget.onYield
-        ) {
-          // Comment sync is idempotent and re-runs on the next 15-minute tick,
-          // so an exhausted GitHub quota defers the remaining batch like a
-          // runtime-budget yield instead of recording a workflow failure.
+        if (error instanceof GitHubRateLimitError && runtimeBudget.onYield) {
+          // Quota exhaustion is the same "out of resource, resume next cycle"
+          // situation as a runtime-budget stop: closes are per-item verified
+          // and checkpointed, comment sync is idempotent, and the cursor trace
+          // returns the interrupted item to the next scheduled window. Failing
+          // loudly here only discarded the rest of the scan window.
           runtimeBudget.onYield(
-            `GitHub rate limited until ${error.retryAt}; comment sync deferred to the next cycle`,
+            `GitHub rate limited until ${error.retryAt}; credential scope ${error.scope}; reset source ${error.provenance}; apply resumes next cycle`,
           );
           return;
         }

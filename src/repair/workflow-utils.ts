@@ -1411,6 +1411,7 @@ function selectedProposedItemCandidates(
             type === "pull_request" &&
             frontMatterValue(markdown, "review_status") === "complete" &&
             frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+            frontMatterValue(markdown, "local_checkout_access_source") === "runner_preflight_v1" &&
             hasPullRequestClosePromotionSignal(markdown, options.targetRepo, {
               staleMinAgeMs: options.staleMinAgeDays * 24 * 60 * 60 * 1000,
             }) &&
@@ -2325,7 +2326,8 @@ function commentSyncCandidates(
         actionTaken === "skipped_close_exempt_label" ||
         actionTaken === "skipped_invalid_decision";
       const verifiedLocalCheckout =
-        frontMatterValue(markdown, "local_checkout_access") === "verified";
+        frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+        frontMatterValue(markdown, "local_checkout_access_source") === "runner_preflight_v1";
       const storedReviewCommentId = frontMatterValue(markdown, "review_comment_id");
       const storedReviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
       const hasStoredReviewComment =

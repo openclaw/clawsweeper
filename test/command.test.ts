@@ -955,7 +955,6 @@ test("local exact review explains when GitHub item is not open", () => {
     execFileSync("git", ["branch", "-M", "main"], { cwd: targetDir });
     execFileSync("git", ["remote", "add", "origin", origin], { cwd: targetDir });
     execFileSync("git", ["push", "origin", "main"], { cwd: targetDir, stdio: "ignore" });
-
     mkdirSync(binDir);
     const ghPath = join(binDir, "gh.js");
     writeFileSync(
@@ -1037,6 +1036,7 @@ test("local exact review selects PATH Codex instead of the Desktop app binary", 
   const binDir = join(root, "bin");
   const localAppData = join(root, "local-app-data");
   const codexMarker = join(root, "path-codex-ran.txt");
+  const missingHeadArtifactDir = join(root, "missing-head-artifacts");
   try {
     execFileSync("git", ["init", "--bare", origin], { stdio: "ignore" });
     execFileSync("git", ["init", targetDir], { stdio: "ignore" });
@@ -1048,6 +1048,10 @@ test("local exact review selects PATH Codex instead of the Desktop app binary", 
     execFileSync("git", ["branch", "-M", "main"], { cwd: targetDir });
     execFileSync("git", ["remote", "add", "origin", origin], { cwd: targetDir });
     execFileSync("git", ["push", "origin", "main"], { cwd: targetDir, stdio: "ignore" });
+    const reviewHeadSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: targetDir,
+      encoding: "utf8",
+    }).trim();
 
     mkdirSync(binDir);
     const ghPath = join(binDir, "gh.js");
@@ -1078,12 +1082,12 @@ const pull = {
   state: "open",
   draft: false,
   merged: false,
-  merge_commit_sha: "abc123",
+  merge_commit_sha: ${JSON.stringify(reviewHeadSha)},
   mergeable: true,
   mergeable_state: "clean",
   user: { login: "author" },
-  head: { ref: "feature", sha: "def456" },
-  base: { ref: "main", sha: "abc123" },
+  head: { ref: "feature", sha: process.env.REVIEW_HEAD_SHA || ${JSON.stringify(reviewHeadSha)} },
+  base: { ref: "main", sha: ${JSON.stringify(reviewHeadSha)} },
   additions: 1,
   deletions: 0,
   changed_files: 0,
@@ -1175,6 +1179,40 @@ process.stdin.on("end", () => process.exit(1));
     assert.doesNotMatch(result.stderr, /\n\s+at /);
     assert.match(readFileSync(join(artifactDir, "96221.md"), "utf8"), /review_status: failed/);
     assert.equal(readFileSync(codexMarker, "utf8"), "path\n");
+
+    rmSync(codexMarker);
+    const missingHeadResult = spawnSync(
+      process.execPath,
+      [
+        CLI,
+        "review",
+        "--local-only",
+        "--target-dir",
+        targetDir,
+        "--item-number",
+        "96221",
+        "--artifact-dir",
+        missingHeadArtifactDir,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          LOCALAPPDATA: localAppData,
+          REVIEW_HEAD_SHA: "f".repeat(40),
+          ...mockGhBinEnv(ghPath),
+          PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+        },
+      },
+    );
+
+    assert.equal(missingHeadResult.status, 1);
+    assert.equal(existsSync(codexMarker), false);
+    assert.match(missingHeadResult.stderr, /Codex review failed/);
+    const missingHeadReport = readFileSync(join(missingHeadArtifactDir, "96221.md"), "utf8");
+    assert.match(missingHeadReport, /^review_status: failed$/m);
+    assert.match(missingHeadReport, /^review_checkout_inspection_failed: true$/m);
+    assert.match(missingHeadReport, /^local_checkout_access: unverified$/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

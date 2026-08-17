@@ -492,8 +492,19 @@ test("--local-range carries hosted-shaped review history across related local it
   );
   writeFileSync(
     fakeCodexScript,
-    `import fs from "node:fs";
+    `import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 const args = process.argv.slice(2);
+if (args[0] === "sandbox") {
+  const separator = args.indexOf("--");
+  const result = spawnSync(args[separator + 1], args.slice(separator + 2), {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+  process.stdout.write(result.stdout ?? "");
+  process.stderr.write(result.stderr ?? "");
+  process.exit(result.status ?? 1);
+}
 const outputPath = args[args.indexOf("--output-last-message") + 1];
 const prompt = fs.readFileSync(0, "utf8");
 const captures = fs.existsSync(process.env.LOCAL_REVIEW_CAPTURE)

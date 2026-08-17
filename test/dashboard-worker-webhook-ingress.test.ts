@@ -52,7 +52,7 @@ test("hosted webhook accepts author read-only mention commands", async () => {
   }
 });
 
-test("hosted webhook ignores inline ClawSweeper mentions before fast ack", async () => {
+test("hosted webhook materializes inline mentions without routing a command", async () => {
   const response = await worker.fetch(
     signedGithubWebhookRequest({
       event: "issue_comment",
@@ -82,8 +82,10 @@ test("hosted webhook ignores inline ClawSweeper mentions before fast ack", async
   assert.equal(response.status, 202);
   assert.deepEqual(await response.json(), {
     ok: true,
-    accepted: false,
-    reason: "no routable ClawSweeper command",
+    accepted: true,
+    materialized: false,
+    event: "issue_comment",
+    action: "created",
   });
 });
 
@@ -100,7 +102,7 @@ test("hosted webhook returns invalid_json for signed malformed bodies", async ()
   assert.deepEqual(await response.json(), { error: "invalid_json" });
 });
 
-test("hosted webhook rejects label additions before exact-review intake", async () => {
+test("hosted webhook materializes label additions without exact-review intake", async () => {
   for (const sender of ["openclaw-clawsweeper[bot]", "openclaw-barnacle[bot]", "steipete"]) {
     const response = await worker.fetch(
       signedGithubWebhookRequest({
@@ -126,8 +128,10 @@ test("hosted webhook rejects label additions before exact-review intake", async 
     assert.equal(response.status, 202);
     assert.deepEqual(await response.json(), {
       ok: true,
-      accepted: false,
-      reason: "unsupported action",
+      accepted: true,
+      materialized: false,
+      event: "issues",
+      action: "labeled",
     });
   }
 });
@@ -1329,7 +1333,7 @@ test("hosted webhook requeues unlocked and close-guard removal events", async ()
   }
 });
 
-test("hosted webhook ignores removal of non-close-guard labels", async () => {
+test("hosted webhook materializes removal of non-close-guard labels", async () => {
   const response = await worker.fetch(
     signedGithubWebhookRequest({
       event: "issues",
@@ -1355,13 +1359,76 @@ test("hosted webhook ignores removal of non-close-guard labels", async () => {
   assert.equal(response.status, 202);
   assert.deepEqual(await response.json(), {
     ok: true,
-    accepted: false,
-    reason: "unsupported action",
+    accepted: true,
+    materialized: false,
+    event: "issues",
+    action: "unlabeled",
   });
+});
+
+test("hosted webhook read-model failures log only a closed category", async () => {
+  const originalConsoleWarn = console.warn;
+  const marker = "synthetic-read-model-log-marker";
+  const warnings: unknown[][] = [];
+  console.warn = (...args: unknown[]) => warnings.push(args);
+  try {
+    const response = await worker.fetch(
+      signedGithubWebhookRequest({
+        event: "workflow_run",
+        secret: "test-secret",
+        deliveryId: marker,
+        payload: {
+          action: "completed",
+          repository: {
+            full_name: "openclaw/synthetic-project",
+            default_branch: "trunk",
+            private: false,
+            archived: false,
+            fork: false,
+            has_issues: true,
+          },
+          workflow_run: {
+            id: 602,
+            updated_at: "2026-08-15T12:00:00Z",
+          },
+        },
+      }),
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+        EXACT_REVIEW_QUEUE: {
+          idFromName: () => "global",
+          get: () => ({
+            fetch: async () => {
+              throw new Error(`${marker} https://invalid.example/private?item=1`);
+            },
+          }),
+        },
+      },
+    );
+
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      accepted: true,
+      materialized: false,
+      event: "workflow_run",
+      action: "completed",
+    });
+    assert.deepEqual(warnings, [
+      [JSON.stringify({ event: "github_read_model_ingest_failed", failure: "queue_unavailable" })],
+    ]);
+    assert.doesNotMatch(JSON.stringify(warnings), new RegExp(marker));
+    assert.doesNotMatch(JSON.stringify(warnings), /invalid\.example|private|item=/);
+  } finally {
+    console.warn = originalConsoleWarn;
+  }
 });
 
 test("hosted pull request receipt fast acks precede verification and stay idempotent", async () => {
   const originalFetch = globalThis.fetch;
+  const originalConsoleError = console.error;
+  const logMarker = "synthetic-log-identity-marker";
+  const errorLogs: unknown[][] = [];
   const { privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
@@ -1442,7 +1509,7 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
       const itemNumber = Number(commentMatch[1]);
       fastAckPostAttempts.set(itemNumber, (fastAckPostAttempts.get(itemNumber) || 0) + 1);
       if (itemNumber === 601) {
-        return new Response(JSON.stringify({ message: "Resource not accessible by integration" }), {
+        return new Response(JSON.stringify({ message: logMarker }), {
           status: 403,
           headers: { "content-type": "application/json" },
         });
@@ -1458,6 +1525,9 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
       return jsonResponse(comment);
     }
     throw new Error(`unexpected fetch ${url}`);
+  };
+  console.error = (...args: unknown[]) => {
+    errorLogs.push(args);
   };
 
   const env = {
@@ -1577,8 +1647,11 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
     assert.equal((await ackFailure.json()).queued, true);
     assert.equal(fastAckPostAttempts.get(601), 1);
     await Promise.all(waitUntilPromises);
+    assert.deepEqual(errorLogs, [["ClawSweeper pull request fast ack failed"]]);
+    assert.doesNotMatch(JSON.stringify(errorLogs), new RegExp(logMarker));
   } finally {
     globalThis.fetch = originalFetch;
+    console.error = originalConsoleError;
   }
 });
 

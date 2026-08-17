@@ -14,6 +14,10 @@ import {
   ITEM_CATEGORIES,
   LABEL_JUSTIFICATION_SCHEMA_KEYS,
   LIKELY_OWNER_SCHEMA_KEYS,
+  LIVE_PROOF_PLAN_SCHEMA_KEYS,
+  LIVE_PROOF_PLAN_STATUSES,
+  LIVE_PROOF_STEP_SCHEMA_KEYS,
+  LIVE_PROOF_SURFACES,
   MANTIS_RECOMMENDATION_SCENARIOS,
   MANTIS_RECOMMENDATION_SCHEMA_KEYS,
   MANTIS_RECOMMENDATION_STATUSES,
@@ -56,6 +60,8 @@ import type {
   FeatureShowcase,
   ImpactLabelName,
   LabelJustification,
+  LiveProofPlan,
+  LiveProofStep,
   LikelyOwner,
   MantisRecommendation,
   MaturityLabelName,
@@ -573,6 +579,91 @@ export function createDecisionParser({
     };
   }
 
+  function parseLiveProofStep(value: unknown, path: string): LiveProofStep {
+    const record = requireRecord(value, path);
+    const action = requireSingleLineString(record.action, `${path}.action`);
+    if (!Object.hasOwn(LIVE_PROOF_STEP_SCHEMA_KEYS, action)) {
+      throw new Error(`${path}.action has invalid value`);
+    }
+    rejectUnexpectedKeys(
+      record,
+      LIVE_PROOF_STEP_SCHEMA_KEYS[action as keyof typeof LIVE_PROOF_STEP_SCHEMA_KEYS],
+      path,
+    );
+    const nonEmptyString = (key: string): string => {
+      const result = requireSingleLineString(record[key], `${path}.${key}`).trim();
+      if (!result) throw new Error(`${path}.${key} must not be empty`);
+      return result;
+    };
+    switch (action) {
+      case "goto": {
+        const step = { action, path: nonEmptyString("path") } as const;
+        if (!step.path.startsWith("/")) throw new Error(`${path}.path must be a URL path`);
+        return step;
+      }
+      case "click":
+        return { action, target: nonEmptyString("target") };
+      case "fill":
+        return { action, target: nonEmptyString("target"), value: nonEmptyString("value") };
+      case "press":
+        return { action, key: nonEmptyString("key") };
+      case "wait_for":
+        return { action, target: nonEmptyString("target") };
+      case "wait": {
+        const seconds = requireNumber(record.seconds, `${path}.seconds`);
+        if (seconds <= 0 || seconds > 90) {
+          throw new Error(`${path}.seconds must be greater than 0 and at most 90`);
+        }
+        return { action, seconds };
+      }
+      case "expect_text":
+        return { action, text: nonEmptyString("text") };
+      case "run":
+        return { action, command: nonEmptyString("command") };
+      case "expect_output":
+        return { action, text: nonEmptyString("text") };
+      default:
+        throw new Error(`${path}.action has invalid value`);
+    }
+  }
+
+  function parseLiveProofPlan(value: unknown, path: string): LiveProofPlan {
+    const record = requireRecord(value, path);
+    rejectUnexpectedKeys(record, LIVE_PROOF_PLAN_SCHEMA_KEYS, path);
+    const status = requireEnum(record.status, LIVE_PROOF_PLAN_STATUSES, `${path}.status`);
+    const surface = requireEnum(record.surface, LIVE_PROOF_SURFACES, `${path}.surface`);
+    const reason = neutralizeOwnedSectionSpoofing(
+      requireSingleLineString(record.reason, `${path}.reason`),
+    ).trim();
+    const entry = requireSingleLineString(record.entry, `${path}.entry`).trim();
+    if (!reason) throw new Error(`${path}.reason must not be empty`);
+    if (!Array.isArray(record.steps)) throw new Error(`${path}.steps must be an array`);
+    if (record.steps.length > 10) throw new Error(`${path}.steps must contain at most 10 items`);
+    const steps = record.steps.map((step, index) =>
+      parseLiveProofStep(step, `${path}.steps[${index}]`),
+    );
+    if (status !== "recommended") {
+      if (surface !== "none") throw new Error(`${path}.surface must be none unless recommended`);
+      if (entry) throw new Error(`${path}.entry must be empty unless recommended`);
+      if (steps.length) throw new Error(`${path}.steps must be empty unless recommended`);
+      return { status, surface, reason, entry, steps };
+    }
+    if (surface === "none") throw new Error(`${path}.surface must identify a recommended surface`);
+    if (!entry) throw new Error(`${path}.entry must not be empty when recommended`);
+    if (!steps.length) throw new Error(`${path}.steps must not be empty when recommended`);
+    if (surface === "browser" && !entry.startsWith("/")) {
+      throw new Error(`${path}.entry must be a URL path for browser proof`);
+    }
+    const allowedActions =
+      surface === "browser"
+        ? new Set(["goto", "click", "fill", "press", "wait_for", "wait", "expect_text"])
+        : new Set(["run", "wait", "expect_output"]);
+    if (steps.some((step) => !allowedActions.has(step.action))) {
+      throw new Error(`${path}.steps contain an action that does not match ${surface} proof`);
+    }
+    return { status, surface, reason, entry, steps };
+  }
+
   function parseMantisRecommendation(value: unknown, path: string): MantisRecommendation {
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, MANTIS_RECOMMENDATION_SCHEMA_KEYS, path);
@@ -954,6 +1045,7 @@ export function createDecisionParser({
         record.telegramVisibleProof,
         "decision.telegramVisibleProof",
       ),
+      liveProofPlan: parseLiveProofPlan(record.liveProofPlan, "decision.liveProofPlan"),
       mantisRecommendation: parseMantisRecommendation(
         record.mantisRecommendation,
         "decision.mantisRecommendation",
@@ -1009,6 +1101,7 @@ export function createDecisionParser({
     parseDecision,
     parseGitHubItemRef,
     parseLabelJustification,
+    parseLiveProofPlan,
     parseMergeRiskOption,
     parseRootCauseCluster,
     selectedReviewLabels,

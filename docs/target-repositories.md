@@ -31,6 +31,13 @@ Dashboard targets are configured separately with `TARGET_REPOS` in
 `APPLY_TARGET_REPOS` and `APPLY_OPTIONAL_TARGET_REPOS`. A runtime profile alone
 does not enable any of those surfaces.
 
+`PUBLIC_BAY_REPOS` is a separate public-output allowlist for the minimal
+repository/item reference cards shown by OpenClaw Bay and Overview. Add a
+repository only after confirming that it is public and intended to be visible
+on the unauthenticated dashboard. The Worker treats an absent or malformed
+allowlist as empty. Membership does not authorize titles, URLs, queries,
+failure data, opaque keys, credentials, tokens, or any private-repository data.
+
 ## Generic Fallbacks
 
 The fallback lets a newly installed repository dispatch to ClawSweeper
@@ -41,6 +48,9 @@ without a TypeScript change. It is intentionally narrow:
 - denied repositories are rejected
 - scheduled fanout is public-only unless a private state publication path exists
 - auto-close policy comes from that owner fallback
+- `live_test`, when present, supplies the default live-proof configuration to
+  matching built-in, configured, and generic profiles; an explicit repository
+  block can override it
 - generic `openclaw/*` issues can auto-close only for
   `implemented_on_main`; PRs can auto-close for `implemented_on_main` or
   age-gated `mostly_implemented_on_main`

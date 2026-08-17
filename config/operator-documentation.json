@@ -20,6 +20,7 @@
   ],
   "auditedDashboardVariables": [
     "CLAWSWEEPER_REPO",
+    "PUBLIC_BAY_REPOS",
     "WORKER_DETAIL_RUN_LIMIT",
     "WORKER_JOB_FETCH_CONCURRENCY",
     "WORKER_JOB_CACHE_TTL_SECONDS",

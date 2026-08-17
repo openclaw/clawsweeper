@@ -3499,7 +3499,7 @@ test("urgent records do not falsely wrap a customized comment-sync cursor", () =
   writeFileSync(join(cursors, "openclaw-clawhub.json"), '{"next_after_number":20}\n');
   writeFileSync(
     join(records, "5.md"),
-    `---\nrepository: openclaw/clawhub\ntype: issue\nreview_status: complete\nlocal_checkout_access: verified\nitem_snapshot_hash: abc123\naction_taken: kept_open\nreviewed_at: ${now}\n---\n`,
+    `---\nrepository: openclaw/clawhub\ntype: issue\nreview_status: complete\nlocal_checkout_access: verified\nlocal_checkout_access_source: runner_preflight_v1\nitem_snapshot_hash: abc123\naction_taken: kept_open\nreviewed_at: ${now}\n---\n`,
   );
   for (let number = 21; number <= 61; number += 1) {
     writeFileSync(
@@ -3847,6 +3847,7 @@ test("wrapped cursor synchronization continues past newer out-of-cycle urgent re
         "type: pull_request",
         "review_status: complete",
         "local_checkout_access: verified",
+        "local_checkout_access_source: runner_preflight_v1",
         "item_snapshot_hash: abc123",
         "action_taken: kept_open",
         `review_comment_id: ${9_000 + number}`,
@@ -3867,6 +3868,7 @@ test("wrapped cursor synchronization continues past newer out-of-cycle urgent re
       "type: pull_request",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "item_snapshot_hash: abc123",
       "action_taken: kept_open",
       "reviewed_at: 2026-08-02T00:00:00Z",

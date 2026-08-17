@@ -16,8 +16,18 @@ const MEDIA_PROOF_MANIFEST_FILE = "media-proof-manifest.json";
 const MEDIA_PROOF_SUMMARY_FILE = "media-proof-summary.md";
 const MAX_MEDIA_PROOF_URLS = 4;
 
-function mediaProofCommandRunner(command: string, args: readonly string[]) {
-  return spawnSync(command, [...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+export function mediaProofCommandRunner(
+  command: string,
+  args: readonly string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+) {
+  return spawnSync(command, [...args], {
+    cwd: options.cwd,
+    env: options.env,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: options.timeoutMs,
+  });
 }
 
 function trimTrailingUrlPunctuation(raw: string): string {
@@ -74,13 +84,43 @@ function mediaProofKind(url: string): "image" | "video" {
   return IMAGE_PROOF_EXTENSIONS.has(extension) ? "image" : "video";
 }
 
-function mediaProofSpawnDetail(result: ReturnType<MediaProofCommandRunner>): string {
+export function mediaProofSpawnDetail(result: ReturnType<MediaProofCommandRunner>): string {
   if (result.status === 0) return "ok";
   const stderr = String(result.stderr ?? "").trim();
   const stdout = String(result.stdout ?? "").trim();
   const error = result.error?.message ?? "";
   const detail = stderr || stdout || error || "command failed without output";
   return trimMiddle(detail, 1000);
+}
+
+export function ffprobeMedia(path: string, runner: MediaProofCommandRunner) {
+  return runner("ffprobe", [
+    "-v",
+    "error",
+    "-print_format",
+    "json",
+    "-show_format",
+    "-show_streams",
+    path,
+  ]);
+}
+
+export function createVideoContactSheet(
+  inputPath: string,
+  outputPath: string,
+  runner: MediaProofCommandRunner,
+) {
+  return runner("ffmpeg", [
+    "-hide_banner",
+    "-y",
+    "-i",
+    inputPath,
+    "-vf",
+    "fps=1/5,scale=640:-1,tile=5x4",
+    "-frames:v",
+    "1",
+    outputPath,
+  ]);
 }
 
 export function prepareMediaProofArtifacts(
@@ -136,15 +176,7 @@ export function prepareMediaProofArtifacts(
       });
       continue;
     }
-    const metadata = runner("ffprobe", [
-      "-v",
-      "error",
-      "-print_format",
-      "json",
-      "-show_format",
-      "-show_streams",
-      downloadedPath,
-    ]);
+    const metadata = ffprobeMedia(downloadedPath, runner);
     if (metadata.status !== 0) {
       artifacts.push({
         kind,
@@ -158,17 +190,7 @@ export function prepareMediaProofArtifacts(
       continue;
     }
     writeFileSync(metadataPath, String(metadata.stdout ?? "{}"), "utf8");
-    const contactSheet = runner("ffmpeg", [
-      "-hide_banner",
-      "-y",
-      "-i",
-      downloadedPath,
-      "-vf",
-      "fps=1/5,scale=640:-1,tile=5x4",
-      "-frames:v",
-      "1",
-      contactSheetPath,
-    ]);
+    const contactSheet = createVideoContactSheet(downloadedPath, contactSheetPath, runner);
     if (contactSheet.status !== 0) {
       artifacts.push({
         kind,

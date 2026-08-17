@@ -17,6 +17,7 @@ import type {
   ItemContext,
   LabelJustification,
   LikelyOwner,
+  LiveProofPlan,
   MantisRecommendation,
   MaturityLabelName,
   MergeRiskLabelName,
@@ -338,6 +339,8 @@ export interface CreateReportOrchestrationDependencies {
   reportFeatureShowcase: (markdown: string) => FeatureShowcase;
   reportFileName: (repo: string, number: number) => string;
   reportLikelyOwners: (markdown: string) => LikelyOwner[];
+  reportLiveProofPlan: (markdown: string) => LiveProofPlan;
+  reportLiveProofRecordingBlock: (markdown: string) => string;
   reportMantisRecommendation: (markdown: string) => MantisRecommendation;
   reportOverallConfidenceScore: (markdown: string) => number;
   reportOverallCorrectness: (markdown: string) => OverallCorrectness;

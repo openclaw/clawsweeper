@@ -164,6 +164,11 @@ const EXACT_REVIEW_BAY_SAMPLE_LIMIT = 24;
 // while their live queue retry is pending. Accept all bounded Bay candidates
 // first, then apply the public sample limit only after resolving live rows.
 const EXACT_REVIEW_BAY_PRIORITY_INPUT_LIMIT = 40;
+const EXACT_REVIEW_BAY_ACTIVE_INPUT_LIMIT = 100;
+const EXACT_REVIEW_BAY_TARGET_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const EXACT_REVIEW_BAY_ITEM_KEY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/;
+const EXACT_REVIEW_BAY_MAX_TIMESTAMP = 8_640_000_000_000_000;
+const EXACT_REVIEW_QUEUE_STATES = new Set(["pending", "dispatching", "leased", "parked"]);
 const EXACT_REVIEW_BAY_STAGES = [
   "arriving",
   "setting-up",
@@ -250,6 +255,7 @@ type ExactReviewQueueCensus = {
   handoffItemCount: number;
   handoffPhases: Record<"pending" | "dispatching" | "leased", ExactReviewHandoffPhaseCensus>;
   reviewRecoveryReasons: Record<ExactReviewReviewRecoveryReason, number>;
+  bayComplete: boolean;
   bayCandidates: Map<string, ExactReviewBayCensusCandidate[]>;
 };
 
@@ -285,15 +291,23 @@ export function exactReviewQueueBayStagePriority(stage: ExactReviewBayStage) {
   return EXACT_REVIEW_BAY_STAGES.indexOf(stage);
 }
 
-export function exactReviewQueueBayPriorityKeys(values: string[]) {
+function exactReviewQueueBayItemKeys(values: string[], limit: number) {
   const unique = new Set<string>();
   for (const value of values) {
     const itemKey = String(value || "").trim();
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/.test(itemKey)) continue;
-    unique.add(itemKey);
-    if (unique.size === EXACT_REVIEW_BAY_PRIORITY_INPUT_LIMIT) break;
+    if (!EXACT_REVIEW_BAY_ITEM_KEY_PATTERN.test(itemKey)) continue;
+    unique.add(itemKey.toLowerCase());
+    if (unique.size === limit) break;
   }
   return [...unique];
+}
+
+export function exactReviewQueueBayPriorityKeys(values: string[]) {
+  return exactReviewQueueBayItemKeys(values, EXACT_REVIEW_BAY_PRIORITY_INPUT_LIMIT);
+}
+
+export function exactReviewQueueBayActiveKeys(values: string[]) {
+  return exactReviewQueueBayItemKeys(values, EXACT_REVIEW_BAY_ACTIVE_INPUT_LIMIT);
 }
 
 function emptyExactReviewQueueLaneCensus(): ExactReviewQueueLaneCensus {
@@ -384,8 +398,25 @@ function exactReviewTargetAppRetryAtByOwner(state: ExactReviewQueueState, now: n
 }
 
 function exactReviewTargetAppRetryAt(census: ExactReviewQueueCensus, targetRepo: string) {
+  if (typeof targetRepo !== "string") return 0;
   const [owner] = targetRepo.split("/", 1);
   return owner ? census.targetAppRetryAtByOwner.get(owner.toLowerCase()) || 0 : 0;
+}
+
+function exactReviewQueueDecision(item: ExactReviewQueueItem) {
+  const decision = item?.decision;
+  return decision && typeof decision === "object" && !Array.isArray(decision) ? decision : null;
+}
+
+function exactReviewQueueStateIsValid(value: unknown): value is ExactReviewQueueItem["state"] {
+  return typeof value === "string" && EXACT_REVIEW_QUEUE_STATES.has(value);
+}
+
+function exactReviewQueueTargetRepository(item: ExactReviewQueueItem) {
+  const repository = exactReviewQueueDecision(item)?.targetRepo;
+  return typeof repository === "string" && EXACT_REVIEW_BAY_TARGET_PATTERN.test(repository)
+    ? repository
+    : null;
 }
 
 function buildExactReviewQueueCensus(
@@ -448,6 +479,7 @@ function buildExactReviewQueueCensus(
       workflow_cancelled: 0,
       workflow_failed: 0,
     },
+    bayComplete: true,
     bayCandidates: new Map(),
   };
 
@@ -462,46 +494,58 @@ function buildExactReviewQueueCensus(
   );
 
   for (const item of items) {
+    const decision = exactReviewQueueDecision(item);
+    const targetRepo = exactReviewQueueTargetRepository(item);
+    const stateValid = exactReviewQueueStateIsValid(item.state);
     const isPublication = exactReviewQueueIsPublication(item);
     const lane = isPublication ? publication : review;
     observeExactReviewQueueLane(lane, item, state, now);
     observeExactReviewQueueLane(all, item, state, now);
 
-    const targetRepo = item.decision.targetRepo;
-    const target = census.targets.get(targetRepo) ?? {
-      target_repo: targetRepo,
-      pending: 0,
-      dispatching: 0,
-      leased: 0,
-      parked: 0,
-      oldest_pending_at: null,
-    };
-    if (item.state === "pending") {
-      target.pending += 1;
-      target.oldest_pending_at =
-        target.oldest_pending_at === null
-          ? item.createdAt
-          : Math.min(target.oldest_pending_at, item.createdAt);
-      if (!excludedItemKeys.has(item.key)) {
-        const pendingItems = isPublication ? census.pendingPublications : census.pendingReviews;
-        pendingItems.push(item);
-        if (item.nextAttemptAt <= now) {
-          const readyItems = isPublication ? census.readyPublications : census.readyReviews;
-          readyItems.push(item);
-        }
+    if (targetRepo !== null) {
+      const target = census.targets.get(targetRepo) ?? {
+        target_repo: targetRepo,
+        pending: 0,
+        dispatching: 0,
+        leased: 0,
+        parked: 0,
+        oldest_pending_at: null,
+      };
+      if (item.state === "pending") {
+        target.pending += 1;
+        target.oldest_pending_at =
+          target.oldest_pending_at === null
+            ? item.createdAt
+            : Math.min(target.oldest_pending_at, item.createdAt);
+      } else if (item.state === "dispatching") {
+        target.dispatching += 1;
+      } else if (item.state === "leased") {
+        target.leased += 1;
+      } else {
+        target.parked += 1;
       }
-    } else if (item.state === "dispatching") {
-      target.dispatching += 1;
-    } else if (item.state === "leased") {
-      target.leased += 1;
-    } else {
-      target.parked += 1;
+      census.targets.set(targetRepo, target);
+    }
+    if (
+      item.state === "pending" &&
+      decision &&
+      targetRepo !== null &&
+      !excludedItemKeys.has(item.key) &&
+      stateValid
+    ) {
+      const pendingItems = isPublication ? census.pendingPublications : census.pendingReviews;
+      pendingItems.push(item);
+      if (item.nextAttemptAt <= now) {
+        const readyItems = isPublication ? census.readyPublications : census.readyReviews;
+        readyItems.push(item);
+      }
+    }
+    if (item.state === "parked" && decision) {
       census.parkedWakeCandidates.push({
         recoveryAt: exactReviewParkedRecoveryAt(item),
         terminalCheckAt: exactReviewParkedTerminalCheckAt(item),
       });
     }
-    census.targets.set(targetRepo, target);
     census.parkedTerminalLastCheckedAt = Math.max(
       census.parkedTerminalLastCheckedAt,
       Number(item.parkedTerminalCheckedAt || 0),
@@ -522,9 +566,11 @@ function buildExactReviewQueueCensus(
       } else {
         census.activeReviews += 1;
         if (leaseExpiresAt && leaseExpiresAt > now) census.activeReviewWakeAt.push(leaseExpiresAt);
-        const targetCount = census.activeTargetCounts.get(targetRepo) || 0;
-        census.activeTargetCounts.set(targetRepo, targetCount + 1);
-        if (leaseExpiresAt > now) {
+        if (targetRepo !== null) {
+          const targetCount = census.activeTargetCounts.get(targetRepo) || 0;
+          census.activeTargetCounts.set(targetRepo, targetCount + 1);
+        }
+        if (targetRepo !== null && leaseExpiresAt > now) {
           const targetWakeAt = census.activeTargetWakeAt.get(targetRepo);
           census.activeTargetWakeAt.set(
             targetRepo,
@@ -534,7 +580,7 @@ function buildExactReviewQueueCensus(
       }
     }
 
-    if (!isPublication && item.state !== "parked") {
+    if (!isPublication && stateValid && item.state !== "parked") {
       census.handoffItemCount += 1;
       const recoveryReason = String(item.reviewRecoveryReason || "");
       if (recoveryReason in census.reviewRecoveryReasons) {
@@ -561,7 +607,9 @@ function buildExactReviewQueueCensus(
       }
     }
 
-    if (collectBay) observeExactReviewBayCandidate(census.bayCandidates, item);
+    if (collectBay && !observeExactReviewBayCandidate(census.bayCandidates, item)) {
+      census.bayComplete = false;
+    }
   }
 
   census.pendingReviews.sort(exactReviewQueueItemOrder);
@@ -575,12 +623,33 @@ function observeExactReviewBayCandidate(
   projected: Map<string, ExactReviewBayCensusCandidate[]>,
   item: ExactReviewQueueItem,
 ) {
-  const repository = String(item.decision.targetRepo || "").trim();
-  const itemNumber = Number(item.decision.itemNumber);
-  if (!repository || !Number.isSafeInteger(itemNumber) || itemNumber <= 0) return;
-  const itemKey = `${repository}#${itemNumber}`;
-  const updatedAt = Date.parse(new Date(item.updatedAt).toISOString());
-  const candidate = { item, itemKey, repository, itemNumber, updatedAt };
+  const decision = exactReviewQueueDecision(item);
+  const repository = decision?.targetRepo;
+  const itemNumber = decision?.itemNumber;
+  if (
+    !decision ||
+    !exactReviewQueueStateIsValid(item.state) ||
+    typeof repository !== "string" ||
+    !EXACT_REVIEW_BAY_TARGET_PATTERN.test(repository) ||
+    typeof itemNumber !== "number" ||
+    !Number.isSafeInteger(itemNumber) ||
+    itemNumber <= 0 ||
+    !exactReviewQueueBayTimestamp(item.createdAt) ||
+    !exactReviewQueueBayTimestamp(item.updatedAt) ||
+    !exactReviewQueueBayTimestamp(item.nextAttemptAt)
+  ) {
+    return false;
+  }
+  const canonicalRepository = repository.toLowerCase();
+  const itemKey = `${canonicalRepository}#${itemNumber}`;
+  const updatedAt = item.updatedAt;
+  const candidate = {
+    item,
+    itemKey,
+    repository: canonicalRepository,
+    itemNumber,
+    updatedAt,
+  };
   const previous = projected.get(itemKey);
   const latest = previous?.[0];
   if (!latest || updatedAt > latest.updatedAt) {
@@ -588,25 +657,52 @@ function observeExactReviewBayCandidate(
   } else if (updatedAt === latest.updatedAt) {
     previous.push(candidate);
   }
+  return true;
+}
+
+function exactReviewQueueBayTimestamp(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value > 0 &&
+    value <= EXACT_REVIEW_BAY_MAX_TIMESTAMP
+  );
 }
 
 export function exactReviewQueueBayProjection(
   items: ExactReviewQueueItem[],
   priorityItemKeys: string[] = [],
   batchByItemKey: ReadonlyMap<string, ExactReviewBayBatchOwner> = new Map(),
+  activeItemKeys: string[] = [],
 ) {
   const census = buildExactReviewQueueCensus(items, {
     state: { items: {} },
     now: 0,
   });
-  return exactReviewQueueBayProjectionFromCensus(census, priorityItemKeys, batchByItemKey);
+  return exactReviewQueueBayProjectionFromCensus(
+    census,
+    priorityItemKeys,
+    batchByItemKey,
+    activeItemKeys,
+  );
 }
 
 function exactReviewQueueBayProjectionFromCensus(
   census: ExactReviewQueueCensus,
   priorityItemKeys: string[] = [],
   batchByItemKey: ReadonlyMap<string, ExactReviewBayBatchOwner> = new Map(),
+  activeItemKeys: string[] = [],
 ) {
+  if (!census.bayComplete) {
+    return {
+      complete: false as const,
+      sample_limit: EXACT_REVIEW_BAY_SAMPLE_LIMIT,
+      total: null,
+      stages: null,
+      active_overlaps: null,
+      items: [],
+    };
+  }
   const projected = new Map<string, ExactReviewBayProjectionItem>();
   const stages = Object.fromEntries(EXACT_REVIEW_BAY_STAGES.map((stage) => [stage, 0])) as Record<
     ExactReviewBayStage,
@@ -657,6 +753,13 @@ function exactReviewQueueBayProjectionFromCensus(
         left.item_key.localeCompare(right.item_key),
     );
   }
+  const activeOverlaps = Object.fromEntries(
+    EXACT_REVIEW_BAY_STAGES.map((stage) => [stage, 0]),
+  ) as Record<ExactReviewBayStage, number>;
+  for (const itemKey of exactReviewQueueBayActiveKeys(activeItemKeys)) {
+    const item = projected.get(itemKey);
+    if (item) activeOverlaps[item.stage] += 1;
+  }
   const priorityRows = exactReviewQueueBayPriorityKeys(priorityItemKeys)
     .map((itemKey) => projected.get(itemKey))
     .filter((item): item is ExactReviewBayProjectionItem => Boolean(item))
@@ -679,9 +782,11 @@ function exactReviewQueueBayProjectionFromCensus(
     }
   }
   return {
+    complete: true as const,
     sample_limit: EXACT_REVIEW_BAY_SAMPLE_LIMIT,
     total: projected.size,
     stages,
+    active_overlaps: activeOverlaps,
     items: sample,
   };
 }
@@ -978,7 +1083,9 @@ export function exactReviewQueueStats(
       dispatching: target.dispatching,
       leased: target.leased,
       oldest_pending_at:
-        target.oldest_pending_at === null ? null : new Date(target.oldest_pending_at).toISOString(),
+        target.oldest_pending_at === null
+          ? null
+          : exactReviewQueueIsoTimestamp(target.oldest_pending_at),
     }))
     .sort(
       (left, right) =>
@@ -1058,7 +1165,7 @@ export function exactReviewQueueStats(
     bay_projection: undefined as unknown as ReturnType<
       typeof exactReviewQueueBayProjectionFromCensus
     >,
-    next_wake_at: nextWakeAt === null ? null : new Date(nextWakeAt).toISOString(),
+    next_wake_at: nextWakeAt === null ? null : exactReviewQueueIsoTimestamp(nextWakeAt),
     dispatcher: {
       state: state.dispatcher?.state || "unknown",
       reason: state.dispatcher?.reason || null,
@@ -1097,6 +1204,7 @@ export function exactReviewQueueBayProjectionFromStats(
   stats: ExactReviewQueueStatsWithCensus,
   priorityItemKeys: string[] = [],
   batchByItemKey: ReadonlyMap<string, ExactReviewBayBatchOwner> = new Map(),
+  activeItemKeys: string[] = [],
 ) {
   const census = stats[EXACT_REVIEW_STATS_CENSUS];
   if (!census) throw new Error("exact-review queue stats are missing their census");
@@ -1104,6 +1212,7 @@ export function exactReviewQueueBayProjectionFromStats(
     census,
     priorityItemKeys,
     batchByItemKey,
+    activeItemKeys,
   );
   Object.defineProperty(stats, "bay_projection", {
     value: projection,
@@ -1146,26 +1255,26 @@ function exactReviewQueueLaneStatsFromCensus(
     active,
     available_slots: Math.max(0, capacity - active),
     oldest_pending_at:
-      lane.oldestPendingAt === null ? null : new Date(lane.oldestPendingAt).toISOString(),
+      lane.oldestPendingAt === null ? null : exactReviewQueueIsoTimestamp(lane.oldestPendingAt),
     oldest_pending_age_seconds:
       lane.oldestPendingAt === null
         ? null
         : Math.max(0, Math.floor((now - lane.oldestPendingAt) / 1_000)),
     oldest_pending_key: lane.oldestPendingKey,
     oldest_ready_at:
-      lane.oldestReadyAt === null ? null : new Date(lane.oldestReadyAt).toISOString(),
+      lane.oldestReadyAt === null ? null : exactReviewQueueIsoTimestamp(lane.oldestReadyAt),
     oldest_ready_age_seconds:
       lane.oldestReadyAt === null
         ? null
         : Math.max(0, Math.floor((now - lane.oldestReadyAt) / 1_000)),
     oldest_backoff_at:
-      lane.oldestBackoffAt === null ? null : new Date(lane.oldestBackoffAt).toISOString(),
+      lane.oldestBackoffAt === null ? null : exactReviewQueueIsoTimestamp(lane.oldestBackoffAt),
     oldest_backoff_age_seconds:
       lane.oldestBackoffAt === null
         ? null
         : Math.max(0, Math.floor((now - lane.oldestBackoffAt) / 1_000)),
     next_attempt_at:
-      lane.nextAttemptAt === null ? null : new Date(lane.nextAttemptAt).toISOString(),
+      lane.nextAttemptAt === null ? null : exactReviewQueueIsoTimestamp(lane.nextAttemptAt),
   };
 }
 
@@ -1370,6 +1479,11 @@ function timestampAtOrBefore(value: unknown, maximum: number): number | null {
 
 function finiteExactReviewTimestamp(value: unknown, fallback: number) {
   return validExactReviewTimestamp(value) ?? fallback;
+}
+
+function exactReviewQueueIsoTimestamp(value: unknown) {
+  const timestamp = validExactReviewTimestamp(value);
+  return timestamp === null ? null : new Date(timestamp).toISOString();
 }
 
 function finiteExactReviewNumber(value: unknown, fallback: number) {

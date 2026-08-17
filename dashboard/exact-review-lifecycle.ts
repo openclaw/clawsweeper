@@ -1,6 +1,9 @@
 export const EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE = "exact_review_lifecycle_projection_v1";
 export const EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS = 5 * 60 * 1000;
-export const EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT = 512;
+// Keep the public reader bounded, but leave enough headroom for the durable
+// history between normal retention passes. The former 512-row ceiling turned
+// a healthy, append-only store into a permanently unknown public snapshot.
+export const EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT = 24;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_PAGE_MAX = 100;
@@ -173,6 +176,7 @@ export type ExactReviewLifecycleProjection = {
   admission: {
     deliveryId: string;
     sourceDeliveryId?: string;
+    bayJourneyDeliveryId?: string;
     sourceAction: string;
     commandOriginated: boolean;
     statusMarker: string | null;
@@ -231,6 +235,7 @@ type ProjectionIdentity = {
 type LifecycleAdmissionInput = ProjectionIdentity & {
   deliveryId: string;
   sourceDeliveryId?: string;
+  bayJourneyDeliveryId?: string;
   sourceAction: string;
   commandOriginated: boolean;
   statusMarker: string | null;
@@ -268,6 +273,17 @@ export class ExactReviewLifecycleProjectionStore {
           ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
           (updated_at DESC, canonical_target_key, fence_key, revision)`,
     );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_repository_v2
+          ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          (
+            LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)),
+            updated_at DESC,
+            canonical_target_key,
+            fence_key,
+            revision DESC
+          )`,
+    );
     this.schemaReady = true;
   }
 
@@ -283,6 +299,12 @@ export class ExactReviewLifecycleProjectionStore {
     if (input.sourceDeliveryId !== undefined && !validText(input.sourceDeliveryId, 1, 200)) {
       throw new Error("invalid lifecycle source delivery identity");
     }
+    if (
+      input.bayJourneyDeliveryId !== undefined &&
+      !validText(input.bayJourneyDeliveryId, 1, 200)
+    ) {
+      throw new Error("invalid lifecycle Bay journey delivery identity");
+    }
     if (input.statusMarker !== null && !validText(input.statusMarker, 1, 300)) {
       throw new Error("invalid lifecycle status marker");
     }
@@ -297,6 +319,7 @@ export class ExactReviewLifecycleProjectionStore {
       if (
         admission.deliveryId !== input.deliveryId ||
         admission.sourceDeliveryId !== input.sourceDeliveryId ||
+        admission.bayJourneyDeliveryId !== input.bayJourneyDeliveryId ||
         admission.sourceAction !== input.sourceAction ||
         admission.commandOriginated !== input.commandOriginated ||
         admission.statusMarker !== input.statusMarker ||
@@ -314,6 +337,7 @@ export class ExactReviewLifecycleProjectionStore {
       admission: {
         deliveryId: input.deliveryId,
         ...(input.sourceDeliveryId ? { sourceDeliveryId: input.sourceDeliveryId } : {}),
+        ...(input.bayJourneyDeliveryId ? { bayJourneyDeliveryId: input.bayJourneyDeliveryId } : {}),
         sourceAction: input.sourceAction,
         commandOriginated: input.commandOriginated,
         statusMarker: input.statusMarker,
@@ -777,11 +801,14 @@ export class ExactReviewLifecycleProjectionStore {
   }
 
   /**
-   * This reader is intentionally side-effect free. In particular, it does not
-   * ensure schema, normalize legacy rows, or write an index: the public Bay
-   * route must never turn an observation into queue maintenance.
+   * This reader is intentionally side-effect free. Its caller provisions the
+   * table and indexes through the Durable Object constructor barrier; this
+   * method does not ensure schema, normalize legacy rows, or write an index.
    */
-  readBaySnapshot(now = Date.now()): DurableLifecycleBaySnapshot {
+  readBaySnapshot(
+    now = Date.now(),
+    allowedRepositories?: ReadonlySet<string>,
+  ): DurableLifecycleBaySnapshot {
     const unknown = (reason: DurableLifecycleBayUnknownReason): DurableLifecycleBaySnapshot => ({
       version: 1,
       source: "exact-review-lifecycle-projection-v1",
@@ -793,17 +820,55 @@ export class ExactReviewLifecycleProjectionStore {
       sample: null,
     });
 
+    const repositories = allowedRepositories
+      ? [
+          ...new Set([...allowedRepositories].map((repository) => repository.trim().toLowerCase())),
+        ].sort()
+      : null;
+    if (
+      repositories &&
+      (repositories.length > 32 ||
+        repositories.some((repository) => !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repository)))
+    ) {
+      return unknown("malformed");
+    }
+
     let rows: Array<Record<string, unknown>>;
     try {
-      rows = Array.from(
-        this.storage.sql.exec(
-          `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-           ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
-           LIMIT ?`,
-          EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1,
-        ),
-      );
-      // The fixed 512+1 public source bound is deliberately fail-closed. Do
+      if (repositories?.length === 0) {
+        rows = [];
+      } else if (repositories) {
+        rows = [];
+        for (const repository of repositories) {
+          const remaining = EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1 - rows.length;
+          const repositoryRows = Array.from(
+            this.storage.sql.exec(
+              `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+               INDEXED BY exact_review_lifecycle_projection_bay_repository_v2
+               WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?
+               ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+               LIMIT ?`,
+              repository,
+              remaining,
+            ),
+          );
+          rows.push(...repositoryRows);
+          if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT) {
+            return unknown("over_cap");
+          }
+        }
+      } else {
+        rows = Array.from(
+          this.storage.sql.exec(
+            `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+             INDEXED BY exact_review_lifecycle_projection_bay
+            ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+            LIMIT ?`,
+            EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1,
+          ),
+        );
+      }
+      // The fixed bounded public source read is deliberately fail-closed. Do
       // not paginate, prune, or otherwise maintain storage while observing it.
       if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT) return unknown("over_cap");
     } catch {
@@ -821,7 +886,6 @@ export class ExactReviewLifecycleProjectionStore {
     } catch {
       return unknown("mixed");
     }
-
     const maxRevisionByTarget = new Map<string, number>();
     for (const projection of projections) {
       maxRevisionByTarget.set(
@@ -1557,6 +1621,8 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
     !validText(value.admission.deliveryId, 1, 300) ||
     (value.admission.sourceDeliveryId !== undefined &&
       !validText(value.admission.sourceDeliveryId, 1, 200)) ||
+    (value.admission.bayJourneyDeliveryId !== undefined &&
+      !validText(value.admission.bayJourneyDeliveryId, 1, 200)) ||
     !validText(value.admission.sourceAction, 1, 200) ||
     (value.admission.statusMarker !== null && !validText(value.admission.statusMarker, 1, 300)) ||
     (value.admission.statusCommentId !== null &&

@@ -5,32 +5,55 @@ const DEFAULT_CRABFLEET_URL = "https://crabfleet.openclaw.ai";
 function issueTriagePageConfig() {
   return {
     title: "ClawSweeper Triage",
-    loadingSubtitle: "Loading advisory issue labels...",
     endpoint: "/api/triage",
-    storagePrefix: "clawsweeper:triage",
     defaultView: "clawsweeper",
     navLabel: "Issue triage views",
-    filterPlaceholder: "Title, number, author, assignee, label...",
-    itemNoun: "issue",
-    itemLabel: "Issue",
-    emptySnapshotText: "No matching issues in the current snapshot.",
-    emptyFilterText: "No issues match the current filter.",
-    routingGroups: true,
-    highlightLabelPrefixes: ["clawsweeper:"],
+    aggregateViews: [
+      {
+        id: "clawsweeper",
+        title: "ClawSweeper",
+        description: "Open issues carrying any ClawSweeper label.",
+      },
+      {
+        id: "ready-candidates",
+        title: "Ready candidates",
+        description: "Queueable fixes without a no-new-fix-pr blocker.",
+      },
+      {
+        id: "queueable-blocked",
+        title: "Queueable but blocked",
+        description: "Queueable-looking fixes with a no-new-fix-pr blocker.",
+      },
+      {
+        id: "already-has-pr",
+        title: "Already has PR",
+        description: "Issues where an open linked pull request was found.",
+      },
+      {
+        id: "needs-info",
+        title: "Needs info",
+        description: "Issues needing more reporter detail before verification.",
+      },
+      {
+        id: "needs-maintainer-review",
+        title: "Needs maintainer review",
+        description: "Issues where a maintainer decision is the next useful step.",
+      },
+      {
+        id: "product-security",
+        title: "Product or security",
+        description: "Issues needing product, behavior, or security-sensitive review.",
+      },
+      {
+        id: "needs-live-repro",
+        title: "Needs live repro",
+        description: "Issues where live validation would improve confidence.",
+      },
+    ],
     links: [
       { href: "/", label: "Live pipeline" },
       { href: "/bay", label: "OpenClaw Bay" },
       { href: "/pr-proof-triage", label: "PR proof triage" },
-    ],
-    columns: [
-      { key: "issue", label: "Issue", width: 420, min: 240 },
-      { key: "assignees", label: "Assignees", width: 140, min: 100 },
-      { key: "priority", label: "Priority", width: 92, min: 76 },
-      { key: "area", label: "Impact group", width: 180, min: 130 },
-      { key: "prs", label: "Linked PRs", width: 180, min: 120 },
-      { key: "labels", label: "Labels", width: 430, min: 220 },
-      { key: "updated", label: "Updated", width: 130, min: 110 },
-      { key: "comments", label: "Comments", width: 96, min: 84 },
     ],
     metrics: [
       {
@@ -54,32 +77,50 @@ function issueTriagePageConfig() {
 function prProofTriagePageConfig() {
   return {
     title: "ClawSweeper PR Proof Triage",
-    loadingSubtitle: "Loading pull request proof labels...",
     endpoint: "/api/pr-proof-triage",
-    storagePrefix: "clawsweeper:pr-proof-triage",
     defaultView: "missing-proof",
     navLabel: "Pull request proof triage views",
-    filterPlaceholder: "Title, number, author, assignee, proof state, label...",
-    itemNoun: "PR",
-    itemLabel: "Pull request",
-    emptySnapshotText: "No matching pull requests in the current snapshot.",
-    emptyFilterText: "No pull requests match the current filter.",
-    routingGroups: false,
-    highlightLabelPrefixes: ["triage:", "proof:", "mantis:"],
+    aggregateViews: [
+      {
+        id: "proof-triage",
+        title: "Proof triage",
+        description: "Open pull requests carrying a closed proof-triage category.",
+      },
+      {
+        id: "needs-proof",
+        title: "Needs proof",
+        description: "Open pull requests where real behavior proof is requested.",
+      },
+      {
+        id: "missing-proof",
+        title: "Needs proof review",
+        description: "Proof is requested but not yet marked sufficient or overridden.",
+      },
+      {
+        id: "sufficient-proof",
+        title: "Proof sufficient",
+        description: "Open pull requests whose proof gate appears satisfied.",
+      },
+      {
+        id: "mock-only-proof",
+        title: "Mock-only proof",
+        description: "Open pull requests whose proof needs a stronger real-behavior signal.",
+      },
+      {
+        id: "telegram-proof",
+        title: "Telegram proof",
+        description: "Open pull requests awaiting the closed Telegram proof category.",
+      },
+      {
+        id: "sufficient-with-need-label",
+        title: "Sufficient plus needs label",
+        description: "Open pull requests with sufficient proof and a remaining needs-proof state.",
+      },
+    ],
     links: [
       { href: "/", label: "Live pipeline" },
       { href: "/bay", label: "OpenClaw Bay" },
       { href: "/triage", label: "Issue triage" },
-    ],
-    columns: [
-      { key: "issue", label: "Pull request", width: 420, min: 240 },
-      { key: "author", label: "Author", width: 130, min: 100 },
-      { key: "assignees", label: "Assignees", width: 140, min: 100 },
-      { key: "priority", label: "Priority", width: 86, min: 76 },
-      { key: "proof", label: "Proof state", width: 180, min: 140 },
-      { key: "labels", label: "Labels", width: 430, min: 220 },
-      { key: "updated", label: "Updated", width: 130, min: 110 },
-      { key: "comments", label: "Comments", width: 96, min: 84 },
     ],
     metrics: [
       { label: "Proof triage PRs", view: "proof-triage", detail: "proof-related labels" },
@@ -242,20 +283,18 @@ function dashboardThemeControlScript() {
 })();`;
 }
 
-function serializedPageConfig(config: TriagePageConfig): string {
-  return JSON.stringify(config).replace(/</g, "\\u003c");
+function serializedAggregateTriagePageConfig(config: TriagePageConfig): string {
+  return JSON.stringify({
+    endpoint: config.endpoint,
+    defaultView: config.defaultView,
+    navLabel: config.navLabel,
+    views: config.aggregateViews,
+    metrics: config.metrics,
+  }).replace(/</g, "\\u003c");
 }
 
-function triageHtml(config: TriagePageConfig): string {
-  const pageConfig = serializedPageConfig(config);
-  const routingGroupControl = config.routingGroups
-    ? `<label class="field">
-        <span>Impact group</span>
-        <select id="routing-group">
-          <option value="">All impact groups</option>
-        </select>
-      </label>`
-    : "";
+function aggregateTriageHtml(config: TriagePageConfig): string {
+  const pageConfig = serializedAggregateTriagePageConfig(config);
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -276,8 +315,6 @@ ${dashboardThemeInitScript()}
   --claw: light-dark(#d94a26, #ff6f48);
   --green: light-dark(#31824f, #5cc088);
   --amber: light-dark(#b3831d, #dcaf5e);
-  --red: light-dark(#c03d33, #ef685c);
-  --violet: light-dark(#6b59c8, #a893f0);
 }
 * { box-sizing: border-box; }
 html { scrollbar-color: light-dark(#cfc6b6, #3a332b) transparent; }
@@ -293,330 +330,80 @@ body {
 body::before {
   content: "";
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
+  inset: 0 0 auto;
   height: 2px;
   background: var(--claw);
-  z-index: 10;
 }
 ::selection { background: color-mix(in srgb, var(--claw) 22%, transparent); }
 :focus-visible { outline: 2px solid color-mix(in srgb, var(--claw) 60%, transparent); outline-offset: 2px; }
-main { width: min(1560px, calc(100vw - 48px)); margin: 0 auto; padding: 34px 0 72px; }
+main { width: min(1180px, calc(100vw - 48px)); margin: 0 auto; padding: 34px 0 72px; }
 header { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
-header h1 + .muted { margin-top: 6px; font-size: 12px; }
-h1 {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-h1::before { content: "🦞"; font-size: 20px; }
-h2 {
-  margin: 32px 0 12px;
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radius: 1px; background: var(--claw); }
-a { color: var(--claw); text-decoration: none; }
-a:hover { text-decoration: underline; text-underline-offset: 3px; }
+h1 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -0.01em; }
+h1::before { content: "\\1F99E "; font-size: 20px; }
+h2 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
 .muted { color: var(--muted); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
 .top-links { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
-.top-link { color: var(--muted); font-size: 12.5px; font-weight: 500; }
-.top-link:hover { color: var(--claw); text-decoration: none; }
+.top-link { color: var(--muted); font-size: 12.5px; font-weight: 500; text-decoration: none; }
+.top-link:hover { color: var(--claw); }
 #updated { font-size: 11px; }
-.pill,
-.tab,
-.query-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 22px;
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: transparent;
+.privacy-note {
+  margin: 12px 0 24px;
+  padding: 12px 14px;
   border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
   color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-  font-weight: 500;
-  transition: border-color 0.15s ease, color 0.15s ease;
 }
-.pill:hover,
-.tab:hover,
-.query-link:hover { border-color: color-mix(in srgb, var(--claw) 45%, var(--line)); color: var(--text); }
-a.pill:hover,
-.query-link:hover { color: var(--claw); text-decoration: none; }
-.query-link { color: var(--claw); border-color: color-mix(in srgb, var(--claw) 35%, transparent); }
 .grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-bottom: 24px;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
 }
-.metric { padding: 16px 18px 14px; border-left: 1px solid var(--line-soft); min-width: 0; overflow: hidden; }
-.metric:first-child { border-left: 0; padding-left: 0; }
-.metric strong { display: block; margin-top: 9px; font-size: 28px; font-weight: 560; line-height: 1; letter-spacing: -0.03em; }
+.metric { padding: 16px 18px 14px; border-left: 1px solid var(--line-soft); min-width: 0; }
+.metric:nth-child(3n + 1) { border-left: 0; padding-left: 0; }
+.metric strong { display: block; margin-top: 9px; font-size: 28px; font-weight: 560; line-height: 1; }
 .metric span { color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; }
 .metric .muted { font-size: 12px; margin-top: 4px; }
-.tabs {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 14px;
-  padding-bottom: 10px;
-}
-button.tab {
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.tab {
+  min-height: 28px;
+  padding: 3px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
   cursor: pointer;
   font: inherit;
+  font-size: 12px;
 }
-button.tab[aria-selected="true"] {
+.tab[aria-selected="true"] {
   color: var(--claw);
   border-color: color-mix(in srgb, var(--claw) 55%, transparent);
   background: color-mix(in srgb, var(--claw) 8%, transparent);
 }
-.view-head {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 16px;
-  margin: 14px 0;
-}
-.view-title { display: grid; gap: 3px; min-width: 0; }
-.view-title strong { font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
-.controls {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 0 0 14px;
-  flex-wrap: wrap;
-}
-.control-group {
-  display: flex;
-  align-items: end;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.field {
-  display: grid;
-  gap: 5px;
-  min-width: 220px;
-}
-.field span {
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-input,
-select,
-.secondary-button {
-  min-height: 34px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-  color: var(--text);
-  padding: 6px 10px;
-  font: inherit;
-}
-input { min-width: min(460px, calc(100vw - 48px)); }
-select { min-width: 190px; }
-input::placeholder { color: var(--muted); }
-input:focus,
-select:focus,
-.secondary-button:focus {
-  outline: 2px solid color-mix(in srgb, var(--claw) 55%, transparent);
-  outline-offset: 1px;
-}
-.secondary-button {
-  cursor: pointer;
-  min-width: 70px;
-  font-weight: 600;
-  color: var(--muted);
-  transition: border-color 0.15s ease, color 0.15s ease;
-}
-.secondary-button:hover { color: var(--claw); border-color: color-mix(in srgb, var(--claw) 45%, var(--line)); }
-.table-wrap {
-  overflow: hidden;
+.aggregate-card, .snapshot-health {
+  padding: 22px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel);
 }
-table {
-  width: 100%;
-  table-layout: fixed;
-  border-collapse: collapse;
-}
-th,
-td {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--line-soft);
-  text-align: left;
-  vertical-align: top;
-}
-th {
-  position: relative;
-  color: var(--muted);
-  font-size: 10px;
-  text-transform: uppercase;
-  background: transparent;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  border-bottom-color: var(--line);
-}
-tbody tr:hover { background: color-mix(in srgb, var(--claw) 3%, transparent); }
-tr:last-child td { border-bottom: 0; }
-.issue-cell { display: grid; gap: 4px; min-width: 0; }
-.issue-title {
-  display: block;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  line-height: 1.3;
-  font-weight: 600;
-  color: var(--text);
-}
-.issue-title:hover { color: var(--claw); }
-.label-list { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
-.assignee-list { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
-.pr-list { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
-.label-pill,
-.priority-filter {
-  display: inline-flex;
-  align-items: center;
-  min-height: 19px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.25;
-  max-width: 100%;
-  overflow-wrap: anywhere;
-  font-family: inherit;
-  font-weight: 500;
-  cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease;
-}
-.label-pill.dot::before {
-  content: "";
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  margin-right: 5px;
-  border-radius: 50%;
-  background: var(--label-color, transparent);
-}
-.label-pill.clawsweeper,
-.label-pill.highlight { color: var(--claw); border-color: color-mix(in srgb, var(--claw) 40%, transparent); }
-.label-pill:hover,
-.priority-filter:hover {
-  border-color: color-mix(in srgb, var(--claw) 55%, transparent);
-  color: var(--claw);
-}
-.priority-filter {
-  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
-  background: color-mix(in srgb, var(--amber) 8%, transparent);
-  color: var(--amber);
-}
-.assignee-pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 19px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--violet) 40%, transparent);
-  background: color-mix(in srgb, var(--violet) 7%, transparent);
-  color: var(--text);
-  font-size: 11px;
-  line-height: 1.25;
-  max-width: 100%;
-  overflow-wrap: anywhere;
-}
-.pr-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 19px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.25;
-  max-width: 100%;
-  overflow-wrap: anywhere;
-}
-.pr-chip.open { border-color: color-mix(in srgb, var(--green) 45%, transparent); color: var(--green); }
-.pr-chip.merged { border-color: color-mix(in srgb, var(--violet) 45%, transparent); color: var(--violet); }
-.pr-chip.closed { border-color: color-mix(in srgb, var(--red) 45%, transparent); color: var(--red); }
-.resize-handle {
-  position: absolute;
-  top: 0;
-  right: -4px;
-  width: 8px;
-  height: 100%;
-  z-index: 2;
-  cursor: col-resize;
-  touch-action: none;
-}
-.resize-handle::after {
-  content: "";
-  position: absolute;
-  top: 22%;
-  bottom: 22%;
-  left: 3px;
-  width: 1px;
-  background: transparent;
-}
-.resize-handle:hover::after,
-body.resizing-col .resize-handle::after {
-  background: color-mix(in srgb, var(--claw) 55%, transparent);
-}
-body.resizing-col {
-  cursor: col-resize;
-  user-select: none;
-}
-.priority { color: var(--amber); }
-.empty,
-.error {
-  padding: 26px;
-  color: var(--muted);
-  background: transparent;
-  border: 1px dashed var(--line);
-  border-radius: 12px;
-  text-align: center;
-}
-.empty::before { content: "🦞 "; opacity: 0.5; }
-.error { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
-@media (max-width: 1280px) {
-  .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .metric:nth-child(3n + 1) { border-left: 0; padding-left: 0; }
-  header, .view-head { align-items: start; flex-direction: column; }
-  .top-links { justify-content: flex-start; }
-}
+.aggregate-card { display: grid; grid-template-columns: 1fr auto; gap: 8px 24px; align-items: center; }
+.aggregate-card p { margin: 0; }
+.aggregate-count { grid-row: 1 / span 2; grid-column: 2; color: var(--claw); font-size: 38px; font-weight: 600; }
+.snapshot-health { margin-top: 18px; color: var(--muted); }
+.snapshot-health[data-state="complete"] { border-color: color-mix(in srgb, var(--green) 35%, var(--line)); }
+.snapshot-health[data-state="partial"] { border-color: color-mix(in srgb, var(--amber) 40%, var(--line)); }
 @media (max-width: 760px) {
-  main { width: min(100vw - 24px, 1560px); padding-top: 20px; }
-  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 560px) {
+  main { width: min(100vw - 24px, 1180px); padding-top: 20px; }
+  header { align-items: start; flex-direction: column; }
+  .top-links { justify-content: flex-start; }
   .grid { grid-template-columns: 1fr; }
+  .metric { border-left: 0; padding-left: 0; }
+  .aggregate-card { grid-template-columns: 1fr; }
+  .aggregate-count { grid-row: auto; grid-column: auto; }
 }
 </style>
 </head>
@@ -625,7 +412,7 @@ body.resizing-col {
   <header>
     <div>
       <h1>${escapeHtml(config.title)}</h1>
-      <div class="muted" id="subtitle">${escapeHtml(config.loadingSubtitle)}</div>
+      <div class="muted" id="subtitle">Privacy-safe aggregate triage counts</div>
     </div>
     <div class="top-links">
       ${config.links.map((link) => `<a class="top-link" href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>`).join("")}
@@ -633,452 +420,161 @@ body.resizing-col {
       <span class="muted mono" id="updated"></span>
     </div>
   </header>
-  <section class="grid" id="metrics"></section>
-  <section class="controls" id="controls">
-    <div class="control-group">
-      <label class="field">
-        <span>Filter</span>
-        <input id="issue-filter" type="search" placeholder="${escapeHtml(config.filterPlaceholder)}">
-      </label>
-      <button class="secondary-button" id="clear-filter" type="button">Clear</button>
-      ${routingGroupControl}
-      <label class="field">
-        <span>Sort</span>
-        <select id="issue-sort">
-          <option value="created-desc">Newest ${escapeHtml(config.itemNoun)} first</option>
-          <option value="created-asc">Oldest ${escapeHtml(config.itemNoun)} first</option>
-          <option value="number-desc">Highest ${escapeHtml(config.itemNoun)} number first</option>
-          <option value="number-asc">Lowest ${escapeHtml(config.itemNoun)} number first</option>
-          <option value="updated-desc">Recently updated first</option>
-          <option value="updated-asc">Least recently updated first</option>
-          <option value="comments-desc">Most comments first</option>
-          <option value="comments-asc">Fewest comments first</option>
-        </select>
-      </label>
-    </div>
-    <span class="muted mono" id="visible-count">Showing 0 loaded</span>
-  </section>
+  <p class="privacy-note">This public page exposes bounded category counts only. Per-item details and source diagnostics are intentionally unavailable.</p>
+  <section class="grid" id="metrics" aria-label="Aggregate triage metrics"></section>
   <nav class="tabs" id="tabs" aria-label="${escapeHtml(config.navLabel)}"></nav>
-  <section class="view-head">
-    <div class="view-title">
-      <strong id="view-name">Loading</strong>
-      <span class="muted" id="view-description"></span>
-    </div>
-    <a class="query-link" id="github-query" href="https://github.com/issues" target="_blank" rel="noreferrer">Open GitHub query</a>
+  <section class="aggregate-card" id="aggregate-view" aria-live="polite">
+    <h2 id="view-name">Loading aggregate view</h2>
+    <p class="muted" id="view-description"></p>
+    <strong class="aggregate-count" id="view-count">Not available</strong>
   </section>
-  <section id="table"></section>
-  <h2>Diagnostics</h2>
-  <section id="diagnostics" class="muted"></section>
+  <section class="snapshot-health" id="snapshot-health" data-state="unavailable" aria-live="polite">Aggregate snapshot is loading.</section>
 </main>
 <script>
 ${dashboardThemeControlScript()}
 const PAGE = ${pageConfig};
+const MAX_PUBLIC_COUNT = 1000000;
+const MAX_PUBLIC_ERROR_COUNT = 20;
 const fmt = new Intl.NumberFormat();
-const rel = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-const COLUMN_ORDER = PAGE.columns.map(column => column.key);
-const COLUMN_LABELS = Object.fromEntries(PAGE.columns.map(column => [column.key, column.label]));
-const COLUMN_DEFAULTS = Object.fromEntries(PAGE.columns.map(column => [column.key, column.width]));
-const COLUMN_MIN = Object.fromEntries(PAGE.columns.map(column => [column.key, column.min]));
-function storageGet(key) {
-  try {
-    return localStorage.getItem(key) || "";
-  } catch {
-    return "";
-  }
-}
-function storageSet(key, value) {
-  try {
-    localStorage.setItem(key, value);
-  } catch {}
-}
 let state = null;
-let activeView = location.hash.replace(/^#/, "") || storageGet(PAGE.storagePrefix + ":view") || PAGE.defaultView;
-let activeGroup = PAGE.routingGroups
-  ? new URLSearchParams(location.search).get("group") || storageGet(PAGE.storagePrefix + ":group")
-  : "";
-let filterText = storageGet(PAGE.storagePrefix + ":filter");
-let sortMode = storageGet(PAGE.storagePrefix + ":sort") || "created-desc";
-let filterTimer = null;
-let columnWidths = loadColumnWidths();
+let activeView = PAGE.views.some(view => view.id === location.hash.slice(1))
+  ? location.hash.slice(1)
+  : PAGE.defaultView;
 function esc(value) {
   return String(value ?? "").replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
 }
-function loadColumnWidths() {
-  let saved = {};
-  try {
-    saved = JSON.parse(storageGet(PAGE.storagePrefix + ":columns") || "{}");
-  } catch {
-    saved = {};
+function boundedCount(value, maximum = MAX_PUBLIC_COUNT) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum
+    ? value
+    : null;
+}
+function normalizedTimestamp(value) {
+  if (
+    typeof value !== "string" ||
+    value.length > 35 ||
+    !/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$/.test(value)
+  ) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && timestamp >= Date.UTC(2020, 0, 1) && timestamp < Date.UTC(2100, 0, 1)
+    ? new Date(timestamp).toISOString()
+    : null;
+}
+function unavailableSnapshot() {
+  return {
+    generated_at: null,
+    complete: false,
+    error_count: null,
+    views: PAGE.views.map(view => ({ ...view, count: null })),
+  };
+}
+function publicSnapshot(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.schema_version !== 2) {
+    return unavailableSnapshot();
   }
-  return Object.fromEntries(COLUMN_ORDER.map(key => {
-    const width = Number(saved[key]);
-    return [key, Math.max(COLUMN_MIN[key], Number.isFinite(width) ? width : COLUMN_DEFAULTS[key])];
-  }));
+  const generatedAt = normalizedTimestamp(value.generated_at);
+  const errorCount = boundedCount(value.error_count, MAX_PUBLIC_ERROR_COUNT);
+  if (
+    !generatedAt ||
+    typeof value.complete !== "boolean" ||
+    errorCount === null ||
+    value.complete !== (errorCount === 0) ||
+    !Array.isArray(value.views) ||
+    value.views.length !== PAGE.views.length
+  ) {
+    return unavailableSnapshot();
+  }
+  const sourceById = new Map();
+  for (const source of value.views) {
+    if (!source || typeof source !== "object" || Array.isArray(source) || typeof source.id !== "string" || sourceById.has(source.id)) {
+      return unavailableSnapshot();
+    }
+    sourceById.set(source.id, source);
+  }
+  const views = [];
+  for (const view of PAGE.views) {
+    const count = boundedCount(sourceById.get(view.id)?.total_count);
+    if (count === null) return unavailableSnapshot();
+    views.push({ ...view, count });
+  }
+  if (sourceById.size !== PAGE.views.length) return unavailableSnapshot();
+  return { generated_at: generatedAt, complete: value.complete, error_count: errorCount, views };
 }
-function saveColumnWidths() {
-  storageSet(PAGE.storagePrefix + ":columns", JSON.stringify(columnWidths));
-}
-function tableWidth() {
-  return COLUMN_ORDER.reduce((total, key) => total + columnWidths[key], 0);
-}
-function columnPercent(key) {
-  const total = Math.max(1, tableWidth());
-  return ((columnWidths[key] / total) * 100).toFixed(3) + "%";
-}
-function colgroupHtml() {
-  return COLUMN_ORDER.map(key => '<col data-col="' + esc(key) + '" style="width:' + esc(columnPercent(key)) + '">').join("");
-}
-function headerCell(key) {
-  const label = COLUMN_LABELS[key] || key;
-  return '<th><span>' + esc(label) + '</span><span class="resize-handle" role="separator" aria-label="Resize ' + esc(label) + ' column" data-resize-col="' + esc(key) + '"></span></th>';
-}
-function tableHeaderHtml() {
-  return COLUMN_ORDER.map(headerCell).join("");
-}
-function applyColumnWidths() {
-  const table = document.querySelector("#table table");
-  if (table) table.style.width = "100%";
-  document.querySelectorAll("#table col[data-col]").forEach(col => {
-    const key = col.getAttribute("data-col");
-    if (columnWidths[key]) col.style.width = columnPercent(key);
-  });
-}
-function since(iso) {
-  const diff = Date.parse(iso) - Date.now();
-  const minutes = Math.round(diff / 60000);
-  if (!Number.isFinite(minutes)) return "";
-  if (Math.abs(minutes) < 90) return rel.format(minutes, "minute");
-  return rel.format(Math.round(minutes / 60), "hour");
-}
-function compact(value) {
-  return String(value ?? "").replace(/\\s+/g, " ").trim();
-}
-function updateLocation() {
-  const url = new URL(location.href);
-  if (PAGE.routingGroups && activeGroup) url.searchParams.set("group", activeGroup);
-  else url.searchParams.delete("group");
-  url.hash = activeView;
-  history.replaceState(null, "", url.pathname + url.search + url.hash);
+function displayCount(value) {
+  return value === null ? "Not available" : fmt.format(value);
 }
 function metric(label, count, detail) {
-  return '<article class="metric"><span>' + esc(label) + '</span><strong>' + esc(fmt.format(count || 0)) + '</strong><div class="muted">' + esc(detail || "") + '</div></article>';
+  return '<article class="metric"><span>' + esc(label) + '</span><strong>' + esc(displayCount(count)) + '</strong><div class="muted">' + esc(detail || "") + '</div></article>';
 }
-function labelPill(label) {
-  const name = label.name || String(label);
-  const color = label.color ? '#' + label.color : '';
-  const style = color ? ' style="--label-color: ' + esc(color) + ';"' : '';
-  const highlighted = (PAGE.highlightLabelPrefixes || []).some(prefix => name.startsWith(prefix));
-  const cls = (highlighted ? "label-pill highlight" : "label-pill") + (color ? " dot" : "");
-  return '<button class="' + cls + '" type="button" data-filter-value="' + esc(name) + '"' + style + ' title="Filter by ' + esc(name) + '">' + esc(name) + '</button>';
-}
-function assigneePills(row) {
-  const assignees = Array.isArray(row.assignees) ? row.assignees : [];
-  if (!assignees.length) return '<span class="muted">Unassigned</span>';
-  return assignees.map(assignee => '<span class="assignee-pill">' + esc(assignee) + '</span>').join("");
-}
-function linkedPullRequestPills(row) {
-  const prs = Array.isArray(row.linked_pull_requests) ? row.linked_pull_requests : [];
-  if (!prs.length) return '<span class="muted">-</span>';
-  return prs
-    .map((pr) => {
-      const state = pr.state || "unknown";
-      const label = state.toUpperCase() + " #" + pr.number;
-      return '<a class="pr-chip ' + esc(state) + '" href="' + esc(pr.url) + '" target="_blank" rel="noreferrer" title="' + esc(pr.repository + "#" + pr.number + ": " + pr.title) + '">' + esc(label) + '</a>';
-    })
-    .join("");
-}
-function priorityFor(row) {
-  return (row.labels || []).map(label => label.name).find(name => /^P[0-3]$/.test(name || "")) || "";
-}
-function routingGroupPills(row) {
-  const groups = Array.isArray(row.routing_groups) ? row.routing_groups : [];
-  if (!groups.length) return '<span class="muted">Unclassified</span>';
-  return groups.map(group =>
-    '<button class="label-pill" type="button" data-group-value="' + esc(group.id) +
-    '" title="Show ' + esc(group.title) + '">' + esc(group.title) + '</button>'
+function renderMetrics() {
+  const byId = Object.fromEntries(state.views.map(view => [view.id, view.count]));
+  document.getElementById("metrics").innerHTML = PAGE.metrics.map(metricDefinition =>
+    metric(metricDefinition.label, byId[metricDefinition.view] ?? null, metricDefinition.detail)
   ).join("");
 }
-function searchableText(row) {
-  const assignees = row.assignees || [];
-  return [
-    row.title,
-    row.repository,
-    "#" + row.number,
-    row.number,
-    row.author,
-    ...(assignees.length ? assignees : ["unassigned"]),
-    ...(row.linked_pull_requests || []).flatMap(pr => [
-      pr.repository,
-      "#" + pr.number,
-      pr.title,
-      pr.state,
-    ]),
-    priorityFor(row),
-    row.proof_state,
-    ...(row.routing_groups || []).flatMap(group => [group.id, group.title]),
-    ...(row.labels || []).map(label => label.name)
-  ].join(" ").toLowerCase();
-}
-function filteredRows(rows) {
-  const terms = filterText.toLowerCase().split(/\\s+/).filter(Boolean);
-  const grouped = activeGroup
-    ? rows.filter(row => (row.routing_groups || []).some(group => group.id === activeGroup))
-    : rows.slice();
-  const visible = terms.length
-    ? grouped.filter(row => terms.every(term => searchableText(row).includes(term)))
-    : grouped;
-  return visible.sort(compareRows);
-}
-function compareRows(left, right) {
-  if (sortMode === "created-asc") return Date.parse(left.created_at || "") - Date.parse(right.created_at || "");
-  if (sortMode === "number-desc") return Number(right.number || 0) - Number(left.number || 0);
-  if (sortMode === "number-asc") return Number(left.number || 0) - Number(right.number || 0);
-  if (sortMode === "updated-desc") return Date.parse(right.updated_at || "") - Date.parse(left.updated_at || "");
-  if (sortMode === "updated-asc") return Date.parse(left.updated_at || "") - Date.parse(right.updated_at || "");
-  if (sortMode === "comments-desc") return Number(right.comments || 0) - Number(left.comments || 0);
-  if (sortMode === "comments-asc") return Number(left.comments || 0) - Number(right.comments || 0);
-  return Date.parse(right.created_at || "") - Date.parse(left.created_at || "");
-}
-function renderTabs(views) {
-  document.getElementById("tabs").innerHTML = views.map(view =>
+function renderTabs() {
+  document.getElementById("tabs").innerHTML = state.views.map(view =>
     '<button class="tab" type="button" data-view="' + esc(view.id) + '" aria-selected="' + (view.id === activeView ? "true" : "false") + '">' +
-    esc(view.title) + ' <span class="muted">' + esc(fmt.format(view.total_count || 0)) + '</span></button>'
+    esc(view.title) + ' <span class="muted">' + esc(displayCount(view.count)) + '</span></button>'
   ).join("");
   document.querySelectorAll("[data-view]").forEach(button => {
     button.addEventListener("click", () => {
-      activeView = button.dataset.view;
-      storageSet(PAGE.storagePrefix + ":view", activeView);
-      updateLocation();
+      const selected = PAGE.views.find(view => view.id === button.dataset.view);
+      if (!selected) return;
+      activeView = selected.id;
+      history.replaceState(null, "", location.pathname + "#" + encodeURIComponent(activeView));
       render();
     });
   });
 }
-function renderMetrics(views) {
-  const byId = Object.fromEntries(views.map(view => [view.id, view.total_count || 0]));
-  document.getElementById("metrics").innerHTML = PAGE.metrics.map(item =>
-    metric(item.label, byId[item.view], item.detail)
-  ).join("");
+function renderView() {
+  const view = state.views.find(candidate => candidate.id === activeView) || state.views[0];
+  if (!view) return;
+  activeView = view.id;
+  document.getElementById("view-name").textContent = view.title;
+  document.getElementById("view-description").textContent = view.description;
+  document.getElementById("view-count").textContent = displayCount(view.count);
 }
-function renderTable(view) {
-  document.getElementById("view-name").textContent = view.title + " (" + fmt.format(view.total_count || 0) + ")";
-  document.getElementById("view-description").textContent = view.description || "";
-  const query = document.getElementById("github-query");
-  const githubUrl = routingGroupGithubUrl(view);
-  query.href = githubUrl || "https://github.com/issues";
-  query.style.display = githubUrl ? "inline-flex" : "none";
-  renderRows(view);
-}
-function routingGroupGithubUrl(view) {
-  if (!view.github_url || !activeGroup) return view.github_url || "";
-  const group = (state?.routing_groups || []).find(candidate => candidate.id === activeGroup);
-  if (!group || group.labels?.length !== 1) return "";
-  const url = new URL(view.github_url);
-  const query = url.searchParams.get("q") || "";
-  url.searchParams.set("q", query + ' label:"' + group.labels[0] + '"');
-  return url.toString();
-}
-function authorCell(row) {
-  return row.author ? '<button class="label-pill" type="button" data-filter-value="' + esc(row.author) + '" title="Filter by ' + esc(row.author) + '">' + esc(row.author) + '</button>' : '<span class="muted">Unknown</span>';
-}
-function proofStateCell(row) {
-  return row.proof_state ? '<button class="priority-filter" type="button" data-filter-value="' + esc(row.proof_state) + '" title="Filter by ' + esc(row.proof_state) + '">' + esc(row.proof_state) + '</button>' : '<span class="muted">-</span>';
-}
-function rowCellHtml(key, row) {
-  if (key === "issue") {
-    const itemLabel = row.repository + "#" + row.number;
-    return '<div class="issue-cell"><a class="issue-title" href="' + esc(row.url) + '" target="_blank" rel="noreferrer">' + esc(compact(row.title)) + '</a><span class="muted mono">' + esc(itemLabel) + (row.author ? " opened by " + esc(row.author) : "") + '</span></div>';
-  }
-  if (key === "author") return authorCell(row);
-  if (key === "assignees") return '<div class="assignee-list">' + assigneePills(row) + '</div>';
-  if (key === "priority") {
-    const priority = priorityFor(row);
-    return priority
-      ? '<button class="priority-filter" type="button" data-filter-value="' + esc(priority) + '" title="Filter by ' + esc(priority) + '">' + esc(priority) + '</button>'
-      : '<span class="muted">-</span>';
-  }
-  if (key === "proof") return proofStateCell(row);
-  if (key === "area") return '<div class="label-list">' + routingGroupPills(row) + '</div>';
-  if (key === "prs") return '<div class="pr-list">' + linkedPullRequestPills(row) + '</div>';
-  if (key === "labels") return '<div class="label-list">' + (row.labels || []).map(labelPill).join("") + '</div>';
-  if (key === "updated") return '<span title="' + esc(row.updated_at || "") + '">' + esc(since(row.updated_at)) + '</span>';
-  if (key === "comments") return esc(fmt.format(row.comments || 0));
-  return "";
-}
-function renderRows(view) {
-  const rows = filteredRows(view.items || []);
-  const visibleCount = document.getElementById("visible-count");
-  if (visibleCount) {
-    const loaded = (view.items || []).length;
-    const total = view.total_count || loaded;
-    const limit = view.item_limit || state?.source?.item_limit_per_view || loaded;
-    const totalText = total > loaded ? " \\u00b7 " + fmt.format(total) + " total" : "";
-    visibleCount.textContent =
-      "Showing " +
-      fmt.format(rows.length) +
-      " of " +
-      fmt.format(loaded) +
-      " loaded" +
-      totalText +
-      " \u00b7 max " +
-      fmt.format(limit) +
-      " for this view";
-  }
-  if (!view.items || !view.items.length) {
-    document.getElementById("table").innerHTML = '<div class="empty">' + esc(PAGE.emptySnapshotText) + '</div>';
+function renderHealth() {
+  const health = document.getElementById("snapshot-health");
+  if (!state.generated_at || state.error_count === null) {
+    health.dataset.state = "unavailable";
+    health.textContent = "Aggregate snapshot is temporarily unavailable; no detail was rendered.";
+    document.getElementById("updated").textContent = "";
     return;
   }
-  if (!rows.length) {
-    document.getElementById("table").innerHTML = '<div class="empty">' + esc(PAGE.emptyFilterText) + '</div>';
-    return;
+  document.getElementById("updated").textContent = "Updated " + new Date(state.generated_at).toLocaleString();
+  if (state.complete) {
+    health.dataset.state = "complete";
+    health.textContent = "Complete aggregate snapshot. No collection errors were reported.";
+  } else {
+    health.dataset.state = "partial";
+    health.textContent = "Partial aggregate snapshot. " + fmt.format(state.error_count) + " collection errors were withheld.";
   }
-  const tableRows = rows.map(row => {
-    return '<tr>' +
-      COLUMN_ORDER.map(key => '<td>' + rowCellHtml(key, row) + '</td>').join("") +
-      '</tr>';
-  }).join("");
-  document.getElementById("table").innerHTML =
-    '<div class="table-wrap"><table><colgroup>' +
-    colgroupHtml() +
-    '</colgroup><thead><tr>' + tableHeaderHtml() + '</tr></thead><tbody>' +
-    tableRows +
-    '</tbody></table></div>';
-}
-function currentView() {
-  const views = state?.views || [];
-  return views.find(view => view.id === activeView) || views[0] || null;
-}
-function renderRoutingGroupControl(view) {
-  if (!PAGE.routingGroups) return;
-  const select = document.getElementById("routing-group");
-  const groups = state?.routing_groups || [];
-  if (activeGroup && !groups.some(group => group.id === activeGroup)) {
-    activeGroup = "";
-    storageSet(PAGE.storagePrefix + ":group", "");
-    updateLocation();
-  }
-  const counts = view?.loaded_routing_group_counts || {};
-  select.innerHTML = '<option value="">All impact groups</option>' + groups.map(group =>
-    '<option value="' + esc(group.id) + '">' + esc(group.title) +
-    ' (' + esc(fmt.format(counts[group.id] || 0)) + ')</option>'
-  ).join("");
-  select.value = activeGroup;
-}
-function initControls() {
-  const input = document.getElementById("issue-filter");
-  const sort = document.getElementById("issue-sort");
-  input.value = filterText;
-  sort.value = sortMode;
-  const routingGroup = document.getElementById("routing-group");
-  input.addEventListener("input", () => {
-    clearTimeout(filterTimer);
-    filterTimer = setTimeout(() => {
-      filterText = input.value;
-      storageSet(PAGE.storagePrefix + ":filter", filterText);
-      const view = currentView();
-      if (view) renderRows(view);
-    }, 80);
-  });
-  document.getElementById("clear-filter").addEventListener("click", () => {
-    filterText = "";
-    input.value = "";
-    storageSet(PAGE.storagePrefix + ":filter", filterText);
-    const view = currentView();
-    if (view) renderRows(view);
-    input.focus();
-  });
-  sort.addEventListener("change", event => {
-    sortMode = event.target.value;
-    storageSet(PAGE.storagePrefix + ":sort", sortMode);
-    const view = currentView();
-    if (view) renderRows(view);
-  });
-  if (routingGroup) {
-    routingGroup.addEventListener("change", event => {
-      activeGroup = event.target.value;
-      storageSet(PAGE.storagePrefix + ":group", activeGroup);
-      updateLocation();
-      render();
-    });
-  }
-  document.getElementById("table").addEventListener("click", event => {
-    const groupTarget = event.target.closest("[data-group-value]");
-    if (groupTarget) {
-      activeGroup = groupTarget.getAttribute("data-group-value") || "";
-      storageSet(PAGE.storagePrefix + ":group", activeGroup);
-      updateLocation();
-      render();
-      return;
-    }
-    const target = event.target.closest("[data-filter-value]");
-    if (!target) return;
-    filterText = target.getAttribute("data-filter-value") || "";
-    input.value = filterText;
-    storageSet(PAGE.storagePrefix + ":filter", filterText);
-    const view = currentView();
-    if (view) renderRows(view);
-    input.focus();
-  });
-  document.getElementById("table").addEventListener("pointerdown", event => {
-    const handle = event.target.closest("[data-resize-col]");
-    if (!handle) return;
-    event.preventDefault();
-    const key = handle.getAttribute("data-resize-col");
-    if (!COLUMN_ORDER.includes(key)) return;
-    const startX = event.clientX;
-    const startWidth = columnWidths[key] || COLUMN_DEFAULTS[key];
-    document.body.classList.add("resizing-col");
-    const onMove = moveEvent => {
-      columnWidths[key] = Math.round(Math.max(COLUMN_MIN[key], startWidth + moveEvent.clientX - startX));
-      applyColumnWidths();
-    };
-    const onUp = () => {
-      document.body.classList.remove("resizing-col");
-      document.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerup", onUp);
-      document.removeEventListener("pointercancel", onUp);
-      saveColumnWidths();
-    };
-    document.addEventListener("pointermove", onMove);
-    document.addEventListener("pointerup", onUp);
-    document.addEventListener("pointercancel", onUp);
-  });
-}
-function renderDiagnostics(data) {
-  const errors = data.diagnostics?.errors || [];
-  document.getElementById("diagnostics").innerHTML = errors.length
-    ? '<div class="error">' + errors.map(esc).join("<br>") + '</div>'
-    : '<div class="empty">No dashboard diagnostics in this snapshot.</div>';
 }
 function render() {
-  if (!state) return;
-  const views = state.views || [];
-  if (!views.find(view => view.id === activeView) && views.length) activeView = views[0].id;
-  document.getElementById("subtitle").textContent = (state.source?.target_repositories || []).join(", ") + " - read-only GitHub Search snapshot";
-  document.getElementById("updated").textContent = "Updated " + since(state.generated_at);
-  renderMetrics(views);
-  renderTabs(views);
-  const view = views.find(view => view.id === activeView) || views[0] || {};
-  renderRoutingGroupControl(view);
-  renderTable(view);
-  renderDiagnostics(state);
+  renderMetrics();
+  renderTabs();
+  renderView();
+  renderHealth();
 }
 async function load() {
   try {
     const response = await fetch(PAGE.endpoint, { cache: "no-store" });
-    if (!response.ok) throw new Error(PAGE.endpoint + " returned " + response.status);
-    state = await response.json();
-    render();
-  } catch (error) {
-    document.getElementById("subtitle").textContent = "Failed to load triage data: " + error.message;
-    document.getElementById("table").innerHTML = '<div class="error">' + esc(error.message) + '</div>';
+    state = response.ok ? publicSnapshot(await response.json()) : unavailableSnapshot();
+  } catch {
+    state = unavailableSnapshot();
   }
+  render();
 }
-initControls();
 load();
 setInterval(load, 120000);
 </script>
 </body>
 </html>`;
+}
+
+function triageHtml(config: TriagePageConfig): string {
+  return aggregateTriageHtml(config);
 }
 
 function dashboardHtml(env: DashboardEnv = {}) {
@@ -1579,6 +1075,39 @@ h2::before { content: ""; flex: 0 0 auto; width: 14px; height: 2px; border-radiu
   .apply-health-action { grid-template-columns: 1fr; }
 }
 .worker-toolbar { margin-top: 12px; }
+.public-reference-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}
+.public-reference-search input {
+  min-width: 260px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px 10px;
+}
+.public-reference-row mark {
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--amber) 24%, transparent);
+  color: inherit;
+  padding: 1px 3px;
+}
+.public-reference-row {
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.public-reference-row:hover,
+.public-reference-row:focus-visible {
+  background: color-mix(in srgb, var(--claw) 5%, transparent);
+  outline: 2px solid var(--claw);
+  outline-offset: 2px;
+}
 .worker-filters {
   display: inline-flex;
   flex-wrap: wrap;
@@ -2050,15 +1579,8 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
 .automerge-n { position: absolute; left: 50%; bottom: -19px; translate: -50% 0; color: var(--muted); font-size: 9px; white-space: nowrap; }
 .automerge-chart-legend { margin-top: 7px; color: var(--muted); font-size: 10px; }
 .automerge-details { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 22px; }
-.automerge-details h3, .automerge-sessions h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+.automerge-details h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
 .automerge-detail-row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--line-soft); font-size: 12px; }
-.automerge-sessions { margin-top: 22px; overflow-x: auto; }
-.automerge-sessions-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-.automerge-sessions-head h3 { margin: 0; }
-.automerge-sessions-head span { color: var(--muted); font-size: 10px; }
-.automerge-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-.automerge-table th, .automerge-table td { padding: 9px 8px; border-bottom: 1px solid var(--line-soft); text-align: left; white-space: nowrap; }
-.automerge-table th { color: var(--muted); font-weight: 500; }
 .health-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .health-strip:empty { display: none; }
 .health-chip {
@@ -2274,12 +1796,23 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
       <span class="muted">Select a worker for its live step timeline.</span>
     </div>
     <div id="workers"></div>
+    <div class="workers-head">
+      <h2>Public GitHub work</h2>
+      <span class="muted" id="public-reference-summary"></span>
+    </div>
+    <form class="public-reference-search" id="public-reference-search" role="search">
+      <label class="sr-only" for="public-reference-input">Find a public issue or pull request</label>
+      <input id="public-reference-input" autocomplete="off" placeholder="Issue/PR number or owner/repo#number">
+      <button class="filter-button" type="submit">Find</button>
+      <button class="filter-button" id="public-reference-clear" type="button">Clear</button>
+    </form>
+    <div id="public-references"></div>
   </section>
   <h2 id="review-coverage-title">Fleet Review Coverage</h2>
   <details class="review-coverage">
     <summary>
       <span class="coverage-summary-content">
-        <span class="coverage-summary-label">Explore repository coverage</span>
+        <span class="coverage-summary-label">Explore fleet-wide coverage</span>
         <span class="muted" id="review-coverage-note">Open items reviewed in the trailing 7 days</span>
       </span>
     </summary>
@@ -2294,8 +1827,6 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
           <button class="trend-range" type="button" data-automerge-range="24h">24h</button>
           <button class="trend-range active" type="button" data-automerge-range="7d">7d</button>
         </div>
-        <label class="muted">Repo <select id="automerge-repo" aria-label="Filter automerge metrics by repository"><option value="">All</option></select></label>
-        <label class="muted">Policy <select id="automerge-policy" aria-label="Filter automerge metrics by policy"><option value="">All</option></select></label>
       </div>
     </div>
     <div class="automerge-meta" id="automerge-meta">Loading product telemetry…</div>
@@ -2334,7 +1865,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
   <div class="drawer">
     <div class="drawer-head">
       <div id="worker-dialog-heading"></div>
-      <button class="drawer-close" id="worker-dialog-close" type="button" aria-label="Close worker details">×</button>
+      <button class="drawer-close" id="worker-dialog-close" type="button" aria-label="Close details">×</button>
     </div>
     <div class="drawer-body" id="worker-dialog-body"></div>
   </div>
@@ -2352,7 +1883,9 @@ function elapsed(ms) {
   return Math.round(m / 60) + "h";
 }
 function since(iso) {
-  const diff = Date.parse(iso) - Date.now();
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return "";
+  const diff = timestamp - Date.now();
   const minutes = Math.round(diff / 60000);
   if (Math.abs(minutes) < 90) return rel.format(minutes, "minute");
   return rel.format(Math.round(minutes / 60), "hour");
@@ -2402,6 +1935,273 @@ function ciBadge(ci) {
   const detail = ci.total ? " " + esc(ci.failing || 0) + "/" + esc(ci.pending || 0) + "/" + esc(ci.total || 0) : "";
   return '<span class="pill ' + cls + '" title="' + esc(ci.label || ci.source || "") + '">' + esc(prefix) + " " + esc(ci.state) + detail + '</span>';
 }
+const STATUS_CONTAINER_FIELDS = new Set([
+  "root", "source", "fleet", "control_plane", "publishers", "comment_routers", "reconcilers",
+  "health", "operational_health", "averages", "workers", "automatic_work", "pipeline", "bay",
+  "recent", "diagnostics", "dashboard_health", "progress", "steps", "timeline", "ci", "timings",
+  "overall", "terminal_buffer", "recently_washed", "cluster_repair", "markers", "latest_runs",
+  "active_intake_runs", "active_worker_runs", "apply_health", "items", "failures", "skip_reasons",
+  "closure", "next_action_buckets", "next_actions", "cycle", "candidate_counts", "lanes",
+  "comment_sync", "automerge", "automerge_reliability", "closed_items", "closed_stats",
+  "operation_counts", "events", "reasons", "cursor", "exact_review_queue",
+  "recent_durable_publication_events", "collection", "review", "publication", "handoff_health",
+  "phases", "pending", "dispatching", "leased", "pressure", "bay_projection", "activity", "queue_stages", "live_stages", "stages",
+  "active_stages", "window", "direct", "batch", "counts", "buckets", "provenance",
+  "backoff_reasons", "parked_reasons", "recovery_reasons", "errors"
+]);
+const STATUS_BOOLEAN_FIELDS = new Set([
+  "active_census_complete", "complete", "cursor_required", "is_codex_worker",
+  "public_aggregate_only", "public_projection_complete", "recovered", "telemetry_complete",
+  "workflow_run_census_complete", "durable_server_observed"
+]);
+const STATUS_TEXT_FIELDS = new Set([
+  "conclusion", "mode", "outcome", "reason", "sample_kind", "severity", "source", "stage", "state",
+  "status", "terminal_outcome", "work_kind", "errors"
+]);
+const STATUS_TEXT_VALUES = new Set([
+  "active", "apply", "applying", "arriving", "all_clear", "amber", "assist", "automerge",
+  "background-review", "cancelled", "closing", "complete", "congested", "commit-review", "completed",
+  "completed_review_journeys", "degraded", "exact-review", "failure", "github-checks", "green",
+  "healthy", "hot-review", "in_progress", "idle", "issue_to_pr", "job", "live", "neutral",
+  "needs_attention", "other", "pending", "processed", "publishing", "pr_repair", "queued",
+  "recovered", "repair", "repair_cluster", "repairing", "red", "requested", "reviewing",
+  "running", "setting-up", "skipped", "skipped_changed_since_review", "stale", "stalled",
+  "success", "telemetry_unavailable", "timed_out", "unavailable", "unresolved", "unknown",
+  "waiting", "workflow", "workflow-fallback", "6h", "24h", "7d", "accepted", "deduped",
+  "superseded", "fallback", "retryable", "permanent", "saturated", "malformed", "mixed",
+  "observed", "queue_empty", "claim_stalled", "dispatcher_blocked", "dispatcher_paused",
+  "claim_delayed", "handoff_current", "handoff_unknown", "capacity_unavailable", "capacity_available",
+  "no_ready_backlog", "no_admissible_backlog", "dispatcher_inactive", "capacity_full_with_backlog"
+]);
+const STATUS_TIME_FIELDS = new Set([
+  "at", "completed_at", "generated_at", "observed_at", "oldest_at", "oldest_pending_at",
+  "oldest_ready_at", "oldest_backoff_at", "oldest_dispatching_at", "oldest_leased_at",
+  "next_attempt_at", "next_wake_at", "last_tide_at", "received_at", "since", "started_at",
+  "updated_at", "washed_at"
+]);
+const STATUS_TIMESTAMP_PATTERN =
+  /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$/;
+const STATUS_NUMBER_FIELDS = new Set([
+  "schema_version", "applying", "arriving", "active_codex_jobs", "active", "active_intake_runs",
+  "active_worker_runs", "active_workflow_runs", "action_records", "attempts", "available_slots",
+  "automerge_samples", "bot_owned_proof_decisions_requested", "bot_owned_proof_dispatches",
+  "budget_used_percent", "capacity", "cancelled_attempts", "closed", "comment_synced",
+  "completed", "confirmed_proposal", "count", "dispatching", "error_rate_percent", "examined",
+  "failed_review_retries", "failed_review_retry_exhaustions", "failed_attempts", "failed_recent_runs",
+  "failing", "fallbacks", "guarded_retry", "inherited_label_cleanups", "inconsistent_or_stale",
+  "issues", "leased", "measured_attempts", "oldest_queued_minutes", "oldest_running_minutes",
+  "oldest_wedged_rerun_minutes", "oldest_zombie_queued_minutes", "pending", "pending_depth", "processed", "publishing",
+  "promotion_cooldown_eligible", "promotion_eligible", "promotion_total", "cooldown_eligible_total",
+  "proof_required", "prs", "queued_over_threshold", "queued_runs", "queued_workflow_runs",
+  "recovered_failures", "recovery_rate_percent", "review_refresh", "repairing", "reviewing",
+  "running_over_threshold", "running", "sample_limit", "sampled_runs", "setting_up", "samples",
+  "self_heal_conflict_repairs", "support_queued_workflow_runs", "support_workflow_runs",
+  "stalled_after_seconds", "successful_attempts", "skipped", "skipped_changed_since_review",
+  "tide_generation", "tide_threshold", "target_repository_count", "total", "unresolved_failures",
+  "worker_budget", "worker_detail_fallbacks", "worker_detail_runs", "waiting", "window_minutes",
+  "window_hours", "wedged_rerun_runs", "zombie_queued_runs", "apply_ready_count", "attention_count",
+  "automerge_command_to_merge_ms", "average_duration_ms", "average_ms", "candidate_count",
+  "completed_attempts", "duration_ms", "elapsed_ms", "error_count", "estimated_full_cycle_minutes",
+  "failure_rate_percent", "generated_count", "longest_duration_ms", "maximum_age_ms", "median_ms",
+  "oldest_age_seconds", "oldest_dispatching_age_seconds", "oldest_leased_age_seconds",
+  "oldest_pending_age_seconds", "omitted_count", "ready_pending", "admissible_pending",
+  "scheduled_interval_minutes", "terminal_count", "total_count", "total_duration_ms", "ttl_seconds",
+  "setting-up", "ready", "backoff", "parked", "oldest_ready_age_seconds",
+  "oldest_backoff_age_seconds", "oldest_lease_age_seconds", "enqueued_total", "completed_total",
+  "published_total", "superseded_total", "semantic_deduped_total", "retried_total",
+  "dead_lettered_total", "refreshed_total", "shed_since_reset", "warning_after_seconds",
+  "scan_limit", "bucket_seconds", "bucket_count", "rows", "retention_seconds", "index",
+  "dispatch_debounce", "dispatcher_backoff", "admission_retry", "coordination_retry",
+  "throttle_retry", "review_retry", "publication_retry", "dead_letter_capacity",
+  "dispatch_rejected", "review_retry_exhausted", "direct_publication", "claim_timeout",
+  "execution_timeout", "workflow_cancelled", "workflow_failed"
+]);
+function dashboardStatusNumber(value, field) {
+  if (!STATUS_NUMBER_FIELDS.has(field) || !Number.isFinite(value) || value < 0) return undefined;
+  if (field === "schema_version") return value === 1 ? 1 : undefined;
+  if (field === "error_count") return Number.isSafeInteger(value) && value <= 20 ? value : undefined;
+  if (field.endsWith("_percent")) return value <= 100 ? value : undefined;
+  return Number.isSafeInteger(value) && value <= 1000000000000 ? value : undefined;
+}
+function dashboardStatusValue(value, field, depth) {
+  if (depth > 12) return undefined;
+  if (value === null) {
+    return STATUS_CONTAINER_FIELDS.has(field) || STATUS_NUMBER_FIELDS.has(field) ||
+      STATUS_TEXT_FIELDS.has(field) || STATUS_TIME_FIELDS.has(field) ? null : undefined;
+  }
+  if (typeof value === "boolean") return STATUS_BOOLEAN_FIELDS.has(field) ? value : undefined;
+  if (typeof value === "number") return dashboardStatusNumber(value, field);
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (STATUS_TIME_FIELDS.has(field)) {
+      if (text.length > 35 || !STATUS_TIMESTAMP_PATTERN.test(text)) return undefined;
+      const parsed = Date.parse(text);
+      return Number.isFinite(parsed) && parsed >= Date.UTC(2020, 0, 1) && parsed < Date.UTC(2100, 0, 1)
+        ? new Date(parsed).toISOString()
+        : undefined;
+    }
+    if (!STATUS_TEXT_FIELDS.has(field)) return undefined;
+    const normalized = text.toLowerCase();
+    return STATUS_TEXT_VALUES.has(normalized) ? normalized : undefined;
+  }
+  if (Array.isArray(value)) {
+    if (!STATUS_CONTAINER_FIELDS.has(field)) return undefined;
+    return value.slice(0, 100).map(entry => dashboardStatusValue(entry, field, depth + 1)).filter(entry => entry !== undefined);
+  }
+  if (!value || typeof value !== "object" || !STATUS_CONTAINER_FIELDS.has(field)) return undefined;
+  const result = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const projected = dashboardStatusValue(entry, key, depth + 1);
+    if (projected !== undefined) result[key] = projected;
+  }
+  return result;
+}
+function dashboardPublicBayReferences(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 124) return [];
+  const stages = new Set(["arriving", "setting-up", "reviewing", "publishing", "applying", "repairing"]);
+  const sources = new Set(["queue", "live"]);
+  const seen = new Set();
+  const references = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const repository = typeof entry.repository === "string" ? entry.repository.trim().toLowerCase() : "";
+    const itemNumber = entry.item_number;
+    if (
+      repository.length > 200 ||
+      !/^[a-z0-9_.-]+\\/[a-z0-9_.-]+$/.test(repository) ||
+      typeof itemNumber !== "number" ||
+      !Number.isSafeInteger(itemNumber) ||
+      itemNumber <= 0 ||
+      itemNumber > 1000000000 ||
+      !stages.has(entry.stage) ||
+      !sources.has(entry.source)
+    ) return [];
+    const key = repository + "#" + itemNumber;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const action = dashboardPublicBayAction(entry.action);
+    references.push({
+      repository,
+      item_number: itemNumber,
+      stage: entry.stage,
+      source: entry.source,
+      ...(action ? { action } : {})
+    });
+  }
+  return references;
+}
+const PUBLIC_ACTION_STEP_LABELS = {
+  setup: "Set up job",
+  checkout: "Check out repository",
+  dependencies: "Prepare dependencies",
+  lease: "Acquire work lease",
+  review: "Run review",
+  proof: "Verify proof",
+  test: "Run checks",
+  publish: "Publish result",
+  apply: "Apply result",
+  finalize: "Finalize",
+  cleanup: "Clean up",
+  workflow: "Workflow step"
+};
+function dashboardPublicBayAction(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const repository = typeof value.repository === "string" ? value.repository.trim().toLowerCase() : "";
+  const runId = value.run_id;
+  const jobId = value.job_id;
+  const statuses = new Set(["queued", "in_progress", "completed"]);
+  const conclusions = new Set(["success", "failure", "cancelled", "skipped", "neutral", "timed_out", "action_required", "startup_failure", "stale"]);
+  const startedAt = value.started_at === null ? null : dashboardObservabilityTimestamp(value.started_at);
+  if (
+    repository.length > 200 ||
+    !/^[a-z0-9_.-]+\\/[a-z0-9_.-]+$/.test(repository) ||
+    typeof runId !== "number" || !Number.isSafeInteger(runId) || runId <= 0 || runId > 1000000000000000 ||
+    (jobId !== undefined && (typeof jobId !== "number" || !Number.isSafeInteger(jobId) || jobId <= 0 || jobId > 1000000000000000)) ||
+    !statuses.has(value.status) ||
+    (value.started_at !== null && !startedAt) ||
+    typeof value.steps_complete !== "boolean" ||
+    !Array.isArray(value.steps) || value.steps.length > 100
+  ) return null;
+  const steps = [];
+  const seen = new Set();
+  for (const step of value.steps) {
+    if (!step || typeof step !== "object" || Array.isArray(step)) return null;
+    if (
+      typeof step.sequence !== "number" || !Number.isSafeInteger(step.sequence) || step.sequence <= 0 || step.sequence > 1000 || seen.has(step.sequence) ||
+      !Object.hasOwn(PUBLIC_ACTION_STEP_LABELS, step.kind) ||
+      !statuses.has(step.status) ||
+      (step.conclusion !== null && !conclusions.has(step.conclusion))
+    ) return null;
+    seen.add(step.sequence);
+    steps.push({ sequence: step.sequence, kind: step.kind, status: step.status, conclusion: step.conclusion });
+  }
+  if ((!value.steps_complete && steps.length) || (value.steps_complete && steps.length !== value.steps.length)) return null;
+  steps.sort((left, right) => left.sequence - right.sequence);
+  return { repository, run_id: runId, ...(jobId === undefined ? {} : { job_id: jobId }), status: value.status, started_at: startedAt, steps_complete: value.steps_complete, steps };
+}
+function dashboardStatusSnapshot(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const projected = dashboardStatusValue(value, "root", 0);
+  const source = projected && typeof projected === "object" && !Array.isArray(projected) ? projected : null;
+  if (source?.schema_version !== 1 || typeof source.generated_at !== "string") return null;
+  const rawDiagnostics = value.diagnostics && typeof value.diagnostics === "object" && !Array.isArray(value.diagnostics)
+    ? value.diagnostics
+    : {};
+  const rawErrorCount = Array.isArray(rawDiagnostics.errors)
+    ? Math.min(rawDiagnostics.errors.length, 20)
+    : 1;
+  const declaredErrorCount = Number.isSafeInteger(rawDiagnostics.error_count) && rawDiagnostics.error_count >= 0 && rawDiagnostics.error_count <= 20
+    ? rawDiagnostics.error_count
+    : 0;
+  const errorCount = Math.max(rawErrorCount, declaredErrorCount);
+  const projectedQueue = source.exact_review_queue && typeof source.exact_review_queue === "object"
+    ? source.exact_review_queue
+    : null;
+  const projectedBay = projectedQueue?.bay_projection && typeof projectedQueue.bay_projection === "object"
+    ? projectedQueue.bay_projection
+    : null;
+  const projectedActivity = projectedBay?.activity && typeof projectedBay.activity === "object"
+    ? projectedBay.activity
+    : null;
+  const rawItems = value.exact_review_queue?.bay_projection?.activity?.items;
+  const publicReferences = dashboardPublicBayReferences(rawItems);
+  const exactReviewQueue = projectedQueue && projectedBay && projectedActivity
+    ? {
+        ...projectedQueue,
+        bay_projection: {
+          ...projectedBay,
+          activity: {
+            ...projectedActivity,
+            ...(publicReferences.length ? { items: publicReferences } : {})
+          }
+        }
+      }
+    : projectedQueue;
+  return {
+    schema_version: 1,
+    generated_at: source.generated_at,
+    source: source.source || { target_repository_count: 0 },
+    fleet: source.fleet || { active_codex_jobs: 0, active_workflow_runs: 0, worker_budget: 0, budget_used_percent: 0 },
+    control_plane: source.control_plane || {},
+    health: source.health || {},
+    operational_health: source.operational_health || { status: "unknown" },
+    averages: source.averages || {},
+    workers: Array.isArray(source.workers) ? source.workers : [],
+    automatic_work: Array.isArray(source.automatic_work) ? source.automatic_work : [],
+    pipeline: Array.isArray(source.pipeline) ? source.pipeline : [],
+    bay: source.bay || {},
+    recent: source.recent || {},
+    diagnostics: {
+      ...(source.diagnostics || {}),
+      errors: Array.from({ length: errorCount }, () => "telemetry_unavailable"),
+      error_count: errorCount,
+    },
+    dashboard_health: source.dashboard_health || { conclusion: "needs_attention", severity: "amber" },
+    exact_review_queue: exactReviewQueue,
+    recent_durable_publication_events: source.recent_durable_publication_events ?? null
+  };
+}
 let lastData = null;
 let loading = false;
 let activeAutomergeRange = "7d";
@@ -2409,6 +2209,8 @@ let activeAutomergeChart = "success";
 let lastAutomergeMetrics = null;
 let automergeMetricsRequestGeneration = 0;
 let activeWorkerFilter = "all";
+let publicReferenceQuery = "";
+let publicReferenceIndex = new Map();
 let workerIndex = new Map();
 let automaticIndex = new Map();
 let activeHealthRange = "6h";
@@ -2698,12 +2500,544 @@ function renderExecutionAlert(current) {
   if (running) parts.push(fmt.format(running) + " execution" + (running === 1 ? "" : "s") + " over 150m");
   if (incomplete) parts.push("work execution telemetry is incomplete");
   const approvalGated = Number(current?.approval_gated_runs) || 0;
-  const details = "Total GitHub queued " + fmt.format(Number(current?.queued_runs) || 0) + " · oldest queued " + formatAgeMinutes(current?.oldest_queued_minutes) + " · oldest running " + formatAgeMinutes(current?.oldest_running_minutes) + (approvalGated ? " · " + fmt.format(approvalGated) + " awaiting deployment approval (oldest " + formatAgeMinutes(current?.oldest_approval_gated_minutes) + ")" : "");
+  const wedgedReruns = Number(current?.wedged_rerun_runs) || 0;
+  const details = "Total GitHub queued " + fmt.format(Number(current?.queued_runs) || 0) + " · oldest queued " + formatAgeMinutes(current?.oldest_queued_minutes) + " · oldest running " + formatAgeMinutes(current?.oldest_running_minutes) + (wedgedReruns ? " · " + fmt.format(wedgedReruns) + " wedged pre-queue re-run" + (wedgedReruns === 1 ? "" : "s") + " excluded from health (oldest " + formatAgeMinutes(current?.oldest_wedged_rerun_minutes) + ")" : "") + (approvalGated ? " · " + fmt.format(approvalGated) + " awaiting deployment approval (oldest " + formatAgeMinutes(current?.oldest_approval_gated_minutes) + ")" : "");
   target.innerHTML = '<details class="execution-alert"><summary><span class="execution-alert-title"><strong>⚠ Work execution needs attention</strong><span>' + esc(parts.join(" · ")) + '</span></span><span class="execution-alert-toggle">Details ▾</span></summary><div class="execution-alert-body">' + esc(details) + '</div></details>';
 }
 
 function applyMetric(label, value, detail) {
   return '<div class="apply-observability-metric"><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong>' + (detail ? '<small>' + esc(detail) + '</small>' : '') + '</div>';
+}
+const DASHBOARD_OBSERVABILITY_RANGES = ["6h", "24h", "7d"];
+const DASHBOARD_OBSERVABILITY_MAX_COUNT = 10000000;
+const DASHBOARD_OBSERVABILITY_MAX_DURATION_MS = 90 * 24 * 60 * 60 * 1000;
+const DASHBOARD_OBSERVABILITY_TIMESTAMP_PATTERN =
+  /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$/;
+const DASHBOARD_APPLY_RESULT_FIELDS = ["arrivals", "applied", "closed", "superseded", "retried", "dead_lettered"];
+const DASHBOARD_APPLY_FAILURE_KINDS = [
+  "state_lease_timeout", "state_lease_contention", "action_ledger_failure",
+  "state_publication_failure", "safe_close_blocked", "safe_close_failure", "workflow_failure"
+];
+const DASHBOARD_AUTOMERGE_OUTCOMES = [
+  "merged", "repair_failed", "maintainer_stopped", "repair_cap_exhausted",
+  "pr_closed", "automerge_disabled"
+];
+const DASHBOARD_AUTOMERGE_BUCKET_COUNTS = { "6h": 12, "24h": 12, "7d": 14 };
+const DASHBOARD_AUTOMERGE_RANGE_MS = {
+  "6h": 6 * 60 * 60 * 1000,
+  "24h": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000
+};
+function dashboardObservabilityObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+function dashboardObservabilityMember(values, value) {
+  return values.some(candidate => candidate === value);
+}
+function dashboardObservabilityTimestamp(value) {
+  if (typeof value !== "string" || value.length > 35 || !DASHBOARD_OBSERVABILITY_TIMESTAMP_PATTERN.test(value)) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed >= Date.UTC(2020, 0, 1) && parsed < Date.UTC(2100, 0, 1)
+    ? new Date(parsed).toISOString()
+    : null;
+}
+function dashboardObservabilityNullableTimestamp(value) {
+  if (value === null) return null;
+  return dashboardObservabilityTimestamp(value) || undefined;
+}
+function dashboardObservabilityCount(value, maximum = DASHBOARD_OBSERVABILITY_MAX_COUNT) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= maximum ? value : null;
+}
+function dashboardObservabilityNullableCount(value, maximum = DASHBOARD_OBSERVABILITY_MAX_COUNT) {
+  if (value === null) return null;
+  const parsed = dashboardObservabilityCount(value, maximum);
+  return parsed === null ? undefined : parsed;
+}
+function dashboardObservabilityNullableSignedCount(value) {
+  if (value === null) return null;
+  return Number.isSafeInteger(value) && Math.abs(value) <= DASHBOARD_OBSERVABILITY_MAX_COUNT
+    ? value
+    : undefined;
+}
+function dashboardObservabilityNullableNumber(value, minimum, maximum) {
+  if (value === null) return null;
+  return typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= maximum
+    ? value
+    : undefined;
+}
+function dashboardObservabilityNullableCountObject(value, fields) {
+  const source = dashboardObservabilityObject(value);
+  if (!source) return null;
+  const result = {};
+  for (const field of fields) {
+    const parsed = dashboardObservabilityNullableCount(source[field]);
+    if (parsed === undefined) return null;
+    result[field] = parsed;
+  }
+  return result;
+}
+function dashboardObservabilityCountObject(value, fields) {
+  const source = dashboardObservabilityObject(value);
+  if (!source) return null;
+  const result = {};
+  for (const field of fields) {
+    const parsed = dashboardObservabilityCount(source[field]);
+    if (parsed === null) return null;
+    result[field] = parsed;
+  }
+  return result;
+}
+const DASHBOARD_REVIEW_COVERAGE_TOTAL_FIELDS = [
+  "open_records", "reviewable_records", "tracked_records", "reviewed_recent", "stale", "failed",
+  "expired", "unreviewed_records", "untracked_open", "pending", "excluded",
+  "unschedulable_records", "record_drift"
+];
+function dashboardReviewCoverageSnapshot(value) {
+  const source = dashboardObservabilityObject(value);
+  const totalsSource = dashboardObservabilityObject(source?.totals);
+  if (!source || source.ok !== true || !totalsSource) return null;
+  const generatedAt = dashboardObservabilityTimestamp(source.generated_at);
+  const inventoryGeneratedAt = dashboardObservabilityNullableTimestamp(source.inventory_generated_at);
+  const windowDays = dashboardObservabilityCount(source.window_days, 90);
+  if (
+    !generatedAt || inventoryGeneratedAt === undefined || windowDays === null || windowDays < 1 ||
+    !dashboardObservabilityMember(["missing", "stale", "current"], source.inventory_status) ||
+    (source.inventory_status === "missing") !== (inventoryGeneratedAt === null)
+  ) return null;
+  const totals = {};
+  for (const field of DASHBOARD_REVIEW_COVERAGE_TOTAL_FIELDS) {
+    const parsed = dashboardObservabilityCount(totalsSource[field]);
+    if (parsed === null) return null;
+    totals[field] = parsed;
+  }
+  const coveragePercent = dashboardObservabilityNullableNumber(totalsSource.coverage_percent, 0, 100);
+  if (coveragePercent === undefined) return null;
+  const expectedCoverage = totals.reviewable_records
+    ? Math.round((totals.reviewed_recent / totals.reviewable_records) * 1000) / 10
+    : null;
+  if (totals.reviewed_recent > totals.reviewable_records || coveragePercent !== expectedCoverage) return null;
+  return {
+    ok: true,
+    generated_at: generatedAt,
+    window_days: windowDays,
+    inventory_generated_at: inventoryGeneratedAt,
+    inventory_status: source.inventory_status,
+    totals: { ...totals, coverage_percent: expectedCoverage }
+  };
+}
+const DASHBOARD_HEALTH_HISTORY_RANGE_MS = {
+  "6h": 6 * 60 * 60 * 1000,
+  "24h": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000
+};
+const DASHBOARD_HEALTH_HISTORY_SAMPLE_MS = 5 * 60 * 1000;
+const DASHBOARD_HEALTH_HISTORY_RETENTION_DAYS = 7;
+const DASHBOARD_HEALTH_HISTORY_MAX_TOTAL = 1000000000000;
+const DASHBOARD_HEALTH_HISTORY_STATUSES = ["healthy", "degraded", "stalled", "unknown"];
+const DASHBOARD_HEALTH_HISTORY_HANDOFF_STATUSES = ["idle", "healthy", "degraded", "stalled"];
+const DASHBOARD_HEALTH_HISTORY_WRITER_MODES = ["single_item", "batch", "mixed", "unknown"];
+function dashboardHealthHistoryOptionalCount(value, maximum = DASHBOARD_OBSERVABILITY_MAX_COUNT) {
+  return value === undefined ? undefined : dashboardObservabilityCount(value, maximum);
+}
+function dashboardHealthHistoryPercentiles(value) {
+  const source = dashboardObservabilityObject(value);
+  if (!source) return null;
+  const p50 = source.p50 === null ? null : dashboardHealthHistoryOptionalCount(source.p50);
+  const p95 = source.p95 === null ? null : dashboardHealthHistoryOptionalCount(source.p95);
+  const samples = dashboardObservabilityCount(source.samples);
+  const pairPresent = p50 !== null && p50 !== undefined && p95 !== null && p95 !== undefined;
+  if (
+    p50 === undefined || p95 === undefined || samples === null ||
+    (samples === 0 && (p50 !== null || p95 !== null)) ||
+    (samples > 0 && (!pairPresent || p50 > p95))
+  ) return null;
+  return { p50, p95, samples };
+}
+function dashboardHealthHistoryLane(value, includeShed) {
+  const source = dashboardObservabilityObject(value);
+  if (!source) return null;
+  const pending = dashboardObservabilityCount(source.pending);
+  const enqueuedTotal = dashboardHealthHistoryOptionalCount(source.enqueued_total, DASHBOARD_HEALTH_HISTORY_MAX_TOTAL);
+  const completedTotal = dashboardHealthHistoryOptionalCount(source.completed_total, DASHBOARD_HEALTH_HISTORY_MAX_TOTAL);
+  const shedTotal = includeShed ? dashboardHealthHistoryOptionalCount(source.shed_total) : undefined;
+  if (
+    pending === null || enqueuedTotal === null || completedTotal === null || shedTotal === null ||
+    (enqueuedTotal === undefined) !== (completedTotal === undefined)
+  ) return null;
+  return {
+    pending,
+    ...(enqueuedTotal === undefined ? {} : { enqueued_total: enqueuedTotal }),
+    ...(completedTotal === undefined ? {} : { completed_total: completedTotal }),
+    ...(shedTotal === undefined ? {} : { shed_total: shedTotal })
+  };
+}
+function dashboardHealthHistoryExactReview(value) {
+  const source = dashboardObservabilityObject(value);
+  if (!source || typeof source.collection_ok !== "boolean") return null;
+  if (!source.collection_ok) return { collection_ok: false };
+  const review = dashboardHealthHistoryLane(source.review, true);
+  const publication = dashboardHealthHistoryLane(source.publication, false);
+  if (!review || !publication) return null;
+  const result = { collection_ok: true, review, publication };
+  if (source.handoff !== undefined) {
+    const handoff = dashboardObservabilityObject(source.handoff);
+    const pending = handoff && dashboardObservabilityCount(handoff.pending);
+    const dispatching = handoff && dashboardObservabilityCount(handoff.dispatching);
+    const leased = handoff && dashboardObservabilityCount(handoff.leased);
+    if (
+      !handoff || !dashboardObservabilityMember(DASHBOARD_HEALTH_HISTORY_HANDOFF_STATUSES, handoff.status) ||
+      pending === null || dispatching === null || leased === null
+    ) return null;
+    result.handoff = { status: handoff.status, pending, dispatching, leased };
+  }
+  return result;
+}
+function dashboardHealthHistoryStateWriter(value) {
+  const source = dashboardObservabilityObject(value);
+  if (!source || typeof source.collection_ok !== "boolean") return null;
+  if (!source.collection_ok) return { collection_ok: false };
+  if (
+    typeof source.terminal_collection_ok !== "boolean" ||
+    !dashboardObservabilityMember(DASHBOARD_HEALTH_HISTORY_WRITER_MODES, source.mode)
+  ) return null;
+  const result = {
+    collection_ok: true,
+    terminal_collection_ok: source.terminal_collection_ok,
+    mode: source.mode
+  };
+  for (const field of [
+    "tracked_holding", "tracked_waiting", "tracked_releasing", "accepted_operations_total",
+    "state_commits_total", "materialized_items_total", "contention_timeouts_total"
+  ]) {
+    const parsed = dashboardHealthHistoryOptionalCount(source[field]);
+    if (parsed === null) return null;
+    if (parsed !== undefined) result[field] = parsed;
+  }
+  const wait = dashboardHealthHistoryPercentiles(source.wait_ms);
+  const hold = dashboardHealthHistoryPercentiles(source.hold_ms);
+  if (!wait || !hold) return null;
+  const lastSuccessful = source.last_successful_materialization_at === null
+    ? null
+    : dashboardObservabilityTimestamp(source.last_successful_materialization_at);
+  if (lastSuccessful === null && source.last_successful_materialization_at !== null) return null;
+  result.wait_ms = wait;
+  result.hold_ms = hold;
+  result.last_successful_materialization_at = lastSuccessful;
+  return result;
+}
+function dashboardHealthHistorySample(value) {
+  const source = dashboardObservabilityObject(value);
+  if (!source) return null;
+  const at = dashboardObservabilityTimestamp(source.at);
+  if (!at) return null;
+  const operationalFields = [
+    "status", "collection_ok", "queued", "queued_over_30m", "oldest_queued_minutes",
+    "running", "running_over_150m", "oldest_running_minutes"
+  ];
+  const hasOperational = operationalFields.some(field => Object.prototype.hasOwnProperty.call(source, field));
+  const result = { at };
+  if (hasOperational) {
+    if (
+      !dashboardObservabilityMember(DASHBOARD_HEALTH_HISTORY_STATUSES, source.status) ||
+      typeof source.collection_ok !== "boolean"
+    ) return null;
+    const counts = {};
+    for (const field of operationalFields.slice(2)) {
+      const parsed = dashboardObservabilityCount(source[field]);
+      if (parsed === null) return null;
+      counts[field] = parsed;
+    }
+    if (counts.queued_over_30m > counts.queued || counts.running_over_150m > counts.running) return null;
+    Object.assign(result, { status: source.status, collection_ok: source.collection_ok }, counts);
+  }
+  if (source.exact_review !== undefined) {
+    const exactReview = dashboardHealthHistoryExactReview(source.exact_review);
+    if (!exactReview) return null;
+    result.exact_review = exactReview;
+  }
+  if (source.state_writer !== undefined) {
+    const stateWriter = dashboardHealthHistoryStateWriter(source.state_writer);
+    if (!stateWriter) return null;
+    result.state_writer = stateWriter;
+  }
+  return hasOperational || result.exact_review || result.state_writer ? result : null;
+}
+function dashboardHealthHistorySnapshot(value, requestedRange) {
+  const source = dashboardObservabilityObject(value);
+  const rangeMs = DASHBOARD_HEALTH_HISTORY_RANGE_MS[requestedRange];
+  if (
+    !source || !rangeMs || source.schema_version !== 1 || source.range !== requestedRange ||
+    source.retention_days !== DASHBOARD_HEALTH_HISTORY_RETENTION_DAYS || !Array.isArray(source.samples)
+  ) return null;
+  const sampleLimit = Math.ceil(rangeMs / DASHBOARD_HEALTH_HISTORY_SAMPLE_MS) + 1;
+  if (source.samples.length > sampleLimit) return null;
+  const samples = [];
+  const slots = new Set();
+  let previousAt = null;
+  const now = Date.now();
+  for (const value of source.samples) {
+    const sample = dashboardHealthHistorySample(value);
+    if (!sample) return null;
+    const at = Date.parse(sample.at);
+    const slot = Math.floor(at / DASHBOARD_HEALTH_HISTORY_SAMPLE_MS);
+    if (
+      (previousAt !== null && at <= previousAt) || slots.has(slot) ||
+      at < now - rangeMs - DASHBOARD_HEALTH_HISTORY_SAMPLE_MS ||
+      at > now + DASHBOARD_HEALTH_HISTORY_SAMPLE_MS
+    ) return null;
+    previousAt = at;
+    slots.add(slot);
+    samples.push(sample);
+  }
+  return {
+    schema_version: 1,
+    range: requestedRange,
+    retention_days: DASHBOARD_HEALTH_HISTORY_RETENTION_DAYS,
+    samples
+  };
+}
+function dashboardApplyAggregate(value) {
+  const source = dashboardObservabilityObject(value);
+  if (!source) return null;
+  const result = {};
+  for (const field of DASHBOARD_APPLY_RESULT_FIELDS) {
+    const parsed = dashboardObservabilityNullableCount(source[field]);
+    if (parsed === undefined) return null;
+    result[field] = parsed;
+  }
+  const netDrain = dashboardObservabilityNullableSignedCount(source.net_drain);
+  const expectedNetDrain = result.arrivals === null || result.applied === null
+    ? null
+    : result.applied - result.arrivals;
+  return netDrain === expectedNetDrain ? { ...result, net_drain: expectedNetDrain } : null;
+}
+function dashboardApplyObservabilitySnapshot(value) {
+  const source = dashboardObservabilityObject(value);
+  if (!source) return null;
+  const generatedAt = dashboardObservabilityTimestamp(source.generated_at);
+  const eventCount = dashboardObservabilityCount(source.event_count);
+  const queue = dashboardObservabilityNullableCountObject(source.queue, [
+    "active", "capacity", "ready", "backoff", "dispatching", "leased",
+    "oldest_ready_age_seconds", "oldest_backoff_age_seconds", "oldest_lease_age_seconds"
+  ]);
+  const last15Minutes = dashboardApplyAggregate(source.last_15_minutes);
+  const last60Minutes = dashboardApplyAggregate(source.last_60_minutes);
+  const totals = dashboardApplyAggregate(source.totals);
+  const lease = dashboardObservabilityNullableCountObject(source.lease, ["wait_ms", "hold_ms"]);
+  const failuresSource = dashboardObservabilityObject(source.failures);
+  const retryAmplification = dashboardObservabilityNullableNumber(
+    source.retry_amplification,
+    0,
+    DASHBOARD_OBSERVABILITY_MAX_COUNT
+  );
+  const expectedRetryAmplification = !totals
+    ? undefined
+    : totals.retried === null || totals.applied === null || totals.applied === 0
+      ? null
+      : Math.round((totals.retried / totals.applied) * 100) / 100;
+  if (
+    source.schema_version !== 1 ||
+    !dashboardObservabilityMember(DASHBOARD_OBSERVABILITY_RANGES, source.range) ||
+    (source.repo !== undefined && source.repo !== "all") ||
+    !generatedAt ||
+    typeof source.telemetry_complete !== "boolean" ||
+    eventCount === null ||
+    !queue ||
+    !last15Minutes ||
+    !last60Minutes ||
+    !totals ||
+    !lease ||
+    !failuresSource ||
+    retryAmplification === undefined ||
+    expectedRetryAmplification === undefined ||
+    retryAmplification !== expectedRetryAmplification
+  ) return null;
+  const failures = {};
+  for (const field of [
+    "state_lease_timeout", "state_lease_contention", "action_ledger",
+    "state_publication", "safe_close_blocked", "safe_close_failure"
+  ]) {
+    const parsed = dashboardObservabilityNullableCount(failuresSource[field]);
+    if (parsed === undefined) return null;
+    failures[field] = parsed;
+  }
+  const lastFailureKind = failuresSource.last_failure_kind;
+  const lastFailureAt = dashboardObservabilityNullableTimestamp(failuresSource.last_failure_at);
+  if (
+    (lastFailureKind !== null && !dashboardObservabilityMember(DASHBOARD_APPLY_FAILURE_KINDS, lastFailureKind)) ||
+    lastFailureAt === undefined ||
+    (lastFailureKind === null) !== (lastFailureAt === null)
+  ) return null;
+  failures.last_failure_kind = lastFailureKind;
+  failures.last_failure_at = lastFailureAt;
+  return {
+    schema_version: 1,
+    range: source.range,
+    generated_at: generatedAt,
+    telemetry_complete: source.telemetry_complete,
+    event_count: eventCount,
+    queue,
+    last_15_minutes: last15Minutes,
+    last_60_minutes: last60Minutes,
+    totals,
+    retry_amplification: expectedRetryAmplification,
+    lease,
+    failures
+  };
+}
+function dashboardAutomergeSummary(value) {
+  const source = dashboardObservabilityObject(value);
+  if (!source) return null;
+  const terminalSessions = dashboardObservabilityCount(source.terminal_sessions);
+  const mergedSessions = dashboardObservabilityCount(source.merged_sessions);
+  const activeSessions = dashboardObservabilityCount(source.active_sessions);
+  const successRate = dashboardObservabilityNullableNumber(source.merge_success_rate_percent, 0, 100);
+  const latencyP50 = dashboardObservabilityNullableCount(source.command_to_merge_p50_ms, DASHBOARD_OBSERVABILITY_MAX_DURATION_MS);
+  const latencyP90 = dashboardObservabilityNullableCount(source.command_to_merge_p90_ms, DASHBOARD_OBSERVABILITY_MAX_DURATION_MS);
+  const baseSyncP50 = dashboardObservabilityNullableCount(source.base_sync_p50);
+  const baseSyncP90 = dashboardObservabilityNullableCount(source.base_sync_p90);
+  const multiRebaseRate = dashboardObservabilityNullableNumber(source.multi_rebase_rate_percent, 0, 100);
+  if (
+    terminalSessions === null || mergedSessions === null || activeSessions === null ||
+    successRate === undefined || latencyP50 === undefined || latencyP90 === undefined ||
+    baseSyncP50 === undefined || baseSyncP90 === undefined || multiRebaseRate === undefined ||
+    mergedSessions > terminalSessions
+  ) return null;
+  const expectedSuccessRate = terminalSessions
+    ? Math.round((mergedSessions / terminalSessions) * 1000) / 10
+    : null;
+  const latencyPairValid =
+    (latencyP50 === null) === (latencyP90 === null) &&
+    (latencyP50 === null || latencyP50 <= latencyP90) &&
+    (mergedSessions > 0 || latencyP50 === null);
+  const baseSyncPairValid = terminalSessions
+    ? baseSyncP50 !== null && baseSyncP90 !== null && baseSyncP50 <= baseSyncP90
+    : baseSyncP50 === null && baseSyncP90 === null;
+  if (successRate !== expectedSuccessRate || !latencyPairValid || !baseSyncPairValid) return null;
+  return {
+    terminal_sessions: terminalSessions,
+    merged_sessions: mergedSessions,
+    merge_success_rate_percent: expectedSuccessRate,
+    command_to_merge_p50_ms: latencyP50,
+    command_to_merge_p90_ms: latencyP90,
+    base_sync_p50: baseSyncP50,
+    base_sync_p90: baseSyncP90,
+    multi_rebase_rate_percent: multiRebaseRate,
+    active_sessions: activeSessions
+  };
+}
+function dashboardAutomergeBuckets(value, range) {
+  if (!Array.isArray(value) || value.length !== DASHBOARD_AUTOMERGE_BUCKET_COUNTS[range]) return null;
+  const result = [];
+  let priorEnd = null;
+  for (const entry of value) {
+    const source = dashboardObservabilityObject(entry);
+    if (!source) return null;
+    const start = dashboardObservabilityTimestamp(source.start);
+    const end = dashboardObservabilityTimestamp(source.end);
+    const terminalCount = dashboardObservabilityCount(source.terminal_count);
+    const mergedCount = dashboardObservabilityCount(source.merged_count);
+    const successRate = dashboardObservabilityNullableNumber(source.success_rate_percent, 0, 100);
+    const latencyP50 = dashboardObservabilityNullableCount(source.command_to_merge_p50_ms, DASHBOARD_OBSERVABILITY_MAX_DURATION_MS);
+    const latencyP90 = dashboardObservabilityNullableCount(source.command_to_merge_p90_ms, DASHBOARD_OBSERVABILITY_MAX_DURATION_MS);
+    const latencyPairValid =
+      (latencyP50 === null) === (latencyP90 === null) &&
+      (latencyP50 === null || latencyP50 <= latencyP90) &&
+      (mergedCount === 0 ? latencyP50 === null : true);
+    if (
+      !start || !end || Date.parse(start) >= Date.parse(end) ||
+      (priorEnd !== null && start !== priorEnd) || terminalCount === null ||
+      mergedCount === null || mergedCount > terminalCount || successRate === undefined ||
+      latencyP50 === undefined || latencyP90 === undefined || !latencyPairValid ||
+      typeof source.low_sample !== "boolean" ||
+      successRate !== (terminalCount ? Math.round((mergedCount / terminalCount) * 1000) / 10 : null) ||
+      source.low_sample !== (terminalCount > 0 && terminalCount < 5)
+    ) return null;
+    result.push({
+      start,
+      end,
+      terminal_count: terminalCount,
+      merged_count: mergedCount,
+      success_rate_percent: successRate,
+      command_to_merge_p50_ms: latencyP50,
+      command_to_merge_p90_ms: latencyP90,
+      low_sample: source.low_sample
+    });
+    priorEnd = end;
+  }
+  return result;
+}
+function dashboardAutomergeOutcomes(value) {
+  const source = dashboardObservabilityObject(value);
+  if (!source || Object.keys(source).length > 32) return null;
+  const result = Object.fromEntries(DASHBOARD_AUTOMERGE_OUTCOMES.map(outcome => [outcome, 0]));
+  let unknown = 0;
+  for (const [outcome, value] of Object.entries(source)) {
+    const parsed = dashboardObservabilityCount(value);
+    if (parsed === null) return null;
+    if (dashboardObservabilityMember(DASHBOARD_AUTOMERGE_OUTCOMES, outcome)) result[outcome] = parsed;
+    else unknown += parsed;
+    if (unknown > DASHBOARD_OBSERVABILITY_MAX_COUNT) return null;
+  }
+  return { ...result, unknown };
+}
+function dashboardAutomergeMetricsSnapshot(value) {
+  const source = dashboardObservabilityObject(value);
+  if (!source || !dashboardObservabilityMember(DASHBOARD_OBSERVABILITY_RANGES, source.range)) return null;
+  const filters = dashboardObservabilityObject(source.filters);
+  if (
+    (source.filters !== undefined && !filters) ||
+    (filters && (filters.repo !== null || filters.policy_version !== null))
+  ) return null;
+  const generatedAt = dashboardObservabilityTimestamp(source.generated_at);
+  const rangeStart = dashboardObservabilityTimestamp(source.range_start);
+  const telemetrySince = dashboardObservabilityNullableTimestamp(source.telemetry_since);
+  const coveragePercent = dashboardObservabilityNullableNumber(source.coverage_percent, 0, 100);
+  const summary = dashboardAutomergeSummary(source.summary);
+  const buckets = dashboardAutomergeBuckets(source.buckets, source.range);
+  const outcomes = dashboardAutomergeOutcomes(source.terminal_outcomes);
+  const efficiency = dashboardObservabilityCountObject(source.repair_efficiency, [
+    "zero_base_sync", "one_base_sync", "multiple_base_sync"
+  ]);
+  const generatedAtMs = generatedAt ? Date.parse(generatedAt) : Number.NaN;
+  const rangeStartMs = rangeStart ? Date.parse(rangeStart) : Number.NaN;
+  const expectedCoveragePercent = telemetrySince === null
+    ? 0
+    : Math.max(0, Math.min(100, Math.round(
+      ((generatedAtMs - Math.max(rangeStartMs, Date.parse(String(telemetrySince)))) /
+        DASHBOARD_AUTOMERGE_RANGE_MS[source.range]) * 100
+    )));
+  if (
+    !generatedAt || !rangeStart || telemetrySince === undefined || coveragePercent === undefined ||
+    !summary || !buckets || !outcomes || !efficiency ||
+    generatedAtMs - rangeStartMs !== DASHBOARD_AUTOMERGE_RANGE_MS[source.range] ||
+    coveragePercent !== expectedCoveragePercent || buckets[0]?.start !== rangeStart ||
+    buckets.at(-1)?.end !== generatedAt
+  ) return null;
+  const outcomeTotal = Object.values(outcomes).reduce((total, item) => total + item, 0);
+  const bucketTerminalTotal = buckets.reduce((total, bucket) => total + bucket.terminal_count, 0);
+  const bucketMergedTotal = buckets.reduce((total, bucket) => total + bucket.merged_count, 0);
+  const efficiencyTotal = Object.values(efficiency).reduce((total, item) => total + item, 0);
+  const expectedMultiRebaseRate = summary.terminal_sessions
+    ? Math.round((efficiency.multiple_base_sync / summary.terminal_sessions) * 1000) / 10
+    : null;
+  if (
+    outcomeTotal !== summary.terminal_sessions || outcomes.merged !== summary.merged_sessions ||
+    bucketTerminalTotal !== summary.terminal_sessions || bucketMergedTotal !== summary.merged_sessions ||
+    efficiencyTotal !== summary.terminal_sessions ||
+    summary.multi_rebase_rate_percent !== expectedMultiRebaseRate
+  ) return null;
+  return {
+    generated_at: generatedAt,
+    range: source.range,
+    range_start: rangeStart,
+    telemetry_since: telemetrySince,
+    coverage_percent: expectedCoveragePercent,
+    summary: { ...summary, multi_rebase_rate_percent: expectedMultiRebaseRate },
+    buckets,
+    terminal_outcomes: outcomes,
+    repair_efficiency: efficiency
+  };
 }
 function applyValue(value) {
   if (value == null) return "unknown";
@@ -2713,6 +3047,12 @@ function renderApplyObservability(payload) {
   const summary = document.getElementById("apply-observability-summary");
   const target = document.getElementById("apply-observability-body");
   if (!summary || !target) return;
+  payload = dashboardApplyObservabilitySnapshot(payload);
+  if (!payload) {
+    summary.innerHTML = '<span class="review-status degraded">Telemetry unavailable</span>';
+    target.innerHTML = '<div class="empty">Durable apply telemetry could not be loaded.</div>';
+    return;
+  }
   const queue = payload.queue || {};
   const fifteen = payload.last_15_minutes || {};
   const sixty = payload.last_60_minutes || {};
@@ -2739,22 +3079,22 @@ function renderApplyObservability(payload) {
     ["Safe-close blocked / failure", applyValue(failures.safe_close_blocked) + " / " + applyValue(failures.safe_close_failure)]
   ];
   const blocks = (rows) => '<div class="apply-observability-kpis">' + rows.map(row => applyMetric(row[0], row[1], row[2] || "")).join("") + '</div>';
-  target.innerHTML = blocks(queueRows) + blocks(resultRows) + '<div class="review-anomalies"><div class="review-anomaly"><span><strong>Last failure</strong> ' + esc(failureText) + '</span>' + link(failures.last_failure_run_url, "Actions run") + '</div></div>' + blocks(failureRows);
+  target.innerHTML = blocks(queueRows) + blocks(resultRows) + '<div class="review-anomalies"><div class="review-anomaly"><span><strong>Last failure category</strong> ' + esc(failureText) + '</span></div></div>' + blocks(failureRows);
 }
 async function loadApplyObservability() {
   const generation = ++applyObservabilityRequestGeneration;
   try {
     const response = await fetch("/api/apply-observability?range=" + encodeURIComponent(activeApplyRange), { cache: "no-store" });
     if (!response.ok) throw new Error("apply observability returned " + response.status);
-    const payload = await response.json();
+    const payload = dashboardApplyObservabilitySnapshot(await response.json());
     if (generation !== applyObservabilityRequestGeneration) return;
+    if (!payload || payload.range !== activeApplyRange) throw new Error("invalid apply observability");
     lastApplyObservability = payload;
     renderApplyObservability(payload);
   } catch {
     if (generation !== applyObservabilityRequestGeneration) return;
     lastApplyObservability = null;
-    document.getElementById("apply-observability-summary").innerHTML = '<span class="review-status degraded">Telemetry unavailable</span>';
-    document.getElementById("apply-observability-body").innerHTML = '<div class="empty">Durable apply telemetry could not be loaded.</div>';
+    renderApplyObservability(null);
   }
   renderHealthStrip();
 }
@@ -2764,8 +3104,9 @@ async function loadReviewCoverage() {
   try {
     const response = await fetch("/api/review-coverage", { cache: "no-store" });
     if (!response.ok) throw new Error("review coverage returned " + response.status);
-    const payload = await response.json();
+    const payload = dashboardReviewCoverageSnapshot(await response.json());
     if (generation !== reviewCoverageRequestGeneration) return;
+    if (!payload) throw new Error("invalid review coverage");
     lastReviewCoverage = payload;
   } catch {
     if (generation !== reviewCoverageRequestGeneration) return;
@@ -2784,8 +3125,8 @@ function renderReviewCoverage() {
   const note = document.getElementById("review-coverage-note");
   const target = document.getElementById("review-coverage-body");
   if (!note || !target) return;
-  const payload = lastReviewCoverage;
-  if (!payload || payload.ok !== true) {
+  const payload = dashboardReviewCoverageSnapshot(lastReviewCoverage);
+  if (!payload) {
     note.textContent = "Open items reviewed in the trailing 7 days";
     target.innerHTML = '<div class="empty">Review coverage is unavailable. The canonical record store could not be reached.</div>';
     return;
@@ -2801,34 +3142,22 @@ function renderReviewCoverage() {
       inventorySuffix +
       " · updated " + since(payload.generated_at)
     : "Open items reviewed in the trailing " + windowDays + " days";
-  const fleets = Array.isArray(payload.fleets) ? payload.fleets : [];
-  if (!fleets.length) {
-    target.innerHTML = '<div class="empty">No canonical item records yet. Coverage appears after the first hydrated review sweep.</div>';
-    return;
-  }
-  const ordered = [...fleets].sort((left, right) => (left.coverage_percent ?? 101) - (right.coverage_percent ?? 101));
-  target.innerHTML = '<div class="coverage-fleets">' + ordered.map(fleet => {
-    const percent = fleet.coverage_percent;
-    const band = coverageBand(percent);
-    const flags =
-      (fleet.stale ? '<span class="coverage-flag stale">' + fmt.format(fleet.stale) + ' stale</span>' : '') +
-      (fleet.failed ? '<span class="coverage-flag failed">' + fmt.format(fleet.failed) + ' failed</span>' : '') +
-      (fleet.expired ? '<span class="coverage-flag stale">' + fmt.format(fleet.expired) + ' expired</span>' : '') +
-      (fleet.untracked_open ? '<span class="coverage-flag">' + fmt.format(fleet.untracked_open) + ' never reviewed</span>' : '') +
-      (fleet.excluded ? '<span class="coverage-flag">' + fmt.format(fleet.excluded) + ' protected</span>' : '') +
-      (fleet.unschedulable_records ? '<span class="coverage-flag">' + fmt.format(fleet.unschedulable_records) + ' unmanaged records</span>' : '') +
-      (fleet.pending ? '<span class="coverage-flag">' + fmt.format(fleet.pending) + ' pending</span>' : '');
-    return '<div class="coverage-fleet">' +
-      '<div class="coverage-fleet-name"><strong>' + esc(fleet.repo) + '</strong><span>' +
-        (fleet.schedulable === false
-          ? fmt.format(fleet.tracked_records || 0) + ' canonical records outside the current fleet'
-          : fmt.format(fleet.reviewed_recent || 0) + ' of ' + fmt.format(fleet.reviewable_records || 0) + ' reviewable open items reviewed') +
-      '</span></div>' +
-      '<div><div class="coverage-bar ' + band + '"><i style="width:' + Math.max(0, Math.min(100, percent ?? 0)) + '%"></i></div></div>' +
-      '<div class="coverage-value"><strong>' + (percent == null ? "n/a" : percent + "%") + '</strong>' +
+  const percent = totals.coverage_percent;
+  const flags =
+    (totals.stale ? '<span class="coverage-flag stale">' + fmt.format(totals.stale) + ' stale</span>' : '') +
+    (totals.failed ? '<span class="coverage-flag failed">' + fmt.format(totals.failed) + ' failed</span>' : '') +
+    (totals.expired ? '<span class="coverage-flag stale">' + fmt.format(totals.expired) + ' expired</span>' : '') +
+    (totals.untracked_open ? '<span class="coverage-flag">' + fmt.format(totals.untracked_open) + ' never reviewed</span>' : '') +
+    (totals.excluded ? '<span class="coverage-flag">' + fmt.format(totals.excluded) + ' protected</span>' : '') +
+    (totals.unschedulable_records ? '<span class="coverage-flag">' + fmt.format(totals.unschedulable_records) + ' unmanaged records</span>' : '') +
+    (totals.pending ? '<span class="coverage-flag">' + fmt.format(totals.pending) + ' pending</span>' : '');
+  target.innerHTML = '<div class="coverage-fleets"><div class="coverage-fleet">' +
+    '<div class="coverage-fleet-name"><strong>Fleet aggregate</strong><span>' +
+      fmt.format(totals.reviewed_recent || 0) + ' of ' + fmt.format(totals.reviewable_records || 0) + ' reviewable open items reviewed</span></div>' +
+    '<div><div class="coverage-bar ' + coverageBand(percent) + '"><i style="width:' + Math.max(0, Math.min(100, percent ?? 0)) + '%"></i></div></div>' +
+    '<div class="coverage-value"><strong>' + (percent == null ? "n/a" : percent + "%") + '</strong>' +
       (flags ? '<span class="coverage-flags">' + flags + '</span>' : '<span>fully current</span>') +
-      '</div></div>';
-  }).join("") + '</div>';
+    '</div></div></div>';
 }
 
 function healthChip(label, value, band, title) {
@@ -2866,9 +3195,10 @@ function renderHealthStrip() {
     const applyKnown = lastApplyObservability.telemetry_complete === true;
     chips.push(healthChip("Apply lane", applyKnown ? fmt.format(Number(sixty.applied) || 0) + " applied · " + fmt.format(Number(sixty.closed) || 0) + " closed / 60m" : "awaiting telemetry", applyKnown ? "ok" : "amber", "Durable apply and close lane activity in the last hour."));
   }
-  if (lastReviewCoverage?.ok === true) {
-    const coverage = lastReviewCoverage.totals?.coverage_percent;
-    const stale = Number(lastReviewCoverage.totals?.stale || 0);
+  const reviewCoverage = dashboardReviewCoverageSnapshot(lastReviewCoverage);
+  if (reviewCoverage) {
+    const coverage = reviewCoverage.totals.coverage_percent;
+    const stale = reviewCoverage.totals.stale;
     chips.push(healthChip("7d coverage", (coverage == null ? "n/a" : coverage + "%") + (stale ? " · " + fmt.format(stale) + " stale" : ""), coverage == null ? "" : coverageBand(coverage), "Share of reviewable live open items with a completed review in the trailing 7 days."));
   }
   target.innerHTML = chips.join("");
@@ -2894,9 +3224,10 @@ async function loadHealthHistory(range, force) {
   try {
     const response = await fetch("/api/health-history?range=" + encodeURIComponent(range), { cache: "no-store" });
     if (!response.ok) throw new Error("history returned " + response.status);
-    const payload = await response.json();
+    const payload = dashboardHealthHistorySnapshot(await response.json(), requestedRange);
     if (requestedRange !== activeHealthRange) return;
-    healthHistorySamples = Array.isArray(payload.samples) ? payload.samples : [];
+    if (!payload) throw new Error("invalid health history");
+    healthHistorySamples = payload.samples;
     healthHistoryLoadedAt = Date.now();
   } catch {
     if (requestedRange !== activeHealthRange) return;
@@ -2935,7 +3266,7 @@ function workerTarget(worker) {
   }
   if (worker.repository && worker.item_number) return worker.repository + "#" + worker.item_number;
   if (worker.repository) return worker.repository;
-  return compactText(worker.workflow_title || worker.name);
+  return worker.mode ? modeLabel(worker.mode) + " activity" : "Worker activity";
 }
 function workerTargetTitle(worker) {
   const targets = (worker.target_items || []).filter(target => compactText(target.title));
@@ -3318,7 +3649,7 @@ function renderRecentDurablePublicationEvents(events) {
   target.innerHTML = '<div class="exact-handoff"><div class="exact-handoff-head"><div class="exact-handoff-title"><strong>Recent durable publication events</strong><span>Trailing ' + esc(events?.window?.id || "unknown") + ' window; publication attempts only.</span></div><span class="health-badge ' + esc(state) + '">' + esc(state) + '</span></div><div class="handoff-phases"><div class="handoff-phase"><span>Direct accepted</span><strong>' + esc(value(direct.accepted)) + '</strong><small>durable event</small></div><div class="handoff-phase"><span>Batch retryable</span><strong>' + esc(value(batch.retryable)) + '</strong><small>durable event</small></div></div><div class="handoff-foot"><span>No events observed is idle, not failure.</span><span>Workflow activity is not lifecycle completion.</span></div></div>';
 }
 function renderWorkers(rows) {
-  workerIndex = new Map(rows.map(worker => [String(worker.id), worker]));
+  workerIndex = new Map(rows.map((worker, index) => [String(index), worker]));
   const groups = ["issue-to-pr", "pr-repair", "review", "repair", "commit", "assist", "other"];
   const counts = Object.fromEntries(groups.map(group => [group, rows.filter(worker => workerGroup(worker) === group).length]));
   const filters = [["all", "All", rows.length], ...groups.filter(group => counts[group]).map(group => [group, group[0].toUpperCase() + group.slice(1), counts[group]])];
@@ -3333,15 +3664,16 @@ function renderWorkers(rows) {
     return;
   }
   document.getElementById("workers").innerHTML = '<div class="worker-list">' + visible.map(worker => {
+    const viewKey = rows.indexOf(worker);
     const progress = worker.progress?.total ? Math.round((worker.progress.completed / worker.progress.total) * 100) : 0;
     const kind = workerKindLabel(worker.work_kind);
     const targetTitle = workerTargetTitle(worker);
-    return '<button type="button" class="worker-row" data-worker-id="' + esc(worker.id) + '" aria-label="Open details for ' + esc(targetTitle || worker.name) + '">' +
+    return '<button type="button" class="worker-row" data-worker-id="' + viewKey + '" aria-label="Open worker details">' +
       '<div class="worker-row-main">' +
       '<i class="status-dot ' + workerStatusClass(worker.status) + '"></i>' +
       '<span class="pill">' + esc(modeLabel(worker.mode)) + (kind ? " · " + esc(kind) : "") + '</span>' +
-      '<strong class="worker-name" title="' + esc(worker.name) + '">' + esc(worker.name) + '</strong>' +
-      '<span class="worker-step">' + esc(worker.current_step || worker.stage) + '</span>' +
+      '<strong class="worker-name">Active worker</strong>' +
+      '<span class="worker-step">' + esc(worker.stage || "Status telemetry") + '</span>' +
       '<span class="worker-time mono">' + elapsed(worker.elapsed_ms) + '</span>' +
       '</div>' +
       '<div class="worker-row-sub">' +
@@ -3352,8 +3684,79 @@ function renderWorkers(rows) {
       '</button>';
   }).join("") + '</div>';
 }
+function publicReferenceSearch(value) {
+  const query = String(value || "").trim().toLowerCase();
+  if (!query) return null;
+  const qualified = query.match(/^([a-z0-9_.-]+\\/[a-z0-9_.-]+)#(\\d+)$/);
+  const numberOnly = query.match(/^#?(\\d+)$/);
+  const itemNumber = Number(qualified ? qualified[2] : numberOnly?.[1]);
+  if (!Number.isSafeInteger(itemNumber) || itemNumber <= 0 || itemNumber > 1000000000) return false;
+  return { repository: qualified?.[1] || null, item_number: itemNumber };
+}
+function renderPublicReferences(data) {
+  const target = document.getElementById("public-references");
+  const summary = document.getElementById("public-reference-summary");
+  const rows = dashboardPublicBayReferences(data?.exact_review_queue?.bay_projection?.activity?.items);
+  publicReferenceIndex = new Map(rows.map(row => [row.repository + "#" + row.item_number, row]));
+  const search = publicReferenceSearch(publicReferenceQuery);
+  const visible = search && search !== false
+    ? rows.filter(row => row.item_number === search.item_number && (!search.repository || row.repository === search.repository))
+    : search === false ? [] : rows;
+  summary.textContent = search === false
+    ? "Enter a number or owner/repo#number"
+    : publicReferenceQuery
+      ? visible.length + " match" + (visible.length === 1 ? "" : "es")
+      : rows.length + " verified public reference" + (rows.length === 1 ? "" : "s");
+  if (!visible.length) {
+    target.innerHTML = '<div class="empty">' + (publicReferenceQuery ? "No matching public reference in this snapshot." : "No verified public references are in the bounded Bay sample.") + '</div>';
+    return;
+  }
+  target.innerHTML = '<div class="work-list">' + visible.map(row => {
+    const key = row.repository + "#" + row.item_number;
+    const label = esc(key);
+    const display = publicReferenceQuery ? "<mark>" + label + "</mark>" : label;
+    return '<button type="button" class="work-row public-reference-row" data-public-reference-key="' + esc(key) + '" aria-label="Open public reference details for ' + esc(key) + '"><div class="work-main"><div class="row-top"><span class="pill">' + esc(row.source) + '</span><span class="item-link">' + display + '</span></div><div class="muted work-title">Verified public repository and issue/PR reference only</div></div><div class="work-state"><div class="stage-block"><strong>' + esc(row.stage) + '</strong><span class="muted">Bay stage</span></div></div></button>';
+  }).join("") + '</div>';
+}
+function renderPublicReferenceDialog(row, key) {
+  const dialog = document.getElementById("worker-dialog");
+  const repositoryUrl = "https://github.com/" + row.repository;
+  const itemUrl = repositoryUrl + "/issues/" + row.item_number;
+  const source = row.source === "queue" ? "Bounded queue sample" : "Bounded live sample";
+  const action = dashboardPublicBayAction(row.action);
+  const completedSteps = action ? action.steps.filter(step => step.status === "completed").length : 0;
+  const actionRepositoryUrl = action ? "https://github.com/" + action.repository : null;
+  const runUrl = action ? actionRepositoryUrl + "/actions/runs/" + action.run_id : null;
+  const jobUrl = action?.job_id ? runUrl + "/job/" + action.job_id : null;
+  const stepRows = action?.steps.map(step =>
+    '<li class="step-row ' + esc(step.status) + '"><i class="step-mark"></i><strong>' + esc(PUBLIC_ACTION_STEP_LABELS[step.kind]) + '</strong><span>' + esc((step.conclusion || step.status).replaceAll("_", " ")) + '</span></li>'
+  ).join("") || "";
+  document.getElementById("worker-dialog-heading").innerHTML =
+    '<div><span class="pill">' + esc(row.source) + '</span> <span class="pill">' + esc(row.stage) + '</span></div>' +
+    '<h3 id="worker-dialog-title">' + esc(key) + '</h3>' +
+    '<div class="muted">Verified public GitHub issue or pull request</div>';
+  document.getElementById("worker-dialog-body").innerHTML =
+    '<div class="drawer-grid">' +
+      '<div class="drawer-stat"><span>Current stage</span><strong>' + esc(row.stage) + '</strong></div>' +
+      '<div class="drawer-stat"><span>Source</span><strong>' + esc(source) + '</strong></div>' +
+      '<div class="drawer-stat"><span>Repository</span><strong>' + esc(row.repository) + '</strong></div>' +
+      '<div class="drawer-stat"><span>Reference</span><strong>#' + esc(row.item_number) + '</strong></div>' +
+      (action ? '<div class="drawer-stat"><span>Action status</span><strong>' + esc(action.status.replaceAll("_", " ")) + '</strong></div>' : '') +
+      (action ? '<div class="drawer-stat"><span>Progress</span><strong>' + esc(completedSteps) + ' / ' + esc(action.steps.length) + ' steps</strong></div>' : '') +
+    '</div>' +
+    '<div class="drawer-links">' +
+      linkClass(itemUrl, "Open issue or pull request", "pill run-link") +
+      linkClass(repositoryUrl, "Open repository", "pill run-link") +
+      linkClass(jobUrl, "Open job", "pill run-link") +
+      linkClass(runUrl, "Open workflow run", "pill run-link") +
+    '</div>' +
+    '<h2>' + (action ? 'Step timeline' : 'Public status') + '</h2>' +
+    (stepRows ? '<ol class="step-list">' + stepRows + '</ol>' : '<ol class="step-list"><li class="step-row completed"><i class="step-mark"></i><strong>Reference verified</strong><span>Verified public GitHub coordinates</span></li><li class="step-row in_progress"><i class="step-mark"></i><strong>Current Bay stage</strong><span>' + esc(row.stage) + '</span></li></ol>');
+  if (!dialog.open) dialog.showModal();
+  history.replaceState(null, "", "#public-reference-" + encodeURIComponent(key));
+}
 function renderAutomaticWork(rows) {
-  automaticIndex = new Map(rows.map(row => [String(row.id), row]));
+  automaticIndex = new Map(rows.map((row, index) => [String(index), row]));
   const active = rows.filter(row => row.active || ["queued", "running", "in_progress"].includes(row.status)).length;
   document.getElementById("automatic-summary").textContent =
     fmt.format(rows.length) + " recent · " + fmt.format(active) + " active";
@@ -3364,28 +3767,28 @@ function renderAutomaticWork(rows) {
   }
   document.getElementById("automatic-work").innerHTML =
     '<div class="worker-list">' +
-    rows.map(row => {
+    rows.map((row, index) => {
       const phase = compactText(row.phase || row.status || "queued").replaceAll("_", " ");
-      return '<button type="button" class="worker-row automatic-row" data-automatic-id="' + esc(row.id) +
-        '" aria-label="Open automatic build details for ' + esc(row.title) + '">' +
+      return '<button type="button" class="worker-row automatic-row" data-automatic-id="' + index +
+        '" aria-label="Open automatic build details">' +
         '<div class="worker-row-main">' +
         '<i class="status-dot ' + workerStatusClass(row.status) + '"></i>' +
         '<span class="pill">' + esc(phase) + '</span>' +
-        '<strong class="worker-name">' + esc(row.title || "Issue #" + row.issue_number) + '</strong>' +
+        '<strong class="worker-name">Automatic work</strong>' +
         '<span class="worker-time mono">' + esc(row.updated_at ? since(row.updated_at) : "") + '</span>' +
         '</div>' +
         '<div class="worker-row-sub">' +
-        '<span class="worker-target-ref mono">' + esc(row.repository + "#" + row.issue_number) + '</span>' +
+        '<span class="worker-target-ref mono">Identity-safe status</span>' +
         '<span class="worker-target-title">' + esc(row.pr_url ? "PR opened" : row.active ? "worker active" : row.status) + '</span>' +
         '</div>' +
         '</button>';
     }).join("") +
     '</div>';
 }
-function renderWorkerDialog(worker) {
+function renderWorkerDialog(worker, viewKey) {
   const dialog = document.getElementById("worker-dialog");
   const statusClass = workerStatusClass(worker.status);
-  document.getElementById("worker-dialog-heading").innerHTML = '<div><span class="pill"><i class="status-dot ' + statusClass + '"></i>' + esc(worker.status) + '</span> <span class="pill">' + esc(modeLabel(worker.mode)) + '</span></div><h3 id="worker-dialog-title">' + esc(worker.name) + '</h3><div class="muted">' + esc(compactText(worker.workflow_title)) + '</div>';
+  document.getElementById("worker-dialog-heading").innerHTML = '<div><span class="pill"><i class="status-dot ' + statusClass + '"></i>' + esc(worker.status) + '</span> <span class="pill">' + esc(modeLabel(worker.mode)) + '</span></div><h3 id="worker-dialog-title">Active worker</h3><div class="muted">Identity-safe live status</div>';
   const targetItems = new Map((worker.target_items || []).map(target => [Number(target.number), target]));
   const targetUrls = worker.repository
     ? (worker.item_numbers || (worker.item_number ? [worker.item_number] : [])).map(number => ({
@@ -3393,10 +3796,10 @@ function renderWorkerDialog(worker) {
         label: "#" + number + (targetItems.get(Number(number))?.title ? " · " + compactText(targetItems.get(Number(number)).title) : "")
       }))
     : [];
-  const stepRows = (worker.steps || []).map(step => '<li class="step-row ' + esc(step.status) + '"><i class="step-mark"></i><strong>' + esc(step.name) + '</strong><span>' + esc(step.conclusion || step.status) + '</span></li>').join("");
+  const stepRows = (worker.steps || []).map(step => '<li class="step-row ' + esc(step.status) + '"><i class="step-mark"></i><strong>Step</strong><span>' + esc(step.conclusion || step.status) + '</span></li>').join("");
   document.getElementById("worker-dialog-body").innerHTML =
     '<div class="drawer-grid">' +
-      '<div class="drawer-stat"><span>Current step</span><strong>' + esc(worker.current_step || worker.stage) + '</strong></div>' +
+      '<div class="drawer-stat"><span>Current stage</span><strong>' + esc(worker.stage || "Status telemetry") + '</strong></div>' +
       '<div class="drawer-stat"><span>Elapsed</span><strong>' + elapsed(worker.elapsed_ms) + '</strong></div>' +
       '<div class="drawer-stat"><span>Target</span><strong>' + esc(workerTarget(worker)) + '</strong></div>' +
       '<div class="drawer-stat"><span>Progress</span><strong>' + fmt.format(worker.progress?.completed || 0) + " / " + fmt.format(worker.progress?.total || 0) + ' steps</strong></div>' +
@@ -3409,16 +3812,16 @@ function renderWorkerDialog(worker) {
     '<h2>Step Timeline</h2>' +
     (stepRows ? '<ol class="step-list">' + stepRows + '</ol>' : '<div class="empty">Job-level steps are unavailable; showing workflow fallback telemetry.</div>');
   if (!dialog.open) dialog.showModal();
-  history.replaceState(null, "", "#worker-" + encodeURIComponent(worker.id));
+  history.replaceState(null, "", "#worker-" + encodeURIComponent(viewKey));
 }
-function renderAutomaticDialog(row) {
+function renderAutomaticDialog(row, viewKey) {
   const dialog = document.getElementById("worker-dialog");
   const phase = compactText(row.phase || row.status || "queued").replaceAll("_", " ");
   document.getElementById("worker-dialog-heading").innerHTML =
     '<div><span class="pill"><i class="status-dot ' + workerStatusClass(row.status) + '"></i>' +
     esc(row.status) + '</span> <span class="pill">Automatic issue build</span></div>' +
-    '<h3 id="worker-dialog-title">' + esc(row.title) + '</h3>' +
-    '<div class="muted">' + esc(row.repository + "#" + row.issue_number) + '</div>';
+    '<h3 id="worker-dialog-title">Automatic work</h3>' +
+    '<div class="muted">Identity-safe status</div>';
   const timeline = (row.timeline || []).map(entry =>
     '<li class="step-row ' + esc(entry.status) + '"><i class="step-mark"></i><strong>' +
     esc(compactText(entry.phase).replaceAll("_", " ")) + '</strong><span>' +
@@ -3430,7 +3833,7 @@ function renderAutomaticDialog(row) {
     '<div class="drawer-grid">' +
       '<div class="drawer-stat"><span>Current phase</span><strong>' + esc(phase) + '</strong></div>' +
       '<div class="drawer-stat"><span>Status</span><strong>' + esc(row.status) + '</strong></div>' +
-      '<div class="drawer-stat"><span>Source</span><strong>' + esc(row.repository + "#" + row.issue_number) + '</strong></div>' +
+      '<div class="drawer-stat"><span>Source</span><strong>Identity-safe status</strong></div>' +
       '<div class="drawer-stat"><span>Updated</span><strong>' + esc(row.updated_at ? since(row.updated_at) : "unknown") + '</strong></div>' +
     '</div>' +
     '<div class="drawer-links">' +
@@ -3442,31 +3845,62 @@ function renderAutomaticDialog(row) {
     '<h2>Lifecycle Timeline</h2>' +
     (timeline ? '<ol class="step-list">' + timeline + '</ol>' : '<div class="empty">No lifecycle events recorded yet.</div>');
   if (!dialog.open) dialog.showModal();
-  history.replaceState(null, "", "#automatic-" + encodeURIComponent(row.id));
+  history.replaceState(null, "", "#automatic-" + encodeURIComponent(viewKey));
 }
 function closeWorkerDialog() {
   const dialog = document.getElementById("worker-dialog");
   if (dialog.open) dialog.close();
-  if (location.hash.startsWith("#worker-") || location.hash.startsWith("#automatic-")) {
+  if (location.hash.startsWith("#worker-") || location.hash.startsWith("#automatic-") || location.hash.startsWith("#public-reference-")) {
     history.replaceState(null, "", location.pathname + location.search);
+  }
+}
+function decodedHashValue(prefix) {
+  try {
+    return decodeURIComponent(location.hash.slice(prefix.length));
+  } catch {
+    return null;
   }
 }
 function openWorkerFromHash() {
   if (location.hash.startsWith("#worker-")) {
-    const worker = workerIndex.get(decodeURIComponent(location.hash.slice(8)));
-    if (worker) renderWorkerDialog(worker);
-    else if (document.getElementById("worker-dialog").open) closeWorkerDialog();
+    const key = decodedHashValue("#worker-");
+    const worker = key === null ? null : workerIndex.get(key);
+    if (worker) renderWorkerDialog(worker, key);
+    else closeWorkerDialog();
   } else if (location.hash.startsWith("#automatic-")) {
-    const row = automaticIndex.get(decodeURIComponent(location.hash.slice(11)));
-    if (row) renderAutomaticDialog(row);
-    else if (document.getElementById("worker-dialog").open) closeWorkerDialog();
+    const key = decodedHashValue("#automatic-");
+    const row = key === null ? null : automaticIndex.get(key);
+    if (row) renderAutomaticDialog(row, key);
+    else closeWorkerDialog();
+  } else if (location.hash.startsWith("#public-reference-")) {
+    const key = decodedHashValue("#public-reference-");
+    const row = key === null ? null : publicReferenceIndex.get(key);
+    if (row) renderPublicReferenceDialog(row, key);
+    else closeWorkerDialog();
   }
 }
 
 try {
-  lastData = JSON.parse(localStorage.getItem("clawsweeper:last-status") || "null");
-  if (lastData) renderDashboard(lastData, "Showing cached status while refreshing...");
-} catch {}
+  const cachedStatus = localStorage.getItem("clawsweeper:last-status");
+  if (cachedStatus) {
+    lastData = dashboardStatusSnapshot(JSON.parse(cachedStatus));
+    if (lastData) {
+      localStorage.setItem("clawsweeper:last-status", JSON.stringify(lastData));
+    } else {
+      localStorage.removeItem?.("clawsweeper:last-status");
+    }
+  }
+} catch {
+  lastData = null;
+  localStorage.removeItem?.("clawsweeper:last-status");
+}
+if (lastData) {
+  try {
+    renderDashboard(lastData, "Showing cached status while refreshing...");
+  } catch {
+    lastData = null;
+  }
+}
 
 async function load() {
   if (loading) return;
@@ -3475,7 +3909,7 @@ async function load() {
   try {
   const response = await fetch("/api/status", { cache: "no-store" });
   if (!response.ok) throw new Error("/api/status returned " + response.status);
-  data = await response.json();
+  data = dashboardStatusSnapshot(await response.json());
   const cacheState = response.headers.get("x-clawsweeper-cache");
   const hasErrors = Boolean(data.diagnostics && Array.isArray(data.diagnostics.errors) && data.diagnostics.errors.length);
   const looksEmpty = !data.pipeline?.length && data.fleet?.active_workflow_runs === 0 && hasErrors;
@@ -3497,11 +3931,11 @@ async function load() {
   loadApplyObservability().catch(() => undefined);
   loadReviewCoverage().catch(() => undefined);
   loadAutomergeMetrics().catch(() => undefined);
-  } catch (error) {
+  } catch {
     if (lastData) {
       renderDashboard(lastData, "Live refresh failed; showing last good status.");
     } else {
-      document.getElementById("subtitle").textContent = "Failed to load status: " + error.message;
+      document.getElementById("subtitle").textContent = "Failed to load public status.";
     }
   } finally {
     loading = false;
@@ -3509,6 +3943,9 @@ async function load() {
 }
 
 function renderDashboard(data, note) {
+  data = dashboardStatusSnapshot(data);
+  if (!data) return;
+  lastData = data;
   const handoffStatus = data.exact_review_queue?.handoff_health?.status;
   const operationalStatus = data.operational_health?.status;
   const serverHealth = data.dashboard_health;
@@ -3528,13 +3965,13 @@ function renderDashboard(data, note) {
   const severity = serverHealth?.severity ||
     (handoffStatus === "stalled" || operationalStatus === "stalled" ? "red" : needsAttention ? "amber" : "green");
   const workerCount = (data.workers || []).filter(worker => worker.is_codex_worker !== false).length;
-  const repoCount = (data.source.target_repositories || []).length;
+  const repoCount = Number(data.source?.target_repository_count || 0);
   document.getElementById("hero-dot").className = "hero-dot " + (severity === "green" ? "ok" : severity);
   document.getElementById("hero-headline").textContent =
     (needsAttention ? "Needs attention" : "All clear") + " — " +
     fmt.format(workerCount) + " claw worker" + (workerCount === 1 ? "" : "s") + " sweeping " +
     fmt.format(repoCount) + " " + (repoCount === 1 ? "repository" : "repositories");
-  document.getElementById("subtitle").textContent = data.source.target_repositories.join(", ");
+  document.getElementById("subtitle").textContent = "Identity-safe public status";
   document.getElementById("updated").textContent = "Updated " + since(data.generated_at) + (note ? " \u00b7 " + note : "");
   const fleet = data.fleet;
   document.getElementById("metrics").innerHTML = [
@@ -3553,6 +3990,7 @@ function renderDashboard(data, note) {
   renderApplyHealth(data);
   renderAutomaticWork(data.automatic_work || []);
   renderWorkers(data.workers || []);
+  renderPublicReferences(data);
   openWorkerFromHash();
   renderClusterRepair(data.recent?.cluster_repair);
   renderPipeline(data.pipeline || []);
@@ -3928,26 +4366,29 @@ function renderAutomerge(rows) {
 }
 async function loadAutomergeMetrics() {
   const generation = ++automergeMetricsRequestGeneration;
-  const params = new URLSearchParams({ range: activeAutomergeRange });
-  const repo = document.getElementById("automerge-repo").value;
-  const policy = document.getElementById("automerge-policy").value;
-  if (repo) params.set("repo", repo);
-  if (policy) params.set("policy_version", policy);
-  const response = await fetch("/api/automerge-metrics?" + params.toString(), { cache: "no-store" });
-  if (!response.ok) throw new Error("automerge metrics returned " + response.status);
-  const metrics = await response.json();
-  if (generation !== automergeMetricsRequestGeneration) return;
-  lastAutomergeMetrics = metrics;
-  renderAutomergeProduct(lastAutomergeMetrics);
+  try {
+    const params = new URLSearchParams({ range: activeAutomergeRange });
+    const response = await fetch("/api/automerge-metrics?" + params.toString(), { cache: "no-store" });
+    if (!response.ok) throw new Error("automerge metrics unavailable");
+    const metrics = dashboardAutomergeMetricsSnapshot(await response.json());
+    if (generation !== automergeMetricsRequestGeneration) return;
+    if (!metrics || metrics.range !== activeAutomergeRange) throw new Error("invalid automerge metrics");
+    lastAutomergeMetrics = metrics;
+    renderAutomergeProduct(metrics);
+  } catch {
+    if (generation !== automergeMetricsRequestGeneration) return;
+    lastAutomergeMetrics = null;
+    renderAutomergeProduct(null);
+  }
 }
 function renderAutomergeProduct(data) {
+  data = dashboardAutomergeMetricsSnapshot(data);
+  if (!data) {
+    document.getElementById("automerge-meta").textContent = "Telemetry unavailable";
+    document.getElementById("automerge-product").innerHTML = '<div class="empty">Automerge product telemetry could not be loaded.</div>';
+    return;
+  }
   const summary = data.summary || {};
-  const setOptions = (id, values, selected) => {
-    const select = document.getElementById(id);
-    select.innerHTML = '<option value="">All</option>' + (values || []).map(value => '<option value="' + esc(value) + '"' + (value === selected ? ' selected' : '') + '>' + esc(value) + '</option>').join("");
-  };
-  setOptions("automerge-repo", data.filters?.repositories, data.filters?.repo);
-  setOptions("automerge-policy", data.filters?.policy_versions, data.filters?.policy_version);
   const sinceText = data.telemetry_since ? new Date(data.telemetry_since).toLocaleString() : "not started";
   const terminalSamples = Number(summary.terminal_sessions) || 0;
   document.getElementById("automerge-meta").textContent = "Telemetry since " + sinceText + " · Time-window coverage " + fmt.format(data.coverage_percent || 0) + "% · Active sessions " + fmt.format(summary.active_sessions || 0) + " · terminal sample n=" + fmt.format(terminalSamples) + " · Updated " + since(data.generated_at);
@@ -3972,13 +4413,11 @@ function renderAutomergeProduct(data) {
     return '<div class="automerge-point" title="' + esc(bucket.start + ' · p50 ' + duration(bucket.command_to_merge_p50_ms) + ' · p90 ' + duration(bucket.command_to_merge_p90_ms)) + '"><i class="automerge-dot" style="bottom:' + p50 + '%"></i><i class="automerge-dot p90" style="bottom:' + p90 + '%"></i><span class="automerge-n">n=' + fmt.format(bucket.merged_count) + '</span></div>';
   }).join("");
   const chart = '<div class="automerge-chart-shell"><div class="automerge-tabs"><button type="button" data-automerge-chart="success" class="' + (activeAutomergeChart === "success" ? "active" : "") + '">Merge success</button><button type="button" data-automerge-chart="latency" class="' + (activeAutomergeChart === "latency" ? "active" : "") + '">Merge latency</button></div><div class="automerge-chart" role="img" aria-label="Automerge ' + esc(activeAutomergeChart) + ' trend over ' + esc(activeAutomergeRange) + '">' + points + '</div><div class="automerge-chart-legend">' + (activeAutomergeChart === "success" ? '● normal sample · ○ fewer than 5 terminal sessions · gaps mean no terminal sample' : '● p50 · amber p90 · gaps mean no merged sample') + '</div></div>';
-  const outcomeLabels = { merged: "Merged", repair_failed: "Repair workflow failed", maintainer_stopped: "Maintainer stopped", repair_cap_exhausted: "Repair cap exhausted", pr_closed: "PR closed", automerge_disabled: "Automerge disabled" };
+  const outcomeLabels = { merged: "Merged", repair_failed: "Repair workflow failed", maintainer_stopped: "Maintainer stopped", repair_cap_exhausted: "Repair cap exhausted", pr_closed: "PR closed", automerge_disabled: "Automerge disabled", unknown: "Other terminal outcome" };
   const outcomes = Object.entries(outcomeLabels).map(entry => '<div class="automerge-detail-row"><span>' + esc(entry[1]) + '</span><strong>' + fmt.format(data.terminal_outcomes?.[entry[0]] || 0) + '</strong></div>').join("");
   const efficiency = [['0 base sync sessions', data.repair_efficiency?.zero_base_sync], ['1 base sync session', data.repair_efficiency?.one_base_sync], ['2+ base sync sessions', data.repair_efficiency?.multiple_base_sync], ['Multi-rebase rate', value(summary.multi_rebase_rate_percent, "%")]].map(entry => '<div class="automerge-detail-row"><span>' + esc(entry[0]) + '</span><strong>' + esc(entry[1] ?? 0) + '</strong></div>').join("");
   const details = '<div class="automerge-details"><div><h3>Terminal outcomes</h3>' + outcomes + '</div><div><h3>Repair efficiency</h3>' + efficiency + '</div></div>';
-  const rows = (data.sessions || []).map(session => '<tr><td>' + linkClass(session.pr_url, session.repository + '#' + session.item_number, "item-link") + '</td><td>' + esc(outcomeLabels[session.state] || session.state || 'unknown') + '</td><td>' + esc(session.policy_version) + '</td><td>' + esc(session.activated_at ? since(session.activated_at) : 'missing') + '</td><td>' + esc(session.terminal_at ? since(session.terminal_at) : since(session.last_event_at)) + '</td><td>' + fmt.format(session.base_sync_count || 0) + '</td><td>' + fmt.format(session.repairs || 0) + '</td><td>' + esc(session.last_reason || '') + ' ' + linkClass(session.run_url, 'run', 'pill run-link') + '</td></tr>').join("");
-  const sessions = '<div class="automerge-sessions"><div class="automerge-sessions-head"><h3>Recent automerge sessions</h3><span>Showing up to 30 latest sessions in the selected window</span></div><table class="automerge-table"><thead><tr><th>PR</th><th>State</th><th>Policy</th><th>Activated</th><th>Terminal / age</th><th>Syncs</th><th>Repairs</th><th>Last reason</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8" class="muted">No session telemetry in this range.</td></tr>') + '</tbody></table></div>';
-  document.getElementById("automerge-product").innerHTML = kpis + chart + details + sessions;
+  document.getElementById("automerge-product").innerHTML = kpis + chart + details;
 }
 function automergeWorkerHealthHtml(reliability) {
   const safe = reliability || {
@@ -4000,11 +4439,14 @@ function automergeWorkerHealthHtml(reliability) {
   return '<section class="worker-health-section" aria-labelledby="automerge-worker-health-title"><div class="worker-health-subhead"><strong id="automerge-worker-health-title">Automerge worker operations</strong><span class="muted">Repair workflow reliability only · separate from Automerge Product Health success rate.</span></div>' + stats + sample + (rows ? '<div class="side-list">' + rows + '</div>' : '<div class="empty">No automerge worker failures in the recent sample.</div>') + '</section>';
 }
 function renderClosedItems(rows) {
-  if (!rows.length) {
-    document.getElementById("closed").innerHTML = '<div class="empty">No ClawSweeper closes found...</div>';
+  const visible = (Array.isArray(rows) ? rows : []).filter(row =>
+    Number.isFinite(Date.parse(row?.closed_at || ""))
+  );
+  if (!visible.length) {
+    document.getElementById("closed").innerHTML = '<div class="empty">Individual close details are unavailable; aggregate counts remain above.</div>';
     return;
   }
-  document.getElementById("closed").innerHTML = '<div class="side-list">' + rows.map(row => '<article class="side-row"><div class="side-main"><div class="row-top"><span class="pill">' + esc(row.type) + '</span>' + linkClass(row.url, row.repository + "#" + row.number, "item-link") + '</div><div class="muted side-title">' + esc(row.title) + '</div></div><div class="side-meta">' + since(row.closed_at) + '</div></article>').join("") + '</div>';
+  document.getElementById("closed").innerHTML = '<div class="side-list">' + visible.map(row => '<article class="side-row"><div class="side-main"><div class="row-top"><span class="pill">' + esc(row.type) + '</span>' + linkClass(row.url, row.repository + "#" + row.number, "item-link") + '</div><div class="muted side-title">' + esc(row.title) + '</div></div><div class="side-meta">' + since(row.closed_at) + '</div></article>').join("") + '</div>';
 }
 function renderClosedStats(stats) {
   const safe = stats || { total: 0, issues: 0, prs: 0, window_hours: 24 };
@@ -4042,6 +4484,23 @@ document.getElementById("worker-filters").addEventListener("click", event => {
   activeWorkerFilter = button.dataset.workerFilter || "all";
   renderWorkers(lastData?.workers || []);
 });
+document.getElementById("public-reference-search").addEventListener("submit", event => {
+  event.preventDefault();
+  publicReferenceQuery = document.getElementById("public-reference-input").value;
+  renderPublicReferences(lastData || {});
+});
+document.getElementById("public-reference-clear").addEventListener("click", () => {
+  publicReferenceQuery = "";
+  document.getElementById("public-reference-input").value = "";
+  renderPublicReferences(lastData || {});
+});
+document.getElementById("public-references").addEventListener("click", event => {
+  const button = event.target.closest("button[data-public-reference-key]");
+  if (!button) return;
+  const key = String(button.dataset.publicReferenceKey || "");
+  const row = publicReferenceIndex.get(key);
+  if (row) renderPublicReferenceDialog(row, key);
+});
 document.getElementById("trend-ranges").addEventListener("click", event => {
   const button = event.target.closest("button[data-trend-range]");
   if (!button) return;
@@ -4068,19 +4527,17 @@ document.getElementById("automerge-product").addEventListener("click", event => 
   activeAutomergeChart = button.dataset.automergeChart || "success";
   renderAutomergeProduct(lastAutomergeMetrics);
 });
-document.getElementById("automerge-repo").addEventListener("change", () => loadAutomergeMetrics().catch(() => undefined));
-document.getElementById("automerge-policy").addEventListener("change", () => loadAutomergeMetrics().catch(() => undefined));
 document.getElementById("workers").addEventListener("click", event => {
   const button = event.target.closest("button[data-worker-id]");
   if (!button) return;
   const worker = workerIndex.get(String(button.dataset.workerId));
-  if (worker) renderWorkerDialog(worker);
+  if (worker) renderWorkerDialog(worker, String(button.dataset.workerId));
 });
 document.getElementById("automatic-work").addEventListener("click", event => {
   const button = event.target.closest("button[data-automatic-id]");
   if (!button) return;
   const row = automaticIndex.get(String(button.dataset.automaticId));
-  if (row) renderAutomaticDialog(row);
+  if (row) renderAutomaticDialog(row, String(button.dataset.automaticId));
 });
 document.addEventListener("click", event => {
   const button = event.target.closest("button[data-copy-command]");
@@ -4102,13 +4559,13 @@ document.getElementById("worker-dialog").addEventListener("click", event => {
   const linkedWorker = event.target.closest("button[data-linked-worker-id]");
   if (linkedWorker) {
     const worker = workerIndex.get(String(linkedWorker.dataset.linkedWorkerId));
-    if (worker) renderWorkerDialog(worker);
+    if (worker) renderWorkerDialog(worker, String(linkedWorker.dataset.linkedWorkerId));
     return;
   }
   if (event.target === event.currentTarget) closeWorkerDialog();
 });
 document.getElementById("worker-dialog").addEventListener("close", () => {
-  if (location.hash.startsWith("#worker-") || location.hash.startsWith("#automatic-")) {
+  if (location.hash.startsWith("#worker-") || location.hash.startsWith("#automatic-") || location.hash.startsWith("#public-reference-")) {
     history.replaceState(null, "", location.pathname + location.search);
   }
 });

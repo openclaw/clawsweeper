@@ -501,20 +501,16 @@ export function createRecordMetadata({
     return markdown.includes("Codex review failed") ? "failed" : "complete";
   }
 
-  function hasBlockedLocalCheckoutAccess(markdown: string): boolean {
-    return /bwrap: loopback|sandbox wrapper|sandbox startup failed|sandboxed shell failed|local shell (?:access|commands|inspection).*unavailable|local shell .*blocked|local terminal commands were unavailable|could not run local shell/i.test(
-      markdown,
-    );
-  }
-
   function hasVerifiedLocalCheckoutAccess(markdown: string): boolean {
-    return frontMatterValue(markdown, "local_checkout_access") === "verified";
+    return (
+      frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+      frontMatterValue(markdown, "local_checkout_access_source") === "runner_preflight_v1"
+    );
   }
 
   function effectiveReviewStatus(markdown: string): string {
     const status = frontMatterValue(markdown, "review_status") ?? inferReviewStatus(markdown);
     if (status === "complete") {
-      if (hasBlockedLocalCheckoutAccess(markdown)) return "stale_local_checkout_blocked";
       if (!hasVerifiedLocalCheckoutAccess(markdown)) return "stale_local_checkout_unverified";
     }
     return status;
@@ -611,12 +607,29 @@ export function createRecordMetadata({
   function isInfrastructureFailedReview(markdown: string): boolean {
     const detail = failedReviewFailureDetail(markdown);
     const terminalFailure = frontMatterField(markdown, "review_terminal_failure");
+    const checkoutInspectionFailure = frontMatterField(
+      markdown,
+      "review_checkout_inspection_failed",
+    );
     if (terminalFailure.status === "ambiguous") return false;
     if (
       terminalFailure.status === "value" &&
       (!/^(?:true|false)$/i.test(terminalFailure.value) || /^true$/i.test(terminalFailure.value))
     ) {
       return false;
+    }
+    if (checkoutInspectionFailure.status === "ambiguous") return false;
+    if (
+      checkoutInspectionFailure.status === "value" &&
+      !/^(?:true|false)$/i.test(checkoutInspectionFailure.value)
+    ) {
+      return false;
+    }
+    if (
+      checkoutInspectionFailure.status === "value" &&
+      /^true$/i.test(checkoutInspectionFailure.value)
+    ) {
+      return true;
     }
     return (
       isRetryableCodexTransportError(detail) ||

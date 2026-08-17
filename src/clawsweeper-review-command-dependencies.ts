@@ -27,6 +27,7 @@ import type {
   ReviewStartStatusCommentResult,
 } from "./clawsweeper-types.js";
 import type { UserFacingCommandError } from "./command.js";
+import type { CodexProcessResult } from "./codex-process.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 import type { ReviewSemanticRecord } from "./review-semantic-cache.js";
 import type { ReviewStructuralPullState } from "./review-structural-cache.js";
@@ -131,6 +132,11 @@ export interface CreateReviewCommandWorkflowDependencies {
   displayDurationMs: (ms: number) => string;
   displayPath: (path: string) => string;
   enforceExpectedIssueSourceRevision: (options: ExpectedIssueSourceRevisionOptions) => void;
+  ensurePullRequestReviewHead: (options: {
+    targetDir: string;
+    itemNumber: number;
+    headSha: string;
+  }) => boolean;
   ensureDir: (path: string) => void;
   exactLocalReviewNoCandidateError: (
     itemNumber: number | undefined,
@@ -215,6 +221,12 @@ export interface CreateReviewCommandWorkflowDependencies {
   ) => boolean;
   localExactReviewHistoryPath: (artifactDir: string, repo: string, itemNumber: number) => string;
   makeTreeReadOnly: (path: string, snapshots?: FileModeSnapshot[]) => FileModeSnapshot[];
+  materializePullRequestReviewTree: (options: {
+    targetDir: string;
+    worktreeDir: string;
+    itemNumber: number;
+    headSha: string;
+  }) => boolean;
   markdownFor: (options: {
     item: Item;
     context: ItemContext;
@@ -256,6 +268,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     missingReasonCode?: ActionEventReasonCode;
     retryable?: boolean;
   }) => ActionEvent | null;
+  removePullRequestReviewTree: (options: { targetDir: string; worktreeDir: string }) => boolean;
   refreshRelatedItemsContext: (item: Item, context: ItemContext) => unknown[];
   replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
   renderReviewCommentFromReport: (
@@ -298,6 +311,12 @@ export interface CreateReviewCommandWorkflowDependencies {
     serviceTier?: string;
   }) => string;
   reviewStructuralPullStateFromContext: (context: ItemContext) => ReviewStructuralPullState | null;
+  runReviewCheckoutInspection: (options: {
+    itemNumber: number;
+    openclawDir: string;
+    preserveCodexAuth?: boolean;
+    timeoutMs: number;
+  }) => CodexProcessResult;
   runCodex: (options: {
     item: Item;
     context: ItemContext;

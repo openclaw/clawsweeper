@@ -22,10 +22,14 @@ import worker, {
   exactReviewQueueStatusSnapshot,
   mergeBayJourneyState,
   mergeBayTerminalState,
+  recentWorkerHealthRunSample,
+  workerHealthSectionTimeoutMs,
+  readCachedSnapshot,
   StatusStore,
   summarizeAutomergeReliability,
   summarizeBayJourneyTimings,
   workerWorkKind,
+  workflowJobsForRunSnapshot,
 } from "../dashboard/worker.ts";
 import {
   TRIAGE_ROUTING_GROUPS,
@@ -100,7 +104,10 @@ class MemorySqlStorage {
       throw error;
     }
     const statement = this.database.prepare(query);
-    if (/^\s*(?:SELECT|WITH)\b/i.test(query) || /\bRETURNING\b/i.test(query)) {
+    if (
+      /^\s*(?:SELECT|WITH|EXPLAIN(?:\s+QUERY\s+PLAN)?)\b/i.test(query) ||
+      /\bRETURNING\b/i.test(query)
+    ) {
       const rows = statement.all(...bindings) as Record<string, unknown>[];
       return new MemorySqlCursor(rows, rows.length);
     }
@@ -1025,10 +1032,14 @@ export {
   exactReviewQueueStatusSnapshot,
   mergeBayJourneyState,
   mergeBayTerminalState,
+  recentWorkerHealthRunSample,
+  workerHealthSectionTimeoutMs,
+  readCachedSnapshot,
   StatusStore,
   summarizeAutomergeReliability,
   summarizeBayJourneyTimings,
   workerWorkKind,
+  workflowJobsForRunSnapshot,
   TRIAGE_ROUTING_GROUPS,
   triageRoutingGroupsForLabels,
   ExactReviewPublicationBatchStore,

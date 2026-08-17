@@ -30,6 +30,9 @@ importers:
       oxlint-tsgolint:
         specifier: 0.24.0
         version: 0.24.0
+      playwright-core:
+        specifier: ^1.62.1
+        version: 1.62.1
 
 packages:
 
@@ -477,6 +480,11 @@ packages:
       vite-plus:
         optional: true
 
+  playwright-core@1.62.1:
+    resolution: {integrity: sha512-wPYSwEBJY9GHraISXqyqtx0na0LpO3XEX7jNDhntbex7tzUS7kLnZsOlFruFJB4Hi/rhDMjXGqHewDZ68nYZVw==}
+    engines: {node: '>=20'}
+    hasBin: true
+
   punycode.js@2.3.1:
     resolution: {integrity: sha512-uxFIHU0YlHYhDQtV4R9J6a52SLx28BCjT+4ieh7IGbgwVJWO+km431c4yRlREUAsAmt/uMjQUyQHNEPf0M39CA==}
     engines: {node: '>=6'}
@@ -773,6 +781,8 @@ snapshots:
       '@oxlint/binding-win32-ia32-msvc': 1.73.0
       '@oxlint/binding-win32-x64-msvc': 1.73.0
       oxlint-tsgolint: 0.24.0
+
+  playwright-core@1.62.1: {}
 
   punycode.js@2.3.1: {}
 

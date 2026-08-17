@@ -122,7 +122,14 @@ export function oldExactReviewQueueBayProjection(
       if (sample.length === OLD_BAY_SAMPLE_LIMIT) break;
     }
   }
-  return { sample_limit: OLD_BAY_SAMPLE_LIMIT, total: rows.length, stages, items: sample };
+  return {
+    complete: true,
+    sample_limit: OLD_BAY_SAMPLE_LIMIT,
+    total: rows.length,
+    stages,
+    active_overlaps: Object.fromEntries(OLD_BAY_STAGES.map((stage) => [stage, 0])),
+    items: sample,
+  };
 }
 
 export function oldExactReviewQueueLaneStats(

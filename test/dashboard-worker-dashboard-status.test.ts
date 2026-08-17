@@ -7,15 +7,584 @@ import {
   worker,
   automaticIssueWork,
   workerWorkKind,
+  workflowJobsForRunSnapshot,
+  ExactReviewQueue,
   MemoryKv,
-  MemoryDurableNamespace,
   MemoryCache,
+  MemoryDurableStorage,
+  MemoryDurableNamespace,
   isoAgo,
   completedReviewRun,
   activePrFetch,
   triageIssue,
   jsonResponse,
+  buildExactReviewQueueRequest,
 } from "./dashboard-worker-harness.ts";
+
+const ISSUE_TRIAGE_VIEW_IDS = [
+  "clawsweeper",
+  "ready-candidates",
+  "queueable-blocked",
+  "already-has-pr",
+  "needs-info",
+  "needs-maintainer-review",
+  "product-security",
+  "needs-live-repro",
+];
+
+const PROOF_TRIAGE_VIEW_IDS = [
+  "proof-triage",
+  "needs-proof",
+  "missing-proof",
+  "sufficient-proof",
+  "mock-only-proof",
+  "telegram-proof",
+  "sufficient-with-need-label",
+];
+
+function legacyTriageSnapshot(viewIds: string[], marker: string) {
+  const views = viewIds.map((id, index) => ({
+    id,
+    title: marker,
+    description: marker,
+    total_count: index + 1,
+    item_limit: 100,
+    query: marker,
+    github_url: `https://invalid.example/${marker}?q=${marker}`,
+    items: [
+      {
+        repository: marker,
+        number: index + 1,
+        title: marker,
+        url: `https://invalid.example/${marker}/${index + 1}`,
+        author: marker,
+        assignees: [marker],
+        labels: [{ name: marker }],
+      },
+    ],
+  }));
+  return {
+    schema_version: 1,
+    generated_at: "2026-08-15T12:00:00.000Z",
+    source: { target_repositories: [marker], labels: [marker] },
+    counts: Object.fromEntries(views.map((view) => [view.id, view.total_count])),
+    views,
+    diagnostics: { errors: [] },
+  };
+}
+
+function assertAggregateTriageSnapshot(snapshot: any, viewIds: string[], marker: string) {
+  assert.equal(snapshot.schema_version, 2);
+  assert.equal(snapshot.complete, true);
+  assert.equal(snapshot.error_count, 0);
+  assert.deepEqual(
+    snapshot.views.map((view: { id: string }) => view.id),
+    viewIds,
+  );
+  assert.deepEqual(
+    snapshot.views.map((view: { items: unknown[] }) => view.items),
+    viewIds.map(() => []),
+  );
+  assert.deepEqual(
+    viewIds.map((id, index) => snapshot.counts[id] === index + 1),
+    viewIds.map(() => true),
+  );
+  const serialized = JSON.stringify(snapshot);
+  assert.doesNotMatch(serialized, new RegExp(marker, "i"));
+  for (const field of [
+    "repository",
+    "number",
+    "query",
+    "github_url",
+    "author",
+    "assignees",
+    "labels",
+    "diagnostics",
+    "source",
+  ]) {
+    assert.equal(serialized.includes(`"${field}"`), false, field);
+  }
+}
+
+function dashboardApplyObservabilityFixture() {
+  return {
+    schema_version: 1,
+    range: "24h",
+    generated_at: "2026-08-15T12:00:00.000Z",
+    telemetry_complete: true,
+    event_count: 20,
+    queue: {
+      active: 2,
+      capacity: 8,
+      ready: 3,
+      backoff: 1,
+      dispatching: 1,
+      leased: 1,
+      oldest_ready_age_seconds: 60,
+      oldest_backoff_age_seconds: 30,
+      oldest_lease_age_seconds: 15,
+    },
+    last_15_minutes: {
+      arrivals: 3,
+      applied: 2,
+      closed: 1,
+      superseded: 0,
+      retried: 1,
+      dead_lettered: 0,
+      net_drain: -1,
+    },
+    last_60_minutes: {
+      arrivals: 10,
+      applied: 8,
+      closed: 5,
+      superseded: 1,
+      retried: 4,
+      dead_lettered: 1,
+      net_drain: -2,
+    },
+    totals: {
+      arrivals: 10,
+      applied: 8,
+      closed: 5,
+      superseded: 1,
+      retried: 4,
+      dead_lettered: 1,
+      net_drain: -2,
+    },
+    retry_amplification: 0.5,
+    lease: { wait_ms: 250, hold_ms: 500 },
+    failures: {
+      state_lease_timeout: 1,
+      state_lease_contention: 2,
+      action_ledger: 0,
+      state_publication: 0,
+      safe_close_blocked: 1,
+      safe_close_failure: 0,
+      last_failure_kind: "workflow_failure",
+      last_failure_at: "2026-08-15T11:30:00.000Z",
+    },
+  };
+}
+
+function dashboardAutomergeMetricsFixture() {
+  const generatedAt = Date.parse("2026-08-15T12:00:00.000Z");
+  const rangeStart = generatedAt - 7 * 24 * 60 * 60 * 1000;
+  const bucketWidth = 12 * 60 * 60 * 1000;
+  return {
+    generated_at: new Date(generatedAt).toISOString(),
+    range: "7d",
+    range_start: new Date(rangeStart).toISOString(),
+    telemetry_since: new Date(rangeStart).toISOString(),
+    coverage_percent: 100,
+    summary: {
+      terminal_sessions: 14,
+      merged_sessions: 7,
+      merge_success_rate_percent: 50,
+      command_to_merge_p50_ms: 1_000,
+      command_to_merge_p90_ms: 2_000,
+      base_sync_p50: 1,
+      base_sync_p90: 2,
+      multi_rebase_rate_percent: 21.4,
+      active_sessions: 2,
+    },
+    buckets: Array.from({ length: 14 }, (_, index) => {
+      const merged = index % 2 === 0;
+      return {
+        start: new Date(rangeStart + index * bucketWidth).toISOString(),
+        end: new Date(rangeStart + (index + 1) * bucketWidth).toISOString(),
+        terminal_count: 1,
+        merged_count: merged ? 1 : 0,
+        success_rate_percent: merged ? 100 : 0,
+        command_to_merge_p50_ms: merged ? 1_000 : null,
+        command_to_merge_p90_ms: merged ? 2_000 : null,
+        low_sample: true,
+      };
+    }),
+    terminal_outcomes: {
+      merged: 7,
+      repair_failed: 7,
+      maintainer_stopped: 0,
+      repair_cap_exhausted: 0,
+      pr_closed: 0,
+      automerge_disabled: 0,
+      unknown: 0,
+    },
+    repair_efficiency: { zero_base_sync: 7, one_base_sync: 4, multiple_base_sync: 3 },
+  };
+}
+
+function dashboardReviewCoverageFixture() {
+  return {
+    ok: true,
+    generated_at: new Date().toISOString(),
+    window_days: 7,
+    inventory_generated_at: new Date(Date.now() - 60_000).toISOString(),
+    inventory_status: "current",
+    totals: {
+      open_records: 100,
+      reviewable_records: 80,
+      tracked_records: 75,
+      reviewed_recent: 60,
+      stale: 10,
+      failed: 2,
+      expired: 3,
+      unreviewed_records: 20,
+      untracked_open: 5,
+      pending: 4,
+      excluded: 20,
+      unschedulable_records: 1,
+      record_drift: 0,
+      coverage_percent: 75,
+    },
+  };
+}
+
+function dashboardHealthHistoryFixture(range = "6h") {
+  const rangeMs = { "6h": 6 * 60 * 60_000, "24h": 24 * 60 * 60_000, "7d": 7 * 24 * 60 * 60_000 }[
+    range
+  ]!;
+  const at =
+    Math.floor((Date.now() - Math.min(rangeMs / 2, 15 * 60_000)) / (5 * 60_000)) * (5 * 60_000);
+  return {
+    schema_version: 1,
+    range,
+    retention_days: 7,
+    samples: [
+      {
+        at: new Date(at).toISOString(),
+        exact_review: {
+          collection_ok: true,
+          review: {
+            pending: 4,
+            enqueued_total: 10_000_020,
+            completed_total: 10_000_016,
+            shed_total: 1,
+          },
+          publication: {
+            pending: 2,
+            enqueued_total: 10_000_018,
+            completed_total: 10_000_016,
+          },
+          handoff: { status: "healthy", pending: 4, dispatching: 1, leased: 2 },
+        },
+        state_writer: {
+          collection_ok: true,
+          terminal_collection_ok: true,
+          mode: "batch",
+          tracked_holding: 1,
+          tracked_waiting: 2,
+          tracked_releasing: 0,
+          accepted_operations_total: 16,
+          state_commits_total: 8,
+          materialized_items_total: 16,
+          contention_timeouts_total: 0,
+          wait_ms: { p50: 10, p95: 20, samples: 2 },
+          hold_ms: { p50: 30, p95: 40, samples: 2 },
+          last_successful_materialization_at: new Date(at - 60_000).toISOString(),
+        },
+      },
+    ],
+  };
+}
+
+test("worker job pagination marks a capped census incomplete across cache reuse", async () => {
+  const statusStore = new MemoryKv();
+  let reads = 0;
+  const github = async () => {
+    reads += 1;
+    return {
+      total_count: 301,
+      jobs: Array.from({ length: 100 }, (_, index) => ({
+        id: reads * 1_000 + index,
+        run_id: 41,
+      })),
+    };
+  };
+  const first = await workflowJobsForRunSnapshot(
+    { STATUS_STORE: statusStore },
+    "generated-owner/generated-repo",
+    41,
+    github,
+  );
+  assert.equal(first.jobs.length, 300);
+  assert.equal(first.complete, false);
+  assert.equal(reads, 3);
+
+  const restarted = await workflowJobsForRunSnapshot(
+    { STATUS_STORE: statusStore },
+    "generated-owner/generated-repo",
+    41,
+    async () => {
+      throw new Error("cached incomplete census should not fetch");
+    },
+  );
+  assert.equal(restarted.jobs.length, 300);
+  assert.equal(restarted.complete, false);
+});
+
+test("worker job cache cannot claim a complete malformed or cross-run census", async () => {
+  const statusStore = new MemoryKv();
+  await statusStore.put(
+    "workflow-jobs:generated-owner/generated-repo:41",
+    JSON.stringify({
+      schema_version: 1,
+      complete: true,
+      jobs: [
+        null,
+        { id: 1, run_id: 99, name: "synthetic unrelated job" },
+        { id: 2, run_id: 41, name: "synthetic matching job" },
+      ],
+    }),
+  );
+  const cached = await workflowJobsForRunSnapshot(
+    { STATUS_STORE: statusStore },
+    "generated-owner/generated-repo",
+    41,
+    async () => {
+      throw new Error("malformed cached census should fail closed without a source read");
+    },
+  );
+  assert.equal(cached.complete, false);
+  assert.equal(cached.jobs.length, 1);
+});
+
+test("worker job cache requires an exact versioned total before claiming completion", async () => {
+  const job = { id: 2, run_id: 41, name: "synthetic matching job" };
+  for (const [record, expectedComplete] of [
+    [{ schema_version: 1, complete: true, jobs: [job] }, false],
+    [{ schema_version: 2, complete: true, total_count: 1, jobs: [job] }, true],
+    [{ schema_version: 2, complete: true, total_count: 2, jobs: [job] }, false],
+    [{ schema_version: 2, complete: true, total_count: "1", jobs: [job] }, false],
+  ]) {
+    const statusStore = new MemoryKv();
+    await statusStore.put(
+      "workflow-jobs:generated-owner/generated-repo:41",
+      JSON.stringify(record),
+    );
+    const cached = await workflowJobsForRunSnapshot(
+      { STATUS_STORE: statusStore },
+      "generated-owner/generated-repo",
+      41,
+      async () => {
+        throw new Error("cached census should not fetch");
+      },
+    );
+    assert.equal(cached.complete, expectedComplete);
+    assert.equal(cached.jobs.length, 1);
+  }
+});
+
+test("live worker job fetch versions complete cache and durable coverage", async () => {
+  const statusStore = new MemoryKv();
+  let repairBody = null;
+  const live = await workflowJobsForRunSnapshot(
+    {
+      STATUS_STORE: statusStore,
+      CLAWSWEEPER_WEBHOOK_SECRET: "synthetic-secret",
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+        async fetch(request) {
+          repairBody = await request.json();
+          return jsonResponse({ ok: true });
+        },
+      }),
+    },
+    "generated-owner/generated-repo",
+    41,
+    async () => ({
+      total_count: 1,
+      jobs: [
+        {
+          id: 2,
+          run_id: 41,
+          updated_at: "2026-08-15T12:00:00Z",
+        },
+      ],
+    }),
+  );
+  assert.equal(live.complete, true);
+  const stored = JSON.parse(
+    String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41")),
+  );
+  assert.equal(stored.schema_version, 2);
+  assert.equal(stored.complete, true);
+  assert.equal(stored.total_count, 1);
+  assert.equal(repairBody.workflow_job_census_version, 2);
+  assert.deepEqual(repairBody.complete_workflow_job_runs, [41]);
+  const restarted = await workflowJobsForRunSnapshot(
+    { STATUS_STORE: statusStore },
+    "generated-owner/generated-repo",
+    41,
+    async () => {
+      throw new Error("versioned complete census should survive restart");
+    },
+  );
+  assert.equal(restarted.complete, true);
+  assert.equal(restarted.jobs.length, 1);
+});
+
+test("live worker job fetch cannot claim a complete malformed or cross-run census", async () => {
+  const statusStore = new MemoryKv();
+  let repairBody = null;
+  const exactReviewQueue = new MemoryDurableNamespace({
+    async fetch(request) {
+      assert.equal(new URL(request.url).pathname, "/github-read-model/repair");
+      repairBody = await request.json();
+      return jsonResponse({ ok: true });
+    },
+  });
+  const live = await workflowJobsForRunSnapshot(
+    {
+      STATUS_STORE: statusStore,
+      EXACT_REVIEW_QUEUE: exactReviewQueue,
+      CLAWSWEEPER_WEBHOOK_SECRET: "synthetic-secret",
+    },
+    "generated-owner/generated-repo",
+    41,
+    async () => ({
+      total_count: 3,
+      jobs: [
+        null,
+        {
+          id: 1,
+          run_id: 99,
+          name: "synthetic unrelated job",
+          updated_at: "2026-08-15T12:00:00Z",
+        },
+        {
+          id: 2,
+          run_id: 41,
+          name: "synthetic matching job",
+          updated_at: "2026-08-15T12:00:00Z",
+        },
+      ],
+    }),
+  );
+  assert.equal(live.complete, false);
+  assert.deepEqual(
+    live.jobs.map((job) => job.id),
+    [2],
+  );
+
+  const stored = JSON.parse(
+    String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41")),
+  );
+  assert.equal(stored.complete, false);
+  assert.deepEqual(
+    stored.jobs.map((job) => job.id),
+    [2],
+  );
+  assert.equal(repairBody.objects.length, 1);
+  assert.equal(repairBody.objects[0].runId, 41);
+  assert.equal("complete_workflow_job_runs" in repairBody, false);
+  assert.equal("workflow_job_census_started_at" in repairBody, false);
+  assert.equal("workflow_job_census_version" in repairBody, false);
+});
+
+test("live worker job fetch rejects malformed pages and ambiguous job identities", async () => {
+  const cases = [
+    { payload: { jobs: null, total_count: 0 }, retained: 0 },
+    { payload: { jobs: [{ id: "2", run_id: 41 }], total_count: 1 }, retained: 0 },
+    {
+      payload: {
+        jobs: [
+          { id: 2, run_id: 41 },
+          { id: 2, run_id: 41 },
+        ],
+        total_count: 2,
+      },
+      retained: 1,
+    },
+  ];
+  for (const { payload, retained } of cases) {
+    const statusStore = new MemoryKv();
+    const live = await workflowJobsForRunSnapshot(
+      { STATUS_STORE: statusStore },
+      "generated-owner/generated-repo",
+      41,
+      async () => payload,
+    );
+    assert.equal(live.complete, false);
+    assert.equal(live.jobs.length, retained);
+    const stored = JSON.parse(
+      String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41")),
+    );
+    assert.equal(stored.complete, false);
+    assert.equal(stored.jobs.length, retained);
+  }
+});
+
+test("live worker job fetch requires a strict stable total before completion", async () => {
+  const oneJob = {
+    id: 2,
+    run_id: 41,
+    updated_at: "2026-08-15T12:00:00Z",
+  };
+  for (const payload of [
+    { jobs: [oneJob], total_count: 2 },
+    { jobs: [oneJob], total_count: 0 },
+    { jobs: [oneJob], total_count: "1" },
+  ]) {
+    const statusStore = new MemoryKv();
+    const repairBodies = [];
+    const live = await workflowJobsForRunSnapshot(
+      {
+        STATUS_STORE: statusStore,
+        CLAWSWEEPER_WEBHOOK_SECRET: "synthetic-secret",
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+          async fetch(request) {
+            repairBodies.push(await request.json());
+            return jsonResponse({ ok: true });
+          },
+        }),
+      },
+      "generated-owner/generated-repo",
+      41,
+      async () => payload,
+    );
+    assert.equal(live.complete, false);
+    const stored = JSON.parse(
+      String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41")),
+    );
+    assert.equal(stored.complete, false);
+    assert.equal(
+      repairBodies.some(
+        (body) =>
+          "complete_workflow_job_runs" in body ||
+          "workflow_job_census_started_at" in body ||
+          "workflow_job_census_version" in body,
+      ),
+      false,
+    );
+  }
+
+  const statusStore = new MemoryKv();
+  let page = 0;
+  const changedTotal = await workflowJobsForRunSnapshot(
+    { STATUS_STORE: statusStore },
+    "generated-owner/generated-repo",
+    41,
+    async () => {
+      page += 1;
+      return page === 1
+        ? {
+            total_count: 101,
+            jobs: Array.from({ length: 100 }, (_, index) => ({
+              id: index + 1,
+              run_id: 41,
+            })),
+          }
+        : { total_count: 102, jobs: [{ id: 101, run_id: 41 }] };
+    },
+  );
+  assert.equal(page, 2);
+  assert.equal(changedTotal.complete, false);
+  assert.equal(changedTotal.jobs.length, 100);
+  const stored = JSON.parse(
+    String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41")),
+  );
+  assert.equal(stored.complete, false);
+  assert.equal(stored.jobs.length, 100);
+});
 
 test("dashboard classifies issue conversion and PR repair workers", () => {
   assert.equal(
@@ -42,6 +611,8 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
   const html = await response.text();
   assert.match(html, /<title>🦞 ClawSweeper Live<\/title>/);
+  assert.match(html, /if \(!Number\.isFinite\(timestamp\)\) return "";/);
+  assert.match(html, /Individual close details are unavailable; aggregate counts remain above\./);
   assert.match(html, /content: "🦞"/);
   assert.match(html, /Codex Workers/);
   assert.doesNotMatch(html, /Active Sweeps/);
@@ -66,7 +637,7 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   );
   assert.match(
     html,
-    /<summary>\s*<span class="coverage-summary-content">\s*<span class="coverage-summary-label">Explore repository coverage<\/span>/,
+    /<summary>\s*<span class="coverage-summary-content">\s*<span class="coverage-summary-label">Explore fleet-wide coverage<\/span>/,
   );
   assert.doesNotMatch(html, /<summary>(?:(?!<\/summary>)[\s\S])*<h2/);
   assert.doesNotMatch(html, /\.review-coverage > summary \{[^}]*display: flex/);
@@ -121,6 +692,12 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /Lifecycle Timeline/);
   assert.match(html, /Active Workers/);
   assert.match(html, /id="worker-dialog"/);
+  assert.match(html, /function renderPublicReferenceDialog/);
+  assert.match(html, /data-public-reference-key/);
+  assert.match(
+    html,
+    /\.public-reference-row:focus-visible \{[\s\S]*?outline: 2px solid var\(--claw\)/,
+  );
   assert.match(html, /Step Timeline/);
   assert.match(html, /worker-target-title/);
   assert.match(html, /Refreshing live status in the background/);
@@ -134,12 +711,393 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /Active sessions/);
   assert.match(html, /No terminal samples yet/);
   assert.match(html, /Repair workflow failed/);
-  assert.match(html, /outcomeLabels\[session\.state\]/);
-  assert.match(html, /Showing up to 30 latest sessions in the selected window/);
+  assert.match(html, /Other terminal outcome/);
+  assert.doesNotMatch(html, /id="automerge-repo"/);
+  assert.doesNotMatch(html, /id="automerge-policy"/);
+  assert.doesNotMatch(html, /Recent automerge sessions/);
+  assert.doesNotMatch(html, /data\.sessions/);
   assert.match(html, /Closed by ClawSweeper/);
   assert.match(html, /Worker Health/);
   assert.match(html, /Recent Activity/);
   assert.doesNotMatch(html, /ðŸ|â|âš|âœ/);
+});
+
+test("dashboard sanitizes stored status immediately and never renders transport errors", async () => {
+  const response = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/"));
+  const html = await response.text();
+  const script = [...html.matchAll(/<script>\n([\s\S]*?)\n<\/script>/g)].at(-1)?.[1];
+  assert.ok(script);
+  const marker = "synthetic-browser-storage-marker";
+
+  const run = async (cachedStatus: string | null) => {
+    const elements = new Map<string, Record<string, unknown>>();
+    const elementFor = (id: string) => {
+      if (!elements.has(id)) {
+        elements.set(id, {
+          addEventListener: () => undefined,
+          className: "",
+          dataset: {},
+          id,
+          innerHTML: "",
+          open: false,
+          showModal() {
+            this.open = true;
+          },
+          close() {
+            this.open = false;
+          },
+          style: {},
+          textContent: "",
+        });
+      }
+      return elements.get(id)!;
+    };
+    const writes: string[] = [];
+    let removed = false;
+    const context = createContext({
+      console,
+      document: {
+        addEventListener: () => undefined,
+        body: { classList: { add: () => undefined, remove: () => undefined } },
+        documentElement: { dataset: {} },
+        getElementById: elementFor,
+        querySelector: () => null,
+        querySelectorAll: () => [],
+      },
+      fetch: async () => ({
+        headers: { get: () => null },
+        json: async () => {
+          throw new Error(`${marker} https://invalid.example/private?item=1`);
+        },
+        ok: true,
+        status: 200,
+      }),
+      history: { replaceState: () => undefined },
+      localStorage: {
+        getItem: () => cachedStatus,
+        removeItem: () => {
+          removed = true;
+        },
+        setItem: (_key: string, value: string) => writes.push(value),
+      },
+      location: { hash: "", pathname: "/", search: "" },
+      navigator: { clipboard: { writeText: async () => undefined } },
+      setInterval: () => 1,
+      setTimeout: () => 1,
+      window: { addEventListener: () => undefined },
+    });
+    new Script(script).runInContext(context);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { elements, removed, writes };
+  };
+
+  const cached = JSON.stringify({
+    schema_version: 1,
+    generated_at: "2026-08-15T12:00:00.000Z",
+    source: { repository: marker },
+    fleet: {},
+    workers: [{ title: marker, run_url: `https://invalid.example/${marker}?item=1` }],
+    automatic_work: [],
+    pipeline: [],
+    bay: {},
+    recent: {},
+    diagnostics: { errors: [marker], error_count: 0 },
+  });
+  const withCache = await run(cached);
+  assert.equal(withCache.removed, false);
+  assert.ok(withCache.writes.length >= 1);
+  assert.equal(withCache.writes[0].includes(marker), false);
+  assert.match(withCache.writes[0], /telemetry_unavailable/);
+  assert.doesNotMatch(JSON.stringify([...withCache.elements.values()]), new RegExp(marker, "i"));
+
+  const withoutCache = await run(null);
+  assert.equal(withoutCache.removed, false);
+  assert.equal(withoutCache.writes.length, 0);
+  assert.equal(withoutCache.elements.get("subtitle")?.textContent, "Failed to load public status.");
+  assert.doesNotMatch(JSON.stringify([...withoutCache.elements.values()]), new RegExp(marker, "i"));
+
+  const invalidCache = await run(`{"invalid":"${marker}"`);
+  assert.equal(invalidCache.removed, true);
+  assert.equal(invalidCache.writes.length, 0);
+  assert.doesNotMatch(JSON.stringify([...invalidCache.elements.values()]), new RegExp(marker, "i"));
+});
+
+test("dashboard reprojects separately fetched public observability before rendering", async () => {
+  const response = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/"));
+  const html = await response.text();
+  const script = [...html.matchAll(/<script>\n([\s\S]*?)\n<\/script>/g)].at(-1)?.[1];
+  assert.ok(script);
+
+  const elements = new Map<string, Record<string, any>>();
+  const elementFor = (id: string) => {
+    if (!elements.has(id)) {
+      elements.set(id, {
+        addEventListener: () => undefined,
+        className: "",
+        dataset: {},
+        id,
+        innerHTML: "",
+        open: false,
+        showModal() {
+          this.open = true;
+        },
+        close() {
+          this.open = false;
+        },
+        style: {},
+        textContent: "",
+      });
+    }
+    return elements.get(id)!;
+  };
+  let nextPayload: unknown = null;
+  const context = createContext({
+    console,
+    document: {
+      addEventListener: () => undefined,
+      body: { classList: { add: () => undefined, remove: () => undefined } },
+      documentElement: { dataset: {} },
+      getElementById: elementFor,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    },
+    fetch: async (input: string) => {
+      if (input === "/api/status") return { ok: false, status: 503 };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => structuredClone(nextPayload),
+      };
+    },
+    history: { replaceState: () => undefined },
+    localStorage: {
+      getItem: () => null,
+      removeItem: () => undefined,
+      setItem: () => undefined,
+    },
+    location: { hash: "", pathname: "/", search: "" },
+    navigator: { clipboard: { writeText: async () => undefined } },
+    setInterval: () => 1,
+    setTimeout: () => 1,
+    URLSearchParams,
+    window: { addEventListener: () => undefined },
+  });
+  new Script(script).runInContext(context);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const validApply = dashboardApplyObservabilityFixture();
+  nextPayload = validApply;
+  await context.loadApplyObservability();
+  assert.match(elementFor("apply-observability-summary").innerHTML, /Observed.*24h window/);
+  assert.match(elementFor("apply-observability-body").innerHTML, /8 \/ 5/);
+  assert.match(elementFor("apply-observability-body").innerHTML, /workflow_failure/);
+
+  const validAutomerge = dashboardAutomergeMetricsFixture();
+  nextPayload = validAutomerge;
+  await context.loadAutomergeMetrics();
+  assert.match(elementFor("automerge-meta").textContent, /Time-window coverage 100%/);
+  assert.match(elementFor("automerge-product").innerHTML, /Merge success rate/);
+  assert.match(elementFor("automerge-product").innerHTML, /merged 7 \/ terminal 14/);
+
+  new Script(`lastData = dashboardStatusSnapshot({
+    schema_version: 1,
+    generated_at: new Date().toISOString(),
+    fleet: {}, workers: [], automatic_work: [], pipeline: [], bay: {}, recent: {},
+    diagnostics: { errors: [], error_count: 0 }
+  })`).runInContext(context);
+  const validCoverage = dashboardReviewCoverageFixture();
+  nextPayload = validCoverage;
+  await context.loadReviewCoverage();
+  assert.match(elementFor("review-coverage-note").textContent, /60 of 80.*75%/);
+  assert.match(elementFor("review-coverage-body").innerHTML, /<strong>75%<\/strong>/);
+  assert.match(elementFor("health-strip").innerHTML, /7d coverage.*75%/);
+
+  const validHistory = dashboardHealthHistoryFixture();
+  nextPayload = validHistory;
+  await context.loadHealthHistory("6h", true);
+  assert.equal(context.exactReviewHistory("review")[0].pending, 4);
+  assert.equal(context.stateWriterHistorySamples()[0].wait.p50, 10);
+  assert.equal(context.stateWriterCoordinatorHistorySamples()[0].queued, 2);
+
+  const marker = "synthetic-public-observability-marker";
+  const markerUrl = `https://invalid.example/${marker}?repo=${marker}&token=${marker}`;
+  const markerHash = "0f".repeat(20);
+  for (const malformed of [
+    { ...validApply, range: marker },
+    {
+      ...validApply,
+      failures: { ...validApply.failures, last_failure_kind: marker },
+    },
+    {
+      ...validApply,
+      failures: { ...validApply.failures, last_failure_at: markerUrl },
+    },
+    { ...validApply, queue: { ...validApply.queue, active: { identity: markerUrl } } },
+    { ...validApply, event_count: 10_000_001 },
+    { ...validApply, totals: { ...validApply.totals, net_drain: 999 } },
+  ]) {
+    assert.equal(context.dashboardApplyObservabilitySnapshot(malformed), null);
+  }
+  for (const malformed of [
+    { ...validAutomerge, range: marker },
+    { ...validAutomerge, generated_at: markerUrl },
+    {
+      ...validAutomerge,
+      buckets: validAutomerge.buckets.map((bucket, index) =>
+        index === 0 ? { ...bucket, start: markerUrl } : bucket,
+      ),
+    },
+    { ...validAutomerge, buckets: Array.from({ length: 100 }, () => ({ identity: marker })) },
+    {
+      ...validAutomerge,
+      summary: { ...validAutomerge.summary, terminal_sessions: { identity: markerUrl } },
+    },
+    {
+      ...validAutomerge,
+      terminal_outcomes: Object.fromEntries(
+        Array.from({ length: 33 }, (_, index) => [`${marker}-${index}`, 0]),
+      ),
+    },
+    {
+      ...validAutomerge,
+      terminal_outcomes: { ...validAutomerge.terminal_outcomes, repair_failed: 6 },
+    },
+    { ...validAutomerge, filters: { repo: marker, policy_version: null } },
+  ]) {
+    assert.equal(context.dashboardAutomergeMetricsSnapshot(malformed), null);
+  }
+  for (const malformed of [
+    { ...validCoverage, generated_at: markerUrl },
+    { ...validCoverage, inventory_status: "missing" },
+    {
+      ...validCoverage,
+      totals: { ...validCoverage.totals, coverage_percent: marker },
+    },
+    {
+      ...validCoverage,
+      totals: { ...validCoverage.totals, reviewed_recent: 81 },
+    },
+    {
+      ...validCoverage,
+      totals: { ...validCoverage.totals, stale: { identity: markerUrl } },
+    },
+    {
+      ...validCoverage,
+      totals: { ...validCoverage.totals, open_records: 10_000_001 },
+    },
+  ]) {
+    assert.equal(context.dashboardReviewCoverageSnapshot(malformed), null);
+  }
+  const invalidHistorySample = {
+    ...validHistory,
+    samples: validHistory.samples.map((sample) => ({
+      ...sample,
+      state_writer: {
+        ...sample.state_writer,
+        wait_ms: { ...sample.state_writer.wait_ms, p50: markerUrl },
+      },
+    })),
+  };
+  for (const malformed of [
+    { samples: validHistory.samples },
+    { ...validHistory, range: marker },
+    { ...validHistory, retention_days: "7" },
+    invalidHistorySample,
+    {
+      ...validHistory,
+      samples: validHistory.samples.map((sample) => ({ ...sample, at: markerUrl })),
+    },
+    {
+      ...validHistory,
+      samples: validHistory.samples.map((sample) => ({
+        ...sample,
+        exact_review: {
+          ...sample.exact_review,
+          review: { ...sample.exact_review.review, pending: "4" },
+        },
+      })),
+    },
+    {
+      ...validHistory,
+      samples: Array.from({ length: 74 }, (_, index) => ({
+        ...validHistory.samples[0],
+        at: new Date(Date.parse(validHistory.samples[0].at) + index * 5 * 60_000).toISOString(),
+      })),
+    },
+    { ...validHistory, samples: [validHistory.samples[0], validHistory.samples[0]] },
+  ]) {
+    assert.equal(context.dashboardHealthHistorySnapshot(malformed, "6h"), null);
+  }
+
+  nextPayload = {
+    ...validApply,
+    range: marker,
+    generated_at: markerUrl,
+    failures: {
+      ...validApply.failures,
+      last_failure_kind: marker,
+      last_failure_at: markerUrl,
+      nested: { identity: marker, hash: markerHash },
+    },
+    error: `${marker} ${markerUrl}`,
+  };
+  await context.loadApplyObservability();
+  assert.equal(
+    elementFor("apply-observability-summary").innerHTML,
+    '<span class="review-status degraded">Telemetry unavailable</span>',
+  );
+  assert.equal(
+    elementFor("apply-observability-body").innerHTML,
+    '<div class="empty">Durable apply telemetry could not be loaded.</div>',
+  );
+
+  nextPayload = {
+    ...validAutomerge,
+    generated_at: markerUrl,
+    buckets: validAutomerge.buckets.map((bucket, index) =>
+      index === 0 ? { ...bucket, start: markerUrl, nested: { identity: markerHash } } : bucket,
+    ),
+    error: `${marker} ${markerUrl}`,
+  };
+  await context.loadAutomergeMetrics();
+  assert.equal(elementFor("automerge-meta").textContent, "Telemetry unavailable");
+  assert.equal(
+    elementFor("automerge-product").innerHTML,
+    '<div class="empty">Automerge product telemetry could not be loaded.</div>',
+  );
+
+  nextPayload = {
+    ...validCoverage,
+    totals: { ...validCoverage.totals, coverage_percent: markerUrl, nested: { hash: markerHash } },
+    error: marker,
+  };
+  await context.loadReviewCoverage();
+  assert.equal(
+    elementFor("review-coverage-body").innerHTML,
+    '<div class="empty">Review coverage is unavailable. The canonical record store could not be reached.</div>',
+  );
+  assert.doesNotMatch(elementFor("health-strip").innerHTML, /7d coverage/);
+
+  nextPayload = { ...invalidHistorySample, error: marker, nested: { hash: markerHash } };
+  await context.loadHealthHistory("6h", true);
+  assert.equal(context.exactReviewHistory("review").length, 0);
+  assert.equal(context.stateWriterHistorySamples().length, 0);
+  assert.equal(context.stateWriterCoordinatorHistorySamples().length, 0);
+
+  const rendered = JSON.stringify([
+    elementFor("apply-observability-summary"),
+    elementFor("apply-observability-body"),
+    elementFor("automerge-meta"),
+    elementFor("automerge-product"),
+    elementFor("review-coverage-note"),
+    elementFor("review-coverage-body"),
+    elementFor("health-strip"),
+    elementFor("exact-review-lanes"),
+    elementFor("state-writer-health"),
+  ]);
+  assert.doesNotMatch(rendered, new RegExp(marker, "i"));
+  assert.doesNotMatch(rendered, /invalid\.example|repo=|token=/i);
+  assert.equal(rendered.includes(markerHash), false);
 });
 
 test("dashboard hero treats apply and exact-review handoff health as attention", async () => {
@@ -171,6 +1129,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     return elements.get(id);
   };
   const status = {
+    schema_version: 1,
     generated_at: "2026-07-05T11:22:43.934Z",
     source: { target_repositories: ["openclaw/openclaw"] },
     health: {
@@ -284,6 +1243,81 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
           leased: { count: 24, oldest_age_seconds: 240 },
         },
       },
+      bay_projection: {
+        complete: true,
+        sample_limit: 24,
+        total: 2,
+        stages: {
+          arriving: 0,
+          "setting-up": 0,
+          reviewing: 1,
+          publishing: 1,
+          applying: 0,
+          repairing: 0,
+        },
+        activity: {
+          complete: true,
+          total: 2,
+          queue_stages: {
+            arriving: 0,
+            "setting-up": 0,
+            reviewing: 1,
+            publishing: 0,
+            applying: 0,
+            repairing: 0,
+          },
+          live_stages: {
+            arriving: 0,
+            "setting-up": 0,
+            reviewing: 0,
+            publishing: 1,
+            applying: 0,
+            repairing: 0,
+          },
+          items: [
+            {
+              repository: "OpenClaw/OpenClaw",
+              item_number: 123,
+              stage: "reviewing",
+              source: "queue",
+              title: "SYNTHETIC_OVERVIEW_PRIVATE_TITLE",
+              url: "https://invalid.example/SYNTHETIC_OVERVIEW_PRIVATE_URL?token=1",
+              failure_key: "SYNTHETIC_OVERVIEW_PRIVATE_FAILURE",
+              action: {
+                repository: "openclaw/clawsweeper",
+                run_id: 7001,
+                job_id: 8001,
+                status: "in_progress",
+                started_at: "2026-07-05T11:20:00.000Z",
+                steps_complete: true,
+                steps: [
+                  {
+                    sequence: 1,
+                    kind: "setup",
+                    status: "completed",
+                    conclusion: "success",
+                    name: "SYNTHETIC_OVERVIEW_PRIVATE_STEP",
+                  },
+                  {
+                    sequence: 2,
+                    kind: "review",
+                    status: "in_progress",
+                    conclusion: null,
+                    name: "SYNTHETIC_OVERVIEW_PRIVATE_CURRENT_STEP",
+                  },
+                ],
+                run_url: "https://invalid.example/SYNTHETIC_OVERVIEW_PRIVATE_ACTION?token=1",
+              },
+            },
+            {
+              repository: "openclaw/clawhub",
+              item_number: 456,
+              stage: "publishing",
+              source: "live",
+            },
+          ],
+        },
+      },
     },
     diagnostics: { errors: [], exact_review_queue_error: null as string | null },
     recent: {
@@ -372,6 +1406,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     },
   };
 
+  const dashboardLocation = { hash: "", pathname: "/", search: "" };
   const context = createContext({
     console,
     document: {
@@ -393,7 +1428,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
       getItem: () => null,
       setItem: () => undefined,
     },
-    location: { hash: "", pathname: "/", search: "" },
+    location: dashboardLocation,
     navigator: { clipboard: { writeText: async () => undefined } },
     setInterval: () => 1,
     setTimeout: () => 1,
@@ -402,10 +1437,187 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   new Script(script).runInContext(context);
   await new Promise((resolve) => setTimeout(resolve, 0));
 
+  const projectedDiagnostics = context.dashboardStatusSnapshot({
+    schema_version: 1,
+    generated_at: "2026-07-05T11:22:43.934Z",
+    diagnostics: {
+      errors: ["telemetry_unavailable", "synthetic unbounded error text"],
+      error_count: 2,
+    },
+  });
+  assert.equal(
+    JSON.stringify(projectedDiagnostics.diagnostics),
+    JSON.stringify({
+      errors: ["telemetry_unavailable", "telemetry_unavailable"],
+      error_count: 2,
+    }),
+  );
+  assert.equal(
+    JSON.stringify(projectedDiagnostics).includes("synthetic unbounded error text"),
+    false,
+  );
+  const malformedDiagnostics = context.dashboardStatusSnapshot({
+    schema_version: 1,
+    generated_at: "2026-07-05T11:22:43.934Z",
+    diagnostics: { errors: { nested: "synthetic malformed error" }, error_count: 0 },
+  });
+  assert.equal(malformedDiagnostics.diagnostics.error_count, 1);
+  assert.equal(malformedDiagnostics.diagnostics.errors[0], "telemetry_unavailable");
+  assert.equal(JSON.stringify(malformedDiagnostics).includes("synthetic malformed error"), false);
+  for (const generatedAt of [
+    "1171",
+    "https://example.invalid/private?timestamp=1",
+    "2026-07-05T11:22:43.934Z".repeat(3),
+  ]) {
+    assert.equal(
+      context.dashboardStatusSnapshot({ schema_version: 1, generated_at: generatedAt }),
+      null,
+    );
+  }
+
   assert.equal(elementFor("hero-dot").className, "hero-dot amber");
   assert.match(elementFor("hero-headline").textContent, /^Needs attention/);
+  assert.match(elementFor("public-reference-summary").textContent, /2 verified public references/);
+  const publicReferenceHtml = elementFor("public-references").innerHTML;
+  assert.match(publicReferenceHtml, /openclaw\/openclaw#123/);
+  assert.match(publicReferenceHtml, /openclaw\/clawhub#456/);
+  assert.doesNotMatch(publicReferenceHtml, /https:\/\/github\.com/);
+  assert.match(publicReferenceHtml, /data-public-reference-key/);
+  assert.doesNotMatch(publicReferenceHtml, /SYNTHETIC_OVERVIEW_PRIVATE/i);
+  assert.doesNotMatch(publicReferenceHtml, /invalid\.example|token=/i);
+  context.renderPublicReferenceDialog(
+    {
+      repository: "openclaw/openclaw",
+      item_number: 123,
+      stage: "reviewing",
+      source: "queue",
+      title: "SYNTHETIC_OVERVIEW_PRIVATE_BLADE",
+      item_url: "https://invalid.example/private?token=SYNTHETIC_OVERVIEW_PRIVATE_BLADE",
+      failure_key: "SYNTHETIC_OVERVIEW_PRIVATE_BLADE",
+      action: {
+        repository: "openclaw/clawsweeper",
+        run_id: 7001,
+        job_id: 8001,
+        status: "in_progress",
+        started_at: "2026-07-05T11:20:00.000Z",
+        steps_complete: true,
+        steps: [
+          { sequence: 1, kind: "setup", status: "completed", conclusion: "success" },
+          { sequence: 2, kind: "review", status: "in_progress", conclusion: null },
+        ],
+      },
+    },
+    "openclaw/openclaw#123",
+  );
+  const publicReferenceBlade =
+    elementFor("worker-dialog-heading").innerHTML + elementFor("worker-dialog-body").innerHTML;
+  assert.equal(elementFor("worker-dialog").open, true);
+  assert.match(publicReferenceBlade, /openclaw\/openclaw#123/);
+  assert.match(publicReferenceBlade, /Bounded queue sample/);
+  assert.match(publicReferenceBlade, /https:\/\/github\.com\/openclaw\/openclaw\/issues\/123/);
+  assert.match(publicReferenceBlade, /https:\/\/github\.com\/openclaw\/openclaw/);
+  assert.match(
+    publicReferenceBlade,
+    /https:\/\/github\.com\/openclaw\/clawsweeper\/actions\/runs\/7001\/job\/8001/,
+  );
+  assert.match(
+    publicReferenceBlade,
+    /https:\/\/github\.com\/openclaw\/clawsweeper\/actions\/runs\/7001/,
+  );
+  assert.match(publicReferenceBlade, /Set up job/);
+  assert.match(publicReferenceBlade, /Run review/);
+  assert.match(publicReferenceBlade, /class="step-row in_progress"/);
+  assert.match(publicReferenceBlade, /2 steps/);
+  assert.doesNotMatch(
+    publicReferenceBlade,
+    /SYNTHETIC_OVERVIEW_PRIVATE_BLADE|invalid\.example|token=/i,
+  );
+  dashboardLocation.hash = "#public-reference-%";
+  assert.doesNotThrow(() => context.openWorkerFromHash());
+  assert.equal(elementFor("worker-dialog").open, false);
+  const projectedPublicReferences = context.dashboardStatusSnapshot(status);
+  assert.equal(
+    JSON.stringify(projectedPublicReferences.exact_review_queue.bay_projection.activity.items),
+    JSON.stringify([
+      {
+        repository: "openclaw/openclaw",
+        item_number: 123,
+        stage: "reviewing",
+        source: "queue",
+        action: {
+          repository: "openclaw/clawsweeper",
+          run_id: 7001,
+          job_id: 8001,
+          status: "in_progress",
+          started_at: "2026-07-05T11:20:00.000Z",
+          steps_complete: true,
+          steps: [
+            { sequence: 1, kind: "setup", status: "completed", conclusion: "success" },
+            { sequence: 2, kind: "review", status: "in_progress", conclusion: null },
+          ],
+        },
+      },
+      {
+        repository: "openclaw/clawhub",
+        item_number: 456,
+        stage: "publishing",
+        source: "live",
+      },
+    ]),
+  );
+  assert.doesNotMatch(JSON.stringify(projectedPublicReferences), /SYNTHETIC_OVERVIEW_PRIVATE/i);
+  assert.equal(
+    context.dashboardPublicBayReferences([
+      { repository: "openclaw/openclaw", item_number: "123", stage: "reviewing", source: "queue" },
+    ]).length,
+    0,
+  );
+  assert.equal(
+    context.dashboardPublicBayReferences(
+      Array.from({ length: 125 }, (_, index) => ({
+        repository: "openclaw/openclaw",
+        item_number: index + 1,
+        stage: "reviewing",
+        source: "queue",
+      })),
+    ).length,
+    0,
+  );
+  new Script('publicReferenceQuery = "123"; renderPublicReferences(lastData);').runInContext(
+    context,
+  );
+  assert.match(elementFor("public-reference-summary").textContent, /1 match/);
+  assert.match(elementFor("public-references").innerHTML, /openclaw\/openclaw#123/);
+  assert.doesNotMatch(elementFor("public-references").innerHTML, /openclaw\/clawhub#456/);
+  new Script(
+    'publicReferenceQuery = "openclaw/clawhub#456"; renderPublicReferences(lastData);',
+  ).runInContext(context);
+  assert.match(elementFor("public-references").innerHTML, /openclaw\/clawhub#456/);
+  assert.doesNotMatch(elementFor("public-references").innerHTML, /openclaw\/openclaw#123/);
+  new Script(
+    'publicReferenceQuery = "not-a-reference"; renderPublicReferences(lastData);',
+  ).runInContext(context);
+  assert.match(
+    elementFor("public-reference-summary").textContent,
+    /Enter a number or owner\/repo#number/,
+  );
+  assert.match(elementFor("public-references").innerHTML, /No matching public reference/);
+  new Script('publicReferenceQuery = ""; renderPublicReferences(lastData);').runInContext(context);
   assert.match(elementFor("apply-health").innerHTML, /Pruning sweep blocked/);
+  status.recent.closed_items = {};
+  assert.doesNotThrow(() => context.renderDashboard(status, ""));
+  assert.match(
+    elementFor("closed").innerHTML,
+    /Individual close details are unavailable; aggregate counts remain above\./,
+  );
+  status.recent.closed_items = [];
   assert.match(elementFor("exact-review-handoff").innerHTML, /Dispatching/);
+  assert.match(elementFor("exact-review-handoff").innerHTML, /Pending<\/span><strong>4<\/strong>/);
+  assert.match(
+    elementFor("exact-review-handoff").innerHTML,
+    /Dispatching<\/span><strong>2<\/strong>/,
+  );
+  assert.match(elementFor("exact-review-handoff").innerHTML, /Leased<\/span><strong>24<\/strong>/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /2 of 28 exact-review slots open/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /health-badge healthy/);
   assert.match(elementFor("exact-review-handoff").innerHTML, /pressure congested/);
@@ -556,50 +1768,38 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     /Terminal telemetry<\/dt><dd>terminal telemetry stale/,
   );
 
+  const coordinatorWriter = (trackedWaiting: number) => ({
+    collection_ok: true,
+    terminal_collection_ok: false,
+    mode: "batch",
+    tracked_holding: 1,
+    tracked_waiting: trackedWaiting,
+    accepted_operations_total: 16,
+    state_commits_total: 8,
+    materialized_items_total: 16,
+    wait_ms: { p50: null, p95: null, samples: 0 },
+    hold_ms: { p50: null, p95: null, samples: 0 },
+    last_successful_materialization_at: null,
+  });
   const coordinatorSamples = [
     {
-      at: new Date(Date.now() - 15 * 60_000).toISOString(),
-      state_writer: {
-        collection_ok: true,
-        terminal_collection_ok: false,
-        tracked_holding: null,
-        tracked_waiting: "",
-      },
-    },
-    {
       at: new Date(Date.now() - 10 * 60_000).toISOString(),
-      state_writer: {
-        collection_ok: true,
-        terminal_collection_ok: false,
-        tracked_holding: 1,
-        tracked_waiting: 5,
-        accepted_operations_total: 16,
-        state_commits_total: 8,
-        materialized_items_total: 16,
-      },
+      state_writer: coordinatorWriter(5),
     },
     {
       at: new Date(Date.now() - 5 * 60_000).toISOString(),
-      state_writer: {
-        collection_ok: true,
-        terminal_collection_ok: false,
-        tracked_holding: 1,
-        tracked_waiting: 2,
-      },
+      state_writer: coordinatorWriter(2),
     },
-    {
-      at: new Date().toISOString(),
-      state_writer: {
-        collection_ok: true,
-        terminal_collection_ok: false,
-        tracked_holding: 1,
-        tracked_waiting: 4,
-      },
-    },
+    { at: new Date().toISOString(), state_writer: coordinatorWriter(4) },
   ];
   context.fetch = async () => ({
     ok: true,
-    json: async () => ({ samples: coordinatorSamples }),
+    json: async () => ({
+      schema_version: 1,
+      range: "6h",
+      retention_days: 7,
+      samples: coordinatorSamples,
+    }),
   });
   await context.loadHealthHistory("6h", true);
   context.renderStateWriter({
@@ -628,38 +1828,11 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(stateWriterHtml, /class="lane-metrics"/);
   assert.doesNotMatch(stateWriterHtml, /<section class="exact-lane">/);
   const initialLaneHtml = elementFor("exact-review-lanes").innerHTML;
-  assert.match(
-    initialLaneHtml,
-    /<details class="lane-flow"><summary><span class="lane-flow-title">Review throughput · last 15 minutes/,
-  );
-  assert.match(
-    initialLaneHtml,
-    /<details class="lane-flow"><summary><span class="lane-flow-title">Publication throughput · last 15 minutes/,
-  );
-  assert.match(
-    initialLaneHtml,
-    /15m hourly-equivalent rates respond faster to recent changes but are more burst-sensitive than the up-to-60m net rate above\./,
-  );
-  assert.equal(initialLaneHtml.match(/class="lane-flow"/g)?.length, 2);
-  assert.equal(initialLaneHtml.match(/class="lane-flow-foot"/g)?.length, 2);
-  assert.doesNotMatch(initialLaneHtml, /<details class="lane-flow" open>/);
-  const flowBlocks = [
-    ...initialLaneHtml.matchAll(/<details class="lane-flow">([\s\S]*?)<\/details>/g),
-  ];
-  assert.equal(flowBlocks.length, 2);
-  assert.deepEqual(
-    flowBlocks.map((match) => match[1].match(/class="lane-count"/g)?.length),
-    [4, 4],
-  );
-  assert.match(initialLaneHtml, /Successful<\/span><strong>20\/h/);
-  assert.match(initialLaneHtml, /Shed<\/span><strong>0\/h/);
-  assert.match(initialLaneHtml, /Published<\/span><strong>4\/h/);
-  assert.match(initialLaneHtml, /Superseded<\/span><strong>16\/h/);
-  assert.doesNotMatch(initialLaneHtml, /Terminal resolved/);
-  assert.doesNotMatch(initialLaneHtml, /Dead-lettered/);
-  assert.match(initialLaneHtml, /DLQ 2/);
-  assert.match(initialLaneHtml, /Retry amplification<\/span><strong>0\.20/);
-  assert.match(initialLaneHtml, /Retry amplification<\/span><strong>0\.40/);
+  assert.doesNotMatch(initialLaneHtml, /class="lane-flow"/);
+  assert.doesNotMatch(initialLaneHtml, /Retry amplification/);
+  assert.doesNotMatch(initialLaneHtml, /DLQ/);
+  assert.match(initialLaneHtml, /Ready<\/span><strong>3/);
+  assert.match(initialLaneHtml, /Backoff<\/span><strong>1/);
   assert.match(elementFor("worker-health").innerHTML, /Automerge worker operations/);
   assert.match(elementFor("worker-health").innerHTML, /Active \/ stalled<\/span><strong>0 \/ 0/);
   assert.match(elementFor("worker-health").innerHTML, /Failed attempts<\/span><strong>2/);
@@ -668,13 +1841,11 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     /Recovered \/ unresolved<\/span><strong>1 \/ 1/,
   );
   assert.match(elementFor("worker-health").innerHTML, /avg runtime 10m/);
-  assert.match(elementFor("worker-health").innerHTML, /openclaw\/openclaw#107691/);
-  assert.match(elementFor("worker-health").innerHTML, /actions\/runs\/29431617465/);
+  assert.doesNotMatch(elementFor("worker-health").innerHTML, /#107691/);
+  assert.doesNotMatch(elementFor("worker-health").innerHTML, /actions\/runs\//);
   assert.match(elementFor("worker-health").innerHTML, /unresolved/);
-  assert.match(
-    elementFor("exact-review-lanes").innerHTML,
-    /target 32 · pressure ceiling 24 after GitHub rate limit/,
-  );
+  assert.match(elementFor("exact-review-lanes").innerHTML, /target 24 · adaptive 24–24/);
+  assert.doesNotMatch(elementFor("exact-review-lanes").innerHTML, /GitHub rate limit/);
   assert.match(elementFor("exact-review-lanes").innerHTML, /No backlog history in this range/);
   status.workers = [
     ...Array.from({ length: 128 }, (_, id) => ({
@@ -699,6 +1870,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   status.exact_review_queue.pressure.reason = "capacity_full_with_backlog";
   status.exact_review_queue.handoff_health.message =
     "A dispatched review has not been claimed within the expected handoff window.";
+  status.dashboard_health = { conclusion: "needs_attention", severity: "red" };
   context.renderDashboard(status, "");
 
   assert.equal(elementFor("hero-dot").className, "hero-dot red");
@@ -708,6 +1880,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
 
   Object.assign(status, { exact_review_queue: null });
   status.diagnostics.exact_review_queue_error = "exact-review queue timed out";
+  status.dashboard_health = { conclusion: "needs_attention", severity: "amber" };
   context.renderDashboard(status, "");
 
   assert.equal(elementFor("hero-dot").className, "hero-dot amber");
@@ -744,6 +1917,17 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   );
   context.renderExecutionAlert({
     ...healthyOperational,
+    queued_runs: 2,
+    queued_over_threshold: 1,
+    wedged_rerun_runs: 1,
+    oldest_wedged_rerun_minutes: 90,
+  });
+  assert.match(
+    elementFor("execution-alert").innerHTML,
+    /1 wedged pre-queue re-run excluded from health \(oldest 1h 30m\)/,
+  );
+  context.renderExecutionAlert({
+    ...healthyOperational,
     running_runs: 1,
     running_over_threshold: 1,
   });
@@ -764,6 +1948,7 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     running_over_threshold: 1,
     oldest_running_minutes: 180,
   };
+  status.dashboard_health = { conclusion: "needs_attention", severity: "red" };
   context.renderDashboard(status, "");
 
   assert.equal(elementFor("hero-dot").className, "hero-dot red");
@@ -784,19 +1969,18 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   const now = Date.now();
   const samples = Array.from({ length: 25 }, (_, index) => ({
     at: new Date(now - (24 - index) * 5 * 60_000).toISOString(),
-    collection_ok: true,
     exact_review: {
       collection_ok: true,
       review: {
         pending: 100 + index,
-        enqueued_total: index * 8,
-        completed_total: index * 5,
+        enqueued_total: 10_000_000 + index * 8,
+        completed_total: 10_000_000 + index * 5,
         shed_total: 0,
       },
       publication: {
         pending: 200 - index,
-        enqueued_total: index * 4,
-        completed_total: index * 10,
+        enqueued_total: 10_000_000 + index * 4,
+        completed_total: 10_000_000 + index * 10,
       },
     },
   }));
@@ -808,13 +1992,16 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
     }
     return {
       ok: true,
-      json: async () => ({ samples }),
+      json: async () => ({ schema_version: 1, range: "7d", retention_days: 7, samples }),
     };
   };
   const stale24HourRequest = context.loadHealthHistory("24h", true);
   const active7DayRequest = context.loadHealthHistory("7d", true);
   await active7DayRequest;
-  resolve24HourHistory?.({ ok: true, json: async () => ({ samples: [] }) });
+  resolve24HourHistory?.({
+    ok: true,
+    json: async () => ({ schema_version: 1, range: "24h", retention_days: 7, samples: [] }),
+  });
   await stale24HourRequest;
   const laneHtml = elementFor("exact-review-lanes").innerHTML;
   assert.match(laneHtml, /Growing · \+12 in the last hour/);
@@ -1174,6 +2361,21 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
     updated_at: isoAgo(2_000),
   };
   let graphqlRequests = 0;
+  const queueStorage = new MemoryDurableStorage();
+  const exactReviewQueue = new ExactReviewQueue(
+    { storage: queueStorage },
+    { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" },
+  );
+  await exactReviewQueue.fetch(
+    buildExactReviewQueueRequest(
+      "aggregate-bay-overlap",
+      92521,
+      "opened",
+      "issue",
+      "openclaw/openclaw",
+    ),
+  );
+  const exactReviewQueueNamespace = new MemoryDurableNamespace(exactReviewQueue);
   globalThis.fetch = async (input) => {
     const url = new URL(String(input));
     if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
@@ -1190,9 +2392,11 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
     }
     if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/42/jobs") {
       return jsonResponse({
+        total_count: 3,
         jobs: [
           {
             id: 4201,
+            run_id: 42,
             name: "Review shard 0 · openclaw/openclaw#92521,92522",
             status: "in_progress",
             conclusion: null,
@@ -1221,6 +2425,7 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
           },
           {
             id: 4202,
+            run_id: 42,
             name: "Publish review artifacts",
             status: "in_progress",
             conclusion: null,
@@ -1243,6 +2448,7 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
           },
           {
             id: 4203,
+            run_id: 42,
             name: "publish",
             status: "in_progress",
             conclusion: null,
@@ -1267,13 +2473,15 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
       });
     }
     if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/43/jobs") {
-      return jsonResponse({ jobs: [] });
+      return jsonResponse({ total_count: 0, jobs: [] });
     }
     if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/44/jobs") {
       return jsonResponse({
+        total_count: 1,
         jobs: [
           {
             id: 4401,
+            run_id: 44,
             name: "publish",
             status: "queued",
             conclusion: null,
@@ -1331,84 +2539,159 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
       {
         CLAWSWEEPER_REPO: "openclaw/clawsweeper",
         TARGET_REPOS: "openclaw/openclaw",
+        PUBLIC_BAY_REPOS: "openclaw/openclaw,openclaw/clawsweeper",
         CACHE_TTL_SECONDS: "0",
         GITHUB_TOKEN: "test-token",
+        EXACT_REVIEW_QUEUE: exactReviewQueueNamespace,
       },
       {
         waitUntil: () => undefined,
       },
     );
     const status = await response.json();
+    const serializedStatus = JSON.stringify(status);
+    for (const privateField of [
+      "workflow_title",
+      "failure_key",
+      "run_url",
+      "job_url",
+      "item_numbers",
+      "target_items",
+      "name",
+    ]) {
+      assert.equal(serializedStatus.includes(`"${privateField}"`), false);
+    }
+    assert.equal(status.workers[0].status, "in_progress");
+    assert.equal("repository" in status.workers[0], false);
+    assert.equal("item_number" in status.workers[0], false);
+    assert.equal("id" in status.workers[0], false);
+    assert.deepEqual(status.workers[0].progress, { completed: 2, total: 3 });
     assert.equal(status.fleet.active_codex_jobs, 2);
     assert.equal(status.fleet.worker_detail_runs, 3);
     assert.equal(status.fleet.worker_detail_fallbacks, 1);
     assert.equal(status.workers.length, 5);
-    assert.equal(status.workers[0].id, 4201);
-    assert.equal(status.workers[0].name, "Review shard 0 · openclaw/openclaw#92521,92522");
-    assert.equal(status.workers[0].repository, "openclaw/openclaw");
-    assert.equal(status.workers[0].item_number, null);
-    assert.deepEqual(status.workers[0].item_numbers, [92521, 92522]);
-    assert.equal(status.workers[0].current_step, "Review shard");
+    assert.deepEqual(
+      status.workers.map((worker) => worker.stage),
+      ["reviewing", "publishing", "applying", "arriving", "publishing"],
+    );
+    assert.equal(status.workers[0].status, "in_progress");
     assert.deepEqual(status.workers[0].progress, { completed: 2, total: 3 });
     assert.equal(status.workers[0].steps[2].status, "in_progress");
-    assert.deepEqual(status.workers[0].target_items, [
-      {
-        repository: "openclaw/openclaw",
-        number: 92521,
-        title: "Preserve terminal resize state",
-        url: "https://github.com/openclaw/openclaw/issues/92521",
-        type: "issue",
-      },
-      {
-        repository: "openclaw/openclaw",
-        number: 92522,
-        title: "Repair terminal resize state",
-        url: "https://github.com/openclaw/openclaw/pull/92522",
-        type: "pull_request",
-      },
-    ]);
-    assert.equal(status.workers[1].id, 4202);
-    assert.equal(status.workers[1].name, "Publish review artifacts");
     assert.equal(status.workers[1].is_codex_worker, false);
-    assert.equal(status.workers[1].item_number, 92521);
-    assert.equal(status.workers[1].current_step, "Publish review artifact action ledger");
-    assert.equal(status.workers[1].steps[0].name, "Apply review artifacts");
-    assert.equal(status.workers[2].id, 4203);
-    assert.equal(status.workers[2].name, "publish");
-    assert.equal(status.workers[2].is_codex_worker, false);
-    assert.equal(
-      status.workers[2].current_step,
-      "Finalize healthy members under a fenced heartbeat",
-    );
-    const cachedPublisherJobs = await cache.match(
-      new Request("https://clawsweeper.internal/store/workflow-jobs%3Aopenclaw%2Fclawsweeper%3A42"),
-    );
-    assert.equal(cachedPublisherJobs?.headers.get("cache-control"), "public, max-age=60");
-    assert.equal(status.workers[3].id, "run-43");
     assert.equal(status.workers[3].source, "workflow-fallback");
-    assert.equal(status.workers[3].current_step, "reviewing");
-    assert.equal(status.workers[3].target_items[0].title, "Queued terminal resize follow-up");
-    const queuedBatchPublisher = status.workers.find((entry) => entry.id === 4401);
-    assert.ok(queuedBatchPublisher);
-    assert.equal(queuedBatchPublisher.name, "publish");
-    assert.equal(queuedBatchPublisher.is_codex_worker, false);
-    assert.equal(queuedBatchPublisher.workflow_title, "Publish exact review batch");
-    assert.equal(queuedBatchPublisher.current_step, "Waiting for runner");
-
-    const cachedResponse = await worker.fetch(
+    const activity = status.exact_review_queue.bay_projection.activity;
+    const { items: publicItems, ...activityCounts } = activity;
+    assert.deepEqual(activityCounts, {
+      complete: true,
+      queue_stages: {
+        arriving: 0,
+        "setting-up": 0,
+        reviewing: 0,
+        publishing: 0,
+        applying: 0,
+        repairing: 0,
+      },
+      live_stages: {
+        arriving: 1,
+        "setting-up": 0,
+        reviewing: 1,
+        publishing: 0,
+        applying: 1,
+        repairing: 0,
+      },
+      total: 3,
+    });
+    assert.deepEqual(
+      publicItems.map((item) => ({
+        repository: item.repository,
+        item_number: item.item_number,
+        stage: item.stage,
+        source: item.source,
+        action_repository: item.action?.repository,
+        run_id: item.action?.run_id,
+        job_id: item.action?.job_id,
+        status: item.action?.status,
+        step_kinds: item.action?.steps.map((step) => step.kind),
+        step_statuses: item.action?.steps.map((step) => step.status),
+      })),
+      [
+        {
+          repository: "openclaw/openclaw",
+          item_number: 92521,
+          stage: "applying",
+          source: "live",
+          action_repository: "openclaw/clawsweeper",
+          run_id: 42,
+          job_id: 4203,
+          status: "in_progress",
+          step_kinds: ["lease", "finalize"],
+          step_statuses: ["completed", "in_progress"],
+        },
+        {
+          repository: "openclaw/openclaw",
+          item_number: 92522,
+          stage: "reviewing",
+          source: "live",
+          action_repository: "openclaw/clawsweeper",
+          run_id: 42,
+          job_id: 4201,
+          status: "in_progress",
+          step_kinds: ["setup", "review", "review"],
+          step_statuses: ["completed", "completed", "in_progress"],
+        },
+        {
+          repository: "openclaw/openclaw",
+          item_number: 92523,
+          stage: "arriving",
+          source: "live",
+          action_repository: "openclaw/clawsweeper",
+          run_id: 43,
+          job_id: undefined,
+          status: "queued",
+          step_kinds: [],
+          step_statuses: [],
+        },
+      ],
+    );
+    assert.equal(
+      publicItems.every((item) => typeof item.action?.started_at === "string"),
+      true,
+    );
+    assert.equal(serializedStatus.includes("Review shard"), false);
+    assert.equal(serializedStatus.includes("setup-codex"), false);
+    assert.equal("active_overlaps" in status.exact_review_queue.bay_projection, false);
+    assert.equal(Array.isArray(status.exact_review_queue.bay_projection.items), true);
+    assert.equal(
+      JSON.stringify(status.exact_review_queue.bay_projection.items).includes(
+        "aggregate-bay-overlap",
+      ),
+      false,
+    );
+    const privacyCachedResponse = await worker.fetch(
       new Request("https://clawsweeper.openclaw.ai/api/status"),
       {
         CLAWSWEEPER_REPO: "openclaw/clawsweeper",
         TARGET_REPOS: "openclaw/openclaw",
+        PUBLIC_BAY_REPOS: "openclaw/openclaw,openclaw/clawsweeper",
         CACHE_TTL_SECONDS: "0",
         GITHUB_TOKEN: "test-token",
+        EXACT_REVIEW_QUEUE: exactReviewQueueNamespace,
       },
       {
         waitUntil: () => undefined,
       },
     );
-    const cachedStatus = await cachedResponse.json();
-    assert.equal(cachedStatus.workers[0].target_items[0].title, "Preserve terminal resize state");
+    const cachedStatus = await privacyCachedResponse.json();
+    assert.equal(cachedStatus.workers[0].status, "in_progress");
+    assert.deepEqual(
+      cachedStatus.workers.map((worker) => worker.stage),
+      ["reviewing", "publishing", "applying", "arriving", "publishing"],
+    );
+    assert.deepEqual(
+      cachedStatus.exact_review_queue.bay_projection.activity,
+      status.exact_review_queue.bay_projection.activity,
+    );
+    assert.equal("workflow_title" in cachedStatus.workers[0], false);
     assert.equal(graphqlRequests, 1);
   } finally {
     globalThis.fetch = originalFetch;
@@ -1482,11 +2765,11 @@ test("dashboard keeps control-plane workflow fallbacks out of Codex capacity", a
     const status = await response.json();
     assert.equal(status.fleet.active_codex_jobs, 3);
     assert.equal(status.fleet.worker_detail_fallbacks, 3);
-    assert.deepEqual(status.workers.map((entry: { id: string }) => entry.id).sort(), [
-      "run-1",
-      "run-2",
-      "run-3",
-    ]);
+    assert.equal(status.workers.length, 3);
+    assert.equal(
+      status.workers.every((entry: Record<string, unknown>) => !("id" in entry)),
+      true,
+    );
     assert.deepEqual(status.control_plane, {
       publishers: { running: 1, waiting: 0 },
       comment_routers: { running: 0, waiting: 2 },
@@ -1533,9 +2816,11 @@ test("dashboard bounds worker job detail request concurrency", async () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
       activeJobRequests -= 1;
       return jsonResponse({
+        total_count: 1,
         jobs: [
           {
             id: runId * 10,
+            run_id: runId,
             name: `Review shard ${runId}`,
             status: "in_progress",
             conclusion: null,
@@ -1651,6 +2936,7 @@ test("dashboard paginates worker jobs beyond GitHub's first page", async () => {
         total_count: 128,
         jobs: Array.from({ length: count }, (_, index) => ({
           id: 500_000 + offset + index,
+          run_id: 500,
           name: `Review shard ${offset + index}`,
           status: "in_progress",
           conclusion: null,
@@ -1698,7 +2984,7 @@ test("dashboard paginates worker jobs beyond GitHub's first page", async () => {
     );
     const status = await response.json();
     assert.equal(status.fleet.active_codex_jobs, 128);
-    assert.equal(status.workers.length, 128);
+    assert.equal(status.workers.length, 100);
     assert.deepEqual(requestedPages, [1, 2]);
   } finally {
     globalThis.fetch = originalFetch;
@@ -1747,9 +3033,11 @@ test("dashboard reports worker error and recovery rates from completed job steps
       const jobStartedAt = new Date(runStartedAt + 1_000).toISOString();
       const reviewStartedAt = new Date(runStartedAt + 3_000).toISOString();
       return jsonResponse({
+        total_count: 1,
         jobs: [
           {
             id: runId * 10,
+            run_id: runId,
             name: `Review shard 0 · openclaw/openclaw#${itemNumber}`,
             status: "completed",
             conclusion: runId === 4 ? "neutral" : "success",
@@ -1758,24 +3046,34 @@ test("dashboard reports worker error and recovery rates from completed job steps
             }`,
             started_at: jobStartedAt,
             completed_at: run?.updated_at,
-            steps: [
-              {
-                number: 1,
-                name: "Run ./clawsweeper/.github/actions/setup-codex",
-                status: "completed",
-                conclusion: "success",
-                started_at: jobStartedAt,
-                completed_at: reviewStartedAt,
-              },
-              {
-                number: 2,
-                name: "Review shard",
-                status: "completed",
-                conclusion: failed ? "failure" : "success",
-                started_at: reviewStartedAt,
-                completed_at: run?.updated_at,
-              },
-            ],
+            steps:
+              runId === 4
+                ? Array.from({ length: 101 }, (_, index) => ({
+                    number: index + 1,
+                    name: `Review shard ${index + 1}`,
+                    status: "completed",
+                    conclusion: "success",
+                    started_at: jobStartedAt,
+                    completed_at: run?.updated_at,
+                  }))
+                : [
+                    {
+                      number: 1,
+                      name: "Run ./clawsweeper/.github/actions/setup-codex",
+                      status: "completed",
+                      conclusion: "success",
+                      started_at: jobStartedAt,
+                      completed_at: reviewStartedAt,
+                    },
+                    {
+                      number: 2,
+                      name: "Review shard",
+                      status: "completed",
+                      conclusion: failed ? "failure" : "success",
+                      started_at: reviewStartedAt,
+                      completed_at: run?.updated_at,
+                    },
+                  ],
           },
         ],
       });
@@ -1795,6 +3093,7 @@ test("dashboard reports worker error and recovery rates from completed job steps
     const env = {
       CLAWSWEEPER_REPO: "openclaw/clawsweeper",
       TARGET_REPOS: "openclaw/openclaw",
+      PUBLIC_BAY_REPOS: "openclaw/openclaw,openclaw/clawsweeper",
       CACHE_TTL_SECONDS: "0",
       STATUS_STORE: new MemoryKv(),
     };
@@ -1820,17 +3119,83 @@ test("dashboard reports worker error and recovery rates from completed job steps
       median_ms: null,
       samples: 0,
     });
-    assert.deepEqual(
-      status.bay.terminal_buffer.map((item: { number: number }) => item.number),
-      [100, 200, 300],
-    );
+    assert.equal(status.bay.terminal_buffer.length, 3);
+    const overLimitTimeline = status.bay.terminal_buffer.find((item) => item.item_number === 300);
+    assert.ok(overLimitTimeline);
+    assert.equal(overLimitTimeline.action.run_id, 4);
+    assert.equal(overLimitTimeline.action.job_id, 40);
+    assert.equal(overLimitTimeline.action.steps_complete, false);
+    assert.deepEqual(overLimitTimeline.action.steps, []);
     assert.equal(status.health.recent_attempts, undefined);
-    assert.equal(status.health.failures[0].item_numbers[0], 200);
+    assert.equal(status.health.failures.length, 2);
     assert.equal(status.health.failures[0].recovered, false);
-    assert.equal(status.health.failures[0].failed_step, "Review shard");
-    assert.equal(status.health.failures[1].item_numbers[0], 100);
     assert.equal(status.health.failures[1].recovered, true);
     assert.equal(jobRequests, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("dashboard cold-cache status bounds a stalled forty-run worker-health refresh", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  const runs = Array.from({ length: 40 }, (_, index) =>
+    completedReviewRun(index + 1, 50_000 + index, "success", (index + 1) * 1_000),
+  );
+  let stalledJobRequests = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+      return jsonResponse({
+        workflow_runs:
+          url.searchParams.get("status") === "completed"
+            ? runs
+            : url.searchParams.has("status")
+              ? []
+              : runs,
+      });
+    }
+    if (/^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/jobs$/.test(url.pathname)) {
+      stalledJobRequests += 1;
+      return new Promise<Response>(() => undefined);
+    }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/repair-cluster-intake.yml/runs"
+    ) {
+      return jsonResponse({ workflow_runs: [] });
+    }
+    if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+    if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const startedAt = Date.now();
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      {
+        CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+        TARGET_REPOS: "openclaw/openclaw",
+        CACHE_TTL_SECONDS: "0",
+        WORKER_HEALTH_FETCH_CONCURRENCY: "40",
+        WORKER_HEALTH_SECTION_TIMEOUT_MS: "25",
+      },
+      { waitUntil: () => undefined },
+    );
+    const elapsedMs = Date.now() - startedAt;
+    const status = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-clawsweeper-cache"), "miss");
+    assert.equal(status.health.sampled_runs, 0);
+    assert.equal(status.bay.tide_threshold, 20);
+    assert.equal(stalledJobRequests, 20, "only one bounded concurrency wave may start");
+    assert.ok(elapsedMs < 1_000, `cold status exceeded its bounded test budget: ${elapsedMs}ms`);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -1905,15 +3270,15 @@ test("dashboard exposes scheduled cluster intake markers and runs", async () => 
     });
     assert.equal(response.status, 200);
     const status = await response.json();
-    assert.equal(status.recent.cluster_repair.workflow, "repair-cluster-intake.yml");
+    assert.equal(status.recent.cluster_repair.markers.length, 1);
+    assert.equal("workflow" in status.recent.cluster_repair, false);
     assert.equal("schedule" in status.recent.cluster_repair, false);
-    assert.equal(status.recent.cluster_repair.markers[0].status, "imported");
     assert.equal(status.recent.cluster_repair.markers[0].generated_count, 1);
     assert.equal(
-      status.recent.cluster_repair.markers[0].last_processed_store_short_sha,
-      "abc123def4",
+      "last_processed_store_short_sha" in status.recent.cluster_repair.markers[0],
+      false,
     );
-    assert.equal(status.recent.cluster_repair.latest_runs[0].url, marker.run_url);
+    assert.equal("url" in status.recent.cluster_repair.latest_runs[0], false);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -2048,10 +3413,7 @@ test("dashboard exposes apply health from sweep status without broad scans", asy
     const status = await response.json();
     assert.equal(status.recent.apply_health.attention_count, 1);
     assert.equal(status.recent.apply_health.items[0].status, "needs_attention");
-    assert.equal(
-      status.recent.apply_health.items[0].run_url,
-      "https://github.com/openclaw/clawsweeper/actions/runs/98",
-    );
+    assert.equal("run_url" in status.recent.apply_health.items[0], false);
     assert.equal(status.recent.apply_health.items[0].examined, 4);
     assert.equal(status.recent.apply_health.items[0].action_records, 2);
     assert.equal(status.recent.apply_health.items[0].processed, 2);
@@ -2072,10 +3434,7 @@ test("dashboard exposes apply health from sweep status without broad scans", asy
     assert.deepEqual(status.recent.apply_health.items[0].next_action_buckets, {
       review_refresh: 2,
     });
-    assert.equal(
-      status.recent.apply_health.items[0].next_actions[0].next_step,
-      "Queue a fresh ClawSweeper review before any close retry.",
-    );
+    assert.equal("next_step" in status.recent.apply_health.items[0].next_actions[0], false);
     assert.equal(status.recent.apply_health.items[0].cycle.estimated_full_cycle_minutes, null);
     assert.equal(status.recent.apply_health.items[0].cycle.apply_ready_count, 1200);
     assert.deepEqual(status.recent.apply_health.items[0].cycle.candidate_counts, {
@@ -2172,8 +3531,8 @@ test("dashboard reads stored CI status for active PR rows", async () => {
       },
     );
     const status = await response.json();
-    assert.equal(status.pipeline[0].repository, "openclaw/openclaw");
-    assert.equal(status.pipeline[0].item_number, 80609);
+    assert.equal("repository" in status.pipeline[0], false);
+    assert.equal("item_number" in status.pipeline[0], false);
     assert.equal(status.pipeline[0].ci.state, "green");
     assert.equal(status.pipeline[0].ci.source, "github-checks");
     assert.equal(status.pipeline[0].ci.total, 12);
@@ -2183,13 +3542,22 @@ test("dashboard reads stored CI status for active PR rows", async () => {
   }
 });
 
-test("dashboard falls back to edge cache storage when KV is not bound", async () => {
+test("dashboard skips raw event persistence when the private status store is not bound", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
+  const marker = "synthetic-unbound-store-marker";
+  const cached = new Map<string, Response>();
+  const writes: Array<{ url: string; body: string }> = [];
   Object.defineProperty(globalThis, "caches", {
     configurable: true,
     value: {
-      default: new MemoryCache(),
+      default: {
+        match: async (request: Request) => cached.get(request.url)?.clone(),
+        put: async (request: Request, response: Response) => {
+          writes.push({ url: request.url, body: await response.clone().text() });
+          cached.set(request.url, response.clone());
+        },
+      },
     },
   });
   globalThis.fetch = activePrFetch;
@@ -2210,10 +3578,10 @@ test("dashboard falls back to edge cache storage when KV is not bound", async ()
         },
         body: JSON.stringify({
           event_type: "ci.status",
-          repository: "openclaw/openclaw",
+          repository: `synthetic-owner/${marker}`,
           item_number: 80609,
           ci: {
-            repository: "openclaw/openclaw",
+            repository: `synthetic-owner/${marker}`,
             item_number: 80609,
             state: "pending",
             source: "github-checks",
@@ -2226,6 +3594,7 @@ test("dashboard falls back to edge cache storage when KV is not bound", async ()
       env,
     );
     assert.equal(ingest.status, 200);
+    assert.deepEqual(writes, []);
 
     const response = await worker.fetch(
       new Request("https://clawsweeper.openclaw.ai/api/status"),
@@ -2235,9 +3604,13 @@ test("dashboard falls back to edge cache storage when KV is not bound", async ()
       },
     );
     const status = await response.json();
-    assert.equal(status.pipeline[0].ci.state, "pending");
-    assert.equal(status.pipeline[0].ci.source, "github-checks");
-    assert.equal(status.pipeline[0].ci.pending, 2);
+    assert.equal(response.status, 200);
+    assert.doesNotMatch(JSON.stringify(status), new RegExp(marker));
+    assert.equal(
+      writes.some(({ url }) => url.includes("clawsweeper.internal/store")),
+      false,
+    );
+    assert.doesNotMatch(JSON.stringify(writes), new RegExp(marker));
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -2253,7 +3626,7 @@ test("dashboard serves stale status while coalescing one background refresh", as
     value: { default: cache },
   });
   await cache.put(
-    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v3/stale"),
+    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v4/stale"),
     jsonResponse({
       schema_version: 1,
       generated_at: "2026-06-13T18:00:00Z",
@@ -2263,7 +3636,10 @@ test("dashboard serves stale status while coalescing one background refresh", as
       },
       fleet: { active_workflow_runs: 1 },
       workers: [],
+      automatic_work: [],
       pipeline: [{ id: "stale-row" }],
+      bay: {},
+      recent: {},
       exact_review_queue: {
         pending: 1,
         dispatching: 1,
@@ -2339,7 +3715,7 @@ test("dashboard serves stale status while coalescing one background refresh", as
     assert.equal(second.headers.get("x-clawsweeper-cache"), "stale");
     const firstStatus = await first.json();
     const secondStatus = await second.json();
-    assert.equal(firstStatus.pipeline[0].id, "stale-row");
+    assert.equal(firstStatus.pipeline[0].id, undefined);
     assert.equal(firstStatus.exact_review_queue.pending, 1);
     assert.equal(firstStatus.exact_review_queue.handoff_health.status, "stalled");
     assert.equal(secondStatus.exact_review_queue.handoff_health.status, "stalled");
@@ -2567,15 +3943,10 @@ test("dashboard reports automerge worker reliability independently of merged PR 
     assert.equal(reliability.recovered_failures, 1);
     assert.equal(reliability.unresolved_failures, 1);
     assert.deepEqual(
-      reliability.failures.map((failure: { number: number; status: string }) => [
-        failure.number,
-        failure.status,
-      ]),
-      [
-        [107692, "unresolved"],
-        [107691, "recovered"],
-      ],
+      reliability.failures.map((failure: { status: string }) => failure.status),
+      ["unresolved", "recovered"],
     );
+    assert.ok(reliability.failures.every((failure: { number?: number }) => !failure.number));
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -2675,15 +4046,12 @@ test("dashboard batches recent automerge hydration with GraphQL when authenticat
     assert.equal(searchRequests, 1);
     assert.equal(graphqlRequests, 1);
     assert.equal(restDetailRequests, 0);
-    assert.deepEqual(
-      status.recent.automerge.map((item: { number: number; merge_commit_sha: string }) => [
-        item.number,
-        item.merge_commit_sha,
-      ]),
-      [
-        [101, "abc101"],
-        [102, "abc102"],
-      ],
+    assert.equal(status.recent.automerge.length, 2);
+    assert.ok(
+      status.recent.automerge.every(
+        (item: { number?: number; merge_commit_sha?: string }) =>
+          item.number === undefined && item.merge_commit_sha === undefined,
+      ),
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -2742,12 +4110,12 @@ test("dashboard preserves repeated untargeted activity events", async () => {
       },
     );
     const status = await response.json();
-    assert.deepEqual(
-      status.recent.events
-        .filter((event: { event_type: string }) => event.event_type === "status.test")
-        .map((event: { title: string }) => event.title)
-        .sort(),
-      ["Probe one", "Probe two"],
+    assert.equal(status.recent.events.length, 2);
+    assert.ok(
+      status.recent.events.every(
+        (event: { event_type?: string; title?: string }) =>
+          event.event_type === undefined && event.title === undefined,
+      ),
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -2976,7 +4344,6 @@ test("dashboard reuses live PR CI hydration within one status snapshot", async (
       [
         {
           state: "green",
-          head_sha: "head-80609",
           total: 1,
           failing: 0,
           pending: 0,
@@ -2984,7 +4351,6 @@ test("dashboard reuses live PR CI hydration within one status snapshot", async (
         },
         {
           state: "green",
-          head_sha: "head-80609",
           total: 1,
           failing: 0,
           pending: 0,
@@ -3126,10 +4492,8 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
     assert.equal(status.fleet.support_workflow_runs, 3);
     assert.equal(status.fleet.support_queued_workflow_runs, 1);
     assert.equal(status.fleet.worker_budget, 128);
-    assert.deepEqual(
-      status.pipeline.map((row: { id: number }) => row.id),
-      [2, 4, 3],
-    );
+    assert.equal(status.pipeline.length, 3);
+    assert.ok(status.pipeline.every((row: { id?: number }) => row.id === undefined));
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -3179,6 +4543,23 @@ test("dashboard surfaces stale queue ghosts as zombies without active cards", as
           ],
         });
       }
+      if (status === "pending") {
+        return jsonResponse({
+          workflow_runs: [
+            {
+              id: 3,
+              run_attempt: 2,
+              name: "repair publish cluster results",
+              display_title: "repair publish cluster results",
+              status: "pending",
+              conclusion: null,
+              html_url: "https://github.com/openclaw/clawsweeper/actions/runs/3",
+              created_at: isoAgo(90 * 60_000),
+              updated_at: isoAgo(90 * 60_000),
+            },
+          ],
+        });
+      }
       return jsonResponse({ workflow_runs: [] });
     }
     if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
@@ -3198,18 +4579,18 @@ test("dashboard surfaces stale queue ghosts as zombies without active cards", as
       },
     );
     const status = await response.json();
-    assert.equal(status.fleet.active_workflow_runs, 1);
-    assert.equal(status.fleet.queued_workflow_runs, 1);
-    assert.equal(status.operational_health.queued_runs, 2);
+    assert.equal(status.fleet.active_workflow_runs, 2);
+    assert.equal(status.fleet.queued_workflow_runs, 2);
+    assert.equal(status.operational_health.queued_runs, 3);
     assert.equal(status.operational_health.queued_over_threshold, 0);
     assert.equal(status.operational_health.oldest_queued_minutes, 10);
     assert.equal(status.operational_health.zombie_queued_runs, 1);
     assert.equal(status.operational_health.oldest_zombie_queued_minutes, 7 * 24 * 60);
+    assert.equal(status.operational_health.wedged_rerun_runs, 1);
+    assert.equal(status.operational_health.oldest_wedged_rerun_minutes, 90);
     assert.equal(status.operational_health.status, "healthy");
-    assert.deepEqual(
-      status.pipeline.map((row: { id: number }) => row.id),
-      [2],
-    );
+    assert.equal(status.pipeline.length, 2);
+    assert.equal(status.pipeline[0].id, undefined);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -3411,72 +4792,15 @@ test("dashboard exposes ClawSweeper-owned recent closes and 24h stats", async ()
       },
     );
     const status = await response.json();
-    assert.deepEqual(
-      status.recent.closed_items.map(
-        (item: { type: string; number: number; closed_by: string }) => ({
-          type: item.type,
-          number: item.number,
-          closed_by: item.closed_by,
-        }),
+    assert.deepEqual(status.recent.closed_items, []);
+    assert.equal(status.recent.events.length, 4);
+    assert.ok(
+      status.recent.events.every(
+        (event: { item_number?: number; source?: string; title?: string }) =>
+          event.item_number === undefined &&
+          event.source === undefined &&
+          event.title === undefined,
       ),
-      [
-        { type: "Issue", number: 80, closed_by: "clawsweeper[bot]" },
-        { type: "PR", number: 81, closed_by: "clawsweeper[bot]" },
-        { type: "Issue", number: 82, closed_by: "openclaw-clawsweeper[bot]" },
-      ],
-    );
-    assert.deepEqual(
-      status.recent.events.map(
-        (event: {
-          mode: string;
-          stage: string;
-          status: string;
-          item_number: number;
-          source: string;
-          title: string;
-        }) => ({
-          mode: event.mode,
-          stage: event.stage,
-          status: event.status,
-          item_number: event.item_number,
-          source: event.source,
-          title: event.title,
-        }),
-      ),
-      [
-        {
-          mode: "close_blocked",
-          stage: "close_duplicate",
-          status: "blocked",
-          item_number: undefined,
-          source: undefined,
-          title: "Blocked close event",
-        },
-        {
-          mode: "item_closed",
-          stage: "close_fixed_by_candidate",
-          status: "executed",
-          item_number: undefined,
-          source: undefined,
-          title: "Explicit PR close event",
-        },
-        {
-          mode: "item_closed",
-          stage: "close_duplicate",
-          status: "executed",
-          item_number: undefined,
-          source: undefined,
-          title: "Real close event",
-        },
-        {
-          mode: "closed",
-          stage: "Issue",
-          status: "closed",
-          item_number: 82,
-          source: "closed_items",
-          title: "Alternate app closed issue",
-        },
-      ],
     );
     assert.deepEqual(status.recent.closed_stats, {
       window_hours: 24,
@@ -3484,14 +4808,8 @@ test("dashboard exposes ClawSweeper-owned recent closes and 24h stats", async ()
       total: 3,
       issues: 2,
       prs: 1,
-      by_repository: {
-        "openclaw/openclaw": {
-          total: 3,
-          issues: 2,
-          prs: 1,
-        },
-      },
     });
+    assert.equal(status.recent.closed_stats.by_repository, undefined);
     assert.ok(new Date(status.recent.closed_stats.since).getTime() <= Date.now());
     assert.deepEqual(issuePages, ["1"]);
   } finally {
@@ -3573,14 +4891,8 @@ test("dashboard fetches additional closed pages only when the first page is full
       total: 1,
       issues: 1,
       prs: 0,
-      by_repository: {
-        "openclaw/openclaw": {
-          total: 1,
-          issues: 1,
-          prs: 0,
-        },
-      },
     });
+    assert.equal(status.recent.closed_stats.by_repository, undefined);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -3656,25 +4968,19 @@ test("triage focused views use direct search when broad snapshot is capped", asy
     const snapshot = await response.json();
     const root = snapshot.views.find((view: { id: string }) => view.id === "clawsweeper");
     const ready = snapshot.views.find((view: { id: string }) => view.id === "ready-candidates");
+    assert.equal(snapshot.schema_version, 2);
+    assert.equal(snapshot.complete, true);
+    assert.equal(snapshot.error_count, 0);
     assert.equal(root.item_limit, 500);
     assert.equal(ready.total_count, 2);
     assert.equal(ready.item_limit, 100);
     assert.equal(readyPerPage, "100");
-    assert.deepEqual(
-      ready.items.map((item: { number: number }) => item.number),
-      [102, 100],
-    );
-    assert.deepEqual(
-      ready.items[0].routing_groups.map((group: { id: string }) => group.id),
-      ["message-delivery"],
-    );
-    assert.deepEqual(
-      ready.items[1].routing_groups.map((group: { id: string }) => group.id),
-      ["unclassified"],
-    );
-    assert.equal(ready.loaded_routing_group_counts["message-delivery"], 1);
-    assert.equal(ready.loaded_routing_group_counts.unclassified, 1);
-    assert.ok(snapshot.routing_groups.some((group: { id: string }) => group.id === "state-data"));
+    assert.deepEqual(ready.items, []);
+    assert.equal(ready.title, "Ready candidates");
+    assert.equal(snapshot.counts["ready-candidates"], 2);
+    assert.equal(snapshot.source, undefined);
+    assert.equal(snapshot.routing_groups, undefined);
+    assert.equal(snapshot.diagnostics, undefined);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -3745,8 +5051,10 @@ test("triage focused fallbacks reserve search budget for later repos", async () 
     );
     const snapshot = await response.json();
     assert.equal(searchRequests, 9);
-    assert.equal(snapshot.source.search_request_budget_remaining, 0);
     assert.equal(sawSecondRepoLastRootPage, true);
+    assert.equal(snapshot.complete, false);
+    assert.ok(snapshot.error_count > 0);
+    assert.equal(snapshot.source, undefined);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -3814,11 +5122,10 @@ test("triage focused search errors fall back to loaded broad rows", async () => 
     const snapshot = await response.json();
     const ready = snapshot.views.find((view: { id: string }) => view.id === "ready-candidates");
     assert.equal(ready.total_count, 1);
-    assert.deepEqual(
-      ready.items.map((item: { number: number }) => item.number),
-      [102],
-    );
-    assert.match(snapshot.diagnostics.errors.join("\n"), /focused search failed/);
+    assert.deepEqual(ready.items, []);
+    assert.equal(snapshot.complete, false);
+    assert.equal(snapshot.error_count, 1);
+    assert.equal(snapshot.diagnostics, undefined);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -3869,8 +5176,10 @@ test("triage skips repos after root search budget is exhausted", async () => {
     );
     const snapshot = await response.json();
     assert.equal(searchRequests, 9);
-    assert.equal(snapshot.source.search_request_budget_remaining, 0);
-    assert.match(snapshot.diagnostics.errors.join("\n"), /repo-9 triage skipped/);
+    assert.equal(snapshot.complete, false);
+    assert.ok(snapshot.error_count > 0);
+    assert.equal(snapshot.source, undefined);
+    assert.equal(snapshot.diagnostics, undefined);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -3918,8 +5227,10 @@ test("triage debits failed root searches from the search budget", async () => {
     );
     const snapshot = await response.json();
     assert.equal(searchRequests, 9);
-    assert.equal(snapshot.source.search_request_budget_remaining, 0);
-    assert.match(snapshot.diagnostics.errors.join("\n"), /repo-9 triage skipped/);
+    assert.equal(snapshot.complete, false);
+    assert.ok(snapshot.error_count > 0);
+    assert.equal(snapshot.source, undefined);
+    assert.equal(snapshot.diagnostics, undefined);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -3988,10 +5299,229 @@ test("triage uses ClawSweeper GitHub App credentials when no static token is con
     );
     const snapshot = await response.json();
     assert.equal(response.status, 200);
-    assert.equal(snapshot.source.search_request_budget_remaining, 27);
+    assert.equal(snapshot.complete, true);
+    assert.equal(snapshot.error_count, 0);
     assert.equal(sawAppJwt, true);
     assert.equal(sawInstallationToken, true);
-    assert.doesNotMatch(snapshot.diagnostics.errors.join("\n"), /GITHUB_TOKEN/);
+    assert.equal(snapshot.source, undefined);
+    assert.equal(snapshot.diagnostics, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("triage writes and reprojects aggregate-only fresh cache bodies", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const cache = new MemoryCache();
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: cache },
+  });
+  const marker = "synthetic-fresh-identity-marker";
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/labels")) {
+      return jsonResponse([{ name: "clawsweeper:queueable-fix", color: "0E8A16" }]);
+    }
+    if (url.pathname === "/search/issues") {
+      return jsonResponse({
+        total_count: 1,
+        items: [
+          {
+            ...triageIssue(7, ["clawsweeper:queueable-fix"]),
+            title: marker,
+            html_url: `https://invalid.example/${marker}?item=7`,
+            user: { login: marker },
+          },
+        ],
+      });
+    }
+    throw new Error("unexpected synthetic request");
+  };
+
+  try {
+    const writes: Promise<unknown>[] = [];
+    const request = new Request("https://clawsweeper.openclaw.ai/api/triage");
+    const first = await worker.fetch(
+      request,
+      { TARGET_REPOS: "synthetic/target" },
+      { waitUntil: (write) => writes.push(write) },
+    );
+    const firstSnapshot = await first.json();
+    assert.equal(firstSnapshot.counts.clawsweeper, 1);
+    assert.equal(firstSnapshot.counts["ready-candidates"], 1);
+    assert.deepEqual(firstSnapshot.views[0].items, []);
+    assert.doesNotMatch(JSON.stringify(firstSnapshot), new RegExp(marker, "i"));
+    await Promise.all(writes);
+
+    const cached = await cache.match(
+      new Request("https://clawsweeper.openclaw.ai/api/triage-cache/v3/fresh"),
+    );
+    assert.ok(cached);
+    const cachedText = await cached.text();
+    assert.doesNotMatch(cachedText, new RegExp(marker, "i"));
+    assert.deepEqual(JSON.parse(cachedText), firstSnapshot);
+
+    globalThis.fetch = async () => {
+      throw new Error("fresh projected cache should avoid collection");
+    };
+    const replay = await worker.fetch(request, {}, { waitUntil: () => undefined });
+    assert.deepEqual(await replay.json(), firstSnapshot);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("triage routes reproject raw legacy fresh caches", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  globalThis.fetch = async () => {
+    throw new Error("valid legacy cache should avoid collection");
+  };
+
+  try {
+    for (const fixture of [
+      {
+        endpoint: "/api/triage",
+        cachePath: "/api/triage-cache/v2/fresh",
+        viewIds: ISSUE_TRIAGE_VIEW_IDS,
+      },
+      {
+        endpoint: "/api/pr-proof-triage",
+        cachePath: "/api/pr-proof-triage-cache/v1/fresh",
+        viewIds: PROOF_TRIAGE_VIEW_IDS,
+      },
+    ]) {
+      const marker = `synthetic-legacy-marker-${fixture.viewIds.length}`;
+      const cache = new MemoryCache();
+      await cache.put(
+        new Request(`https://clawsweeper.openclaw.ai${fixture.cachePath}`),
+        jsonResponse(legacyTriageSnapshot(fixture.viewIds, marker)),
+      );
+      Object.defineProperty(globalThis, "caches", {
+        configurable: true,
+        value: { default: cache },
+      });
+      const response = await worker.fetch(
+        new Request(`https://clawsweeper.openclaw.ai${fixture.endpoint}`),
+        {},
+        { waitUntil: () => undefined },
+      );
+      assert.equal(response.status, 200);
+      assertAggregateTriageSnapshot(await response.json(), fixture.viewIds, marker);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("triage reprojects raw legacy stale cache after a failed refresh", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const marker = "synthetic-stale-identity-marker";
+  const cache = new MemoryCache();
+  await cache.put(
+    new Request("https://clawsweeper.openclaw.ai/api/triage-cache/v2/stale"),
+    jsonResponse(legacyTriageSnapshot(ISSUE_TRIAGE_VIEW_IDS, marker)),
+  );
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: cache },
+  });
+  globalThis.fetch = async () => {
+    throw new Error(marker);
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/triage"),
+      { TARGET_REPOS: "synthetic/target" },
+      { waitUntil: () => undefined },
+    );
+    assertAggregateTriageSnapshot(await response.json(), ISSUE_TRIAGE_VIEW_IDS, marker);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("triage fails closed for malformed, nested, and over-cap cached input", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const marker = "synthetic-malformed-identity-marker";
+  const mutations = [
+    (snapshot: ReturnType<typeof legacyTriageSnapshot>) => {
+      snapshot.generated_at = "1171";
+    },
+    (snapshot: ReturnType<typeof legacyTriageSnapshot>) => {
+      snapshot.generated_at = `https://invalid.example/${marker}?timestamp=1`;
+    },
+    (snapshot: ReturnType<typeof legacyTriageSnapshot>) => {
+      snapshot.views[0].total_count = { nested: { marker } } as unknown as number;
+    },
+    (snapshot: ReturnType<typeof legacyTriageSnapshot>) => {
+      snapshot.views[0].item_limit = 100;
+      snapshot.views[0].items = Array.from({ length: 101 }, () => ({
+        repository: marker,
+        number: 1,
+        title: marker,
+        url: marker,
+        author: marker,
+        assignees: [marker],
+        labels: [{ name: marker }],
+      }));
+    },
+    (snapshot: ReturnType<typeof legacyTriageSnapshot>) => {
+      (snapshot.diagnostics as { errors: string[] }).errors = Array.from(
+        { length: 21 },
+        () => marker,
+      );
+    },
+  ];
+
+  try {
+    for (const mutate of mutations) {
+      const cache = new MemoryCache();
+      const malformed = legacyTriageSnapshot(ISSUE_TRIAGE_VIEW_IDS, marker);
+      mutate(malformed);
+      await cache.put(
+        new Request("https://clawsweeper.openclaw.ai/api/triage-cache/v3/fresh"),
+        jsonResponse(malformed),
+      );
+      Object.defineProperty(globalThis, "caches", {
+        configurable: true,
+        value: { default: cache },
+      });
+      const env = {};
+      Object.defineProperty(env, "TRIAGE_TARGET_REPOS", {
+        get() {
+          throw new Error(marker);
+        },
+      });
+      const response = await worker.fetch(
+        new Request("https://clawsweeper.openclaw.ai/api/triage"),
+        env,
+        { waitUntil: () => undefined },
+      );
+      const snapshot = await response.json();
+      assert.equal(snapshot.schema_version, 2);
+      assert.equal(snapshot.generated_at, null);
+      assert.equal(snapshot.complete, false);
+      assert.equal(snapshot.error_count, 1);
+      assert.deepEqual(
+        Object.values(snapshot.counts),
+        ISSUE_TRIAGE_VIEW_IDS.map(() => null),
+      );
+      assert.deepEqual(
+        snapshot.views.map((view: { items: unknown[] }) => view.items),
+        ISSUE_TRIAGE_VIEW_IDS.map(() => []),
+      );
+      assert.doesNotMatch(JSON.stringify(snapshot), new RegExp(marker, "i"));
+    }
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });

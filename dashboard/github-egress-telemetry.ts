@@ -24,6 +24,7 @@ const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_ROLLUP_ROWS = 50_000;
 const MAX_RATE_LIMIT_ROWS = 10_000;
 const MAX_PUBLIC_ROWS = 2_000;
+const MAX_PUBLIC_THROTTLE_ROWS = 7 * 24 * GITHUB_EGRESS_POOL_CLASSES.length * 2;
 const MAX_METRICS_PER_SUBMISSION = 128;
 const MAX_RATE_LIMITS_PER_SUBMISSION = 16;
 const MAX_RATE_LIMIT_INTEGER = 10_000_000_000;
@@ -51,11 +52,72 @@ function alignedBucketStart(bucketKind: "five_minute" | "hour", timestamp: numbe
   return Math.floor(timestamp / bucketMs) * bucketMs;
 }
 
+function positiveLimit(value: number | undefined, fallback: number): number {
+  return Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : fallback;
+}
+
+function finiteTimestamp(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const timestamp = Number(value);
+  return Number.isSafeInteger(timestamp) && timestamp >= 0 ? timestamp : null;
+}
+
+function publicTimestamp(value: unknown): string | null {
+  const timestamp = finiteTimestamp(value);
+  return timestamp === null ? null : new Date(timestamp).toISOString();
+}
+
+function evictionWatermark(
+  rows: Array<Record<string, unknown>>,
+  bucketKind: string,
+): number | null {
+  const row = rows.find((candidate) => String(candidate.bucket_kind || "") === bucketKind);
+  return finiteTimestamp(row?.bucket_start);
+}
+
+function evictionCount(rows: Array<Record<string, unknown>>, bucketKind: string): number {
+  const row = rows.find((candidate) => String(candidate.bucket_kind || "") === bucketKind);
+  const count = Number(row?.count || 0);
+  return Number.isSafeInteger(count) && count > 0 ? count : 0;
+}
+
+function rollupWindowComplete(
+  diagnostics: Record<string, unknown>,
+  bucketKind: "five_minute" | "hour",
+  windowStart: number,
+): boolean {
+  const countColumn =
+    bucketKind === "five_minute" ? "evicted_five_minute_rollup_rows" : "evicted_hour_rollup_rows";
+  if (Number(diagnostics[countColumn] || 0) === 0) return true;
+  const column =
+    bucketKind === "five_minute"
+      ? "last_five_minute_evicted_bucket_start"
+      : "last_hour_evicted_bucket_start";
+  const watermark = finiteTimestamp(diagnostics[column]);
+  return watermark !== null && watermark < windowStart;
+}
+
+function rateLimitWindowComplete(
+  diagnostics: Record<string, unknown>,
+  windowStart: number,
+): boolean {
+  if (Number(diagnostics.evicted_rate_limit_rows || 0) === 0) return true;
+  const watermark = finiteTimestamp(diagnostics.last_rate_limit_evicted_observed_at);
+  return watermark !== null && watermark < windowStart;
+}
+
 export class GithubEgressTelemetryStore {
   private readonly storage: DurableStorage;
+  private readonly maxRollupRows: number;
+  private readonly maxRateLimitRows: number;
 
-  constructor(storage: DurableStorage) {
+  constructor(
+    storage: DurableStorage,
+    limits: { maxRollupRows?: number; maxRateLimitRows?: number } = {},
+  ) {
     this.storage = storage;
+    this.maxRollupRows = positiveLimit(limits.maxRollupRows, MAX_ROLLUP_ROWS);
+    this.maxRateLimitRows = positiveLimit(limits.maxRateLimitRows, MAX_RATE_LIMIT_ROWS);
   }
 
   ensureSchemaSync() {
@@ -160,13 +222,98 @@ export class GithubEgressTelemetryStore {
          accepted_rate_limits INTEGER NOT NULL DEFAULT 0,
          incomplete_count INTEGER NOT NULL DEFAULT 0,
          evicted_rollup_rows INTEGER NOT NULL DEFAULT 0,
+         evicted_five_minute_rollup_rows INTEGER NOT NULL DEFAULT 0,
+         evicted_hour_rollup_rows INTEGER NOT NULL DEFAULT 0,
+         rollup_eviction_counts_exact INTEGER NOT NULL DEFAULT 1
+           CHECK (rollup_eviction_counts_exact IN (0, 1)),
          evicted_rate_limit_rows INTEGER NOT NULL DEFAULT 0,
          last_rollup_evicted_at INTEGER,
          last_rate_limit_evicted_at INTEGER,
+         last_five_minute_evicted_bucket_start INTEGER,
+         last_hour_evicted_bucket_start INTEGER,
+         last_rate_limit_evicted_observed_at INTEGER,
          last_observed_at INTEGER
        ) STRICT`,
     );
+    const diagnosticColumns = new Set(
+      (
+        Array.from(
+          this.storage.sql.exec(`SELECT name FROM pragma_table_info('${DIAGNOSTICS_TABLE}')`),
+        ) as Array<Record<string, unknown>>
+      ).map((row) => String(row.name || "")),
+    );
+    for (const [column, definition] of [
+      ["evicted_five_minute_rollup_rows", "INTEGER NOT NULL DEFAULT 0"],
+      ["evicted_hour_rollup_rows", "INTEGER NOT NULL DEFAULT 0"],
+      [
+        "rollup_eviction_counts_exact",
+        "INTEGER NOT NULL DEFAULT 1 CHECK (rollup_eviction_counts_exact IN (0, 1))",
+      ],
+      ["last_five_minute_evicted_bucket_start", "INTEGER"],
+      ["last_hour_evicted_bucket_start", "INTEGER"],
+      ["last_rate_limit_evicted_observed_at", "INTEGER"],
+    ] as const) {
+      if (!diagnosticColumns.has(column)) {
+        this.storage.sql.exec(
+          `ALTER TABLE ${DIAGNOSTICS_TABLE} ADD COLUMN ${column} ${definition}`,
+        );
+      }
+    }
     this.storage.sql.exec(`INSERT OR IGNORE INTO ${DIAGNOSTICS_TABLE} (singleton_id) VALUES (1)`);
+    // Older workers recorded when a cap eviction ran, not which evidence was
+    // removed. Cap eviction always deleted the oldest rows first, so the oldest
+    // retained timestamp is a conservative upper bound for the legacy
+    // watermark. If no retained row exists, leave the watermark unknown and
+    // fail closed in public queries.
+    this.storage.sql.exec(
+      `UPDATE ${DIAGNOSTICS_TABLE}
+          SET rollup_eviction_counts_exact = CASE
+                WHEN evicted_rollup_rows > 0
+                  AND evicted_five_minute_rollup_rows = 0
+                  AND evicted_hour_rollup_rows = 0
+                THEN 0
+                ELSE rollup_eviction_counts_exact
+              END,
+              evicted_five_minute_rollup_rows = CASE
+                WHEN evicted_rollup_rows > 0
+                  AND evicted_five_minute_rollup_rows = 0
+                  AND evicted_hour_rollup_rows = 0
+                THEN evicted_rollup_rows
+                ELSE evicted_five_minute_rollup_rows
+              END,
+              evicted_hour_rollup_rows = CASE
+                WHEN evicted_rollup_rows > 0
+                  AND evicted_five_minute_rollup_rows = 0
+                  AND evicted_hour_rollup_rows = 0
+                THEN evicted_rollup_rows
+                ELSE evicted_hour_rollup_rows
+              END,
+              last_five_minute_evicted_bucket_start = CASE
+                WHEN evicted_rollup_rows > 0
+                  AND last_five_minute_evicted_bucket_start IS NULL
+                THEN (
+                  SELECT MIN(bucket_start) FROM ${ROLLUP_TABLE}
+                   WHERE bucket_kind = 'five_minute'
+                )
+                ELSE last_five_minute_evicted_bucket_start
+              END,
+              last_hour_evicted_bucket_start = CASE
+                WHEN evicted_rollup_rows > 0
+                  AND last_hour_evicted_bucket_start IS NULL
+                THEN (
+                  SELECT MIN(bucket_start) FROM ${ROLLUP_TABLE}
+                   WHERE bucket_kind = 'hour'
+                )
+                ELSE last_hour_evicted_bucket_start
+              END,
+              last_rate_limit_evicted_observed_at = CASE
+                WHEN evicted_rate_limit_rows > 0
+                  AND last_rate_limit_evicted_observed_at IS NULL
+                THEN (SELECT MIN(observed_at) FROM ${RATE_LIMIT_TABLE})
+                ELSE last_rate_limit_evicted_observed_at
+              END
+        WHERE singleton_id = 1`,
+    );
   }
 
   ingest(value: unknown, now = Date.now()) {
@@ -304,10 +451,21 @@ export class GithubEgressTelemetryStore {
         five_minute_days: 7,
         hourly_days: 30,
         evicted_rollup_rows_total: Number(diagnostics.evicted_rollup_rows || 0),
+        evicted_five_minute_rollup_rows_total: Number(
+          diagnostics.evicted_five_minute_rollup_rows || 0,
+        ),
+        evicted_hour_rollup_rows_total: Number(diagnostics.evicted_hour_rollup_rows || 0),
+        rollup_eviction_count_exact: Number(diagnostics.rollup_eviction_counts_exact) === 1,
         evicted_rate_limit_rows_total: Number(diagnostics.evicted_rate_limit_rows || 0),
-        rollup_window_complete: Number(diagnostics.last_rollup_evicted_at || 0) < bucketStart,
-        rate_limit_window_complete:
-          Number(diagnostics.last_rate_limit_evicted_at || 0) < windowStart,
+        last_five_minute_evicted_bucket_start: publicTimestamp(
+          diagnostics.last_five_minute_evicted_bucket_start,
+        ),
+        last_hour_evicted_bucket_start: publicTimestamp(diagnostics.last_hour_evicted_bucket_start),
+        last_rate_limit_evicted_observed_at: publicTimestamp(
+          diagnostics.last_rate_limit_evicted_observed_at,
+        ),
+        rollup_window_complete: rollupWindowComplete(diagnostics, "five_minute", bucketStart),
+        rate_limit_window_complete: rateLimitWindowComplete(diagnostics, windowStart),
       },
     };
   }
@@ -360,11 +518,12 @@ export class GithubEgressTelemetryStore {
 
   publicObservability(hours: number, now = Date.now()) {
     const boundedHours =
-      hours === 0.25 || hours === 1 || hours === 6 || hours === 24 ? hours : null;
+      hours === 0.25 || hours === 1 || hours === 6 || hours === 24 || hours === 168 ? hours : null;
     if (!boundedHours) return null;
     const bucketKind = boundedHours <= 6 ? "five_minute" : "hour";
     const windowStart = now - boundedHours * 60 * 60 * 1000;
     const bucketStart = alignedBucketStart(bucketKind, windowStart);
+    const closedThrough = alignedBucketStart(bucketKind, now);
     const rows = Array.from(
       this.storage.sql.exec(
         `SELECT bucket_start, deployment_revision, config_revision, pool_class,
@@ -428,9 +587,58 @@ export class GithubEgressTelemetryStore {
     const rateLimits = rateLimitRows.slice(0, 256).map(publicRateLimitRow);
     const completeness = this.completenessSince(bucketKind, bucketStart);
     const diagnostics = this.diagnostics();
-    const rollupWindowComplete = Number(diagnostics.last_rollup_evicted_at || 0) < bucketStart;
-    const rateLimitWindowComplete =
-      Number(diagnostics.last_rate_limit_evicted_at || 0) < windowStart;
+    const rollupWindowIsComplete = rollupWindowComplete(diagnostics, bucketKind, bucketStart);
+    const rateLimitDetailCoversWindow = boundedHours <= RATE_LIMIT_RETENTION_MS / 3_600_000;
+    const rateLimitWindowIsComplete =
+      rateLimitDetailCoversWindow && rateLimitWindowComplete(diagnostics, windowStart);
+    const firstAvailableRows = Array.from(
+      this.storage.sql.exec(
+        `SELECT MIN(bucket_start) AS bucket_start
+           FROM ${ROLLUP_TABLE}
+          WHERE bucket_kind = ?`,
+        bucketKind,
+      ),
+    ) as Array<Record<string, unknown>>;
+    const firstAvailableBucket = finiteTimestamp(firstAvailableRows[0]?.bucket_start);
+    const throttleRows = Array.from(
+      this.storage.sql.exec(
+        `SELECT bucket_start, pool_class, status_bucket, SUM(count) AS count
+           FROM ${ROLLUP_TABLE}
+          WHERE bucket_kind = ? AND bucket_start >= ? AND bucket_start < ?
+            AND unit = 'wire_attempt' AND outcome = 'throttle'
+            AND attempted = 1 AND telemetry_complete = 1
+            AND status_bucket IN ('403', '429')
+          GROUP BY bucket_start, pool_class, status_bucket
+          ORDER BY bucket_start ASC, pool_class, status_bucket
+          LIMIT ?`,
+        bucketKind,
+        bucketStart,
+        closedThrough,
+        MAX_PUBLIC_THROTTLE_ROWS + 1,
+      ),
+    ) as Array<Record<string, unknown>>;
+    const throttleRowsTruncated = throttleRows.length > MAX_PUBLIC_THROTTLE_ROWS;
+    const incompleteEgressRows = Array.from(
+      this.storage.sql.exec(
+        `SELECT SUM(count) AS count
+           FROM ${ROLLUP_TABLE}
+          WHERE bucket_kind = ? AND bucket_start >= ? AND bucket_start < ?
+            AND telemetry_complete = 0`,
+        bucketKind,
+        bucketStart,
+        closedThrough,
+      ),
+    ) as Array<Record<string, unknown>>;
+    const excludedIncompleteEgressCount = Number(incompleteEgressRows[0]?.count || 0);
+    // A first observation only proves coverage from somewhere inside its rollup
+    // bucket. Require an earlier bucket before zero-filling the requested edge.
+    const throttleCoverageComplete =
+      firstAvailableBucket !== null && firstAvailableBucket < bucketStart;
+    const throttleSeriesComplete =
+      !throttleRowsTruncated &&
+      excludedIncompleteEgressCount === 0 &&
+      rollupWindowIsComplete &&
+      throttleCoverageComplete;
     return {
       version: 2,
       generated_at: new Date(now).toISOString(),
@@ -438,14 +646,52 @@ export class GithubEgressTelemetryStore {
       units: completeness.byUnit,
       rows: publicRows,
       rate_limit_observations: rateLimits,
+      throttle_series: {
+        unit: "wire_attempt",
+        closed_through: new Date(closedThrough).toISOString(),
+        first_available_bucket_start:
+          firstAvailableBucket === null ? null : new Date(firstAvailableBucket).toISOString(),
+        rows: throttleRows.slice(0, MAX_PUBLIC_THROTTLE_ROWS).map((row) => ({
+          bucket_start: new Date(Number(row.bucket_start)).toISOString(),
+          pool_class: row.pool_class,
+          status_bucket: row.status_bucket,
+          count: Number(row.count),
+        })),
+        rows_truncated: throttleRowsTruncated,
+        excluded_incomplete_count: excludedIncompleteEgressCount,
+        coverage_complete: throttleCoverageComplete,
+        complete: throttleSeriesComplete,
+      },
+      retention: {
+        rate_limit_detail_hours: RATE_LIMIT_RETENTION_MS / 3_600_000,
+        rollup_evicted_rows_total: Number(
+          diagnostics[
+            bucketKind === "five_minute"
+              ? "evicted_five_minute_rollup_rows"
+              : "evicted_hour_rollup_rows"
+          ] || 0,
+        ),
+        rollup_eviction_count_exact: Number(diagnostics.rollup_eviction_counts_exact) === 1,
+        rate_limit_evicted_rows_total: Number(diagnostics.evicted_rate_limit_rows || 0),
+        last_rollup_evicted_bucket_start: publicTimestamp(
+          diagnostics[
+            bucketKind === "five_minute"
+              ? "last_five_minute_evicted_bucket_start"
+              : "last_hour_evicted_bucket_start"
+          ],
+        ),
+        last_rate_limit_evicted_observed_at: publicTimestamp(
+          diagnostics.last_rate_limit_evicted_observed_at,
+        ),
+      },
       completeness: {
         ...completeness.result,
         rows_truncated: truncated,
         rate_limit_rows_truncated: rateLimitTruncated,
-        rollup_window_complete: rollupWindowComplete,
-        rate_limit_window_complete: rateLimitWindowComplete,
+        rollup_window_complete: rollupWindowIsComplete,
+        rate_limit_window_complete: rateLimitWindowIsComplete,
         query_complete:
-          !truncated && !rateLimitTruncated && rollupWindowComplete && rateLimitWindowComplete,
+          !truncated && !rateLimitTruncated && rollupWindowIsComplete && rateLimitWindowIsComplete,
       },
       privacy: {
         pool_identity: "withheld",
@@ -516,46 +762,98 @@ export class GithubEgressTelemetryStore {
       this.storage.sql.exec(`SELECT COUNT(*) AS count FROM ${ROLLUP_TABLE}`),
     ) as Array<Record<string, unknown>>;
     const rollupCount = Number(rollupRows[0]?.count || 0);
-    const rollupOverflow = Math.max(0, rollupCount - MAX_ROLLUP_ROWS);
+    const rollupOverflow = Math.max(0, rollupCount - this.maxRollupRows);
     if (rollupOverflow) {
+      const evicted = Array.from(
+        this.storage.sql.exec(
+          `SELECT bucket_kind, MAX(bucket_start) AS bucket_start, COUNT(*) AS count
+             FROM (
+               SELECT bucket_kind, bucket_start FROM ${ROLLUP_TABLE}
+                ORDER BY bucket_start ASC, rowid ASC LIMIT ?
+             )
+            GROUP BY bucket_kind`,
+          rollupOverflow,
+        ),
+      ) as Array<Record<string, unknown>>;
+      const fiveMinuteWatermark = evictionWatermark(evicted, "five_minute");
+      const hourWatermark = evictionWatermark(evicted, "hour");
+      const fiveMinuteCount = evictionCount(evicted, "five_minute");
+      const hourCount = evictionCount(evicted, "hour");
       this.storage.sql.exec(
         `DELETE FROM ${ROLLUP_TABLE}
           WHERE rowid IN (
             SELECT rowid FROM ${ROLLUP_TABLE}
-             ORDER BY bucket_start ASC LIMIT ?
+             ORDER BY bucket_start ASC, rowid ASC LIMIT ?
           )`,
         rollupOverflow,
       );
       this.storage.sql.exec(
         `UPDATE ${DIAGNOSTICS_TABLE}
             SET evicted_rollup_rows = evicted_rollup_rows + ?,
-                last_rollup_evicted_at = ?
+                evicted_five_minute_rollup_rows =
+                  evicted_five_minute_rollup_rows + ?,
+                evicted_hour_rollup_rows = evicted_hour_rollup_rows + ?,
+                last_rollup_evicted_at = ?,
+                last_five_minute_evicted_bucket_start = CASE
+                  WHEN ? IS NULL THEN last_five_minute_evicted_bucket_start
+                  ELSE MAX(COALESCE(last_five_minute_evicted_bucket_start, ?), ?)
+                END,
+                last_hour_evicted_bucket_start = CASE
+                  WHEN ? IS NULL THEN last_hour_evicted_bucket_start
+                  ELSE MAX(COALESCE(last_hour_evicted_bucket_start, ?), ?)
+                END
           WHERE singleton_id = 1`,
         rollupOverflow,
+        fiveMinuteCount,
+        hourCount,
         now,
+        fiveMinuteWatermark,
+        fiveMinuteWatermark,
+        fiveMinuteWatermark,
+        hourWatermark,
+        hourWatermark,
+        hourWatermark,
       );
     }
     const rateRows = Array.from(
       this.storage.sql.exec(`SELECT COUNT(*) AS count FROM ${RATE_LIMIT_TABLE}`),
     ) as Array<Record<string, unknown>>;
     const rateCount = Number(rateRows[0]?.count || 0);
-    const rateOverflow = Math.max(0, rateCount - MAX_RATE_LIMIT_ROWS);
+    const rateOverflow = Math.max(0, rateCount - this.maxRateLimitRows);
     if (rateOverflow) {
+      const evicted = Array.from(
+        this.storage.sql.exec(
+          `SELECT MAX(observed_at) AS observed_at
+             FROM (
+               SELECT observed_at FROM ${RATE_LIMIT_TABLE}
+                ORDER BY observed_at ASC, event_id ASC LIMIT ?
+             )`,
+          rateOverflow,
+        ),
+      )[0] as Record<string, unknown> | undefined;
+      const rateLimitWatermark = finiteTimestamp(evicted?.observed_at);
       this.storage.sql.exec(
         `DELETE FROM ${RATE_LIMIT_TABLE}
           WHERE event_id IN (
             SELECT event_id FROM ${RATE_LIMIT_TABLE}
-             ORDER BY observed_at ASC LIMIT ?
+             ORDER BY observed_at ASC, event_id ASC LIMIT ?
           )`,
         rateOverflow,
       );
       this.storage.sql.exec(
         `UPDATE ${DIAGNOSTICS_TABLE}
             SET evicted_rate_limit_rows = evicted_rate_limit_rows + ?,
-                last_rate_limit_evicted_at = ?
+                last_rate_limit_evicted_at = ?,
+                last_rate_limit_evicted_observed_at = CASE
+                  WHEN ? IS NULL THEN last_rate_limit_evicted_observed_at
+                  ELSE MAX(COALESCE(last_rate_limit_evicted_observed_at, ?), ?)
+                END
           WHERE singleton_id = 1`,
         rateOverflow,
         now,
+        rateLimitWatermark,
+        rateLimitWatermark,
+        rateLimitWatermark,
       );
     }
   }

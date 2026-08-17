@@ -1,15 +1,26 @@
 # Historical OpenClaw Bay deterministic browser proof
 
-Status: historical review-time evidence. The recorded behavior source,
-`0cf6b147fe86f56e4ec8c77352e3d31433e3a1d2`, is not reachable from current
-repository history, so this package must not be treated as current exact-head
-proof.
+Status: reusable deterministic runner with historical checked-in artifacts.
+The recorded artifact source, `0cf6b147fe86f56e4ec8c77352e3d31433e3a1d2`,
+is not reachable from current repository history, so the checked-in report and
+storyboard must not be treated as current exact-head proof. A new runner receipt
+and artifacts must name their exact source SHA.
 
 This proof package exercises the real `/bay` page and its checked-in
 artwork in Chromium. Playwright replaces the dashboard's status, history, and
 triage reads with fully synthetic, redacted fixtures so stage changes,
 telemetry controls, and navigation can be reproduced without live dashboard
 data, credentials, or GitHub API traffic.
+
+The post-privacy-boundary throttle chart has a focused runnable entry point:
+
+```bash
+bash docs/proof/openclaw-bay/run-throttle-proof.sh
+```
+
+It supplies the strict aggregate-only public status shape and verifies the
+6-hour, 24-hour, and 7-day throttle fetches, interval summaries, accessible
+403/429 series, physical-pool totals, reset-header boundary, and screenshots.
 
 The sequence proves:
 
@@ -28,6 +39,9 @@ The sequence proves:
 - the read-only drawer's safe GitHub item, job, and workflow-run links;
 - readable overflow controls that open the known queue sample and explicitly explain when aggregate queue IDs are outside the bounded public projection;
 - compact review-admission, result-publication, and State writer charts with labelled y-axes, exact point hover labels, and cached 6-hour, 24-hour, and 7-day range controls;
+- closed-bucket GitHub throttle history across those ranges, split by 403/429,
+  summarized by physical pool class, and explicit about the 24-hour
+  reset-header-detail boundary;
 - lightweight hover/focus explanations on the beach lane signs;
 - the local-only tide preview advancing through incoming, crest, backwash, and restored states while preserving terminal keys and count;
 - the short static reduced-motion tide cue preserving the same preview state;
@@ -54,6 +68,7 @@ The sequence proves:
     > "$bay_trace_dir/trace.zip"
   npx --yes playwright@1.60.0 show-trace "$bay_trace_dir/trace.zip"
   ```
+
 - [`proof-summary.json`](proof-summary.json) records all 51 passing assertions
   from its accompanying deterministic proof run,
   sanitized request/response metadata, safe drawer links, the unchanged
@@ -63,6 +78,8 @@ The sequence proves:
   artifact renderer. [`run-proof.sh`](run-proof.sh) installs the pinned
   Playwright package in `/tmp`, starts the real local Wrangler Worker, and runs
   that script without changing repository dependencies.
+  [`run-throttle-proof.sh`](run-throttle-proof.sh) selects the focused
+  aggregate-only throttle proof path.
 - [`fixtures/`](fixtures/) contains the exact three checked-in synthetic
   `/api/status` transition responses. The runner derives dense-terminal and
   real-tide responses from the final fixture, provides a synthetic in-memory
@@ -119,5 +136,5 @@ private payloads.
 
 This is deterministic interaction proof, not a claim that synthetic state is
 live operational evidence. The separate deployment smoke covers the canonical
-`/bay` route, the query-preserving legacy redirect, response headers, shared
+`/bay` route, the query-stripping legacy redirect, response headers, shared
 schema, and static assets.

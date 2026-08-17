@@ -81,11 +81,40 @@ test("state blob failures return stable errors and sanitize server logs", async 
   } finally {
     console.error = originalError;
   }
+  assert.deepEqual(errors, ["state_blob_request_failed"]);
   assert.doesNotMatch(errors.join("\n"), new RegExp(sensitive));
   assert.doesNotMatch(errors.join("\n"), new RegExp(bearerCredential));
-  assert.match(errors.join("\n"), /https:\/\/\[REDACTED\]@storage\.example/);
-  assert.match(errors.join("\n"), /token=\[REDACTED\]/);
-  assert.match(errors.join("\n"), /Authorization: Bearer \[REDACTED\]/);
+});
+
+test("state blob upload rejection logs omit path, upload, URL, query, and error identity", async () => {
+  const marker =
+    "synthetic-upload-title-at-https://privacy.invalid/private-path?query=private-marker";
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...values: unknown[]) => warnings.push(values.join(" "));
+  try {
+    const response = await worker.fetch(
+      signedBlobRequest("multipart/part", {
+        path: "assets/private-repository/private-item.svg",
+        uploadId: marker,
+        partNumber: 1,
+        contentBase64: Buffer.from("synthetic upload bytes").toString("base64"),
+      }),
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        STATE_SNAPSHOTS: new FakeR2Bucket(),
+      },
+    );
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "invalid_blob_upload" });
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.deepEqual(warnings, ["state_blob_upload_rejected"]);
+  assert.doesNotMatch(
+    warnings.join("\n"),
+    /synthetic-upload-title|privacy\.invalid|private-marker/,
+  );
 });
 
 test("single-shot blob uploads verify digests server-side and re-put idempotently", async () => {

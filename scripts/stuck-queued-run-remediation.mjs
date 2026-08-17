@@ -28,6 +28,7 @@ const DEADLINE_SETTLE_MS = 25;
 const RUN_ID = /^[1-9]\d*$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const STARTED_STATUSES = new Set(["in_progress", "completed"]);
+const PRE_QUEUE_RERUN_CONFLICT = "Cannot cancel a workflow re-run that has not yet queued";
 
 export function selectStuckQueuedRuns({
   queuedRuns,
@@ -63,7 +64,9 @@ export function selectStuckQueuedRuns({
       reason: "",
     };
 
-    if (String(run.status || "") !== "queued") return { ...base, reason: "not_queued" };
+    const status = String(run.status || "");
+    const pendingRerun = status === "pending" && Number(run.run_attempt) > 1;
+    if (status !== "queued" && !pendingRerun) return { ...base, reason: "not_queued" };
     if (!runId || !workflowId || ageMs === null) {
       return { ...base, reason: "invalid_run_identity" };
     }
@@ -72,6 +75,7 @@ export function selectStuckQueuedRuns({
       return { ...base, reason: "expected_long_queue_workflow" };
     }
     if (ageMs <= staleAgeMs) return { ...base, reason: "younger_than_threshold" };
+    if (pendingRerun) return { ...base, selected: true, reason: "wedged_rerun" };
 
     const history = historyByWorkflow.get(workflowId);
     if (!Array.isArray(history)) {
@@ -138,6 +142,14 @@ export async function remediateCandidate({ candidate, postCancellation, zombieSt
       force_cancel_status: null,
     };
   }
+  if (isWedgedRerunConflict(regular)) {
+    return {
+      run_id: candidate.run_id,
+      outcome: "wedged_rerun_skipped",
+      cancel_status: regular.status,
+      force_cancel_status: null,
+    };
+  }
   if (regular.status !== 500) {
     return {
       run_id: candidate.run_id,
@@ -152,6 +164,14 @@ export async function remediateCandidate({ candidate, postCancellation, zombieSt
     return {
       run_id: candidate.run_id,
       outcome: "force_cancel_requested",
+      cancel_status: regular.status,
+      force_cancel_status: forced.status,
+    };
+  }
+  if (isWedgedRerunConflict(forced)) {
+    return {
+      run_id: candidate.run_id,
+      outcome: "wedged_rerun_skipped",
       cancel_status: regular.status,
       force_cancel_status: forced.status,
     };
@@ -301,6 +321,7 @@ Options:
       workflowId &&
       Number.isFinite(createdAtMs) &&
       nowMs - createdAtMs > STALE_QUEUED_AGE_MS &&
+      !isAgedPendingRerun(run, nowMs) &&
       !zombieState.has(normalizeRunId(run.id)) &&
       !EXPECTED_LONG_QUEUE_WORKFLOWS.has(String(run.path || ""))
     ) {
@@ -373,6 +394,22 @@ Options:
         }
         break;
       }
+      if (isAgedPendingRerun(current, nowMs)) {
+        const action = {
+          run_id: candidate.run_id,
+          outcome: "wedged_rerun_skipped",
+          cancel_status: null,
+          force_cancel_status: null,
+        };
+        actions.push(action);
+        recordWedgedRerunSkip({
+          runId: candidate.run_id,
+          skipReasons,
+          skipSamples,
+        });
+        logAction(action, candidate);
+        continue;
+      }
       if (String(current.status || "") !== "queued") {
         const action = {
           run_id: candidate.run_id,
@@ -404,6 +441,13 @@ Options:
         break;
       }
       actions.push(action);
+      if (action.outcome === "wedged_rerun_skipped") {
+        recordWedgedRerunSkip({
+          runId: candidate.run_id,
+          skipReasons,
+          skipSamples,
+        });
+      }
       logAction(action, candidate);
     }
   }
@@ -426,6 +470,7 @@ Options:
       max_runtime_ms: REMEDIATION_MAX_RUNTIME_MS,
       dead_letter_reserved_ms: DEAD_LETTER_RESERVED_MS,
       expected_long_queue_workflows: [...EXPECTED_LONG_QUEUE_WORKFLOWS],
+      remediation_statuses: ["queued", "pending"],
     },
     deadline: deadline,
     deadline_reached: deadlineReached,
@@ -508,8 +553,24 @@ function githubApi({ repository, token, deadlineAtMs }) {
     return { runs, complete };
   };
   return {
-    listQueuedRuns: () =>
-      listRuns((page) => `/actions/runs?status=queued&per_page=${PER_PAGE}&page=${page}`),
+    listQueuedRuns: async () => {
+      const queued = await listRuns(
+        (page) => `/actions/runs?status=queued&per_page=${PER_PAGE}&page=${page}`,
+      );
+      const pending = await listRuns(
+        (page) => `/actions/runs?status=pending&per_page=${PER_PAGE}&page=${page}`,
+      );
+      const seen = new Set();
+      const runs = [...queued.runs, ...pending.runs].filter((run) => {
+        const runId = normalizeRunId(run.id);
+        if (!runId || !seen.has(runId)) {
+          if (runId) seen.add(runId);
+          return true;
+        }
+        return false;
+      });
+      return { runs, complete: queued.complete && pending.complete };
+    },
     listWorkflowRuns: ({ workflowId, earliestCreatedAtMs }) => {
       const created = encodeURIComponent(`>=${new Date(earliestCreatedAtMs).toISOString()}`);
       return listRuns(
@@ -521,10 +582,11 @@ function githubApi({ repository, token, deadlineAtMs }) {
     postCancellation: async (runId, endpoint) => {
       const path = `/actions/runs/${runId}/${endpoint}`;
       const response = await request(path, { method: "POST" });
+      const body = response.ok ? "" : await response.text();
       if ([401, 403, 429].includes(response.status)) {
-        throw new GitHubRequestError("POST", path, response.status, await response.text());
+        throw new GitHubRequestError("POST", path, response.status, body);
       }
-      return { ok: response.ok, status: response.status };
+      return { ok: response.ok, status: response.status, body };
     },
   };
 }
@@ -579,6 +641,20 @@ function normalizeRunId(value) {
   return RUN_ID.test(text) ? text : "";
 }
 
+function isWedgedRerunConflict(response) {
+  return response.status === 409 && String(response.body || "").includes(PRE_QUEUE_RERUN_CONFLICT);
+}
+
+function isAgedPendingRerun(run, nowMs) {
+  const createdAtMs = Date.parse(String(run?.created_at || ""));
+  return (
+    String(run?.status || "") === "pending" &&
+    Number(run?.run_attempt) > 1 &&
+    Number.isFinite(createdAtMs) &&
+    nowMs - createdAtMs > STALE_QUEUED_AGE_MS
+  );
+}
+
 function logAction(action, candidate) {
   process.stdout.write(
     `stuck-queued remediation action=${action.outcome} run_id=${action.run_id} age_minutes=${candidate.age_minutes} newer_started=${candidate.discriminator.newer_started_run_count} evidence_ids=${candidate.discriminator.evidence.map((entry) => entry.run_id).join(",")}\n`,
@@ -598,6 +674,19 @@ function recordGitHubThrottleSkip({ error, phase, skipReasons, skipSamples }) {
       skip_reasons: { github_throttled: 1 },
       phase,
       request_path: requestPath,
+    })}\n`,
+  );
+}
+
+function recordWedgedRerunSkip({ runId, skipReasons, skipSamples }) {
+  skipReasons.wedged_rerun = (skipReasons.wedged_rerun || 0) + 1;
+  skipSamples.push({ phase: "remediation", run_id: runId });
+  process.stdout.write(
+    `${JSON.stringify({
+      event: "stuck_queued_remediation_skipped",
+      skip_reasons: { wedged_rerun: 1 },
+      phase: "remediation",
+      run_id: runId,
     })}\n`,
   );
 }

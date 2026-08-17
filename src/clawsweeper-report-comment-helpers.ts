@@ -647,6 +647,7 @@ export function createReportCommentHelpers(
     "merge readiness",
     "review scores",
     "verification",
+    "live proof",
     "how this fits together",
     "decision needed",
     "before merge",
