@@ -357,6 +357,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         let reviewOpenclawDir = openclawDir;
         let pullRequestReviewTreeDir: string | null = null;
         let pullRequestReviewTreeSha: string | null = null;
+        let pullRequestReviewTreeFailure: Error | null = null;
         let cachePreflightState: "not_run" | "passed" | "failed" = "not_run";
         const preparePullRequestReviewTree = (headSha: string): boolean => {
           if (item.kind !== "pull_request") return true;
@@ -882,9 +883,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         if (!localRangeData && item.kind === "pull_request") {
           const headSha = pullHeadShaFromContext(context);
           if (!headSha || !preparePullRequestReviewTree(headSha)) {
-            throw new Error(
-              `pull request #${item.number} head ${headSha ?? "unknown"} was unavailable in the restricted review checkout`,
+            pullRequestReviewTreeFailure = new Error(
+              `Read-only checkout inspection failed: pull request #${item.number} head ${headSha ?? "unknown"} was unavailable in the restricted review checkout`,
             );
+            cachePreflightState = "failed";
           }
         }
         if (previousLocalReviewCommentBody) {
@@ -1499,6 +1501,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           null;
         const codexStartedAt = Date.now();
         try {
+          if (pullRequestReviewTreeFailure) throw pullRequestReviewTreeFailure;
           if (humanLocalReview) {
             console.error("");
             console.error("Running Codex review");
