@@ -177,7 +177,7 @@ is absent or a cache event lands in another Cloudflare colo.
 The Worker fetches job details only for the bounded active-run set, limits that
 GitHub fanout to 12 concurrent requests, and caches each run's jobs for 60
 seconds. It separately samples up to 40 recent completed worker runs with
-ten-way fanout and caches error/recovery telemetry for 120 seconds. That leaves
+twenty-way fanout and caches error/recovery telemetry for 120 seconds. That leaves
 enough distinct completed-item evidence to drive a 20-outcome tide despite
 repeated targets or excluded runs while still bounding telemetry pressure.
 This bounds
