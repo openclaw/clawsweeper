@@ -17,9 +17,12 @@ repository is on the deployment's verified-public allowlist. It is linked from
 the Overview, issue-triage, and PR-proof headers as a normal ClawSweeper
 web-page destination.
 
-Bay is an observer-only surface: it displays bounded public status but never
-triggers or offers queue, workflow, GitHub, DLQ, recovery, deploy, or rollback
-actions. Its public visibility is not an authorization boundary; any future
+Bay is an observer-only surface: it displays bounded public status and may
+provide view-only navigation to verified-public GitHub repository, item,
+workflow-run, and job pages. Those canonical GET links are references, not
+action controls. Bay never calls GitHub from the browser or triggers or offers
+queue, workflow, GitHub, DLQ, recovery, deploy, rollback, or other mutation
+controls. Its public visibility is not an authorization boundary; any future
 restricted surface would require separate authentication or access-control
 design.
 
