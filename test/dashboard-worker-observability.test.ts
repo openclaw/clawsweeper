@@ -161,6 +161,7 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
     storage.sql.exec(
       `EXPLAIN QUERY PLAN
        SELECT projection_json FROM exact_review_lifecycle_projection_v1
+       INDEXED BY exact_review_lifecycle_projection_bay_repository
        WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) IN (?)
        ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
        LIMIT ?`,
@@ -285,7 +286,8 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
   const snapshot = body.durable_lifecycle_bay;
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.equal(initialized, 0, "pure Bay GET must not initialize queue storage");
+  assert.equal(initialized, 1, "constructor must provision only the Bay read schema");
+  assert.equal(storage.sql.hasNormalizedQueue(), false);
   assert.equal(queries.length, 1);
   assert.equal(snapshot.collection.state, "complete");
   assert.equal(snapshot.inventory?.lifecycle_records, 6);
@@ -509,7 +511,7 @@ test("operator lifecycle audit inventory is signed, redacted, paginated, snapsho
   });
 });
 
-test("durable lifecycle Bay keeps ordinary queue initialization available after a pure direct read", async () => {
+test("durable lifecycle Bay provisions only its indexed reader before ordinary queue initialization", async () => {
   const storage = new MemoryDurableStorage();
   let initialized = 0;
   const queue = new ExactReviewQueue(
@@ -528,21 +530,19 @@ test("durable lifecycle Bay keeps ordinary queue initialization available after 
   );
   const pureBody = (await pure.json()) as {
     durable_lifecycle_bay: {
-      collection: { state: string; reason: string };
-      inventory: unknown;
-      lanes: unknown;
-      sample: unknown;
+      collection: { state: string };
+      inventory: { lifecycle_records: number };
+      lanes: Record<string, number>;
+      sample: { returned: number; cards: unknown[] };
     };
   };
   assert.equal(pure.status, 200);
-  assert.deepEqual(pureBody.durable_lifecycle_bay.collection, {
-    state: "unknown",
-    reason: "unavailable",
-  });
-  assert.equal(pureBody.durable_lifecycle_bay.inventory, null);
-  assert.equal(pureBody.durable_lifecycle_bay.lanes, null);
-  assert.equal(pureBody.durable_lifecycle_bay.sample, null);
-  assert.equal(initialized, 0, "pure /lifecycle-bay must bypass initialization");
+  assert.deepEqual(pureBody.durable_lifecycle_bay.collection, { state: "complete" });
+  assert.equal(pureBody.durable_lifecycle_bay.inventory.lifecycle_records, 0);
+  assert.deepEqual(Object.values(pureBody.durable_lifecycle_bay.lanes), [0, 0, 0, 0, 0, 0]);
+  assert.equal(pureBody.durable_lifecycle_bay.sample.returned, 0);
+  assert.deepEqual(pureBody.durable_lifecycle_bay.sample.cards, []);
+  assert.equal(initialized, 1, "the constructor must provision the Bay read schema and indexes");
   assert.equal(storage.sql.hasNormalizedQueue(), false);
 
   const ordinary = await queue.fetch(
@@ -554,7 +554,7 @@ test("durable lifecycle Bay keeps ordinary queue initialization available after 
     recent_durable_publication_events: { collection: { state: string; complete: boolean } };
   };
   assert.equal(ordinary.status, 200);
-  assert.equal(initialized, 1, "ordinary queue GET must still initialize normally");
+  assert.equal(initialized, 2, "ordinary queue GET must still run full initialization normally");
   assert.equal(storage.sql.hasNormalizedQueue(), true);
   assert.equal(ordinaryBody.recent_durable_publication_events.collection.state, "complete");
   assert.equal(ordinaryBody.recent_durable_publication_events.collection.complete, true);

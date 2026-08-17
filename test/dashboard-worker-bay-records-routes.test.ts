@@ -4559,8 +4559,11 @@ test("OpenClaw Bay samples enough completed worker runs to fill a distinct 20-it
     sample.map((run) => run.id),
     Array.from({ length: 40 }, (_, index) => index + 1),
   );
-  assert.equal(workerHealthSectionTimeoutMs(10), 60_000);
-  assert.ok(workerHealthSectionTimeoutMs(10) >= Math.ceil(sample.length / 10) * 3 * 4_500);
+  assert.equal(workerHealthSectionTimeoutMs(10), 12_000);
+  assert.equal(workerHealthSectionTimeoutMs(1), 12_000);
+  assert.equal(workerHealthSectionTimeoutMs(40), 12_000);
+  assert.equal(workerHealthSectionTimeoutMs(10, 25), 25);
+  assert.ok(workerHealthSectionTimeoutMs(10) < 20_000);
 });
 
 test("OpenClaw Bay shares a bounded 20-outcome tide buffer", () => {

@@ -416,6 +416,8 @@ const DEFAULT_WORKER_JOB_FETCH_CONCURRENCY = 12;
 const RECENT_WORKER_HEALTH_RUN_LIMIT = BAY_TIDE_THRESHOLD * 2;
 const WORKER_HEALTH_CACHE_TTL_SECONDS = 120;
 const DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY = 10;
+const MAX_WORKER_HEALTH_SECTION_TIMEOUT_MS = OPTIONAL_SECTION_TIMEOUT_MS * 2;
+const MIN_WORKER_HEALTH_SECTION_TIMEOUT_MS = 25;
 
 function workerHealthFetchConcurrency(env) {
   return Math.max(
@@ -428,10 +430,25 @@ function workerHealthFetchConcurrency(env) {
 
 export function workerHealthSectionTimeoutMs(
   fetchConcurrency = DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY,
+  requestedMaximumMs = MAX_WORKER_HEALTH_SECTION_TIMEOUT_MS,
 ) {
   const concurrency = Math.max(1, Math.floor(Number(fetchConcurrency) || 1));
   const waves = Math.ceil(RECENT_WORKER_HEALTH_RUN_LIMIT / concurrency);
-  return waves * WORKER_JOB_PAGE_LIMIT * GITHUB_TIMEOUT_MS + OPTIONAL_SECTION_TIMEOUT_MS;
+  const requested = Math.floor(Number(requestedMaximumMs));
+  const maximum = Math.max(
+    MIN_WORKER_HEALTH_SECTION_TIMEOUT_MS,
+    Math.min(
+      MAX_WORKER_HEALTH_SECTION_TIMEOUT_MS,
+      Number.isFinite(requested) ? requested : MAX_WORKER_HEALTH_SECTION_TIMEOUT_MS,
+    ),
+  );
+  // Worker health is optional status telemetry. Keep its complete 40-run tide
+  // sample, but never let paginated GitHub reads consume the whole cache-miss
+  // response budget. Per-request aborts continue independently underneath.
+  return Math.min(
+    maximum,
+    waves * WORKER_JOB_PAGE_LIMIT * GITHUB_TIMEOUT_MS + OPTIONAL_SECTION_TIMEOUT_MS,
+  );
 }
 const WORKER_TARGET_CACHE_TTL_SECONDS = 900;
 const WORKER_TARGET_BATCH_SIZE = 50;
@@ -6120,7 +6137,10 @@ async function statusSnapshot(env) {
   ] = await Promise.all([
     withTimeout(
       recentWorkerHealth(env, repo, completedWorkflowRuns, github, readModelJobs),
-      workerHealthSectionTimeoutMs(workerHealthFetchConcurrency(env)),
+      workerHealthSectionTimeoutMs(
+        workerHealthFetchConcurrency(env),
+        env.WORKER_HEALTH_SECTION_TIMEOUT_MS,
+      ),
       "worker health",
     ).catch((error) => {
       errors.push(error.message);

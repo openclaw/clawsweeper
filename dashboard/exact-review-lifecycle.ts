@@ -801,9 +801,9 @@ export class ExactReviewLifecycleProjectionStore {
   }
 
   /**
-   * This reader is intentionally side-effect free. In particular, it does not
-   * ensure schema, normalize legacy rows, or write an index: the public Bay
-   * route must never turn an observation into queue maintenance.
+   * This reader is intentionally side-effect free. Its caller provisions the
+   * table and indexes through the Durable Object constructor barrier; this
+   * method does not ensure schema, normalize legacy rows, or write an index.
    */
   readBaySnapshot(
     now = Date.now(),
@@ -843,6 +843,11 @@ export class ExactReviewLifecycleProjectionStore {
         rows = Array.from(
           this.storage.sql.exec(
             `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+             INDEXED BY ${
+               repositories
+                 ? "exact_review_lifecycle_projection_bay_repository"
+                 : "exact_review_lifecycle_projection_bay"
+             }
            ${repositoryWhere}
            ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
            LIMIT ?`,

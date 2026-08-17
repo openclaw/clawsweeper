@@ -3137,6 +3137,70 @@ test("dashboard reports worker error and recovery rates from completed job steps
   }
 });
 
+test("dashboard cold-cache status bounds a stalled forty-run worker-health refresh", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  const runs = Array.from({ length: 40 }, (_, index) =>
+    completedReviewRun(index + 1, 50_000 + index, "success", (index + 1) * 1_000),
+  );
+  let stalledJobRequests = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+      return jsonResponse({
+        workflow_runs:
+          url.searchParams.get("status") === "completed"
+            ? runs
+            : url.searchParams.has("status")
+              ? []
+              : runs,
+      });
+    }
+    if (/^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/jobs$/.test(url.pathname)) {
+      stalledJobRequests += 1;
+      return new Promise<Response>(() => undefined);
+    }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/repair-cluster-intake.yml/runs"
+    ) {
+      return jsonResponse({ workflow_runs: [] });
+    }
+    if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+    if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const startedAt = Date.now();
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      {
+        CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+        TARGET_REPOS: "openclaw/openclaw",
+        CACHE_TTL_SECONDS: "0",
+        WORKER_HEALTH_SECTION_TIMEOUT_MS: "25",
+      },
+      { waitUntil: () => undefined },
+    );
+    const elapsedMs = Date.now() - startedAt;
+    const status = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-clawsweeper-cache"), "miss");
+    assert.equal(status.health.sampled_runs, 0);
+    assert.equal(status.bay.tide_threshold, 20);
+    assert.equal(stalledJobRequests, 10, "only one bounded concurrency wave may start");
+    assert.ok(elapsedMs < 1_000, `cold status exceeded its bounded test budget: ${elapsedMs}ms`);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
 test("dashboard exposes scheduled cluster intake markers and runs", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;

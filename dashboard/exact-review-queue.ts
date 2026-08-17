@@ -714,6 +714,7 @@ export class ExactReviewQueue {
   private storage;
   private env;
   private ready: Promise<void> | null = null;
+  private lifecycleProjectionReady: Promise<void>;
   private migratedAt = 0;
   private legacyMirrorDisabled = false;
   private legacyMirrorWarningReported = false;
@@ -759,21 +760,30 @@ export class ExactReviewQueue {
     );
     this.githubEtagResponseStore = new GithubEtagResponseStore(this.storage);
     this.githubWebhookReadModelStore = new GithubWebhookReadModelStore(this.storage);
-    // Direct in-process users retain the established eager setup behavior.
-    // A real Durable Object has blockConcurrencyWhile; defer that setup until a
-    // non-Bay request so constructing it for the public pure reader cannot
-    // initialize or migrate storage before the route is known.
-    if (typeof state.blockConcurrencyWhile !== "function") {
+    // The public lifecycle reader remains side-effect free, but its table and
+    // repository-leading index must exist before the first read. Provision
+    // only that bounded read schema in the constructor barrier; full queue
+    // initialization and migration stay deferred until an ordinary request.
+    if (typeof state.blockConcurrencyWhile === "function") {
+      this.lifecycleProjectionReady = Promise.resolve(
+        state.blockConcurrencyWhile(async () => {
+          this.lifecycleProjectionStore.ensureSchemaSync();
+        }),
+      );
+    } else {
       this.ready = this.initializeStorage();
+      this.lifecycleProjectionReady = this.ready;
     }
   }
 
   async fetch(request: Request) {
     const url = new URL(request.url);
     // This is deliberately the only route that may observe lifecycle rows
-    // before storage initialization. It must stay a pure reader: no schema
-    // creation, cleanup, queue reclamation, alarm scheduling, or GitHub work.
+    // before full queue initialization. Its constructor-managed schema barrier
+    // is already complete; the handler itself performs no schema creation,
+    // cleanup, queue reclamation, alarm scheduling, or GitHub work.
     if (request.method === "GET" && url.pathname === "/lifecycle-bay") {
+      await this.lifecycleProjectionReady.catch(() => undefined);
       const publicRepositories = url.searchParams
         .getAll("public_repo")
         .map((value) => value.trim().toLowerCase());
