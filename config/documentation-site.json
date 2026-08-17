@@ -9,6 +9,7 @@
       "name": "Review and policy",
       "pages": [
         "commit-sweeper.md",
+        "live-proof.md",
         "review-cache.md",
         "pr-review-comments.md",
         "pr-proof-triage-dashboard.md",

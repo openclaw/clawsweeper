@@ -4745,6 +4745,58 @@ jobs:
             --artifact-dir artifacts \
             --report-dir "records/$target_slug/items"
 
+      - name: Dispatch recommended live proofs
+        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
+        run: |
+          set -euo pipefail
+          item_numbers="$(pnpm run --silent workflow -- artifact-item-numbers --artifact-dir artifacts)"
+          TARGET_REPO="$TARGET_REPO" ITEM_NUMBERS="$item_numbers" node --input-type=module <<'NODE' > /tmp/live-proof-candidates.jsonl
+          import { readFileSync } from "node:fs";
+          import { reportLiveProofPlan } from "./dist/clawsweeper.js";
+          import { repositoryProfileFor } from "./dist/repository-profiles.js";
+
+          const repo = process.env.TARGET_REPO || "";
+          const profile = repositoryProfileFor(repo);
+          if (!profile.liveTest?.enabled) process.exit(0);
+          for (const item of (process.env.ITEM_NUMBERS || "").split(",").filter(Boolean)) {
+            const path = "records/" + profile.slug + "/items/" + item + ".md";
+            let markdown;
+            try {
+              markdown = readFileSync(path, "utf8");
+            } catch {
+              continue;
+            }
+            const plan = reportLiveProofPlan(markdown);
+            if (plan.status === "recommended") {
+              process.stdout.write(JSON.stringify({ item: Number(item), plan }) + "\n");
+            }
+          }
+          NODE
+          if [ ! -s /tmp/live-proof-candidates.jsonl ]; then
+            echo "No published review requested an enabled live proof."
+            exit 0
+          fi
+          while IFS= read -r candidate; do
+            item="$(jq -r '.item' <<<"$candidate")"
+            plan="$(jq -c '.plan' <<<"$candidate")"
+            jq -n \
+              --arg repo "$TARGET_REPO" \
+              --arg item "$item" \
+              --argjson plan "$plan" \
+              '{
+                event_type: "clawsweeper_live_proof",
+                client_payload: {
+                  repo: $repo,
+                  item: $item,
+                  live_proof_plan: $plan
+                }
+              }' | gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" --input -
+            echo "Dispatched live proof for $TARGET_REPO#$item."
+          done < /tmp/live-proof-candidates.jsonl
+
       - name: Dispatch vision-fit implementation candidates
         if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES == '1' && needs.plan.outputs.target_repo == 'openclaw/openclaw' && vars.CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT == '1' }}
         env:
