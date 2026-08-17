@@ -55,6 +55,9 @@ if (process.env.OPENCLAW_TEST_READ_PATH) {
       },
     },
   ];
+  if (process.env.OPENCLAW_TEST_RECEIPT_EXTRA) {
+    entries.push(...JSON.parse(process.env.OPENCLAW_TEST_RECEIPT_EXTRA));
+  }
   fs.writeFileSync(sessionFile, entries.map((entry) => JSON.stringify(entry)).join("\\n") + "\\n");
 }
 process.stderr.write(process.env.OPENCLAW_TEST_STDERR || "");
@@ -242,6 +245,82 @@ test("OpenClaw checkout inspection requires structured read evidence", () => {
     });
     assert.equal(failedRead.status, 1);
     assert.match(failedRead.error?.message ?? "", /exact challenged path/);
+
+    for (const [label, extraReceipt] of [
+      [
+        "non-read tool",
+        [
+          {
+            type: "message",
+            message: {
+              role: "assistant",
+              content: [{ type: "toolCall", id: "exec-after-read", name: "exec", arguments: {} }],
+            },
+          },
+          {
+            type: "message",
+            message: {
+              role: "toolResult",
+              toolCallId: "exec-after-read",
+              toolName: "exec",
+              isError: false,
+              content: [],
+            },
+          },
+        ],
+      ],
+      [
+        "failed later read",
+        [
+          {
+            type: "message",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "toolCall",
+                  id: "failed-read-after-success",
+                  name: "read",
+                  arguments: { path: "tracked.txt" },
+                },
+              ],
+            },
+          },
+          {
+            type: "message",
+            message: {
+              role: "toolResult",
+              toolCallId: "failed-read-after-success",
+              toolName: "read",
+              isError: true,
+              content: [],
+            },
+          },
+        ],
+      ],
+    ] as const) {
+      const mixedReceipt = runOpenclawProcess({
+        label: `checkout-inspection-${label}`,
+        prompt: "Read the challenged line.",
+        model: "openai/test",
+        cwd: root,
+        env: {
+          ...process.env,
+          CLAWSWEEPER_OPENCLAW_BIN: binary,
+          OPENCLAW_TEST_RECORD: recordPath,
+          OPENCLAW_TEST_READ_PATH: "tracked.txt",
+          OPENCLAW_TEST_RECEIPT_EXTRA: JSON.stringify(extraReceipt),
+          OPENCLAW_TEST_STDOUT: JSON.stringify({
+            payloads: [{ text: "tracked checkout content" }],
+            meta: { stopReason: "stop" },
+          }),
+        },
+        timeoutMs: 10_000,
+        checkoutInspection,
+      });
+      assert.equal(mixedReceipt.status, 1, label);
+      assert.match(mixedReceipt.error?.message ?? "", /exact challenged path/);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

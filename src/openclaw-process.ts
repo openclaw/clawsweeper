@@ -275,50 +275,47 @@ function hasSuccessfulReadReceipt(options: {
   } catch {
     return false;
   }
-  const matchingCallIds = new Set<string>();
+  const readCalls = new Map<string, { matchesExpectedPath: boolean; resolved: boolean }>();
+  let challengedReadSucceeded = false;
   for (const line of transcript.split("\n")) {
     if (!line.trim()) continue;
     let entry: unknown;
     try {
       entry = JSON.parse(line);
     } catch {
-      continue;
+      return false;
     }
     if (!isRecord(entry) || !isRecord(entry.message)) continue;
     const message = entry.message;
     if (message.role === "assistant" && Array.isArray(message.content)) {
       for (const block of message.content) {
+        if (!isRecord(block) || block.type !== "toolCall") continue;
         if (
-          !isRecord(block) ||
-          block.type !== "toolCall" ||
           block.name !== "read" ||
           typeof block.id !== "string" ||
           !isRecord(block.arguments) ||
-          typeof block.arguments.path !== "string"
+          typeof block.arguments.path !== "string" ||
+          readCalls.has(block.id)
         ) {
-          continue;
+          return false;
         }
-        if (
-          resolve(options.cwd, block.arguments.path) === resolve(options.cwd, options.expectedPath)
-        ) {
-          matchingCallIds.add(block.id);
-        } else {
-          matchingCallIds.delete(block.id);
-        }
+        readCalls.set(block.id, {
+          matchesExpectedPath:
+            resolve(options.cwd, block.arguments.path) ===
+            resolve(options.cwd, options.expectedPath),
+          resolved: false,
+        });
       }
       continue;
     }
-    if (
-      message.role === "toolResult" &&
-      message.toolName === "read" &&
-      typeof message.toolCallId === "string" &&
-      matchingCallIds.has(message.toolCallId)
-    ) {
-      matchingCallIds.delete(message.toolCallId);
-      if (message.isError === false) return true;
-    }
+    if (message.role !== "toolResult") continue;
+    if (message.toolName !== "read" || typeof message.toolCallId !== "string") return false;
+    const call = readCalls.get(message.toolCallId);
+    if (!call || call.resolved || message.isError !== false) return false;
+    call.resolved = true;
+    if (call.matchesExpectedPath) challengedReadSucceeded = true;
   }
-  return false;
+  return challengedReadSucceeded && [...readCalls.values()].every((call) => call.resolved);
 }
 
 function failedInspectionResult(
