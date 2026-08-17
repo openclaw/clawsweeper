@@ -27,18 +27,15 @@ export interface LiveProofAttachDependencies {
   renderReviewCommentFromReport: (markdown: string, closeReason: CloseReason) => string;
   markedReviewCommentBody: (number: number, body: string) => string;
   upsertReviewComment: (number: number, body: string) => Record<string, unknown> | undefined;
-  updateReviewCommentMetadata: (
-    markdown: string,
-    comment: Record<string, unknown> | undefined,
-    body: string,
-  ) => string;
   log?: (message: string) => void;
 }
+
+export type LiveProofAttachResult = "attached" | "skipped" | "dry-run";
 
 export async function attachLiveProof(
   options: LiveProofAttachOptions,
   dependencies: LiveProofAttachDependencies,
-): Promise<void> {
+): Promise<LiveProofAttachResult> {
   const env = dependencies.env ?? process.env;
   const runner = dependencies.runner ?? mediaProofCommandRunner;
   const log = dependencies.log ?? console.log;
@@ -64,7 +61,7 @@ export async function attachLiveProof(
       log(
         `[live-proof-attach] skip: ${manifest.repo}#${manifest.item} is not an open pull request`,
       );
-      return;
+      return "skipped";
     }
     liveHead = pull.headSha?.toLowerCase() ?? "";
   }
@@ -72,7 +69,7 @@ export async function attachLiveProof(
     log(
       `[live-proof-attach] skip: stale proof head ${manifest.head_sha} does not match live head ${liveHead || "unknown"}`,
     );
-    return;
+    return "skipped";
   }
 
   const upload = trustedUploadConfiguration(env, manifest);
@@ -107,7 +104,7 @@ export async function attachLiveProof(
     log(
       `[live-proof-attach] dry-run: upsert marker-backed review comment for ${manifest.repo}#${manifest.item}:\n${markedComment}`,
     );
-    return;
+    return "dry-run";
   }
 
   for (const candidate of uploads) {
@@ -117,15 +114,38 @@ export async function attachLiveProof(
       throw new Error(`aws s3 cp failed: ${mediaProofSpawnDetail(result)}`);
     }
   }
-  const publishedComment = dependencies.upsertReviewComment(manifest.item, markedComment);
-  updatedReport = dependencies.updateReviewCommentMetadata(
-    updatedReport,
-    publishedComment,
-    markedComment,
-  );
   writeFileSync(recordPath, updatedReport, "utf8");
   log(
-    `[live-proof-attach] attached ${manifest.surface} proof for ${manifest.repo}#${manifest.item} at ${manifest.head_sha}`,
+    `[live-proof-attach] prepared ${manifest.surface} proof for ${manifest.repo}#${manifest.item} at ${manifest.head_sha}`,
+  );
+  return "attached";
+}
+
+export function syncLiveProofComment(
+  options: Pick<LiveProofAttachOptions, "bundleDir" | "recordPath">,
+  dependencies: LiveProofAttachDependencies,
+): void {
+  const bundleDir = resolve(options.bundleDir);
+  const recordPath = resolve(options.recordPath);
+  const manifest = parseLiveProofManifest(
+    JSON.parse(readFileSync(join(bundleDir, "live-proof-manifest.json"), "utf8")) as unknown,
+  );
+  const report = readFileSync(recordPath, "utf8");
+  validateReportIdentity(report, manifest, dependencies.frontMatterValue);
+  if (
+    !dependencies
+      .sectionValue(report, dependencies.reviewSections.liveProof)
+      .includes(LIVE_PROOF_RECORDING_MARKER)
+  ) {
+    throw new Error("record is missing the attached Live Proof recording");
+  }
+  const closeReason = (dependencies.frontMatterValue(report, "close_reason") ??
+    "none") as CloseReason;
+  const comment = dependencies.renderReviewCommentFromReport(report, closeReason);
+  const markedComment = dependencies.markedReviewCommentBody(manifest.item, comment);
+  dependencies.upsertReviewComment(manifest.item, markedComment);
+  (dependencies.log ?? console.log)(
+    `[live-proof-attach] synced marker-backed review comment for ${manifest.repo}#${manifest.item}`,
   );
 }
 

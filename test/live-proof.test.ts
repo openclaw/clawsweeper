@@ -9,7 +9,7 @@ import YAML from "yaml";
 import { REVIEW_SECTIONS } from "../dist/clawsweeper-policy.js";
 import type { LiveProofPlan, MediaProofCommandRunner } from "../dist/clawsweeper-types.js";
 import type { RepositoryProfile } from "../dist/repository-profiles.js";
-import { attachLiveProof } from "../dist/live-proof/attach.js";
+import { attachLiveProof, syncLiveProofComment } from "../dist/live-proof/attach.js";
 import {
   driveTerminal,
   generatePlaywrightScript,
@@ -17,6 +17,10 @@ import {
 } from "../dist/live-proof/drivers.js";
 import { executeLiveProof } from "../dist/live-proof/execute.js";
 import { parseLiveProofManifest } from "../dist/live-proof/manifest.js";
+import {
+  isCanonicalPublicationConflict,
+  publishLiveProofAttachment,
+} from "../dist/live-proof/publication.js";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 
@@ -386,7 +390,7 @@ test("live-proof attach refuses stale heads before upload or publication", async
   assert.match(fixture.logs.join("\n"), /skip: stale proof head/);
 });
 
-test("live-proof attach constructs trusted URLs, uploads, rewrites the report, and re-upserts", async () => {
+test("live-proof attach publishes the record before syncing its marker-backed comment", async () => {
   const fixture = attachmentFixture();
   const commands: string[] = [];
   let publishedBody = "";
@@ -412,9 +416,96 @@ test("live-proof attach constructs trusted URLs, uploads, rewrites the report, a
   const report = readFileSync(fixture.recordPath, "utf8");
   assert.match(report, /<!-- clawsweeper-live-proof-recording -->/);
   assert.match(report, /https:\/\/media\.example\.test\/live-proof\/example-repo\/42\//);
-  assert.match(report, /<!-- comment metadata updated -->/);
+  assert.equal(publishedBody, "");
+  syncLiveProofComment(
+    { bundleDir: fixture.bundleDir, recordPath: fixture.recordPath },
+    attachDependencies({
+      runner: mediaRunner(commands),
+      fetchPullRequest: async () => ({ kind: "pull_request", state: "open", headSha: HEAD }),
+      upsertReviewComment: (_number, body) => {
+        publishedBody = body;
+        return { id: 99, html_url: "https://github.com/example/repo/pull/42#issuecomment-99" };
+      },
+      logs: fixture.logs,
+    }),
+  );
   assert.match(publishedBody, /### Live Proof/);
   assert.match(publishedBody, /<!-- clawsweeper-review item=42 -->/);
+});
+
+test("live-proof publication rehydrates and retries a canonical conflict without duplicate comment upserts", async () => {
+  const calls: string[] = [];
+  let publications = 0;
+  let commentUpserts = 0;
+  const result = await publishLiveProofAttachment({
+    hydrateRecord: () => calls.push("hydrate"),
+    attachRecord: async () => {
+      calls.push("attach");
+      return "attached";
+    },
+    publishRecord: () => {
+      calls.push("publish");
+      publications += 1;
+      if (publications === 1) throw canonicalPublicationConflict();
+    },
+    syncComment: () => {
+      calls.push("comment");
+      commentUpserts += 1;
+    },
+    isCanonicalConflict: isCanonicalPublicationConflict,
+    delay: async () => undefined,
+    log: () => undefined,
+  });
+
+  assert.equal(result, "attached");
+  assert.deepEqual(calls, [
+    "hydrate",
+    "attach",
+    "publish",
+    "hydrate",
+    "attach",
+    "publish",
+    "comment",
+  ]);
+  assert.equal(commentUpserts, 1);
+});
+
+test("live-proof publication fails loudly after three canonical conflicts", async () => {
+  let hydrations = 0;
+  let attachments = 0;
+  let publications = 0;
+  let commentUpserts = 0;
+
+  await assert.rejects(
+    publishLiveProofAttachment({
+      hydrateRecord: () => {
+        hydrations += 1;
+      },
+      attachRecord: async () => {
+        attachments += 1;
+        return "attached";
+      },
+      publishRecord: () => {
+        publications += 1;
+        throw canonicalPublicationConflict();
+      },
+      syncComment: () => {
+        commentUpserts += 1;
+      },
+      isCanonicalConflict: isCanonicalPublicationConflict,
+      delay: async () => undefined,
+      log: () => undefined,
+    }),
+    (error) =>
+      typeof error === "object" &&
+      error !== null &&
+      "stderr" in error &&
+      String(error.stderr).includes("Canonical publication conflicted for all 1 item(s)"),
+  );
+  assert.equal(hydrations, 3);
+  assert.equal(attachments, 3);
+  assert.equal(publications, 3);
+  assert.equal(commentUpserts, 0);
 });
 
 test("live-proof attach dry-run prints exact uploads and mutations without performing them", async () => {
@@ -460,6 +551,8 @@ test("live-proof workflow keeps execute secretless and attach trusted", () => {
   assert.match(source, /apt-get install --yes ffmpeg tmux x11-utils xfonts-base xvfb xterm/);
   assert.match(source, /--record \.\.\/live-proof-report\.md/);
   assert.doesNotMatch(source, /--plan \.\.\/live-proof/);
+  assert.match(source, /live-proof-attach-publish/);
+  assert.match(source, /--repo-slug "\$\{\{ needs\.execute\.outputs\.repo_slug \}\}"/);
 
   const dispatchActionSource = readFileSync(
     ".github/actions/dispatch-live-proofs/action.yml",
@@ -834,10 +927,14 @@ function attachDependencies(options: {
     markedReviewCommentBody: (number: number, body: string) =>
       `${body}\n\n<!-- clawsweeper-review item=${number} -->`,
     upsertReviewComment: options.upsertReviewComment,
-    updateReviewCommentMetadata: (markdown: string) =>
-      `${markdown.trimEnd()}\n\n<!-- comment metadata updated -->\n`,
     log: (message: string) => options.logs.push(message),
   };
+}
+
+function canonicalPublicationConflict(): Error & { stderr: string } {
+  return Object.assign(new Error("publish-main failed"), {
+    stderr: "Canonical publication conflicted for all 1 item(s); see per-item warnings above",
+  });
 }
 
 function frontMatterValue(markdown: string, key: string): string | undefined {

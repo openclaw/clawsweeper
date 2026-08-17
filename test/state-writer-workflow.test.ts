@@ -154,6 +154,7 @@ test("setup-state checks out only the remaining operational git tree", () => {
 test("all remaining git publishers join setup-state and receive a step-scoped coordinator secret", () => {
   const patterns = [
     /repair:publish-main\b/,
+    /live-proof-attach-publish\b/,
     /repair:publish-cluster-intake\b/,
     /repair:conflict-self-heal\b(?![^\n]*--verify-job-head)/,
     /\b(?:persist_reconciliation|publish_changes|publish_status)\b/,

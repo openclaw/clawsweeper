@@ -205,10 +205,8 @@ jobs:
         run: |
           set -euo pipefail
           record="records/${{ needs.execute.outputs.repo_slug }}/items/${{ needs.execute.outputs.item }}.md"
-          node dist/clawsweeper.js live-proof-attach \
+          node dist/clawsweeper.js live-proof-attach-publish \
             --bundle live-proof-bundle \
-            --record "$record"
-          pnpm run repair:publish-main -- \
-            --message "chore: attach live proof" \
-            --path "$record" \
-            --rebase-strategy normal
+            --record "$record" \
+            --repo-slug "${{ needs.execute.outputs.repo_slug }}" \
+            --item "${{ needs.execute.outputs.item }}"

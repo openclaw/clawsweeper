@@ -67,6 +67,10 @@ import {
 } from "./clawsweeper-item-policy.js";
 import { createLabelPolicy } from "./clawsweeper-label-policy.js";
 import { createLiveProofCommands } from "./live-proof/commands.js";
+import {
+  isCanonicalPublicationConflict,
+  publishLiveProofAttachment,
+} from "./live-proof/publication.js";
 import { createRepositoryLinks } from "./clawsweeper-links.js";
 import { createLocalRangeReviewer } from "./clawsweeper-local-review.js";
 import { createPlanCommand } from "./clawsweeper-plan-command.js";
@@ -1477,7 +1481,6 @@ const liveProofCommands = createLiveProofCommands({
     renderReviewCommentFromReport: reportOrchestration.renderReviewCommentFromReport,
     markedReviewCommentBody: reviewCommentWorkflow.markedReviewCommentBody,
     upsertReviewComment: reviewCommentWorkflow.upsertReviewComment,
-    updateReviewCommentMetadata: reviewCommentWorkflow.updateReviewCommentMetadata,
   },
 });
 
@@ -1493,6 +1496,68 @@ async function liveProofAttachCommand(args: Args): Promise<void> {
   await liveProofCommands.liveProofAttachCommand(args);
 }
 
+async function liveProofAttachPublishCommand(args: Args): Promise<void> {
+  const recordPath = stringArg(args.record, "");
+  const repoSlug = stringArg(args.repo_slug, "").trim();
+  const itemText = stringArg(args.item ?? args.item_number, "").trim();
+  const item = Number(itemText);
+  if (!recordPath) throw new Error("--record is required");
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repoSlug)) {
+    throw new Error("--repo-slug is required and must be a canonical repository slug");
+  }
+  if (!/^\d+$/.test(itemText) || !Number.isSafeInteger(item) || item < 1) {
+    throw new Error("--item requires a positive safe integer");
+  }
+  const recordsUrl = process.env.QUEUE_URL?.trim() || "https://clawsweeper.openclaw.ai";
+
+  await publishLiveProofAttachment({
+    hydrateRecord: () => {
+      runText(
+        process.execPath,
+        [
+          join(ROOT, "scripts", "hydrate-state.ts"),
+          "--worktree",
+          ROOT,
+          "--records-url",
+          recordsUrl,
+          "--records-repo-slugs",
+          repoSlug,
+          "--records-item-number",
+          String(item),
+          "--skip-state-blobs",
+          "--skip-git-state",
+        ],
+        { cwd: ROOT, trim: "none" },
+      );
+    },
+    attachRecord: async () => {
+      const markdown = readFileSync(resolve(recordPath), "utf8");
+      const repo = frontMatterValue(markdown, "repository");
+      if (repo) setTargetRepo(repo);
+      return liveProofCommands.liveProofAttachCommand(args);
+    },
+    publishRecord: () => {
+      runText(
+        "pnpm",
+        [
+          "run",
+          "repair:publish-main",
+          "--",
+          "--message",
+          "chore: attach live proof",
+          "--path",
+          recordPath,
+          "--rebase-strategy",
+          "normal",
+        ],
+        { cwd: ROOT, trim: "none" },
+      );
+    },
+    syncComment: () => liveProofCommands.liveProofCommentCommand(args),
+    isCanonicalConflict: isCanonicalPublicationConflict,
+  });
+}
+
 const COMMAND_HANDLERS: Readonly<Record<string, CommandHandler<Args>>> = {
   plan: planCommand,
   "reserve-review-lease": reserveReviewLeaseCommand,
@@ -1501,6 +1566,7 @@ const COMMAND_HANDLERS: Readonly<Record<string, CommandHandler<Args>>> = {
   "apply-artifacts": applyArtifactsCommand,
   "live-proof": liveProofCommand,
   "live-proof-attach": liveProofAttachCommand,
+  "live-proof-attach-publish": liveProofAttachPublishCommand,
   "apply-decisions": applyDecisionsCommand,
   "publish-action-events": publishActionEventsCommand,
   "publish-action-event-paths": publishActionEventPathsCommand,

@@ -1,7 +1,11 @@
 import { boolArg, stringArg, type Args } from "../clawsweeper-args.js";
 import type { LiveProofPlan, MediaProofCommandRunner } from "../clawsweeper-types.js";
 import type { RepositoryProfile } from "../repository-profiles.js";
-import { attachLiveProof, type LiveProofAttachDependencies } from "./attach.js";
+import {
+  attachLiveProof,
+  syncLiveProofComment,
+  type LiveProofAttachDependencies,
+} from "./attach.js";
 import {
   executeLiveProof,
   type LiveProofExecuteDependencies,
@@ -51,10 +55,10 @@ export function createLiveProofCommands(dependencies: LiveProofCommandDependenci
     );
   }
 
-  async function liveProofAttachCommand(args: Args): Promise<void> {
+  async function liveProofAttachCommand(args: Args) {
     const bundleDir = requiredArg(args.bundle, "--bundle");
     const recordPath = requiredArg(args.record, "--record");
-    await attachLiveProof(
+    return attachLiveProof(
       {
         bundleDir,
         recordPath,
@@ -70,7 +74,22 @@ export function createLiveProofCommands(dependencies: LiveProofCommandDependenci
     );
   }
 
-  return { liveProofCommand, liveProofAttachCommand };
+  function liveProofCommentCommand(args: Args): void {
+    const bundleDir = requiredArg(args.bundle, "--bundle");
+    const recordPath = requiredArg(args.record, "--record");
+    syncLiveProofComment(
+      { bundleDir, recordPath },
+      {
+        ...dependencies.attach,
+        fetchPullRequest,
+        ...(dependencies.runner ? { runner: dependencies.runner } : {}),
+        ...(dependencies.env ? { env: dependencies.env } : {}),
+        ...(dependencies.log ? { log: dependencies.log } : {}),
+      },
+    );
+  }
+
+  return { liveProofCommand, liveProofAttachCommand, liveProofCommentCommand };
 }
 
 export async function fetchGitHubPullRequest(
