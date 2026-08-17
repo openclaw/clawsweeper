@@ -16,7 +16,14 @@ import test from "node:test";
 import YAML from "yaml";
 
 import { makeTreeReadOnlyForTest, restoreTreeModesForTest } from "../dist/clawsweeper.js";
-import { readText, tmpPrefix } from "./helpers.ts";
+import {
+  readText,
+  reportWithSyncedReviewComment,
+  runApplyDecisionsForTest,
+  tmpPrefix,
+  withMockGh,
+  workPlanCandidateReport,
+} from "./helpers.ts";
 import { scheduledReviewSemanticSourceRevision } from "../scripts/classify-scheduled-review-noop.ts";
 
 test("sweep keeps optional media tooling out of review startup", () => {
@@ -5476,6 +5483,155 @@ test("review publication routes hot intake once without changing other producers
       1,
       `${name}: exactly one terminal-publication route`,
     );
+  }
+
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const itemsDir = join(root, "items");
+    const closedDir = join(root, "closed");
+    const plansDir = join(root, "plans");
+    const reportPath = join(root, "apply-report.json");
+    const statePath = join(root, "comments.json");
+    const logPath = join(root, "gh.log");
+    const number = 125204;
+    const reviewedAt = "2026-08-17T10:30:00.000Z";
+    mkdirSync(itemsDir, { recursive: true });
+    mkdirSync(plansDir, { recursive: true });
+    const review = reportWithSyncedReviewComment(
+      workPlanCandidateReport({
+        repository: "openclaw/openclaw",
+        number,
+        title: "Hot intake publication regression",
+        reviewed_at: reviewedAt,
+        item_created_at: "2026-08-17T10:08:36.000Z",
+        item_updated_at: reviewedAt,
+        item_snapshot_hash: "reviewed-snapshot-125204",
+        labels: JSON.stringify([]),
+      }),
+      number,
+    );
+    writeFileSync(
+      join(itemsDir, `${number}.md`),
+      review.report.replaceAll(
+        `https://github.com/openclaw/clawsweeper/issues/${number}`,
+        `https://github.com/openclaw/openclaw/issues/${number}`,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      statePath,
+      JSON.stringify([
+        {
+          id: 9000 + number,
+          html_url: `https://github.com/openclaw/openclaw/issues/${number}#issuecomment-${9000 + number}`,
+          created_at: "2026-08-17T10:31:00.000Z",
+          updated_at: "2026-08-17T10:31:00.000Z",
+          user: { login: "clawsweeper[bot]" },
+          body: review.comment.replace("queue_fix_pr", "stale_publication"),
+        },
+      ]),
+      "utf8",
+    );
+    writeFileSync(logPath, "", "utf8");
+
+    const ghMock = `
+const { appendFileSync, readFileSync, writeFileSync } = require("fs");
+const logPath = ${JSON.stringify(logPath)};
+const statePath = ${JSON.stringify(statePath)};
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
+appendFileSync(logPath, JSON.stringify(args) + "\\n");
+const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
+const comments = JSON.parse(readFileSync(statePath, "utf8"));
+if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
+  console.log(JSON.stringify({
+    number: ${number},
+    title: "Hot intake publication regression",
+    body: "A recently created issue needs a review.",
+    html_url: "https://github.com/openclaw/openclaw/issues/${number}",
+    created_at: "2026-08-17T10:08:36.000Z",
+    updated_at: ${JSON.stringify(reviewedAt)},
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "reporter" },
+    labels: [],
+    comments: comments.length,
+    pull_request: null
+  }));
+} else if (args[0] === "api" && /\\/issues\\/${number}\\/timeline(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify(args.includes("--slurp") ? [[]] : []));
+} else if (args[0] === "api" && /\\/issues\\/${number}\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method") && args.includes("POST")) {
+    const input = args[args.indexOf("--input") + 1];
+    const body = JSON.parse(readFileSync(input, "utf8")).body;
+    const comment = {
+      id: 5315045852,
+      html_url: "https://github.com/openclaw/openclaw/issues/${number}#issuecomment-5315045852",
+      created_at: "2026-08-17T10:47:02.000Z",
+      updated_at: "2026-08-17T10:47:02.000Z",
+      user: { login: "clawsweeper[bot]" },
+      body
+    };
+    writeFileSync(statePath, JSON.stringify([comment]), "utf8");
+    console.log(JSON.stringify(comment));
+  } else {
+    console.log(JSON.stringify(args.includes("--slurp") ? [comments] : comments));
+  }
+} else if (args[0] === "api" && /\\/issues\\/comments\\/${9000 + number}$/.test(path) && args.includes("PATCH")) {
+  const input = args[args.indexOf("--input") + 1];
+  const body = JSON.parse(readFileSync(input, "utf8")).body;
+  const comment = { ...comments[0], body, updated_at: "2026-08-17T10:47:02.000Z" };
+  writeFileSync(statePath, JSON.stringify([comment]), "utf8");
+  console.log(JSON.stringify(comment));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && /\\/collaborators\\/reporter\\/permission$/.test(path)) {
+  console.log(JSON.stringify({ permission: "read", role_name: "read" }));
+} else if (args[0] === "label" && args[1] === "create") {
+  console.log(JSON.stringify({ name: args[2] }));
+} else if (args[0] === "issue" && args[1] === "edit") {
+  console.log("");
+} else {
+  console.error("unexpected gh args", JSON.stringify(args));
+  process.exit(1);
+}
+`;
+    const broadHotRoute = routes({ event: "workflow_dispatch", hot: true });
+    assert.equal(broadHotRoute.selected, true);
+    assert.equal(broadHotRoute.background, false);
+    withMockGh(root, ghMock, () => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        runApplyDecisionsForTest({
+          targetRepo: "openclaw/openclaw",
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: ["--sync-comments-only", "--item-numbers", String(number)],
+        });
+      }
+    });
+
+    const calls = readFileSync(logPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    const publications = calls.filter(
+      (args) => args[0] === "api" && (args.includes("POST") || args.includes("PATCH")),
+    );
+    assert.equal(
+      publications.length,
+      1,
+      `selected sync publishes once across a replay: ${readFileSync(reportPath, "utf8")}`,
+    );
+    const [published] = JSON.parse(readFileSync(statePath, "utf8")) as Array<{ body: string }>;
+    assert.match(published?.body ?? "", /clawsweeper-review item=125204/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 
   // Selected publication keeps using the existing exact artifact set and
