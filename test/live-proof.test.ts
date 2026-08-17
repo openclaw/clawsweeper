@@ -295,7 +295,7 @@ test("terminal driver accepts a recorder file that appears and grows late", () =
   const calls: string[] = [];
   const result = runTerminalFixture(
     terminalLifecycleRunner(calls, {
-      recorderSizes: [undefined, undefined, 7, 7, 11],
+      recorderSizes: [undefined, undefined, 0, 0, 11],
     }),
   );
   assert.equal(result.status, "completed");
@@ -319,7 +319,7 @@ test("terminal driver reports a dead recorder with its pane diagnostics", () => 
     () => runTerminalFixture(runner),
     (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.match(error.message, /recorder session exited before the raw WebM began growing/);
+      assert.match(error.message, /recorder session exited before the raw WebM was written/);
       assert.match(error.message, /\[xterm: .*\]\nxterm pane ready/);
       assert.match(error.message, /\[recorder: .*\]\nffmpeg: cannot open display :99/);
       return true;
@@ -457,7 +457,7 @@ test("live-proof workflow keeps execute secretless and attach trusted", () => {
   assert.match(source, /uses: \.\/\.github\/actions\/create-target-write-token/);
   assert.match(source, /CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: \$\{\{ secrets\./);
   assert.match(source, /setsid timeout --kill-after=30s 1500s/);
-  assert.match(source, /apt-get install --yes ffmpeg tmux x11-utils xvfb xterm/);
+  assert.match(source, /apt-get install --yes ffmpeg tmux x11-utils xfonts-base xvfb xterm/);
   assert.match(source, /--record \.\.\/live-proof-report\.md/);
   assert.doesNotMatch(source, /--plan \.\.\/live-proof/);
 

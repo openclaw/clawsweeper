@@ -244,6 +244,12 @@ export function terminalCommandPlan(options: {
         ":99.0",
         "-c:v",
         "libvpx-vp9",
+        // Realtime tuning: default VP9 encoding cannot hold 30fps on a
+        // two-core hosted runner and buffers output for seconds at a time.
+        "-deadline",
+        "realtime",
+        "-cpu-used",
+        "8",
         options.rawVideoPath,
       ],
       waitAfter: "recorder",
@@ -347,20 +353,18 @@ function waitForRecorder(
   recorderSession: string,
   rawVideoPath: string,
 ): void {
-  let previousSize: number | undefined;
   for (let elapsed = 0; elapsed <= RECORDER_READY_TIMEOUT_SECONDS; elapsed += 1) {
     const size = recordingSize(runner, checkout, rawVideoPath);
     if (recorderExited(runner, checkout, recorderSession)) {
-      throw new Error("recorder session exited before the raw WebM began growing");
+      throw new Error("recorder session exited before the raw WebM was written");
     }
-    if (size !== undefined) {
-      if (previousSize !== undefined && size > previousSize) return;
-      previousSize = size;
-    }
+    // VP9 muxer output is bursty, so consecutive equal size samples are normal
+    // while recording; any written payload proves the recorder captures frames.
+    if (size !== undefined && size > 0) return;
     if (elapsed < RECORDER_READY_TIMEOUT_SECONDS) pollSleep(runner);
   }
   throw new Error(
-    `raw WebM did not begin growing within ${RECORDER_READY_TIMEOUT_SECONDS} seconds`,
+    `raw WebM was not written within ${RECORDER_READY_TIMEOUT_SECONDS} seconds`,
   );
 }
 
