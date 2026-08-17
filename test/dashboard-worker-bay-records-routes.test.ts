@@ -4483,26 +4483,23 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
   assert.equal(retainedProjection.exact_review_queue.bay_projection.activity.live_stages, null);
   assert.equal(retainedProjection.exact_review_queue.bay_projection.activity.total, null);
   assert.equal(retainedProjection.bay.active_census_complete, false);
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(runtime.expandQueue(retainedProjection))),
-    [
-      {
-        id: "queue:openclaw/openclaw#91",
-        key: "openclaw/openclaw#91",
-        number: 91,
-        repository: "openclaw/openclaw",
-        item_url: "https://github.com/openclaw/openclaw/issues/91",
-        stage: "arriving",
-        status: "pending",
-        source: "queue",
-        outcome: null,
-        queue_item: true,
-        action: null,
-        run_id: null,
-        started_at: null,
-      },
-    ],
-  );
+  assert.deepEqual(JSON.parse(JSON.stringify(runtime.expandQueue(retainedProjection))), [
+    {
+      id: "queue:openclaw/openclaw#91",
+      key: "openclaw/openclaw#91",
+      number: 91,
+      repository: "openclaw/openclaw",
+      item_url: "https://github.com/openclaw/openclaw/issues/91",
+      stage: "arriving",
+      status: "pending",
+      source: "queue",
+      outcome: null,
+      queue_item: true,
+      action: null,
+      run_id: null,
+      started_at: null,
+    },
+  ]);
   const chatStart = body.indexOf("function laneChatCopy(");
   const chatEnd = body.indexOf("function runLaneChat(", chatStart);
   const chatRuntime = new Script(

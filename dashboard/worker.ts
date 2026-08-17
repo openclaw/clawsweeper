@@ -6318,10 +6318,19 @@ async function attachExactReviewQueueStatus(snapshot, env) {
     priorExactReviewQueue,
     allowedRepositories,
   );
+  const priorQueueGeneratedAt = Date.parse(
+    String(projectedPriorExactReviewQueue.generated_at || ""),
+  );
+  const priorQueueAgeMs = Date.now() - priorQueueGeneratedAt;
+  const priorQueueIsFresh =
+    Number.isFinite(priorQueueAgeMs) &&
+    priorQueueAgeMs >= 0 &&
+    priorQueueAgeMs <= numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS) * 1000;
   const priorProjection = objectValue(priorExactReviewQueue.bay_projection);
   const priorActivity = publicBayActivity(priorProjection.activity, allowedRepositories);
   const retainedPriorExactReviewQueue =
     queueResult.status === "rejected" &&
+    priorQueueIsFresh &&
     projectedPriorExactReviewQueue.collection.state === "complete" &&
     projectedPriorExactReviewQueue.bay_projection.complete === true;
   if (retainedPriorExactReviewQueue) {
@@ -6337,7 +6346,11 @@ async function attachExactReviewQueueStatus(snapshot, env) {
         activity: publicBayActivity(null, allowedRepositories),
       },
     };
-  } else if (!activeTargets.complete && priorActivity.complete) {
+  } else if (
+    queueResult.status === "fulfilled" &&
+    !activeTargets.complete &&
+    priorActivity.complete
+  ) {
     // A projected cache no longer has correlation keys. Keep its same-generation
     // queue/live aggregate intact instead of combining it with a newer queue census.
     exactReviewQueue = priorExactReviewQueue;
