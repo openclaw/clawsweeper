@@ -11,6 +11,7 @@ import {
   MemoryDurableStorage,
   MemoryDurableNamespace,
   MemoryCache,
+  buildExactReviewQueueRequest,
   readCachedSnapshot,
   applyObservation,
   isoAgo,
@@ -2017,6 +2018,152 @@ test("optional queue status failures remain bounded in public and persisted snap
     assert.equal(cachedStatus.diagnostics.exact_review_queue_error, undefined);
     assert.equal(JSON.stringify(cachedStatus).includes(rejectionMarker), false);
     assert.equal(queueReads, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("optional queue status failure retains the last complete public Bay queue sample", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  globalThis.fetch = async () => {
+    throw new Error("shared snapshot should avoid GitHub requests");
+  };
+
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const enqueue = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "bay-status-fallback",
+      125_204,
+      "opened",
+      "issue",
+      "openclaw/openclaw",
+    ),
+  );
+  assert.equal(enqueue.status, 202);
+  const publicQueueResponse = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/exact-review-queue"),
+    {
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      PUBLIC_BAY_REPOS: "openclaw/openclaw",
+    },
+  );
+  assert.equal(publicQueueResponse.status, 200);
+  const priorExactReviewQueue = await publicQueueResponse.json();
+  assert.equal(priorExactReviewQueue.bay_projection.complete, true);
+  assert.deepEqual(priorExactReviewQueue.bay_projection.items, [
+    {
+      repository: "openclaw/openclaw",
+      item_number: 125_204,
+      stage: "arriving",
+      source: "queue",
+    },
+  ]);
+
+  const statusStore = new MemoryKv();
+  await statusStore.put(
+    "snapshot",
+    JSON.stringify({
+      schema_version: 1,
+      generated_at: new Date().toISOString(),
+      public_projection_complete: true,
+      health: {},
+      workers: [],
+      automatic_work: [],
+      bay: {
+        active_census_complete: false,
+        timings: { sample_kind: "completed_review_journeys" },
+      },
+      pipeline: [],
+      recent: {},
+      fleet: { active_workflow_runs: 0 },
+      diagnostics: { errors: [], error_count: 0 },
+      exact_review_queue: priorExactReviewQueue,
+    }),
+  );
+  const rejectionMarker = "synthetic_queue_probe_rejection";
+  let queueReads = 0;
+  const queueWithUnavailableStatus = {
+    fetch: async (request: Request) => {
+      queueReads += 1;
+      if (new URL(request.url).pathname === "/stats") {
+        return new Response(JSON.stringify({ error: rejectionMarker }), {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return queue.fetch(request);
+    },
+  };
+  const env = {
+    CACHE_TTL_SECONDS: "60",
+    STATUS_STORE: statusStore,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queueWithUnavailableStatus),
+    PUBLIC_BAY_REPOS: "openclaw/openclaw",
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      env,
+      { waitUntil: () => undefined },
+    );
+    const status = await response.json();
+    assert.deepEqual(status.exact_review_queue.bay_projection.items, [
+      {
+        repository: "openclaw/openclaw",
+        item_number: 125_204,
+        stage: "arriving",
+        source: "queue",
+      },
+    ]);
+    assert.equal(status.exact_review_queue.bay_projection.activity.complete, false);
+    assert.equal(status.dashboard_health.conclusion, "needs_attention");
+    assert.equal(status.dashboard_health.severity, "amber");
+    assert.equal(JSON.stringify(status).includes(rejectionMarker), false);
+
+    const persisted = await statusStore.get("snapshot");
+    assert.ok(persisted);
+    const persistedSnapshot = JSON.parse(persisted);
+    assert.deepEqual(
+      persistedSnapshot.exact_review_queue.bay_projection.items,
+      status.exact_review_queue.bay_projection.items,
+    );
+    assert.equal(persisted.includes(rejectionMarker), false);
+
+    const cached = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      env,
+      { waitUntil: () => undefined },
+    );
+    assert.equal(cached.headers.get("x-clawsweeper-cache"), "fresh");
+    const cachedStatus = await cached.json();
+    assert.deepEqual(
+      cachedStatus.exact_review_queue.bay_projection.items,
+      status.exact_review_queue.bay_projection.items,
+    );
+    assert.equal(queueReads, 2);
+
+    Object.defineProperty(globalThis, "caches", {
+      configurable: true,
+      value: { default: new MemoryCache() },
+    });
+    const unbound = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      {
+        CACHE_TTL_SECONDS: "60",
+        STATUS_STORE: statusStore,
+        PUBLIC_BAY_REPOS: "openclaw/openclaw",
+      },
+      { waitUntil: () => undefined },
+    );
+    const unboundStatus = await unbound.json();
+    assert.equal(unboundStatus.exact_review_queue, null);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });

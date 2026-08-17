@@ -6313,10 +6313,23 @@ async function attachExactReviewQueueStatus(snapshot, env) {
   if (queueResult.status === "fulfilled") exactReviewQueue = queueResult.value;
   if (eventsResult.status === "fulfilled") recentDurablePublicationEvents = eventsResult.value;
   const priorExactReviewQueue = objectValue(snapshot.exact_review_queue);
-  const priorProjection = objectValue(priorExactReviewQueue.bay_projection);
   const allowedRepositories = verifiedPublicBayRepositories(env);
+  const projectedPriorExactReviewQueue = publicExactReviewQueueProjection(
+    priorExactReviewQueue,
+    allowedRepositories,
+  );
+  const priorProjection = objectValue(priorExactReviewQueue.bay_projection);
   const priorActivity = publicBayActivity(priorProjection.activity, allowedRepositories);
-  if (!activeTargets.complete && priorActivity.complete) {
+  const retainedPriorExactReviewQueue =
+    queueResult.status === "rejected" &&
+    projectedPriorExactReviewQueue.collection.state === "complete" &&
+    projectedPriorExactReviewQueue.bay_projection.complete === true;
+  if (retainedPriorExactReviewQueue) {
+    // The optional queue probe can fail while its direct endpoint and the review
+    // pipeline remain healthy. Retain the last internally consistent, public-only
+    // queue document rather than caching a null projection that empties the Bay.
+    exactReviewQueue = projectedPriorExactReviewQueue;
+  } else if (!activeTargets.complete && priorActivity.complete) {
     // A projected cache no longer has correlation keys. Keep its same-generation
     // queue/live aggregate intact instead of combining it with a newer queue census.
     exactReviewQueue = priorExactReviewQueue;
