@@ -155,33 +155,48 @@ test("public telemetry routes contain malformed and rejecting durable reads", as
 test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot", async () => {
   const now = Date.now();
   const storage = new MemoryDurableStorage();
+  const bootstrapLifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  bootstrapLifecycle.ensureSchemaSync();
+  storage.sql.exec("DROP INDEX exact_review_lifecycle_projection_bay_repository_v2");
+  storage.sql.exec(
+    `CREATE INDEX exact_review_lifecycle_projection_bay_repository
+        ON exact_review_lifecycle_projection_v1 (
+          LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)),
+          updated_at DESC,
+          canonical_target_key,
+          fence_key,
+          revision
+        )`,
+  );
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
   lifecycle.ensureSchemaSync();
-  const publicRepositoryPlan = Array.from(
-    storage.sql.exec(
-      `EXPLAIN QUERY PLAN
-       SELECT projection_json FROM exact_review_lifecycle_projection_v1
-       INDEXED BY exact_review_lifecycle_projection_bay_repository
-       WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) IN (?)
-       ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
-       LIMIT ?`,
-      "openclaw/openclaw",
-      10_001,
-    ),
-  );
-  assert.ok(
-    publicRepositoryPlan.some((row) =>
-      String(row.detail || "").includes("exact_review_lifecycle_projection_bay_repository"),
-    ),
-    "public lifecycle reads must seek through the repository-leading index",
-  );
-  assert.equal(
-    publicRepositoryPlan.some((row) =>
-      /^SCAN exact_review_lifecycle_projection_v1\b/i.test(String(row.detail || "")),
-    ),
-    false,
-    "public lifecycle reads must not scan unrelated durable history",
-  );
+  for (const repository of ["openclaw/openclaw", "openclaw/clawsweeper"]) {
+    const publicRepositoryPlan = Array.from(
+      storage.sql.exec(
+        `EXPLAIN QUERY PLAN
+         SELECT projection_json FROM exact_review_lifecycle_projection_v1
+         INDEXED BY exact_review_lifecycle_projection_bay_repository_v2
+         WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?
+         ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+         LIMIT ?`,
+        repository,
+        10_001,
+      ),
+    );
+    assert.ok(
+      publicRepositoryPlan.some((row) =>
+        String(row.detail || "").includes("exact_review_lifecycle_projection_bay_repository_v2"),
+      ),
+      "each public repository read must seek through the repository-leading index",
+    );
+    assert.equal(
+      publicRepositoryPlan.some((row) =>
+        /SCAN exact_review_lifecycle_projection_v1|USE TEMP B-TREE/i.test(String(row.detail || "")),
+      ),
+      false,
+      "each public repository read must avoid unrelated scans and unbounded sorting",
+    );
+  }
   const record = ({
     number,
     revision = 1,
@@ -241,6 +256,7 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
   record({ number: 913, terminal: "requeue" });
   record({ number: 914, terminal: "dead_letter" });
   record({ number: 915, repository: "private-owner/private-repo" });
+  record({ number: 916, repository: "openclaw/clawsweeper" });
 
   let initialized = 0;
   const queue = new ExactReviewQueue(
@@ -255,11 +271,12 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
   );
   const exec = storage.sql.exec.bind(storage.sql);
   const queries: string[] = [];
+  const queryBindings: unknown[][] = [];
   storage.sql.exec = (query: string, ...bindings: unknown[]) => {
     queries.push(query);
+    queryBindings.push(bindings);
     assert.match(query, /^\s*SELECT\s+projection_json\b/i, "Bay route must be read-only");
     assert.match(query, /WHERE LOWER\(SUBSTR\(canonical_target_key/);
-    assert.deepEqual(bindings, ["openclaw/openclaw", 10_001]);
     return exec(query, ...bindings);
   };
 
@@ -267,7 +284,7 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
     new Request("https://clawsweeper.openclaw.ai/api/durable-lifecycle-bay"),
     {
       EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
-      PUBLIC_BAY_REPOS: "openclaw/openclaw",
+      PUBLIC_BAY_REPOS: "openclaw/openclaw,openclaw/clawsweeper",
     },
   );
   const body = (await response.json()) as {
@@ -288,11 +305,15 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(initialized, 1, "constructor must provision only the Bay read schema");
   assert.equal(storage.sql.hasNormalizedQueue(), false);
-  assert.equal(queries.length, 1);
+  assert.equal(queries.length, 2);
+  assert.deepEqual(queryBindings, [
+    ["openclaw/clawsweeper", 10_001],
+    ["openclaw/openclaw", 10_000],
+  ]);
   assert.equal(snapshot.collection.state, "complete");
-  assert.equal(snapshot.inventory?.lifecycle_records, 6);
+  assert.equal(snapshot.inventory?.lifecycle_records, 7);
   assert.deepEqual(snapshot.lanes, {
-    pending: 1,
+    pending: 2,
     acknowledgement_pending: 1,
     completed: 1,
     superseded: 1,
@@ -300,9 +321,9 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
     terminal_attention: 1,
   });
   assert.equal(snapshot.sample?.limit, 24);
-  assert.equal(snapshot.sample?.returned, 6);
+  assert.equal(snapshot.sample?.returned, 7);
   assert.equal(snapshot.sample?.omitted, 0);
-  assert.equal(snapshot.sample?.cards.length, 6);
+  assert.equal(snapshot.sample?.cards.length, 7);
   for (const card of snapshot.sample?.cards || []) {
     assert.deepEqual(Object.keys(card).sort(), [
       "current_revision",
@@ -312,7 +333,9 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
       "state",
       "updated_at",
     ]);
-    assert.equal(card.repository, "openclaw/openclaw");
+    assert.ok(
+      card.repository === "openclaw/openclaw" || card.repository === "openclaw/clawsweeper",
+    );
   }
   const publicText = JSON.stringify(body);
   for (const secret of [

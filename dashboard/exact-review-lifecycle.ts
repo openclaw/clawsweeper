@@ -274,14 +274,14 @@ export class ExactReviewLifecycleProjectionStore {
           (updated_at DESC, canonical_target_key, fence_key, revision)`,
     );
     this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_repository
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_repository_v2
           ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
           (
             LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)),
             updated_at DESC,
             canonical_target_key,
             fence_key,
-            revision
+            revision DESC
           )`,
     );
     this.schemaReady = true;
@@ -821,7 +821,9 @@ export class ExactReviewLifecycleProjectionStore {
     });
 
     const repositories = allowedRepositories
-      ? [...allowedRepositories].map((repository) => repository.trim().toLowerCase())
+      ? [
+          ...new Set([...allowedRepositories].map((repository) => repository.trim().toLowerCase())),
+        ].sort()
       : null;
     if (
       repositories &&
@@ -835,23 +837,33 @@ export class ExactReviewLifecycleProjectionStore {
     try {
       if (repositories?.length === 0) {
         rows = [];
+      } else if (repositories) {
+        rows = [];
+        for (const repository of repositories) {
+          const remaining = EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1 - rows.length;
+          const repositoryRows = Array.from(
+            this.storage.sql.exec(
+              `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+               INDEXED BY exact_review_lifecycle_projection_bay_repository_v2
+               WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?
+               ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+               LIMIT ?`,
+              repository,
+              remaining,
+            ),
+          );
+          rows.push(...repositoryRows);
+          if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT) {
+            return unknown("over_cap");
+          }
+        }
       } else {
-        const repositoryWhere = repositories
-          ? `WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1))
-                   IN (${repositories.map(() => "?").join(", ")})`
-          : "";
         rows = Array.from(
           this.storage.sql.exec(
             `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-             INDEXED BY ${
-               repositories
-                 ? "exact_review_lifecycle_projection_bay_repository"
-                 : "exact_review_lifecycle_projection_bay"
-             }
-           ${repositoryWhere}
-           ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
-           LIMIT ?`,
-            ...(repositories || []),
+             INDEXED BY exact_review_lifecycle_projection_bay
+            ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+            LIMIT ?`,
             EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1,
           ),
         );
