@@ -136,5 +136,5 @@ private payloads.
 
 This is deterministic interaction proof, not a claim that synthetic state is
 live operational evidence. The separate deployment smoke covers the canonical
-`/bay` route, the query-preserving legacy redirect, response headers, shared
+`/bay` route, the query-stripping legacy redirect, response headers, shared
 schema, and static assets.
