@@ -2184,6 +2184,34 @@ test("optional queue status failure retains the last complete public Bay queue s
       configurable: true,
       value: { default: new MemoryCache() },
     });
+    await statusStore.put(
+      "snapshot",
+      JSON.stringify({
+        ...JSON.parse(persisted),
+        generated_at: new Date(Date.now() - 61_000).toISOString(),
+      }),
+    );
+    const staleRoot = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      env,
+      { waitUntil: () => undefined },
+    );
+    const staleRootStatus = await staleRoot.json();
+    assert.deepEqual(
+      staleRootStatus.exact_review_queue.bay_projection.items,
+      status.exact_review_queue.bay_projection.items,
+    );
+    assert.deepEqual(staleRootStatus.exact_review_queue.bay_projection.activity, {
+      complete: false,
+      queue_stages: null,
+      live_stages: null,
+      total: null,
+    });
+
+    Object.defineProperty(globalThis, "caches", {
+      configurable: true,
+      value: { default: new MemoryCache() },
+    });
     const stalePriorExactReviewQueue = structuredClone(priorExactReviewQueue);
     const staleQueueGeneratedAt = new Date(Date.now() - 901_000).toISOString();
     stalePriorExactReviewQueue.generated_at = staleQueueGeneratedAt;

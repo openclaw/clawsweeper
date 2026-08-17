@@ -6312,7 +6312,16 @@ async function attachExactReviewQueueStatus(snapshot, env) {
   ]);
   if (queueResult.status === "fulfilled") exactReviewQueue = queueResult.value;
   if (eventsResult.status === "fulfilled") recentDurablePublicationEvents = eventsResult.value;
-  const priorExactReviewQueue = objectValue(snapshot.exact_review_queue);
+  const staleStatusSnapshot =
+    queueResult.status === "rejected"
+      ? await readCachedSnapshot(
+          env,
+          numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS),
+        )
+      : null;
+  const priorExactReviewQueue = objectValue(
+    snapshot.exact_review_queue || staleStatusSnapshot?.exact_review_queue,
+  );
   const allowedRepositories = verifiedPublicBayRepositories(env);
   const projectedPriorExactReviewQueue = publicExactReviewQueueProjection(
     priorExactReviewQueue,
