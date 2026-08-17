@@ -15,6 +15,8 @@ import {
   ensureReviewTreeCommit,
   githubReviewBlobSizes,
   hydratePullRequestReviewBlobs,
+  materializePullRequestReviewTree,
+  removePullRequestReviewTree,
 } from "./clawsweeper-review-blobs.js";
 import {
   filterReviewComments,
@@ -1106,6 +1108,8 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     sameAuthorCounterpartApplyReason,
     semanticPullFilesWithTreeIdentity,
     ensurePullRequestReviewHead,
+    materializePullRequestReviewTree,
+    removePullRequestReviewTree,
     staleVersionBugCloseEnabled,
     structuralExternalRelationSensitivity,
     unconfirmedProductDirectionCloseEnabled,

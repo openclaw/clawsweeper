@@ -115,7 +115,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     displayDurationMs,
     displayPath,
     enforceExpectedIssueSourceRevision,
-    ensurePullRequestReviewHead,
+    ensureDir,
     exactLocalReviewNoCandidateError,
     extractClawSweeperReviewCommentBody,
     existingReview,
@@ -136,6 +136,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     localExactReviewHistoryPath,
     localRangeHistoryApplies,
     makeTreeReadOnly,
+    materializePullRequestReviewTree,
     markdownFor,
     postReviewStartStatusComment,
     previousClawSweeperReviewDigestFromReport,
@@ -143,6 +144,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     pullHeadShaFromContext,
     pullRequestHeadSha,
     recordReviewLogPublication,
+    removePullRequestReviewTree,
     refreshRelatedItemsContext,
     replaceFrontMatterValue,
     renderReviewCommentFromReport,
@@ -334,8 +336,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const semanticCacheRevalidationReasons = new Map<string, number>();
       const codexFailureReports: string[] = [];
       const leaseAcquisitionFailureDetails: string[] = [];
+      const reviewTreeCleanupFailures: string[] = [];
       // oxfmt-ignore
       for (const item of candidates) {
+        const itemReadonlyModeSnapshots: ReturnType<typeof makeTreeReadOnly> = [];
+        let reviewOpenclawDir = openclawDir;
+        let pullRequestReviewTreeDir: string | null = null;
         const restoredMaintainerAssociation =
           !localOnly &&
           restoreVerifiedMaintainerPullRequestAuthorAssociation(item, (author) =>
@@ -792,10 +798,14 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             });
         if (!localRangeData && item.kind === "pull_request") {
           const headSha = pullHeadShaFromContext(context);
+          const reviewTreesDir = join(artifactDir, "review-trees");
+          ensureDir(reviewTreesDir);
+          pullRequestReviewTreeDir = join(reviewTreesDir, String(item.number));
           if (
             !headSha ||
-            !ensurePullRequestReviewHead({
+            !materializePullRequestReviewTree({
               targetDir: openclawDir,
+              worktreeDir: pullRequestReviewTreeDir,
               itemNumber: item.number,
               headSha,
             })
@@ -803,6 +813,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             throw new Error(
               `pull request #${item.number} head ${headSha ?? "unknown"} was unavailable in the restricted review checkout`,
             );
+          }
+          reviewOpenclawDir = pullRequestReviewTreeDir;
+          if (readonlyOpenclaw) {
+            makeTreeReadOnly(reviewOpenclawDir, itemReadonlyModeSnapshots);
           }
         }
         if (previousLocalReviewCommentBody) {
@@ -1419,7 +1433,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             context,
             git,
             model,
-            openclawDir,
+            openclawDir: reviewOpenclawDir,
             reasoningEffort,
             sandboxMode,
             serviceTier,
@@ -1465,7 +1479,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           context,
           existingPriorReview?.markdown,
         );
-        decision = verifyRegressionProvenance(decision, item, context, openclawDir, git);
+        decision = verifyRegressionProvenance(decision, item, context, reviewOpenclawDir, git);
         const runtime = {
           model: PUBLIC_CODEX_MODEL,
           reasoningEffort,
@@ -1574,7 +1588,22 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               activeReviewItem = null;
             }
           } finally {
-            dependencies.activeReviewMutationRunner = previousReviewMutationRunner;
+            try {
+              dependencies.activeReviewMutationRunner = previousReviewMutationRunner;
+            } finally {
+              restoreTreeModes(itemReadonlyModeSnapshots);
+              if (
+                pullRequestReviewTreeDir &&
+                !removePullRequestReviewTree({
+                  targetDir: openclawDir,
+                  worktreeDir: pullRequestReviewTreeDir,
+                })
+              ) {
+                const detail = `could not remove restricted review checkout ${pullRequestReviewTreeDir}`;
+                reviewTreeCleanupFailures.push(detail);
+                console.error(`[review] ${new Date().toISOString()} ${detail}`);
+              }
+            }
           }
         }
       }
@@ -1650,6 +1679,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             leaseAcquisitionFailures === 1 ? "" : "s"
           }; the workflow recovery lane can requeue the planned set. ${leaseAcquisitionFailureDetails.join("; ")}`,
         );
+      }
+      if (reviewTreeCleanupFailures.length > 0) {
+        throw new Error(reviewTreeCleanupFailures.join("; "));
       }
       if (codexFailures > 0) {
         for (const reportPath of codexFailureReports) {

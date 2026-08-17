@@ -527,7 +527,10 @@ test("review candidates start lazily and deferred items cannot remain active", (
 
   const reviewCommandStart = source.indexOf("function reviewCommand(args:");
   const contextCollection = source.indexOf("const context = localRangeData", reviewCommandStart);
-  const sourceAvailabilityGate = source.indexOf("ensurePullRequestReviewHead({", contextCollection);
+  const sourceAvailabilityGate = source.indexOf(
+    "materializePullRequestReviewTree({",
+    contextCollection,
+  );
   const modelReview = source.indexOf("decision = runCodex({", sourceAvailabilityGate);
   assert.ok(contextCollection >= 0);
   assert.ok(sourceAvailabilityGate > contextCollection);

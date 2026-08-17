@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 const MAX_REVIEW_FILES = 80;
 const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -88,6 +89,68 @@ export function ensurePullRequestReviewHead({
       destinationRef,
     })
   );
+}
+
+function reviewTreeMatchesCommit({ targetDir, sha }: { targetDir: string; sha: string }): boolean {
+  const head = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: targetDir,
+    encoding: "utf8",
+    env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+  });
+  if (head.error || head.status !== 0 || head.stdout.trim().toLowerCase() !== sha.toLowerCase()) {
+    return false;
+  }
+  const status = spawnSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
+    cwd: targetDir,
+    encoding: "utf8",
+    env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+  });
+  return !status.error && status.status === 0 && status.stdout.trim() === "";
+}
+
+export function materializePullRequestReviewTree({
+  targetDir,
+  worktreeDir,
+  itemNumber,
+  headSha,
+}: {
+  targetDir: string;
+  worktreeDir: string;
+  itemNumber: number;
+  headSha: string;
+}): boolean {
+  if (!ensurePullRequestReviewHead({ targetDir, itemNumber, headSha })) return false;
+  if (existsSync(worktreeDir)) return false;
+  const worktree = spawnSync(
+    "git",
+    ["worktree", "add", "--detach", "--force", worktreeDir, headSha],
+    {
+      cwd: targetDir,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      stdio: "ignore",
+    },
+  );
+  return (
+    !worktree.error &&
+    worktree.status === 0 &&
+    reviewTreeMatchesCommit({ targetDir: worktreeDir, sha: headSha })
+  );
+}
+
+export function removePullRequestReviewTree({
+  targetDir,
+  worktreeDir,
+}: {
+  targetDir: string;
+  worktreeDir: string;
+}): boolean {
+  if (!existsSync(worktreeDir)) return true;
+  const removed = spawnSync("git", ["worktree", "remove", "--force", worktreeDir], {
+    cwd: targetDir,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    stdio: "ignore",
+  });
+  return !removed.error && removed.status === 0 && !existsSync(worktreeDir);
 }
 
 export function hydratePullRequestReviewBlobs({

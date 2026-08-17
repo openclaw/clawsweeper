@@ -220,6 +220,12 @@ export interface CreateReviewCommandWorkflowDependencies {
   ) => boolean;
   localExactReviewHistoryPath: (artifactDir: string, repo: string, itemNumber: number) => string;
   makeTreeReadOnly: (path: string, snapshots?: FileModeSnapshot[]) => FileModeSnapshot[];
+  materializePullRequestReviewTree: (options: {
+    targetDir: string;
+    worktreeDir: string;
+    itemNumber: number;
+    headSha: string;
+  }) => boolean;
   markdownFor: (options: {
     item: Item;
     context: ItemContext;
@@ -261,6 +267,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     missingReasonCode?: ActionEventReasonCode;
     retryable?: boolean;
   }) => ActionEvent | null;
+  removePullRequestReviewTree: (options: { targetDir: string; worktreeDir: string }) => boolean;
   refreshRelatedItemsContext: (item: Item, context: ItemContext) => unknown[];
   replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
   renderReviewCommentFromReport: (
