@@ -196,7 +196,7 @@ test("Playwright generation keeps quotes, backticks, and newlines inside JSON da
   assert.equal(checked.status, 0, checked.stderr);
 });
 
-test("terminal driver composes tmux, xvfb-run, and bounded ffmpeg x11grab", () => {
+test("terminal driver composes direct Xvfb, xterm, and bounded ffmpeg sessions", () => {
   const commands = terminalCommandPlan({
     sessionPrefix: "proof",
     entry: "pnpm cli --help",
@@ -207,15 +207,43 @@ test("terminal driver composes tmux, xvfb-run, and bounded ffmpeg x11grab", () =
     command: "tmux",
     args: ["new-session", "-d", "-s", "proof-terminal", "-x", "160", "-y", "50"],
   });
-  const display = commands.find((invocation) => invocation.args.includes("xvfb-run"));
+  const display = commands.find((invocation) => invocation.args.includes("Xvfb"));
+  const xterm = commands.find((invocation) => invocation.args.includes("xterm"));
   const recorder = commands.find((invocation) => invocation.args.includes("ffmpeg"));
-  assert.deepEqual(display?.args.slice(4, 8), [
-    "xvfb-run",
-    "--server-num=99",
-    "--server-args=-screen 0 1280x800x24",
-    "xterm",
+  assert.deepEqual(display?.args.slice(4), [
+    "Xvfb",
+    ":99",
+    "-screen",
+    "0",
+    "1280x800x24",
+    "-nolisten",
+    "tcp",
   ]);
   assert.equal(display?.waitAfter, "display");
+  assert.deepEqual(xterm, {
+    command: "tmux",
+    args: [
+      "new-session",
+      "-d",
+      "-s",
+      "proof-xterm",
+      "env",
+      "DISPLAY=:99",
+      "xterm",
+      "-fullscreen",
+      "-geometry",
+      "160x50+0+0",
+      "-e",
+      "tmux",
+      "attach-session",
+      "-t",
+      "proof-terminal",
+    ],
+  });
+  assert.equal(
+    commands.some((invocation) => invocation.args.includes("xvfb-run")),
+    false,
+  );
   assert.deepEqual(recorder?.args.slice(4, 13), [
     "timeout",
     "90s",
@@ -242,6 +270,7 @@ test("terminal driver reports display readiness timeout with all pane diagnostic
     paneOutput: {
       terminal: "terminal pane waiting",
       display: "display pane cold",
+      xterm: "xterm pane absent",
       recorder: "recorder pane absent",
     },
   });
@@ -252,12 +281,14 @@ test("terminal driver reports display readiness timeout with all pane diagnostic
       assert.match(error.message, /X display :99 was not ready after 30 seconds/);
       assert.match(error.message, /\[terminal: .*\]\nterminal pane waiting/);
       assert.match(error.message, /\[display: .*\]\ndisplay pane cold/);
+      assert.match(error.message, /\[xterm: .*\]\nxterm pane absent/);
       assert.match(error.message, /\[recorder: .*\]\nrecorder pane absent/);
       return true;
     },
   );
   assert.equal(calls.filter((call) => call === "xdpyinfo -display :99").length, 31);
   assert.equal(calls.filter((call) => call === "sleep 1").length, 30);
+  assert.ok(calls.some((call) => /tmux kill-session -t .*-xterm$/.test(call)));
 });
 
 test("terminal driver accepts a recorder file that appears and grows late", () => {
@@ -280,6 +311,7 @@ test("terminal driver reports a dead recorder with its pane diagnostics", () => 
     paneOutput: {
       terminal: "terminal pane ready",
       display: "display pane ready",
+      xterm: "xterm pane ready",
       recorder: "ffmpeg: cannot open display :99",
     },
   });
@@ -288,6 +320,7 @@ test("terminal driver reports a dead recorder with its pane diagnostics", () => 
     (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.match(error.message, /recorder session exited before the raw WebM began growing/);
+      assert.match(error.message, /\[xterm: .*\]\nxterm pane ready/);
       assert.match(error.message, /\[recorder: .*\]\nffmpeg: cannot open display :99/);
       return true;
     },
@@ -721,7 +754,7 @@ function terminalLifecycleRunner(
     recorderSizes?: Array<number | undefined>;
     recorderDiesAtProbe?: number;
     finalizeExitAfter?: number;
-    paneOutput?: Record<"terminal" | "display" | "recorder", string>;
+    paneOutput?: Record<"terminal" | "display" | "xterm" | "recorder", string>;
   } = {},
 ): MediaProofCommandRunner {
   let displayProbe = 0;
@@ -763,9 +796,11 @@ function terminalLifecycleRunner(
       const target = String(args[args.indexOf("-t") + 1] ?? "");
       const label = target.includes("-display")
         ? "display"
-        : target.includes("-recorder")
-          ? "recorder"
-          : "terminal";
+        : target.includes("-xterm")
+          ? "xterm"
+          : target.includes("-recorder")
+            ? "recorder"
+            : "terminal";
       return { status: 0, stdout: `${options.paneOutput?.[label] ?? `${label} pane`}\n` };
     }
     return { status: 0 };

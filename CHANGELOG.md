@@ -44,6 +44,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Replaced terminal live proof's authenticated `xvfb-run` wrapper with a TCP-disabled local Xvfb display so readiness probes and recording can connect without X authorization failures.
 - Made terminal live-proof recording wait for Xvfb and ffmpeg readiness and clean finalization, with tmux pane diagnostics on failure.
 - Routed every durable review-record publication lane through one shared, host-authenticated live-proof dispatcher, including queued exact-review batches grouped per target repository.
 - Exact-event reviews now dispatch recommended live proofs with host-repository credentials, while generic and configured OpenClaw and steipete profiles opt into browser or terminal proof as appropriate.

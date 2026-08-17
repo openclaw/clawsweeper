@@ -162,6 +162,7 @@ export function terminalCommandPlan(options: {
 }): TerminalCommandInvocation[] {
   const terminalSession = `${options.sessionPrefix}-terminal`;
   const displaySession = `${options.sessionPrefix}-display`;
+  const xtermSession = `${options.sessionPrefix}-xterm`;
   const recorderSession = `${options.sessionPrefix}-recorder`;
   return [
     {
@@ -183,9 +184,25 @@ export function terminalCommandPlan(options: {
         "-k",
         "-t",
         `${displaySession}:0.0`,
-        "xvfb-run",
-        "--server-num=99",
-        "--server-args=-screen 0 1280x800x24",
+        "Xvfb",
+        ":99",
+        "-screen",
+        "0",
+        "1280x800x24",
+        "-nolisten",
+        "tcp",
+      ],
+      waitAfter: "display",
+    },
+    {
+      command: "tmux",
+      args: [
+        "new-session",
+        "-d",
+        "-s",
+        xtermSession,
+        "env",
+        "DISPLAY=:99",
         "xterm",
         "-fullscreen",
         "-geometry",
@@ -196,7 +213,6 @@ export function terminalCommandPlan(options: {
         "-t",
         terminalSession,
       ],
-      waitAfter: "display",
     },
     {
       command: "tmux",
@@ -253,6 +269,7 @@ export function driveTerminal(options: {
   const sessionPrefix = `clawsweeper-live-proof-${process.pid}`;
   const terminalSession = `${sessionPrefix}-terminal`;
   const displaySession = `${sessionPrefix}-display`;
+  const xtermSession = `${sessionPrefix}-xterm`;
   const recorderSession = `${sessionPrefix}-recorder`;
   const log: LiveProofStepLogEntry[] = [];
   let failed = false;
@@ -295,10 +312,12 @@ export function driveTerminal(options: {
     thrown = terminalErrorWithDiagnostics(error, options.runner, options.checkout, {
       terminal: terminalSession,
       display: displaySession,
+      xterm: xtermSession,
       recorder: recorderSession,
     });
   } finally {
     options.runner("tmux", ["kill-session", "-t", recorderSession]);
+    options.runner("tmux", ["kill-session", "-t", xtermSession]);
     options.runner("tmux", ["kill-session", "-t", displaySession]);
     options.runner("tmux", ["kill-session", "-t", terminalSession]);
   }
@@ -411,7 +430,7 @@ function terminalErrorWithDiagnostics(
   error: unknown,
   runner: MediaProofCommandRunner,
   checkout: string,
-  sessions: Record<"terminal" | "display" | "recorder", string>,
+  sessions: Record<"terminal" | "display" | "xterm" | "recorder", string>,
 ): Error {
   const message = error instanceof Error ? error.message : String(error);
   const diagnostics = (Object.entries(sessions) as Array<[keyof typeof sessions, string]>).map(

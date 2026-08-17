@@ -30,7 +30,8 @@ contains no model call. Browser plans are serialized as JSON data into a
 generated plain `playwright-core` script; plan values are never inserted as
 source code. The script uses installed Chrome, a 1280x800 recorded context, and
 falls back to Playwright Chromium only when Chrome cannot launch. Terminal
-plans use tmux, `xvfb-run`, a fullscreen xterm, and ffmpeg `x11grab`; typed
+plans use tmux, an unauthenticated local Xvfb display with its TCP listener
+disabled, a fullscreen xterm, and ffmpeg `x11grab`; typed
 `run`, `wait`, and `expect_output` steps are replayed through the tmux pane.
 
 Both drivers finalize the recording after a mid-plan failure and record the
