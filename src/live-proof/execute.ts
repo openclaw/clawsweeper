@@ -147,8 +147,32 @@ export async function executeLiveProof(
         `live proof recording exceeds configured ${liveTest.maxRecordingSeconds}-second cap`,
       );
     }
-    const poster = createVideoContactSheet(mp4Path, posterPath, runner);
-    requireSuccess("ffmpeg", ["contact-sheet", mp4Path], poster);
+    // The contact-sheet tile needs ~100 seconds of sampled video before some
+    // ffmpeg builds emit a frame, so short recordings fall back to a single
+    // poster frame near the start of the demonstration.
+    createVideoContactSheet(mp4Path, posterPath, runner);
+    if (!existsSync(posterPath)) {
+      for (const offset of ["1", "0"]) {
+        const frame = runner(
+          "ffmpeg",
+          [
+            "-hide_banner",
+            "-y",
+            "-ss",
+            offset,
+            "-i",
+            mp4Path,
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=640:-1",
+            posterPath,
+          ],
+          { cwd: checkout },
+        );
+        if (frame.status === 0 && existsSync(posterPath)) break;
+      }
+    }
     if (!existsSync(posterPath)) throw new Error("ffmpeg did not create poster.jpg");
 
     writeFileSync(stepsLogPath, `${JSON.stringify(drive.steps, null, 2)}\n`, "utf8");

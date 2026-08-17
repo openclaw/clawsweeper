@@ -18,6 +18,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Short live-proof recordings fall back to a single poster frame when the contact-sheet tile cannot emit one.
 - Terminal recorders flush WebM packets immediately and treat a live ffmpeg session as healthy while the muxer buffers.
 - Terminal live-proof recordings tune VP9 for realtime capture and accept the recorder once any payload is written, matching the encoder's bursty muxer output.
 - OpenClaw browser live proofs run against the repository's mock control-UI dev server.
