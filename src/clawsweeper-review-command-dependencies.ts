@@ -131,6 +131,11 @@ export interface CreateReviewCommandWorkflowDependencies {
   displayDurationMs: (ms: number) => string;
   displayPath: (path: string) => string;
   enforceExpectedIssueSourceRevision: (options: ExpectedIssueSourceRevisionOptions) => void;
+  ensurePullRequestReviewHead: (options: {
+    targetDir: string;
+    itemNumber: number;
+    headSha: string;
+  }) => boolean;
   ensureDir: (path: string) => void;
   exactLocalReviewNoCandidateError: (
     itemNumber: number | undefined,

@@ -955,7 +955,6 @@ test("local exact review explains when GitHub item is not open", () => {
     execFileSync("git", ["branch", "-M", "main"], { cwd: targetDir });
     execFileSync("git", ["remote", "add", "origin", origin], { cwd: targetDir });
     execFileSync("git", ["push", "origin", "main"], { cwd: targetDir, stdio: "ignore" });
-
     mkdirSync(binDir);
     const ghPath = join(binDir, "gh.js");
     writeFileSync(
@@ -1048,6 +1047,10 @@ test("local exact review selects PATH Codex instead of the Desktop app binary", 
     execFileSync("git", ["branch", "-M", "main"], { cwd: targetDir });
     execFileSync("git", ["remote", "add", "origin", origin], { cwd: targetDir });
     execFileSync("git", ["push", "origin", "main"], { cwd: targetDir, stdio: "ignore" });
+    const reviewHeadSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: targetDir,
+      encoding: "utf8",
+    }).trim();
 
     mkdirSync(binDir);
     const ghPath = join(binDir, "gh.js");
@@ -1078,12 +1081,12 @@ const pull = {
   state: "open",
   draft: false,
   merged: false,
-  merge_commit_sha: "abc123",
+  merge_commit_sha: ${JSON.stringify(reviewHeadSha)},
   mergeable: true,
   mergeable_state: "clean",
   user: { login: "author" },
-  head: { ref: "feature", sha: "def456" },
-  base: { ref: "main", sha: "abc123" },
+  head: { ref: "feature", sha: ${JSON.stringify(reviewHeadSha)} },
+  base: { ref: "main", sha: ${JSON.stringify(reviewHeadSha)} },
   additions: 1,
   deletions: 0,
   changed_files: 0,

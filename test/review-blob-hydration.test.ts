@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  ensurePullRequestReviewHead,
   githubReviewBlobSizes,
   hydratePullRequestReviewBlobs,
 } from "../dist/clawsweeper-review-blobs.js";
@@ -17,7 +18,8 @@ function git(cwd: string, ...args: string[]): string {
 function partialCloneFixture({
   extraFiles = 0,
   largeFiles = [],
-}: { extraFiles?: number; largeFiles?: number[] } = {}) {
+  prefetchHead = true,
+}: { extraFiles?: number; largeFiles?: number[]; prefetchHead?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-promisor-"));
   const origin = join(root, "origin.git");
   const source = join(root, "source");
@@ -69,15 +71,17 @@ function partialCloneFixture({
     `file://${origin}`,
     target,
   );
-  git(
-    target,
-    "fetch",
-    "-q",
-    "--filter=blob:none",
-    "origin",
-    "refs/pull/982/head:refs/clawsweeper/review-cache/head-982",
-    "--depth=1",
-  );
+  if (prefetchHead) {
+    git(
+      target,
+      "fetch",
+      "-q",
+      "--filter=blob:none",
+      "origin",
+      "refs/pull/982/head:refs/clawsweeper/review-cache/head-982",
+      "--depth=1",
+    );
+  }
   return { root, source, target, baseSha, headSha, addedBlobSha, changedBlobSha };
 }
 
@@ -139,6 +143,52 @@ test("restricted PR review can inspect changed blobs from a genuine blobless clo
       /\+after/,
     );
     assert.equal(git(fixture.target, "status", "--porcelain"), "");
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("restricted review materializes the exact pull request head before model execution", () => {
+  const fixture = partialCloneFixture({ prefetchHead: false });
+  try {
+    assert.equal(objectExistsOffline(fixture.target, fixture.headSha), false);
+
+    assert.equal(
+      ensurePullRequestReviewHead({
+        targetDir: fixture.target,
+        itemNumber: 982,
+        headSha: fixture.headSha,
+      }),
+      true,
+    );
+    assert.equal(objectExistsOffline(fixture.target, fixture.headSha), true);
+    assert.equal(
+      git(fixture.target, "rev-parse", "refs/clawsweeper/review-cache/head-982"),
+      fixture.headSha,
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("restricted review binds a force-pushed pull request to the exact REST head", () => {
+  const fixture = partialCloneFixture({ prefetchHead: false });
+  try {
+    git(fixture.source, "push", "-q", "origin", "HEAD:refs/heads/feature");
+    git(fixture.source, "push", "-q", "--force", "origin", `${fixture.baseSha}:refs/pull/982/head`);
+
+    assert.equal(
+      ensurePullRequestReviewHead({
+        targetDir: fixture.target,
+        itemNumber: 982,
+        headSha: fixture.headSha,
+      }),
+      true,
+    );
+    assert.equal(
+      git(fixture.target, "rev-parse", "refs/clawsweeper/review-cache/head-982"),
+      fixture.headSha,
+    );
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

@@ -16,6 +16,80 @@ export type ReviewBlobHydration = {
   blobs: number;
 };
 
+function gitCommitExists(targetDir: string, sha: string): boolean {
+  return (
+    spawnSync("git", ["cat-file", "-e", `${sha}^{commit}`], {
+      cwd: targetDir,
+      env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+      stdio: "ignore",
+    }).status === 0
+  );
+}
+
+export function ensureReviewTreeCommit({
+  targetDir,
+  sha,
+  sourceRef,
+  destinationRef,
+}: {
+  targetDir: string;
+  sha: string;
+  sourceRef: string;
+  destinationRef: string;
+}): boolean {
+  if (!GIT_OBJECT_ID.test(sha)) return false;
+  if (gitCommitExists(targetDir, sha)) return true;
+  const fetched = spawnSync(
+    "git",
+    [
+      "fetch",
+      "--force",
+      "--filter=blob:none",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "--recurse-submodules=no",
+      "origin",
+      `${sourceRef}:${destinationRef}`,
+      "--depth=1",
+    ],
+    {
+      cwd: targetDir,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      stdio: "ignore",
+    },
+  );
+  return !fetched.error && fetched.status === 0 && gitCommitExists(targetDir, sha);
+}
+
+export function ensurePullRequestReviewHead({
+  targetDir,
+  itemNumber,
+  headSha,
+}: {
+  targetDir: string;
+  itemNumber: number;
+  headSha: string;
+}): boolean {
+  if (!Number.isSafeInteger(itemNumber) || itemNumber <= 0) return false;
+  const destinationRef = `refs/clawsweeper/review-cache/head-${itemNumber}`;
+  return (
+    ensureReviewTreeCommit({
+      targetDir,
+      sha: headSha,
+      sourceRef: `refs/pull/${itemNumber}/head`,
+      destinationRef,
+    }) ||
+    // The PR ref and REST head can briefly disagree after a force-push. Fetching the
+    // exact validated object keeps the model bound to the revision under review.
+    ensureReviewTreeCommit({
+      targetDir,
+      sha: headSha,
+      sourceRef: headSha,
+      destinationRef,
+    })
+  );
+}
+
 export function hydratePullRequestReviewBlobs({
   targetDir,
   baseSha,

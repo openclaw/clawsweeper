@@ -115,6 +115,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     displayDurationMs,
     displayPath,
     enforceExpectedIssueSourceRevision,
+    ensurePullRequestReviewHead,
     exactLocalReviewNoCandidateError,
     extractClawSweeperReviewCommentBody,
     existingReview,
@@ -789,6 +790,21 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 : null,
               prCommentActivityRevision: prCommentActivityRevisions.get(item.number) ?? null,
             });
+        if (!localRangeData && item.kind === "pull_request") {
+          const headSha = pullHeadShaFromContext(context);
+          if (
+            !headSha ||
+            !ensurePullRequestReviewHead({
+              targetDir: openclawDir,
+              itemNumber: item.number,
+              headSha,
+            })
+          ) {
+            throw new Error(
+              `pull request #${item.number} head ${headSha ?? "unknown"} was unavailable in the restricted review checkout`,
+            );
+          }
+        }
         if (previousLocalReviewCommentBody) {
           const previousLocalReview = extractClawSweeperReviewCommentBody(
             previousLocalReviewCommentBody,
