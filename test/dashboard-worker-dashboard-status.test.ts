@@ -3183,6 +3183,7 @@ test("dashboard cold-cache status bounds a stalled forty-run worker-health refre
         CLAWSWEEPER_REPO: "openclaw/clawsweeper",
         TARGET_REPOS: "openclaw/openclaw",
         CACHE_TTL_SECONDS: "0",
+        WORKER_HEALTH_FETCH_CONCURRENCY: "40",
         WORKER_HEALTH_SECTION_TIMEOUT_MS: "25",
       },
       { waitUntil: () => undefined },

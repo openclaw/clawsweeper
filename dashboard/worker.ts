@@ -418,15 +418,19 @@ const WORKER_HEALTH_CACHE_TTL_SECONDS = 120;
 // Forty terminal runs still complete in the same two default waves as the
 // former 20-run sample, so the larger tide sample does not outgrow the bounded
 // worker-health section budget on ordinary uncached reads.
-const DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY = 20;
+const MAX_WORKER_HEALTH_FETCH_CONCURRENCY = 20;
+const DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY = MAX_WORKER_HEALTH_FETCH_CONCURRENCY;
 const MAX_WORKER_HEALTH_SECTION_TIMEOUT_MS = OPTIONAL_SECTION_TIMEOUT_MS * 2;
 const MIN_WORKER_HEALTH_SECTION_TIMEOUT_MS = 25;
 
 function workerHealthFetchConcurrency(env) {
-  return Math.max(
-    1,
-    Math.floor(
-      numberFrom(env.WORKER_HEALTH_FETCH_CONCURRENCY, DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY),
+  return Math.min(
+    MAX_WORKER_HEALTH_FETCH_CONCURRENCY,
+    Math.max(
+      1,
+      Math.floor(
+        numberFrom(env.WORKER_HEALTH_FETCH_CONCURRENCY, DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY),
+      ),
     ),
   );
 }
