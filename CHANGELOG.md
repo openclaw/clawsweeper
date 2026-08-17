@@ -44,6 +44,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Made terminal live-proof recording wait for Xvfb and ffmpeg readiness and clean finalization, with tmux pane diagnostics on failure.
 - Routed every durable review-record publication lane through one shared, host-authenticated live-proof dispatcher, including queued exact-review batches grouped per target repository.
 - Exact-event reviews now dispatch recommended live proofs with host-repository credentials, while generic and configured OpenClaw and steipete profiles opt into browser or terminal proof as appropriate.
 - Hosted webhook 🦞👀 receipts now dedupe per pull request across `opened` and `ready_for_review`, so back-to-back webhook actions keep one receipt instead of posting near-identical duplicates. (#1084)

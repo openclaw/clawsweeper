@@ -10,7 +10,11 @@ import { REVIEW_SECTIONS } from "../dist/clawsweeper-policy.js";
 import type { LiveProofPlan, MediaProofCommandRunner } from "../dist/clawsweeper-types.js";
 import type { RepositoryProfile } from "../dist/repository-profiles.js";
 import { attachLiveProof } from "../dist/live-proof/attach.js";
-import { generatePlaywrightScript, terminalCommandPlan } from "../dist/live-proof/drivers.js";
+import {
+  driveTerminal,
+  generatePlaywrightScript,
+  terminalCommandPlan,
+} from "../dist/live-proof/drivers.js";
 import { executeLiveProof } from "../dist/live-proof/execute.js";
 import { parseLiveProofManifest } from "../dist/live-proof/manifest.js";
 
@@ -203,14 +207,16 @@ test("terminal driver composes tmux, xvfb-run, and bounded ffmpeg x11grab", () =
     command: "tmux",
     args: ["new-session", "-d", "-s", "proof-terminal", "-x", "160", "-y", "50"],
   });
-  assert.deepEqual(commands[1]?.args.slice(4, 8), [
+  const display = commands.find((invocation) => invocation.args.includes("xvfb-run"));
+  const recorder = commands.find((invocation) => invocation.args.includes("ffmpeg"));
+  assert.deepEqual(display?.args.slice(4, 8), [
     "xvfb-run",
     "--server-num=99",
     "--server-args=-screen 0 1280x800x24",
     "xterm",
   ]);
-  assert.deepEqual(commands[2], { command: "sleep", args: ["1"] });
-  assert.deepEqual(commands[3]?.args.slice(4, 13), [
+  assert.equal(display?.waitAfter, "display");
+  assert.deepEqual(recorder?.args.slice(4, 13), [
     "timeout",
     "90s",
     "ffmpeg",
@@ -221,7 +227,91 @@ test("terminal driver composes tmux, xvfb-run, and bounded ffmpeg x11grab", () =
     "-video_size",
     "1280x800",
   ]);
+  assert.equal(recorder?.waitAfter, "recorder");
+  assert.equal(
+    commands.some((invocation) => invocation.command === "sleep"),
+    false,
+  );
   assert.deepEqual(commands.at(-2)?.args.slice(-2), ["--", "pnpm cli --help"]);
+});
+
+test("terminal driver reports display readiness timeout with all pane diagnostics", () => {
+  const calls: string[] = [];
+  const runner = terminalLifecycleRunner(calls, {
+    displayReadyAfter: Number.POSITIVE_INFINITY,
+    paneOutput: {
+      terminal: "terminal pane waiting",
+      display: "display pane cold",
+      recorder: "recorder pane absent",
+    },
+  });
+  assert.throws(
+    () => runTerminalFixture(runner),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /X display :99 was not ready after 30 seconds/);
+      assert.match(error.message, /\[terminal: .*\]\nterminal pane waiting/);
+      assert.match(error.message, /\[display: .*\]\ndisplay pane cold/);
+      assert.match(error.message, /\[recorder: .*\]\nrecorder pane absent/);
+      return true;
+    },
+  );
+  assert.equal(calls.filter((call) => call === "xdpyinfo -display :99").length, 31);
+  assert.equal(calls.filter((call) => call === "sleep 1").length, 30);
+});
+
+test("terminal driver accepts a recorder file that appears and grows late", () => {
+  const calls: string[] = [];
+  const result = runTerminalFixture(
+    terminalLifecycleRunner(calls, {
+      recorderSizes: [undefined, undefined, 7, 7, 11],
+    }),
+  );
+  assert.equal(result.status, "completed");
+  assert.equal(calls.filter((call) => call.startsWith("wc -c -- ")).length, 6);
+  assert.ok(calls.some((call) => /tmux send-keys .* q$/.test(call)));
+});
+
+test("terminal driver reports a dead recorder with its pane diagnostics", () => {
+  const calls: string[] = [];
+  const runner = terminalLifecycleRunner(calls, {
+    recorderDiesAtProbe: 0,
+    recorderSizes: [undefined],
+    paneOutput: {
+      terminal: "terminal pane ready",
+      display: "display pane ready",
+      recorder: "ffmpeg: cannot open display :99",
+    },
+  });
+  assert.throws(
+    () => runTerminalFixture(runner),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /recorder session exited before the raw WebM began growing/);
+      assert.match(error.message, /\[recorder: .*\]\nffmpeg: cannot open display :99/);
+      return true;
+    },
+  );
+});
+
+test("terminal driver waits for the recorder session to exit after sending q", () => {
+  const calls: string[] = [];
+  runTerminalFixture(
+    terminalLifecycleRunner(calls, {
+      recorderSizes: [1, 2],
+      finalizeExitAfter: 3,
+    }),
+  );
+  const sentQ = calls.findIndex((call) => /tmux send-keys .* q$/.test(call));
+  assert.notEqual(sentQ, -1);
+  const finalizeCalls = calls.slice(sentQ + 1);
+  assert.equal(finalizeCalls.filter((call) => call === "sleep 1").length, 3);
+  assert.equal(
+    finalizeCalls.filter(
+      (call) => call.includes("tmux display-message") && call.includes("pane_dead"),
+    ).length,
+    4,
+  );
 });
 
 test("live proof manifest is metadata-only and rejects URL-bearing extensions", () => {
@@ -334,6 +424,7 @@ test("live-proof workflow keeps execute secretless and attach trusted", () => {
   assert.match(source, /uses: \.\/\.github\/actions\/create-target-write-token/);
   assert.match(source, /CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: \$\{\{ secrets\./);
   assert.match(source, /setsid timeout --kill-after=30s 1500s/);
+  assert.match(source, /apt-get install --yes ffmpeg tmux x11-utils xvfb xterm/);
   assert.match(source, /--record \.\.\/live-proof-report\.md/);
   assert.doesNotMatch(source, /--plan \.\.\/live-proof/);
 
@@ -608,6 +699,74 @@ function mediaRunner(commands: string[]): MediaProofCommandRunner {
           format: image ? {} : { duration: "4.000" },
         }),
       };
+    }
+    return { status: 0 };
+  };
+}
+
+function runTerminalFixture(runner: MediaProofCommandRunner) {
+  return driveTerminal({
+    plan: { ...recommendedPlan("terminal"), steps: [] },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    runner,
+  });
+}
+
+function terminalLifecycleRunner(
+  calls: string[],
+  options: {
+    displayReadyAfter?: number;
+    recorderSizes?: Array<number | undefined>;
+    recorderDiesAtProbe?: number;
+    finalizeExitAfter?: number;
+    paneOutput?: Record<"terminal" | "display" | "recorder", string>;
+  } = {},
+): MediaProofCommandRunner {
+  let displayProbe = 0;
+  let recorderSizeProbe = 0;
+  let recorderPaneProbe = 0;
+  let finalizeProbe = 0;
+  let finalizing = false;
+  const recorderSizes = options.recorderSizes ?? [1, 2];
+  return (command, args) => {
+    const rendered = [command, ...args].join(" ");
+    calls.push(rendered);
+    if (command === "xdpyinfo") {
+      const ready = displayProbe >= (options.displayReadyAfter ?? 0);
+      displayProbe += 1;
+      return ready ? { status: 0 } : { status: 1, stderr: "unable to open display :99" };
+    }
+    if (command === "wc") {
+      const size = recorderSizes[Math.min(recorderSizeProbe, recorderSizes.length - 1)];
+      recorderSizeProbe += 1;
+      return size === undefined
+        ? { status: 1, stderr: "No such file" }
+        : { status: 0, stdout: `${size} /tmp/live-proof.raw.webm\n` };
+    }
+    if (command === "tmux" && args[0] === "send-keys" && args.at(-1) === "q") {
+      finalizing = true;
+      return { status: 0 };
+    }
+    if (command === "tmux" && args[0] === "display-message") {
+      if (finalizing) {
+        const exited = finalizeProbe >= (options.finalizeExitAfter ?? 0);
+        finalizeProbe += 1;
+        return { status: 0, stdout: exited ? "1\n" : "0\n" };
+      }
+      const exited = recorderPaneProbe >= (options.recorderDiesAtProbe ?? Number.POSITIVE_INFINITY);
+      recorderPaneProbe += 1;
+      return { status: 0, stdout: exited ? "1\n" : "0\n" };
+    }
+    if (command === "tmux" && args[0] === "capture-pane") {
+      const target = String(args[args.indexOf("-t") + 1] ?? "");
+      const label = target.includes("-display")
+        ? "display"
+        : target.includes("-recorder")
+          ? "recorder"
+          : "terminal";
+      return { status: 0, stdout: `${options.paneOutput?.[label] ?? `${label} pane`}\n` };
     }
     return { status: 0 };
   };

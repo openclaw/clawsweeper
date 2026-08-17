@@ -31,7 +31,7 @@ test("every state hydration uses the canonical Worker with an explicit git-state
     }
   }
 
-  assert.equal(setups.length, 21, "setup-state site count is an audited invariant");
+  assert.equal(setups.length, 22, "setup-state site count is an audited invariant");
   for (const { site, step } of setups) {
     assert.equal(step.with?.["records-url"], workerUrl, site);
     assert.equal(step.with?.["records-secret"], workerSecret, site);
@@ -45,6 +45,7 @@ test("every state hydration uses the canonical Worker with an explicit git-state
       .map(({ site }) => site),
     [
       ".github/workflows/exact-review-batch-publish.yml:publish",
+      ".github/workflows/exact-review-batch-publish.yml:dispatch-live-proofs",
       ".github/workflows/live-proof.yml:attach",
       ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-publish",
@@ -69,6 +70,7 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       .map(({ site }) => site),
     [
       ".github/workflows/exact-review-batch-publish.yml:publish",
+      ".github/workflows/exact-review-batch-publish.yml:dispatch-live-proofs",
       ".github/workflows/live-proof.yml:attach",
       ".github/workflows/repair-cluster-intake.yml:intake",
       ".github/workflows/repair-cluster-worker.yml:cluster",

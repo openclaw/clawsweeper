@@ -21,6 +21,16 @@ export interface LiveProofDriveResult {
   rawVideoPath: string;
 }
 
+const DISPLAY_READY_TIMEOUT_SECONDS = 30;
+const RECORDER_READY_TIMEOUT_SECONDS = 15;
+const RECORDER_FINALIZE_TIMEOUT_SECONDS = 20;
+
+type TerminalCommandInvocation = {
+  command: string;
+  args: string[];
+  waitAfter?: "display" | "recorder";
+};
+
 export function generatePlaywrightScript(steps: readonly LiveProofBrowserStep[]): string {
   const serializedSteps = JSON.stringify(JSON.stringify(steps))
     .replaceAll("\u2028", "\\u2028")
@@ -149,7 +159,7 @@ export function terminalCommandPlan(options: {
   entry: string;
   maxRecordingSeconds: number;
   rawVideoPath: string;
-}): Array<{ command: string; args: string[] }> {
+}): TerminalCommandInvocation[] {
   const terminalSession = `${options.sessionPrefix}-terminal`;
   const displaySession = `${options.sessionPrefix}-display`;
   const recorderSession = `${options.sessionPrefix}-recorder`;
@@ -160,11 +170,19 @@ export function terminalCommandPlan(options: {
     },
     {
       command: "tmux",
+      args: ["new-session", "-d", "-s", displaySession],
+    },
+    {
+      command: "tmux",
+      args: ["set-option", "-w", "-t", `${displaySession}:0`, "remain-on-exit", "on"],
+    },
+    {
+      command: "tmux",
       args: [
-        "new-session",
-        "-d",
-        "-s",
-        displaySession,
+        "respawn-pane",
+        "-k",
+        "-t",
+        `${displaySession}:0.0`,
         "xvfb-run",
         "--server-num=99",
         "--server-args=-screen 0 1280x800x24",
@@ -178,15 +196,23 @@ export function terminalCommandPlan(options: {
         "-t",
         terminalSession,
       ],
+      waitAfter: "display",
     },
-    { command: "sleep", args: ["1"] },
+    {
+      command: "tmux",
+      args: ["new-session", "-d", "-s", recorderSession],
+    },
+    {
+      command: "tmux",
+      args: ["set-option", "-w", "-t", `${recorderSession}:0`, "remain-on-exit", "on"],
+    },
     {
       command: "tmux",
       args: [
-        "new-session",
-        "-d",
-        "-s",
-        recorderSession,
+        "respawn-pane",
+        "-k",
+        "-t",
+        `${recorderSession}:0.0`,
         "timeout",
         `${options.maxRecordingSeconds}s`,
         "ffmpeg",
@@ -204,6 +230,7 @@ export function terminalCommandPlan(options: {
         "libvpx-vp9",
         options.rawVideoPath,
       ],
+      waitAfter: "recorder",
     },
     {
       command: "tmux",
@@ -229,6 +256,7 @@ export function driveTerminal(options: {
   const recorderSession = `${sessionPrefix}-recorder`;
   const log: LiveProofStepLogEntry[] = [];
   let failed = false;
+  let thrown: Error | undefined;
   try {
     for (const invocation of terminalCommandPlan({
       sessionPrefix,
@@ -241,8 +269,12 @@ export function driveTerminal(options: {
         invocation.args,
         options.runner(invocation.command, invocation.args, { cwd: options.checkout }),
       );
+      if (invocation.waitAfter === "display") {
+        waitForDisplay(options.runner, options.checkout);
+      } else if (invocation.waitAfter === "recorder") {
+        waitForRecorder(options.runner, options.checkout, recorderSession, options.rawVideoPath);
+      }
     }
-    requireSuccess("sleep", ["1"], options.runner("sleep", ["1"]));
     for (const step of options.plan.steps as LiveProofTerminalStep[]) {
       try {
         runTerminalStep(step, terminalSession, options.runner, options.checkout);
@@ -257,20 +289,150 @@ export function driveTerminal(options: {
         break;
       }
     }
+    finalizeRecorder(options.runner, options.checkout, recorderSession);
+    requireRecording(options.runner, options.checkout, options.rawVideoPath);
+  } catch (error) {
+    thrown = terminalErrorWithDiagnostics(error, options.runner, options.checkout, {
+      terminal: terminalSession,
+      display: displaySession,
+      recorder: recorderSession,
+    });
   } finally {
-    options.runner("tmux", ["send-keys", "-t", `${recorderSession}:0.0`, "q"]);
-    options.runner("sleep", ["1"]);
     options.runner("tmux", ["kill-session", "-t", recorderSession]);
     options.runner("tmux", ["kill-session", "-t", displaySession]);
     options.runner("tmux", ["kill-session", "-t", terminalSession]);
   }
-  if (!existsSync(options.rawVideoPath))
-    throw new Error("terminal driver did not finalize a recording");
+  if (thrown) throw thrown;
   return {
     status: failed ? (log.length > 1 ? "partial" : "failed") : "completed",
     steps: log,
     rawVideoPath: options.rawVideoPath,
   };
+}
+
+function waitForDisplay(runner: MediaProofCommandRunner, checkout: string): void {
+  let lastResult: ReturnType<MediaProofCommandRunner> | undefined;
+  for (let elapsed = 0; elapsed <= DISPLAY_READY_TIMEOUT_SECONDS; elapsed += 1) {
+    lastResult = runner("xdpyinfo", ["-display", ":99"], { cwd: checkout });
+    if (lastResult.status === 0) return;
+    if (elapsed < DISPLAY_READY_TIMEOUT_SECONDS) pollSleep(runner);
+  }
+  throw new Error(
+    `X display :99 was not ready after ${DISPLAY_READY_TIMEOUT_SECONDS} seconds: ${mediaProofSpawnDetail(lastResult!)}`,
+  );
+}
+
+function waitForRecorder(
+  runner: MediaProofCommandRunner,
+  checkout: string,
+  recorderSession: string,
+  rawVideoPath: string,
+): void {
+  let previousSize: number | undefined;
+  for (let elapsed = 0; elapsed <= RECORDER_READY_TIMEOUT_SECONDS; elapsed += 1) {
+    const size = recordingSize(runner, checkout, rawVideoPath);
+    if (recorderExited(runner, checkout, recorderSession)) {
+      throw new Error("recorder session exited before the raw WebM began growing");
+    }
+    if (size !== undefined) {
+      if (previousSize !== undefined && size > previousSize) return;
+      previousSize = size;
+    }
+    if (elapsed < RECORDER_READY_TIMEOUT_SECONDS) pollSleep(runner);
+  }
+  throw new Error(
+    `raw WebM did not begin growing within ${RECORDER_READY_TIMEOUT_SECONDS} seconds`,
+  );
+}
+
+function finalizeRecorder(
+  runner: MediaProofCommandRunner,
+  checkout: string,
+  recorderSession: string,
+): void {
+  if (recorderExited(runner, checkout, recorderSession)) {
+    throw new Error("recorder session exited before finalization");
+  }
+  const target = `${recorderSession}:0.0`;
+  requireSuccess(
+    "tmux",
+    ["send-keys", "-t", target, "q"],
+    runner("tmux", ["send-keys", "-t", target, "q"], { cwd: checkout }),
+  );
+  for (let elapsed = 0; elapsed <= RECORDER_FINALIZE_TIMEOUT_SECONDS; elapsed += 1) {
+    if (recorderExited(runner, checkout, recorderSession)) return;
+    if (elapsed < RECORDER_FINALIZE_TIMEOUT_SECONDS) pollSleep(runner);
+  }
+  throw new Error(
+    `recorder session did not exit within ${RECORDER_FINALIZE_TIMEOUT_SECONDS} seconds after ffmpeg received q`,
+  );
+}
+
+function recorderExited(
+  runner: MediaProofCommandRunner,
+  checkout: string,
+  recorderSession: string,
+): boolean {
+  const result = runner(
+    "tmux",
+    ["display-message", "-p", "-t", `${recorderSession}:0.0`, "#{pane_dead}"],
+    { cwd: checkout },
+  );
+  return result.status !== 0 || String(result.stdout ?? "").trim() === "1";
+}
+
+function recordingSize(
+  runner: MediaProofCommandRunner,
+  checkout: string,
+  rawVideoPath: string,
+): number | undefined {
+  const result = runner("wc", ["-c", "--", rawVideoPath], { cwd: checkout });
+  if (result.status !== 0) return undefined;
+  const size = Number.parseInt(String(result.stdout ?? "").trim(), 10);
+  return Number.isSafeInteger(size) && size >= 0 ? size : undefined;
+}
+
+function requireRecording(
+  runner: MediaProofCommandRunner,
+  checkout: string,
+  rawVideoPath: string,
+): void {
+  const size = recordingSize(runner, checkout, rawVideoPath);
+  if (size === undefined || size === 0) {
+    throw new Error("terminal driver did not finalize a recording");
+  }
+}
+
+function pollSleep(runner: MediaProofCommandRunner): void {
+  requireSuccess("sleep", ["1"], runner("sleep", ["1"]));
+}
+
+function terminalErrorWithDiagnostics(
+  error: unknown,
+  runner: MediaProofCommandRunner,
+  checkout: string,
+  sessions: Record<"terminal" | "display" | "recorder", string>,
+): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  const diagnostics = (Object.entries(sessions) as Array<[keyof typeof sessions, string]>).map(
+    ([label, session]) => {
+      const result = runner("tmux", ["capture-pane", "-p", "-t", `${session}:0.0`, "-S", "-40"], {
+        cwd: checkout,
+      });
+      const output =
+        result.status === 0
+          ? lastLines(String(result.stdout ?? ""), 40) || "<empty>"
+          : `<capture failed: ${mediaProofSpawnDetail(result)}>`;
+      return `[${label}: ${session}]\n${output}`;
+    },
+  );
+  return new Error(
+    `${message}\n\nTerminal session diagnostics (last 40 lines):\n\n${diagnostics.join("\n\n")}`,
+  );
+}
+
+function lastLines(value: string, count: number): string {
+  return value.trimEnd().split("\n").slice(-count).join("\n");
 }
 
 function runTerminalStep(
