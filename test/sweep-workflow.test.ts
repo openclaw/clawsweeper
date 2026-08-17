@@ -5397,6 +5397,104 @@ test("target hot sweep dispatches honor shard cap payload", () => {
   assert.match(modeBlock, /shard_count="\$hot_intake_shards"/);
 });
 
+test("review publication routes hot intake once without changing other producers", () => {
+  type PublishStep = { name?: string; if?: string; run?: string };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: PublishStep[] }>;
+  };
+  const publishSteps = workflow.jobs.publish!.steps;
+  const step = (name: string) => {
+    const value = publishSteps.find((candidate) => candidate.name === name);
+    assert.ok(value, name);
+    return value;
+  };
+  const background = step("Dispatch background review comment sync");
+  const selected = step("Sync selected review comments");
+
+  assert.equal(
+    background.if,
+    "${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.hot_intake != 'true' && (github.event_name != 'repository_dispatch' || github.event.action == 'clawsweeper_target_sweep') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) }}",
+  );
+  assert.equal(
+    selected.if,
+    "${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep') || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '' || needs.plan.outputs.hot_intake == 'true') }}",
+  );
+
+  type RouteInput = {
+    event: "workflow_dispatch" | "repository_dispatch" | "schedule";
+    action?: string;
+    hot: boolean;
+    itemNumber?: string;
+    itemNumbers?: string;
+  };
+  const routes = ({ event, action = "", hot, itemNumber = "", itemNumbers = "" }: RouteInput) => ({
+    background:
+      !hot &&
+      (event !== "repository_dispatch" || action === "clawsweeper_target_sweep") &&
+      (event !== "workflow_dispatch" || (itemNumber === "" && itemNumbers === "")),
+    selected:
+      (event === "repository_dispatch" && action !== "clawsweeper_target_sweep") ||
+      itemNumber !== "" ||
+      itemNumbers !== "" ||
+      hot,
+  });
+  const scenarios: Array<[string, RouteInput, "background" | "selected"]> = [
+    ["broad hot workflow dispatch", { event: "workflow_dispatch", hot: true }, "selected"],
+    ["normal workflow dispatch", { event: "workflow_dispatch", hot: false }, "background"],
+    [
+      "explicit item workflow dispatch",
+      { event: "workflow_dispatch", hot: false, itemNumber: "125204" },
+      "selected",
+    ],
+    [
+      "explicit items workflow dispatch",
+      { event: "workflow_dispatch", hot: false, itemNumbers: "125204,125205" },
+      "selected",
+    ],
+    [
+      "hot target repository dispatch",
+      { event: "repository_dispatch", action: "clawsweeper_target_sweep", hot: true },
+      "selected",
+    ],
+    [
+      "normal target repository dispatch",
+      { event: "repository_dispatch", action: "clawsweeper_target_sweep", hot: false },
+      "background",
+    ],
+    [
+      "exact repository dispatch",
+      { event: "repository_dispatch", action: "clawsweeper_exact_review", hot: false },
+      "selected",
+    ],
+    ["scheduled background review", { event: "schedule", hot: false }, "background"],
+  ];
+  for (const [name, input, expected] of scenarios) {
+    const result = routes(input);
+    assert.equal(result[expected], true, `${name}: expected ${expected}`);
+    assert.equal(
+      Number(result.background) + Number(result.selected),
+      1,
+      `${name}: exactly one terminal-publication route`,
+    );
+  }
+
+  // Selected publication keeps using the existing exact artifact set and
+  // canonical mutation path, so the fix does not bypass its lease/fencing and
+  // idempotent comment-update behavior or its immutable action ledger.
+  assert.match(selected.run ?? "", /begin_canonical_record_mutation/);
+  assert.match(selected.run ?? "", /artifact-item-numbers --artifact-dir artifacts/);
+  assert.match(selected.run ?? "", /--item-numbers "\$item_numbers"/);
+  assert.match(selected.run ?? "", /--sync-comments-only/);
+  assert.match(
+    step("Finalize selected review comment action ledger").if ?? "",
+    /steps\.sync-selected-review-comments\.outcome != 'skipped'/,
+  );
+  assert.match(
+    step("Publish selected review comment action ledger").run ?? "",
+    /publish-action-events/,
+  );
+});
+
 test("scheduled reviews feed the durable queue instead of one-item matrix workers", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const modeBlock = workflow.slice(
