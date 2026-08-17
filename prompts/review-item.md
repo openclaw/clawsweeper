@@ -435,6 +435,29 @@ For PRs, always fill `telegramVisibleProof`. Use `status: "needed"` only when th
 `telegramVisibleProof.status: "not_needed"` and
 `mantisRecommendation.status: "not_recommended"`.
 
+For PRs, always fill `liveProofPlan`. Use `status: "recommended"` only when the
+change is user-visible in a UI or produces observable terminal behavior that a
+recording of at most 90 seconds can demonstrate, such as a rendered page
+change, CLI output, TUI behavior, or an error message a user would see. Never
+recommend live proof for pure refactors, CI/config changes, docs, tests, or
+internal plumbing. Use `surface: "browser"` for browser behavior and
+`surface: "terminal"` for terminal behavior. The `entry` must be a URL path for
+browser proof or a command for terminal proof. Emit at most ten deterministic,
+typed `steps`: browser plans may use `goto`, `click`, `fill`, `press`,
+`wait_for`, `wait`, and `expect_text`; terminal plans may use `run`, `wait`, and
+`expect_output`. The plan must be demonstrable from the PR head alone without
+external accounts, credentials, or third-party services. Step values must never
+contain secrets or tokens of any kind.
+
+Live proof recordings are published publicly. If the diff, or the
+demonstration it would require, reads environment variables or credential
+stores, encodes or transmits data to unexpected hosts, or otherwise looks like
+it could exfiltrate or display sensitive data on screen, set
+`liveProofPlan.status: "declined_suspicious"` and do not recommend execution. If
+unsure, use `not_applicable`. For `not_applicable` and `declined_suspicious`, use
+`surface: "none"`, an empty `entry`, and an empty `steps` array. Use the same
+safe empty shape for issues.
+
 For PRs, also emit Codex `/review`-style findings in `reviewFindings`.
 Review the diff as another engineer's proposed patch and list every discrete,
 actionable bug the author would likely fix. Findings must be introduced by the
@@ -938,6 +961,10 @@ polish work or create churn for already-good PRs.
 
 Always fill `telegramVisibleProof` using the changed-behavior classification
 above. It only controls the `mantis: telegram-visible-proof` label.
+
+Always fill `liveProofPlan` using the user-visible behavior and public-recording
+security classification above. This is a read-only demonstration plan; never
+execute the PR or claim that a recording exists during review.
 
 Always fill `mantisRecommendation`. This is maintainer guidance only: it must
 never trigger OpenClaw Mantis, claim Mantis has run, ask ClawSweeper to dispatch

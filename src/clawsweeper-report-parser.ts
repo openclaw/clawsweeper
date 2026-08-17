@@ -9,6 +9,7 @@ import {
   FEATURE_SHOWCASE_STATUSES,
   IMPLEMENTATION_COMPLEXITIES,
   IMPACT_LABEL_NAMES,
+  LIVE_PROOF_RECORDING_MARKER,
   MANTIS_RECOMMENDATION_SCENARIOS,
   MANTIS_RECOMMENDATION_STATUSES,
   MATURITY_LABEL_NAMES,
@@ -59,6 +60,7 @@ import type {
   SecurityReviewStatus,
   TelegramVisibleProof,
   TelegramVisibleProofStatus,
+  LiveProofPlan,
   TriagePriority,
   VisionFitStatus,
 } from "./clawsweeper-types.js";
@@ -77,6 +79,7 @@ interface ReportParsingDependencies {
   markdownRepository: (markdown: string, file?: string) => string;
   parseBoldListHeading: (line: string) => { label: string; detail: string } | null;
   parseLabelJustification: (value: unknown, path: string) => LabelJustification;
+  parseLiveProofPlan: (value: unknown, path: string) => LiveProofPlan;
   parseMergeRiskOption: (value: unknown, path: string) => MergeRiskOption;
   parseReviewFindingHeading: (line: string) => {
     priority: ReviewFinding["priority"];
@@ -121,6 +124,7 @@ export function createReportParser({
   markdownRepository,
   parseBoldListHeading,
   parseLabelJustification,
+  parseLiveProofPlan,
   parseMergeRiskOption,
   parseReviewFindingHeading,
   parseRootCauseCluster,
@@ -522,6 +526,62 @@ export function createReportParser({
     };
   }
 
+  function defaultLiveProofPlan(): LiveProofPlan {
+    return {
+      status: "not_applicable",
+      surface: "none",
+      reason: "No live-proof plan was recorded in this report.",
+      entry: "",
+      steps: [],
+    };
+  }
+
+  function reportLiveProofPlan(markdown: string): LiveProofPlan {
+    const section = reviewSectionValue(markdown, "liveProof");
+    const rawSteps = sectionList(section, "Steps");
+    try {
+      return parseLiveProofPlan(
+        {
+          status: sectionLineValue(section, "Status"),
+          surface: sectionLineValue(section, "Surface"),
+          reason: sectionLineValue(section, "Reason"),
+          entry: sectionLineValue(section, "Entry") ?? "",
+          steps: rawSteps.map((step) => JSON.parse(step) as unknown),
+        },
+        "report.liveProofPlan",
+      );
+    } catch {
+      return defaultLiveProofPlan();
+    }
+  }
+
+  function reportLiveProofRecordingBlock(markdown: string): string {
+    const section = reviewSectionValue(markdown, "liveProof");
+    const markerIndex = section.lastIndexOf(LIVE_PROOF_RECORDING_MARKER);
+    if (markerIndex < 0) return "";
+    const lines = section
+      .slice(markerIndex + LIVE_PROOF_RECORDING_MARKER.length)
+      .trim()
+      .split("\n")
+      .map((line) => line.trimEnd());
+    if (lines.length !== 3 || lines[1] !== "") return "";
+    if (
+      !/^\[!\[Live proof recording\]\(https:\/\/[^)\s]+\)\]\(https:\/\/[^)\s]+\)$/.test(
+        lines[0] ?? "",
+      )
+    ) {
+      return "";
+    }
+    if (
+      !/^\*Recorded live on the PR head \(`(?:[0-9a-f]{7,40})`\), (?:0|[1-9][0-9]*)(?:\.[0-9]+)?s, (?:browser|terminal) surface\.\*$/.test(
+        lines[2] ?? "",
+      )
+    ) {
+      return "";
+    }
+    return lines.join("\n");
+  }
+
   function reportPrRating(markdown: string): PrRating {
     const section = reviewSectionValue(markdown, "prRating");
     const proof = reportRealBehaviorProof(markdown);
@@ -738,6 +798,8 @@ export function createReportParser({
     reportSecurityReview,
     reportRealBehaviorProof,
     reportTelegramVisibleProof,
+    reportLiveProofPlan,
+    reportLiveProofRecordingBlock,
     reportPrRating,
     reportMantisRecommendation,
     reportFeatureShowcase,

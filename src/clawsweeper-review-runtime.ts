@@ -722,6 +722,13 @@ ${extra}
         status: "not_needed",
         summary: "Telegram visible proof was not assessed because the Codex review failed.",
       },
+      liveProofPlan: {
+        status: "not_applicable",
+        surface: "none",
+        reason: "Live proof was not assessed because the Codex review failed.",
+        entry: "",
+        steps: [],
+      },
       mantisRecommendation: {
         status: "not_recommended",
         scenario: "none",

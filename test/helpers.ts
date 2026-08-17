@@ -162,6 +162,13 @@ export function closeDecision(overrides = {}) {
       status: "not_needed",
       summary: "This non-PR issue triage does not need Telegram visible proof.",
     },
+    liveProofPlan: {
+      status: "not_applicable",
+      surface: "none",
+      reason: "This non-PR issue triage does not need live proof.",
+      entry: "",
+      steps: [],
+    },
     mantisRecommendation: {
       status: "not_recommended",
       scenario: "none",

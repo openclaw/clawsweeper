@@ -267,6 +267,22 @@ export function createReportDocumentRendering(
     ].join("\n");
   }
 
+  function renderLiveProofReportSection(decision: Decision): string {
+    return [
+      `Status: ${decision.liveProofPlan.status}`,
+      "",
+      `Surface: ${decision.liveProofPlan.surface}`,
+      "",
+      `Reason: ${sentence(decision.liveProofPlan.reason)}`,
+      "",
+      `Entry: ${decision.liveProofPlan.entry.trim()}`,
+      "",
+      "Steps:",
+      "",
+      markdownList(decision.liveProofPlan.steps.map((step) => JSON.stringify(step))),
+    ].join("\n");
+  }
+
   function renderMantisRecommendationReportSection(decision: Decision): string {
     return [
       `Status: ${decision.mantisRecommendation.status}`,
@@ -530,6 +546,7 @@ export function createReportDocumentRendering(
     const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
     const prRating = renderPrRatingReportSection(options.decision);
     const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
+    const liveProof = renderLiveProofReportSection(options.decision);
     const mantisRecommendation = renderMantisRecommendationReportSection(options.decision);
     const featureShowcase = renderFeatureShowcaseReportSection(options.decision);
     const agentsPolicyStatus = renderAgentsPolicyStatusReportSection(options.decision);
@@ -694,6 +711,8 @@ pr_rating_overall: ${options.decision.prRating.overallTier}
 pr_rating_proof: ${options.decision.prRating.proofTier}
 pr_rating_patch: ${options.decision.prRating.patchTier}
 telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}
+live_proof_status: ${options.decision.liveProofPlan.status}
+live_proof_surface: ${options.decision.liveProofPlan.surface}
 mantis_recommendation_status: ${options.decision.mantisRecommendation.status}
 mantis_recommendation_scenario: ${options.decision.mantisRecommendation.scenario}
 feature_showcase_status: ${options.decision.featureShowcase.status}
@@ -802,6 +821,10 @@ ${prRating}
 
 ${telegramVisibleProof}
 
+## ${REVIEW_SECTIONS.liveProof}
+
+${liveProof}
+
 ## ${REVIEW_SECTIONS.mantisRecommendation}
 
 ${mantisRecommendation}
@@ -897,6 +920,7 @@ ${renderReviewContextBudget(options.context)}
     renderPrRatingAssessmentReportSection,
     renderPrRatingReportSection,
     renderTelegramVisibleProofReportSection,
+    renderLiveProofReportSection,
     renderMantisRecommendationReportSection,
     renderFeatureShowcaseReportSection,
     renderRootCauseClusterAssessmentReportSection,

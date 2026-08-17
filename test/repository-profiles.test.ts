@@ -1,7 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { REPOSITORY_PROFILES, repositoryProfileFor } from "../dist/repository-profiles.js";
+import {
+  REPOSITORY_PROFILES,
+  repositoryProfileFor,
+  validateTargetRepositoryConfigForTest,
+} from "../dist/repository-profiles.js";
+
+function targetRepositoryConfig(liveTest: Record<string, unknown>, schemaVersion = 2) {
+  return {
+    schema_version: schemaVersion,
+    repositories: [
+      {
+        target_repo: "example/repo",
+        display_name: "Example",
+        checkout_dir: "repo",
+        prompt_note: "Review the example repository.",
+        apply_close_rules: { issue: [], pull_request: [] },
+        live_test: liveTest,
+      },
+    ],
+    generic_fallbacks: [],
+  };
+}
 
 test("OpenClaw allows unsponsored feature closes for issues only", () => {
   const profile = repositoryProfileFor("openclaw/openclaw");
@@ -107,4 +128,66 @@ test("profile lookup normalizes candidate target repos as well as input", () => 
   } finally {
     REPOSITORY_PROFILES.pop();
   }
+});
+
+test("schema v2 repository profiles strictly validate optional live_test config", () => {
+  const liveTest = {
+    enabled: true,
+    surface_default: "browser",
+    setup: ["pnpm install", "pnpm build"],
+    start: "pnpm dev",
+    url: "http://localhost:3000",
+    ready_timeout_seconds: 120,
+    max_recording_seconds: 90,
+  };
+  const parsed = validateTargetRepositoryConfigForTest(targetRepositoryConfig(liveTest));
+  assert.deepEqual(parsed.repositories[0]?.liveTest, {
+    enabled: true,
+    surfaceDefault: "browser",
+    setup: ["pnpm install", "pnpm build"],
+    start: "pnpm dev",
+    url: "http://localhost:3000",
+    readyTimeoutSeconds: 120,
+    maxRecordingSeconds: 90,
+  });
+
+  const invalidCases: Array<[string, Record<string, unknown>, RegExp]> = [
+    ["unknown key", { ...liveTest, surprise: true }, /live_test has unexpected keys: surprise/],
+    ["surface", { ...liveTest, surface_default: "desktop" }, /surface_default/],
+    ["setup", { ...liveTest, setup: "pnpm install" }, /setup must be an array/],
+    ["browser start", { ...liveTest, start: undefined }, /start is required/],
+    ["browser URL", { ...liveTest, url: "http://localhost:3000/path" }, /HTTP URL origin/],
+    ["recording limit", { ...liveTest, max_recording_seconds: 91 }, /must be at most 90/],
+    ["positive timeout", { ...liveTest, ready_timeout_seconds: 0 }, /positive integer/],
+  ];
+  for (const [name, value, expected] of invalidCases) {
+    assert.throws(
+      () => validateTargetRepositoryConfigForTest(targetRepositoryConfig(value)),
+      expected,
+      name,
+    );
+  }
+  assert.throws(
+    () => validateTargetRepositoryConfigForTest(targetRepositoryConfig(liveTest, 1)),
+    /live_test requires schema_version 2/,
+  );
+});
+
+test("terminal live_test profiles may omit browser start and URL fields", () => {
+  const parsed = validateTargetRepositoryConfigForTest(
+    targetRepositoryConfig({
+      enabled: true,
+      surface_default: "terminal",
+      setup: ["pnpm install", "pnpm build"],
+      ready_timeout_seconds: 120,
+      max_recording_seconds: 90,
+    }),
+  );
+  assert.deepEqual(parsed.repositories[0]?.liveTest, {
+    enabled: true,
+    surfaceDefault: "terminal",
+    setup: ["pnpm install", "pnpm build"],
+    readyTimeoutSeconds: 120,
+    maxRecordingSeconds: 90,
+  });
 });

@@ -3,6 +3,18 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type RepositoryItemKind = "issue" | "pull_request";
+export type RepositoryLiveTestSurface = "browser" | "terminal";
+
+export interface RepositoryLiveTestConfig {
+  enabled: boolean;
+  surfaceDefault: RepositoryLiveTestSurface;
+  setup: readonly string[];
+  start?: string;
+  url?: string;
+  readyTimeoutSeconds: number;
+  maxRecordingSeconds: number;
+}
+
 export type RepositoryCloseReason =
   | "implemented_on_main"
   | "mostly_implemented_on_main"
@@ -31,6 +43,7 @@ export interface RepositoryProfile {
   communityUrl?: string;
   promptNote: string;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
+  liveTest?: RepositoryLiveTestConfig;
 }
 
 interface TargetRepositoryConfig {
@@ -47,6 +60,7 @@ interface ConfiguredRepositoryProfile {
   communityUrl?: string;
   promptNote: string;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
+  liveTest?: RepositoryLiveTestConfig;
 }
 
 interface GenericFallbackConfig {
@@ -159,6 +173,7 @@ function configuredRepositoryProfile(profile: ConfiguredRepositoryProfile): Repo
   };
   if (profile.docsUrl) result.docsUrl = profile.docsUrl;
   if (profile.communityUrl) result.communityUrl = profile.communityUrl;
+  if (profile.liveTest) result.liveTest = profile.liveTest;
   return result;
 }
 
@@ -216,7 +231,7 @@ function validateTargetRepositoryConfig(value: unknown): TargetRepositoryConfig 
   if (schemaVersion !== 1 && schemaVersion !== 2)
     throw new Error(`Unsupported target repository config schema: ${schemaVersion}`);
   const repositories = arrayValue(config.repositories, "repositories").map((entry, index) =>
-    validateConfiguredRepositoryProfile(entry, `repositories[${index}]`),
+    validateConfiguredRepositoryProfile(entry, `repositories[${index}]`, schemaVersion as 1 | 2),
   );
   const genericFallbacks =
     config.generic_fallbacks !== undefined
@@ -241,6 +256,7 @@ function validateTargetRepositoryConfig(value: unknown): TargetRepositoryConfig 
 function validateConfiguredRepositoryProfile(
   value: unknown,
   label: string,
+  schemaVersion: 1 | 2,
 ): ConfiguredRepositoryProfile {
   const profile = record(value, label);
   const result: ConfiguredRepositoryProfile = {
@@ -256,7 +272,65 @@ function validateConfiguredRepositoryProfile(
   if (profile.community_url !== undefined) {
     result.communityUrl = stringValue(profile.community_url, `${label}.community_url`);
   }
+  if (profile.live_test !== undefined) {
+    if (schemaVersion !== 2) throw new Error(`${label}.live_test requires schema_version 2`);
+    result.liveTest = liveTestValue(profile.live_test, `${label}.live_test`);
+  }
   return result;
+}
+
+function liveTestValue(value: unknown, label: string): RepositoryLiveTestConfig {
+  // Local so the eager module-init config read cannot hit a temporal dead zone
+  // when a checked-in profile carries a live_test block.
+  const liveTestKeys = new Set([
+    "enabled",
+    "surface_default",
+    "setup",
+    "start",
+    "url",
+    "ready_timeout_seconds",
+    "max_recording_seconds",
+  ]);
+  const config = record(value, label);
+  const unexpected = Object.keys(config).filter((key) => !liveTestKeys.has(key));
+  if (unexpected.length) throw new Error(`${label} has unexpected keys: ${unexpected.join(", ")}`);
+  const surfaceDefault = stringValue(
+    config.surface_default,
+    `${label}.surface_default`,
+  ) as RepositoryLiveTestSurface;
+  if (surfaceDefault !== "browser" && surfaceDefault !== "terminal") {
+    throw new Error(`${label}.surface_default must be browser or terminal`);
+  }
+  const setup = arrayValue(config.setup, `${label}.setup`).map((entry, index) =>
+    commandValue(entry, `${label}.setup[${index}]`),
+  );
+  const result: RepositoryLiveTestConfig = {
+    enabled: booleanValue(config.enabled, `${label}.enabled`),
+    surfaceDefault,
+    setup,
+    readyTimeoutSeconds: positiveIntegerValue(
+      config.ready_timeout_seconds,
+      `${label}.ready_timeout_seconds`,
+    ),
+    maxRecordingSeconds: positiveIntegerValue(
+      config.max_recording_seconds,
+      `${label}.max_recording_seconds`,
+    ),
+  };
+  if (result.maxRecordingSeconds > 90) {
+    throw new Error(`${label}.max_recording_seconds must be at most 90`);
+  }
+  if (config.start !== undefined) result.start = commandValue(config.start, `${label}.start`);
+  if (config.url !== undefined) result.url = urlOriginValue(config.url, `${label}.url`);
+  if (surfaceDefault === "browser") {
+    if (!result.start) throw new Error(`${label}.start is required for browser live tests`);
+    if (!result.url) throw new Error(`${label}.url is required for browser live tests`);
+  }
+  return result;
+}
+
+export function validateTargetRepositoryConfigForTest(value: unknown): TargetRepositoryConfig {
+  return validateTargetRepositoryConfig(value);
 }
 
 function validateGenericFallbackConfig(value: unknown, label: string): GenericFallbackConfig {
@@ -312,6 +386,45 @@ function pathSegmentValue(value: unknown, label: string): string {
 function stringValue(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${label} must be a string`);
+  return value;
+}
+
+function commandValue(value: unknown, label: string): string {
+  const command = stringValue(value, label);
+  if (/[\r\n\u2028\u2029]/.test(command)) throw new Error(`${label} must be a single line`);
+  return command;
+}
+
+function urlOriginValue(value: unknown, label: string): string {
+  const text = stringValue(value, label);
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new Error(`${label} must be an HTTP URL origin`);
+  }
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error(`${label} must be an HTTP URL origin`);
+  }
+  return url.origin;
+}
+
+function booleanValue(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
+  return value;
+}
+
+function positiveIntegerValue(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive integer`);
+  }
   return value;
 }
 

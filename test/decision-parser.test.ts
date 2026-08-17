@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseDecision, rootCauseClusterFromReportForTest } from "../dist/clawsweeper.js";
+import {
+  parseDecision,
+  renderLiveProofReportSectionForTest,
+  reportLiveProofPlanForTest,
+  rootCauseClusterFromReportForTest,
+} from "../dist/clawsweeper.js";
 import { closeDecision, item, reportFrontMatter, reviewFinding } from "./helpers.ts";
 
 test("decision parser enforces required schema-shaped evidence", () => {
@@ -392,6 +397,47 @@ test("decision parser enforces required schema-shaped evidence", () => {
   assert.equal(workCandidate.reproductionStatus, "reproduced");
   assert.equal(workCandidate.realBehaviorProof.status, "not_applicable");
   assert.deepEqual(workCandidate.workClusterRefs, ["#123", "#456"]);
+});
+
+test("decision parser validates typed live-proof plans and report roundtrips", () => {
+  const liveProofPlan = {
+    status: "recommended",
+    surface: "browser",
+    reason: "The changed settings confirmation is visible in the browser.",
+    entry: "/settings",
+    steps: [
+      { action: "goto", path: "/settings" },
+      { action: "fill", target: "#display-name", value: "Claw" },
+      { action: "click", target: "text=Save" },
+      { action: "expect_text", text: "Saved" },
+    ],
+  };
+  const parsed = parseDecision(closeDecision({ liveProofPlan }));
+  assert.deepEqual(parsed.liveProofPlan, liveProofPlan);
+
+  const section = renderLiveProofReportSectionForTest(parsed);
+  assert.deepEqual(
+    reportLiveProofPlanForTest(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
+    liveProofPlan,
+  );
+
+  const invalidPlans = [
+    { ...liveProofPlan, unexpected: true },
+    { ...liveProofPlan, surface: "none" },
+    { ...liveProofPlan, entry: "https://example.com/settings" },
+    { ...liveProofPlan, steps: [{ action: "run", command: "pnpm test" }] },
+    { ...liveProofPlan, steps: [{ action: "click", target: "text=Save", extra: true }] },
+    {
+      status: "not_applicable",
+      surface: "none",
+      reason: "The change is internal plumbing.",
+      entry: "pnpm test",
+      steps: [],
+    },
+  ];
+  for (const invalidPlan of invalidPlans) {
+    assert.throws(() => parseDecision(closeDecision({ liveProofPlan: invalidPlan })), /liveProof/);
+  }
 });
 
 test("decision parser accepts only a complete regression-provenance candidate shape", () => {

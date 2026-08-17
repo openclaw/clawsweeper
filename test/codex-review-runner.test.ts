@@ -368,6 +368,13 @@ test("codex failure decisions expose stderr and stdout separately", () => {
     "user\nThe reviewed prompt discusses rate limits.",
   );
   assert.equal(decision.regressionAssessment, null);
+  assert.deepEqual(decision.liveProofPlan, {
+    status: "not_applicable",
+    surface: "none",
+    reason: "Live proof was not assessed because the Codex review failed.",
+    entry: "",
+    steps: [],
+  });
   assert.match(
     decision.evidence.find((entry) => entry.label === "codex stdout")?.detail ?? "",
     /"type":"turn.failed"/,

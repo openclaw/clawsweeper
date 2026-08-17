@@ -13,6 +13,8 @@ import type {
   ImpactLabelName,
   ImplementationComplexity,
   ItemCategory,
+  LiveProofPlanStatus,
+  LiveProofSurface,
   MantisRecommendationScenario,
   MantisRecommendationStatus,
   MaturityLabelName,
@@ -88,6 +90,7 @@ export const WAITING_ON_AUTHOR_LABEL = "status: ⏳ waiting on author";
 export const PROOF_OVERRIDE_LABEL = "proof: override";
 export const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
 export const PROOF_NUDGE_MARKER_PREFIX = "<!-- clawsweeper-proof-nudge";
+export const LIVE_PROOF_RECORDING_MARKER = "<!-- clawsweeper-live-proof-recording -->";
 export const PROOF_SUFFICIENT_LABEL_COLOR = "1A7F37";
 export const PROOF_SUFFICIENT_LABEL_DESCRIPTION = "Contributor real behavior proof is sufficient.";
 export const FEATURE_SHOWCASE_LABEL = "feature: ✨ showcase";
@@ -651,6 +654,12 @@ export const TELEGRAM_VISIBLE_PROOF_STATUSES = new Set<TelegramVisibleProofStatu
   "needed",
   "not_needed",
 ]);
+export const LIVE_PROOF_PLAN_STATUSES = new Set<LiveProofPlanStatus>([
+  "recommended",
+  "not_applicable",
+  "declined_suspicious",
+]);
+export const LIVE_PROOF_SURFACES = new Set<LiveProofSurface>(["browser", "terminal", "none"]);
 export const MANTIS_RECOMMENDATION_STATUSES = new Set<MantisRecommendationStatus>([
   "recommended",
   "not_recommended",
@@ -736,6 +745,7 @@ export const DECISION_SCHEMA_KEYS = new Set([
   "realBehaviorProof",
   "prRating",
   "telegramVisibleProof",
+  "liveProofPlan",
   "mantisRecommendation",
   "featureShowcase",
   "overallCorrectness",
@@ -787,6 +797,24 @@ export const PR_RATING_SCHEMA_KEYS = new Set([
   "nextSteps",
 ]);
 export const TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS = new Set(["status", "summary"]);
+export const LIVE_PROOF_PLAN_SCHEMA_KEYS = new Set([
+  "status",
+  "surface",
+  "reason",
+  "entry",
+  "steps",
+]);
+export const LIVE_PROOF_STEP_SCHEMA_KEYS = {
+  goto: new Set(["action", "path"]),
+  click: new Set(["action", "target"]),
+  fill: new Set(["action", "target", "value"]),
+  press: new Set(["action", "key"]),
+  wait_for: new Set(["action", "target"]),
+  wait: new Set(["action", "seconds"]),
+  expect_text: new Set(["action", "text"]),
+  run: new Set(["action", "command"]),
+  expect_output: new Set(["action", "text"]),
+} as const;
 export const MANTIS_RECOMMENDATION_SCHEMA_KEYS = new Set([
   "status",
   "scenario",
@@ -860,6 +888,7 @@ export const REVIEW_SECTIONS = {
   realBehaviorProof: "Real Behavior Proof",
   prRating: "PR Rating",
   telegramVisibleProof: "Telegram Visible Proof",
+  liveProof: "Live Proof",
   mantisRecommendation: "Mantis Recommendation",
   featureShowcase: "Feature Showcase",
   agentsPolicyStatus: "AGENTS.md Policy Status",

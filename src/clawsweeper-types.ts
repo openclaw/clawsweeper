@@ -126,6 +126,21 @@ export type PrStatusLabelKind =
   | "ready_for_maintainer_look";
 export type FeatureShowcaseStatus = "showcase" | "none";
 export type TelegramVisibleProofStatus = "needed" | "not_needed";
+export type LiveProofPlanStatus = "recommended" | "not_applicable" | "declined_suspicious";
+export type LiveProofSurface = "browser" | "terminal" | "none";
+export type LiveProofBrowserStep =
+  | { action: "goto"; path: string }
+  | { action: "click"; target: string }
+  | { action: "fill"; target: string; value: string }
+  | { action: "press"; key: string }
+  | { action: "wait_for"; target: string }
+  | { action: "wait"; seconds: number }
+  | { action: "expect_text"; text: string };
+export type LiveProofTerminalStep =
+  | { action: "run"; command: string }
+  | { action: "wait"; seconds: number }
+  | { action: "expect_output"; text: string };
+export type LiveProofStep = LiveProofBrowserStep | LiveProofTerminalStep;
 export type MantisRecommendationStatus = "recommended" | "not_recommended";
 export type MantisRecommendationScenario =
   | "none"
@@ -390,6 +405,14 @@ export interface TelegramVisibleProof {
   summary: string;
 }
 
+export interface LiveProofPlan {
+  status: LiveProofPlanStatus;
+  surface: LiveProofSurface;
+  reason: string;
+  entry: string;
+  steps: LiveProofStep[];
+}
+
 export interface MantisRecommendation {
   status: MantisRecommendationStatus;
   scenario: MantisRecommendationScenario;
@@ -551,6 +574,7 @@ export interface Decision {
   realBehaviorProof: RealBehaviorProof;
   prRating: PrRating;
   telegramVisibleProof: TelegramVisibleProof;
+  liveProofPlan: LiveProofPlan;
   mantisRecommendation: MantisRecommendation;
   featureShowcase: FeatureShowcase;
   overallCorrectness: OverallCorrectness;
@@ -1185,6 +1209,11 @@ export type ManagedLocalReviewCheckoutOptions = {
 export type MediaProofCommandRunner = (
   command: string,
   args: readonly string[],
+  options?: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+  },
 ) => {
   status: number | null;
   stdout?: string | Buffer;
