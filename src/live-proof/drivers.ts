@@ -369,9 +369,7 @@ function waitForRecorder(
     if (elapsed >= RECORDER_READY_TIMEOUT_SECONDS) return;
     pollSleep(runner);
   }
-  throw new Error(
-    `raw WebM was not written within ${RECORDER_READY_TIMEOUT_SECONDS} seconds`,
-  );
+  throw new Error(`raw WebM was not written within ${RECORDER_READY_TIMEOUT_SECONDS} seconds`);
 }
 
 function finalizeRecorder(

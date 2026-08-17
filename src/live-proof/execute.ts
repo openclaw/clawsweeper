@@ -155,7 +155,19 @@ export async function executeLiveProof(
       for (const offset of ["1", "0"]) {
         const frame = runner(
           "ffmpeg",
-          ["-hide_banner", "-y", "-ss", offset, "-i", mp4Path, "-frames:v", "1", "-vf", "scale=640:-1", posterPath],
+          [
+            "-hide_banner",
+            "-y",
+            "-ss",
+            offset,
+            "-i",
+            mp4Path,
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=640:-1",
+            posterPath,
+          ],
           { cwd: checkout },
         );
         if (frame.status === 0 && existsSync(posterPath)) break;
