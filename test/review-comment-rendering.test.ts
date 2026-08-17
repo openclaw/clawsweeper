@@ -131,6 +131,9 @@ test("structural cache probes before hydration but acquires a lease before carry
   );
   const structuralWrite = reviewLoop.indexOf("writeFileSync(reportPath, carried", structuralLease);
   const contentCache = reviewLoop.indexOf("reviewContentCacheHit({");
+  const structuralPreflight = reviewLoop.indexOf("cachePreflightPasses(", structuralRevalidation);
+  const contentWrite = reviewLoop.indexOf("writeFileSync(reportPath, carried", contentCache);
+  const contentPreflight = reviewLoop.indexOf("cachePreflightPasses(", contentCache);
   const hydration = reviewLoop.indexOf("collectItemContext(item");
   const mediaPrep = reviewLoop.indexOf("prepareMediaProofArtifacts(context", contentCache);
 
@@ -142,8 +145,12 @@ test("structural cache probes before hydration but acquires a lease before carry
   assert.ok(structuralLease > structuralHit);
   assert.ok(structuralRevalidation > structuralLease);
   assert.ok(structuralWrite > structuralRevalidation);
+  assert.ok(structuralPreflight > structuralRevalidation);
+  assert.ok(structuralPreflight < structuralWrite);
   assert.ok(structuralWrite < hydration);
   assert.ok(contentCache > structuralLease);
+  assert.ok(contentPreflight > contentCache);
+  assert.ok(contentPreflight < contentWrite);
   assert.ok(mediaPrep > contentCache);
   assert.match(
     reviewLoop.slice(structuralHit, structuralWrite),
@@ -225,6 +232,7 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
     "semanticCacheRevalidations += 1",
     semanticDecision,
   );
+  const semanticPreflight = reviewLoop.indexOf("cachePreflightPasses(", semanticDecision);
   const checkRevalidation = reviewLoop.indexOf("pullChecksContext(", semanticRevalidation);
   const priorReviewRevalidation = reviewLoop.indexOf(
     "fetchIssueReviewComments(item.number)",
@@ -251,6 +259,8 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
   assert.ok(issueReviewRevalidation < semanticRecord);
   assert.ok(semanticRecord > hydration);
   assert.ok(semanticDecision > semanticRecord);
+  assert.ok(semanticPreflight > semanticDecision);
+  assert.ok(semanticPreflight < semanticWrite);
   assert.ok(semanticRevalidation > semanticDecision);
   assert.ok(checkRevalidation > semanticRevalidation);
   assert.ok(priorReviewRevalidation > checkRevalidation);

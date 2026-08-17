@@ -141,6 +141,7 @@ test("scheduled delivery serves an unchanged item from the structural cache", ()
   let startCommentCalls = 0;
   let structuralFetches = 0;
   let cachedCompletions = 0;
+  let checkoutInspectionCalls = 0;
   let activeReviewMutationRunner = null;
 
   const ledgerItem = {
@@ -282,6 +283,10 @@ test("scheduled delivery serves an unchanged item from the structural cache", ()
     reviewCodexForcedLoginMethod: () => "chatgpt",
     reviewMutationRunner: () => null,
     reviewPolicyHash: () => POLICY,
+    runReviewCheckoutInspection: () => {
+      checkoutInspectionCalls += 1;
+      return { status: 0, signal: null, stdout: "", stderr: "" };
+    },
     runCodex: () => {
       generationCalls += 1;
       throw new Error("scheduled structural cache hit must not generate a review");
@@ -323,6 +328,7 @@ test("scheduled delivery serves an unchanged item from the structural cache", ()
     assert.equal(startCommentCalls, 0);
     assert.equal(structuralFetches, 2);
     assert.equal(cachedCompletions, 1);
+    assert.equal(checkoutInspectionCalls, 1);
     assert.equal(existsSync(join(artifactDir, `${ITEM_NUMBER}.md`)), true);
     const metrics = JSON.parse(
       readFileSync(join(artifactDir, "review-cache-metrics.json"), "utf8"),

@@ -27,6 +27,7 @@ import type {
   ReviewStartStatusCommentResult,
 } from "./clawsweeper-types.js";
 import type { UserFacingCommandError } from "./command.js";
+import type { CodexProcessResult } from "./codex-process.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 import type { ReviewSemanticRecord } from "./review-semantic-cache.js";
 import type { ReviewStructuralPullState } from "./review-structural-cache.js";
@@ -310,6 +311,12 @@ export interface CreateReviewCommandWorkflowDependencies {
     serviceTier?: string;
   }) => string;
   reviewStructuralPullStateFromContext: (context: ItemContext) => ReviewStructuralPullState | null;
+  runReviewCheckoutInspection: (options: {
+    itemNumber: number;
+    openclawDir: string;
+    preserveCodexAuth?: boolean;
+    timeoutMs: number;
+  }) => CodexProcessResult;
   runCodex: (options: {
     item: Item;
     context: ItemContext;

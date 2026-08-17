@@ -526,12 +526,22 @@ test("review candidates start lazily and deferred items cannot remain active", (
   assert.match(reviewBatchTerminal, /mutation: options\.ledger\.mutationObserved/);
 
   const reviewCommandStart = source.indexOf("function reviewCommand(args:");
+  const materializationHelper = source.indexOf(
+    "const preparePullRequestReviewTree =",
+    reviewCommandStart,
+  );
+  const exactHeadMaterialization = source.indexOf(
+    "materializePullRequestReviewTree({",
+    materializationHelper,
+  );
   const contextCollection = source.indexOf("const context = localRangeData", reviewCommandStart);
   const sourceAvailabilityGate = source.indexOf(
-    "materializePullRequestReviewTree({",
+    "preparePullRequestReviewTree(headSha)",
     contextCollection,
   );
   const modelReview = source.indexOf("decision = runCodex({", sourceAvailabilityGate);
+  assert.ok(materializationHelper >= 0);
+  assert.ok(exactHeadMaterialization > materializationHelper);
   assert.ok(contextCollection >= 0);
   assert.ok(sourceAvailabilityGate > contextCollection);
   assert.ok(modelReview > sourceAvailabilityGate);

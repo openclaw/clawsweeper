@@ -37,7 +37,7 @@ import type {
   RootCauseClusterAssessment,
 } from "./clawsweeper-types.js";
 import { codexLoginConfig, redactInternalCodexModel } from "./codex-env.js";
-import { codexProcessErrorCode } from "./codex-process.js";
+import { codexProcessErrorCode, type CodexProcessResult } from "./codex-process.js";
 import {
   codexJsonlFailureDetail,
   codexRetryDelayMs,
@@ -914,6 +914,34 @@ ${extra}
     return stringArg(args.codex_forced_login_method, "");
   }
 
+  function runReviewCheckoutInspection(options: {
+    itemNumber: number;
+    openclawDir: string;
+    preserveCodexAuth?: boolean;
+    timeoutMs: number;
+  }): CodexProcessResult {
+    const dirtyBefore = openclawDirtyStatus(options.openclawDir);
+    if (dirtyBefore) {
+      return {
+        status: 1,
+        signal: null,
+        error: new Error(
+          `OpenClaw checkout is dirty before reviewing #${options.itemNumber}:\n${dirtyBefore}`,
+        ),
+        stdout: "",
+        stderr: "",
+      };
+    }
+    return runAgentCheckoutInspection({
+      cwd: options.openclawDir,
+      env: untrustedCodexEnv({
+        ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
+        preserveCodexAuth: options.preserveCodexAuth,
+      }),
+      timeoutMs: Math.min(options.timeoutMs, 30_000),
+    });
+  }
+
   function runCodex(options: {
     item: Item;
     context: ItemContext;
@@ -954,21 +982,18 @@ ${extra}
         mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
       ).text;
     writeFileSync(promptPath, prompt, "utf8");
-    const dirtyBefore = openclawDirtyStatus(options.openclawDir);
-    if (dirtyBefore) {
-      throw new Error(
-        `OpenClaw checkout is dirty before reviewing #${options.item.number}:\n${dirtyBefore}`,
-      );
-    }
     const codexEnv = untrustedCodexEnv({
       ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
       preserveCodexAuth: options.preserveCodexAuth,
     });
     const startedAt = Date.now();
-    const checkoutInspection = runAgentCheckoutInspection({
-      cwd: options.openclawDir,
-      env: codexEnv,
-      timeoutMs: Math.min(options.timeoutMs, 30_000),
+    const checkoutInspection = runReviewCheckoutInspection({
+      itemNumber: options.item.number,
+      openclawDir: options.openclawDir,
+      timeoutMs: options.timeoutMs,
+      ...(options.preserveCodexAuth === undefined
+        ? {}
+        : { preserveCodexAuth: options.preserveCodexAuth }),
     });
     if (checkoutInspection.error || checkoutInspection.status !== 0) {
       const stderr = redactedOutputTail(checkoutInspection.stderr);
@@ -1181,6 +1206,7 @@ ${extra}
     resolveReviewCheckout,
     restoreTreeModes,
     reviewCodexForcedLoginMethod,
+    runReviewCheckoutInspection,
     runCodex,
   };
 }

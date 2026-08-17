@@ -155,6 +155,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     reviewLeaseStillMatchesContext,
     reviewMutationRunner,
     reviewStructuralPullStateFromContext,
+    runReviewCheckoutInspection,
     runCodex,
     selectCandidates,
     startReviewActionLedger,
@@ -342,6 +343,64 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const itemReadonlyModeSnapshots: ReturnType<typeof makeTreeReadOnly> = [];
         let reviewOpenclawDir = openclawDir;
         let pullRequestReviewTreeDir: string | null = null;
+        let pullRequestReviewTreeSha: string | null = null;
+        let cachePreflightState: "not_run" | "passed" | "failed" = "not_run";
+        const preparePullRequestReviewTree = (headSha: string): boolean => {
+          if (item.kind !== "pull_request") return true;
+          if (pullRequestReviewTreeDir && pullRequestReviewTreeSha === headSha) return true;
+          if (pullRequestReviewTreeDir) {
+            restoreTreeModes(itemReadonlyModeSnapshots);
+            itemReadonlyModeSnapshots.length = 0;
+            if (
+              !removePullRequestReviewTree({
+                targetDir: openclawDir,
+                worktreeDir: pullRequestReviewTreeDir,
+              })
+            ) {
+              return false;
+            }
+          }
+          const reviewTreesDir = join(artifactDir, "review-trees");
+          ensureDir(reviewTreesDir);
+          pullRequestReviewTreeDir = join(reviewTreesDir, String(item.number));
+          pullRequestReviewTreeSha = null;
+          reviewOpenclawDir = openclawDir;
+          if (
+            !materializePullRequestReviewTree({
+              targetDir: openclawDir,
+              worktreeDir: pullRequestReviewTreeDir,
+              itemNumber: item.number,
+              headSha,
+            })
+          ) {
+            return false;
+          }
+          pullRequestReviewTreeSha = headSha;
+          reviewOpenclawDir = pullRequestReviewTreeDir;
+          if (readonlyOpenclaw) {
+            makeTreeReadOnly(reviewOpenclawDir, itemReadonlyModeSnapshots);
+          }
+          return true;
+        };
+        const cachePreflightPasses = (headSha: string | null): boolean => {
+          if (cachePreflightState !== "not_run") return cachePreflightState === "passed";
+          if (item.kind === "pull_request" && (!headSha || !preparePullRequestReviewTree(headSha))) {
+            cachePreflightState = "failed";
+          } else {
+            const inspection = runReviewCheckoutInspection({
+              itemNumber: item.number,
+              openclawDir: reviewOpenclawDir,
+              preserveCodexAuth: localOnly,
+              timeoutMs,
+            });
+            cachePreflightState =
+              !inspection.error && inspection.status === 0 ? "passed" : "failed";
+          }
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} cache-checkout-preflight=${cachePreflightState} #${item.number}`,
+          );
+          return cachePreflightState === "passed";
+        };
         const restoredMaintainerAssociation =
           !localOnly &&
           restoreVerifiedMaintainerPullRequestAuthorAssociation(item, (author) =>
@@ -685,6 +744,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 const confirmedStructuralRecord = revalidatedStructuralRecord!;
                 structuralRecord = confirmedStructuralRecord;
                 item.updatedAt = confirmedStructuralRecord.activityUpdatedAt;
+                if (
+                  !cachePreflightPasses(
+                    item.kind === "pull_request" ? confirmedStructuralRecord.pullHeadSha : null,
+                  )
+                ) {
+                  console.error(
+                    `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=checkout-preflight-miss hydrate #${item.number}`,
+                  );
+                } else {
                 const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
                 let carried = priorReview!.markdown;
                 carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
@@ -739,11 +807,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                   );
                 }
                 continue;
+                }
               }
             }
           }
         }
-        if (!skipStartComment && item.kind === "pull_request") {
+        if (!skipStartComment && !acquiredReviewLease && item.kind === "pull_request") {
           try {
             const startComment = postReviewStartStatusComment({
               item,
@@ -798,25 +867,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             });
         if (!localRangeData && item.kind === "pull_request") {
           const headSha = pullHeadShaFromContext(context);
-          const reviewTreesDir = join(artifactDir, "review-trees");
-          ensureDir(reviewTreesDir);
-          pullRequestReviewTreeDir = join(reviewTreesDir, String(item.number));
-          if (
-            !headSha ||
-            !materializePullRequestReviewTree({
-              targetDir: openclawDir,
-              worktreeDir: pullRequestReviewTreeDir,
-              itemNumber: item.number,
-              headSha,
-            })
-          ) {
+          if (!headSha || !preparePullRequestReviewTree(headSha)) {
             throw new Error(
               `pull request #${item.number} head ${headSha ?? "unknown"} was unavailable in the restricted review checkout`,
             );
-          }
-          reviewOpenclawDir = pullRequestReviewTreeDir;
-          if (readonlyOpenclaw) {
-            makeTreeReadOnly(reviewOpenclawDir, itemReadonlyModeSnapshots);
           }
         }
         if (previousLocalReviewCommentBody) {
@@ -1119,6 +1173,14 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             (semanticCacheReasons.get(semanticDecision.reason) ?? 0) + 1,
           );
         }
+        if (
+          semanticDecision?.hit &&
+          !cachePreflightPasses(
+            item.kind === "pull_request" ? pullHeadShaFromContext(context) : null,
+          )
+        ) {
+          semanticDecision = null;
+        }
         if (semanticDecision?.hit) {
           semanticCacheRevalidations += 1;
           const initialSemanticRecord = semanticRecord;
@@ -1327,15 +1389,19 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           (item.kind === "pull_request" && !completePullChecksContext(context.pullChecks))
             ? null
             : priorReview;
-        if (
-          reviewContentCacheHit({
+        const contentCacheHit = reviewContentCacheHit({
             review: contentCacheReview,
             reviewPolicy,
             contentDigest,
             now: Date.now(),
             explicitDispatch,
             maintainerRequest,
-          })
+          });
+        if (
+          contentCacheHit &&
+          cachePreflightPasses(
+            item.kind === "pull_request" ? pullHeadShaFromContext(context) : null,
+          )
         ) {
           structuralRecord = refreshStructuralRecordForVerdict();
           const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
@@ -1599,7 +1665,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                   worktreeDir: pullRequestReviewTreeDir,
                 })
               ) {
-                const detail = `could not remove restricted review checkout ${pullRequestReviewTreeDir}`;
+                const detail = [
+                  "could not remove restricted review checkout",
+                  pullRequestReviewTreeDir,
+                ].join(" ");
                 reviewTreeCleanupFailures.push(detail);
                 console.error(`[review] ${new Date().toISOString()} ${detail}`);
               }
