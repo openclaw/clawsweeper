@@ -4455,6 +4455,54 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
   const expanded = runtime.expandQueue(projected);
   assert.equal(expanded[0].started_at, "2026-08-16T12:00:00.000Z");
   assert.equal(expanded[0].run_id, 7001);
+
+  const retainedQueueOnly = JSON.parse(JSON.stringify(valid));
+  retainedQueueOnly.exact_review_queue.bay_projection.items = [
+    {
+      repository: "openclaw/openclaw",
+      item_number: 91,
+      stage: "arriving",
+      source: "queue",
+    },
+  ];
+  retainedQueueOnly.exact_review_queue.bay_projection.activity = {
+    complete: false,
+    queue_stages: null,
+    live_stages: null,
+    total: null,
+  };
+  const retainedProjection = runtime.publicBayStatus(retainedQueueOnly);
+  assert.equal(retainedProjection.privacy.state, "complete");
+  assert.equal(retainedProjection.exact_review_queue.bay_projection.activity.complete, false);
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(retainedProjection.exact_review_queue.bay_projection.activity.queue_stages),
+    ),
+    { ...emptyStages, arriving: 2 },
+  );
+  assert.equal(retainedProjection.exact_review_queue.bay_projection.activity.live_stages, null);
+  assert.equal(retainedProjection.exact_review_queue.bay_projection.activity.total, null);
+  assert.equal(retainedProjection.bay.active_census_complete, false);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(runtime.expandQueue(retainedProjection))),
+    [
+      {
+        id: "queue:openclaw/openclaw#91",
+        key: "openclaw/openclaw#91",
+        number: 91,
+        repository: "openclaw/openclaw",
+        item_url: "https://github.com/openclaw/openclaw/issues/91",
+        stage: "arriving",
+        status: "pending",
+        source: "queue",
+        outcome: null,
+        queue_item: true,
+        action: null,
+        run_id: null,
+        started_at: null,
+      },
+    ],
+  );
   const chatStart = body.indexOf("function laneChatCopy(");
   const chatEnd = body.indexOf("function runLaneChat(", chatStart);
   const chatRuntime = new Script(
@@ -4520,6 +4568,19 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
           activity: {
             ...valid.exact_review_queue.bay_projection.activity,
             live_stages: { ...emptyStages, reviewing: { nested: marker } },
+          },
+        },
+      },
+    },
+    {
+      ...retainedQueueOnly,
+      exact_review_queue: {
+        ...retainedQueueOnly.exact_review_queue,
+        bay_projection: {
+          ...retainedQueueOnly.exact_review_queue.bay_projection,
+          activity: {
+            ...retainedQueueOnly.exact_review_queue.bay_projection.activity,
+            queue_stages: { ...emptyStages, arriving: 2 },
           },
         },
       },
