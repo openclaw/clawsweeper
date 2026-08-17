@@ -3193,7 +3193,7 @@ test("dashboard cold-cache status bounds a stalled forty-run worker-health refre
     assert.equal(response.headers.get("x-clawsweeper-cache"), "miss");
     assert.equal(status.health.sampled_runs, 0);
     assert.equal(status.bay.tide_threshold, 20);
-    assert.equal(stalledJobRequests, 10, "only one bounded concurrency wave may start");
+    assert.equal(stalledJobRequests, 20, "only one bounded concurrency wave may start");
     assert.ok(elapsedMs < 1_000, `cold status exceeded its bounded test budget: ${elapsedMs}ms`);
   } finally {
     globalThis.fetch = originalFetch;

@@ -415,7 +415,10 @@ const DEFAULT_WORKER_JOB_FETCH_CONCURRENCY = 12;
 // strand the tide indefinitely just below its threshold.
 const RECENT_WORKER_HEALTH_RUN_LIMIT = BAY_TIDE_THRESHOLD * 2;
 const WORKER_HEALTH_CACHE_TTL_SECONDS = 120;
-const DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY = 10;
+// Forty terminal runs still complete in the same two default waves as the
+// former 20-run sample, so the larger tide sample does not outgrow the bounded
+// worker-health section budget on ordinary uncached reads.
+const DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY = 20;
 const MAX_WORKER_HEALTH_SECTION_TIMEOUT_MS = OPTIONAL_SECTION_TIMEOUT_MS * 2;
 const MIN_WORKER_HEALTH_SECTION_TIMEOUT_MS = 25;
 

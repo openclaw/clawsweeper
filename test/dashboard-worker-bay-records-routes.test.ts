@@ -2,6 +2,7 @@ import {
   assert,
   createHash,
   createHmac,
+  fs,
   test,
   createContext,
   Script,
@@ -4564,6 +4565,10 @@ test("OpenClaw Bay samples enough completed worker runs to fill a distinct 20-it
   assert.equal(workerHealthSectionTimeoutMs(40), 12_000);
   assert.equal(workerHealthSectionTimeoutMs(10, 25), 25);
   assert.ok(workerHealthSectionTimeoutMs(10) < 20_000);
+  assert.match(
+    fs.readFileSync("dashboard/wrangler.toml", "utf8"),
+    /WORKER_HEALTH_FETCH_CONCURRENCY\s*=\s*"20"/,
+  );
 });
 
 test("OpenClaw Bay shares a bounded 20-outcome tide buffer", () => {
