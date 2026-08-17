@@ -261,3 +261,40 @@ test("OpenClaw checkout inspection reports challenge setup failures", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("checkout inspection lists tracked files beyond the 1 MB spawn default", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-agent-runner-large-index-test-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+      cwd: root,
+      input: "tracked checkout content\n",
+      encoding: "utf8",
+    }).trim();
+    // Index-only entries: ~6000 x 220-byte paths push `git ls-files --stage -z` past 1 MB.
+    const indexInfo = Array.from(
+      { length: 6000 },
+      (_, index) => `100644 blob ${blob}\t${"deep/".repeat(40)}file-${index}.txt\n`,
+    ).join("");
+    execFileSync("git", ["update-index", "--index-info"], { cwd: root, input: indexInfo });
+    const listing = execFileSync("git", ["ls-files", "--stage", "-z"], {
+      cwd: root,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.ok(listing.length > 1024 * 1024, `listing is ${listing.length} bytes`);
+
+    const result = runAgentCheckoutInspection({
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_RUNNER: "openclaw",
+        CLAWSWEEPER_OPENCLAW_MODEL: "openai/test",
+      },
+      timeoutMs: 30_000,
+    });
+    assert.notEqual(result.error?.code, "ENOBUFS", result.error?.message);
+    assert.match(result.error?.message ?? "", /could not select a tracked text line/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

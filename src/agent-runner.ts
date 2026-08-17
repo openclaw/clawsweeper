@@ -83,11 +83,14 @@ export function runAgentCheckoutInspection(options: {
   timeoutMs: number;
 }): CodexProcessResult {
   const env = { ...options.env, GIT_OPTIONAL_LOCKS: "0" };
+  // Large repositories list tens of thousands of tracked paths (openclaw/openclaw
+  // exceeds 3 MB); the 1 MB spawnSync default returns ENOBUFS and fails inspection.
   const trackedFiles = spawnSync("git", ["ls-files", "--stage", "-z"], {
     cwd: options.cwd,
     encoding: "utf8",
     env,
     timeout: options.timeoutMs,
+    maxBuffer: 64 * 1024 * 1024,
   });
   if (trackedFiles.error || trackedFiles.status !== 0) return spawnResult(trackedFiles);
   const candidates = (trackedFiles.stdout ?? "").split("\0").flatMap((entry) => {
