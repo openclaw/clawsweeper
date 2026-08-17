@@ -69,6 +69,7 @@ interface GenericFallbackConfig {
   allowRepoNamePattern: RegExp;
   promptNote: string;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
+  liveTest?: RepositoryLiveTestConfig;
 }
 
 const OPENCLAW_CLOSE_REASONS: readonly RepositoryCloseReason[] = [
@@ -121,7 +122,7 @@ const CORE_OPENCLAW_PROFILE: RepositoryProfile = {
 const TARGET_REPOSITORY_CONFIG = readTargetRepositoryConfig();
 
 export const REPOSITORY_PROFILES: RepositoryProfile[] = [
-  CORE_OPENCLAW_PROFILE,
+  repositoryProfileWithFallbackLiveTest(CORE_OPENCLAW_PROFILE),
   ...TARGET_REPOSITORY_CONFIG.repositories.map(configuredRepositoryProfile),
 ];
 
@@ -173,22 +174,25 @@ function configuredRepositoryProfile(profile: ConfiguredRepositoryProfile): Repo
   };
   if (profile.docsUrl) result.docsUrl = profile.docsUrl;
   if (profile.communityUrl) result.communityUrl = profile.communityUrl;
-  if (profile.liveTest) result.liveTest = profile.liveTest;
+  const liveTest = profile.liveTest ?? genericFallbackConfigFor(targetRepo)?.liveTest;
+  if (liveTest) result.liveTest = liveTest;
   return result;
+}
+
+function repositoryProfileWithFallbackLiveTest(profile: RepositoryProfile): RepositoryProfile {
+  if (profile.liveTest) return profile;
+  const liveTest = genericFallbackConfigFor(profile.targetRepo)?.liveTest;
+  return liveTest ? { ...profile, liveTest } : profile;
 }
 
 function fallbackRepositoryProfile(normalizedTargetRepo: string): RepositoryProfile | undefined {
   const [owner, repoName] = normalizedTargetRepo.split("/");
   if (!owner || !repoName) return undefined;
 
-  const fallback = TARGET_REPOSITORY_CONFIG.genericFallbacks.find(
-    (candidate) => candidate.owner === owner,
-  );
+  const fallback = genericFallbackConfigFor(normalizedTargetRepo);
   if (!fallback) return undefined;
-  if (fallback.denyRepositories.includes(normalizedTargetRepo)) return undefined;
-  if (!fallback.allowRepoNamePattern.test(repoName)) return undefined;
 
-  return {
+  const result: RepositoryProfile = {
     targetRepo: normalizedTargetRepo,
     slug: slugForRepo(normalizedTargetRepo),
     displayName: repoName,
@@ -198,6 +202,20 @@ function fallbackRepositoryProfile(normalizedTargetRepo: string): RepositoryProf
       .replaceAll("{repo_name}", repoName),
     applyCloseRules: fallback.applyCloseRules,
   };
+  if (fallback.liveTest) result.liveTest = fallback.liveTest;
+  return result;
+}
+
+function genericFallbackConfigFor(normalizedTargetRepo: string): GenericFallbackConfig | undefined {
+  const [owner, repoName] = normalizedTargetRepo.split("/");
+  if (!owner || !repoName) return undefined;
+  const fallback = TARGET_REPOSITORY_CONFIG.genericFallbacks.find(
+    (candidate) => candidate.owner === owner,
+  );
+  if (!fallback) return undefined;
+  if (fallback.denyRepositories.includes(normalizedTargetRepo)) return undefined;
+  if (!fallback.allowRepoNamePattern.test(repoName)) return undefined;
+  return fallback;
 }
 
 function fallbackDescription(): string {
@@ -236,7 +254,11 @@ function validateTargetRepositoryConfig(value: unknown): TargetRepositoryConfig 
   const genericFallbacks =
     config.generic_fallbacks !== undefined
       ? arrayValue(config.generic_fallbacks, "generic_fallbacks").map((entry, index) =>
-          validateGenericFallbackConfig(entry, `generic_fallbacks[${index}]`),
+          validateGenericFallbackConfig(
+            entry,
+            `generic_fallbacks[${index}]`,
+            schemaVersion as 1 | 2,
+          ),
         )
       : [];
   const result: TargetRepositoryConfig = {
@@ -247,7 +269,11 @@ function validateTargetRepositoryConfig(value: unknown): TargetRepositoryConfig 
   if (config.openclaw_fallback !== undefined) {
     result.genericFallbacks = [
       ...result.genericFallbacks,
-      validateGenericFallbackConfig(config.openclaw_fallback, "openclaw_fallback"),
+      validateGenericFallbackConfig(
+        config.openclaw_fallback,
+        "openclaw_fallback",
+        schemaVersion as 1 | 2,
+      ),
     ];
   }
   return result;
@@ -333,10 +359,14 @@ export function validateTargetRepositoryConfigForTest(value: unknown): TargetRep
   return validateTargetRepositoryConfig(value);
 }
 
-function validateGenericFallbackConfig(value: unknown, label: string): GenericFallbackConfig {
+function validateGenericFallbackConfig(
+  value: unknown,
+  label: string,
+  schemaVersion: 1 | 2,
+): GenericFallbackConfig {
   const fallback = record(value, label);
   const pattern = stringValue(fallback.allow_repo_name_pattern, `${label}.allow_repo_name_pattern`);
-  return {
+  const result: GenericFallbackConfig = {
     owner: stringValue(fallback.owner, `${label}.owner`).toLowerCase(),
     denyRepositories: arrayValue(fallback.deny_repositories, `${label}.deny_repositories`).map(
       (entry, index) => normalizeRepo(repoValue(entry, `${label}.deny_repositories[${index}]`)),
@@ -345,6 +375,11 @@ function validateGenericFallbackConfig(value: unknown, label: string): GenericFa
     promptNote: stringValue(fallback.prompt_note, `${label}.prompt_note`),
     applyCloseRules: closeRulesValue(fallback.apply_close_rules, `${label}.apply_close_rules`),
   };
+  if (fallback.live_test !== undefined) {
+    if (schemaVersion !== 2) throw new Error(`${label}.live_test requires schema_version 2`);
+    result.liveTest = liveTestValue(fallback.live_test, `${label}.live_test`);
+  }
+  return result;
 }
 
 function closeRulesValue(

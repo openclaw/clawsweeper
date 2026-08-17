@@ -24,6 +24,31 @@ function targetRepositoryConfig(liveTest: Record<string, unknown>, schemaVersion
   };
 }
 
+function fallbackRepositoryConfig(liveTest: Record<string, unknown>, schemaVersion = 2) {
+  return {
+    schema_version: schemaVersion,
+    repositories: [],
+    generic_fallbacks: [
+      {
+        owner: "example",
+        deny_repositories: [],
+        allow_repo_name_pattern: "^[A-Za-z0-9_.-]+$",
+        prompt_note: "Review {target_repo}.",
+        apply_close_rules: { issue: [], pull_request: [] },
+        live_test: liveTest,
+      },
+    ],
+  };
+}
+
+const TERMINAL_LIVE_TEST = {
+  enabled: true,
+  surfaceDefault: "terminal",
+  setup: ["pnpm install --frozen-lockfile"],
+  readyTimeoutSeconds: 240,
+  maxRecordingSeconds: 90,
+} as const;
+
 test("OpenClaw allows unsponsored feature closes for issues only", () => {
   const profile = repositoryProfileFor("openclaw/openclaw");
   assert.equal(profile.applyCloseRules.issue?.includes("unsponsored_feature_request"), true);
@@ -86,6 +111,7 @@ test("generic OpenClaw fallback supports conservative event-only onboarding", ()
     "implemented_on_main",
     "mostly_implemented_on_main",
   ]);
+  assert.deepEqual(profile.liveTest, TERMINAL_LIVE_TEST);
 });
 
 test("generic steipete fallback starts review-only", () => {
@@ -98,6 +124,7 @@ test("generic steipete fallback starts review-only", () => {
   assert.match(profile.promptNote, /generic personal-repository onboarding profile/);
   assert.deepEqual(profile.applyCloseRules.issue, []);
   assert.deepEqual(profile.applyCloseRules.pull_request, []);
+  assert.deepEqual(profile.liveTest, TERMINAL_LIVE_TEST);
 });
 
 test("generic OpenClaw fallback keeps denied repositories unsupported", () => {
@@ -188,6 +215,50 @@ test("terminal live_test profiles may omit browser start and URL fields", () => 
     surfaceDefault: "terminal",
     setup: ["pnpm install", "pnpm build"],
     readyTimeoutSeconds: 120,
+    maxRecordingSeconds: 90,
+  });
+});
+
+test("schema v2 generic fallbacks strictly validate and inherit optional live_test config", () => {
+  const liveTest = {
+    enabled: true,
+    surface_default: "terminal",
+    setup: ["pnpm install"],
+    ready_timeout_seconds: 120,
+    max_recording_seconds: 90,
+  };
+  const parsed = validateTargetRepositoryConfigForTest(fallbackRepositoryConfig(liveTest));
+  assert.deepEqual(parsed.genericFallbacks[0]?.liveTest, {
+    enabled: true,
+    surfaceDefault: "terminal",
+    setup: ["pnpm install"],
+    readyTimeoutSeconds: 120,
+    maxRecordingSeconds: 90,
+  });
+  assert.throws(
+    () =>
+      validateTargetRepositoryConfigForTest(
+        fallbackRepositoryConfig({ ...liveTest, surprise: true }),
+      ),
+    /generic_fallbacks\[0\]\.live_test has unexpected keys: surprise/,
+  );
+  assert.throws(
+    () => validateTargetRepositoryConfigForTest(fallbackRepositoryConfig(liveTest, 1)),
+    /generic_fallbacks\[0\]\.live_test requires schema_version 2/,
+  );
+});
+
+test("configured and fallback-owned repositories expose their enabled live-proof surfaces", () => {
+  assert.deepEqual(repositoryProfileFor("openclaw/openclaw").liveTest, TERMINAL_LIVE_TEST);
+  assert.deepEqual(repositoryProfileFor("openclaw/openclaw-facetime").liveTest, TERMINAL_LIVE_TEST);
+  assert.deepEqual(repositoryProfileFor("openclaw/fs-safe").liveTest, TERMINAL_LIVE_TEST);
+  assert.deepEqual(repositoryProfileFor("openclaw/clawhub").liveTest, {
+    enabled: true,
+    surfaceDefault: "browser",
+    setup: ["bun install"],
+    start: "bun run dev",
+    url: "http://127.0.0.1:3000",
+    readyTimeoutSeconds: 240,
     maxRecordingSeconds: 90,
   });
 });

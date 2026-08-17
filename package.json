@@ -67,6 +67,7 @@
     "repair:github-egress-telemetry": "node dist/repair/github-egress-telemetry-cli.js",
     "repair:exact-review-direct-publication": "node dist/repair/exact-review-direct-publication.js",
     "repair:publish-event-result": "node dist/repair/publish-event-result.js",
+    "repair:live-proof-candidates": "node dist/repair/live-proof-dispatch-candidates.js",
     "repair:update-command-status": "node dist/repair/update-command-status.js",
     "workflow": "node dist/repair/workflow-utils.js",
     "repair:promote-stuck-jobs": "node dist/repair/promote-stuck-jobs.js",

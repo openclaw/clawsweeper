@@ -1433,6 +1433,49 @@ jobs:
           EXACT_REVIEW_BATCH_MUTATION_OUTPUT: .artifacts/direct-publication-outcome.json
         run: pnpm run --silent repair:publish-event-result
 
+      - name: Create live-proof dispatch token
+        id: live-proof-dispatch-token
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.prepare-direct-exact-review-publication.outcome == 'success' }}
+        continue-on-error: true
+        uses: ./.github/actions/create-target-write-token
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repository: clawsweeper
+
+      - name: Dispatch recommended live proofs
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.prepare-direct-exact-review-publication.outcome == 'success' && steps.live-proof-dispatch-token.outcome == 'success' && steps.live-proof-dispatch-token.outputs.token != '' }}
+        env:
+          GH_TOKEN: ${{ steps.live-proof-dispatch-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+        run: |
+          set -euo pipefail
+          item_numbers="$ITEM_NUMBER"
+          ITEM_NUMBERS="$item_numbers" RECORDS_ROOT=records pnpm run --silent repair:live-proof-candidates > /tmp/live-proof-candidates.jsonl
+          if [ ! -s /tmp/live-proof-candidates.jsonl ]; then
+            echo "No published review requested an enabled live proof."
+            exit 0
+          fi
+          while IFS= read -r candidate; do
+            item="$(jq -r '.item' <<<"$candidate")"
+            plan="$(jq -c '.plan' <<<"$candidate")"
+            jq -n \
+              --arg repo "$TARGET_REPO" \
+              --arg item "$item" \
+              --argjson plan "$plan" \
+              '{
+                event_type: "clawsweeper_live_proof",
+                client_payload: {
+                  repo: $repo,
+                  item: $item,
+                  live_proof_plan: $plan
+                }
+              }' | gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" --input -
+            echo "Dispatched live proof for $TARGET_REPO#$item."
+          done < /tmp/live-proof-candidates.jsonl
+
       - name: Post direct exact review publication result
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.prepare-direct-exact-review-publication.outcome == 'success' }}
         id: direct-exact-review-publication
@@ -4753,28 +4796,7 @@ jobs:
         run: |
           set -euo pipefail
           item_numbers="$(pnpm run --silent workflow -- artifact-item-numbers --artifact-dir artifacts)"
-          TARGET_REPO="$TARGET_REPO" ITEM_NUMBERS="$item_numbers" node --input-type=module <<'NODE' > /tmp/live-proof-candidates.jsonl
-          import { readFileSync } from "node:fs";
-          import { reportLiveProofPlan } from "./dist/clawsweeper.js";
-          import { repositoryProfileFor } from "./dist/repository-profiles.js";
-
-          const repo = process.env.TARGET_REPO || "";
-          const profile = repositoryProfileFor(repo);
-          if (!profile.liveTest?.enabled) process.exit(0);
-          for (const item of (process.env.ITEM_NUMBERS || "").split(",").filter(Boolean)) {
-            const path = "records/" + profile.slug + "/items/" + item + ".md";
-            let markdown;
-            try {
-              markdown = readFileSync(path, "utf8");
-            } catch {
-              continue;
-            }
-            const plan = reportLiveProofPlan(markdown);
-            if (plan.status === "recommended") {
-              process.stdout.write(JSON.stringify({ item: Number(item), plan }) + "\n");
-            }
-          }
-          NODE
+          ITEM_NUMBERS="$item_numbers" RECORDS_ROOT=records pnpm run --silent repair:live-proof-candidates > /tmp/live-proof-candidates.jsonl
           if [ ! -s /tmp/live-proof-candidates.jsonl ]; then
             echo "No published review requested an enabled live proof."
             exit 0

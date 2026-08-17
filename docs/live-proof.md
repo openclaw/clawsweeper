@@ -12,12 +12,14 @@ recording of user-visible browser or terminal behavior. Classification remains
 part of the existing read-only review. It records only a typed plan in the
 durable report; it never executes pull request code and never publishes a URL.
 
-After the report is published, `sweep.yml` dispatches
-`live-proof.yml` only when the plan status is `recommended` and the target's
-repository profile has `live_test.enabled: true`. The command then applies four
-ordered gates: `CLAWSWEEPER_LIVE_PROOF_ENABLED=1`, repository opt-in, a
-recommended plan, and a still-open pull request. Every failed gate is a logged
-successful skip.
+After the report is published, both scheduled publication and exact-event
+direct delivery in `sweep.yml` dispatch `live-proof.yml` only when the plan
+status is `recommended` and the target's repository profile has
+`live_test.enabled: true`. The command then applies ordered gates for
+`CLAWSWEEPER_LIVE_PROOF_ENABLED=1`, repository opt-in, a recommended plan, a
+runnable configured surface, and a still-open pull request. Every failed gate
+is a logged successful skip, including a browser recommendation for a
+terminal-only repository that has no configured server or URL.
 
 ## Execute and attach
 

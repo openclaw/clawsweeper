@@ -3,6 +3,7 @@ import {
   normalizePrRating,
   normalizeRealBehaviorProof,
 } from "./clawsweeper-rating.js";
+import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import {
   AGENTS_POLICY_STATUSES,
   AUTO_IMPLEMENTATION_CANDIDATES,
@@ -79,7 +80,6 @@ interface ReportParsingDependencies {
   markdownRepository: (markdown: string, file?: string) => string;
   parseBoldListHeading: (line: string) => { label: string; detail: string } | null;
   parseLabelJustification: (value: unknown, path: string) => LabelJustification;
-  parseLiveProofPlan: (value: unknown, path: string) => LiveProofPlan;
   parseMergeRiskOption: (value: unknown, path: string) => MergeRiskOption;
   parseReviewFindingHeading: (line: string) => {
     priority: ReviewFinding["priority"];
@@ -111,6 +111,106 @@ interface ReportParsingDependencies {
   splitFileAndLine: (file: string) => { file: string; line?: number };
 }
 
+const LIVE_PROOF_SECTION_HEADING = REVIEW_SECTIONS.liveProof;
+const LIVE_PROOF_OWNED_HEADINGS = new Set(
+  Object.values(REVIEW_SECTIONS).map((heading) => heading.toLowerCase()),
+);
+const parseRecordedLiveProofPlan = createDecisionParser({
+  isMaintainerAuthorAssociation: () => false,
+  neutralizeOwnedSectionSpoofing: neutralizeLiveProofText,
+  sanitizeArchitectureDiagram: (value) => value,
+}).parseLiveProofPlan;
+
+export function reportLiveProofPlan(markdown: string): LiveProofPlan {
+  const section = reportSectionValue(markdown, LIVE_PROOF_SECTION_HEADING);
+  const rawSteps = reportSectionList(section, "Steps");
+  try {
+    return parseRecordedLiveProofPlan(
+      {
+        status: reportSectionLineValue(section, "Status"),
+        surface: reportSectionLineValue(section, "Surface"),
+        reason: reportSectionLineValue(section, "Reason"),
+        entry: reportSectionLineValue(section, "Entry") ?? "",
+        steps: rawSteps.map((step) => JSON.parse(step) as unknown),
+      },
+      "report.liveProofPlan",
+    );
+  } catch {
+    return {
+      status: "not_applicable",
+      surface: "none",
+      reason: "No live-proof plan was recorded in this report.",
+      entry: "",
+      steps: [],
+    };
+  }
+}
+
+function reportSectionValue(markdown: string, heading: string): string {
+  const match = markdown.match(
+    new RegExp(`(?:^|\\n)## ${heading}\\n\\n([\\s\\S]*?)(?=\\n## |\\n?$)`),
+  );
+  return match?.[1]?.trim() ?? "";
+}
+
+function reportSectionLineValue(section: string, label: string): string | undefined {
+  const prefix = `${label}:`;
+  for (const line of section.split("\n")) {
+    if (!line.startsWith(prefix)) continue;
+    const value = line.slice(prefix.length).trim();
+    return value || undefined;
+  }
+  return undefined;
+}
+
+function reportSectionList(section: string, label: string): string[] {
+  const lines = section.split("\n");
+  const start = lines.findIndex((line) => line.trim() === `${label}:`);
+  if (start === -1) return [];
+  const values: string[] = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (/^[A-Z][A-Za-z -]+:/.test(line)) break;
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith("- ")) continue;
+    const item = trimmed.slice(2).trim();
+    if (item) values.push(item);
+  }
+  return values;
+}
+
+function neutralizeLiveProofText(value: string): string {
+  return value
+    .replace(/\r\n?|[\u2028\u2029]/g, "\n")
+    .split("\n")
+    .map((line) => {
+      const containerPrefix =
+        line.match(/^[ \t]*(?:(?:>|(?:[-*+]|\d+[.)])[ \t])[ \t]*)*/)?.[0] ?? "";
+      const content = line.slice(containerPrefix.length).replace(/<(?!br\s*\/?>)/gi, "&lt;");
+      const trimmed = content.trim();
+      if (/^#{1,6}\s+\S/.test(trimmed)) {
+        return `${containerPrefix}${content.replace("#", "\\#")}`;
+      }
+      if (/^\*\*[^*\n]+\*\*:?\s*$/.test(trimmed)) {
+        return `${containerPrefix}${content.replace("**", "\\*\\*")}`;
+      }
+      if (/^(?:```|~~~)/.test(trimmed)) {
+        return `${containerPrefix}${content.replace(/[`~]/, "\\$&")}`;
+      }
+      if (/^(?:=+|-+)[ \t]*$/.test(trimmed)) {
+        return `${containerPrefix}${content.replace(/[=-]/, "\\$&")}`;
+      }
+      if (
+        trimmed.endsWith(":") &&
+        LIVE_PROOF_OWNED_HEADINGS.has(trimmed.slice(0, -1).trim().toLowerCase())
+      ) {
+        return `${containerPrefix}${content.trimEnd().slice(0, -1)}&#58;`;
+      }
+      return `${containerPrefix}${content}`;
+    })
+    .join("\n");
+}
+
 export function createReportParser({
   agentsPolicyStatusLine,
   defaultRootCauseCluster,
@@ -124,7 +224,6 @@ export function createReportParser({
   markdownRepository,
   parseBoldListHeading,
   parseLabelJustification,
-  parseLiveProofPlan,
   parseMergeRiskOption,
   parseReviewFindingHeading,
   parseRootCauseCluster,
@@ -524,35 +623,6 @@ export function createReportParser({
         sectionLineValue(section, "Summary") ??
         "No Telegram visible-proof assessment was recorded in this report.",
     };
-  }
-
-  function defaultLiveProofPlan(): LiveProofPlan {
-    return {
-      status: "not_applicable",
-      surface: "none",
-      reason: "No live-proof plan was recorded in this report.",
-      entry: "",
-      steps: [],
-    };
-  }
-
-  function reportLiveProofPlan(markdown: string): LiveProofPlan {
-    const section = reviewSectionValue(markdown, "liveProof");
-    const rawSteps = sectionList(section, "Steps");
-    try {
-      return parseLiveProofPlan(
-        {
-          status: sectionLineValue(section, "Status"),
-          surface: sectionLineValue(section, "Surface"),
-          reason: sectionLineValue(section, "Reason"),
-          entry: sectionLineValue(section, "Entry") ?? "",
-          steps: rawSteps.map((step) => JSON.parse(step) as unknown),
-        },
-        "report.liveProofPlan",
-      );
-    } catch {
-      return defaultLiveProofPlan();
-    }
   }
 
   function reportLiveProofRecordingBlock(markdown: string): string {

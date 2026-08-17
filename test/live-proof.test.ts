@@ -101,6 +101,24 @@ test("live-proof gates skip in order with a successful result", async (t) => {
       expectedFetches: 0,
     },
     {
+      name: "browser plan on terminal-only profile",
+      env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
+      targetProfile: {
+        ...profile(),
+        liveTest: {
+          enabled: true,
+          surfaceDefault: "terminal",
+          setup: [],
+          readyTimeoutSeconds: 5,
+          maxRecordingSeconds: 90,
+        },
+      },
+      plan: recommendedPlan("browser"),
+      pull: { kind: "pull_request", state: "open", headSha: HEAD },
+      expected: /browser plan cannot run .* live_test\.start and live_test\.url are not configured/,
+      expectedFetches: 0,
+    },
+    {
       name: "item kind",
       env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
       targetProfile: profile(),
@@ -319,8 +337,63 @@ test("live-proof workflow keeps execute secretless and attach trusted", () => {
   assert.match(source, /--record \.\.\/live-proof-report\.md/);
   assert.doesNotMatch(source, /--plan \.\.\/live-proof/);
   const sweep = readFileSync(".github/workflows/sweep.yml", "utf8");
-  assert.match(sweep, /event_type: "clawsweeper_live_proof"/);
-  assert.match(sweep, /profile\.liveTest\?\.enabled/);
+  const sweepWorkflow = YAML.parse(sweep) as {
+    jobs: Record<
+      string,
+      {
+        steps: Array<{
+          name?: string;
+          id?: string;
+          if?: string;
+          env?: Record<string, string>;
+          run?: string;
+          uses?: string;
+          with?: Record<string, string>;
+        }>;
+      }
+    >;
+  };
+  const directSteps = sweepWorkflow.jobs["event-review-apply"]?.steps ?? [];
+  const directDeliveryIndex = directSteps.findIndex(
+    (step) => step.name === "Deliver GitHub effects and prepare direct state mutation",
+  );
+  const directDispatchIndex = directSteps.findIndex(
+    (step) => step.name === "Dispatch recommended live proofs",
+  );
+  const directDispatch = directSteps[directDispatchIndex];
+  const dispatchToken = directSteps.find((step) => step.id === "live-proof-dispatch-token");
+  assert.ok(directDeliveryIndex >= 0);
+  assert.ok(directDispatchIndex > directDeliveryIndex);
+  assert.equal(dispatchToken?.uses, "./.github/actions/create-target-write-token");
+  assert.equal(dispatchToken?.with?.owner, "openclaw");
+  assert.equal(dispatchToken?.with?.repository, "clawsweeper");
+  assert.match(
+    directDispatch?.if ?? "",
+    /prepare-direct-exact-review-publication\.outcome == 'success'/,
+  );
+  assert.equal(
+    directDispatch?.env?.GH_TOKEN,
+    "${{ steps.live-proof-dispatch-token.outputs.token }}",
+  );
+  assert.equal(directDispatch?.env?.ITEM_NUMBER, "${{ steps.target.outputs.item_number }}");
+  assert.match(
+    directDispatch?.run ?? "",
+    /ITEM_NUMBERS="\$item_numbers" RECORDS_ROOT=records pnpm run --silent repair:live-proof-candidates/,
+  );
+  assert.doesNotMatch(directDispatch?.run ?? "", /dist\/clawsweeper\.js/);
+  assert.match(directDispatch?.run ?? "", /event_type: "clawsweeper_live_proof"/);
+  assert.match(directDispatch?.run ?? "", /repos\/\$GITHUB_REPOSITORY\/dispatches/);
+  assert.equal(
+    Object.values(sweepWorkflow.jobs)
+      .flatMap((job) => job.steps)
+      .filter((step) => step.name === "Dispatch recommended live proofs").length,
+    2,
+  );
+  assert.equal(sweep.match(/pnpm run --silent repair:live-proof-candidates/g)?.length, 2);
+  assert.doesNotMatch(sweep, /node --input-type=module <<'NODE' > \/tmp\/live-proof-candidates/);
+  const candidateSource = readFileSync("src/repair/live-proof-dispatch-candidates.ts", "utf8");
+  assert.match(candidateSource, /profile\.liveTest\?\.enabled/);
+  assert.match(candidateSource, /plan\.status === "recommended"/);
 });
 
 function validManifest() {

@@ -63,6 +63,12 @@ export async function executeLiveProof(
   if (plan.surface === "none") {
     throw new Error("recommended live proof plan is missing a browser or terminal surface");
   }
+  if (plan.surface === "browser" && (!liveTest.start || !liveTest.url)) {
+    log(
+      `[live-proof] skip: browser plan cannot run for ${profile.targetRepo} because live_test.start and live_test.url are not configured`,
+    );
+    return;
+  }
 
   const checkout = resolve(options.checkoutPath ?? process.cwd());
   let headSha: string;
@@ -85,9 +91,6 @@ export async function executeLiveProof(
     headSha = item.headSha.toLowerCase();
   }
 
-  if (plan.surface === "browser" && (!liveTest.start || !liveTest.url)) {
-    throw new Error("browser live proof requires live_test.start and live_test.url");
-  }
   const outputDir = resolve(options.outputDir);
   mkdirSync(outputDir, { recursive: true });
   const rawVideoPath = join(outputDir, "live-proof.raw.webm");
