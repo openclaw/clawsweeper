@@ -157,6 +157,30 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
   const storage = new MemoryDurableStorage();
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
   lifecycle.ensureSchemaSync();
+  const publicRepositoryPlan = Array.from(
+    storage.sql.exec(
+      `EXPLAIN QUERY PLAN
+       SELECT projection_json FROM exact_review_lifecycle_projection_v1
+       WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) IN (?)
+       ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+       LIMIT ?`,
+      "openclaw/openclaw",
+      10_001,
+    ),
+  );
+  assert.ok(
+    publicRepositoryPlan.some((row) =>
+      String(row.detail || "").includes("exact_review_lifecycle_projection_bay_repository"),
+    ),
+    "public lifecycle reads must seek through the repository-leading index",
+  );
+  assert.equal(
+    publicRepositoryPlan.some((row) =>
+      /^SCAN exact_review_lifecycle_projection_v1\b/i.test(String(row.detail || "")),
+    ),
+    false,
+    "public lifecycle reads must not scan unrelated durable history",
+  );
   const record = ({
     number,
     revision = 1,

@@ -273,6 +273,17 @@ export class ExactReviewLifecycleProjectionStore {
           ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
           (updated_at DESC, canonical_target_key, fence_key, revision)`,
     );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_repository
+          ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          (
+            LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)),
+            updated_at DESC,
+            canonical_target_key,
+            fence_key,
+            revision
+          )`,
+    );
     this.schemaReady = true;
   }
 

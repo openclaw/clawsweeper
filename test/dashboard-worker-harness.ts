@@ -104,7 +104,10 @@ class MemorySqlStorage {
       throw error;
     }
     const statement = this.database.prepare(query);
-    if (/^\s*(?:SELECT|WITH)\b/i.test(query) || /\bRETURNING\b/i.test(query)) {
+    if (
+      /^\s*(?:SELECT|WITH|EXPLAIN(?:\s+QUERY\s+PLAN)?)\b/i.test(query) ||
+      /\bRETURNING\b/i.test(query)
+    ) {
       const rows = statement.all(...bindings) as Record<string, unknown>[];
       return new MemorySqlCursor(rows, rows.length);
     }
