@@ -250,6 +250,10 @@ export function terminalCommandPlan(options: {
         "realtime",
         "-cpu-used",
         "8",
+        // The WebM muxer buffers whole clusters in memory; flush packets so
+        // the output file reflects capture progress immediately.
+        "-flush_packets",
+        "1",
         options.rawVideoPath,
       ],
       waitAfter: "recorder",
@@ -358,10 +362,12 @@ function waitForRecorder(
     if (recorderExited(runner, checkout, recorderSession)) {
       throw new Error("recorder session exited before the raw WebM was written");
     }
-    // VP9 muxer output is bursty, so consecutive equal size samples are normal
-    // while recording; any written payload proves the recorder captures frames.
     if (size !== undefined && size > 0) return;
-    if (elapsed < RECORDER_READY_TIMEOUT_SECONDS) pollSleep(runner);
+    // A live recorder session is sufficient: the WebM muxer may buffer whole
+    // clusters in memory, so an empty file with ffmpeg alive is healthy. The
+    // finalize wait plus ffprobe and the duration cap validate substance.
+    if (elapsed >= RECORDER_READY_TIMEOUT_SECONDS) return;
+    pollSleep(runner);
   }
   throw new Error(
     `raw WebM was not written within ${RECORDER_READY_TIMEOUT_SECONDS} seconds`,

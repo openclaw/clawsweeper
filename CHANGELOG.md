@@ -18,6 +18,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Terminal recorders flush WebM packets immediately and treat a live ffmpeg session as healthy while the muxer buffers.
 - Terminal live-proof recordings tune VP9 for realtime capture and accept the recorder once any payload is written, matching the encoder's bursty muxer output.
 - OpenClaw browser live proofs run against the repository's mock control-UI dev server.
 - Folder reconciliation now defers with a zero-mutation result when the open-state scan hits GitHub rate limiting, so throttled proof/apply/publish runs proceed to their close and publication work instead of failing before `Apply close proposals` can run.
