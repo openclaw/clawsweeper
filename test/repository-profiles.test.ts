@@ -191,3 +191,15 @@ test("terminal live_test profiles may omit browser start and URL fields", () => 
     maxRecordingSeconds: 90,
   });
 });
+
+test("ClawSweeper enables browser live proof with the local Bay demo", () => {
+  assert.deepEqual(repositoryProfileFor("openclaw/clawsweeper").liveTest, {
+    enabled: true,
+    surfaceDefault: "browser",
+    setup: ["pnpm install --frozen-lockfile"],
+    start: "./scripts/live-proof/bay-demo/start.sh",
+    url: "http://127.0.0.1:8787",
+    readyTimeoutSeconds: 240,
+    maxRecordingSeconds: 90,
+  });
+});

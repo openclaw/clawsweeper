@@ -58,6 +58,23 @@ canonical record. OpenClaw Bay is unaffected: this lane changes a durable
 report and its existing GitHub comment, not Bay's observer-only data contract
 or controls.
 
+## ClawSweeper Bay demo
+
+The `openclaw/clawsweeper` repository profile enables browser live proof against
+the local OpenClaw Bay at `http://127.0.0.1:8787`. Its maintained launcher and
+data seeder live in `scripts/live-proof/bay-demo/`: `start.sh` creates a
+throwaway `.dev.vars` and Wrangler state directory outside the checkout, starts
+the dashboard Worker in the foreground, and runs `seed.mjs` after the health
+endpoint becomes ready. The dependency-free Node seeder fills the local Worker
+with representative ClawSweeper lifecycle and workflow records so recordings
+show real Bay cards and stage content instead of an empty dashboard.
+
+The profile installs the PR head with `pnpm install --frozen-lockfile`, allows
+240 seconds for the Worker and seed data to become ready, and retains the
+lane-wide 90-second recording limit. The temporary signing value is generated
+for each launcher process; the demo neither requires production credentials nor
+writes a `.dev.vars` or Wrangler state into the tracked tree.
+
 ## Local simulation
 
 The execution lane can run without GitHub or an API key against an existing

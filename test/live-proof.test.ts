@@ -306,9 +306,11 @@ test("live-proof workflow keeps execute secretless and attach trusted", () => {
   const source = readFileSync(".github/workflows/live-proof.yml", "utf8");
   const workflow = YAML.parse(source) as {
     on: { workflow_dispatch: { inputs: Record<string, unknown> } };
+    env: Record<string, string>;
     jobs: Record<string, Record<string, unknown>>;
   };
   assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ["repo", "item"]);
+  assert.equal(workflow.env.CLAWSWEEPER_APP_CLIENT_ID, "Iv23liOECG0slfuhz093");
   assert.deepEqual(workflow.jobs.execute?.permissions, {});
   assert.doesNotMatch(JSON.stringify(workflow.jobs.execute), /secrets\./);
   assert.match(source, /uses: \.\/\.github\/actions\/create-target-write-token/);

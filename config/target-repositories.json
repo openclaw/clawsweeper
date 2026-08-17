@@ -29,6 +29,15 @@
       "changed_gate": {
         "command": "pnpm check:changed",
         "required_script": "check:changed"
+      },
+      "live_test": {
+        "enabled": true,
+        "surface_default": "browser",
+        "setup": ["pnpm install --frozen-lockfile"],
+        "start": "./scripts/live-proof/bay-demo/start.sh",
+        "url": "http://127.0.0.1:8787",
+        "ready_timeout_seconds": 240,
+        "max_recording_seconds": 90
       }
     },
     {
