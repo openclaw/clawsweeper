@@ -22,6 +22,10 @@ import {
   liveProofStepActions,
 } from "./drivers.js";
 import { LIVE_PROOF_MAX_MP4_BYTES, type LiveProofManifest, probeMedia } from "./manifest.js";
+import {
+  assertLiveProofEnvironmentSanitized,
+  sanitizedLiveProofEnvironment,
+} from "./environment.js";
 import { buildLiveVerificationResult } from "./verification.js";
 
 export interface LiveProofPullRequestState {
@@ -55,7 +59,7 @@ export async function executeLiveProof(
   dependencies: LiveProofExecuteDependencies,
 ): Promise<void> {
   const env = dependencies.env ?? process.env;
-  const runner = dependencies.runner ?? mediaProofCommandRunner;
+  const baseRunner = dependencies.runner ?? mediaProofCommandRunner;
   const log = dependencies.log ?? console.log;
   if (env.CLAWSWEEPER_LIVE_PROOF_ENABLED !== "1") {
     log("[live-proof] skip: CLAWSWEEPER_LIVE_PROOF_ENABLED is not 1");
@@ -83,6 +87,20 @@ export async function executeLiveProof(
     );
     return;
   }
+
+  // Every command that can load target code receives the same denylist- and
+  // heuristic-sanitized environment, even for local callers that did not come
+  // through the production review child.
+  const targetEnvironment = sanitizedLiveProofEnvironment(env);
+  assertLiveProofEnvironmentSanitized(targetEnvironment);
+  const runner: MediaProofCommandRunner = (command, args, runOptions = {}) =>
+    baseRunner(command, args, {
+      ...runOptions,
+      env: sanitizedLiveProofEnvironment({
+        ...targetEnvironment,
+        ...runOptions.env,
+      }),
+    });
 
   const checkout = resolve(options.checkoutPath ?? process.cwd());
   let headSha: string;
@@ -137,7 +155,8 @@ export async function executeLiveProof(
   try {
     let drive: ReturnType<typeof driveBrowser>;
     try {
-      for (const command of liveTest.setup) {
+      for (const configuredCommand of liveTest.setup) {
+        const command = liveProofSetupCommand(configuredCommand, liveTest.allowInstallScripts);
         requireSuccess("sh", ["-lc", command], runner("sh", ["-lc", command], { cwd: checkout }));
       }
       if (plan.surface === "browser") {
@@ -293,6 +312,21 @@ export async function executeLiveProof(
   } finally {
     if (serverStarted) stopBackgroundServer(serverPidPath, runner, checkout);
   }
+}
+
+export function liveProofSetupCommand(command: string, allowInstallScripts: boolean): string {
+  // Repository live_test setup is maintainer-authored. Its direct package
+  // manager installs are rewritten so a dependency lockfile bump cannot run a
+  // postinstall that was never visible in the reviewed diff.
+  const install = /^(\s*(?:pnpm|bun)\s+(?:install|i)\b|\s*npm\s+(?:install|i|ci)\b)/.exec(command);
+  if (!install || allowInstallScripts) return command;
+  if (/(?:^|\s)--(?:no-ignore-scripts|ignore-scripts=(?:false|0)|trust)(?:\s|$)/.test(command)) {
+    throw new Error(
+      "live_test.setup cannot enable install scripts without allow_install_scripts: true",
+    );
+  }
+  if (/(?:^|\s)--ignore-scripts(?:=true)?(?:\s|$)/.test(command)) return command;
+  return command.replace(install[0], `${install[0]} --ignore-scripts`);
 }
 
 function writeVerificationResult(

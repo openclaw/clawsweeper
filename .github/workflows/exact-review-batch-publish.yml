@@ -29,8 +29,6 @@ jobs:
       }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    outputs:
-      live_proof_matrix: ${{ steps.live-proof-dispatch-matrix.outputs.matrix }}
     env:
       EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
       CLAWSWEEPER_AUTO_CLOSE_REASONS: ${{ vars.CLAWSWEEPER_AUTO_CLOSE_REASONS || 'all' }}
@@ -117,10 +115,21 @@ jobs:
           hydrate-git-state: "false"
           hydrate-state-blobs: "false"
 
+      - name: Install exact live-proof media validators
+        if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+
       - name: Prepare each item independently
         if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_SECRET_ACCESS_KEY }}
+          CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT }}
+          CLAWSWEEPER_LIVE_PROOF_BUCKET: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BUCKET }}
+          CLAWSWEEPER_LIVE_PROOF_BASE_URL: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BASE_URL }}
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
           REPO_TOKEN: ${{ github.token }}
         run: |
@@ -406,32 +415,6 @@ jobs:
             pnpm run --silent repair:exact-review-batch observe || true
           pnpm run --silent repair:exact-review-batch complete
 
-      - name: Compose live-proof dispatch matrix from durable batch receipt
-        id: live-proof-dispatch-matrix
-        if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
-        run: |
-          set -euo pipefail
-          receipt_path="$(dirname "$EXACT_REVIEW_BATCH_MANIFEST")/state-receipt.json"
-          matrix="$(jq -c '
-            [
-              .outcomes[]?
-              | select(.outcome == "accepted" or .outcome == "deduped")
-              | .canonicalTargetKey
-              | capture("^(?<target_repo>[^#]+)#(?<item_number>[1-9][0-9]*)$")
-            ]
-            | unique_by(.target_repo, .item_number)
-            | sort_by(.target_repo, (.item_number | tonumber))
-            | group_by(.target_repo)
-            | {
-                include: map({
-                  target_repo: .[0].target_repo,
-                  target_slug: (.[0].target_repo | gsub("[^A-Za-z0-9_.-]+"; "-")),
-                  item_numbers: (map(.item_number) | join(","))
-                })
-              }
-          ' "$receipt_path")"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-
       - name: Submit batch GitHub egress telemetry
         if: ${{ always() && steps.github-egress-observer.outcome == 'success' }}
         continue-on-error: true
@@ -445,44 +428,3 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: pnpm run --silent repair:exact-review-batch release
-
-  dispatch-live-proofs:
-    name: Dispatch live proofs for ${{ matrix.target_repo }}
-    needs: publish
-    if: ${{ needs.publish.outputs.live_proof_matrix != '' && needs.publish.outputs.live_proof_matrix != '{"include":[]}' }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.publish.outputs.live_proof_matrix) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: main
-          filter: blob:none
-          fetch-depth: 1
-          persist-credentials: false
-
-      - uses: ./.github/actions/setup-pnpm
-        with:
-          build-script: build:repair
-
-      - uses: ./.github/actions/setup-state
-        with:
-          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          records-repo-slugs: ${{ matrix.target_slug }}
-          hydrate-git-state: "false"
-          hydrate-state-blobs: "false"
-
-      - name: Dispatch recommended live proofs
-        uses: ./.github/actions/dispatch-live-proofs
-        with:
-          target-repo: ${{ matrix.target_repo }}
-          item-numbers: ${{ matrix.item_numbers }}
-          records-root: records
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}

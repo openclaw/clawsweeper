@@ -750,7 +750,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   };
 
   assert.equal(reviewer.permissions?.contents, "read");
-  assert.equal(reviewer["timeout-minutes"], 120);
+  assert.equal(reviewer["timeout-minutes"], 150);
   assert.equal(reviewer.permissions?.issues, "read");
   assert.equal(
     reviewer.steps.some((candidate) => candidate.uses?.endsWith("/setup-state")),

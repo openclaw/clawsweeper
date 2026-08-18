@@ -791,7 +791,7 @@
     "liveProofPlan": {
       "type": "object",
       "additionalProperties": false,
-      "description": "For PRs, recommend a deterministic live proof only when a user-visible browser or terminal behavior can be demonstrated from the PR head in 90 seconds or less without external accounts, credentials, secrets, or third-party services. Use declined_suspicious when the diff or required demonstration reads environment variables or credential stores, could encode or transmit data to unexpected hosts, or could exfiltrate or display sensitive data in the public recording. If unsure, use not_applicable.",
+      "description": "For PRs, recommend a deterministic live proof only when a user-visible browser or terminal behavior can be demonstrated from the PR head in 90 seconds or less without external accounts, credentials, secrets, or third-party services. ClawSweeper executes recommended plans unsandboxed on a machine that holds credentials, so declined_suspicious is the safety control. Use it whenever the diff or installed dependencies, including new or bumped dependencies that cannot be inspected, could plausibly exfiltrate, read credential stores, transmit data to unexpected hosts, or display sensitive data. If unsure, use declined_suspicious.",
       "required": ["status", "surface", "reason", "payoff", "entry", "steps"],
       "properties": {
         "status": {

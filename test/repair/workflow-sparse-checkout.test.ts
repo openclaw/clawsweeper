@@ -27,7 +27,6 @@ const REPAIR_RUNTIME_PATHS = [
 
 const MAIN_BUNDLE = "dist/clawsweeper.js";
 const RUNTIME_DIST_ARTIFACT = "clawsweeper-runtime-dist";
-const DISPATCH_LIVE_PROOFS_ACTION = "./.github/actions/dispatch-live-proofs";
 
 test("repair planning and execution use a Node runtime accepted by current OpenClaw", () => {
   const workflow = parse(
@@ -128,43 +127,34 @@ test("every workflow job that runs the main bundle directly obtains it", () => {
   assert.ok(audited.length > 0, `no job invoking ${MAIN_BUNDLE} was audited`);
 });
 
-test("every workflow job that runs the repair bundle through dispatch-live-proofs obtains it", () => {
-  const audited: string[] = [];
-  for (const workflowPath of fs.globSync(".github/workflows/*.yml").sort()) {
-    const workflow = parse(fs.readFileSync(workflowPath, "utf8")) as {
-      jobs?: Record<string, { steps?: { uses?: unknown; with?: Record<string, unknown> }[] }>;
-    };
-    for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
-      const steps = job.steps ?? [];
-      if (!steps.some((step) => step.uses === DISPATCH_LIVE_PROOFS_ACTION)) continue;
-      const site = `${workflowPath}:${jobName}`;
-      audited.push(site);
-      const buildScripts = steps
-        .filter((step) => String(step.uses ?? "").includes("actions/setup-pnpm"))
-        .map((step) => String(step.with?.["build-script"] ?? ""));
-      assert.ok(
-        buildScripts.some(buildScriptEmitsRepairBundle),
-        `${site} invokes ${DISPATCH_LIVE_PROOFS_ACTION} but no build-script emits the repair bundle: ${JSON.stringify(buildScripts)}`,
-      );
-    }
+test("review jobs execute live proof before their existing artifact upload", () => {
+  const workflow = parse(fs.readFileSync(".github/workflows/sweep.yml", "utf8")) as {
+    jobs?: Record<string, { steps?: { name?: unknown; run?: unknown; uses?: unknown }[] }>;
+  };
+  for (const jobName of ["event-review-apply", "review"]) {
+    const steps = workflow.jobs?.[jobName]?.steps ?? [];
+    const review = steps.findIndex((step) => String(step.name ?? "").startsWith("Review "));
+    const execute = steps.findIndex((step) => String(step.run ?? "").includes("live-proof-review"));
+    const upload = steps.findIndex(
+      (step, index) =>
+        index > execute && String(step.uses ?? "").startsWith("actions/upload-artifact@"),
+    );
+    assert.ok(review >= 0 && execute > review && upload > execute, jobName);
   }
-  assert.equal(audited.length, 4, JSON.stringify(audited));
 });
 
-test("every durable review-record publication lane invokes dispatch-live-proofs", () => {
+test("every durable review-record publication lane preserves the merged live-proof boundary", () => {
   const publicationSites: string[] = [];
   for (const workflowPath of fs.globSync(".github/workflows/*.yml").sort()) {
     const workflow = parse(fs.readFileSync(workflowPath, "utf8")) as {
       jobs?: Record<
         string,
         {
-          needs?: unknown;
-          steps?: { id?: unknown; uses?: unknown; run?: unknown }[];
+          steps?: { id?: unknown; if?: unknown; name?: unknown; run?: unknown }[];
         }
       >;
     };
-    const jobs = workflow.jobs ?? {};
-    for (const [jobName, job] of Object.entries(jobs)) {
+    for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
       const steps = job.steps ?? [];
       const runs = steps.map((step) => String(step.run ?? ""));
       const directPublication = runs.some(
@@ -178,22 +168,29 @@ test("every durable review-record publication lane invokes dispatch-live-proofs"
       if (!directPublication && !artifactPublication) continue;
       const site = `${workflowPath}:${jobName}`;
       publicationSites.push(site);
-      const dispatchesInJob = steps.some(
-        (candidate) => candidate.uses === DISPATCH_LIVE_PROOFS_ACTION,
-      );
-      const dispatchesInDependentJob = Object.values(jobs).some((candidate) => {
-        const needs = Array.isArray(candidate.needs) ? candidate.needs : [candidate.needs];
-        return (
-          needs.includes(jobName) &&
-          (candidate.steps ?? []).some(
-            (candidateStep) => candidateStep.uses === DISPATCH_LIVE_PROOFS_ACTION,
-          )
+      if (site === ".github/workflows/sweep.yml:event-review-apply") {
+        const directSetup = steps.find((step) => step.id === "direct-setup-state");
+        assert.match(
+          String(directSetup?.if ?? ""),
+          /execute-exact-live-proof\.outputs\.produced != 'true'/,
+          site,
         );
-      });
-      assert.ok(
-        dispatchesInJob || dispatchesInDependentJob,
-        `${site} durably publishes review records without ${DISPATCH_LIVE_PROOFS_ACTION}`,
+        continue;
+      }
+      if (site === ".github/workflows/exact-review-batch-publish.yml:publish") {
+        assert.match(
+          fs.readFileSync("scripts/prepare-exact-review-batch.mjs", "utf8"),
+          /live-proof-publish-artifacts/,
+          site,
+        );
+        continue;
+      }
+      const fold = runs.findIndex((run) => run.includes("live-proof-publish-artifacts"));
+      const publish = runs.findIndex(
+        (run) =>
+          run.includes("repair:publish-event-result") || run.includes("pnpm run apply-artifacts"),
       );
+      assert.ok(fold >= 0 && publish > fold, `${site} must fold live proof before publication`);
     }
   }
   assert.equal(publicationSites.length, 4, JSON.stringify(publicationSites));

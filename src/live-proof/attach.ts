@@ -52,6 +52,21 @@ export async function attachLiveProof(
   options: LiveProofAttachOptions,
   dependencies: LiveProofAttachDependencies,
 ): Promise<LiveProofAttachResult> {
+  return attachLiveProofInternal(options, dependencies, false);
+}
+
+export async function attachReviewLiveProofArtifact(
+  options: Omit<LiveProofAttachOptions, "dryRun">,
+  dependencies: LiveProofAttachDependencies,
+): Promise<LiveProofAttachResult> {
+  return attachLiveProofInternal({ ...options, dryRun: false }, dependencies, true);
+}
+
+async function attachLiveProofInternal(
+  options: LiveProofAttachOptions,
+  dependencies: LiveProofAttachDependencies,
+  reviewedHeadIsAuthoritative: boolean,
+): Promise<LiveProofAttachResult> {
   const env = dependencies.env ?? process.env;
   const runner = dependencies.runner ?? mediaProofCommandRunner;
   const log = dependencies.log ?? console.log;
@@ -77,7 +92,9 @@ export async function attachLiveProof(
   validateReportIdentity(report, verification, dependencies.frontMatterValue);
   const reportHead = dependencies.frontMatterValue(report, "pull_head_sha")?.toLowerCase() ?? "";
   let liveHead: string;
-  if (options.dryRun) {
+  if (reviewedHeadIsAuthoritative) {
+    liveHead = reportHead;
+  } else if (options.dryRun) {
     liveHead = reportHead;
     log("[live-proof-attach] dry-run: using the report head for the simulated live-head check");
   } else {

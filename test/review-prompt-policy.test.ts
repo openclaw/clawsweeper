@@ -587,7 +587,12 @@ test("review prompt and schema classify deterministic live-proof plans in field 
   assert.match(prompt, /docs-only edits or generated assets/);
   assert.match(prompt, /without\s+external accounts,\s+credentials, or third-party services/);
   assert.match(prompt, /reads environment variables or credential\s+stores/);
-  assert.match(prompt, /exfiltrate or display sensitive data on screen/);
+  assert.match(prompt, /exfiltrate or display sensitive data\s+on screen/);
+  assert.match(prompt, /unsandboxed code on a machine that holds credentials/);
+  assert.match(prompt, /judgment is the safety control/);
+  assert.match(prompt, /after reading the entire diff/);
+  assert.match(prompt, /new or bumped dependencies you cannot inspect/);
+  assert.match(prompt, /If unsure,\s+use `declined_suspicious`/);
   assert.match(prompt, /short burst of plain text/);
   assert.match(prompt, /quoted\s+code block/);
   assert.match(prompt, /output that streams or progresses over\s+seconds/);

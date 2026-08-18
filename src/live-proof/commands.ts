@@ -1,6 +1,7 @@
 import { boolArg, stringArg, type Args } from "../clawsweeper-args.js";
 import type { LiveProofPlan, MediaProofCommandRunner } from "../clawsweeper-types.js";
 import type { RepositoryProfile } from "../repository-profiles.js";
+import { assertLiveProofEnvironmentSanitized } from "./environment.js";
 import {
   attachLiveProof,
   detachLiveProof,
@@ -35,6 +36,12 @@ export function createLiveProofCommands(dependencies: LiveProofCommandDependenci
     const repo = requiredArg(args.repo ?? args.target_repo, "--repo");
     const item = positiveIntegerArg(args.item ?? args.item_number, "--item");
     const outputDir = requiredArg(args.output, "--output");
+    if ((dependencies.env ?? process.env).CLAWSWEEPER_SANITIZED_LIVE_PROOF === "1") {
+      assertLiveProofEnvironmentSanitized(dependencies.env ?? process.env);
+      (dependencies.log ?? console.log)(
+        "[live-proof] sanitized environment assertion passed: credentials=0",
+      );
+    }
     const executeDependencies: LiveProofExecuteDependencies = {
       repositoryProfileFor: dependencies.repositoryProfileFor,
       reportLiveProofPlan: dependencies.reportLiveProofPlan,

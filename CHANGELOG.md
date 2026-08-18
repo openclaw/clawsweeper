@@ -9,6 +9,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Removed
 
+- Deleted the separate live-proof dispatch/execute/attach workflow and its composite dispatcher; live verification now stays inside the review artifact lifecycle.
 - Deleted the retired append-window compactor end to end: the `state-materializer.yml` workflow (a runner every 20 minutes to drain zero rows), its drain module, and the producer-free `/internal/state/{append,drain,ack,dispose}` Worker endpoints plus the five `state_append_*` Durable Object tables, which are dropped on upgrade.
 - Deleted the commit-review lane (`commit-review.yml`, the hosted commit sweeper CLI commands, classifier/check publishing, and the `repair-commit-finding-intake.yml` intake) after zero successful runs in its final 20 attempts; the offline `pnpm local-review` engine and existing `commit_finding` repair jobs remain.
 - Deleted the crawl-remote production deployment system (`deploy-crawl-remote.yml`, its pinned Wrangler toolchain, and CI integration job) after three runs ever with no success.
@@ -18,12 +19,13 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Live verification now runs immediately after review in the same job and exact reviewed checkout; review judgment gates execution, target children receive a denylist-and-heuristic-sanitized environment, package installs suppress lifecycle scripts unless a repository explicitly opts in, and review jobs default to `ubuntu-latest` without requiring Linux namespaces. Existing publication jobs still validate and upload media before publishing the normal record and comment.
+- Live verification comments now keep terminal captures but render browser proof as sanitized per-step outcomes with explicit failure reasons, never document-wide page text or empty assertion sections.
 - Live verification now runs real PR behavior by default, publishes bounded command output and assertion results even without video, and treats recordings as optional presentation.
 - Browser live proofs treat scroll-into-view as best effort so continuously animated targets stay clickable.
 - Live-proof recordings can now be retracted through a trusted manual workflow dispatch without rerunning target code or requiring an artifact, manifest, or matching head SHA.
 - Live-proof recordings now wait for post-action command or page expectations, hold the final state on screen, and attach only when an initially absent expectation proves a semantic change.
-- Live-proof attachment now captures each freshly hydrated canonical single-record revision as the publication baseline before retrying conflicts, then updates the public review comment only after the record lands.
-- Live-proof attachment now supports idempotently retracting a published recording while preserving its review plan and synchronizing the public comment after canonical publication.
+- Live-proof recording retraction now uses a small trusted maintenance workflow that preserves the review plan and verification result while synchronizing the canonical record and public comment.
 - Short live-proof recordings fall back to a single poster frame when the contact-sheet tile cannot emit one.
 - Terminal recorders flush WebM packets immediately and treat a live ffmpeg session as healthy while the muxer buffers.
 - Terminal live-proof recordings tune VP9 for realtime capture and accept the recorder once any payload is written, matching the encoder's bursty muxer output.

@@ -471,15 +471,20 @@ is on screen. This is a judgment call about what a viewer would watch, never a
 judgment about whether to run; explain the presentation choice in
 `payoff.justification`.
 
-Live proof recordings are published publicly. If the diff, or the
-demonstration it would require, reads environment variables or credential
-stores, encodes or transmits data to unexpected hosts, or otherwise looks like
-it could exfiltrate or display sensitive data on screen, set
-`liveProofPlan.status: "declined_suspicious"` and do not recommend execution. If
-unsure, use `not_applicable`. For `not_applicable` and `declined_suspicious`, use
-`surface: "none"`, an empty `entry`, and an empty `steps` array. Use the same
-safe empty shape for issues, with `payoff.kind: "static_text"` and a concise
-explanation that no recording payoff was assessed.
+Live proof recordings are published publicly, and ClawSweeper will execute a
+recommended plan as unsandboxed code on a machine that holds credentials. Your
+`liveProofPlan.status: "declined_suspicious"` judgment is the safety control:
+after reading the entire diff, decline whenever it or the dependencies installed
+from its lockfiles could plausibly exfiltrate. This includes new or bumped dependencies you cannot inspect,
+as well as code that reads environment variables or credential stores, encodes or
+transmits data to unexpected hosts, or could plausibly exfiltrate or display sensitive data
+on screen. Do not recommend execution merely because package lifecycle scripts
+are disabled and the target child receives a sanitized environment. If unsure,
+use `declined_suspicious`, not `not_applicable`. For `not_applicable` and
+`declined_suspicious`, use `surface: "none"`, an empty `entry`, and an empty
+`steps` array. Use the same safe empty shape for issues, with
+`payoff.kind: "static_text"` and a concise explanation that no recording payoff
+was assessed.
 
 For PRs, also emit Codex `/review`-style findings in `reviewFindings`.
 Review the diff as another engineer's proposed patch and list every discrete,

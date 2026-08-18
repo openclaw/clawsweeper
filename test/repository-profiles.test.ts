@@ -45,6 +45,7 @@ const TERMINAL_LIVE_TEST = {
   enabled: true,
   surfaceDefault: "terminal",
   setup: ["pnpm install --frozen-lockfile"],
+  allowInstallScripts: false,
   readyTimeoutSeconds: 240,
   maxRecordingSeconds: 90,
 } as const;
@@ -172,6 +173,7 @@ test("schema v2 repository profiles strictly validate optional live_test config"
     enabled: true,
     surfaceDefault: "browser",
     setup: ["pnpm install", "pnpm build"],
+    allowInstallScripts: false,
     start: "pnpm dev",
     url: "http://localhost:3000",
     readyTimeoutSeconds: 120,
@@ -214,9 +216,27 @@ test("terminal live_test profiles may omit browser start and URL fields", () => 
     enabled: true,
     surfaceDefault: "terminal",
     setup: ["pnpm install", "pnpm build"],
+    allowInstallScripts: false,
     readyTimeoutSeconds: 120,
     maxRecordingSeconds: 90,
   });
+});
+
+test("live_test install scripts are disabled by default and require an explicit opt-in", () => {
+  const base = {
+    enabled: true,
+    surface_default: "terminal",
+    setup: ["pnpm install"],
+    ready_timeout_seconds: 120,
+    max_recording_seconds: 90,
+  };
+  const defaulted = validateTargetRepositoryConfigForTest(targetRepositoryConfig(base));
+  const optedIn = validateTargetRepositoryConfigForTest(
+    targetRepositoryConfig({ ...base, allow_install_scripts: true }),
+  );
+
+  assert.equal(defaulted.repositories[0]?.liveTest?.allowInstallScripts, false);
+  assert.equal(optedIn.repositories[0]?.liveTest?.allowInstallScripts, true);
 });
 
 test("schema v2 generic fallbacks strictly validate and inherit optional live_test config", () => {
@@ -232,6 +252,7 @@ test("schema v2 generic fallbacks strictly validate and inherit optional live_te
     enabled: true,
     surfaceDefault: "terminal",
     setup: ["pnpm install"],
+    allowInstallScripts: false,
     readyTimeoutSeconds: 120,
     maxRecordingSeconds: 90,
   });
@@ -253,6 +274,7 @@ test("configured and fallback-owned repositories expose their enabled live-proof
     enabled: true,
     surfaceDefault: "browser",
     setup: ["pnpm install --frozen-lockfile", "pnpm ui:install"],
+    allowInstallScripts: false,
     start: "pnpm dev:ui:mock",
     url: "http://127.0.0.1:5187",
     readyTimeoutSeconds: 300,
@@ -264,6 +286,7 @@ test("configured and fallback-owned repositories expose their enabled live-proof
     enabled: true,
     surfaceDefault: "browser",
     setup: ["bun install"],
+    allowInstallScripts: false,
     start: "bun run dev",
     url: "http://127.0.0.1:3000",
     readyTimeoutSeconds: 240,
@@ -276,6 +299,7 @@ test("ClawSweeper enables browser live proof with the local Bay demo", () => {
     enabled: true,
     surfaceDefault: "browser",
     setup: ["pnpm install --frozen-lockfile"],
+    allowInstallScripts: false,
     start: "./scripts/live-proof/bay-demo/start.sh",
     url: "http://127.0.0.1:8787",
     readyTimeoutSeconds: 240,

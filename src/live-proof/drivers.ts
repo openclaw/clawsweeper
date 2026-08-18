@@ -141,8 +141,9 @@ try {
   const elapsed = Date.now() - recordingStartedAt;
   await page.waitForTimeout(Math.max(${END_STATE_HOLD_MILLISECONDS}, ${MINIMUM_RECORDING_MILLISECONDS} - elapsed));
 } finally {
-  const capturedOutput = page ? await page.locator("body").innerText().catch(() => "") : "";
-  await writeFile(outputPath, capturedOutput, "utf8");
+  // Browser publication is step telemetry only. Never serialize document text
+  // into the bundle: arbitrary rendered application content is not proof.
+  await writeFile(outputPath, "", "utf8");
   if (context) await context.close().catch(() => undefined);
   if (video) {
     const videoPath = await video.path().catch(() => "");

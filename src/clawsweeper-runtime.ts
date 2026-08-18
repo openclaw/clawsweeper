@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { flushWorkflowActionEvents } from "./action-ledger-runtime.js";
-import { boolArg, parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
+import { boolArg, itemNumbersArg, parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
 import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-dispatch.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import { runText } from "./command.js";
@@ -67,11 +67,8 @@ import {
 } from "./clawsweeper-item-policy.js";
 import { createLabelPolicy } from "./clawsweeper-label-policy.js";
 import { createLiveProofCommands } from "./live-proof/commands.js";
-import {
-  captureLiveProofCanonicalBaseline,
-  isCanonicalPublicationConflict,
-  publishLiveProofAttachment,
-} from "./live-proof/publication.js";
+import { publishReviewLiveProofArtifacts } from "./live-proof/publication-artifacts.js";
+import { executeReviewLiveProofs, inspectReviewLiveProofs } from "./live-proof/review-artifacts.js";
 import { createRepositoryLinks } from "./clawsweeper-links.js";
 import { createLocalRangeReviewer } from "./clawsweeper-local-review.js";
 import { createPlanCommand } from "./clawsweeper-plan-command.js";
@@ -1470,19 +1467,21 @@ const {
   publishActionEventsCommand,
 } = actionCommands;
 
+const liveProofAttachDependencies = {
+  frontMatterValue: recordMetadata.frontMatterValue,
+  sectionValue: recordMetadata.sectionValue,
+  replaceSectionValue: recordMetadata.replaceSectionValue,
+  reviewSections: REVIEW_SECTIONS,
+  renderReviewCommentFromReport: reportOrchestration.renderReviewCommentFromReport,
+  markedReviewCommentBody: reviewCommentWorkflow.markedReviewCommentBody,
+  upsertReviewComment: reviewCommentWorkflow.upsertReviewComment,
+};
+
 const liveProofCommands = createLiveProofCommands({
   repositoryProfileFor,
   reportLiveProofPlan: reportParser.reportLiveProofPlan,
   parseLiveProofPlan: (value) => decisionParser.parseLiveProofPlan(value, "liveProofPlan"),
-  attach: {
-    frontMatterValue: recordMetadata.frontMatterValue,
-    sectionValue: recordMetadata.sectionValue,
-    replaceSectionValue: recordMetadata.replaceSectionValue,
-    reviewSections: REVIEW_SECTIONS,
-    renderReviewCommentFromReport: reportOrchestration.renderReviewCommentFromReport,
-    markedReviewCommentBody: reviewCommentWorkflow.markedReviewCommentBody,
-    upsertReviewComment: reviewCommentWorkflow.upsertReviewComment,
-  },
+  attach: liveProofAttachDependencies,
 });
 
 const liveProofCommand = liveProofCommands.liveProofCommand;
@@ -1494,98 +1493,63 @@ async function liveProofAttachCommand(args: Args): Promise<void> {
     const repo = frontMatterValue(markdown, "repository");
     if (repo) setTargetRepo(repo);
   }
-  if (boolArg(args.detach) && !boolArg(args.dry_run)) {
-    await liveProofAttachPublishCommand(args);
-    return;
-  }
   await liveProofCommands.liveProofAttachCommand(args);
 }
 
-async function liveProofAttachPublishCommand(args: Args): Promise<void> {
-  const recordPath = stringArg(args.record, "");
-  const repoSlug = stringArg(args.repo_slug, "").trim();
-  const itemText = stringArg(args.item ?? args.item_number, "").trim();
-  const item = Number(itemText);
-  if (!recordPath) throw new Error("--record is required");
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repoSlug)) {
-    throw new Error("--repo-slug is required and must be a canonical repository slug");
+function liveProofReviewCommand(args: Args): void {
+  const repo = stringArg(args.repo ?? args.target_repo, "").trim();
+  const recordsDir = stringArg(args.records_dir, "").trim();
+  const checkoutPath = stringArg(args.checkout, "").trim();
+  const outputRoot = stringArg(args.output, "").trim();
+  const itemNumbers = itemNumbersArg(args.item_numbers, args.item ?? args.item_number);
+  if (!repo || !recordsDir || !checkoutPath || !outputRoot || itemNumbers.length === 0) {
+    throw new Error(
+      "live-proof-review requires --repo, --records-dir, --checkout, --output, and --item-numbers",
+    );
   }
-  if (!/^\d+$/.test(itemText) || !Number.isSafeInteger(item) || item < 1) {
-    throw new Error("--item requires a positive safe integer");
-  }
-  if (boolArg(args.dry_run)) {
-    await liveProofCommands.liveProofAttachCommand(args);
-    return;
-  }
-  const detaching = boolArg(args.detach);
-  const recordsUrl = process.env.QUEUE_URL?.trim() || "https://clawsweeper.openclaw.ai";
-  const canonicalBaselineRoots = new Map<number, string>();
+  const options = {
+    checkoutPath,
+    entrypoint: join(ROOT, "dist", "clawsweeper.js"),
+    itemNumbers,
+    outputRoot,
+    recordsDir,
+    repo,
+  };
+  const dependencies = {
+    frontMatterValue: recordMetadata.frontMatterValue,
+    reportLiveProofPlan: reportParser.reportLiveProofPlan,
+    repositoryProfileFor,
+  };
+  const result = boolArg(args.inspect)
+    ? inspectReviewLiveProofs(options, dependencies)
+    : executeReviewLiveProofs(options, dependencies);
+  console.log(JSON.stringify(result));
+}
 
-  await publishLiveProofAttachment({
-    hydrateRecord: (attempt) => {
-      runText(
-        process.execPath,
-        [
-          join(ROOT, "scripts", "hydrate-state.ts"),
-          "--worktree",
-          ROOT,
-          "--records-url",
-          recordsUrl,
-          "--records-repo-slugs",
-          repoSlug,
-          "--records-item-number",
-          String(item),
-          "--skip-state-blobs",
-          "--skip-git-state",
-        ],
-        { cwd: ROOT, trim: "none" },
-      );
-      canonicalBaselineRoots.set(
-        attempt,
-        captureLiveProofCanonicalBaseline({
-          root: ROOT,
-          repositorySlug: repoSlug,
-          itemNumber: item,
-          attempt,
-        }),
-      );
+async function liveProofPublishArtifactsCommand(args: Args): Promise<void> {
+  const artifactDir = stringArg(args.artifact_dir, "").trim();
+  if (!artifactDir) throw new Error("live-proof-publish-artifacts requires --artifact-dir");
+  const results = await publishReviewLiveProofArtifacts(
+    artifactDir,
+    {
+      ...liveProofAttachDependencies,
+      fetchPullRequest: async () => {
+        throw new Error("merged live-proof publication must not perform a live-head lookup");
+      },
     },
-    attachRecord: async () => {
-      const markdown = readFileSync(resolve(recordPath), "utf8");
-      const repo = frontMatterValue(markdown, "repository");
-      if (repo) setTargetRepo(repo);
-      return liveProofCommands.liveProofAttachCommand(args);
-    },
-    publishRecord: (attempt) => {
-      const canonicalBaselineRoot = canonicalBaselineRoots.get(attempt);
-      if (!canonicalBaselineRoot) {
-        throw new Error(`Missing canonical live-proof baseline for attempt ${attempt}`);
-      }
-      runText(
-        "pnpm",
-        [
-          "run",
-          "repair:publish-main",
-          "--",
-          "--message",
-          detaching ? "chore: detach live proof" : "chore: attach live proof",
-          "--path",
-          recordPath,
-          "--rebase-strategy",
-          "normal",
-        ],
-        {
-          cwd: ROOT,
-          env: {
-            CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: canonicalBaselineRoot,
-          },
-          trim: "none",
-        },
-      );
-    },
-    syncComment: () => liveProofCommands.liveProofCommentCommand(args),
-    isCanonicalConflict: isCanonicalPublicationConflict,
-  });
+    (repo) => setTargetRepo(repo),
+  );
+  console.log(JSON.stringify({ results }));
+}
+
+function liveProofCommentCommand(args: Args): void {
+  const recordPath = stringArg(args.record, "");
+  if (recordPath) {
+    const markdown = readFileSync(resolve(recordPath), "utf8");
+    const repo = frontMatterValue(markdown, "repository");
+    if (repo) setTargetRepo(repo);
+  }
+  liveProofCommands.liveProofCommentCommand(args);
 }
 
 const COMMAND_HANDLERS: Readonly<Record<string, CommandHandler<Args>>> = {
@@ -1595,8 +1559,10 @@ const COMMAND_HANDLERS: Readonly<Record<string, CommandHandler<Args>>> = {
   "retry-failed-reviews": retryFailedReviewsCommand,
   "apply-artifacts": applyArtifactsCommand,
   "live-proof": liveProofCommand,
+  "live-proof-review": liveProofReviewCommand,
   "live-proof-attach": liveProofAttachCommand,
-  "live-proof-attach-publish": liveProofAttachPublishCommand,
+  "live-proof-comment": liveProofCommentCommand,
+  "live-proof-publish-artifacts": liveProofPublishArtifactsCommand,
   "apply-decisions": applyDecisionsCommand,
   "publish-action-events": publishActionEventsCommand,
   "publish-action-event-paths": publishActionEventPathsCommand,

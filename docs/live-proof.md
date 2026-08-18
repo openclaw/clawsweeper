@@ -2,118 +2,116 @@
 
 - Status: active
 - Owner: ClawSweeper review and publication maintainers
-- Source of truth: `src/live-proof/`, `.github/workflows/live-proof.yml`, and
-  repository `live_test` profiles
-- Update when: the plan schema, execution gates, media limits, storage path, or
-  comment rendering changes
+- Source of truth: `src/live-proof/`, `.github/workflows/sweep.yml`,
+  `.github/workflows/exact-review-batch-publish.yml`, and repository `live_test`
+  profiles
+- Update when: the plan schema, security boundary, execution gates, media
+  limits, storage path, or comment rendering changes
 
-Live proof turns a review-time `liveProofPlan` into a deterministic execution of
-real browser or terminal behavior, with an optional recording when the run is
-worth watching. Classification remains part of the existing read-only review.
-It records only a typed plan in the durable report; the later secretless
-execution lane runs pull request code and the trusted publication lane reports
-the result.
+Live proof turns a review-time `liveProofPlan` into deterministic browser or
+terminal execution, with an optional recording when the behavior is worth
+watching. Classification and execution now happen in the same review job. The
+review first writes its decision artifact, then immediately executes the typed
+plan against the exact `pull_head_sha` recorded in that artifact. There is no
+separate dispatch, public PR-head lookup, second hydration, or live-head check.
 
-After the report is published, both scheduled publication and exact-event
-direct delivery in `sweep.yml` dispatch `live-proof.yml` only when the plan
-status is `recommended` and the target's repository profile has
-`live_test.enabled: true`. The command then applies ordered gates for
-`CLAWSWEEPER_LIVE_PROOF_ENABLED=1`, repository opt-in, a recommended plan, a
-runnable configured surface, and a still-open pull request. The model also
-classifies only the presentation payoff: short static text belongs in the
-review as a code block, while progressive output, meaningful terminal
-presentation, animation, and UI interaction can justify something to watch. A
-`static_text` payoff still executes the real plan but bypasses all recording,
-transcoding, and poster work. Other failed gates remain successful skips,
-including a browser recommendation for a terminal-only repository that has no
-configured server or URL. `declined_suspicious` remains a strict no-execution
-gate.
+The planner gates execution in order: the repository must opt in with
+`live_test.enabled`, the item must be a pull request, and the plan must be
+`recommended` with a runnable browser or terminal surface.
+`declined_suspicious` is a strict no-execution result. A `static_text` payoff
+still runs and publishes verification, but it bypasses recording, transcoding,
+and poster generation.
 
-## Execute and attach
+## Review-job execution
 
-The workflow has two jobs with different trust. Manual dispatch defaults to
-`mode=attach`; `mode=retract` skips `execute` entirely and runs only the trusted
-publication path described below. `execute` has
-`permissions: {}`, receives no secret environment values, checks out the public
-PR head, and runs setup/start commands from the trusted repository profile. It
-contains no model call. Browser plans are serialized as JSON data into a
-generated plain `playwright-core` script; plan values are never inserted as
-source code. Recorded browser runs use installed Chrome with a 1280x800 video
-context and fall back to Playwright Chromium only when Chrome cannot launch.
-Unrecorded browser runs use the same driver without Playwright video and capture
-the final page text. Recorded terminal plans use tmux, an unauthenticated local
-Xvfb display with its TCP listener disabled, a fullscreen xterm, and ffmpeg
-`x11grab`. Unrecorded terminal plans use only tmux and capture the pane directly.
-Both paths replay typed `run`, `wait`, and `expect_output` steps.
+After the review command returns, the job inspects the produced reports before
+installing tools. tmux is installed only when a terminal candidate exists. The
+recording toolchain (`ffmpeg`, Xvfb, xterm, and related X11 tools) is installed
+only when at least one recommended plan has a non-`static_text` payoff. Review
+job timeouts include the target installation and deterministic drive. Review
+jobs default to `ubuntu-latest`; `CLAWSWEEPER_REVIEW_RUNNER` remains an optional
+runner override.
 
-Terminal commands poll for output beyond the echoed command line; browser steps
-settle briefly. Every drive writes `live-verification.json` with the
-entry command or URL, every planned step and outcome, bounded captured output,
-the overall pass/fail result, and the verified head. A failed drive therefore
-becomes useful public verification evidence instead of disappearing.
+For every candidate, trusted ClawSweeper code materializes the report's exact
+head SHA into a scratch worktree, then invokes the existing `live-proof`
+planner/driver/verifier as a normal child process. The security posture has
+three controls:
 
-Media has additional gates. Recorded drivers hold the final state on screen and
-scroll browser targets into the recorded viewport. Each expectation records
-whether its text was present at the start and whether the later check succeeded.
-A recording is eligible only when at least one expectation was absent initially
-and satisfied after the plan acted. A failed drive, a plan that demonstrates no
-such semantic change, or a recording shorter than three seconds emits no media
-manifest. Eligible completed and partial drives are transcoded to H.264 MP4 and
-probed with ffprobe. The command creates `poster.jpg`, enforces the repository's
-recording limit and a 50 MB MP4 cap, and writes `steps-log.json` plus the
-metadata-only `live-proof-manifest.json`. The manifest contains no media URL and
-is absent when the bundle carries verification without media. Bundles are
-retained as GitHub Actions artifacts for seven days.
+- The review reads the entire diff before deciding whether the plan is safe.
+  `liveProofPlan.status: declined_suspicious` is the execution gate. The prompt
+  requires that result whenever the diff or its dependencies could plausibly
+  exfiltrate, including new or bumped dependencies the reviewer cannot inspect.
+- The child receives a newly constructed environment. An explicit denylist
+  removes `OPENAI_API_KEY`, `CLAWSWEEPER_OPENCLAW_OPENAI_KEY`, `GH_TOKEN`,
+  `GITHUB_TOKEN`, and `CLAWSWEEPER_WEBHOOK_SECRET`; provider rules remove every
+  `AWS_*` and R2 variable; and a heuristic removes every name ending in
+  `*_TOKEN`, `*_KEY`, `*_SECRET`, or `*_PASSWORD`. The child asserts and reports
+  that zero matching names remain before it reads the plan, and every target
+  setup/build/run command receives the sanitized environment again.
+- Direct pnpm, npm, and Bun install commands in `live_test.setup` gain
+  `--ignore-scripts` by default. This matters because a lockfile-only dependency
+  bump can execute a dependency postinstall that never appears in the reviewed
+  diff. A repository may opt in only with the explicit
+  `live_test.allow_install_scripts: true` flag. No current repository opts in.
 
-The trusted `attach` job checks out only ClawSweeper `main`; it never checks out
-or executes target PR code. It treats the downloaded bundle as untrusted,
-strictly validates the verification result and refuses a stale PR head. When a
-media manifest exists, it also rejects extra URL fields, probes the MP4 and
-poster again, rechecks size/duration/dimensions, and confirms the media and
-verification identities match. Only then does it upload `live-proof.mp4` and
-`poster.jpg` with `aws s3 cp` to:
+Untrusted target code therefore runs unsandboxed in a credentialed review job.
+Environment sanitization reduces what the direct child inherits, but it is not
+a kernel security boundary and does not make a suspicious plan safe. Linux
+user/mount/PID/network containment remains a future hardening step; it is not a
+runner requirement today. The repair lane's separate containment remains in use
+and is unaffected by this live-proof policy.
+
+HOME, package-manager caches, and temporary files point into the scratch profile.
+
+Browser plans are serialized as JSON data into a generated plain
+`playwright-core` script; plan values are never inserted as source code.
+Recorded browser runs use installed Chrome with a 1280x800 video context and
+fall back to Playwright Chromium only when Chrome cannot launch. Browser output
+is step telemetry only: ClawSweeper never serializes document text. Recorded
+terminal plans use tmux, Xvfb with its TCP listener disabled, fullscreen xterm,
+and ffmpeg `x11grab`; unrecorded terminal plans use tmux directly.
+
+Every drive writes `live-verification.json` with the exact reviewed head, entry,
+typed steps and outcomes, bounded terminal output, and overall pass/fail result.
+A setup or drive failure still publishes verification and no media. Media is
+eligible only when an expectation was absent initially and satisfied after the
+plan acted, and the recording passes the three-second floor. Eligible recordings
+are capped at 90 seconds and 50 MB, transcoded to H.264 MP4, probed, and paired
+with `poster.jpg` plus a metadata-only manifest.
+
+## Existing artifact and publication path
+
+The review artifact contains its report plus `live-proof/<item>/` with the
+verification result and, when eligible, the manifest, MP4, and poster. The exact
+review bundle binds those files into its existing hashed inventory. No second
+live-proof artifact is uploaded.
+
+The existing publication jobs download and validate the review artifact. Before
+their normal record mutation, they fold each verification result into the review
+report. If media exists, publication re-probes it and uploads it with its own R2
+credentials to:
 
 ```text
 live-proof/<repo-slug>/<item>/<head-sha>/live-proof.mp4
 live-proof/<repo-slug>/<item>/<head-sha>/live-proof.jpg
 ```
 
-The attach job constructs both public URLs from its trusted
-`CLAWSWEEPER_LIVE_PROOF_BASE_URL`; bundle data cannot supply a host or URL. It
-updates the durable report's `Live Proof` section and always renders a public
-`Live Verification` section containing the entry, a fenced excerpt of real
-output, and per-assertion pass/fail. The recording is embedded below that result
-only when media exists. Before rendering, untrusted output is capped and
-neutralized so backtick fences, HTML, and ClawSweeper-like hidden markers cannot
-escape the code block or create comment controls. Publication then upserts the
-marker-backed comment with a target-scoped write token, updates the comment-sync
-front matter, and publishes the changed canonical record. OpenClaw Bay is
-unaffected: this lane changes a durable report and its existing GitHub comment,
-not Bay's observer-only data contract or controls.
+Public URLs are constructed only from trusted publication configuration; bundle
+data cannot supply a host. Publication validates the result against the report's
+repository, item, type, and `pull_head_sha`, but it does not query GitHub for a
+new head. The normal record publisher then writes the canonical record and the
+existing comment-sync path upserts the marker-backed review comment.
 
-## ClawSweeper Bay demo
-
-The `openclaw/clawsweeper` repository profile enables browser live proof against
-the local OpenClaw Bay at `http://127.0.0.1:8787`. Its maintained launcher and
-data seeder live in `scripts/live-proof/bay-demo/`: `start.sh` creates a
-throwaway `.dev.vars` and Wrangler state directory outside the checkout, starts
-the dashboard Worker in the foreground, and runs `seed.mjs` after the health
-endpoint becomes ready. The dependency-free Node seeder fills the local Worker
-with representative ClawSweeper lifecycle and workflow records so recordings
-show real Bay cards and stage content instead of an empty dashboard.
-
-The profile installs the PR head with `pnpm install --frozen-lockfile`, allows
-240 seconds for the Worker and seed data to become ready, and retains the
-lane-wide 90-second recording limit. The temporary signing value is generated
-for each launcher process; the demo neither requires production credentials nor
-writes a `.dev.vars` or Wrangler state into the tracked tree.
+Browser comments contain sanitized per-step outcomes and a one-line failing-step
+reason, never page text. Terminal comments retain capped output and list
+assertions only when present. All untrusted fields are bounded and neutralized
+against Markdown fences, HTML, and ClawSweeper marker spoofing. OpenClaw Bay is
+unaffected: the durable report and comment contract is unchanged, and Bay remains
+an observer-only surface.
 
 ## Local simulation
 
-The execution lane can run without GitHub or an API key against an existing
-checkout. The target repository must still have an enabled `live_test` profile.
-Pass a JSON fixture containing either the `liveProofPlan` object itself or an
-object with a `liveProofPlan` property:
+The low-level driver can still run against an existing checkout:
 
 ```bash
 CLAWSWEEPER_LIVE_PROOF_ENABLED=1 node dist/clawsweeper.js live-proof \
@@ -124,64 +122,17 @@ CLAWSWEEPER_LIVE_PROOF_ENABLED=1 node dist/clawsweeper.js live-proof \
   --output ./artifacts/live-proof
 ```
 
-`--plan` bypasses report-artifact lookup. `--checkout` uses that checkout's
-current Git HEAD and logs that the live PR kind/open lookup is skipped. The
-environment, profile, and plan-status gates still run in their normal order.
-
-To validate publication without GitHub, point the attach command at a local
-bundle and report. A verification-only bundle needs no R2 configuration. For a
-media bundle, supply non-secret example origins as below. Dry-run mode performs
-strict result/manifest/media/report validation, uses the report head for the
-simulated freshness check, and prints any `aws s3 cp` commands, the replacement
-report section, and the marker-backed comment body without making a mutation:
-
-```bash
-CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT=https://example.r2.cloudflarestorage.com \
-CLAWSWEEPER_LIVE_PROOF_BUCKET=example-live-proof \
-CLAWSWEEPER_LIVE_PROOF_BASE_URL=https://media.example.test \
-node dist/clawsweeper.js live-proof-attach \
-  --bundle ./artifacts/live-proof \
-  --record ./fixtures/report.md \
-  --dry-run
-```
+This developer command does not add sandboxing by itself. The production review
+path is `live-proof-review`, which owns exact-head materialization, environment
+sanitization, and the unsandboxed child invocation.
 
 ## Retracting a published recording
 
-Operators can retract a recording while preserving the legitimate Live Proof
-plan (status, surface, reason, entry, and steps). Detach mode needs no bundle
-and deliberately does not compare the record with the current PR head:
+Retraction remains a trusted maintenance action. Run the manual **Maintain live
+proof** workflow with the target repository and pull-request number. It removes
+only the recording block while retaining the plan and verification result, then
+publishes the canonical record and refreshes the review comment.
 
-```bash
-gh workflow run live-proof.yml \
-  --repo openclaw/clawsweeper \
-  --ref main \
-  -f mode=retract \
-  -f repo=openclaw/openclaw \
-  -f item=110714
-```
-
-The trusted job validates the target, mints its target-scoped write token, and
-hydrates only that canonical Worker record using the same setup as attachment.
-It then invokes `live-proof-attach --detach`, which removes only the
-marker-backed recording block, publishes through the normal bounded-conflict
-path, and re-renders the marker-backed GitHub comment. Retraction never
-downloads an artifact, reads a manifest, or compares a head SHA. If the block
-is already absent, it exits successfully without publishing or updating the
-comment.
-
-## Security invariants
-
-- Classification is read-only and executes no target code.
-- Execute has no GitHub permissions, secrets, credentials, or inference; the
-  disposable GitHub-hosted VM is the isolation boundary.
-- Drivers replay only schema-validated typed steps, with at most ten actions
-  and a recording cap of 90 seconds.
-- Every executed plan produces a bounded, schema-validated verification result;
-  public output is separately capped and neutralized for Markdown fences, HTML,
-  and marker spoofing.
-- The artifact manifest is metadata-only. Unknown keys, including any injected
-  URL field, are rejected by attach.
-- R2 credentials, the public base URL, the canonical-record credential, and
-  the target write token exist only in attach.
-- Attach validates media and current PR head before upload, constructs URLs
-  from trusted configuration, and never runs code from the target checkout.
+The maintenance workflow is `workflow_dispatch`-only. It never downloads a
+review artifact, executes target code, reads a media manifest, or compares a
+head SHA.

@@ -9,6 +9,7 @@ export interface RepositoryLiveTestConfig {
   enabled: boolean;
   surfaceDefault: RepositoryLiveTestSurface;
   setup: readonly string[];
+  allowInstallScripts: boolean;
   start?: string;
   url?: string;
   readyTimeoutSeconds: number;
@@ -123,6 +124,7 @@ const CORE_OPENCLAW_PROFILE: RepositoryProfile = {
     enabled: true,
     surfaceDefault: "browser",
     setup: ["pnpm install --frozen-lockfile", "pnpm ui:install"],
+    allowInstallScripts: false,
     start: "pnpm dev:ui:mock",
     url: "http://127.0.0.1:5187",
     readyTimeoutSeconds: 300,
@@ -323,6 +325,7 @@ function liveTestValue(value: unknown, label: string): RepositoryLiveTestConfig 
     "enabled",
     "surface_default",
     "setup",
+    "allow_install_scripts",
     "start",
     "url",
     "ready_timeout_seconds",
@@ -345,6 +348,10 @@ function liveTestValue(value: unknown, label: string): RepositoryLiveTestConfig 
     enabled: booleanValue(config.enabled, `${label}.enabled`),
     surfaceDefault,
     setup,
+    allowInstallScripts:
+      config.allow_install_scripts === undefined
+        ? false
+        : booleanValue(config.allow_install_scripts, `${label}.allow_install_scripts`),
     readyTimeoutSeconds: positiveIntegerValue(
       config.ready_timeout_seconds,
       `${label}.ready_timeout_seconds`,

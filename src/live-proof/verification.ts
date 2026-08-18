@@ -12,9 +12,17 @@ export interface LiveVerificationStepResult {
   action: LiveProofStep["action"];
   status: LiveVerificationStepStatus;
   detail: string;
+  subject?: string;
   assertion?: string;
   present_at_start?: boolean;
   satisfied?: boolean;
+}
+
+export interface LiveVerificationFailure {
+  phase: "step" | "execution";
+  reason: string;
+  step?: number;
+  action?: LiveProofStep["action"];
 }
 
 export interface LiveVerificationResult {
@@ -27,6 +35,7 @@ export interface LiveVerificationResult {
   drive_status: LiveProofDriveStatus;
   steps: LiveVerificationStepResult[];
   output: string;
+  failure?: LiveVerificationFailure;
   overall_pass: boolean;
   verified_at: string;
 }
@@ -41,6 +50,7 @@ const RESULT_KEYS = new Set([
   "drive_status",
   "steps",
   "output",
+  "failure",
   "overall_pass",
   "verified_at",
 ]);
@@ -48,10 +58,12 @@ const STEP_KEYS = new Set([
   "action",
   "status",
   "detail",
+  "subject",
   "assertion",
   "present_at_start",
   "satisfied",
 ]);
+const FAILURE_KEYS = new Set(["phase", "reason", "step", "action"]);
 const ACTIONS = new Set([
   "goto",
   "click",
@@ -76,6 +88,7 @@ export function buildLiveVerificationResult(options: {
 }): LiveVerificationResult {
   const steps = options.plan.steps.map((step, index): LiveVerificationStepResult => {
     const logged = options.stepLog[index];
+    const subject = liveProofStepSubject(step);
     const assertion =
       step.action === "expect_text" || step.action === "expect_output" ? step.text : undefined;
     if (!logged || logged.action !== step.action) {
@@ -83,6 +96,7 @@ export function buildLiveVerificationResult(options: {
         action: step.action,
         status: "not_run",
         detail: "not run after an earlier step failed",
+        ...(subject ? { subject } : {}),
         ...(assertion ? { assertion } : {}),
         ...(assertion ? { present_at_start: false, satisfied: false } : {}),
       };
@@ -93,6 +107,7 @@ export function buildLiveVerificationResult(options: {
       action: step.action,
       status: logged.status,
       detail: trimText(logged.detail, 1_000),
+      ...(subject ? { subject } : {}),
       ...(assertion ? { assertion } : {}),
       ...(expectation
         ? {
@@ -102,6 +117,13 @@ export function buildLiveVerificationResult(options: {
         : {}),
     };
   });
+  const overallPass =
+    options.driveStatus === "completed" &&
+    steps.every(
+      (step) =>
+        step.status === "completed" && (step.satisfied === undefined || step.satisfied === true),
+    );
+  const failure = overallPass ? undefined : buildLiveVerificationFailure(steps, options.output);
   return {
     schema_version: 1,
     repo: options.repo,
@@ -111,13 +133,12 @@ export function buildLiveVerificationResult(options: {
     entry: options.plan.entry,
     drive_status: options.driveStatus,
     steps,
-    output: trimText(options.output, LIVE_VERIFICATION_OUTPUT_MAX_CHARS),
-    overall_pass:
-      options.driveStatus === "completed" &&
-      steps.every(
-        (step) =>
-          step.status === "completed" && (step.satisfied === undefined || step.satisfied === true),
-      ),
+    output:
+      options.plan.surface === "browser"
+        ? ""
+        : trimText(options.output, LIVE_VERIFICATION_OUTPUT_MAX_CHARS),
+    ...(failure ? { failure } : {}),
+    overall_pass: overallPass,
     verified_at: options.verifiedAt,
   };
 }
@@ -155,6 +176,7 @@ export function parseLiveVerificationResult(value: unknown): LiveVerificationRes
       `live verification result.output must be at most ${LIVE_VERIFICATION_OUTPUT_MAX_CHARS} characters`,
     );
   }
+  const failure = record.failure === undefined ? undefined : parseFailure(record.failure, steps);
   if (!["completed", "partial", "failed"].includes(String(record.drive_status))) {
     throw new Error("live verification result.drive_status is invalid");
   }
@@ -169,6 +191,9 @@ export function parseLiveVerificationResult(value: unknown): LiveVerificationRes
     );
   if (record.overall_pass !== derivedOverallPass) {
     throw new Error("live verification result.overall_pass does not match its step outcomes");
+  }
+  if (record.overall_pass && failure) {
+    throw new Error("live verification result.failure is not allowed for a passing result");
   }
   const verifiedAt = requireSingleLine(
     record.verified_at,
@@ -191,6 +216,7 @@ export function parseLiveVerificationResult(value: unknown): LiveVerificationRes
     drive_status: record.drive_status as LiveProofDriveStatus,
     steps,
     output,
+    ...(failure ? { failure } : {}),
     overall_pass: record.overall_pass,
     verified_at: verifiedAt,
   };
@@ -216,27 +242,50 @@ export function decodeLiveVerificationReportPayload(value: string): LiveVerifica
 
 export function renderLiveVerificationCommentBlock(result: LiveVerificationResult): string {
   const parsed = parseLiveVerificationResult(result);
-  const assertions = parsed.steps.filter((step) => step.assertion !== undefined);
-  const assertionLines = assertions.length
-    ? assertions.map((step) => {
-        const passed = step.status === "completed" && step.satisfied === true;
-        return `- ${passed ? "PASS" : "FAIL"} \`${sanitizeInline(step.action)}\`: ${sanitizeInline(step.assertion ?? "")}`;
-      })
-    : ["- None recorded."];
-  const output = sanitizeUntrustedOutput(parsed.output || "<no output captured>");
-  return [
-    `**Command:** \`${sanitizeInline(parsed.entry)}\``,
+  const resultLine = `**Result:** ${parsed.overall_pass ? "PASS" : "FAIL"} (${parsed.drive_status})${parsed.overall_pass ? "" : ` — ${renderFailureSummary(parsed)}`}`;
+  const lines = [
+    `**${parsed.surface === "browser" ? "Entry" : "Command"}:** \`${sanitizeInline(parsed.entry)}\``,
     "",
-    `**Result:** ${parsed.overall_pass ? "PASS" : "FAIL"} (${parsed.drive_status})`,
+    resultLine,
+  ];
+  if (parsed.surface === "browser") {
+    const executed = parsed.steps.filter((step) => step.status !== "not_run");
+    if (executed.length) {
+      lines.push(
+        "",
+        "**Steps:**",
+        "",
+        ...executed.map((step) => {
+          const passed = step.status === "completed";
+          const subject = step.subject ? ` \`${sanitizeInline(step.subject)}\`` : "";
+          const reason =
+            step.status === "failed" ? ` — \`${sanitizeInline(oneLineReason(step.detail))}\`` : "";
+          return `- ${passed ? "PASS" : "FAIL"} \`${sanitizeInline(step.action)}\`${subject}${reason}`;
+        }),
+      );
+    }
+    return lines.join("\n");
+  }
+
+  lines.push(
     "",
     "```text",
-    output,
+    sanitizeUntrustedOutput(parsed.output || "<no output captured>"),
     "```",
-    "",
-    "**Assertions:**",
-    "",
-    ...assertionLines,
-  ].join("\n");
+  );
+  const assertions = parsed.steps.filter((step) => step.assertion !== undefined);
+  if (assertions.length) {
+    lines.push(
+      "",
+      "**Assertions:**",
+      "",
+      ...assertions.map((step) => {
+        const passed = step.status === "completed" && step.satisfied === true;
+        return `- ${passed ? "PASS" : "FAIL"} \`${sanitizeInline(step.action)}\`: ${sanitizeInline(step.assertion ?? "")}`;
+      }),
+    );
+  }
+  return lines.join("\n");
 }
 
 export function sanitizeUntrustedOutput(value: string): string {
@@ -260,6 +309,10 @@ function parseStep(value: unknown, index: number): LiveVerificationStepResult {
   }
   const detail = requireString(record.detail, `${label}.detail`);
   if (detail.length > 1_000) throw new Error(`${label}.detail must be at most 1000 characters`);
+  const subject =
+    record.subject === undefined
+      ? undefined
+      : requireBoundedString(record.subject, `${label}.subject`, 4_000);
   const isAssertion = action === "expect_text" || action === "expect_output";
   const assertion =
     record.assertion === undefined
@@ -278,6 +331,7 @@ function parseStep(value: unknown, index: number): LiveVerificationStepResult {
     action: action as LiveProofStep["action"],
     status: record.status as LiveVerificationStepStatus,
     detail,
+    ...(subject !== undefined ? { subject } : {}),
     ...(assertion !== undefined ? { assertion } : {}),
     ...(isAssertion
       ? {
@@ -288,8 +342,119 @@ function parseStep(value: unknown, index: number): LiveVerificationStepResult {
   };
 }
 
+function parseFailure(
+  value: unknown,
+  steps: readonly LiveVerificationStepResult[],
+): LiveVerificationFailure {
+  const label = "live verification result.failure";
+  const record = requireRecord(value, label);
+  rejectUnexpectedKeys(record, FAILURE_KEYS, label);
+  if (record.phase !== "step" && record.phase !== "execution") {
+    throw new Error(`${label}.phase must be step or execution`);
+  }
+  const reason = requireSingleLine(record.reason, `${label}.reason`, 1_000);
+  if (record.phase === "execution") {
+    if (record.step !== undefined || record.action !== undefined) {
+      throw new Error(`${label} execution failures cannot name a plan step`);
+    }
+    return { phase: "execution", reason };
+  }
+  const step = requirePositiveInteger(record.step, `${label}.step`);
+  const action = requireSingleLine(record.action, `${label}.action`, 50);
+  if (!ACTIONS.has(action)) throw new Error(`${label}.action is invalid`);
+  const failed = steps[step - 1];
+  if (!failed || failed.status !== "failed" || failed.action !== action) {
+    throw new Error(`${label} does not match the failed step outcome`);
+  }
+  return { phase: "step", reason, step, action: action as LiveProofStep["action"] };
+}
+
+function buildLiveVerificationFailure(
+  steps: readonly LiveVerificationStepResult[],
+  output: string,
+): LiveVerificationFailure {
+  const failedIndex = steps.findIndex((step) => step.status === "failed");
+  if (failedIndex >= 0) {
+    const failed = steps[failedIndex]!;
+    return {
+      phase: "step",
+      reason: oneLineReason(failed.detail),
+      step: failedIndex + 1,
+      action: failed.action,
+    };
+  }
+  return {
+    phase: "execution",
+    reason: oneLineReason(output || "driver exited unsuccessfully without a captured reason"),
+  };
+}
+
+function liveProofStepSubject(step: LiveProofStep): string {
+  switch (step.action) {
+    case "goto":
+      return step.path;
+    case "click":
+    case "wait_for":
+      return step.target;
+    case "fill":
+      return `${step.target} ← ${step.value}`;
+    case "press":
+      return step.key;
+    case "wait":
+      return `${step.seconds}s`;
+    case "expect_text":
+    case "expect_output":
+      return step.text;
+    case "run":
+      return step.command;
+  }
+}
+
+function renderFailureSummary(result: LiveVerificationResult): string {
+  const failure =
+    result.failure ??
+    (() => {
+      const failedIndex = result.steps.findIndex((step) => step.status === "failed");
+      if (failedIndex >= 0) {
+        const failed = result.steps[failedIndex]!;
+        return {
+          phase: "step" as const,
+          reason: oneLineReason(failed.detail),
+          step: failedIndex + 1,
+          action: failed.action,
+        };
+      }
+      return {
+        phase: "execution" as const,
+        reason: oneLineReason(
+          result.output || "driver exited unsuccessfully without a captured reason",
+        ),
+      };
+    })();
+  if (failure.phase === "step") {
+    const step = result.steps[(failure.step ?? 1) - 1];
+    const subject = step?.subject ? ` \`${sanitizeInline(step.subject)}\`` : "";
+    return `step ${failure.step} \`${sanitizeInline(failure.action ?? step?.action ?? "unknown")}\`${subject}: \`${sanitizeInline(failure.reason)}\``;
+  }
+  const next = result.steps.findIndex((step) => step.status === "not_run");
+  const before =
+    next >= 0 ? ` before step ${next + 1} \`${sanitizeInline(result.steps[next]!.action)}\`` : "";
+  return `execution${before}: \`${sanitizeInline(failure.reason)}\``;
+}
+
 function sanitizeInline(value: string): string {
   return sanitizeUntrustedOutput(value).replaceAll("\n", " ").slice(0, 2_000);
+}
+
+function oneLineReason(value: string): string {
+  const firstLine =
+    value
+      .replaceAll("\r\n", "\n")
+      .replace(/[\r\u2028\u2029]/g, "\n")
+      .split("\n")
+      .map((line) => line.trim())
+      .find(Boolean) ?? "driver exited unsuccessfully without a captured reason";
+  return firstLine.slice(0, 1_000);
 }
 
 function trimText(value: string, maxChars: number): string {
@@ -316,6 +481,14 @@ function rejectUnexpectedKeys(
 function requireString(value: unknown, label: string): string {
   if (typeof value !== "string") throw new Error(`${label} must be a string`);
   return value;
+}
+
+function requireBoundedString(value: unknown, label: string, maxChars: number): string {
+  const string = requireString(value, label);
+  if (string.length > maxChars) {
+    throw new Error(`${label} must be at most ${maxChars} characters`);
+  }
+  return string;
 }
 
 function requireSingleLine(value: unknown, label: string, maxChars: number): string {

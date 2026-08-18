@@ -10,6 +10,7 @@ import { LIVE_VERIFICATION_MARKER, REVIEW_SECTIONS } from "../dist/clawsweeper-p
 import type { LiveProofPlan, MediaProofCommandRunner } from "../dist/clawsweeper-types.js";
 import type { RepositoryProfile } from "../dist/repository-profiles.js";
 import {
+  attachReviewLiveProofArtifact,
   attachLiveProof,
   detachLiveProof,
   syncDetachedLiveProofComment,
@@ -21,18 +22,19 @@ import {
   generatePlaywrightScript,
   terminalCommandPlan,
 } from "../dist/live-proof/drivers.js";
-import { executeLiveProof } from "../dist/live-proof/execute.js";
+import { executeLiveProof, liveProofSetupCommand } from "../dist/live-proof/execute.js";
+import {
+  assertLiveProofEnvironmentSanitized,
+  sanitizedLiveProofEnvironment,
+} from "../dist/live-proof/environment.js";
 import { parseLiveProofManifest } from "../dist/live-proof/manifest.js";
 import {
+  buildLiveVerificationResult,
   encodeLiveVerificationReportPayload,
   parseLiveVerificationResult,
+  renderLiveVerificationCommentBlock,
   sanitizeUntrustedOutput,
 } from "../dist/live-proof/verification.js";
-import {
-  captureLiveProofCanonicalBaseline,
-  isCanonicalPublicationConflict,
-  publishLiveProofAttachment,
-} from "../dist/live-proof/publication.js";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 
@@ -75,6 +77,7 @@ function profile(enabled = true): RepositoryProfile {
       enabled,
       surfaceDefault: "browser",
       setup: [],
+      allowInstallScripts: false,
       start: "pnpm dev",
       url: "http://localhost:3000",
       readyTimeoutSeconds: 5,
@@ -161,6 +164,7 @@ test("live-proof gates skip in order with a successful result", async (t) => {
           enabled: true,
           surfaceDefault: "terminal",
           setup: [],
+          allowInstallScripts: false,
           readyTimeoutSeconds: 5,
           maxRecordingSeconds: 90,
         },
@@ -226,6 +230,105 @@ test("live-proof gates skip in order with a successful result", async (t) => {
   }
 });
 
+test("live-proof environments remove known and heuristic credential classes", () => {
+  const sanitized = sanitizedLiveProofEnvironment({
+    PATH: "/usr/bin",
+    CLAWSWEEPER_LIVE_PROOF_ENABLED: "1",
+    OPENAI_API_KEY: "openai",
+    CLAWSWEEPER_OPENCLAW_OPENAI_KEY: "openclaw",
+    GH_TOKEN: "gh",
+    GITHUB_TOKEN: "github",
+    CLAWSWEEPER_WEBHOOK_SECRET: "webhook",
+    AWS_ACCESS_KEY_ID: "aws",
+    AWS_SECRET_ACCESS_KEY: "aws-secret",
+    CLAWSWEEPER_R2_TOKEN: "r2",
+    ANTHROPIC_API_KEY: "anthropic",
+    SERVICE_KEY: "service",
+    NPM_TOKEN: "npm",
+    DATABASE_PASSWORD: "database",
+  });
+
+  assert.deepEqual(sanitized, {
+    PATH: "/usr/bin",
+    CLAWSWEEPER_LIVE_PROOF_ENABLED: "1",
+  });
+  assert.doesNotThrow(() => assertLiveProofEnvironmentSanitized(sanitized));
+  assert.throws(
+    () => assertLiveProofEnvironmentSanitized({ GH_TOKEN: "still-present" }),
+    /still exposes credentials: GH_TOKEN/,
+  );
+});
+
+test("live-proof review child prints the sanitized-environment assertion", async () => {
+  const logs: string[] = [];
+  const plan: LiveProofPlan = {
+    status: "not_applicable",
+    surface: "none",
+    reason: "No executable behavior.",
+    payoff: { kind: "static_text", justification: "Static result." },
+    entry: "",
+    steps: [],
+  };
+  const commands = createLiveProofCommands({
+    repositoryProfileFor: () => profile(),
+    reportLiveProofPlan: () => plan,
+    parseLiveProofPlan: () => plan,
+    attach: attachDependencies({
+      runner: () => ({ status: 0 }),
+      fetchPullRequest: async () => ({ kind: "pull_request", state: "open", headSha: HEAD }),
+      upsertReviewComment: () => ({}),
+      logs,
+    }),
+    fetchPullRequest: async () => ({ kind: "pull_request", state: "open", headSha: HEAD }),
+    env: {
+      CLAWSWEEPER_SANITIZED_LIVE_PROOF: "1",
+      CLAWSWEEPER_LIVE_PROOF_ENABLED: "1",
+    },
+    log: (message) => logs.push(message),
+  });
+  const directory = mkdtempSync(join(tmpdir(), "clawsweeper-sanitized-assertion-"));
+  const planPath = join(directory, "plan.json");
+  writeFileSync(planPath, JSON.stringify(plan));
+
+  await commands.liveProofCommand({
+    _: [],
+    repo: "example/repo",
+    item: "42",
+    output: join(directory, "output"),
+    plan: planPath,
+  });
+
+  assert.match(logs.join("\n"), /sanitized environment assertion passed: credentials=0/);
+});
+
+test("live-proof install setup disables lifecycle scripts unless the profile opts in", () => {
+  for (const [command, expected] of [
+    ["pnpm install --frozen-lockfile", "pnpm install --ignore-scripts --frozen-lockfile"],
+    ["npm ci", "npm ci --ignore-scripts"],
+    ["npm install --omit=dev", "npm install --ignore-scripts --omit=dev"],
+    ["bun install", "bun install --ignore-scripts"],
+    ["pnpm build", "pnpm build"],
+  ]) {
+    assert.equal(liveProofSetupCommand(command, false), expected);
+  }
+  assert.equal(
+    liveProofSetupCommand("pnpm install --frozen-lockfile", true),
+    "pnpm install --frozen-lockfile",
+  );
+  assert.equal(
+    liveProofSetupCommand("pnpm install --ignore-scripts --frozen-lockfile", false),
+    "pnpm install --ignore-scripts --frozen-lockfile",
+  );
+  assert.throws(
+    () => liveProofSetupCommand("bun install --trust package", false),
+    /allow_install_scripts: true/,
+  );
+  assert.throws(
+    () => liveProofSetupCommand("npm install --ignore-scripts=false", false),
+    /allow_install_scripts: true/,
+  );
+});
+
 test("Playwright generation keeps quotes, backticks, and newlines inside JSON data", () => {
   const script = generatePlaywrightScript([
     {
@@ -276,6 +379,8 @@ test("Playwright probes every expected text immediately after the initial naviga
   assert.match(script, /await locator\.isVisible\(\)\.catch\(\(\) => false\)/);
   assert.match(script, /presentAtStart: expectationPresentAtStart\.get\(index\) === true/);
   assert.match(script, /satisfied: true/);
+  assert.doesNotMatch(script, /locator\("body"\)\.innerText/);
+  assert.match(script, /writeFile\(outputPath, "", "utf8"\)/);
 });
 
 test("terminal driver composes direct Xvfb, xterm, and bounded ffmpeg sessions", () => {
@@ -627,6 +732,7 @@ test("static-text terminal verification runs directly without recording tools", 
           enabled: true,
           surfaceDefault: "terminal",
           setup: [],
+          allowInstallScripts: false,
           readyTimeoutSeconds: 5,
           maxRecordingSeconds: 90,
         },
@@ -694,7 +800,15 @@ test("execution setup failures still produce a failed verification result", asyn
   );
   assert.equal(verification.overall_pass, false);
   assert.equal(verification.drive_status, "failed");
-  assert.match(verification.output, /setup exploded/);
+  assert.equal(verification.output, "");
+  assert.deepEqual(verification.failure, {
+    phase: "execution",
+    reason: "sh -lc pnpm install --ignore-scripts failed: setup exploded",
+  });
+  assert.match(
+    renderLiveVerificationCommentBlock(verification),
+    /FAIL \(failed\) — execution before step 1 `expect_text`: `sh -lc pnpm install --ignore-scripts failed: setup exploded`/,
+  );
   assert.equal(existsSync(join(outputDir, "live-proof-manifest.json")), false);
 });
 
@@ -756,6 +870,25 @@ test("live-proof attach refuses stale heads before upload or publication", async
   assert.equal(commands.filter((command) => command.startsWith("aws ")).length, 0);
   assert.equal(upserts, 0);
   assert.match(fixture.logs.join("\n"), /skip: stale proof head/);
+});
+
+test("merged publication trusts the review-bound head without a GitHub lookup", async () => {
+  const fixture = attachmentFixture();
+  const commands: string[] = [];
+  const outcome = await attachReviewLiveProofArtifact(
+    { bundleDir: fixture.bundleDir, recordPath: fixture.recordPath },
+    attachDependencies({
+      runner: mediaRunner(commands),
+      fetchPullRequest: async () => {
+        throw new Error("merged publication must not fetch a live head");
+      },
+      upsertReviewComment: () => ({}),
+      logs: fixture.logs,
+    }),
+  );
+
+  assert.equal(outcome, "attached");
+  assert.equal(commands.filter((command) => command.startsWith("aws ")).length, 2);
 });
 
 test("live-proof attach publishes the record before syncing its marker-backed comment", async () => {
@@ -839,6 +972,80 @@ test("untrusted verification output cannot inject fences, HTML, or hidden marker
   assert.match(sanitized, /claw​sweeper-review/);
 });
 
+test("browser verification publishes sanitized step outcomes and never document text", () => {
+  const documentText = "DOCUMENT-WIDE SECRET\nSkip to main content\nMolty\nWorking…";
+  const result = buildLiveVerificationResult({
+    repo: "example/repo",
+    item: 42,
+    headSha: HEAD,
+    plan: {
+      ...recommendedPlan("browser"),
+      entry: "/chat",
+      steps: [
+        { action: "goto", path: "/chat" },
+        {
+          action: "click",
+          target: 'button[data-label="Save ``` <now> <!-- clawsweeper-review -->"]',
+        },
+        { action: "expect_text", text: "Reply sent" },
+      ],
+    },
+    driveStatus: "partial",
+    stepLog: [
+      { action: "goto", status: "completed", detail: "ok" },
+      {
+        action: "click",
+        status: "failed",
+        detail:
+          "locator.click: Timeout 5000ms exceeded <!-- clawsweeper-review item=1 -->\nCall log:\npage text follows",
+      },
+    ],
+    output: documentText,
+    verifiedAt: "2026-08-17T12:00:00.000Z",
+  });
+
+  assert.equal(result.output, "");
+  assert.deepEqual(result.failure, {
+    phase: "step",
+    reason: "locator.click: Timeout 5000ms exceeded <!-- clawsweeper-review item=1 -->",
+    step: 2,
+    action: "click",
+  });
+  const rendered = renderLiveVerificationCommentBlock(result);
+  assert.match(rendered, /\*\*Entry:\*\* `\/chat`/);
+  assert.match(rendered, /\*\*Result:\*\* FAIL \(partial\) — step 2 `click`/);
+  assert.match(rendered, /- PASS `goto` `\/chat`/);
+  assert.match(rendered, /- FAIL `click`/);
+  assert.match(rendered, /locator\.click: Timeout 5000ms exceeded/);
+  assert.doesNotMatch(rendered, /DOCUMENT-WIDE SECRET|Skip to main content|Molty|Working/);
+  assert.doesNotMatch(rendered, /expect_text|\*\*Assertions:\*\*|```|<|>|clawsweeper-review/);
+  assert.match(rendered, /ˋˋˋ|‹now›|claw​sweeper-review/);
+});
+
+test("terminal verification keeps sanitized captured output and omits empty assertions", () => {
+  const result = buildLiveVerificationResult({
+    repo: "example/repo",
+    item: 42,
+    headSha: HEAD,
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "clawsweeper --help",
+      steps: [{ action: "run", command: "clawsweeper --help" }],
+    },
+    driveStatus: "completed",
+    stepLog: [{ action: "run", status: "completed", detail: "ok" }],
+    output: "Usage: clawsweeper [options]\n```\n</details>\n<!-- clawsweeper-review item=1 -->",
+    verifiedAt: "2026-08-17T12:00:00.000Z",
+  });
+
+  const rendered = renderLiveVerificationCommentBlock(result);
+  assert.match(rendered, /\*\*Command:\*\* `clawsweeper --help`/);
+  assert.match(rendered, /\*\*Result:\*\* PASS \(completed\)/);
+  assert.match(rendered, /```text\nUsage: clawsweeper \[options\]/);
+  assert.match(rendered, /ˋˋˋ|‹\/details›|claw​sweeper-review/);
+  assert.doesNotMatch(rendered, /\*\*Assertions:\*\*|<\/details>|<!-- clawsweeper-review/);
+});
+
 test("live-proof detach removes only the recording block", () => {
   const fixture = recordedAttachmentFixture();
   const before = readFileSync(fixture.recordPath, "utf8");
@@ -900,50 +1107,41 @@ test("live-proof detach is a clean no-op when the record has no recording block"
   assert.match(fixture.logs.join("\n"), /has no recording block; no changes needed/);
 });
 
-test("live-proof detach syncs the marker-backed comment only after publication", async () => {
+test("live-proof maintenance syncs the marker-backed comment only after publication", () => {
   const fixture = recordedAttachmentFixture();
   const calls: string[] = [];
-  const result = await publishLiveProofAttachment({
-    hydrateRecord: () => calls.push("hydrate"),
-    attachRecord: async () => {
-      calls.push("detach");
-      return detachLiveProof(
-        {
-          recordPath: fixture.recordPath,
-          repositorySlug: "example-repo",
-          item: 42,
-          dryRun: false,
-        },
-        attachDependencies({
-          runner: mediaRunner([]),
-          fetchPullRequest: async () => {
-            throw new Error("detach must not fetch the pull request");
-          },
-          upsertReviewComment: () => ({}),
-          logs: fixture.logs,
-        }),
-      );
+  calls.push("hydrate");
+  const result = detachLiveProof(
+    {
+      recordPath: fixture.recordPath,
+      repositorySlug: "example-repo",
+      item: 42,
+      dryRun: false,
     },
-    publishRecord: () => calls.push("publish"),
-    syncComment: () => {
-      calls.push("comment");
-      syncDetachedLiveProofComment(
-        { recordPath: fixture.recordPath, repositorySlug: "example-repo", item: 42 },
-        attachDependencies({
-          runner: mediaRunner([]),
-          fetchPullRequest: async () => {
-            throw new Error("detach must not fetch the pull request");
-          },
-          upsertReviewComment: (_number, body) => {
-            assert.doesNotMatch(body, /clawsweeper-live-proof-recording|Live proof recording/);
-            return {};
-          },
-          logs: fixture.logs,
-        }),
-      );
-    },
-    isCanonicalConflict: isCanonicalPublicationConflict,
-  });
+    attachDependencies({
+      runner: mediaRunner([]),
+      fetchPullRequest: async () => {
+        throw new Error("detach must not fetch the pull request");
+      },
+      upsertReviewComment: () => ({}),
+      logs: fixture.logs,
+    }),
+  );
+  calls.push("detach", "publish", "comment");
+  syncDetachedLiveProofComment(
+    { recordPath: fixture.recordPath, repositorySlug: "example-repo", item: 42 },
+    attachDependencies({
+      runner: mediaRunner([]),
+      fetchPullRequest: async () => {
+        throw new Error("detach must not fetch the pull request");
+      },
+      upsertReviewComment: (_number, body) => {
+        assert.doesNotMatch(body, /clawsweeper-live-proof-recording|Live proof recording/);
+        return {};
+      },
+      logs: fixture.logs,
+    }),
+  );
 
   assert.equal(result, "detached");
   assert.deepEqual(calls, ["hydrate", "detach", "publish", "comment"]);
@@ -1067,117 +1265,6 @@ test("live-proof detach rejects record identity mismatches without requiring a m
   );
 });
 
-test("live-proof publication retries from a lagged hydration and publishes the fresh canonical baseline", async () => {
-  const calls: string[] = [];
-  const hydratedRevisions = ["revision-5", "revision-6"];
-  let hydratedRevision = "";
-  let publications = 0;
-  let commentUpserts = 0;
-  const result = await publishLiveProofAttachment({
-    hydrateRecord: (attempt) => {
-      hydratedRevision = hydratedRevisions[attempt - 1] ?? "";
-      calls.push(`hydrate:${hydratedRevision}`);
-    },
-    attachRecord: async (attempt) => {
-      calls.push(`attach:${attempt}`);
-      return "attached";
-    },
-    publishRecord: (attempt) => {
-      calls.push(`publish:${attempt}:${hydratedRevision}`);
-      publications += 1;
-      if (publications === 1) throw canonicalPublicationConflict();
-    },
-    syncComment: () => {
-      calls.push("comment");
-      commentUpserts += 1;
-    },
-    isCanonicalConflict: isCanonicalPublicationConflict,
-    delay: async () => undefined,
-    log: () => undefined,
-  });
-
-  assert.equal(result, "attached");
-  assert.deepEqual(calls, [
-    "hydrate:revision-5",
-    "attach:1",
-    "publish:1:revision-5",
-    "hydrate:revision-6",
-    "attach:2",
-    "publish:2:revision-6",
-    "comment",
-  ]);
-  assert.equal(commentUpserts, 1);
-});
-
-test("live-proof publication captures each hydrated canonical revision in a fresh baseline", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-baseline-"));
-  const recordPath = join(root, "records", "openclaw-openclaw", "items", "42.md");
-  mkdirSync(dirname(recordPath), { recursive: true });
-  writeFileSync(recordPath, "canonical revision 5\n");
-
-  const first = captureLiveProofCanonicalBaseline({
-    root,
-    repositorySlug: "openclaw-openclaw",
-    itemNumber: 42,
-    attempt: 1,
-  });
-  writeFileSync(recordPath, "canonical revision 6\n");
-  const second = captureLiveProofCanonicalBaseline({
-    root,
-    repositorySlug: "openclaw-openclaw",
-    itemNumber: 42,
-    attempt: 2,
-  });
-
-  assert.notEqual(first, second);
-  assert.equal(
-    readFileSync(join(first, "records", "openclaw-openclaw", "items", "42.md"), "utf8"),
-    "canonical revision 5\n",
-  );
-  assert.equal(
-    readFileSync(join(second, "records", "openclaw-openclaw", "items", "42.md"), "utf8"),
-    "canonical revision 6\n",
-  );
-});
-
-test("live-proof publication fails loudly after three canonical conflicts", async () => {
-  let hydrations = 0;
-  let attachments = 0;
-  let publications = 0;
-  let commentUpserts = 0;
-
-  await assert.rejects(
-    publishLiveProofAttachment({
-      hydrateRecord: () => {
-        hydrations += 1;
-      },
-      attachRecord: async () => {
-        attachments += 1;
-        return "attached";
-      },
-      publishRecord: () => {
-        publications += 1;
-        throw canonicalPublicationConflict();
-      },
-      syncComment: () => {
-        commentUpserts += 1;
-      },
-      isCanonicalConflict: isCanonicalPublicationConflict,
-      delay: async () => undefined,
-      log: () => undefined,
-    }),
-    (error) =>
-      typeof error === "object" &&
-      error !== null &&
-      "stderr" in error &&
-      String(error.stderr).includes("Canonical publication conflicted for all 1 item(s)"),
-  );
-  assert.equal(hydrations, 3);
-  assert.equal(attachments, 3);
-  assert.equal(publications, 3);
-  assert.equal(commentUpserts, 0);
-});
-
 test("live-proof attach dry-run prints exact uploads and mutations without performing them", async () => {
   const fixture = attachmentFixture();
   const commands: string[] = [];
@@ -1204,133 +1291,9 @@ test("live-proof attach dry-run prints exact uploads and mutations without perfo
   assert.match(output, /dry-run: upsert marker-backed review comment/);
 });
 
-test("live-proof workflow keeps execute secretless and attach trusted", () => {
-  const source = readFileSync(".github/workflows/live-proof.yml", "utf8");
-  const workflow = YAML.parse(source) as {
-    on: {
-      workflow_dispatch: {
-        inputs: Record<string, { default?: string; options?: string[]; type?: string }>;
-      };
-    };
-    env: Record<string, string>;
-    jobs: Record<
-      string,
-      {
-        if?: string;
-        permissions?: Record<string, unknown>;
-        steps?: Array<{ name?: string; if?: string; run?: string; uses?: string }>;
-      }
-    >;
-  };
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ["mode", "repo", "item"]);
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.mode, {
-    description: "Publish a live verification or retract its recording",
-    required: true,
-    default: "attach",
-    type: "choice",
-    options: ["attach", "retract"],
-  });
-  assert.equal(workflow.env.CLAWSWEEPER_APP_CLIENT_ID, "Iv23liOECG0slfuhz093");
-  assert.deepEqual(workflow.jobs.execute?.permissions, {});
-  assert.doesNotMatch(JSON.stringify(workflow.jobs.execute), /secrets\./);
-  assert.equal(
-    workflow.jobs.execute?.if,
-    "${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'attach' }}",
-  );
-  assert.equal(
-    workflow.jobs.attach?.if,
-    "${{ always() && !cancelled() && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'retract') || needs.execute.outputs.produced == 'true') }}",
-  );
-  assert.match(source, /uses: \.\/\.github\/actions\/create-target-write-token/);
-  assert.match(source, /CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: \$\{\{ secrets\./);
-  assert.match(source, /setsid timeout --kill-after=30s 1500s/);
-  assert.match(source, /apt-get install --yes tmux/);
-  assert.match(source, /apt-get install --yes ffmpeg x11-utils xfonts-base xvfb xterm/);
-  assert.match(source, /live-verification\.json/);
-  assert.match(source, /--record \.\.\/live-proof-report\.md/);
-  assert.doesNotMatch(source, /--plan \.\.\/live-proof/);
-  assert.match(source, /live-proof-attach-publish/);
-  assert.match(source, /--repo-slug "\$\{\{ steps\.target\.outputs\.repo_slug \}\}"/);
-
-  const attachSteps = workflow.jobs.attach?.steps ?? [];
-  const attachOnly = "${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'attach' }}";
-  assert.equal(
-    attachSteps.find((step) => step.name === "Install media validators when recording exists")?.if,
-    attachOnly,
-  );
-  assert.equal(
-    attachSteps.find((step) => step.uses === "actions/download-artifact@v8")?.if,
-    attachOnly,
-  );
-  const publish = attachSteps.find((step) => step.name === "Publish live-proof change")?.run ?? "";
-  assert.match(publish, /if \[ "\$MODE" = "retract" \]; then/);
-  assert.match(publish, /live-proof-attach \\\n+\s+--detach \\\n+\s+--record "\$record"/);
-  assert.doesNotMatch(
-    publish.slice(0, publish.indexOf("exit 0")),
-    /--bundle|manifest|head[_-]sha/i,
-  );
-
-  const dispatchActionSource = readFileSync(
-    ".github/actions/dispatch-live-proofs/action.yml",
-    "utf8",
-  );
-  const dispatchAction = YAML.parse(dispatchActionSource) as {
-    inputs: Record<string, { required?: boolean }>;
-    runs: {
-      steps: Array<{
-        id?: string;
-        if?: string;
-        uses?: string;
-        with?: Record<string, string>;
-        run?: string;
-      }>;
-    };
-  };
-  assert.deepEqual(Object.keys(dispatchAction.inputs), [
-    "target-repo",
-    "item-numbers",
-    "records-root",
-    "client-id",
-    "private-key",
-  ]);
-  assert.ok(Object.values(dispatchAction.inputs).every((input) => input.required === true));
-  const candidateStep = dispatchAction.runs.steps.find((step) => step.id === "candidates");
-  const tokenStep = dispatchAction.runs.steps.find((step) => step.id === "dispatch-token");
-  const dispatchStep = dispatchAction.runs.steps.at(-1);
-  assert.match(candidateStep?.run ?? "", /\[ ! -d "\$RECORDS_ROOT" \]/);
-  assert.match(candidateStep?.run ?? "", /\[ -z "\$\{ITEM_NUMBERS\/\//);
-  assert.match(
-    candidateStep?.run ?? "",
-    /\[ ! -f dist\/repair\/live-proof-dispatch-candidates\.js \]/,
-  );
-  assert.match(candidateStep?.run ?? "", /pnpm run --silent repair:live-proof-candidates/);
-  assert.equal(tokenStep?.uses, "./.github/actions/create-target-write-token");
-  assert.equal(tokenStep?.with?.owner, "openclaw");
-  assert.equal(tokenStep?.with?.repository, "clawsweeper");
-  assert.match(dispatchStep?.run ?? "", /event_type: "clawsweeper_live_proof"/);
-  assert.match(dispatchStep?.run ?? "", /repos\/\$GITHUB_REPOSITORY\/dispatches/);
-  const noOpFixture = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-dispatch-noop-"));
-  const runCandidateStep = (recordsRoot: string, itemNumbers: string, outputName: string) => {
-    const outputPath = join(noOpFixture, outputName);
-    const result = spawnSync("bash", ["-c", candidateStep?.run ?? ""], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        GITHUB_OUTPUT: outputPath,
-        ITEM_NUMBERS: itemNumbers,
-        RECORDS_ROOT: recordsRoot,
-        RUNNER_TEMP: noOpFixture,
-        TARGET_REPO: "openclaw/clawsweeper",
-      },
-    });
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(readFileSync(outputPath, "utf8"), /available=false/);
-  };
-  runCandidateStep(join(noOpFixture, "missing-records"), "42", "missing-root-output.txt");
-  const emptyRecords = join(noOpFixture, "records");
-  mkdirSync(emptyRecords);
-  runCandidateStep(emptyRecords, " , ", "missing-items-output.txt");
-
+test("live proof executes in review jobs and publishes through existing artifact lanes", () => {
+  assert.throws(() => readFileSync(".github/workflows/live-proof.yml", "utf8"));
+  assert.throws(() => readFileSync(".github/actions/dispatch-live-proofs/action.yml", "utf8"));
   const sweep = readFileSync(".github/workflows/sweep.yml", "utf8");
   const sweepWorkflow = YAML.parse(sweep) as {
     jobs: Record<
@@ -1348,53 +1311,61 @@ test("live-proof workflow keeps execute secretless and attach trusted", () => {
       }
     >;
   };
-  const directSteps = sweepWorkflow.jobs["event-review-apply"]?.steps ?? [];
-  const directDeliveryIndex = directSteps.findIndex(
-    (step) => step.name === "Deliver GitHub effects and prepare direct state mutation",
-  );
-  const directDispatchIndex = directSteps.findIndex(
-    (step) => step.name === "Dispatch recommended live proofs",
-  );
-  const directDispatch = directSteps[directDispatchIndex];
-  assert.ok(directDeliveryIndex >= 0);
-  assert.ok(directDispatchIndex > directDeliveryIndex);
-  assert.equal(directDispatch?.uses, "./.github/actions/dispatch-live-proofs");
-  assert.match(
-    directDispatch?.if ?? "",
-    /prepare-direct-exact-review-publication\.outcome == 'success'/,
-  );
-  assert.equal(directDispatch?.with?.["target-repo"], "${{ steps.target.outputs.target_repo }}");
-  assert.equal(directDispatch?.with?.["item-numbers"], "${{ steps.target.outputs.item_number }}");
+  const assertOrdered = (steps: Array<{ name?: string }>, names: string[]) => {
+    const indexes = names.map((name) => steps.findIndex((step) => step.name === name));
+    assert.ok(
+      indexes.every((index) => index >= 0),
+      `${names.join(" -> ")}: ${indexes.join(",")}`,
+    );
+    assert.deepEqual(
+      indexes,
+      [...indexes].sort((left, right) => left - right),
+    );
+  };
+  const exactReviewSteps = sweepWorkflow.jobs["event-review-apply"]?.steps ?? [];
+  assertOrdered(exactReviewSteps, [
+    "Review exact event item",
+    "Inspect exact review live proof",
+    "Execute exact review live proof",
+    "Create exact review artifact bundle",
+    "Upload exact review artifact bundle",
+  ]);
+  const directSetup = exactReviewSteps.find((step) => step.id === "direct-setup-state");
+  assert.match(directSetup?.if ?? "", /execute-exact-live-proof\.outputs\.produced != 'true'/);
+  assert.doesNotMatch(JSON.stringify(exactReviewSteps), /CLAWSWEEPER_LIVE_PROOF_AWS/);
+  assert.doesNotMatch(JSON.stringify(exactReviewSteps), /containment|unshare/);
 
-  const fallbackSteps = sweepWorkflow.jobs["event-review-publish"]?.steps ?? [];
-  const fallbackPublicationIndex = fallbackSteps.findIndex(
-    (step) => step.name === "Publish event result and apply safe close",
+  const shardSteps = sweepWorkflow.jobs.review?.steps ?? [];
+  assertOrdered(shardSteps, [
+    "Review shard",
+    "Inspect review-shard live proofs",
+    "Execute review-shard live proofs",
+  ]);
+  const recordingInstall = shardSteps.find(
+    (step) => step.name === "Install review-shard recording tools",
   );
-  const fallbackDispatchIndex = fallbackSteps.findIndex(
-    (step) => step.uses === "./.github/actions/dispatch-live-proofs",
-  );
-  assert.ok(fallbackPublicationIndex >= 0);
-  assert.ok(fallbackDispatchIndex > fallbackPublicationIndex);
-  assert.match(fallbackSteps[fallbackDispatchIndex]?.if ?? "", /remote_tuple_verified/);
+  assert.match(recordingInstall?.if ?? "", /record_media == 'true'/);
+  const shardUpload = shardSteps.find((step) => step.uses === "actions/upload-artifact@v7");
+  assert.match(JSON.stringify(shardUpload), /live-verification\.json/);
+  assert.doesNotMatch(JSON.stringify(shardSteps), /containment|unshare/);
 
-  const scheduledSteps = sweepWorkflow.jobs.publish?.steps ?? [];
-  const scheduledPublicationIndex = scheduledSteps.findIndex(
-    (step) => step.id === "commit-review-records",
-  );
-  const scheduledDispatchIndex = scheduledSteps.findIndex(
-    (step) => step.uses === "./.github/actions/dispatch-live-proofs",
-  );
-  assert.ok(scheduledPublicationIndex >= 0);
-  assert.ok(scheduledDispatchIndex > scheduledPublicationIndex);
-  assert.equal(
-    scheduledSteps[scheduledDispatchIndex]?.with?.["item-numbers"],
-    "${{ steps.published-review-items.outputs.item_numbers }}",
-  );
-  assert.equal(
-    Object.values(sweepWorkflow.jobs)
-      .flatMap((job) => job.steps)
-      .filter((step) => step.uses === "./.github/actions/dispatch-live-proofs").length,
-    3,
+  const exactPublishSteps = sweepWorkflow.jobs["event-review-publish"]?.steps ?? [];
+  assertOrdered(exactPublishSteps, [
+    "Validate exact review artifact bundle",
+    "Fold exact live proof into the review artifact",
+    "Publish event result and apply safe close",
+  ]);
+  const publishSteps = sweepWorkflow.jobs.publish?.steps ?? [];
+  assertOrdered(publishSteps, [
+    "Fold live proofs into review artifacts",
+    "Apply review artifacts",
+    "Commit review records",
+  ]);
+  assert.match(JSON.stringify(exactPublishSteps), /CLAWSWEEPER_LIVE_PROOF_AWS/);
+  assert.match(JSON.stringify(publishSteps), /CLAWSWEEPER_LIVE_PROOF_AWS/);
+  assert.doesNotMatch(
+    sweep,
+    /dispatch-live-proofs|clawsweeper_live_proof|live-proof-attach-publish/,
   );
 
   const batchWorkflow = YAML.parse(
@@ -1403,68 +1374,31 @@ test("live-proof workflow keeps execute secretless and attach trusted", () => {
     jobs: Record<
       string,
       {
-        needs?: string;
-        strategy?: { matrix?: string };
-        steps: Array<{ id?: string; uses?: string; run?: string; with?: Record<string, string> }>;
+        steps: Array<{
+          name?: string;
+          id?: string;
+          env?: Record<string, string>;
+          uses?: string;
+          run?: string;
+        }>;
       }
     >;
   };
-  const matrixStep = batchWorkflow.jobs.publish?.steps.find(
-    (step) => step.id === "live-proof-dispatch-matrix",
+  assert.deepEqual(Object.keys(batchWorkflow.jobs), ["publish"]);
+  const batchPrepare = batchWorkflow.jobs.publish?.steps.find(
+    (step) => step.name === "Prepare each item independently",
   );
-  assert.match(matrixStep?.run ?? "", /\.outcome == "accepted" or \.outcome == "deduped"/);
-  assert.match(matrixStep?.run ?? "", /group_by\(\.target_repo\)/);
-  const matrixFixture = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-matrix-"));
-  const matrixOutput = join(matrixFixture, "github-output.txt");
-  writeFileSync(
-    join(matrixFixture, "state-receipt.json"),
-    JSON.stringify({
-      outcomes: [
-        { outcome: "accepted", canonicalTargetKey: "openclaw/second#10" },
-        { outcome: "retryable", canonicalTargetKey: "openclaw/ignored#3" },
-        { outcome: "deduped", canonicalTargetKey: "openclaw/second#2" },
-        { outcome: "accepted", canonicalTargetKey: "openclaw/first#7" },
-      ],
-    }),
+  assert.match(JSON.stringify(batchPrepare?.env), /CLAWSWEEPER_LIVE_PROOF_AWS/);
+  assert.match(
+    readFileSync("scripts/prepare-exact-review-batch.mjs", "utf8"),
+    /live-proof-publish-artifacts/,
   );
-  const matrixResult = spawnSync("bash", ["-c", matrixStep?.run ?? ""], {
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      EXACT_REVIEW_BATCH_MANIFEST: join(matrixFixture, "manifest.json"),
-      GITHUB_OUTPUT: matrixOutput,
-    },
-  });
-  assert.equal(matrixResult.status, 0, matrixResult.stderr);
-  assert.deepEqual(JSON.parse(readFileSync(matrixOutput, "utf8").trim().slice("matrix=".length)), {
-    include: [
-      {
-        target_repo: "openclaw/first",
-        target_slug: "openclaw-first",
-        item_numbers: "7",
-      },
-      {
-        target_repo: "openclaw/second",
-        target_slug: "openclaw-second",
-        item_numbers: "2,10",
-      },
-    ],
-  });
-  const batchDispatchJob = batchWorkflow.jobs["dispatch-live-proofs"];
-  assert.equal(batchDispatchJob?.needs, "publish");
-  assert.equal(
-    batchDispatchJob?.strategy?.matrix,
-    "${{ fromJSON(needs.publish.outputs.live_proof_matrix) }}",
-  );
-  const batchDispatch = batchDispatchJob?.steps.find(
-    (step) => step.uses === "./.github/actions/dispatch-live-proofs",
-  );
-  assert.equal(batchDispatch?.with?.["target-repo"], "${{ matrix.target_repo }}");
-  assert.equal(batchDispatch?.with?.["item-numbers"], "${{ matrix.item_numbers }}");
 
-  const candidateSource = readFileSync("src/repair/live-proof-dispatch-candidates.ts", "utf8");
-  assert.match(candidateSource, /profile\.liveTest\?\.enabled/);
-  assert.match(candidateSource, /plan\.status === "recommended"/);
+  const maintenance = readFileSync(".github/workflows/live-proof-maintenance.yml", "utf8");
+  assert.match(maintenance, /workflow_dispatch:/);
+  assert.doesNotMatch(maintenance, /repository_dispatch:/);
+  assert.match(maintenance, /live-proof-attach[\s\S]*--detach/);
+  assert.match(maintenance, /live-proof-comment[\s\S]*--detach/);
 });
 
 function validManifest() {
@@ -1856,12 +1790,6 @@ function attachDependencies(options: {
     upsertReviewComment: options.upsertReviewComment,
     log: (message: string) => options.logs.push(message),
   };
-}
-
-function canonicalPublicationConflict(): Error & { stderr: string } {
-  return Object.assign(new Error("publish-main failed"), {
-    stderr: "Canonical publication conflicted for all 1 item(s); see per-item warnings above",
-  });
 }
 
 function frontMatterValue(markdown: string, key: string): string | undefined {
