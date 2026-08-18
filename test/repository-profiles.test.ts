@@ -99,6 +99,19 @@ test("repositoryProfileFor supports fs-safe event reviews", () => {
   ]);
 });
 
+test("Awesome Claws keeps contribution admission review-only", () => {
+  const profile = repositoryProfileFor("giodl73-repo/awesome-claws");
+
+  assert.equal(profile.slug, "giodl73-repo-awesome-claws");
+  assert.equal(profile.checkoutDir, "awesome-claws");
+  assert.equal(profile.packageManager, "npm");
+  assert.deepEqual(profile.applyCloseRules.issue, []);
+  assert.deepEqual(profile.applyCloseRules.pull_request, []);
+  assert.deepEqual(profile.liveTest?.setup, ["npm ci"]);
+  assert.match(profile.promptNote, /contribution admission guide/);
+  assert.match(profile.promptNote, /never auto-close, auto-fix, or auto-merge/);
+});
+
 test("generic OpenClaw fallback supports conservative event-only onboarding", () => {
   const profile = repositoryProfileFor("OpenClaw/example-tool");
 

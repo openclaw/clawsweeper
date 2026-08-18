@@ -25,6 +25,26 @@
       }
     },
     {
+      "target_repo": "giodl73-repo/awesome-claws",
+      "display_name": "Awesome Claws",
+      "checkout_dir": "awesome-claws",
+      "prompt_note": "Use the Awesome Claws source tree and current main branch. Read the repository AGENTS.md and contribution admission guide before reviewing starter proposals or pull requests. For a new Claw, use the repository similarity report and related GitHub items to compare the actual user, repeatable job, workflow, outputs, evidence model, and authority boundary. Similarity is advisory: never auto-close, auto-fix, or auto-merge a new-Claw proposal from title or lexical overlap. Route unresolved catalog admission to Patrick and Gio as a product decision.",
+      "apply_close_rules": {
+        "issue": [],
+        "pull_request": []
+      },
+      "package_manager": "npm",
+      "validation_commands": ["npm run check"],
+      "changed_gate": null,
+      "live_test": {
+        "enabled": true,
+        "surface_default": "terminal",
+        "setup": ["npm ci"],
+        "ready_timeout_seconds": 240,
+        "max_recording_seconds": 90
+      }
+    },
+    {
       "target_repo": "openclaw/clawsweeper",
       "display_name": "ClawSweeper",
       "checkout_dir": "clawsweeper",

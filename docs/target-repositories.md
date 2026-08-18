@@ -24,6 +24,9 @@ close rules in `apply_close_rules`; do not infer those rules from whether the
 repository appears in the dashboard or receives scheduled work. The current
 configured profiles allow `implemented_on_main` for issues and PRs, and some
 profiles additionally allow age-gated `mostly_implemented_on_main` for PRs.
+The Awesome Claws contribution profile is deliberately review-only: similarity
+evidence can inform catalog admission, but only its maintainers decide whether
+a proposal is a new Claw, an improvement, a variant, or a product decision.
 
 Dashboard targets are configured separately with `TARGET_REPOS` in
 `dashboard/wrangler.toml`. Scheduled target selection comes from
