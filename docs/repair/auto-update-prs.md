@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: comment router, repair worker/executor, finalizers, labels,
   merge gates, and focused automerge tests
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: command trust, adoption, repair budgets, labels, validation,
   exact-head review, merge, or stop/resume behavior changes
 

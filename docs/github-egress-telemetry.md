@@ -6,7 +6,7 @@
   `src/github-egress-telemetry-contract.ts`,
   `src/review-activity-cursor.ts`, `dashboard/github-egress-telemetry.ts`, and
   the publication workflows
-- Last verified: `openclaw/clawsweeper@a1795973a9e6bb00b73cd6adc21a4ea02ca78ced`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: a publication request path, credential selection rule, telemetry
   dimension, retention limit, or public response changes
 - Checked by: focused telemetry tests plus `pnpm run check:docs`

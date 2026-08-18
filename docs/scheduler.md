@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: `.github/workflows/sweep.yml`, planner/runtime source,
   `config/automation-limits.json`, and focused scheduler tests
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: cadence, fanout, admission, retry, publication, apply, or
   state-writing behavior changes
 
@@ -104,6 +104,13 @@ the reported cooldown into its next-attempt timestamp, preventing a parked
 cohort from becoming eligible in lockstep; coordination and ordinary failure
 retries keep their existing timing.
 Review publication and apply/comment sync use separate non-dropping queues.
+Apply treats a typed GitHub installation or abuse-rate-limit response as a
+bounded yield, not a failed scan. It checkpoints completed item work, records
+the interrupted item as `skipped_runtime_budget`, returns that item to the
+cursor, and exits successfully so a later scheduled or continuation cycle can
+retry it. This applies to comment-only sync and close-mode apply. Folder
+reconciliation also defers before mutation when its open-item scan is
+rate-limited; ordinary non-rate-limit failures remain fatal.
 The source fallback publication minimum, base, and maximum are 4, 24, and 48,
 but production overrides them to 8, 32, and 40. The adaptive controller
 classifies GitHub pressure:

@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: `dashboard/bay-page.ts`, public Worker and queue projectors,
   Bay tests, and the read-only `/bay` route
-- Last verified: `openclaw/clawsweeper@71b16d208511700bb241ea06276c94f71c977d89`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: lane names, stage mapping, public projection or completeness
   rules, private-state ownership, routes, or navigation changes
 

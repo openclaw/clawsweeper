@@ -3,7 +3,7 @@
 - Status: active operator reference
 - Owner: ClawSweeper deployment and workflow maintainers
 - Source of truth: `dashboard/wrangler.toml` and `.github/workflows/`
-- Last verified: `openclaw/clawsweeper@2b5b345063efe1690e1d802fb1a738aa6a408707`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: an audited name is removed, renamed, or changes responsibility, or a source-verified ownership gap is added to this inventory
 - Checked by: `pnpm run check:docs`
 

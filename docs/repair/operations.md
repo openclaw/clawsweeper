@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers and the authorized repair operator
 - Source of truth: repair workflows/source, current gates, focused tests, and
   live read-only GitHub state where needed
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: commands, trust checks, gates, tokens, runners, routing,
   publication, recovery, or promotion rules change
 

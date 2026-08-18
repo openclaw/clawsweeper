@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: the linked repository files and their owning code,
   configuration, workflows, and tests
-- Last verified: `openclaw/clawsweeper@a1795973a9e6bb00b73cd6adc21a4ea02ca78ced`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: a document is added, retired, moved, changes lifecycle, or gains a
   new canonical owner
 

@@ -5,6 +5,7 @@
 - Source of truth: `src/live-proof/`, `.github/workflows/sweep.yml`,
   `.github/workflows/exact-review-batch-publish.yml`, and repository `live_test`
   profiles
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: the plan schema, security boundary, execution gates, media
   limits, storage path, or comment rendering changes
 

@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers and target-repository maintainers
 - Source of truth: the embedded dispatcher workflow, receiver workflow,
   repository profiles, and dispatcher tests
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: forwarded events, authentication, payloads, permissions, close
   authority, or installation steps change
 

@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers and the designated Cloudflare operator
 - Source of truth: `dashboard/worker.ts`, `dashboard/exact-review-queue.ts`,
   `dashboard/wrangler.toml`, dashboard tests, and deployed read-only endpoints
-- Last verified: `openclaw/clawsweeper@a1795973a9e6bb00b73cd6adc21a4ea02ca78ced`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: routes, public fields, queue projections, capacity, alerts,
   deployment, or state-writer telemetry changes
 
