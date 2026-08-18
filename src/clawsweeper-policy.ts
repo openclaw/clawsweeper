@@ -91,6 +91,7 @@ export const WAITING_ON_AUTHOR_LABEL = "status: ⏳ waiting on author";
 export const PROOF_OVERRIDE_LABEL = "proof: override";
 export const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
 export const PROOF_NUDGE_MARKER_PREFIX = "<!-- clawsweeper-proof-nudge";
+export const LIVE_VERIFICATION_MARKER = "<!-- clawsweeper-live-verification -->";
 export const LIVE_PROOF_RECORDING_MARKER = "<!-- clawsweeper-live-proof-recording -->";
 export const PROOF_SUFFICIENT_LABEL_COLOR = "1A7F37";
 export const PROOF_SUFFICIENT_LABEL_DESCRIPTION = "Contributor real behavior proof is sufficient.";

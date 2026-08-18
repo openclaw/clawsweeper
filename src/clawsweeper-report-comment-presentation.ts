@@ -359,7 +359,7 @@ export function createReportCommentPresentation(
         );
       }
       if (liveProofRecordingBlock) {
-        lines.push("", "### Live Proof", "", liveProofRecordingBlock);
+        lines.push("", "### Live Verification", "", liveProofRecordingBlock, "");
       }
       if (systemContext && architectureDiagram) {
         appendHeadingSection(

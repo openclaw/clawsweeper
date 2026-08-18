@@ -435,37 +435,41 @@ For PRs, always fill `telegramVisibleProof`. Use `status: "needed"` only when th
 `telegramVisibleProof.status: "not_needed"` and
 `mantisRecommendation.status: "not_recommended"`.
 
-For PRs, always fill `liveProofPlan`. Use `status: "recommended"` only when the
-change is user-visible in a UI or produces observable terminal behavior that a
-recording of at most 90 seconds can demonstrate, such as a rendered page
-change, progressive CLI output, TUI behavior, or an error message a user would
-see. Never
-recommend live proof for pure refactors, CI/config changes, docs, tests, or
-internal plumbing. Use `surface: "browser"` for browser behavior and
+For PRs, always fill `liveProofPlan`. Default to `status: "recommended"` whenever
+the repository has a runnable browser or terminal surface. The point is to run
+the real system from the PR head and verify observable behavior, not merely to
+run its tests. This includes refactors, internal plumbing, and CI/config changes:
+plan a narrow smoke verification such as “the binary still starts and prints X”
+or “the command still resolves Y” even when the implementation change is not
+user-visible. Reserve `not_applicable` for a change with genuinely nothing to
+run, such as docs-only edits or generated assets in a repository with no
+meaningful runnable surface. Use `surface: "browser"` for browser behavior and
 `surface: "terminal"` for terminal behavior. The `entry` must be a URL path for
-browser proof or a command for terminal proof. Emit at most ten deterministic,
-typed `steps`: browser plans may use `goto`, `click`, `fill`, `press`,
-`wait_for`, `wait`, and `expect_text`; terminal plans may use `run`, `wait`, and
-`expect_output`. Every recommended plan must include at least one state-changing
-step (`goto`, `click`, `fill`, or `press` for browser plans; `run` for terminal
-plans) and at least one expectation whose text is absent before that action and
-appears only afterward. Never assert a static label, hint, heading, or the typed
-command itself: the expectation must prove that the action changed observable
-state. Targets for `click`, `fill`, and `wait_for` must be valid CSS or Playwright
-selectors, including `text=...` selectors when appropriate, never prose
-descriptions of state. The plan must be demonstrable from the PR head alone
-without external accounts, credentials, or third-party services. Step values
-must never contain secrets or tokens of any kind.
+browser verification or a command for terminal verification. Emit at most ten
+deterministic, typed `steps`: browser plans may use `goto`, `click`, `fill`,
+`press`, `wait_for`, `wait`, and `expect_text`; terminal plans may use `run`,
+`wait`, and `expect_output`. Include at least one concrete expectation of real
+output. When proposing media, include at least one state-changing step and an
+expectation whose text is absent before that action and appears only afterward;
+the absent-then-present rule decides whether media is useful, not whether the
+system should run. Never assert the typed command itself. Targets for `click`,
+`fill`, and `wait_for` must be valid CSS or Playwright selectors, including
+`text=...` selectors when appropriate, never prose descriptions of state. The
+plan must be demonstrable from the PR head alone without external accounts,
+credentials, or third-party services. Step values must never contain secrets or
+tokens of any kind.
 
-Judge whether the recording has something worth watching. Choose
-`payoff.kind: "static_text"` and do not recommend a recording when the whole
-demonstration is a short burst of plain text that a reader could just as well
-read in a quoted code block. Recommend a recording only when the payoff is
-genuinely visual: output that streams or progresses over seconds, a TUI or
-interactive terminal, colored or formatted output whose presentation matters,
-an animation, or a browser interaction that changes what is on screen. This is
-a judgment call about what a viewer will actually see move or change, not a
-box-checking exercise; explain that visible change in `payoff.justification`.
+Judge whether the run has something worth watching, solely to choose its
+presentation. Choose `payoff.kind: "static_text"` when the whole demonstration
+is a short burst of plain text that a reader can understand better in a quoted
+code block; ClawSweeper must still execute the plan and publish its verification
+result, but it should skip video capture. Choose a visual payoff only when a
+recording is genuinely worth watching: output that streams or progresses over
+seconds, a TUI or interactive terminal, colored or formatted output whose
+presentation matters, an animation, or a browser interaction that changes what
+is on screen. This is a judgment call about what a viewer would watch, never a
+judgment about whether to run; explain the presentation choice in
+`payoff.justification`.
 
 Live proof recordings are published publicly. If the diff, or the
 demonstration it would require, reads environment variables or credential

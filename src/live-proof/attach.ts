@@ -1,7 +1,11 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { mediaProofCommandRunner, mediaProofSpawnDetail } from "../clawsweeper-media-proof.js";
-import { LIVE_PROOF_RECORDING_MARKER, type REVIEW_SECTIONS } from "../clawsweeper-policy.js";
+import {
+  LIVE_PROOF_RECORDING_MARKER,
+  LIVE_VERIFICATION_MARKER,
+  type REVIEW_SECTIONS,
+} from "../clawsweeper-policy.js";
 import type { CloseReason, MediaProofCommandRunner } from "../clawsweeper-types.js";
 import type { LiveProofPullRequestState } from "./execute.js";
 import {
@@ -9,6 +13,11 @@ import {
   validateAttachedMedia,
   type LiveProofManifest,
 } from "./manifest.js";
+import {
+  encodeLiveVerificationReportPayload,
+  parseLiveVerificationResult,
+  type LiveVerificationResult,
+} from "./verification.js";
 
 export interface LiveProofAttachOptions {
   bundleDir: string;
@@ -48,42 +57,56 @@ export async function attachLiveProof(
   const log = dependencies.log ?? console.log;
   const bundleDir = resolve(options.bundleDir);
   const recordPath = resolve(options.recordPath);
-  const manifest = parseLiveProofManifest(
-    JSON.parse(readFileSync(join(bundleDir, "live-proof-manifest.json"), "utf8")) as unknown,
+  const verification = parseLiveVerificationResult(
+    JSON.parse(readFileSync(join(bundleDir, "live-verification.json"), "utf8")) as unknown,
   );
+  const manifestPath = join(bundleDir, "live-proof-manifest.json");
+  const manifest = existsSync(manifestPath)
+    ? parseLiveProofManifest(JSON.parse(readFileSync(manifestPath, "utf8")) as unknown)
+    : undefined;
   const mp4Path = join(bundleDir, "live-proof.mp4");
   const posterPath = join(bundleDir, "poster.jpg");
-  validateAttachedMedia({ manifest, mp4Path, posterPath, runner });
+  if (manifest) {
+    validateManifestMatchesVerification(manifest, verification);
+    validateAttachedMedia({ manifest, mp4Path, posterPath, runner });
+  } else if (existsSync(mp4Path) || existsSync(posterPath)) {
+    throw new Error("live proof media is present without a manifest");
+  }
 
   const report = readFileSync(recordPath, "utf8");
-  validateReportIdentity(report, manifest, dependencies.frontMatterValue);
+  validateReportIdentity(report, verification, dependencies.frontMatterValue);
   const reportHead = dependencies.frontMatterValue(report, "pull_head_sha")?.toLowerCase() ?? "";
   let liveHead: string;
   if (options.dryRun) {
     liveHead = reportHead;
     log("[live-proof-attach] dry-run: using the report head for the simulated live-head check");
   } else {
-    const pull = await dependencies.fetchPullRequest(manifest.repo, manifest.item);
+    const pull = await dependencies.fetchPullRequest(verification.repo, verification.item);
     if (pull.kind !== "pull_request" || pull.state.toLowerCase() !== "open") {
       log(
-        `[live-proof-attach] skip: ${manifest.repo}#${manifest.item} is not an open pull request`,
+        `[live-proof-attach] skip: ${verification.repo}#${verification.item} is not an open pull request`,
       );
       return "skipped";
     }
     liveHead = pull.headSha?.toLowerCase() ?? "";
   }
-  if (liveHead !== manifest.head_sha) {
+  if (liveHead !== verification.head_sha) {
     log(
-      `[live-proof-attach] skip: stale proof head ${manifest.head_sha} does not match live head ${liveHead || "unknown"}`,
+      `[live-proof-attach] skip: stale proof head ${verification.head_sha} does not match live head ${liveHead || "unknown"}`,
     );
     return "skipped";
   }
 
-  const upload = trustedUploadConfiguration(env, manifest);
-  const recordingBlock = liveProofRecordingBlock(manifest, upload.posterUrl, upload.videoUrl);
-  const liveProofSection = liveProofSectionWithRecording(
+  const upload = manifest ? trustedUploadConfiguration(env, manifest) : undefined;
+  const recordingBlock =
+    manifest && upload
+      ? liveProofRecordingBlock(manifest, upload.posterUrl, upload.videoUrl)
+      : undefined;
+  const verificationBlock = liveVerificationReportBlock(verification);
+  const liveProofSection = liveProofSectionWithResult(
     report,
     dependencies.reviewSections.liveProof,
+    verificationBlock,
     recordingBlock,
     dependencies.sectionValue,
   );
@@ -95,27 +118,31 @@ export async function attachLiveProof(
   const closeReason = (dependencies.frontMatterValue(updatedReport, "close_reason") ??
     "none") as CloseReason;
   const comment = dependencies.renderReviewCommentFromReport(updatedReport, closeReason);
-  const markedComment = dependencies.markedReviewCommentBody(manifest.item, comment);
+  const markedComment = dependencies.markedReviewCommentBody(verification.item, comment);
 
-  const uploads: Array<{ localPath: string; key: string; contentType: string }> = [
-    { localPath: mp4Path, key: upload.videoKey, contentType: "video/mp4" },
-    { localPath: posterPath, key: upload.posterKey, contentType: "image/jpeg" },
-  ];
+  const uploads: Array<{ localPath: string; key: string; contentType: string }> = upload
+    ? [
+        { localPath: mp4Path, key: upload.videoKey, contentType: "video/mp4" },
+        { localPath: posterPath, key: upload.posterKey, contentType: "image/jpeg" },
+      ]
+    : [];
   if (options.dryRun) {
     for (const candidate of uploads) {
-      log(`[live-proof-attach] dry-run: ${renderCommand("aws", awsUploadArgs(candidate, upload))}`);
+      log(
+        `[live-proof-attach] dry-run: ${renderCommand("aws", awsUploadArgs(candidate, upload!))}`,
+      );
     }
     log(
       `[live-proof-attach] dry-run: replace ## ${dependencies.reviewSections.liveProof} in ${recordPath} with:\n${liveProofSection}`,
     );
     log(
-      `[live-proof-attach] dry-run: upsert marker-backed review comment for ${manifest.repo}#${manifest.item}:\n${markedComment}`,
+      `[live-proof-attach] dry-run: upsert marker-backed review comment for ${verification.repo}#${verification.item}:\n${markedComment}`,
     );
     return "dry-run";
   }
 
   for (const candidate of uploads) {
-    const args = awsUploadArgs(candidate, upload);
+    const args = awsUploadArgs(candidate, upload!);
     const result = runner("aws", args);
     if (result.status !== 0) {
       throw new Error(`aws s3 cp failed: ${mediaProofSpawnDetail(result)}`);
@@ -123,7 +150,7 @@ export async function attachLiveProof(
   }
   writeFileSync(recordPath, updatedReport, "utf8");
   log(
-    `[live-proof-attach] prepared ${manifest.surface} proof for ${manifest.repo}#${manifest.item} at ${manifest.head_sha}`,
+    `[live-proof-attach] prepared ${verification.surface} verification${manifest ? " with media" : " without media"} for ${verification.repo}#${verification.item} at ${verification.head_sha}`,
   );
   return "attached";
 }
@@ -183,25 +210,25 @@ export function syncLiveProofComment(
 ): void {
   const bundleDir = resolve(options.bundleDir);
   const recordPath = resolve(options.recordPath);
-  const manifest = parseLiveProofManifest(
-    JSON.parse(readFileSync(join(bundleDir, "live-proof-manifest.json"), "utf8")) as unknown,
+  const verification = parseLiveVerificationResult(
+    JSON.parse(readFileSync(join(bundleDir, "live-verification.json"), "utf8")) as unknown,
   );
   const report = readFileSync(recordPath, "utf8");
-  validateReportIdentity(report, manifest, dependencies.frontMatterValue);
+  validateReportIdentity(report, verification, dependencies.frontMatterValue);
   if (
     !dependencies
       .sectionValue(report, dependencies.reviewSections.liveProof)
-      .includes(LIVE_PROOF_RECORDING_MARKER)
+      .includes(LIVE_VERIFICATION_MARKER)
   ) {
-    throw new Error("record is missing the attached Live Proof recording");
+    throw new Error("record is missing the attached Live Verification result");
   }
   const closeReason = (dependencies.frontMatterValue(report, "close_reason") ??
     "none") as CloseReason;
   const comment = dependencies.renderReviewCommentFromReport(report, closeReason);
-  const markedComment = dependencies.markedReviewCommentBody(manifest.item, comment);
-  dependencies.upsertReviewComment(manifest.item, markedComment);
+  const markedComment = dependencies.markedReviewCommentBody(verification.item, comment);
+  dependencies.upsertReviewComment(verification.item, markedComment);
   (dependencies.log ?? console.log)(
-    `[live-proof-attach] synced marker-backed review comment for ${manifest.repo}#${manifest.item}`,
+    `[live-proof-attach] synced marker-backed review comment for ${verification.repo}#${verification.item}`,
   );
 }
 
@@ -236,20 +263,20 @@ export function syncDetachedLiveProofComment(
 
 function validateReportIdentity(
   report: string,
-  manifest: LiveProofManifest,
+  result: Pick<LiveVerificationResult, "repo" | "item" | "head_sha">,
   frontMatterValue: (markdown: string, key: string) => string | undefined,
 ): void {
-  if (frontMatterValue(report, "repository")?.toLowerCase() !== manifest.repo.toLowerCase()) {
-    throw new Error("record repository does not match the live proof manifest");
+  if (frontMatterValue(report, "repository")?.toLowerCase() !== result.repo.toLowerCase()) {
+    throw new Error("record repository does not match the live verification result");
   }
-  if (Number(frontMatterValue(report, "number")) !== manifest.item) {
-    throw new Error("record item number does not match the live proof manifest");
+  if (Number(frontMatterValue(report, "number")) !== result.item) {
+    throw new Error("record item number does not match the live verification result");
   }
   if (frontMatterValue(report, "type") !== "pull_request") {
     throw new Error("live proof can only be attached to a pull request report");
   }
-  if (frontMatterValue(report, "pull_head_sha")?.toLowerCase() !== manifest.head_sha) {
-    throw new Error("record pull_head_sha does not match the live proof manifest");
+  if (frontMatterValue(report, "pull_head_sha")?.toLowerCase() !== result.head_sha) {
+    throw new Error("record pull_head_sha does not match the live verification result");
   }
 }
 
@@ -339,17 +366,43 @@ function liveProofRecordingBlock(
   ].join("\n");
 }
 
-function liveProofSectionWithRecording(
+function liveVerificationReportBlock(result: LiveVerificationResult): string {
+  return [LIVE_VERIFICATION_MARKER, `Result: ${encodeLiveVerificationReportPayload(result)}`].join(
+    "\n",
+  );
+}
+
+function liveProofSectionWithResult(
   report: string,
   heading: string,
-  recordingBlock: string,
+  verificationBlock: string,
+  recordingBlock: string | undefined,
   sectionValue: (markdown: string, heading: string) => string,
 ): string {
   const section = sectionValue(report, heading);
-  const markerIndex = section.lastIndexOf(LIVE_PROOF_RECORDING_MARKER);
+  const markerIndexes = [
+    section.indexOf(LIVE_VERIFICATION_MARKER),
+    section.indexOf(LIVE_PROOF_RECORDING_MARKER),
+  ].filter((index) => index >= 0);
+  const markerIndex = markerIndexes.length ? Math.min(...markerIndexes) : -1;
   const planOnly = (markerIndex >= 0 ? section.slice(0, markerIndex) : section).trimEnd();
   if (!planOnly) throw new Error("record is missing the Live Proof plan section");
-  return `${planOnly}\n\n${recordingBlock}`;
+  return [planOnly, verificationBlock, recordingBlock].filter(Boolean).join("\n\n");
+}
+
+function validateManifestMatchesVerification(
+  manifest: LiveProofManifest,
+  verification: LiveVerificationResult,
+): void {
+  if (
+    manifest.repo !== verification.repo ||
+    manifest.item !== verification.item ||
+    manifest.head_sha !== verification.head_sha ||
+    manifest.surface !== verification.surface ||
+    manifest.drive_status !== verification.drive_status
+  ) {
+    throw new Error("live proof manifest does not match the live verification result");
+  }
 }
 
 function awsUploadArgs(

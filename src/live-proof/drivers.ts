@@ -29,6 +29,7 @@ export interface LiveProofDriveResult {
   status: LiveProofDriveStatus;
   steps: LiveProofStepLogEntry[];
   rawVideoPath: string;
+  output: string;
 }
 
 const DISPLAY_READY_TIMEOUT_SECONDS = 30;
@@ -66,9 +67,11 @@ const baseUrl = process.env.CLAWSWEEPER_LIVE_PROOF_URL;
 const entry = process.env.CLAWSWEEPER_LIVE_PROOF_ENTRY;
 const output = process.env.CLAWSWEEPER_LIVE_PROOF_RAW_VIDEO;
 const logPath = process.env.CLAWSWEEPER_LIVE_PROOF_STEPS_LOG;
+const outputPath = process.env.CLAWSWEEPER_LIVE_PROOF_CAPTURED_OUTPUT;
+const recordMedia = process.env.CLAWSWEEPER_LIVE_PROOF_RECORD_MEDIA === "1";
 const useBundledChromium = process.env.CLAWSWEEPER_LIVE_PROOF_BROWSER === "chromium";
 const headless = process.env.CLAWSWEEPER_LIVE_PROOF_HEADED !== "1";
-if (!baseUrl || !entry || !output || !logPath) throw new Error("missing live proof driver environment");
+if (!baseUrl || !entry || !output || !logPath || !outputPath) throw new Error("missing live proof driver environment");
 
 const log = [];
 let browser;
@@ -79,10 +82,10 @@ let failed = false;
 let recordingStartedAt = 0;
 try {
   browser = await chromium.launch(useBundledChromium ? { headless } : { headless, channel: "chrome" });
-  context = await browser.newContext({ viewport: { width: 1280, height: 800 }, recordVideo: { dir: output + ".videos", size: { width: 1280, height: 800 } } });
+  context = await browser.newContext({ viewport: { width: 1280, height: 800 }, ...(recordMedia ? { recordVideo: { dir: output + ".videos", size: { width: 1280, height: 800 } } } : {}) });
   page = await context.newPage();
   page.setDefaultTimeout(15_000);
-  video = page.video();
+  video = recordMedia ? page.video() : null;
   recordingStartedAt = Date.now();
   await page.goto(new URL(entry, baseUrl).href);
   const expectationPresentAtStart = new Map();
@@ -138,6 +141,8 @@ try {
   const elapsed = Date.now() - recordingStartedAt;
   await page.waitForTimeout(Math.max(${END_STATE_HOLD_MILLISECONDS}, ${MINIMUM_RECORDING_MILLISECONDS} - elapsed));
 } finally {
+  const capturedOutput = page ? await page.locator("body").innerText().catch(() => "") : "";
+  await writeFile(outputPath, capturedOutput, "utf8");
   if (context) await context.close().catch(() => undefined);
   if (video) {
     const videoPath = await video.path().catch(() => "");
@@ -156,7 +161,9 @@ export function driveBrowser(options: {
   scriptPath: string;
   rawVideoPath: string;
   stepsLogPath: string;
+  outputPath: string;
   baseUrl: string;
+  recordMedia: boolean;
   runner: MediaProofCommandRunner;
 }): LiveProofDriveResult {
   const steps = options.plan.steps as LiveProofBrowserStep[];
@@ -167,6 +174,8 @@ export function driveBrowser(options: {
     CLAWSWEEPER_LIVE_PROOF_ENTRY: options.plan.entry,
     CLAWSWEEPER_LIVE_PROOF_RAW_VIDEO: options.rawVideoPath,
     CLAWSWEEPER_LIVE_PROOF_STEPS_LOG: options.stepsLogPath,
+    CLAWSWEEPER_LIVE_PROOF_CAPTURED_OUTPUT: options.outputPath,
+    CLAWSWEEPER_LIVE_PROOF_RECORD_MEDIA: options.recordMedia ? "1" : "0",
   };
   let result = options.runner("node", [options.scriptPath], {
     cwd: options.checkout,
@@ -187,13 +196,14 @@ export function driveBrowser(options: {
     });
   }
   const stepLog = readStepLog(options.stepsLogPath);
-  if (!existsSync(options.rawVideoPath)) {
+  if (options.recordMedia && !existsSync(options.rawVideoPath)) {
     throw new Error(`Playwright did not finalize a recording: ${mediaProofSpawnDetail(result)}`);
   }
   return {
     status: driveStatus(result.status, stepLog),
     steps: stepLog,
     rawVideoPath: options.rawVideoPath,
+    output: existsSync(options.outputPath) ? readFileSync(options.outputPath, "utf8") : "",
   };
 }
 
@@ -201,16 +211,21 @@ export function terminalCommandPlan(options: {
   sessionPrefix: string;
   maxRecordingSeconds: number;
   rawVideoPath: string;
+  recordMedia?: boolean;
 }): TerminalCommandInvocation[] {
   const terminalSession = `${options.sessionPrefix}-terminal`;
   const displaySession = `${options.sessionPrefix}-display`;
   const xtermSession = `${options.sessionPrefix}-xterm`;
   const recorderSession = `${options.sessionPrefix}-recorder`;
-  return [
+  const commands: TerminalCommandInvocation[] = [
     {
       command: "tmux",
       args: ["new-session", "-d", "-s", terminalSession, "-x", "160", "-y", "50"],
     },
+  ];
+  if (options.recordMedia === false) return commands;
+  return [
+    ...commands,
     {
       command: "tmux",
       args: ["new-session", "-d", "-s", displaySession],
@@ -312,6 +327,7 @@ export function driveTerminal(options: {
   checkout: string;
   rawVideoPath: string;
   maxRecordingSeconds: number;
+  recordMedia?: boolean;
   runner: MediaProofCommandRunner;
 }): LiveProofDriveResult {
   const sessionPrefix = `clawsweeper-live-proof-${process.pid}`;
@@ -325,11 +341,14 @@ export function driveTerminal(options: {
   let recordingStartedAt = 0;
   let outputWindow: TerminalOutputWindow | undefined;
   let initialPaneSnapshot = "";
+  let capturedOutput = "";
+  const recordMedia = options.recordMedia !== false;
   try {
     for (const invocation of terminalCommandPlan({
       sessionPrefix,
       maxRecordingSeconds: options.maxRecordingSeconds,
       rawVideoPath: options.rawVideoPath,
+      recordMedia,
     })) {
       requireSuccess(
         invocation.command,
@@ -348,55 +367,68 @@ export function driveTerminal(options: {
       options.checkout,
       `${terminalSession}:0.0`,
     );
-    outputWindow = runTerminalCommand(
-      options.plan.entry,
-      terminalSession,
-      options.runner,
-      options.checkout,
-    );
-    for (const step of options.plan.steps as LiveProofTerminalStep[]) {
-      try {
-        outputWindow = runTerminalStep(
-          step,
-          terminalSession,
-          options.runner,
-          options.checkout,
-          outputWindow,
-        );
-        log.push(
-          step.action === "expect_output"
-            ? {
-                action: step.action,
-                status: "completed",
-                detail: "ok",
-                presentAtStart: initialPaneSnapshot.includes(step.text),
-                satisfied: true,
-              }
-            : { action: step.action, status: "completed", detail: "ok" },
-        );
-      } catch (error) {
-        failed = true;
-        log.push(
-          step.action === "expect_output"
-            ? {
-                action: step.action,
-                status: "failed",
-                detail: error instanceof Error ? error.message : String(error),
-                presentAtStart: initialPaneSnapshot.includes(step.text),
-                satisfied: false,
-              }
-            : {
-                action: step.action,
-                status: "failed",
-                detail: error instanceof Error ? error.message : String(error),
-              },
-        );
-        break;
+    try {
+      outputWindow = runTerminalCommand(
+        options.plan.entry,
+        terminalSession,
+        options.runner,
+        options.checkout,
+      );
+    } catch {
+      failed = true;
+    }
+    if (!failed) {
+      for (const step of options.plan.steps as LiveProofTerminalStep[]) {
+        try {
+          outputWindow = runTerminalStep(
+            step,
+            terminalSession,
+            options.runner,
+            options.checkout,
+            outputWindow,
+          );
+          log.push(
+            step.action === "expect_output"
+              ? {
+                  action: step.action,
+                  status: "completed",
+                  detail: "ok",
+                  presentAtStart: initialPaneSnapshot.includes(step.text),
+                  satisfied: true,
+                }
+              : { action: step.action, status: "completed", detail: "ok" },
+          );
+        } catch (error) {
+          failed = true;
+          log.push(
+            step.action === "expect_output"
+              ? {
+                  action: step.action,
+                  status: "failed",
+                  detail: error instanceof Error ? error.message : String(error),
+                  presentAtStart: initialPaneSnapshot.includes(step.text),
+                  satisfied: false,
+                }
+              : {
+                  action: step.action,
+                  status: "failed",
+                  detail: error instanceof Error ? error.message : String(error),
+                },
+          );
+          break;
+        }
       }
     }
-    holdEndState(options.runner, recordingStartedAt);
-    finalizeRecorder(options.runner, options.checkout, recorderSession);
-    requireRecording(options.runner, options.checkout, options.rawVideoPath);
+    capturedOutput = captureTerminalPane(
+      options.runner,
+      options.checkout,
+      `${terminalSession}:0.0`,
+    );
+    if (recordMedia) {
+      holdEndState(options.runner, recordingStartedAt);
+      finalizeRecorder(options.runner, options.checkout, recorderSession);
+      requireRecording(options.runner, options.checkout, options.rawVideoPath);
+    }
   } catch (error) {
     thrown = terminalErrorWithDiagnostics(error, options.runner, options.checkout, {
       terminal: terminalSession,
@@ -405,9 +437,11 @@ export function driveTerminal(options: {
       recorder: recorderSession,
     });
   } finally {
-    options.runner("tmux", ["kill-session", "-t", recorderSession]);
-    options.runner("tmux", ["kill-session", "-t", xtermSession]);
-    options.runner("tmux", ["kill-session", "-t", displaySession]);
+    if (recordMedia) {
+      options.runner("tmux", ["kill-session", "-t", recorderSession]);
+      options.runner("tmux", ["kill-session", "-t", xtermSession]);
+      options.runner("tmux", ["kill-session", "-t", displaySession]);
+    }
     options.runner("tmux", ["kill-session", "-t", terminalSession]);
   }
   if (thrown) throw thrown;
@@ -415,6 +449,7 @@ export function driveTerminal(options: {
     status: failed ? (log.length > 1 ? "partial" : "failed") : "completed",
     steps: log,
     rawVideoPath: options.rawVideoPath,
+    output: capturedOutput,
   };
 }
 

@@ -11,6 +11,7 @@ import {
   IMPLEMENTATION_COMPLEXITIES,
   IMPACT_LABEL_NAMES,
   LIVE_PROOF_RECORDING_MARKER,
+  LIVE_VERIFICATION_MARKER,
   MANTIS_RECOMMENDATION_SCENARIOS,
   MANTIS_RECOMMENDATION_STATUSES,
   MATURITY_LABEL_NAMES,
@@ -26,6 +27,10 @@ import {
   TRIAGE_PRIORITIES,
   VISION_FIT_STATUSES,
 } from "./clawsweeper-policy.js";
+import {
+  decodeLiveVerificationReportPayload,
+  renderLiveVerificationCommentBlock,
+} from "./live-proof/verification.js";
 import type {
   AgentsPolicyStatus,
   AgentsPolicyStatusKind,
@@ -635,29 +640,45 @@ export function createReportParser({
 
   function reportLiveProofRecordingBlock(markdown: string): string {
     const section = reviewSectionValue(markdown, "liveProof");
+    const verificationBlock = reportLiveVerificationBlock(section);
     const markerIndex = section.lastIndexOf(LIVE_PROOF_RECORDING_MARKER);
-    if (markerIndex < 0) return "";
+    if (markerIndex < 0) return verificationBlock;
     const lines = section
       .slice(markerIndex + LIVE_PROOF_RECORDING_MARKER.length)
       .trim()
       .split("\n")
       .map((line) => line.trimEnd());
-    if (lines.length !== 3 || lines[1] !== "") return "";
+    if (lines.length !== 3 || lines[1] !== "") return verificationBlock;
     if (
       !/^\[!\[Live proof recording\]\(https:\/\/[^)\s]+\)\]\(https:\/\/[^)\s]+\)$/.test(
         lines[0] ?? "",
       )
     ) {
-      return "";
+      return verificationBlock;
     }
     if (
       !/^\*Recorded live on the PR head \(`(?:[0-9a-f]{7,40})`\), (?:0|[1-9][0-9]*)(?:\.[0-9]+)?s, (?:browser|terminal) surface\.\*$/.test(
         lines[2] ?? "",
       )
     ) {
+      return verificationBlock;
+    }
+    return [verificationBlock, lines.join("\n")].filter(Boolean).join("\n\n");
+  }
+
+  function reportLiveVerificationBlock(section: string): string {
+    const markerIndex = section.lastIndexOf(`\n${LIVE_VERIFICATION_MARKER}\n`);
+    if (markerIndex < 0) return "";
+    const start = markerIndex + LIVE_VERIFICATION_MARKER.length + 2;
+    const tail = section.slice(start);
+    const resultLine = tail.split("\n", 1)[0] ?? "";
+    const match = /^Result: ([A-Za-z0-9_-]+)$/.exec(resultLine);
+    if (!match?.[1]) return "";
+    try {
+      return renderLiveVerificationCommentBlock(decodeLiveVerificationReportPayload(match[1]));
+    } catch {
       return "";
     }
-    return lines.join("\n");
   }
 
   function reportPrRating(markdown: string): PrRating {

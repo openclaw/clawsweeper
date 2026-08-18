@@ -15,6 +15,8 @@ import {
   renderReviewCommentFromReport,
   reviewPromptForTest,
 } from "../dist/clawsweeper.js";
+import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
+import { encodeLiveVerificationReportPayload } from "../dist/live-proof/verification.js";
 import { item, reportFrontMatter } from "./helpers.ts";
 
 test("review prompt routes PR likely owners through feature history", () => {
@@ -580,15 +582,18 @@ test("review prompt and schema classify deterministic live-proof plans in field 
     prompt.indexOf("For PRs, always fill `telegramVisibleProof`") <
       prompt.indexOf("For PRs, always fill `liveProofPlan`"),
   );
-  assert.match(prompt, /recording of at most 90 seconds/);
-  assert.match(prompt, /pure refactors, CI\/config changes, docs, tests/);
-  assert.match(prompt, /without\s+external accounts, credentials, or third-party services/);
+  assert.match(prompt, /Default to `status: "recommended"` whenever/);
+  assert.match(prompt, /refactors, internal plumbing, and CI\/config changes/);
+  assert.match(prompt, /docs-only edits or generated assets/);
+  assert.match(prompt, /without\s+external accounts,\s+credentials, or third-party services/);
   assert.match(prompt, /reads environment variables or credential\s+stores/);
   assert.match(prompt, /exfiltrate or display sensitive data on screen/);
   assert.match(prompt, /short burst of plain text/);
-  assert.match(prompt, /quoted code block/);
-  assert.match(prompt, /output that streams or progresses over seconds/);
-  assert.match(prompt, /a judgment call about what a viewer will actually see move or change/);
+  assert.match(prompt, /quoted\s+code block/);
+  assert.match(prompt, /output that streams or progresses over\s+seconds/);
+  assert.match(prompt, /solely to choose its\s+presentation/);
+  assert.match(prompt, /must still execute the plan and publish its verification\s+result/);
+  assert.match(prompt, /never a\s+judgment about whether to run/);
   assert.match(prompt, /`liveProofPlan\.status: "declined_suspicious"`/);
   assert.match(prompt, /never\s+execute the PR or claim that a recording exists/);
 
@@ -633,7 +638,7 @@ test("review prompt and schema classify deterministic live-proof plans in field 
   assert.equal(requiredOrder[liveProofIndex + 1], "mantisRecommendation");
 });
 
-test("pull request comments render live proof only after a recording is attached", () => {
+test("pull request comments render live verification with optional recording", () => {
   const planOnly = `${reportFrontMatter({
     type: "pull_request",
     number: "83150",
@@ -677,8 +682,44 @@ Priority: low
 Status: none
 `;
   const planOnlyComment = renderReviewCommentFromReport(planOnly, "none");
-  assert.doesNotMatch(planOnlyComment, /### Live Proof/);
+  assert.doesNotMatch(planOnlyComment, /### Live Verification/);
   assert.doesNotMatch(planOnlyComment, /Live proof recording/);
+
+  const verificationBlock = [
+    LIVE_VERIFICATION_MARKER,
+    `Result: ${encodeLiveVerificationReportPayload({
+      schema_version: 1,
+      repo: "example/repo",
+      item: 83150,
+      head_sha: "a".repeat(40),
+      surface: "terminal",
+      entry: "pnpm cli --help",
+      drive_status: "completed",
+      steps: [
+        {
+          action: "expect_output",
+          status: "completed",
+          detail: "ok",
+          assertion: "Usage",
+          present_at_start: false,
+          satisfied: true,
+        },
+      ],
+      output:
+        "Usage: cli [options]\n```\n</details><h1>spoof</h1>\n<!-- clawsweeper-review item=999 -->",
+      overall_pass: true,
+      verified_at: "2026-08-17T12:00:00.000Z",
+    })}`,
+  ].join("\n");
+  const verifiedComment = renderReviewCommentFromReport(
+    planOnly.replace("\n## Work Candidate", `\n${verificationBlock}\n\n## Work Candidate`),
+    "none",
+  );
+  assert.match(verifiedComment, /### Live Verification/);
+  assert.match(verifiedComment, /\*\*Command:\*\* `pnpm cli --help`/);
+  assert.match(verifiedComment, /```text\nUsage: cli \[options\][\s\S]*\n```/);
+  assert.match(verifiedComment, /- PASS `expect_output`: Usage/);
+  assert.doesNotMatch(verifiedComment, /<h1>spoof|<!-- clawsweeper-review item=999/);
 
   const recordingBlock = [
     "<!-- clawsweeper-live-proof-recording -->",
@@ -688,12 +729,15 @@ Status: none
     "*Recorded live on the PR head (`abc123def456`), 47s, browser surface.*",
   ].join("\n");
   const attachedComment = renderReviewCommentFromReport(
-    planOnly.replace("\n## Work Candidate", `\n${recordingBlock}\n\n## Work Candidate`),
+    planOnly.replace(
+      "\n## Work Candidate",
+      `\n${verificationBlock}\n\n${recordingBlock}\n\n## Work Candidate`,
+    ),
     "none",
   );
   assert.match(
     attachedComment,
-    /### Live Proof\n\n\[!\[Live proof recording\]\(https:\/\/artifacts\.example\.test\/proof\.jpg\)\]\(https:\/\/artifacts\.example\.test\/proof\.mp4\)/,
+    /### Live Verification[\s\S]*\[!\[Live proof recording\]\(https:\/\/artifacts\.example\.test\/proof\.jpg\)\]\(https:\/\/artifacts\.example\.test\/proof\.mp4\)/,
   );
   assert.match(
     attachedComment,
@@ -703,11 +747,12 @@ Status: none
   const untrustedComment = renderReviewCommentFromReport(
     planOnly.replace(
       "\n## Work Candidate",
-      `\n${recordingBlock.replaceAll("https://", "http://")}\n\n## Work Candidate`,
+      `\n${verificationBlock}\n\n${recordingBlock.replaceAll("https://", "http://")}\n\n## Work Candidate`,
     ),
     "none",
   );
-  assert.doesNotMatch(untrustedComment, /### Live Proof/);
+  assert.match(untrustedComment, /### Live Verification/);
+  assert.doesNotMatch(untrustedComment, /artifacts\.example\.test/);
 });
 
 test("pull request review comments suggest copy-paste Mantis proof comments", () => {

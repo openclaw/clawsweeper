@@ -7,10 +7,12 @@
 - Update when: the plan schema, execution gates, media limits, storage path, or
   comment rendering changes
 
-Live proof turns a review-time `liveProofPlan` into a short deterministic
-recording of user-visible browser or terminal behavior. Classification remains
-part of the existing read-only review. It records only a typed plan in the
-durable report; it never executes pull request code and never publishes a URL.
+Live proof turns a review-time `liveProofPlan` into a deterministic execution of
+real browser or terminal behavior, with an optional recording when the run is
+worth watching. Classification remains part of the existing read-only review.
+It records only a typed plan in the durable report; the later secretless
+execution lane runs pull request code and the trusted publication lane reports
+the result.
 
 After the report is published, both scheduled publication and exact-event
 direct delivery in `sweep.yml` dispatch `live-proof.yml` only when the plan
@@ -18,12 +20,14 @@ status is `recommended` and the target's repository profile has
 `live_test.enabled: true`. The command then applies ordered gates for
 `CLAWSWEEPER_LIVE_PROOF_ENABLED=1`, repository opt-in, a recommended plan, a
 runnable configured surface, and a still-open pull request. The model also
-classifies the recording payoff: short static text belongs in the review as a
-code block, while progressive output, meaningful terminal presentation,
-animation, and UI interaction can justify something to watch. A `static_text`
-payoff is a logged successful skip before any target code runs, as is every
-other failed gate, including a browser recommendation for a terminal-only
-repository that has no configured server or URL.
+classifies only the presentation payoff: short static text belongs in the
+review as a code block, while progressive output, meaningful terminal
+presentation, animation, and UI interaction can justify something to watch. A
+`static_text` payoff still executes the real plan but bypasses all recording,
+transcoding, and poster work. Other failed gates remain successful skips,
+including a browser recommendation for a terminal-only repository that has no
+configured server or URL. `declined_suspicious` remains a strict no-execution
+gate.
 
 ## Execute and attach
 
@@ -34,32 +38,40 @@ publication path described below. `execute` has
 PR head, and runs setup/start commands from the trusted repository profile. It
 contains no model call. Browser plans are serialized as JSON data into a
 generated plain `playwright-core` script; plan values are never inserted as
-source code. The script uses installed Chrome, a 1280x800 recorded context, and
-falls back to Playwright Chromium only when Chrome cannot launch. Terminal
-plans use tmux, an unauthenticated local Xvfb display with its TCP listener
-disabled, a fullscreen xterm, and ffmpeg `x11grab`; typed
-`run`, `wait`, and `expect_output` steps are replayed through the tmux pane.
+source code. Recorded browser runs use installed Chrome with a 1280x800 video
+context and fall back to Playwright Chromium only when Chrome cannot launch.
+Unrecorded browser runs use the same driver without Playwright video and capture
+the final page text. Recorded terminal plans use tmux, an unauthenticated local
+Xvfb display with its TCP listener disabled, a fullscreen xterm, and ffmpeg
+`x11grab`. Unrecorded terminal plans use only tmux and capture the pane directly.
+Both paths replay typed `run`, `wait`, and `expect_output` steps.
 
-Both drivers hold the final state on screen. Terminal commands poll for output
-beyond the echoed command line; browser steps settle briefly and target steps
-scroll the changed region into the recorded viewport. Each expectation records
+Terminal commands poll for output beyond the echoed command line; browser steps
+settle briefly. Every drive writes `live-verification.json` with the
+entry command or URL, every planned step and outcome, bounded captured output,
+the overall pass/fail result, and the verified head. A failed drive therefore
+becomes useful public verification evidence instead of disappearing.
+
+Media has additional gates. Recorded drivers hold the final state on screen and
+scroll browser targets into the recorded viewport. Each expectation records
 whether its text was present at the start and whether the later check succeeded.
 A recording is eligible only when at least one expectation was absent initially
 and satisfied after the plan acted. A failed drive, a plan that demonstrates no
-such semantic change, or a recording shorter than three seconds remains a
-logged successful skip and emits no manifest, so those checks backstop the
-model's payoff judgment. Eligible completed and partial drives are transcoded
-to H.264 MP4 and probed with ffprobe. The command creates `poster.jpg`, enforces
-the repository's recording limit and a 50 MB MP4 cap, and writes
-`steps-log.json` plus a metadata-only `live-proof-manifest.json`. The manifest
-contains no media URL. The bundle is retained as a GitHub Actions artifact for
-seven days.
+such semantic change, or a recording shorter than three seconds emits no media
+manifest. Eligible completed and partial drives are transcoded to H.264 MP4 and
+probed with ffprobe. The command creates `poster.jpg`, enforces the repository's
+recording limit and a 50 MB MP4 cap, and writes `steps-log.json` plus the
+metadata-only `live-proof-manifest.json`. The manifest contains no media URL and
+is absent when the bundle carries verification without media. Bundles are
+retained as GitHub Actions artifacts for seven days.
 
 The trusted `attach` job checks out only ClawSweeper `main`; it never checks out
 or executes target PR code. It treats the downloaded bundle as untrusted,
-strictly validates the manifest, rejects extra URL fields, probes the MP4 and
-poster again, rechecks size/duration/dimensions, and refuses a stale PR head.
-Only then does it upload `live-proof.mp4` and `poster.jpg` with `aws s3 cp` to:
+strictly validates the verification result and refuses a stale PR head. When a
+media manifest exists, it also rejects extra URL fields, probes the MP4 and
+poster again, rechecks size/duration/dimensions, and confirms the media and
+verification identities match. Only then does it upload `live-proof.mp4` and
+`poster.jpg` with `aws s3 cp` to:
 
 ```text
 live-proof/<repo-slug>/<item>/<head-sha>/live-proof.mp4
@@ -68,12 +80,16 @@ live-proof/<repo-slug>/<item>/<head-sha>/live-proof.jpg
 
 The attach job constructs both public URLs from its trusted
 `CLAWSWEEPER_LIVE_PROOF_BASE_URL`; bundle data cannot supply a host or URL. It
-updates the durable report's `Live Proof` section, re-renders the existing
-review presentation, upserts the marker-backed comment with a target-scoped
-write token, updates the comment-sync front matter, and publishes the changed
-canonical record. OpenClaw Bay is unaffected: this lane changes a durable
-report and its existing GitHub comment, not Bay's observer-only data contract
-or controls.
+updates the durable report's `Live Proof` section and always renders a public
+`Live Verification` section containing the entry, a fenced excerpt of real
+output, and per-assertion pass/fail. The recording is embedded below that result
+only when media exists. Before rendering, untrusted output is capped and
+neutralized so backtick fences, HTML, and ClawSweeper-like hidden markers cannot
+escape the code block or create comment controls. Publication then upserts the
+marker-backed comment with a target-scoped write token, updates the comment-sync
+front matter, and publishes the changed canonical record. OpenClaw Bay is
+unaffected: this lane changes a durable report and its existing GitHub comment,
+not Bay's observer-only data contract or controls.
 
 ## ClawSweeper Bay demo
 
@@ -112,12 +128,12 @@ CLAWSWEEPER_LIVE_PROOF_ENABLED=1 node dist/clawsweeper.js live-proof \
 current Git HEAD and logs that the live PR kind/open lookup is skipped. The
 environment, profile, and plan-status gates still run in their normal order.
 
-To validate an attachment without GitHub, R2, or credentials, point the attach
-command at a local media bundle and report and supply non-secret example
-origins. Dry-run mode performs strict manifest/media/report validation, uses
-the report head for the simulated freshness check, and prints the exact two
-`aws s3 cp` commands, replacement report section, and marker-backed comment
-body without making a mutation:
+To validate publication without GitHub, point the attach command at a local
+bundle and report. A verification-only bundle needs no R2 configuration. For a
+media bundle, supply non-secret example origins as below. Dry-run mode performs
+strict result/manifest/media/report validation, uses the report head for the
+simulated freshness check, and prints any `aws s3 cp` commands, the replacement
+report section, and the marker-backed comment body without making a mutation:
 
 ```bash
 CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT=https://example.r2.cloudflarestorage.com \
@@ -160,6 +176,9 @@ comment.
   disposable GitHub-hosted VM is the isolation boundary.
 - Drivers replay only schema-validated typed steps, with at most ten actions
   and a recording cap of 90 seconds.
+- Every executed plan produces a bounded, schema-validated verification result;
+  public output is separately capped and neutralized for Markdown fences, HTML,
+  and marker spoofing.
 - The artifact manifest is metadata-only. Unknown keys, including any injected
   URL field, are rejected by attach.
 - R2 credentials, the public base URL, the canonical-record credential, and

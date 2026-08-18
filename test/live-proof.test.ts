@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import YAML from "yaml";
 
-import { REVIEW_SECTIONS } from "../dist/clawsweeper-policy.js";
+import { LIVE_VERIFICATION_MARKER, REVIEW_SECTIONS } from "../dist/clawsweeper-policy.js";
 import type { LiveProofPlan, MediaProofCommandRunner } from "../dist/clawsweeper-types.js";
 import type { RepositoryProfile } from "../dist/repository-profiles.js";
 import {
@@ -23,6 +23,11 @@ import {
 } from "../dist/live-proof/drivers.js";
 import { executeLiveProof } from "../dist/live-proof/execute.js";
 import { parseLiveProofManifest } from "../dist/live-proof/manifest.js";
+import {
+  encodeLiveVerificationReportPayload,
+  parseLiveVerificationResult,
+  sanitizeUntrustedOutput,
+} from "../dist/live-proof/verification.js";
 import {
   captureLiveProofCanonicalBaseline,
   isCanonicalPublicationConflict,
@@ -129,18 +134,22 @@ test("live-proof gates skip in order with a successful result", async (t) => {
       expectedFetches: 0,
     },
     {
-      name: "static text payoff",
+      name: "suspicious plan is never executed",
       env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
       targetProfile: profile(),
       plan: {
-        ...recommendedPlan("terminal"),
+        status: "declined_suspicious",
+        surface: "none",
+        reason: "The command reads credential storage.",
         payoff: {
           kind: "static_text",
-          justification: "The viewer sees only a short burst of plain help text.",
+          justification: "No presentation payoff was assessed.",
         },
+        entry: "",
+        steps: [],
       },
       pull: { kind: "pull_request", state: "open", headSha: HEAD },
-      expected: /plan expects static text, which needs no recording/,
+      expected: /status is declined_suspicious/,
       expectedFetches: 0,
     },
     {
@@ -513,24 +522,31 @@ test("terminal driver waits for the recorder session to exit after sending q", (
   );
 });
 
-test("live-proof skips a failed drive without producing a manifest", async () => {
+test("live-proof reports a failed drive without producing media", async () => {
   const fixture = executeFixture("failed");
   mkdirSync(dirname(fixture.manifestPath), { recursive: true });
   writeFileSync(fixture.manifestPath, "stale manifest", "utf8");
   await fixture.run();
   assert.equal(existsSync(fixture.manifestPath), false);
-  assert.match(fixture.logs.join("\n"), /skip: demonstration did not complete/);
+  assert.equal(existsSync(fixture.verificationPath), true);
+  const verification = parseLiveVerificationResult(
+    JSON.parse(readFileSync(fixture.verificationPath, "utf8")) as unknown,
+  );
+  assert.equal(verification.overall_pass, false);
+  assert.equal(verification.drive_status, "failed");
+  assert.match(fixture.logs.join("\n"), /verification failed; no recording/);
   assert.equal(
     fixture.commands.some((command) => command.startsWith("ffmpeg ")),
     false,
   );
 });
 
-test("live-proof skips when every satisfied expectation was present at start", async () => {
+test("live-proof keeps verification when every satisfied expectation was present at start", async () => {
   const fixture = executeFixture("present-at-start");
   await fixture.run();
   assert.equal(existsSync(fixture.manifestPath), false);
-  assert.match(fixture.logs.join("\n"), /skip: plan verified nothing that changed/);
+  assert.equal(existsSync(fixture.verificationPath), true);
+  assert.match(fixture.logs.join("\n"), /media skipped because no expectation changed/);
   assert.equal(
     fixture.commands.some((command) => command.startsWith("ffmpeg ")),
     false,
@@ -548,18 +564,138 @@ test("live-proof emits a bundle when an initially absent expectation is satisfie
   assert.match(fixture.logs.join("\n"), /wrote browser proof bundle/);
 });
 
-test("live-proof skips a plan with no expectation steps", async () => {
+test("live-proof keeps verification but skips media for a plan with no expectations", async () => {
   const fixture = executeFixture("no-expectation");
   await fixture.run();
   assert.equal(existsSync(fixture.manifestPath), false);
-  assert.match(fixture.logs.join("\n"), /skip: plan verified nothing that changed/);
+  assert.equal(existsSync(fixture.verificationPath), true);
+  assert.match(fixture.logs.join("\n"), /media skipped because no expectation changed/);
 });
 
 test("live-proof skips a demonstrated recording shorter than three seconds", async () => {
   const fixture = executeFixture("too-short");
   await fixture.run();
   assert.equal(existsSync(fixture.manifestPath), false);
-  assert.match(fixture.logs.join("\n"), /skip: recording is shorter than 3 seconds/);
+  assert.equal(existsSync(fixture.mp4Path), false);
+  assert.equal(existsSync(fixture.verificationPath), true);
+  assert.match(
+    fixture.logs.join("\n"),
+    /media skipped because recording is shorter than 3 seconds/,
+  );
+});
+
+test("static-text terminal verification runs directly without recording tools", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-verification-static-"));
+  const outputDir = join(directory, "output");
+  const planPath = join(directory, "plan.json");
+  const commands: string[] = [];
+  const logs: string[] = [];
+  const plan: LiveProofPlan = {
+    ...recommendedPlan("terminal"),
+    payoff: {
+      kind: "static_text",
+      justification: "Short help output is clearer as text than video.",
+    },
+    steps: [{ action: "expect_output", text: "Usage" }],
+  };
+  writeFileSync(planPath, JSON.stringify(plan), "utf8");
+  const terminalRunner = terminalLifecycleRunner(commands, {
+    terminalCaptures: [
+      "$ pnpm cli --help\nUsage: cli [options]\n",
+      "$ pnpm cli --help\nUsage: cli [options]\n",
+    ],
+  });
+  const runner: MediaProofCommandRunner = (command, args, options) => {
+    if (command === "git") return { status: 0, stdout: `${HEAD}\n` };
+    return terminalRunner(command, args, options);
+  };
+
+  await executeLiveProof(
+    {
+      repo: "example/repo",
+      item: 42,
+      outputDir,
+      planPath,
+      checkoutPath: directory,
+    },
+    {
+      env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
+      runner,
+      repositoryProfileFor: () => ({
+        ...profile(),
+        liveTest: {
+          enabled: true,
+          surfaceDefault: "terminal",
+          setup: [],
+          readyTimeoutSeconds: 5,
+          maxRecordingSeconds: 90,
+        },
+      }),
+      reportLiveProofPlan: () => plan,
+      parseLiveProofPlan: () => plan,
+      fetchPullRequest: async () => {
+        throw new Error("local checkout must not fetch the pull request");
+      },
+      log: (message) => logs.push(message),
+      now: () => new Date("2026-08-17T12:00:00.000Z"),
+    },
+  );
+
+  const verification = parseLiveVerificationResult(
+    JSON.parse(readFileSync(join(outputDir, "live-verification.json"), "utf8")) as unknown,
+  );
+  assert.equal(verification.overall_pass, true);
+  assert.match(verification.output, /Usage: cli/);
+  assert.equal(existsSync(join(outputDir, "live-proof-manifest.json")), false);
+  assert.equal(
+    commands.some((command) => /Xvfb|ffmpeg|xterm|xdpyinfo/.test(command)),
+    false,
+  );
+  assert.match(logs.join("\n"), /verification bundle without media/);
+});
+
+test("execution setup failures still produce a failed verification result", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-verification-failure-"));
+  const outputDir = join(directory, "output");
+  const planPath = join(directory, "plan.json");
+  const plan = recommendedPlan("browser");
+  writeFileSync(planPath, JSON.stringify(plan), "utf8");
+
+  await executeLiveProof(
+    {
+      repo: "example/repo",
+      item: 42,
+      outputDir,
+      planPath,
+      checkoutPath: directory,
+    },
+    {
+      env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
+      runner: (command) =>
+        command === "git"
+          ? { status: 0, stdout: `${HEAD}\n` }
+          : { status: 1, stderr: "setup exploded" },
+      repositoryProfileFor: () => ({
+        ...profile(),
+        liveTest: { ...profile().liveTest!, setup: ["pnpm install"] },
+      }),
+      reportLiveProofPlan: () => plan,
+      parseLiveProofPlan: () => plan,
+      fetchPullRequest: async () => {
+        throw new Error("local checkout must not fetch the pull request");
+      },
+      now: () => new Date("2026-08-17T12:00:00.000Z"),
+      log: () => undefined,
+    },
+  );
+
+  const verification = parseLiveVerificationResult(
+    JSON.parse(readFileSync(join(outputDir, "live-verification.json"), "utf8")) as unknown,
+  );
+  assert.equal(verification.overall_pass, false);
+  assert.equal(verification.drive_status, "failed");
+  assert.match(verification.output, /setup exploded/);
+  assert.equal(existsSync(join(outputDir, "live-proof-manifest.json")), false);
 });
 
 test("live proof manifest is metadata-only and rejects URL-bearing extensions", () => {
@@ -574,6 +710,27 @@ test("live proof manifest is metadata-only and rejects URL-bearing extensions", 
     /unexpected keys: video_url/,
   );
   assert.throws(() => parseLiveProofManifest({ ...manifest, duration_seconds: 91 }), /at most 90/);
+});
+
+test("live verification validation rejects inconsistent or extensible public results", () => {
+  const verification = validVerification();
+  assert.deepEqual(parseLiveVerificationResult(verification), verification);
+  assert.throws(
+    () => parseLiveVerificationResult({ ...verification, overall_pass: false }),
+    /overall_pass does not match/,
+  );
+  assert.throws(
+    () =>
+      parseLiveVerificationResult({
+        ...verification,
+        output_url: "https://attacker.example/output",
+      }),
+    /unexpected keys: output_url/,
+  );
+  assert.throws(
+    () => parseLiveVerificationResult({ ...verification, output: "x".repeat(16_001) }),
+    /at most 16000/,
+  );
 });
 
 test("live-proof attach refuses stale heads before upload or publication", async () => {
@@ -640,8 +797,46 @@ test("live-proof attach publishes the record before syncing its marker-backed co
       logs: fixture.logs,
     }),
   );
-  assert.match(publishedBody, /### Live Proof/);
+  assert.match(publishedBody, /### Live Verification/);
   assert.match(publishedBody, /<!-- clawsweeper-review item=42 -->/);
+});
+
+test("live verification publishes without requiring or uploading media", async () => {
+  const fixture = attachmentFixture();
+  rmSync(join(fixture.bundleDir, "live-proof-manifest.json"));
+  rmSync(join(fixture.bundleDir, "live-proof.mp4"));
+  rmSync(join(fixture.bundleDir, "poster.jpg"));
+  const commands: string[] = [];
+  const result = await attachLiveProof(
+    { bundleDir: fixture.bundleDir, recordPath: fixture.recordPath, dryRun: false },
+    attachDependencies({
+      runner: mediaRunner(commands),
+      fetchPullRequest: async () => ({ kind: "pull_request", state: "open", headSha: HEAD }),
+      upsertReviewComment: () => {
+        throw new Error("comment sync must happen after canonical publication");
+      },
+      logs: fixture.logs,
+    }),
+  );
+
+  assert.equal(result, "attached");
+  assert.equal(
+    commands.some((command) => command.startsWith("aws ")),
+    false,
+  );
+  const report = readFileSync(fixture.recordPath, "utf8");
+  assert.match(report, /<!-- clawsweeper-live-verification -->/);
+  assert.doesNotMatch(report, /clawsweeper-live-proof-recording|Live proof recording/);
+});
+
+test("untrusted verification output cannot inject fences, HTML, or hidden markers", () => {
+  const sanitized = sanitizeUntrustedOutput(
+    "before\n```\n</details><h1>owned</h1>\n<!-- clawsweeper-review item=1 -->\nafter",
+  );
+  assert.doesNotMatch(sanitized, /```|<|>|<!-- clawsweeper-review/);
+  assert.match(sanitized, /ˋˋˋ/);
+  assert.match(sanitized, /‹\/details›/);
+  assert.match(sanitized, /claw​sweeper-review/);
 });
 
 test("live-proof detach removes only the recording block", () => {
@@ -1029,7 +1224,7 @@ test("live-proof workflow keeps execute secretless and attach trusted", () => {
   };
   assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ["mode", "repo", "item"]);
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.mode, {
-    description: "Attach or retract a live-proof recording",
+    description: "Publish a live verification or retract its recording",
     required: true,
     default: "attach",
     type: "choice",
@@ -1049,7 +1244,9 @@ test("live-proof workflow keeps execute secretless and attach trusted", () => {
   assert.match(source, /uses: \.\/\.github\/actions\/create-target-write-token/);
   assert.match(source, /CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: \$\{\{ secrets\./);
   assert.match(source, /setsid timeout --kill-after=30s 1500s/);
-  assert.match(source, /apt-get install --yes ffmpeg tmux x11-utils xfonts-base xvfb xterm/);
+  assert.match(source, /apt-get install --yes tmux/);
+  assert.match(source, /apt-get install --yes ffmpeg x11-utils xfonts-base xvfb xterm/);
+  assert.match(source, /live-verification\.json/);
   assert.match(source, /--record \.\.\/live-proof-report\.md/);
   assert.doesNotMatch(source, /--plan \.\.\/live-proof/);
   assert.match(source, /live-proof-attach-publish/);
@@ -1058,7 +1255,7 @@ test("live-proof workflow keeps execute secretless and attach trusted", () => {
   const attachSteps = workflow.jobs.attach?.steps ?? [];
   const attachOnly = "${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'attach' }}";
   assert.equal(
-    attachSteps.find((step) => step.name === "Install media validators")?.if,
+    attachSteps.find((step) => step.name === "Install media validators when recording exists")?.if,
     attachOnly,
   );
   assert.equal(
@@ -1286,6 +1483,31 @@ function validManifest() {
   };
 }
 
+function validVerification() {
+  return {
+    schema_version: 1 as const,
+    repo: "example/repo",
+    item: 42,
+    head_sha: HEAD,
+    surface: "browser" as const,
+    entry: "/settings",
+    drive_status: "completed" as const,
+    steps: [
+      {
+        action: "expect_text" as const,
+        status: "completed" as const,
+        detail: "ok",
+        assertion: "Saved",
+        present_at_start: false,
+        satisfied: true,
+      },
+    ],
+    output: "Settings saved successfully.",
+    overall_pass: true,
+    verified_at: "2026-08-16T12:00:00.000Z",
+  };
+}
+
 function attachmentFixture() {
   const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-attach-"));
   const bundleDir = join(directory, "bundle");
@@ -1295,6 +1517,11 @@ function attachmentFixture() {
   writeFileSync(
     join(bundleDir, "live-proof-manifest.json"),
     JSON.stringify(validManifest()),
+    "utf8",
+  );
+  writeFileSync(
+    join(bundleDir, "live-verification.json"),
+    JSON.stringify(validVerification()),
     "utf8",
   );
   writeFileSync(join(bundleDir, "live-proof.mp4"), "mp4", "utf8");
@@ -1344,6 +1571,9 @@ function recordedAttachmentFixture() {
     report.replace(
       "\n## Work Candidate",
       `
+${LIVE_VERIFICATION_MARKER}
+Result: ${encodeLiveVerificationReportPayload(validVerification())}
+
 <!-- clawsweeper-live-proof-recording -->
 
 [![Live proof recording](https://media.example.test/poster.jpg)](https://media.example.test/proof.mp4)
@@ -1474,6 +1704,7 @@ function executeFixture(
   const outputDir = join(directory, "output");
   const planPath = join(directory, "plan.json");
   const manifestPath = join(outputDir, "live-proof-manifest.json");
+  const verificationPath = join(outputDir, "live-verification.json");
   const mp4Path = join(outputDir, "live-proof.mp4");
   const logs: string[] = [];
   const commands: string[] = [];
@@ -1501,6 +1732,7 @@ function executeFixture(
     if (command === "node") {
       const env = options?.env ?? {};
       writeFileSync(String(env.CLAWSWEEPER_LIVE_PROOF_RAW_VIDEO), "webm", "utf8");
+      writeFileSync(String(env.CLAWSWEEPER_LIVE_PROOF_CAPTURED_OUTPUT), "Settings saved\n", "utf8");
       const steps =
         mode === "failed"
           ? [
@@ -1568,6 +1800,7 @@ function executeFixture(
     commands,
     logs,
     manifestPath,
+    verificationPath,
     mp4Path,
     run: () =>
       executeLiveProof(
@@ -1617,7 +1850,7 @@ function attachDependencies(options: {
     replaceSectionValue,
     reviewSections: REVIEW_SECTIONS,
     renderReviewCommentFromReport: (markdown: string) =>
-      `Review comment\n\n### Live Proof\n\n${sectionValue(markdown, REVIEW_SECTIONS.liveProof)}`,
+      `Review comment\n\n### Live Verification\n\n${sectionValue(markdown, REVIEW_SECTIONS.liveProof)}`,
     markedReviewCommentBody: (number: number, body: string) =>
       `${body}\n\n<!-- clawsweeper-review item=${number} -->`,
     upsertReviewComment: options.upsertReviewComment,

@@ -22,6 +22,7 @@ import {
   liveProofStepActions,
 } from "./drivers.js";
 import { LIVE_PROOF_MAX_MP4_BYTES, type LiveProofManifest, probeMedia } from "./manifest.js";
+import { buildLiveVerificationResult } from "./verification.js";
 
 export interface LiveProofPullRequestState {
   kind: "issue" | "pull_request";
@@ -73,10 +74,6 @@ export async function executeLiveProof(
     log(`[live-proof] skip: liveProofPlan status is ${plan.status}`);
     return;
   }
-  if (plan.payoff.kind === "static_text") {
-    log("[live-proof] skip: plan expects static text, which needs no recording");
-    return;
-  }
   if (plan.surface === "none") {
     throw new Error("recommended live proof plan is missing a browser or terminal surface");
   }
@@ -114,121 +111,202 @@ export async function executeLiveProof(
   const mp4Path = join(outputDir, "live-proof.mp4");
   const posterPath = join(outputDir, "poster.jpg");
   const stepsLogPath = join(outputDir, "steps-log.json");
+  const capturedOutputPath = join(outputDir, "captured-output.txt");
   const scriptPath = join(outputDir, "live-proof-playwright.mjs");
+  const serverLogPath = join(outputDir, "server.log");
   const serverPidPath = join(outputDir, "server.pid");
   const manifestPath = join(outputDir, "live-proof-manifest.json");
-  rmSync(manifestPath, { force: true });
-
-  for (const command of liveTest.setup) {
-    requireSuccess("sh", ["-lc", command], runner("sh", ["-lc", command], { cwd: checkout }));
+  const verificationPath = join(outputDir, "live-verification.json");
+  for (const stalePath of [
+    rawVideoPath,
+    mp4Path,
+    posterPath,
+    stepsLogPath,
+    capturedOutputPath,
+    scriptPath,
+    serverLogPath,
+    serverPidPath,
+    manifestPath,
+    verificationPath,
+  ]) {
+    rmSync(stalePath, { force: true });
   }
+  const recordMedia = plan.payoff.kind !== "static_text";
 
   let serverStarted = false;
   try {
-    if (plan.surface === "browser") {
-      const startCommand = `${liveTest.start} >${shellQuote(join(outputDir, "server.log"))} 2>&1 & echo $! >${shellQuote(serverPidPath)}`;
-      requireSuccess(
-        "sh",
-        ["-lc", startCommand],
-        runner("sh", ["-lc", startCommand], { cwd: checkout }),
-      );
-      serverStarted = true;
-      waitUntilReady(liveTest.url!, liveTest.readyTimeoutSeconds, runner, checkout);
+    let drive: ReturnType<typeof driveBrowser>;
+    try {
+      for (const command of liveTest.setup) {
+        requireSuccess("sh", ["-lc", command], runner("sh", ["-lc", command], { cwd: checkout }));
+      }
+      if (plan.surface === "browser") {
+        const startCommand = `${liveTest.start} >${shellQuote(serverLogPath)} 2>&1 & echo $! >${shellQuote(serverPidPath)}`;
+        requireSuccess(
+          "sh",
+          ["-lc", startCommand],
+          runner("sh", ["-lc", startCommand], { cwd: checkout }),
+        );
+        serverStarted = true;
+        waitUntilReady(liveTest.url!, liveTest.readyTimeoutSeconds, runner, checkout);
+      }
+
+      drive =
+        plan.surface === "browser"
+          ? driveBrowser({
+              plan,
+              checkout,
+              scriptPath,
+              rawVideoPath,
+              stepsLogPath,
+              outputPath: capturedOutputPath,
+              baseUrl: liveTest.url!,
+              recordMedia,
+              runner,
+            })
+          : driveTerminal({
+              plan,
+              checkout,
+              rawVideoPath,
+              maxRecordingSeconds: liveTest.maxRecordingSeconds,
+              recordMedia,
+              runner,
+            });
+    } catch (error) {
+      const verifiedAt = (dependencies.now ?? (() => new Date()))().toISOString();
+      writeVerificationResult({
+        path: verificationPath,
+        repo: profile.targetRepo,
+        item: options.item,
+        headSha,
+        plan,
+        driveStatus: "failed",
+        stepLog: [],
+        output: executionFailureOutput(error, serverLogPath),
+        verifiedAt,
+      });
+      log("[live-proof] execution failed; wrote verification result without media");
+      return;
     }
 
-    const drive =
-      plan.surface === "browser"
-        ? driveBrowser({
-            plan,
-            checkout,
-            scriptPath,
-            rawVideoPath,
-            stepsLogPath,
-            baseUrl: liveTest.url!,
-            runner,
-          })
-        : driveTerminal({
-            plan,
-            checkout,
-            rawVideoPath,
-            maxRecordingSeconds: liveTest.maxRecordingSeconds,
-            runner,
-          });
-
     writeFileSync(stepsLogPath, `${JSON.stringify(drive.steps, null, 2)}\n`, "utf8");
+    const verifiedAt = (dependencies.now ?? (() => new Date()))().toISOString();
+    writeVerificationResult({
+      path: verificationPath,
+      repo: profile.targetRepo,
+      item: options.item,
+      headSha,
+      plan,
+      driveStatus: drive.status,
+      stepLog: drive.steps,
+      output: drive.output,
+      verifiedAt,
+    });
 
     if (drive.status === "failed") {
-      log("[live-proof] skip: demonstration did not complete");
+      log("[live-proof] verification failed; no recording will be attached");
+      return;
+    }
+    if (!recordMedia) {
+      log(
+        `[live-proof] wrote ${plan.surface} verification bundle without media for ${profile.targetRepo}#${options.item} at ${headSha}`,
+      );
       return;
     }
     if (!demonstratedChange(drive.steps)) {
-      log("[live-proof] skip: plan verified nothing that changed");
+      log("[live-proof] verification completed; media skipped because no expectation changed");
       return;
     }
 
-    transcodeToMp4(rawVideoPath, mp4Path, runner, checkout);
-    enforceMp4SizeCap(mp4Path, runner, checkout);
-    const media = probeMedia(mp4Path, runner);
-    if (
-      media.durationSeconds === null ||
-      media.durationSeconds > liveTest.maxRecordingSeconds + 0.05
-    ) {
-      throw new Error(
-        `live proof recording exceeds configured ${liveTest.maxRecordingSeconds}-second cap`,
+    try {
+      transcodeToMp4(rawVideoPath, mp4Path, runner, checkout);
+      enforceMp4SizeCap(mp4Path, runner, checkout);
+      const media = probeMedia(mp4Path, runner);
+      if (
+        media.durationSeconds === null ||
+        media.durationSeconds > liveTest.maxRecordingSeconds + 0.05
+      ) {
+        throw new Error(
+          `live proof recording exceeds configured ${liveTest.maxRecordingSeconds}-second cap`,
+        );
+      }
+      if (media.durationSeconds < 3) {
+        rmSync(mp4Path, { force: true });
+        log(
+          "[live-proof] verification completed; media skipped because recording is shorter than 3 seconds",
+        );
+        return;
+      }
+      // The contact-sheet tile needs ~100 seconds of sampled video before some
+      // ffmpeg builds emit a frame, so short recordings fall back to a single
+      // poster frame near the start of the demonstration.
+      createVideoContactSheet(mp4Path, posterPath, runner);
+      if (!existsSync(posterPath)) {
+        for (const offset of ["1", "0"]) {
+          const frame = runner(
+            "ffmpeg",
+            [
+              "-hide_banner",
+              "-y",
+              "-ss",
+              offset,
+              "-i",
+              mp4Path,
+              "-frames:v",
+              "1",
+              "-vf",
+              "scale=640:-1",
+              posterPath,
+            ],
+            { cwd: checkout },
+          );
+          if (frame.status === 0 && existsSync(posterPath)) break;
+        }
+      }
+      if (!existsSync(posterPath)) throw new Error("ffmpeg did not create poster.jpg");
+
+      const manifest: LiveProofManifest = {
+        schema_version: 1,
+        repo: profile.targetRepo,
+        item: options.item,
+        head_sha: headSha,
+        surface: plan.surface,
+        duration_seconds: Number(media.durationSeconds.toFixed(3)),
+        width: media.width,
+        height: media.height,
+        drive_status: drive.status,
+        steps_executed: liveProofStepActions(plan.steps),
+        recorded_at: verifiedAt,
+      };
+      writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+      log(
+        `[live-proof] wrote ${plan.surface} proof bundle for ${profile.targetRepo}#${options.item} at ${headSha}`,
+      );
+    } catch (error) {
+      for (const mediaPath of [mp4Path, posterPath, manifestPath]) {
+        rmSync(mediaPath, { force: true });
+      }
+      log(
+        `[live-proof] verification completed; media pipeline failed and was skipped: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    if (media.durationSeconds < 3) {
-      log("[live-proof] skip: recording is shorter than 3 seconds");
-      return;
-    }
-    // The contact-sheet tile needs ~100 seconds of sampled video before some
-    // ffmpeg builds emit a frame, so short recordings fall back to a single
-    // poster frame near the start of the demonstration.
-    createVideoContactSheet(mp4Path, posterPath, runner);
-    if (!existsSync(posterPath)) {
-      for (const offset of ["1", "0"]) {
-        const frame = runner(
-          "ffmpeg",
-          [
-            "-hide_banner",
-            "-y",
-            "-ss",
-            offset,
-            "-i",
-            mp4Path,
-            "-frames:v",
-            "1",
-            "-vf",
-            "scale=640:-1",
-            posterPath,
-          ],
-          { cwd: checkout },
-        );
-        if (frame.status === 0 && existsSync(posterPath)) break;
-      }
-    }
-    if (!existsSync(posterPath)) throw new Error("ffmpeg did not create poster.jpg");
-
-    const manifest: LiveProofManifest = {
-      schema_version: 1,
-      repo: profile.targetRepo,
-      item: options.item,
-      head_sha: headSha,
-      surface: plan.surface,
-      duration_seconds: Number(media.durationSeconds.toFixed(3)),
-      width: media.width,
-      height: media.height,
-      drive_status: drive.status,
-      steps_executed: liveProofStepActions(plan.steps),
-      recorded_at: (dependencies.now ?? (() => new Date()))().toISOString(),
-    };
-    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-    log(
-      `[live-proof] wrote ${plan.surface} proof bundle for ${profile.targetRepo}#${options.item} at ${headSha}`,
-    );
   } finally {
     if (serverStarted) stopBackgroundServer(serverPidPath, runner, checkout);
   }
+}
+
+function writeVerificationResult(
+  options: Parameters<typeof buildLiveVerificationResult>[0] & { path: string },
+): void {
+  const { path, ...resultOptions } = options;
+  const verification = buildLiveVerificationResult(resultOptions);
+  writeFileSync(path, `${JSON.stringify(verification, null, 2)}\n`, "utf8");
+}
+
+function executionFailureOutput(error: unknown, serverLogPath: string): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  const serverOutput = existsSync(serverLogPath) ? readFileSync(serverLogPath, "utf8") : "";
+  return [detail, serverOutput].filter(Boolean).join("\n\n");
 }
 
 function demonstratedChange(steps: readonly LiveProofStepLogEntry[]): boolean {

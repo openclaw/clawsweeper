@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Attach or retract a live-proof recording"
+        description: "Publish a live verification or retract its recording"
         required: true
         default: attach
         type: choice
@@ -67,7 +67,7 @@ jobs:
           if [ -n "$LIVE_PROOF_PLAN_JSON" ] && [ "$LIVE_PROOF_PLAN_JSON" != "null" ]; then
             printf '%s\n' "$LIVE_PROOF_PLAN_JSON" | jq -e . > /tmp/live-proof-plan.json
           else
-            printf '%s\n' '{"status":"not_applicable","surface":"none","reason":"Manual dispatch did not include a publication plan.","entry":"","steps":[]}' > /tmp/live-proof-plan.json
+            printf '%s\n' '{"status":"not_applicable","surface":"none","reason":"Manual dispatch did not include a publication plan.","payoff":{"kind":"static_text","justification":"No presentation payoff was assessed."},"entry":"","steps":[]}' > /tmp/live-proof-plan.json
             echo "::notice::No publication plan was supplied; the execution gate will complete as a safe skip."
           fi
           node --input-type=module <<'NODE'
@@ -85,6 +85,10 @@ jobs:
             "",
             "Reason: " + String(plan.reason || ""),
             "",
+            "Payoff: " + String(plan.payoff?.kind || ""),
+            "",
+            "Payoff justification: " + String(plan.payoff?.justification || ""),
+            "",
             "Entry: " + String(plan.entry || ""),
             "",
             "Steps:",
@@ -100,16 +104,21 @@ jobs:
             echo "repo_owner=$repo_owner"
             echo "repo_name=$repo_name"
             echo "repo_slug=$repo_slug"
+            echo "record_media=$(jq -r '.payoff.kind != \"static_text\"' /tmp/live-proof-plan.json)"
           } >> "$GITHUB_OUTPUT"
 
       - uses: ./.github/actions/setup-pnpm
         with:
           build-script: build
 
-      - name: Install deterministic recording tools
+      - name: Install deterministic execution tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes ffmpeg tmux x11-utils xfonts-base xvfb xterm
+          sudo apt-get install --yes tmux
+
+      - name: Install deterministic recording tools
+        if: ${{ steps.target.outputs.record_media == 'true' }}
+        run: sudo apt-get install --yes ffmpeg x11-utils xfonts-base xvfb xterm
 
       - name: Check out the public PR head
         env:
@@ -141,7 +150,7 @@ jobs:
             --item "${{ steps.target.outputs.item }}" \
             --record ../live-proof-report.md \
             --output ../live-proof-bundle
-          if [ -f ../live-proof-bundle/live-proof-manifest.json ]; then
+          if [ -f ../live-proof-bundle/live-verification.json ]; then
             echo "produced=true" >> "$GITHUB_OUTPUT"
           else
             echo "produced=false" >> "$GITHUB_OUTPUT"
@@ -211,17 +220,19 @@ jobs:
         with:
           build-script: build:all
 
-      - name: Install media validators
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'attach' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes ffmpeg
-
       - uses: actions/download-artifact@v8
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'attach' }}
         with:
           name: live-proof-${{ steps.target.outputs.repo_slug }}-${{ steps.target.outputs.item }}
           path: live-proof-bundle
+
+      - name: Install media validators when recording exists
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'attach' }}
+        run: |
+          if [ -f live-proof-bundle/live-proof-manifest.json ]; then
+            sudo apt-get update
+            sudo apt-get install --yes ffmpeg
+          fi
 
       - name: Publish live-proof change
         env:
