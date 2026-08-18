@@ -868,6 +868,143 @@ test("execution setup failures still produce a failed verification result", asyn
   assert.equal(existsSync(join(outputDir, "live-proof-manifest.json")), false);
 });
 
+test("browser readiness timeout publishes the last 40 sanitized server log lines", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-readiness-timeout-"));
+  const outputDir = join(directory, "output");
+  const planPath = join(directory, "plan.json");
+  const plan = recommendedPlan("browser");
+  const serverLines = Array.from({ length: 50 }, (_, index) => `startup line ${index + 1}`);
+  serverLines[11] = "``` </details><h1>owned</h1> <!-- clawsweeper-review item=1 -->";
+  serverLines[49] = `startup line 50 ${"x".repeat(5_000)}`;
+  writeFileSync(planPath, JSON.stringify(plan), "utf8");
+
+  await executeLiveProof(
+    {
+      repo: "example/repo",
+      item: 42,
+      outputDir,
+      planPath,
+      checkoutPath: directory,
+    },
+    {
+      env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
+      runner: (command, args) => {
+        const shellCommand = String(args[1] ?? "");
+        if (command === "git") return { status: 0, stdout: `${HEAD}\n` };
+        if (shellCommand.startsWith("command -v pnpm")) return { status: 0 };
+        if (shellCommand.includes("server.log") && shellCommand.includes("server.pid")) {
+          writeFileSync(join(outputDir, "server.log"), `${serverLines.join("\n")}\n`, "utf8");
+          writeFileSync(join(outputDir, "server.pid"), "12345\n", "utf8");
+          return { status: 0 };
+        }
+        if (command === "curl") return { status: 1, stderr: "connection refused" };
+        if (shellCommand.includes('kill -0 "$pid"')) return { status: 0 };
+        return { status: 0 };
+      },
+      repositoryProfileFor: () => ({
+        ...profile(),
+        liveTest: { ...profile().liveTest!, readyTimeoutSeconds: 0 },
+      }),
+      reportLiveProofPlan: () => plan,
+      parseLiveProofPlan: () => plan,
+      fetchPullRequest: async () => {
+        throw new Error("local checkout must not fetch the pull request");
+      },
+      now: () => new Date("2026-08-17T12:00:00.000Z"),
+      log: () => undefined,
+    },
+  );
+
+  const verification = parseLiveVerificationResult(
+    JSON.parse(readFileSync(join(outputDir, "live-verification.json"), "utf8")) as unknown,
+  );
+  assert.deepEqual(verification.failure, {
+    phase: "execution",
+    reason: "live_test.url did not return HTTP 200 within 0 seconds",
+  });
+  assert.doesNotMatch(verification.output, /startup line 10\b/);
+  assert.match(verification.output, /startup line 11\b/);
+  assert.match(verification.output, /startup line 50\b/);
+
+  const rendered = renderLiveVerificationCommentBlock(verification);
+  assert.match(
+    rendered,
+    /FAIL \(failed\) — execution before step 1 `expect_text`: `live_test\.url did not return HTTP 200 within 0 seconds`/,
+  );
+  assert.match(rendered, /\*\*Startup output:\*\*\n\n```text\nstartup line 11/);
+  assert.match(rendered, /… output truncated …/);
+  assert.doesNotMatch(rendered, /``` <\/details>|<h1>|<!-- clawsweeper-review/);
+  assert.match(rendered, /ˋˋˋ ‹\/details›‹h1›owned‹\/h1›/);
+});
+
+test("browser readiness reports an exited start command without waiting for its timeout", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-start-exit-"));
+  const outputDir = join(directory, "output");
+  const planPath = join(directory, "plan.json");
+  const plan = recommendedPlan("browser");
+  let curlProbes = 0;
+  let sleeps = 0;
+  writeFileSync(planPath, JSON.stringify(plan), "utf8");
+  const startedAt = Date.now();
+
+  await executeLiveProof(
+    {
+      repo: "example/repo",
+      item: 42,
+      outputDir,
+      planPath,
+      checkoutPath: directory,
+    },
+    {
+      env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
+      runner: (command, args) => {
+        const shellCommand = String(args[1] ?? "");
+        if (command === "git") return { status: 0, stdout: `${HEAD}\n` };
+        if (shellCommand.startsWith("command -v pnpm")) return { status: 0 };
+        if (shellCommand.includes("server.log") && shellCommand.includes("server.pid")) {
+          writeFileSync(
+            join(outputDir, "server.log"),
+            "codegen failed before vite started\n",
+            "utf8",
+          );
+          writeFileSync(join(outputDir, "server.pid"), "12345\n", "utf8");
+          return { status: 0 };
+        }
+        if (command === "curl") {
+          curlProbes += 1;
+          return { status: 1, stderr: "connection refused" };
+        }
+        if (shellCommand.includes('kill -0 "$pid"')) return { status: 1 };
+        if (command === "sleep") sleeps += 1;
+        return { status: 0 };
+      },
+      repositoryProfileFor: () => ({
+        ...profile(),
+        liveTest: { ...profile().liveTest!, readyTimeoutSeconds: 240 },
+      }),
+      reportLiveProofPlan: () => plan,
+      parseLiveProofPlan: () => plan,
+      fetchPullRequest: async () => {
+        throw new Error("local checkout must not fetch the pull request");
+      },
+      now: () => new Date("2026-08-17T12:00:00.000Z"),
+      log: () => undefined,
+    },
+  );
+
+  const verification = parseLiveVerificationResult(
+    JSON.parse(readFileSync(join(outputDir, "live-verification.json"), "utf8")) as unknown,
+  );
+  assert.deepEqual(verification.failure, {
+    phase: "execution",
+    reason: "start command exited before the URL became reachable",
+  });
+  assert.equal(verification.output, "codegen failed before vite started");
+  assert.equal(curlProbes, 1);
+  assert.equal(sleeps, 0);
+  assert.ok(Date.now() - startedAt < 2_000, "early exit should not consume the 240-second timeout");
+});
+
 test("toolchain installer failures produce a published verification result", async () => {
   const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-toolchain-failure-"));
   const outputDir = join(directory, "output");

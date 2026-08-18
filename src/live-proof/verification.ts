@@ -84,6 +84,7 @@ export function buildLiveVerificationResult(options: {
   driveStatus: LiveProofDriveStatus;
   stepLog: readonly LiveProofStepLogEntry[];
   output: string;
+  executionFailureReason?: string;
   verifiedAt: string;
 }): LiveVerificationResult {
   const steps = options.plan.steps.map((step, index): LiveVerificationStepResult => {
@@ -123,7 +124,9 @@ export function buildLiveVerificationResult(options: {
       (step) =>
         step.status === "completed" && (step.satisfied === undefined || step.satisfied === true),
     );
-  const failure = overallPass ? undefined : buildLiveVerificationFailure(steps, options.output);
+  const failure = overallPass
+    ? undefined
+    : buildLiveVerificationFailure(steps, options.output, options.executionFailureReason);
   return {
     schema_version: 1,
     repo: options.repo,
@@ -134,7 +137,7 @@ export function buildLiveVerificationResult(options: {
     drive_status: options.driveStatus,
     steps,
     output:
-      options.plan.surface === "browser"
+      options.plan.surface === "browser" && options.executionFailureReason === undefined
         ? ""
         : trimText(options.output, LIVE_VERIFICATION_OUTPUT_MAX_CHARS),
     ...(failure ? { failure } : {}),
@@ -264,6 +267,16 @@ export function renderLiveVerificationCommentBlock(result: LiveVerificationResul
         }),
       );
     }
+    if (parsed.failure?.phase === "execution" && parsed.output) {
+      lines.push(
+        "",
+        "**Startup output:**",
+        "",
+        "```text",
+        sanitizeUntrustedOutput(parsed.output),
+        "```",
+      );
+    }
     return lines.join("\n");
   }
 
@@ -372,6 +385,7 @@ function parseFailure(
 function buildLiveVerificationFailure(
   steps: readonly LiveVerificationStepResult[],
   output: string,
+  executionFailureReason?: string,
 ): LiveVerificationFailure {
   const failedIndex = steps.findIndex((step) => step.status === "failed");
   if (failedIndex >= 0) {
@@ -385,7 +399,9 @@ function buildLiveVerificationFailure(
   }
   return {
     phase: "execution",
-    reason: oneLineReason(output || "driver exited unsuccessfully without a captured reason"),
+    reason: oneLineReason(
+      executionFailureReason || output || "driver exited unsuccessfully without a captured reason",
+    ),
   };
 }
 

@@ -87,6 +87,13 @@ is step telemetry only: ClawSweeper never serializes document text. Recorded
 terminal plans use tmux, Xvfb with its TCP listener disabled, fullscreen xterm,
 and ffmpeg `x11grab`; unrecorded terminal plans use tmux directly.
 
+Browser startup writes the configured start command's output to `server.log`
+and records its process in `server.pid`. Readiness polling stops early when that
+process exits; both an early exit and a readiness timeout publish a one-line
+startup reason plus the sanitized, capped tail of the last 40 log lines. This
+usually exposes a failed build or code-generation command that ran before the
+dev server could bind its port without publishing an unbounded target log.
+
 Every drive writes `live-verification.json` with the exact reviewed head, entry,
 typed steps and outcomes, bounded terminal output, and overall pass/fail result.
 A setup or drive failure still publishes verification and no media. Media is

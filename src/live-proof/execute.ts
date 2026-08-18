@@ -1,6 +1,9 @@
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
+  readSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -27,6 +30,9 @@ import {
   sanitizedLiveProofEnvironment,
 } from "./environment.js";
 import { buildLiveVerificationResult } from "./verification.js";
+
+const SERVER_LOG_TAIL_LINES = 40;
+const SERVER_LOG_TAIL_MAX_BYTES = 64 * 1024;
 
 export interface LiveProofPullRequestState {
   kind: "issue" | "pull_request";
@@ -174,7 +180,14 @@ export async function executeLiveProof(
           runner("sh", ["-lc", startCommand], { cwd: checkout }),
         );
         serverStarted = true;
-        waitUntilReady(liveTest.url!, liveTest.readyTimeoutSeconds, runner, checkout);
+        waitUntilReady(
+          liveTest.url!,
+          liveTest.readyTimeoutSeconds,
+          runner,
+          checkout,
+          serverLogPath,
+          serverPidPath,
+        );
       }
 
       drive =
@@ -200,6 +213,7 @@ export async function executeLiveProof(
             });
     } catch (error) {
       const verifiedAt = (dependencies.now ?? (() => new Date()))().toISOString();
+      const failure = executionFailure(error, plan.surface);
       writeVerificationResult({
         path: verificationPath,
         repo: profile.targetRepo,
@@ -208,7 +222,8 @@ export async function executeLiveProof(
         plan,
         driveStatus: "failed",
         stepLog: [],
-        output: executionFailureOutput(error, serverLogPath),
+        output: failure.output,
+        executionFailureReason: failure.reason,
         verifiedAt,
       });
       log("[live-proof] execution failed; wrote verification result without media");
@@ -406,10 +421,25 @@ function writeVerificationResult(
   writeFileSync(path, `${JSON.stringify(verification, null, 2)}\n`, "utf8");
 }
 
-function executionFailureOutput(error: unknown, serverLogPath: string): string {
-  const detail = error instanceof Error ? error.message : String(error);
-  const serverOutput = existsSync(serverLogPath) ? readFileSync(serverLogPath, "utf8") : "";
-  return [detail, serverOutput].filter(Boolean).join("\n\n");
+class StartupReadinessError extends Error {
+  constructor(
+    message: string,
+    readonly logTail: string,
+  ) {
+    super(message);
+    this.name = "StartupReadinessError";
+  }
+}
+
+function executionFailure(
+  error: unknown,
+  surface: LiveProofPlan["surface"],
+): { reason: string; output: string } {
+  const reason = error instanceof Error ? error.message : String(error);
+  if (error instanceof StartupReadinessError) {
+    return { reason, output: error.logTail || "<no start command output captured>" };
+  }
+  return { reason, output: surface === "terminal" ? reason : "" };
 }
 
 function demonstratedChange(steps: readonly LiveProofStepLogEntry[]): boolean {
@@ -444,6 +474,8 @@ function waitUntilReady(
   timeoutSeconds: number,
   runner: MediaProofCommandRunner,
   checkout: string,
+  serverLogPath: string,
+  serverPidPath: string,
 ): void {
   const deadline = Date.now() + timeoutSeconds * 1000;
   do {
@@ -453,10 +485,55 @@ function waitUntilReady(
       { cwd: checkout },
     );
     if (result.status === 0) return;
+    if (!startCommandIsRunning(serverPidPath, runner, checkout)) {
+      throw new StartupReadinessError(
+        "start command exited before the URL became reachable",
+        readServerLogTail(serverLogPath),
+      );
+    }
     if (Date.now() >= deadline) break;
     runner("sleep", ["1"]);
   } while (Date.now() < deadline);
-  throw new Error(`live_test.url did not return HTTP 200 within ${timeoutSeconds} seconds`);
+  throw new StartupReadinessError(
+    `live_test.url did not return HTTP 200 within ${timeoutSeconds} seconds`,
+    readServerLogTail(serverLogPath),
+  );
+}
+
+function startCommandIsRunning(
+  serverPidPath: string,
+  runner: MediaProofCommandRunner,
+  checkout: string,
+): boolean {
+  const command = `if [ -s ${shellQuote(serverPidPath)} ]; then pid=$(cat ${shellQuote(serverPidPath)}); kill -0 "$pid" 2>/dev/null; else exit 1; fi`;
+  return runner("sh", ["-lc", command], { cwd: checkout }).status === 0;
+}
+
+function readServerLogTail(serverLogPath: string): string {
+  if (!existsSync(serverLogPath)) return "";
+  try {
+    const size = statSync(serverLogPath).size;
+    if (size === 0) return "";
+    const length = Math.min(size, SERVER_LOG_TAIL_MAX_BYTES);
+    const buffer = Buffer.alloc(length);
+    const descriptor = openSync(serverLogPath, "r");
+    let bytesRead: number;
+    try {
+      bytesRead = readSync(descriptor, buffer, 0, length, size - length);
+    } finally {
+      closeSync(descriptor);
+    }
+    const lines = buffer
+      .subarray(0, bytesRead)
+      .toString("utf8")
+      .replaceAll("\r\n", "\n")
+      .replace(/\r/g, "\n")
+      .split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    return lines.slice(-SERVER_LOG_TAIL_LINES).join("\n");
+  } catch {
+    return "<start command output unavailable>";
+  }
 }
 
 function transcodeToMp4(

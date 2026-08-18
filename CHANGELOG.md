@@ -19,6 +19,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Live verification now publishes a sanitized, capped dev-server log tail when browser startup fails, and detects a start command that exits before its URL becomes reachable without waiting for the readiness timeout.
 - Live verification now installs a missing target package manager on demand after execution is approved, publishes installer failures as verification results, and guides plans toward stable assertions the run can satisfy.
 - Live verification now runs immediately after review in the same job and exact reviewed checkout; review judgment gates execution, target children receive a denylist-and-heuristic-sanitized environment, package installs suppress lifecycle scripts unless a repository explicitly opts in, and review jobs default to `ubuntu-latest` without requiring Linux namespaces. Existing publication jobs still validate and upload media before publishing the normal record and comment.
 - Live verification comments now keep terminal captures but render browser proof as sanitized per-step outcomes with explicit failure reasons, never document-wide page text or empty assertion sections.
