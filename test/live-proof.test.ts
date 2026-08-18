@@ -977,14 +977,40 @@ test("live-proof attach dry-run prints exact uploads and mutations without perfo
 test("live-proof workflow keeps execute secretless and attach trusted", () => {
   const source = readFileSync(".github/workflows/live-proof.yml", "utf8");
   const workflow = YAML.parse(source) as {
-    on: { workflow_dispatch: { inputs: Record<string, unknown> } };
+    on: {
+      workflow_dispatch: {
+        inputs: Record<string, { default?: string; options?: string[]; type?: string }>;
+      };
+    };
     env: Record<string, string>;
-    jobs: Record<string, Record<string, unknown>>;
+    jobs: Record<
+      string,
+      {
+        if?: string;
+        permissions?: Record<string, unknown>;
+        steps?: Array<{ name?: string; if?: string; run?: string; uses?: string }>;
+      }
+    >;
   };
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ["repo", "item"]);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ["mode", "repo", "item"]);
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.mode, {
+    description: "Attach or retract a live-proof recording",
+    required: true,
+    default: "attach",
+    type: "choice",
+    options: ["attach", "retract"],
+  });
   assert.equal(workflow.env.CLAWSWEEPER_APP_CLIENT_ID, "Iv23liOECG0slfuhz093");
   assert.deepEqual(workflow.jobs.execute?.permissions, {});
   assert.doesNotMatch(JSON.stringify(workflow.jobs.execute), /secrets\./);
+  assert.equal(
+    workflow.jobs.execute?.if,
+    "${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'attach' }}",
+  );
+  assert.equal(
+    workflow.jobs.attach?.if,
+    "${{ always() && !cancelled() && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'retract') || needs.execute.outputs.produced == 'true') }}",
+  );
   assert.match(source, /uses: \.\/\.github\/actions\/create-target-write-token/);
   assert.match(source, /CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: \$\{\{ secrets\./);
   assert.match(source, /setsid timeout --kill-after=30s 1500s/);
@@ -992,7 +1018,25 @@ test("live-proof workflow keeps execute secretless and attach trusted", () => {
   assert.match(source, /--record \.\.\/live-proof-report\.md/);
   assert.doesNotMatch(source, /--plan \.\.\/live-proof/);
   assert.match(source, /live-proof-attach-publish/);
-  assert.match(source, /--repo-slug "\$\{\{ needs\.execute\.outputs\.repo_slug \}\}"/);
+  assert.match(source, /--repo-slug "\$\{\{ steps\.target\.outputs\.repo_slug \}\}"/);
+
+  const attachSteps = workflow.jobs.attach?.steps ?? [];
+  const attachOnly = "${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'attach' }}";
+  assert.equal(
+    attachSteps.find((step) => step.name === "Install media validators")?.if,
+    attachOnly,
+  );
+  assert.equal(
+    attachSteps.find((step) => step.uses === "actions/download-artifact@v8")?.if,
+    attachOnly,
+  );
+  const publish = attachSteps.find((step) => step.name === "Publish live-proof change")?.run ?? "";
+  assert.match(publish, /if \[ "\$MODE" = "retract" \]; then/);
+  assert.match(publish, /live-proof-attach \\\n+\s+--detach \\\n+\s+--record "\$record"/);
+  assert.doesNotMatch(
+    publish.slice(0, publish.indexOf("exit 0")),
+    /--bundle|manifest|head[_-]sha/i,
+  );
 
   const dispatchActionSource = readFileSync(
     ".github/actions/dispatch-live-proofs/action.yml",

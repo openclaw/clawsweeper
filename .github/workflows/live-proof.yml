@@ -7,6 +7,14 @@ on:
     types: [clawsweeper_live_proof]
   workflow_dispatch:
     inputs:
+      mode:
+        description: "Attach or retract a live-proof recording"
+        required: true
+        default: attach
+        type: choice
+        options:
+          - attach
+          - retract
       repo:
         description: "Target repository"
         required: true
@@ -22,6 +30,7 @@ env:
 
 jobs:
   execute:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'attach' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions: {}
@@ -148,7 +157,7 @@ jobs:
 
   attach:
     needs: execute
-    if: ${{ needs.execute.outputs.produced == 'true' }}
+    if: ${{ always() && !cancelled() && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'retract') || needs.execute.outputs.produced == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -159,22 +168,42 @@ jobs:
           ref: main
           persist-credentials: false
 
+      - name: Resolve target
+        id: target
+        env:
+          EVENT_REPO: ${{ github.event.client_payload.repo || inputs.repo }}
+          EVENT_ITEM: ${{ github.event.client_payload.item || inputs.item }}
+        run: |
+          set -euo pipefail
+          repo="$(printf '%s' "$EVENT_REPO" | tr '[:upper:]' '[:lower:]')"
+          item="$EVENT_ITEM"
+          if ! [[ "$repo" =~ ^[a-z0-9_.-]+/[a-z0-9_.-]+$ ]] || ! [[ "$item" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid live-proof target: $repo#$item" >&2
+            exit 1
+          fi
+          {
+            echo "repo_owner=${repo%%/*}"
+            echo "repo_name=${repo#*/}"
+            echo "repo_slug=${repo//\//-}"
+            echo "item=$item"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create target write token
         id: target-write-token
         uses: ./.github/actions/create-target-write-token
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ needs.execute.outputs.repo_owner }}
-          repository: ${{ needs.execute.outputs.repo_name }}
+          owner: ${{ steps.target.outputs.repo_owner }}
+          repository: ${{ steps.target.outputs.repo_name }}
 
       - uses: ./.github/actions/setup-state
         with:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          records-repo-slugs: ${{ needs.execute.outputs.repo_slug }}
-          records-item-number: ${{ needs.execute.outputs.item }}
+          records-repo-slugs: ${{ steps.target.outputs.repo_slug }}
+          records-item-number: ${{ steps.target.outputs.item }}
           hydrate-git-state: "false"
           hydrate-state-blobs: "false"
 
@@ -183,17 +212,20 @@ jobs:
           build-script: build:all
 
       - name: Install media validators
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'attach' }}
         run: |
           sudo apt-get update
           sudo apt-get install --yes ffmpeg
 
       - uses: actions/download-artifact@v8
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'attach' }}
         with:
-          name: live-proof-${{ needs.execute.outputs.repo_slug }}-${{ needs.execute.outputs.item }}
+          name: live-proof-${{ steps.target.outputs.repo_slug }}-${{ steps.target.outputs.item }}
           path: live-proof-bundle
 
-      - name: Validate, upload, and attach live proof
+      - name: Publish live-proof change
         env:
+          MODE: ${{ inputs.mode || 'attach' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_SECRET_ACCESS_KEY }}
           CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT }}
@@ -204,9 +236,17 @@ jobs:
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
-          record="records/${{ needs.execute.outputs.repo_slug }}/items/${{ needs.execute.outputs.item }}.md"
+          record="records/${{ steps.target.outputs.repo_slug }}/items/${{ steps.target.outputs.item }}.md"
+          if [ "$MODE" = "retract" ]; then
+            node dist/clawsweeper.js live-proof-attach \
+              --detach \
+              --record "$record" \
+              --repo-slug "${{ steps.target.outputs.repo_slug }}" \
+              --item "${{ steps.target.outputs.item }}"
+            exit 0
+          fi
           node dist/clawsweeper.js live-proof-attach-publish \
             --bundle live-proof-bundle \
             --record "$record" \
-            --repo-slug "${{ needs.execute.outputs.repo_slug }}" \
-            --item "${{ needs.execute.outputs.item }}"
+            --repo-slug "${{ steps.target.outputs.repo_slug }}" \
+            --item "${{ steps.target.outputs.item }}"

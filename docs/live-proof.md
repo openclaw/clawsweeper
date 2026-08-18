@@ -23,7 +23,9 @@ terminal-only repository that has no configured server or URL.
 
 ## Execute and attach
 
-The workflow has two jobs with different trust. `execute` has
+The workflow has two jobs with different trust. Manual dispatch defaults to
+`mode=attach`; `mode=retract` skips `execute` entirely and runs only the trusted
+publication path described below. `execute` has
 `permissions: {}`, receives no secret environment values, checks out the public
 PR head, and runs setup/start commands from the trusted repository profile. It
 contains no model call. Browser plans are serialized as JSON data into a
@@ -129,19 +131,22 @@ plan (status, surface, reason, entry, and steps). Detach mode needs no bundle
 and deliberately does not compare the record with the current PR head:
 
 ```bash
-node dist/clawsweeper.js live-proof-attach \
-  --detach \
-  --record ./records/openclaw-openclaw/items/110714.md \
-  --repo-slug openclaw-openclaw \
-  --item 110714
+gh workflow run live-proof.yml \
+  --repo openclaw/clawsweeper \
+  --ref main \
+  -f mode=retract \
+  -f repo=openclaw/openclaw \
+  -f item=110714
 ```
 
-The command hydrates the attempt-scoped canonical record, removes only the
+The trusted job validates the target, mints its target-scoped write token, and
+hydrates only that canonical Worker record using the same setup as attachment.
+It then invokes `live-proof-attach --detach`, which removes only the
 marker-backed recording block, publishes through the normal bounded-conflict
-path, and then re-renders the marker-backed GitHub comment. If the block is
-already absent, it exits successfully without publishing or updating the
-comment. Add `--dry-run` to print the report and comment mutations without
-hydrating, publishing, or changing any file.
+path, and re-renders the marker-backed GitHub comment. Retraction never
+downloads an artifact, reads a manifest, or compares a head SHA. If the block
+is already absent, it exits successfully without publishing or updating the
+comment.
 
 ## Security invariants
 
