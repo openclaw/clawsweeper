@@ -22,6 +22,15 @@ The planner gates execution in order: the repository must opt in with
 still runs and publishes verification, but it bypasses recording, transcoding,
 and poster generation.
 
+Only after those gates pass does the verification child resolve the target
+repository profile's `package_manager`. If the configured Bun, pnpm, or npm
+executable is missing, the child runs that package manager's official installer
+inside the same sanitized scratch profile and verifies that the executable is
+available before target setup. Installer failures become a failed
+`live-verification.json` result and are published through the normal artifact
+path; they do not fail the review itself. Reviews that do not verify never probe
+or install a target package manager.
+
 ## Review-job execution
 
 After the review command returns, the job inspects the produced reports before
@@ -62,6 +71,13 @@ runner requirement today. The repair lane's separate containment remains in use
 and is unaffected by this live-proof policy.
 
 HOME, package-manager caches, and temporary files point into the scratch profile.
+
+Plans must use assertions the demonstration can satisfy. Browser interactions
+should derive search or filter values from content the page already renders,
+and terminal plans should assert stable output such as a header, flag, or error
+string rather than counts, timings, or run-dependent numbers. When no exact
+value is certain, the planner must choose a more stable assertion instead of
+inventing one.
 
 Browser plans are serialized as JSON data into a generated plain
 `playwright-core` script; plan values are never inserted as source code.

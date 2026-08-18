@@ -240,6 +240,22 @@ test("review prompt accepts real production transport-boundary proof for reliabi
   );
 });
 
+test("review prompt requires live-proof assertions the demonstration can satisfy", () => {
+  const prompt = readFileSync("prompts/review-item.md", "utf8");
+
+  assert.match(
+    prompt,
+    /Every assertion must name something the demonstration can actually satisfy/,
+  );
+  assert.match(prompt, /search for a value the page itself already displays/);
+  assert.match(
+    prompt,
+    /stable substring of its output such as a header, flag name, or error string/,
+  );
+  assert.match(prompt, /not a count, timing, or number that varies per run/);
+  assert.match(prompt, /assert something more stable rather\s+than inventing one/);
+});
+
 test("generated shared-channel review prompt preserves scoped policy and real fault evidence", () => {
   const proof =
     "The real production owner and grammY HTTP client produced a recorded 429 older → 200 newest trace against a local HTTP server.";

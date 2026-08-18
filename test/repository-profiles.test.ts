@@ -78,6 +78,7 @@ test("repositoryProfileFor matches mixed-case input against canonical profiles",
 
   assert.equal(profile.targetRepo, "openclaw/clawhub");
   assert.equal(profile.slug, "openclaw-clawhub");
+  assert.equal(profile.packageManager, "bun");
   assert.deepEqual(profile.applyCloseRules.issue, ["implemented_on_main"]);
   assert.deepEqual(profile.applyCloseRules.pull_request, [
     "implemented_on_main",
@@ -113,6 +114,7 @@ test("generic OpenClaw fallback supports conservative event-only onboarding", ()
     "mostly_implemented_on_main",
   ]);
   assert.deepEqual(profile.liveTest, TERMINAL_LIVE_TEST);
+  assert.equal(profile.packageManager, "pnpm");
 });
 
 test("generic steipete fallback starts review-only", () => {
@@ -199,6 +201,16 @@ test("schema v2 repository profiles strictly validate optional live_test config"
   assert.throws(
     () => validateTargetRepositoryConfigForTest(targetRepositoryConfig(liveTest, 1)),
     /live_test requires schema_version 2/,
+  );
+  assert.throws(
+    () =>
+      validateTargetRepositoryConfigForTest({
+        ...targetRepositoryConfig(liveTest),
+        repositories: [
+          { ...targetRepositoryConfig(liveTest).repositories[0], package_manager: "yarn" },
+        ],
+      }),
+    /package_manager must be bun, pnpm, or npm/,
   );
 });
 

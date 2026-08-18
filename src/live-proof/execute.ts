@@ -155,6 +155,13 @@ export async function executeLiveProof(
   try {
     let drive: ReturnType<typeof driveBrowser>;
     try {
+      ensureLiveProofPackageManager(
+        profile.packageManager,
+        runner,
+        checkout,
+        targetEnvironment,
+        log,
+      );
       for (const configuredCommand of liveTest.setup) {
         const command = liveProofSetupCommand(configuredCommand, liveTest.allowInstallScripts);
         requireSuccess("sh", ["-lc", command], runner("sh", ["-lc", command], { cwd: checkout }));
@@ -327,6 +334,68 @@ export function liveProofSetupCommand(command: string, allowInstallScripts: bool
   }
   if (/(?:^|\s)--ignore-scripts(?:=true)?(?:\s|$)/.test(command)) return command;
   return command.replace(install[0], `${install[0]} --ignore-scripts`);
+}
+
+export function liveProofPackageManagerInstallCommand(packageManager: string): string {
+  switch (packageManager) {
+    case "bun":
+      return "curl -fsSL https://bun.sh/install | bash";
+    case "pnpm":
+      return "curl -fsSL https://get.pnpm.io/install.sh | sh -";
+    case "npm":
+      return "curl -fsSL https://www.npmjs.com/install.sh | sh";
+    default:
+      throw new Error(
+        `unsupported live-proof package manager ${JSON.stringify(packageManager)}; expected bun, pnpm, or npm`,
+      );
+  }
+}
+
+export function ensureLiveProofPackageManager(
+  packageManager: string,
+  runner: MediaProofCommandRunner,
+  checkout: string,
+  environment: NodeJS.ProcessEnv,
+  log: (message: string) => void = console.log,
+): void {
+  const installCommand = liveProofPackageManagerInstallCommand(packageManager);
+  addPackageManagerToPath(packageManager, environment);
+  const probe = () =>
+    runner("sh", ["-lc", `command -v ${packageManager} >/dev/null 2>&1`], { cwd: checkout });
+  if (probe().status === 0) return;
+
+  const installed = runner("sh", ["-lc", installCommand], {
+    cwd: checkout,
+    timeoutMs: 2 * 60_000,
+  });
+  if (installed.status !== 0) {
+    throw new Error(
+      `could not install live-proof package manager ${packageManager} with official installer (${installCommand}): ${mediaProofSpawnDetail(installed)}`,
+    );
+  }
+  addPackageManagerToPath(packageManager, environment);
+  const verified = probe();
+  if (verified.status !== 0) {
+    throw new Error(
+      `live-proof package manager ${packageManager} is unavailable after its official installer (${installCommand}): ${mediaProofSpawnDetail(verified)}`,
+    );
+  }
+  log(`[live-proof] installed target package manager ${packageManager}: ${installCommand}`);
+}
+
+function addPackageManagerToPath(packageManager: string, environment: NodeJS.ProcessEnv): void {
+  const home = environment.HOME?.trim();
+  if (!home) return;
+  const directory =
+    packageManager === "bun"
+      ? join(home, ".bun", "bin")
+      : packageManager === "pnpm"
+        ? environment.PNPM_HOME?.trim() || join(home, ".local", "share", "pnpm")
+        : undefined;
+  if (!directory) return;
+  const path = environment.PATH ?? "";
+  if (!path.split(":").includes(directory))
+    environment.PATH = path ? `${directory}:${path}` : directory;
 }
 
 function writeVerificationResult(

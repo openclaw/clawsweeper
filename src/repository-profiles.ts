@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 export type RepositoryItemKind = "issue" | "pull_request";
 export type RepositoryLiveTestSurface = "browser" | "terminal";
+export type RepositoryPackageManager = "bun" | "pnpm" | "npm";
 
 export interface RepositoryLiveTestConfig {
   enabled: boolean;
@@ -40,6 +41,7 @@ export interface RepositoryProfile {
   slug: string;
   displayName: string;
   checkoutDir: string;
+  packageManager: RepositoryPackageManager;
   docsUrl?: string;
   communityUrl?: string;
   promptNote: string;
@@ -57,6 +59,7 @@ interface ConfiguredRepositoryProfile {
   targetRepo: string;
   displayName: string;
   checkoutDir: string;
+  packageManager: RepositoryPackageManager;
   docsUrl?: string;
   communityUrl?: string;
   promptNote: string;
@@ -68,6 +71,7 @@ interface GenericFallbackConfig {
   owner: string;
   denyRepositories: readonly string[];
   allowRepoNamePattern: RegExp;
+  packageManager: RepositoryPackageManager;
   promptNote: string;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
   liveTest?: RepositoryLiveTestConfig;
@@ -103,6 +107,7 @@ const CORE_OPENCLAW_PROFILE: RepositoryProfile = {
   slug: "openclaw-openclaw",
   displayName: "OpenClaw",
   checkoutDir: "openclaw",
+  packageManager: "pnpm",
   docsUrl: "https://docs.openclaw.ai",
   communityUrl: "https://clawhub.ai/",
   promptNote:
@@ -182,6 +187,7 @@ function configuredRepositoryProfile(profile: ConfiguredRepositoryProfile): Repo
     slug: slugForRepo(targetRepo),
     displayName: profile.displayName,
     checkoutDir: profile.checkoutDir,
+    packageManager: profile.packageManager,
     promptNote: profile.promptNote,
     applyCloseRules: profile.applyCloseRules,
   };
@@ -210,6 +216,7 @@ function fallbackRepositoryProfile(normalizedTargetRepo: string): RepositoryProf
     slug: slugForRepo(normalizedTargetRepo),
     displayName: repoName,
     checkoutDir: repoName,
+    packageManager: fallback.packageManager,
     promptNote: fallback.promptNote
       .replaceAll("{target_repo}", normalizedTargetRepo)
       .replaceAll("{repo_name}", repoName),
@@ -302,6 +309,7 @@ function validateConfiguredRepositoryProfile(
     targetRepo: repoValue(profile.target_repo, `${label}.target_repo`),
     displayName: stringValue(profile.display_name, `${label}.display_name`),
     checkoutDir: pathSegmentValue(profile.checkout_dir, `${label}.checkout_dir`),
+    packageManager: packageManagerValue(profile.package_manager, `${label}.package_manager`),
     promptNote: stringValue(profile.prompt_note, `${label}.prompt_note`),
     applyCloseRules: closeRulesValue(profile.apply_close_rules, `${label}.apply_close_rules`),
   };
@@ -390,6 +398,7 @@ function validateGenericFallbackConfig(
       (entry, index) => normalizeRepo(repoValue(entry, `${label}.deny_repositories[${index}]`)),
     ),
     allowRepoNamePattern: new RegExp(pattern),
+    packageManager: packageManagerValue(fallback.package_manager, `${label}.package_manager`),
     promptNote: stringValue(fallback.prompt_note, `${label}.prompt_note`),
     applyCloseRules: closeRulesValue(fallback.apply_close_rules, `${label}.apply_close_rules`),
   };
@@ -434,6 +443,14 @@ function pathSegmentValue(value: unknown, label: string): string {
   const segment = stringValue(value, label);
   if (!/^[A-Za-z0-9_.-]+$/.test(segment)) throw new Error(`${label} must be a safe path segment`);
   return segment;
+}
+
+function packageManagerValue(value: unknown, label: string): RepositoryPackageManager {
+  const packageManager = value === undefined ? "pnpm" : stringValue(value, label).toLowerCase();
+  if (packageManager !== "bun" && packageManager !== "pnpm" && packageManager !== "npm") {
+    throw new Error(`${label} must be bun, pnpm, or npm`);
+  }
+  return packageManager;
 }
 
 function stringValue(value: unknown, label: string): string {

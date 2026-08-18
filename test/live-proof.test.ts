@@ -22,7 +22,12 @@ import {
   generatePlaywrightScript,
   terminalCommandPlan,
 } from "../dist/live-proof/drivers.js";
-import { executeLiveProof, liveProofSetupCommand } from "../dist/live-proof/execute.js";
+import {
+  ensureLiveProofPackageManager,
+  executeLiveProof,
+  liveProofPackageManagerInstallCommand,
+  liveProofSetupCommand,
+} from "../dist/live-proof/execute.js";
 import {
   assertLiveProofEnvironmentSanitized,
   sanitizedLiveProofEnvironment,
@@ -71,6 +76,7 @@ function profile(enabled = true): RepositoryProfile {
     slug: "example-repo",
     displayName: "Example",
     checkoutDir: "repo",
+    packageManager: "pnpm",
     promptNote: "Example profile.",
     applyCloseRules: {},
     liveTest: {
@@ -326,6 +332,53 @@ test("live-proof install setup disables lifecycle scripts unless the profile opt
   assert.throws(
     () => liveProofSetupCommand("npm install --ignore-scripts=false", false),
     /allow_install_scripts: true/,
+  );
+});
+
+test("live-proof installs a missing Bun toolchain with the official installer", () => {
+  const calls: Array<{ command: string; args: readonly string[]; path?: string }> = [];
+  const logs: string[] = [];
+  const environment: NodeJS.ProcessEnv = { HOME: "/tmp/live-proof-home", PATH: "/usr/bin" };
+  let probes = 0;
+  ensureLiveProofPackageManager(
+    "bun",
+    (command, args, options) => {
+      calls.push({ command, args, path: options?.env?.PATH ?? environment.PATH });
+      if (String(args[1]).startsWith("command -v bun")) {
+        probes += 1;
+        return { status: probes === 1 ? 1 : 0 };
+      }
+      return { status: 0 };
+    },
+    "/tmp/checkout",
+    environment,
+    (message) => logs.push(message),
+  );
+
+  assert.deepEqual(
+    calls.map(({ command, args }) => [command, ...args].join(" ")),
+    [
+      "sh -lc command -v bun >/dev/null 2>&1",
+      "sh -lc curl -fsSL https://bun.sh/install | bash",
+      "sh -lc command -v bun >/dev/null 2>&1",
+    ],
+  );
+  assert.match(environment.PATH ?? "", /^\/tmp\/live-proof-home\/\.bun\/bin:/);
+  assert.match(logs.join("\n"), /installed target package manager bun/);
+});
+
+test("live-proof reports an unsupported package manager clearly", () => {
+  assert.throws(
+    () =>
+      ensureLiveProofPackageManager("yarn", () => ({ status: 1 }), "/tmp/checkout", {
+        HOME: "/tmp/live-proof-home",
+        PATH: "/usr/bin",
+      }),
+    /unsupported live-proof package manager "yarn"; expected bun, pnpm, or npm/,
+  );
+  assert.equal(
+    liveProofPackageManagerInstallCommand("bun"),
+    "curl -fsSL https://bun.sh/install | bash",
   );
 });
 
@@ -777,10 +830,13 @@ test("execution setup failures still produce a failed verification result", asyn
     },
     {
       env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
-      runner: (command) =>
-        command === "git"
-          ? { status: 0, stdout: `${HEAD}\n` }
-          : { status: 1, stderr: "setup exploded" },
+      runner: (command, args) => {
+        if (command === "git") return { status: 0, stdout: `${HEAD}\n` };
+        if (command === "sh" && String(args[1]).startsWith("command -v pnpm")) {
+          return { status: 0 };
+        }
+        return { status: 1, stderr: "setup exploded" };
+      },
       repositoryProfileFor: () => ({
         ...profile(),
         liveTest: { ...profile().liveTest!, setup: ["pnpm install"] },
@@ -810,6 +866,54 @@ test("execution setup failures still produce a failed verification result", asyn
     /FAIL \(failed\) — execution before step 1 `expect_text`: `sh -lc pnpm install --ignore-scripts failed: setup exploded`/,
   );
   assert.equal(existsSync(join(outputDir, "live-proof-manifest.json")), false);
+});
+
+test("toolchain installer failures produce a published verification result", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-toolchain-failure-"));
+  const outputDir = join(directory, "output");
+  const planPath = join(directory, "plan.json");
+  const plan = recommendedPlan("terminal");
+  writeFileSync(planPath, JSON.stringify(plan), "utf8");
+
+  await executeLiveProof(
+    {
+      repo: "example/repo",
+      item: 42,
+      outputDir,
+      planPath,
+      checkoutPath: directory,
+    },
+    {
+      env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
+      runner: (command, args) => {
+        if (command === "git") return { status: 0, stdout: `${HEAD}\n` };
+        if (String(args[1]).startsWith("command -v bun")) return { status: 1 };
+        if (String(args[1]) === "curl -fsSL https://bun.sh/install | bash") {
+          return { status: 1, stderr: "network unavailable" };
+        }
+        return { status: 0 };
+      },
+      repositoryProfileFor: () => ({ ...profile(), packageManager: "bun" }),
+      reportLiveProofPlan: () => plan,
+      parseLiveProofPlan: () => plan,
+      fetchPullRequest: async () => {
+        throw new Error("local checkout must not fetch the pull request");
+      },
+      now: () => new Date("2026-08-17T12:00:00.000Z"),
+      log: () => undefined,
+    },
+  );
+
+  const verification = parseLiveVerificationResult(
+    JSON.parse(readFileSync(join(outputDir, "live-verification.json"), "utf8")) as unknown,
+  );
+  assert.equal(verification.overall_pass, false);
+  assert.match(
+    verification.failure?.reason ?? "",
+    /could not install live-proof package manager bun with official installer/,
+  );
+  assert.match(verification.output, /curl -fsSL https:\/\/bun\.sh\/install \| bash/);
+  assert.match(verification.output, /network unavailable/);
 });
 
 test("live proof manifest is metadata-only and rejects URL-bearing extensions", () => {

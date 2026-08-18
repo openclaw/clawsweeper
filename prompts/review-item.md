@@ -459,6 +459,14 @@ plan must be demonstrable from the PR head alone without external accounts,
 credentials, or third-party services. Step values must never contain secrets or
 tokens of any kind.
 
+Every assertion must name something the demonstration can actually satisfy.
+Assert values that the page or command will genuinely produce: for a search
+box, search for a value the page itself already displays; for a command, assert
+a stable substring of its output such as a header, flag name, or error string,
+not a count, timing, or number that varies per run. If you cannot name a value
+the run will certainly print or render, assert something more stable rather
+than inventing one.
+
 Judge whether the run has something worth watching, solely to choose its
 presentation. Choose `payoff.kind: "static_text"` when the whole demonstration
 is a short burst of plain text that a reader can understand better in a quoted

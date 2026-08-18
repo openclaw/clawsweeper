@@ -82,6 +82,7 @@ test(
             slug: "openclaw-sanitized-fixture",
             displayName: "fixture",
             checkoutDir: "fixture",
+            packageManager: "pnpm",
             promptNote: "fixture",
             applyCloseRules: {},
             liveTest: {
