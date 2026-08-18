@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import {
   createVideoContactSheet,
@@ -7,7 +15,12 @@ import {
 } from "../clawsweeper-media-proof.js";
 import type { LiveProofPlan, MediaProofCommandRunner } from "../clawsweeper-types.js";
 import type { RepositoryProfile } from "../repository-profiles.js";
-import { driveBrowser, driveTerminal, liveProofStepActions } from "./drivers.js";
+import {
+  driveBrowser,
+  driveTerminal,
+  type LiveProofStepLogEntry,
+  liveProofStepActions,
+} from "./drivers.js";
 import { LIVE_PROOF_MAX_MP4_BYTES, type LiveProofManifest, probeMedia } from "./manifest.js";
 
 export interface LiveProofPullRequestState {
@@ -99,6 +112,8 @@ export async function executeLiveProof(
   const stepsLogPath = join(outputDir, "steps-log.json");
   const scriptPath = join(outputDir, "live-proof-playwright.mjs");
   const serverPidPath = join(outputDir, "server.pid");
+  const manifestPath = join(outputDir, "live-proof-manifest.json");
+  rmSync(manifestPath, { force: true });
 
   for (const command of liveTest.setup) {
     requireSuccess("sh", ["-lc", command], runner("sh", ["-lc", command], { cwd: checkout }));
@@ -136,6 +151,17 @@ export async function executeLiveProof(
             runner,
           });
 
+    writeFileSync(stepsLogPath, `${JSON.stringify(drive.steps, null, 2)}\n`, "utf8");
+
+    if (drive.status === "failed") {
+      log("[live-proof] skip: demonstration did not complete");
+      return;
+    }
+    if (!demonstratedChange(drive.steps)) {
+      log("[live-proof] skip: plan verified nothing that changed");
+      return;
+    }
+
     transcodeToMp4(rawVideoPath, mp4Path, runner, checkout);
     enforceMp4SizeCap(mp4Path, runner, checkout);
     const media = probeMedia(mp4Path, runner);
@@ -146,6 +172,10 @@ export async function executeLiveProof(
       throw new Error(
         `live proof recording exceeds configured ${liveTest.maxRecordingSeconds}-second cap`,
       );
+    }
+    if (media.durationSeconds < 3) {
+      log("[live-proof] skip: recording is shorter than 3 seconds");
+      return;
     }
     // The contact-sheet tile needs ~100 seconds of sampled video before some
     // ffmpeg builds emit a frame, so short recordings fall back to a single
@@ -175,7 +205,6 @@ export async function executeLiveProof(
     }
     if (!existsSync(posterPath)) throw new Error("ffmpeg did not create poster.jpg");
 
-    writeFileSync(stepsLogPath, `${JSON.stringify(drive.steps, null, 2)}\n`, "utf8");
     const manifest: LiveProofManifest = {
       schema_version: 1,
       repo: profile.targetRepo,
@@ -189,17 +218,22 @@ export async function executeLiveProof(
       steps_executed: liveProofStepActions(plan.steps),
       recorded_at: (dependencies.now ?? (() => new Date()))().toISOString(),
     };
-    writeFileSync(
-      join(outputDir, "live-proof-manifest.json"),
-      `${JSON.stringify(manifest, null, 2)}\n`,
-      "utf8",
-    );
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     log(
       `[live-proof] wrote ${plan.surface} proof bundle for ${profile.targetRepo}#${options.item} at ${headSha}`,
     );
   } finally {
     if (serverStarted) stopBackgroundServer(serverPidPath, runner, checkout);
   }
+}
+
+function demonstratedChange(steps: readonly LiveProofStepLogEntry[]): boolean {
+  return steps.some(
+    (step) =>
+      (step.action === "expect_text" || step.action === "expect_output") &&
+      !step.presentAtStart &&
+      step.satisfied,
+  );
 }
 
 function readPlan(

@@ -445,9 +445,16 @@ internal plumbing. Use `surface: "browser"` for browser behavior and
 browser proof or a command for terminal proof. Emit at most ten deterministic,
 typed `steps`: browser plans may use `goto`, `click`, `fill`, `press`,
 `wait_for`, `wait`, and `expect_text`; terminal plans may use `run`, `wait`, and
-`expect_output`. The plan must be demonstrable from the PR head alone without
-external accounts, credentials, or third-party services. Step values must never
-contain secrets or tokens of any kind.
+`expect_output`. Every recommended plan must include at least one state-changing
+step (`goto`, `click`, `fill`, or `press` for browser plans; `run` for terminal
+plans) and at least one expectation whose text is absent before that action and
+appears only afterward. Never assert a static label, hint, heading, or the typed
+command itself: the expectation must prove that the action changed observable
+state. Targets for `click`, `fill`, and `wait_for` must be valid CSS or Playwright
+selectors, including `text=...` selectors when appropriate, never prose
+descriptions of state. The plan must be demonstrable from the PR head alone
+without external accounts, credentials, or third-party services. Step values
+must never contain secrets or tokens of any kind.
 
 Live proof recordings are published publicly. If the diff, or the
 demonstration it would require, reads environment variables or credential

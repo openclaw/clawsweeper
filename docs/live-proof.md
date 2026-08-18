@@ -34,10 +34,17 @@ plans use tmux, an unauthenticated local Xvfb display with its TCP listener
 disabled, a fullscreen xterm, and ffmpeg `x11grab`; typed
 `run`, `wait`, and `expect_output` steps are replayed through the tmux pane.
 
-Both drivers finalize the recording after a mid-plan failure and record the
-result as `drive_status`. The command transcodes to H.264 MP4, probes it with
-ffprobe, creates `poster.jpg`, enforces the repository's recording limit and a
-50 MB MP4 cap, and writes `steps-log.json` plus a metadata-only
+Both drivers hold the final state on screen. Terminal commands poll for output
+beyond the echoed command line; browser steps settle briefly and target steps
+scroll the changed region into the recorded viewport. Each expectation records
+whether its text was present at the start and whether the later check succeeded.
+A recording is eligible only when at least one expectation was absent initially
+and satisfied after the plan acted. A failed drive, a plan that demonstrates no
+such semantic change, or a recording shorter than three seconds is a logged
+successful skip and emits no manifest, so it cannot reach attachment. Eligible
+completed and partial drives are transcoded to H.264 MP4 and probed with
+ffprobe. The command creates `poster.jpg`, enforces the repository's recording
+limit and a 50 MB MP4 cap, and writes `steps-log.json` plus a metadata-only
 `live-proof-manifest.json`. The manifest contains no media URL. The bundle is
 retained as a GitHub Actions artifact for seven days.
 

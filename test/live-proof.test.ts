@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -201,10 +201,36 @@ test("Playwright generation keeps quotes, backticks, and newlines inside JSON da
   assert.equal(checked.status, 0, checked.stderr);
 });
 
+test("Playwright steps scroll targets into view, settle, and hold a six-second minimum", () => {
+  const script = generatePlaywrightScript([
+    { action: "click", target: "#save" },
+    { action: "wait_for", target: "#result" },
+    { action: "expect_text", text: "Saved" },
+  ]);
+  assert.equal(script.match(/scrollIntoViewIfNeeded\(\)/g)?.length, 3);
+  assert.match(script, /await page\.waitForTimeout\(700\)/);
+  assert.match(script, /Math\.max\(3000, 6000 - elapsed\)/);
+});
+
+test("Playwright probes every expected text immediately after the initial navigation", () => {
+  const script = generatePlaywrightScript([
+    { action: "click", target: "#save" },
+    { action: "expect_text", text: "Saved" },
+  ]);
+  const goto = script.indexOf("await page.goto(new URL(entry, baseUrl).href)");
+  const probe = script.indexOf("const expectationPresentAtStart = new Map()", goto);
+  const loop = "for (const [index, step] of steps.entries()) {";
+  const probeLoop = script.indexOf(loop, probe);
+  const actionLoop = script.indexOf(loop, probeLoop + loop.length);
+  assert.ok(goto >= 0 && probe > goto && probeLoop > probe && actionLoop > probeLoop);
+  assert.match(script, /await locator\.isVisible\(\)\.catch\(\(\) => false\)/);
+  assert.match(script, /presentAtStart: expectationPresentAtStart\.get\(index\) === true/);
+  assert.match(script, /satisfied: true/);
+});
+
 test("terminal driver composes direct Xvfb, xterm, and bounded ffmpeg sessions", () => {
   const commands = terminalCommandPlan({
     sessionPrefix: "proof",
-    entry: "pnpm cli --help",
     maxRecordingSeconds: 90,
     rawVideoPath: "/tmp/live-proof.raw.webm",
   });
@@ -265,7 +291,101 @@ test("terminal driver composes direct Xvfb, xterm, and bounded ffmpeg sessions",
     commands.some((invocation) => invocation.command === "sleep"),
     false,
   );
-  assert.deepEqual(commands.at(-2)?.args.slice(-2), ["--", "pnpm cli --help"]);
+});
+
+test("terminal run waits for pane content beyond the echoed command", () => {
+  const calls: string[] = [];
+  const result = runTerminalFixture(
+    terminalLifecycleRunner(calls, {
+      terminalCaptures: [
+        "$ pnpm cli --help\n",
+        "$ pnpm cli --help\n",
+        "$ pnpm cli --help\nUsage\n",
+      ],
+    }),
+  );
+  assert.equal(result.status, "completed");
+  const enter = calls.findIndex((call) => /tmux send-keys .* Enter$/.test(call));
+  const hold = calls.findIndex((call, index) => index > enter && call === "sleep 6");
+  assert.notEqual(enter, -1);
+  assert.notEqual(hold, -1);
+  assert.equal(calls.slice(enter + 1, hold).filter((call) => call === "sleep 1").length, 2);
+});
+
+test("terminal expect_output polls until new command output appears", () => {
+  const calls: string[] = [];
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "demo",
+      steps: [{ action: "expect_output", text: "Ready" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    runner: terminalLifecycleRunner(calls, {
+      terminalCaptures: ["$ demo\nstarting\n", "$ demo\nstarting\n", "$ demo\nstarting\nReady\n"],
+    }),
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.steps[0]?.status, "completed");
+  assert.equal(result.steps[0]?.presentAtStart, false);
+  assert.equal(result.steps[0]?.satisfied, true);
+  assert.ok(calls.includes("sleep 1"));
+});
+
+test("terminal expect_output records text already present in the plan-start snapshot", () => {
+  const calls: string[] = [];
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "demo",
+      steps: [{ action: "expect_output", text: "Ready" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    runner: terminalLifecycleRunner(calls, {
+      initialTerminalOutput: "$ Ready\n",
+      terminalCaptures: ["$ demo\nReady\n"],
+    }),
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.steps[0]?.presentAtStart, true);
+  assert.equal(result.steps[0]?.satisfied, true);
+});
+
+test("terminal expect_output times out without matching the echoed command", () => {
+  const calls: string[] = [];
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "show expected-token",
+      steps: [{ action: "expect_output", text: "expected-token" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    runner: terminalLifecycleRunner(calls, {
+      terminalCaptures: ["$ show expected-token\nworking\n"],
+    }),
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.steps[0]?.status, "failed");
+  assert.equal(result.steps[0]?.presentAtStart, false);
+  assert.equal(result.steps[0]?.satisfied, false);
+  assert.match(result.steps[0]?.detail ?? "", /within 30 seconds/);
+  assert.match(result.steps[0]?.detail ?? "", /Captured pane:\n\$ show expected-token/);
+  assert.equal(calls.filter((call) => call === "sleep 1").length, 30);
+});
+
+test("terminal recording holds the end state and enforces its minimum before finalizing", () => {
+  const calls: string[] = [];
+  runTerminalFixture(terminalLifecycleRunner(calls));
+  const hold = calls.findIndex((call) => call === "sleep 6");
+  const finalize = calls.findIndex((call) => /tmux send-keys .* q$/.test(call));
+  assert.notEqual(hold, -1);
+  assert.ok(finalize > hold);
 });
 
 test("terminal driver reports display readiness timeout with all pane diagnostics", () => {
@@ -350,6 +470,55 @@ test("terminal driver waits for the recorder session to exit after sending q", (
     ).length,
     4,
   );
+});
+
+test("live-proof skips a failed drive without producing a manifest", async () => {
+  const fixture = executeFixture("failed");
+  mkdirSync(dirname(fixture.manifestPath), { recursive: true });
+  writeFileSync(fixture.manifestPath, "stale manifest", "utf8");
+  await fixture.run();
+  assert.equal(existsSync(fixture.manifestPath), false);
+  assert.match(fixture.logs.join("\n"), /skip: demonstration did not complete/);
+  assert.equal(
+    fixture.commands.some((command) => command.startsWith("ffmpeg ")),
+    false,
+  );
+});
+
+test("live-proof skips when every satisfied expectation was present at start", async () => {
+  const fixture = executeFixture("present-at-start");
+  await fixture.run();
+  assert.equal(existsSync(fixture.manifestPath), false);
+  assert.match(fixture.logs.join("\n"), /skip: plan verified nothing that changed/);
+  assert.equal(
+    fixture.commands.some((command) => command.startsWith("ffmpeg ")),
+    false,
+  );
+});
+
+test("live-proof emits a bundle when an initially absent expectation is satisfied", async () => {
+  const fixture = executeFixture("demonstrated-partial");
+  await fixture.run();
+  assert.equal(existsSync(fixture.manifestPath), true);
+  const manifest = parseLiveProofManifest(
+    JSON.parse(readFileSync(fixture.manifestPath, "utf8")) as unknown,
+  );
+  assert.equal(manifest.drive_status, "partial");
+  assert.match(fixture.logs.join("\n"), /wrote browser proof bundle/);
+});
+
+test("live-proof skips a plan with no expectation steps", async () => {
+  const fixture = executeFixture("no-expectation");
+  await fixture.run();
+  assert.equal(existsSync(fixture.manifestPath), false);
+  assert.match(fixture.logs.join("\n"), /skip: plan verified nothing that changed/);
+});
+
+test("live-proof skips a demonstrated recording shorter than three seconds", async () => {
+  const fixture = executeFixture("too-short");
+  await fixture.run();
+  assert.equal(existsSync(fixture.manifestPath), false);
+  assert.match(fixture.logs.join("\n"), /skip: recording is shorter than 3 seconds/);
 });
 
 test("live proof manifest is metadata-only and rejects URL-bearing extensions", () => {
@@ -885,6 +1054,8 @@ function terminalLifecycleRunner(
     recorderDiesAtProbe?: number;
     finalizeExitAfter?: number;
     paneOutput?: Record<"terminal" | "display" | "xterm" | "recorder", string>;
+    initialTerminalOutput?: string;
+    terminalCaptures?: string[];
   } = {},
 ): MediaProofCommandRunner {
   let displayProbe = 0;
@@ -892,6 +1063,9 @@ function terminalLifecycleRunner(
   let recorderPaneProbe = 0;
   let finalizeProbe = 0;
   let finalizing = false;
+  let typedCommand = "";
+  let commandRunning = false;
+  let terminalCaptureProbe = 0;
   const recorderSizes = options.recorderSizes ?? [1, 2];
   return (command, args) => {
     const rendered = [command, ...args].join(" ");
@@ -910,6 +1084,14 @@ function terminalLifecycleRunner(
     }
     if (command === "tmux" && args[0] === "send-keys" && args.at(-1) === "q") {
       finalizing = true;
+      return { status: 0 };
+    }
+    if (command === "tmux" && args[0] === "send-keys" && args.includes("-l")) {
+      typedCommand = String(args.at(-1) ?? "");
+      return { status: 0 };
+    }
+    if (command === "tmux" && args[0] === "send-keys" && args.at(-1) === "Enter") {
+      commandRunning = true;
       return { status: 0 };
     }
     if (command === "tmux" && args[0] === "display-message") {
@@ -931,9 +1113,146 @@ function terminalLifecycleRunner(
           : target.includes("-recorder")
             ? "recorder"
             : "terminal";
+      if (label === "terminal" && !options.paneOutput?.terminal) {
+        if (!typedCommand) {
+          return { status: 0, stdout: options.initialTerminalOutput ?? "$ \n" };
+        }
+        if (!commandRunning) return { status: 0, stdout: `$ ${typedCommand}\n` };
+        const captures = options.terminalCaptures ?? [`$ ${typedCommand}\ncommand output\n`];
+        const output = captures[Math.min(terminalCaptureProbe, captures.length - 1)] ?? "";
+        terminalCaptureProbe += 1;
+        return { status: 0, stdout: output };
+      }
       return { status: 0, stdout: `${options.paneOutput?.[label] ?? `${label} pane`}\n` };
     }
     return { status: 0 };
+  };
+}
+
+function executeFixture(
+  mode: "failed" | "present-at-start" | "demonstrated-partial" | "no-expectation" | "too-short",
+) {
+  const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-execute-"));
+  const outputDir = join(directory, "output");
+  const planPath = join(directory, "plan.json");
+  const manifestPath = join(outputDir, "live-proof-manifest.json");
+  const mp4Path = join(outputDir, "live-proof.mp4");
+  const logs: string[] = [];
+  const commands: string[] = [];
+  const plan: LiveProofPlan = {
+    ...recommendedPlan("browser"),
+    steps:
+      mode === "demonstrated-partial"
+        ? [
+            { action: "click", target: "#save" },
+            { action: "expect_text", text: "Saved" },
+            { action: "wait_for", target: "#never" },
+          ]
+        : mode === "no-expectation"
+          ? [{ action: "click", target: "#save" }]
+          : [
+              { action: "click", target: "#save" },
+              { action: "expect_text", text: "Saved" },
+            ],
+  };
+  writeFileSync(planPath, JSON.stringify(plan), "utf8");
+
+  const runner: MediaProofCommandRunner = (command, args, options) => {
+    commands.push([command, ...args].join(" "));
+    if (command === "git") return { status: 0, stdout: `${HEAD}\n` };
+    if (command === "node") {
+      const env = options?.env ?? {};
+      writeFileSync(String(env.CLAWSWEEPER_LIVE_PROOF_RAW_VIDEO), "webm", "utf8");
+      const steps =
+        mode === "failed"
+          ? [
+              { action: "click", status: "failed", detail: "not visible" },
+              {
+                action: "expect_text",
+                status: "failed",
+                detail: "not visible",
+                presentAtStart: false,
+                satisfied: false,
+              },
+            ]
+          : mode === "demonstrated-partial"
+            ? [
+                { action: "click", status: "completed", detail: "ok" },
+                {
+                  action: "expect_text",
+                  status: "completed",
+                  detail: "ok",
+                  presentAtStart: false,
+                  satisfied: true,
+                },
+                { action: "wait_for", status: "failed", detail: "not visible" },
+              ]
+            : mode === "no-expectation"
+              ? [{ action: "click", status: "completed", detail: "ok" }]
+              : [
+                  { action: "click", status: "completed", detail: "ok" },
+                  {
+                    action: "expect_text",
+                    status: "completed",
+                    detail: "ok",
+                    presentAtStart: mode === "present-at-start",
+                    satisfied: true,
+                  },
+                ];
+      writeFileSync(
+        String(env.CLAWSWEEPER_LIVE_PROOF_STEPS_LOG),
+        `${JSON.stringify(steps)}\n`,
+        "utf8",
+      );
+      return {
+        status: mode === "failed" || mode === "demonstrated-partial" ? 1 : 0,
+        stderr: mode === "failed" ? "failed" : "",
+      };
+    }
+    if (command === "ffprobe") {
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          streams: [{ codec_type: "video", width: 1280, height: 800 }],
+          format: { duration: mode === "too-short" ? "2.999" : "7.000" },
+        }),
+      };
+    }
+    if (command === "ffmpeg") {
+      const output = String(args.at(-1));
+      writeFileSync(output, output.endsWith(".jpg") ? "jpg" : "mp4", "utf8");
+      return { status: 0 };
+    }
+    return { status: 0 };
+  };
+
+  return {
+    commands,
+    logs,
+    manifestPath,
+    mp4Path,
+    run: () =>
+      executeLiveProof(
+        {
+          repo: "example/repo",
+          item: 42,
+          outputDir,
+          planPath,
+          checkoutPath: directory,
+        },
+        {
+          env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
+          runner,
+          repositoryProfileFor: () => profile(),
+          reportLiveProofPlan: () => plan,
+          parseLiveProofPlan: () => plan,
+          fetchPullRequest: async () => {
+            throw new Error("local checkout must not fetch the pull request");
+          },
+          log: (message) => logs.push(message),
+          now: () => new Date("2026-08-17T12:00:00.000Z"),
+        },
+      ),
   };
 }
 

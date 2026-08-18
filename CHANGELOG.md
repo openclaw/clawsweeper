@@ -18,6 +18,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Live-proof recordings now wait for post-action command or page expectations, hold the final state on screen, and attach only when an initially absent expectation proves a semantic change.
 - Live-proof attachment now captures each freshly hydrated canonical single-record revision as the publication baseline before retrying conflicts, then updates the public review comment only after the record lands.
 - Short live-proof recordings fall back to a single poster frame when the contact-sheet tile cannot emit one.
 - Terminal recorders flush WebM packets immediately and treat a live ffmpeg session as healthy while the muxer buffers.

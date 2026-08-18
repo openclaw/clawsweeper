@@ -9,11 +9,21 @@ import type {
 import { mediaProofSpawnDetail } from "../clawsweeper-media-proof.js";
 import type { LiveProofDriveStatus } from "./manifest.js";
 
-export interface LiveProofStepLogEntry {
+interface LiveProofBaseStepLogEntry {
   action: string;
   status: "completed" | "failed";
   detail: string;
 }
+
+export type LiveProofStepLogEntry =
+  | (LiveProofBaseStepLogEntry & {
+      action: "expect_text" | "expect_output";
+      presentAtStart: boolean;
+      satisfied: boolean;
+    })
+  | (LiveProofBaseStepLogEntry & {
+      action: Exclude<LiveProofStep["action"], "expect_text" | "expect_output">;
+    });
 
 export interface LiveProofDriveResult {
   status: LiveProofDriveStatus;
@@ -24,6 +34,11 @@ export interface LiveProofDriveResult {
 const DISPLAY_READY_TIMEOUT_SECONDS = 30;
 const RECORDER_READY_TIMEOUT_SECONDS = 15;
 const RECORDER_FINALIZE_TIMEOUT_SECONDS = 20;
+const TERMINAL_RUN_OUTPUT_TIMEOUT_SECONDS = 20;
+const TERMINAL_EXPECT_OUTPUT_TIMEOUT_SECONDS = 30;
+const STEP_SETTLE_MILLISECONDS = 700;
+const END_STATE_HOLD_MILLISECONDS = 3_000;
+const MINIMUM_RECORDING_MILLISECONDS = 6_000;
 
 type TerminalCommandInvocation = {
   command: string;
@@ -61,19 +76,28 @@ let context;
 let page;
 let video;
 let failed = false;
+let recordingStartedAt = 0;
 try {
   browser = await chromium.launch(useBundledChromium ? { headless } : { headless, channel: "chrome" });
   context = await browser.newContext({ viewport: { width: 1280, height: 800 }, recordVideo: { dir: output + ".videos", size: { width: 1280, height: 800 } } });
   page = await context.newPage();
   page.setDefaultTimeout(15_000);
   video = page.video();
+  recordingStartedAt = Date.now();
   await page.goto(new URL(entry, baseUrl).href);
-  for (const step of steps) {
+  const expectationPresentAtStart = new Map();
+  for (const [index, step] of steps.entries()) {
+    if (step.action !== "expect_text") continue;
+    const locator = page.getByText(step.text, { exact: false }).first();
+    expectationPresentAtStart.set(index, await locator.isVisible().catch(() => false));
+  }
+  for (const [index, step] of steps.entries()) {
     try {
       switch (step.action) {
         case "goto": await page.goto(new URL(step.path, baseUrl).href); break;
         case "click": {
           const locator = page.locator(step.target);
+          await locator.scrollIntoViewIfNeeded();
           // Fall back to a force click so continuously animated targets (whose
           // position never stabilizes) can still be demonstrated.
           try { await locator.click({ timeout: 5_000 }); }
@@ -82,18 +106,35 @@ try {
         }
         case "fill": await page.locator(step.target).fill(step.value); break;
         case "press": await page.keyboard.press(step.key); break;
-        case "wait_for": await page.locator(step.target).waitFor({ state: "visible" }); break;
+        case "wait_for": {
+          const locator = page.locator(step.target);
+          await locator.scrollIntoViewIfNeeded();
+          await locator.waitFor({ state: "visible" });
+          break;
+        }
         case "wait": await page.waitForTimeout(step.seconds * 1000); break;
-        case "expect_text": await page.getByText(step.text, { exact: false }).first().waitFor({ state: "visible" }); break;
+        case "expect_text": {
+          const locator = page.getByText(step.text, { exact: false }).first();
+          await locator.scrollIntoViewIfNeeded();
+          await locator.waitFor({ state: "visible" });
+          break;
+        }
         default: throw new Error("unsupported browser action");
       }
-      log.push({ action: step.action, status: "completed", detail: "ok" });
+      await page.waitForTimeout(${STEP_SETTLE_MILLISECONDS});
+      log.push(step.action === "expect_text"
+        ? { action: step.action, status: "completed", detail: "ok", presentAtStart: expectationPresentAtStart.get(index) === true, satisfied: true }
+        : { action: step.action, status: "completed", detail: "ok" });
     } catch (error) {
       failed = true;
-      log.push({ action: step.action, status: "failed", detail: error instanceof Error ? error.message : String(error) });
+      log.push(step.action === "expect_text"
+        ? { action: step.action, status: "failed", detail: error instanceof Error ? error.message : String(error), presentAtStart: expectationPresentAtStart.get(index) === true, satisfied: false }
+        : { action: step.action, status: "failed", detail: error instanceof Error ? error.message : String(error) });
       break;
     }
   }
+  const elapsed = Date.now() - recordingStartedAt;
+  await page.waitForTimeout(Math.max(${END_STATE_HOLD_MILLISECONDS}, ${MINIMUM_RECORDING_MILLISECONDS} - elapsed));
 } finally {
   if (context) await context.close().catch(() => undefined);
   if (video) {
@@ -156,7 +197,6 @@ export function driveBrowser(options: {
 
 export function terminalCommandPlan(options: {
   sessionPrefix: string;
-  entry: string;
   maxRecordingSeconds: number;
   rawVideoPath: string;
 }): TerminalCommandInvocation[] {
@@ -258,15 +298,11 @@ export function terminalCommandPlan(options: {
       ],
       waitAfter: "recorder",
     },
-    {
-      command: "tmux",
-      args: ["send-keys", "-t", `${terminalSession}:0.0`, "-l", "--", options.entry],
-    },
-    {
-      command: "tmux",
-      args: ["send-keys", "-t", `${terminalSession}:0.0`, "Enter"],
-    },
   ];
+}
+
+interface TerminalOutputWindow {
+  echoSnapshot: string;
 }
 
 export function driveTerminal(options: {
@@ -284,10 +320,12 @@ export function driveTerminal(options: {
   const log: LiveProofStepLogEntry[] = [];
   let failed = false;
   let thrown: Error | undefined;
+  let recordingStartedAt = 0;
+  let outputWindow: TerminalOutputWindow | undefined;
+  let initialPaneSnapshot = "";
   try {
     for (const invocation of terminalCommandPlan({
       sessionPrefix,
-      entry: options.plan.entry,
       maxRecordingSeconds: options.maxRecordingSeconds,
       rawVideoPath: options.rawVideoPath,
     })) {
@@ -300,22 +338,61 @@ export function driveTerminal(options: {
         waitForDisplay(options.runner, options.checkout);
       } else if (invocation.waitAfter === "recorder") {
         waitForRecorder(options.runner, options.checkout, recorderSession, options.rawVideoPath);
+        recordingStartedAt = Date.now();
       }
     }
+    initialPaneSnapshot = captureTerminalPane(
+      options.runner,
+      options.checkout,
+      `${terminalSession}:0.0`,
+    );
+    outputWindow = runTerminalCommand(
+      options.plan.entry,
+      terminalSession,
+      options.runner,
+      options.checkout,
+    );
     for (const step of options.plan.steps as LiveProofTerminalStep[]) {
       try {
-        runTerminalStep(step, terminalSession, options.runner, options.checkout);
-        log.push({ action: step.action, status: "completed", detail: "ok" });
+        outputWindow = runTerminalStep(
+          step,
+          terminalSession,
+          options.runner,
+          options.checkout,
+          outputWindow,
+        );
+        log.push(
+          step.action === "expect_output"
+            ? {
+                action: step.action,
+                status: "completed",
+                detail: "ok",
+                presentAtStart: initialPaneSnapshot.includes(step.text),
+                satisfied: true,
+              }
+            : { action: step.action, status: "completed", detail: "ok" },
+        );
       } catch (error) {
         failed = true;
-        log.push({
-          action: step.action,
-          status: "failed",
-          detail: error instanceof Error ? error.message : String(error),
-        });
+        log.push(
+          step.action === "expect_output"
+            ? {
+                action: step.action,
+                status: "failed",
+                detail: error instanceof Error ? error.message : String(error),
+                presentAtStart: initialPaneSnapshot.includes(step.text),
+                satisfied: false,
+              }
+            : {
+                action: step.action,
+                status: "failed",
+                detail: error instanceof Error ? error.message : String(error),
+              },
+        );
         break;
       }
     }
+    holdEndState(options.runner, recordingStartedAt);
     finalizeRecorder(options.runner, options.checkout, recorderSession);
     requireRecording(options.runner, options.checkout, options.rawVideoPath);
   } catch (error) {
@@ -467,35 +544,97 @@ function runTerminalStep(
   terminalSession: string,
   runner: MediaProofCommandRunner,
   checkout: string,
-): void {
-  const target = `${terminalSession}:0.0`;
+  outputWindow: TerminalOutputWindow | undefined,
+): TerminalOutputWindow | undefined {
   if (step.action === "run") {
-    requireSuccess(
-      "tmux",
-      ["send-keys", "-t", target, "-l", "--", step.command],
-      runner("tmux", ["send-keys", "-t", target, "-l", "--", step.command], {
-        cwd: checkout,
-      }),
-    );
-    requireSuccess(
-      "tmux",
-      ["send-keys", "-t", target, "Enter"],
-      runner("tmux", ["send-keys", "-t", target, "Enter"], { cwd: checkout }),
-    );
-    return;
+    return runTerminalCommand(step.command, terminalSession, runner, checkout);
   }
   if (step.action === "wait") {
     const seconds = String(step.seconds);
     requireSuccess("sleep", [seconds], runner("sleep", [seconds]));
-    return;
+    return outputWindow;
   }
-  const capture = runner("tmux", ["capture-pane", "-p", "-t", target, "-S", "-200"], {
-    cwd: checkout,
-  });
-  requireSuccess("tmux", ["capture-pane"], capture);
-  if (!String(capture.stdout ?? "").includes(step.text)) {
-    throw new Error(`expected terminal output was not visible: ${JSON.stringify(step.text)}`);
+  if (!outputWindow) {
+    throw new Error("expected terminal output without a preceding command");
   }
+  const target = `${terminalSession}:0.0`;
+  let capturedPane = "";
+  for (let elapsed = 0; elapsed <= TERMINAL_EXPECT_OUTPUT_TIMEOUT_SECONDS; elapsed += 1) {
+    capturedPane = captureTerminalPane(runner, checkout, target);
+    const output = paneContentAfterSnapshot(outputWindow.echoSnapshot, capturedPane);
+    if (output.includes(step.text)) return outputWindow;
+    if (elapsed < TERMINAL_EXPECT_OUTPUT_TIMEOUT_SECONDS) pollSleep(runner);
+  }
+  throw new Error(
+    `expected terminal output was not visible within ${TERMINAL_EXPECT_OUTPUT_TIMEOUT_SECONDS} seconds: ${JSON.stringify(step.text)}\n\nCaptured pane:\n${capturedPane || "<empty>"}`,
+  );
+}
+
+function runTerminalCommand(
+  command: string,
+  terminalSession: string,
+  runner: MediaProofCommandRunner,
+  checkout: string,
+): TerminalOutputWindow {
+  const target = `${terminalSession}:0.0`;
+  captureTerminalPane(runner, checkout, target);
+  requireSuccess(
+    "tmux",
+    ["send-keys", "-t", target, "-l", "--", command],
+    runner("tmux", ["send-keys", "-t", target, "-l", "--", command], { cwd: checkout }),
+  );
+  const echoSnapshot = captureTerminalPane(runner, checkout, target);
+  requireSuccess(
+    "tmux",
+    ["send-keys", "-t", target, "Enter"],
+    runner("tmux", ["send-keys", "-t", target, "Enter"], { cwd: checkout }),
+  );
+  let capturedPane = echoSnapshot;
+  for (let elapsed = 0; elapsed <= TERMINAL_RUN_OUTPUT_TIMEOUT_SECONDS; elapsed += 1) {
+    capturedPane = captureTerminalPane(runner, checkout, target);
+    if (paneContentAfterSnapshot(echoSnapshot, capturedPane).trim()) {
+      return { echoSnapshot };
+    }
+    if (elapsed < TERMINAL_RUN_OUTPUT_TIMEOUT_SECONDS) pollSleep(runner);
+  }
+  throw new Error(
+    `terminal command did not produce output within ${TERMINAL_RUN_OUTPUT_TIMEOUT_SECONDS} seconds: ${JSON.stringify(command)}\n\nCaptured pane:\n${capturedPane || "<empty>"}`,
+  );
+}
+
+function captureTerminalPane(
+  runner: MediaProofCommandRunner,
+  checkout: string,
+  target: string,
+): string {
+  const args = ["capture-pane", "-p", "-t", target, "-S", "-200"];
+  const capture = runner("tmux", args, { cwd: checkout });
+  requireSuccess("tmux", args, capture);
+  return String(capture.stdout ?? "");
+}
+
+function paneContentAfterSnapshot(snapshot: string, current: string): string {
+  const before = snapshot.split("\n");
+  const after = current.split("\n");
+  let firstChangedLine = 0;
+  while (
+    firstChangedLine < before.length &&
+    firstChangedLine < after.length &&
+    before[firstChangedLine] === after[firstChangedLine]
+  ) {
+    firstChangedLine += 1;
+  }
+  return after.slice(firstChangedLine).join("\n");
+}
+
+function holdEndState(runner: MediaProofCommandRunner, recordingStartedAt: number): void {
+  const elapsed = Math.max(0, Date.now() - recordingStartedAt);
+  const holdMilliseconds = Math.max(
+    END_STATE_HOLD_MILLISECONDS,
+    MINIMUM_RECORDING_MILLISECONDS - elapsed,
+  );
+  const holdSeconds = String(Math.ceil(holdMilliseconds / 1000));
+  requireSuccess("sleep", [holdSeconds], runner("sleep", [holdSeconds]));
 }
 
 function readStepLog(path: string): LiveProofStepLogEntry[] {
@@ -509,7 +648,10 @@ function readStepLog(path: string): LiveProofStepLogEntry[] {
       return (
         typeof record.action === "string" &&
         (record.status === "completed" || record.status === "failed") &&
-        typeof record.detail === "string"
+        typeof record.detail === "string" &&
+        (record.action !== "expect_text" && record.action !== "expect_output"
+          ? true
+          : typeof record.presentAtStart === "boolean" && typeof record.satisfied === "boolean")
       );
     });
   } catch {
