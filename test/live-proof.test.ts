@@ -207,13 +207,19 @@ test("Playwright generation keeps quotes, backticks, and newlines inside JSON da
   assert.equal(checked.status, 0, checked.stderr);
 });
 
-test("Playwright steps scroll targets into view, settle, and hold a six-second minimum", () => {
+test("Playwright scrolls targets into view best effort, settles, and holds a six-second minimum", () => {
   const script = generatePlaywrightScript([
     { action: "click", target: "#save" },
     { action: "wait_for", target: "#result" },
     { action: "expect_text", text: "Saved" },
   ]);
-  assert.equal(script.match(/scrollIntoViewIfNeeded\(\)/g)?.length, 3);
+  // Scrolling is best effort: continuously animated targets never settle, and a
+  // failed scroll must not defeat the force-click fallback (openclaw/clawsweeper
+  // Bay critters made every click time out before this).
+  assert.equal(
+    script.match(/scrollIntoViewIfNeeded\(\{ timeout: 2_000 \}\)\.catch\(\(\) => undefined\)/g)?.length,
+    3,
+  );
   assert.match(script, /await page\.waitForTimeout\(700\)/);
   assert.match(script, /Math\.max\(3000, 6000 - elapsed\)/);
 });

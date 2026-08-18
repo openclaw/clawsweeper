@@ -97,7 +97,9 @@ try {
         case "goto": await page.goto(new URL(step.path, baseUrl).href); break;
         case "click": {
           const locator = page.locator(step.target);
-          await locator.scrollIntoViewIfNeeded();
+          // Best-effort framing only: continuously animated targets never
+          // settle, and a failed scroll must not defeat the force-click below.
+          await locator.scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => undefined);
           // Fall back to a force click so continuously animated targets (whose
           // position never stabilizes) can still be demonstrated.
           try { await locator.click({ timeout: 5_000 }); }
@@ -108,14 +110,14 @@ try {
         case "press": await page.keyboard.press(step.key); break;
         case "wait_for": {
           const locator = page.locator(step.target);
-          await locator.scrollIntoViewIfNeeded();
+          await locator.scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => undefined);
           await locator.waitFor({ state: "visible" });
           break;
         }
         case "wait": await page.waitForTimeout(step.seconds * 1000); break;
         case "expect_text": {
           const locator = page.getByText(step.text, { exact: false }).first();
-          await locator.scrollIntoViewIfNeeded();
+          await locator.scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => undefined);
           await locator.waitFor({ state: "visible" });
           break;
         }

@@ -18,6 +18,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Browser live proofs treat scroll-into-view as best effort so continuously animated targets stay clickable.
 - Live-proof recordings can now be retracted through a trusted manual workflow dispatch without rerunning target code or requiring an artifact, manifest, or matching head SHA.
 - Live-proof recordings now wait for post-action command or page expectations, hold the final state on screen, and attach only when an initially absent expectation proves a semantic change.
 - Live-proof attachment now captures each freshly hydrated canonical single-record revision as the publication baseline before retrying conflicts, then updates the public review comment only after the record lands.
