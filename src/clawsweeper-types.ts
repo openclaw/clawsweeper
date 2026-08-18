@@ -128,6 +128,12 @@ export type FeatureShowcaseStatus = "showcase" | "none";
 export type TelegramVisibleProofStatus = "needed" | "not_needed";
 export type LiveProofPlanStatus = "recommended" | "not_applicable" | "declined_suspicious";
 export type LiveProofSurface = "browser" | "terminal" | "none";
+export type LiveProofPayoffKind =
+  | "progressive_output"
+  | "ui_interaction"
+  | "tui_or_color"
+  | "animation"
+  | "static_text";
 export type LiveProofBrowserStep =
   | { action: "goto"; path: string }
   | { action: "click"; target: string }
@@ -409,6 +415,10 @@ export interface LiveProofPlan {
   status: LiveProofPlanStatus;
   surface: LiveProofSurface;
   reason: string;
+  payoff: {
+    kind: LiveProofPayoffKind;
+    justification: string;
+  };
   entry: string;
   steps: LiveProofStep[];
 }

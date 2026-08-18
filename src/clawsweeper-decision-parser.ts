@@ -16,6 +16,8 @@ import {
   LIKELY_OWNER_SCHEMA_KEYS,
   LIVE_PROOF_PLAN_SCHEMA_KEYS,
   LIVE_PROOF_PLAN_STATUSES,
+  LIVE_PROOF_PAYOFF_KINDS,
+  LIVE_PROOF_PAYOFF_SCHEMA_KEYS,
   LIVE_PROOF_STEP_SCHEMA_KEYS,
   LIVE_PROOF_SURFACES,
   MANTIS_RECOMMENDATION_SCENARIOS,
@@ -635,8 +637,17 @@ export function createDecisionParser({
     const reason = neutralizeOwnedSectionSpoofing(
       requireSingleLineString(record.reason, `${path}.reason`),
     ).trim();
+    const payoffRecord = requireRecord(record.payoff, `${path}.payoff`);
+    rejectUnexpectedKeys(payoffRecord, LIVE_PROOF_PAYOFF_SCHEMA_KEYS, `${path}.payoff`);
+    const payoff = {
+      kind: requireEnum(payoffRecord.kind, LIVE_PROOF_PAYOFF_KINDS, `${path}.payoff.kind`),
+      justification: neutralizeOwnedSectionSpoofing(
+        requireSingleLineString(payoffRecord.justification, `${path}.payoff.justification`),
+      ).trim(),
+    };
     const entry = requireSingleLineString(record.entry, `${path}.entry`).trim();
     if (!reason) throw new Error(`${path}.reason must not be empty`);
+    if (!payoff.justification) throw new Error(`${path}.payoff.justification must not be empty`);
     if (!Array.isArray(record.steps)) throw new Error(`${path}.steps must be an array`);
     if (record.steps.length > 10) throw new Error(`${path}.steps must contain at most 10 items`);
     const steps = record.steps.map((step, index) =>
@@ -646,7 +657,7 @@ export function createDecisionParser({
       if (surface !== "none") throw new Error(`${path}.surface must be none unless recommended`);
       if (entry) throw new Error(`${path}.entry must be empty unless recommended`);
       if (steps.length) throw new Error(`${path}.steps must be empty unless recommended`);
-      return { status, surface, reason, entry, steps };
+      return { status, surface, reason, payoff, entry, steps };
     }
     if (surface === "none") throw new Error(`${path}.surface must identify a recommended surface`);
     if (!entry) throw new Error(`${path}.entry must not be empty when recommended`);
@@ -661,7 +672,7 @@ export function createDecisionParser({
     if (steps.some((step) => !allowedActions.has(step.action))) {
       throw new Error(`${path}.steps contain an action that does not match ${surface} proof`);
     }
-    return { status, surface, reason, entry, steps };
+    return { status, surface, reason, payoff, entry, steps };
   }
 
   function parseMantisRecommendation(value: unknown, path: string): MantisRecommendation {

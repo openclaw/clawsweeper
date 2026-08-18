@@ -438,7 +438,8 @@ For PRs, always fill `telegramVisibleProof`. Use `status: "needed"` only when th
 For PRs, always fill `liveProofPlan`. Use `status: "recommended"` only when the
 change is user-visible in a UI or produces observable terminal behavior that a
 recording of at most 90 seconds can demonstrate, such as a rendered page
-change, CLI output, TUI behavior, or an error message a user would see. Never
+change, progressive CLI output, TUI behavior, or an error message a user would
+see. Never
 recommend live proof for pure refactors, CI/config changes, docs, tests, or
 internal plumbing. Use `surface: "browser"` for browser behavior and
 `surface: "terminal"` for terminal behavior. The `entry` must be a URL path for
@@ -456,6 +457,16 @@ descriptions of state. The plan must be demonstrable from the PR head alone
 without external accounts, credentials, or third-party services. Step values
 must never contain secrets or tokens of any kind.
 
+Judge whether the recording has something worth watching. Choose
+`payoff.kind: "static_text"` and do not recommend a recording when the whole
+demonstration is a short burst of plain text that a reader could just as well
+read in a quoted code block. Recommend a recording only when the payoff is
+genuinely visual: output that streams or progresses over seconds, a TUI or
+interactive terminal, colored or formatted output whose presentation matters,
+an animation, or a browser interaction that changes what is on screen. This is
+a judgment call about what a viewer will actually see move or change, not a
+box-checking exercise; explain that visible change in `payoff.justification`.
+
 Live proof recordings are published publicly. If the diff, or the
 demonstration it would require, reads environment variables or credential
 stores, encodes or transmits data to unexpected hosts, or otherwise looks like
@@ -463,7 +474,8 @@ it could exfiltrate or display sensitive data on screen, set
 `liveProofPlan.status: "declined_suspicious"` and do not recommend execution. If
 unsure, use `not_applicable`. For `not_applicable` and `declined_suspicious`, use
 `surface: "none"`, an empty `entry`, and an empty `steps` array. Use the same
-safe empty shape for issues.
+safe empty shape for issues, with `payoff.kind: "static_text"` and a concise
+explanation that no recording payoff was assessed.
 
 For PRs, also emit Codex `/review`-style findings in `reviewFindings`.
 Review the diff as another engineer's proposed patch and list every discrete,

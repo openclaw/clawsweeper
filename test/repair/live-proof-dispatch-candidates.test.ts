@@ -19,6 +19,10 @@ Surface: browser
 
 Reason: The changed settings confirmation is visible in the browser.
 
+Payoff: ui_interaction
+
+Payoff justification: The viewer sees the confirmation appear after clicking Save.
+
 Entry: /settings
 
 Steps:
@@ -37,6 +41,10 @@ Status: not_applicable
 Surface: none
 
 Reason: This change has no visible behavior.
+
+Payoff: static_text
+
+Payoff justification: There is no visual recording payoff.
 
 Entry:
 
@@ -66,6 +74,10 @@ Steps:
           status: "recommended",
           surface: "browser",
           reason: "The changed settings confirmation is visible in the browser.",
+          payoff: {
+            kind: "ui_interaction",
+            justification: "The viewer sees the confirmation appear after clicking Save.",
+          },
           entry: "/settings",
           steps: [
             { action: "goto", path: "/settings" },

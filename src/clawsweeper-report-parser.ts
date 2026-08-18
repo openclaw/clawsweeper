@@ -130,6 +130,10 @@ export function reportLiveProofPlan(markdown: string): LiveProofPlan {
         status: reportSectionLineValue(section, "Status"),
         surface: reportSectionLineValue(section, "Surface"),
         reason: reportSectionLineValue(section, "Reason"),
+        payoff: {
+          kind: reportSectionLineValue(section, "Payoff"),
+          justification: reportSectionLineValue(section, "Payoff justification"),
+        },
         entry: reportSectionLineValue(section, "Entry") ?? "",
         steps: rawSteps.map((step) => JSON.parse(step) as unknown),
       },
@@ -140,6 +144,10 @@ export function reportLiveProofPlan(markdown: string): LiveProofPlan {
       status: "not_applicable",
       surface: "none",
       reason: "No live-proof plan was recorded in this report.",
+      payoff: {
+        kind: "static_text",
+        justification: "No recording payoff was recorded in this report.",
+      },
       entry: "",
       steps: [],
     };

@@ -18,6 +18,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Live-proof plans now let the model judge whether a recording has a genuinely visual payoff and skip short static-text demonstrations that belong in review code blocks.
 - Browser live proofs treat scroll-into-view as best effort so continuously animated targets stay clickable.
 - Live-proof recordings can now be retracted through a trusted manual workflow dispatch without rerunning target code or requiring an artifact, manifest, or matching head SHA.
 - Live-proof recordings now wait for post-action command or page expectations, hold the final state on screen, and attach only when an initially absent expectation proves a semantic change.

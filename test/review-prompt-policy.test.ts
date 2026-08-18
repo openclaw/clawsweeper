@@ -585,14 +585,26 @@ test("review prompt and schema classify deterministic live-proof plans in field 
   assert.match(prompt, /without\s+external accounts, credentials, or third-party services/);
   assert.match(prompt, /reads environment variables or credential\s+stores/);
   assert.match(prompt, /exfiltrate or display sensitive data on screen/);
+  assert.match(prompt, /short burst of plain text/);
+  assert.match(prompt, /quoted code block/);
+  assert.match(prompt, /output that streams or progresses over seconds/);
+  assert.match(prompt, /a judgment call about what a viewer will actually see move or change/);
   assert.match(prompt, /`liveProofPlan\.status: "declined_suspicious"`/);
   assert.match(prompt, /never\s+execute the PR or claim that a recording exists/);
 
-  assert.deepEqual(liveProofPlan.required, ["status", "surface", "reason", "entry", "steps"]);
+  assert.deepEqual(liveProofPlan.required, [
+    "status",
+    "surface",
+    "reason",
+    "payoff",
+    "entry",
+    "steps",
+  ]);
   assert.deepEqual(Object.keys(liveProofPlan.properties), [
     "status",
     "surface",
     "reason",
+    "payoff",
     "entry",
     "steps",
   ]);
@@ -602,6 +614,18 @@ test("review prompt and schema classify deterministic live-proof plans in field 
     "declined_suspicious",
   ]);
   assert.deepEqual(liveProofPlan.properties.surface.enum, ["browser", "terminal", "none"]);
+  assert.deepEqual(liveProofPlan.properties.payoff.required, ["kind", "justification"]);
+  assert.deepEqual(Object.keys(liveProofPlan.properties.payoff.properties), [
+    "kind",
+    "justification",
+  ]);
+  assert.deepEqual(liveProofPlan.properties.payoff.properties.kind.enum, [
+    "progressive_output",
+    "ui_interaction",
+    "tui_or_color",
+    "animation",
+    "static_text",
+  ]);
   assert.equal(liveProofPlan.properties.steps.maxItems, 10);
   const requiredOrder = schema.required;
   const liveProofIndex = requiredOrder.indexOf("liveProofPlan");
@@ -630,6 +654,10 @@ Status: recommended
 Surface: browser
 
 Reason: The settings confirmation is visible in the browser.
+
+Payoff: ui_interaction
+
+Payoff justification: The viewer sees the confirmation appear after clicking Save.
 
 Entry: /settings
 

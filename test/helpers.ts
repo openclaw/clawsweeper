@@ -166,6 +166,10 @@ export function closeDecision(overrides = {}) {
       status: "not_applicable",
       surface: "none",
       reason: "This non-PR issue triage does not need live proof.",
+      payoff: {
+        kind: "static_text",
+        justification: "No recording payoff exists for this non-PR issue triage.",
+      },
       entry: "",
       steps: [],
     },

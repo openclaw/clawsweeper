@@ -17,9 +17,13 @@ direct delivery in `sweep.yml` dispatch `live-proof.yml` only when the plan
 status is `recommended` and the target's repository profile has
 `live_test.enabled: true`. The command then applies ordered gates for
 `CLAWSWEEPER_LIVE_PROOF_ENABLED=1`, repository opt-in, a recommended plan, a
-runnable configured surface, and a still-open pull request. Every failed gate
-is a logged successful skip, including a browser recommendation for a
-terminal-only repository that has no configured server or URL.
+runnable configured surface, and a still-open pull request. The model also
+classifies the recording payoff: short static text belongs in the review as a
+code block, while progressive output, meaningful terminal presentation,
+animation, and UI interaction can justify something to watch. A `static_text`
+payoff is a logged successful skip before any target code runs, as is every
+other failed gate, including a browser recommendation for a terminal-only
+repository that has no configured server or URL.
 
 ## Execute and attach
 
@@ -42,13 +46,14 @@ scroll the changed region into the recorded viewport. Each expectation records
 whether its text was present at the start and whether the later check succeeded.
 A recording is eligible only when at least one expectation was absent initially
 and satisfied after the plan acted. A failed drive, a plan that demonstrates no
-such semantic change, or a recording shorter than three seconds is a logged
-successful skip and emits no manifest, so it cannot reach attachment. Eligible
-completed and partial drives are transcoded to H.264 MP4 and probed with
-ffprobe. The command creates `poster.jpg`, enforces the repository's recording
-limit and a 50 MB MP4 cap, and writes `steps-log.json` plus a metadata-only
-`live-proof-manifest.json`. The manifest contains no media URL. The bundle is
-retained as a GitHub Actions artifact for seven days.
+such semantic change, or a recording shorter than three seconds remains a
+logged successful skip and emits no manifest, so those checks backstop the
+model's payoff judgment. Eligible completed and partial drives are transcoded
+to H.264 MP4 and probed with ffprobe. The command creates `poster.jpg`, enforces
+the repository's recording limit and a 50 MB MP4 cap, and writes
+`steps-log.json` plus a metadata-only `live-proof-manifest.json`. The manifest
+contains no media URL. The bundle is retained as a GitHub Actions artifact for
+seven days.
 
 The trusted `attach` job checks out only ClawSweeper `main`; it never checks out
 or executes target PR code. It treats the downloaded bundle as untrusted,

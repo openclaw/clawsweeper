@@ -404,6 +404,10 @@ test("decision parser validates typed live-proof plans and report roundtrips", (
     status: "recommended",
     surface: "browser",
     reason: "The changed settings confirmation is visible in the browser.",
+    payoff: {
+      kind: "ui_interaction",
+      justification: "The viewer sees the confirmation appear after clicking Save.",
+    },
     entry: "/settings",
     steps: [
       { action: "goto", path: "/settings" },
@@ -423,6 +427,9 @@ test("decision parser validates typed live-proof plans and report roundtrips", (
 
   const invalidPlans = [
     { ...liveProofPlan, unexpected: true },
+    { ...liveProofPlan, payoff: { ...liveProofPlan.payoff, unexpected: true } },
+    { ...liveProofPlan, payoff: { kind: "static_image", justification: "Nothing moves." } },
+    { ...liveProofPlan, payoff: { kind: "ui_interaction", justification: "" } },
     { ...liveProofPlan, surface: "none" },
     { ...liveProofPlan, entry: "https://example.com/settings" },
     { ...liveProofPlan, steps: [{ action: "run", command: "pnpm test" }] },
@@ -431,6 +438,10 @@ test("decision parser validates typed live-proof plans and report roundtrips", (
       status: "not_applicable",
       surface: "none",
       reason: "The change is internal plumbing.",
+      payoff: {
+        kind: "static_text",
+        justification: "There is no visual recording payoff for internal plumbing.",
+      },
       entry: "pnpm test",
       steps: [],
     },

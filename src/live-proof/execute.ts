@@ -73,6 +73,10 @@ export async function executeLiveProof(
     log(`[live-proof] skip: liveProofPlan status is ${plan.status}`);
     return;
   }
+  if (plan.payoff.kind === "static_text") {
+    log("[live-proof] skip: plan expects static text, which needs no recording");
+    return;
+  }
   if (plan.surface === "none") {
     throw new Error("recommended live proof plan is missing a browser or terminal surface");
   }

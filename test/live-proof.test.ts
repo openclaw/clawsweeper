@@ -37,6 +37,11 @@ function recommendedPlan(surface: "browser" | "terminal" = "browser"): LiveProof
         status: "recommended",
         surface,
         reason: "The changed setting is visible.",
+        payoff: {
+          kind: "ui_interaction",
+          justification:
+            "The viewer sees the changed setting appear after interacting with the page.",
+        },
         entry: "/settings",
         steps: [{ action: "expect_text", text: "Saved" }],
       }
@@ -44,6 +49,10 @@ function recommendedPlan(surface: "browser" | "terminal" = "browser"): LiveProof
         status: "recommended",
         surface,
         reason: "The changed CLI output is visible.",
+        payoff: {
+          kind: "progressive_output",
+          justification: "The viewer sees the CLI output stream as the command progresses.",
+        },
         entry: "pnpm cli --help",
         steps: [{ action: "expect_output", text: "Usage" }],
       };
@@ -108,11 +117,30 @@ test("live-proof gates skip in order with a successful result", async (t) => {
         status: "not_applicable",
         surface: "none",
         reason: "No visible behavior.",
+        payoff: {
+          kind: "static_text",
+          justification: "There is no visible recording payoff.",
+        },
         entry: "",
         steps: [],
       },
       pull: { kind: "pull_request", state: "open", headSha: HEAD },
       expected: /status is not_applicable/,
+      expectedFetches: 0,
+    },
+    {
+      name: "static text payoff",
+      env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
+      targetProfile: profile(),
+      plan: {
+        ...recommendedPlan("terminal"),
+        payoff: {
+          kind: "static_text",
+          justification: "The viewer sees only a short burst of plain help text.",
+        },
+      },
+      pull: { kind: "pull_request", state: "open", headSha: HEAD },
+      expected: /plan expects static text, which needs no recording/,
       expectedFetches: 0,
     },
     {
@@ -217,7 +245,8 @@ test("Playwright scrolls targets into view best effort, settles, and holds a six
   // failed scroll must not defeat the force-click fallback (openclaw/clawsweeper
   // Bay critters made every click time out before this).
   assert.equal(
-    script.match(/scrollIntoViewIfNeeded\(\{ timeout: 2_000 \}\)\.catch\(\(\) => undefined\)/g)?.length,
+    script.match(/scrollIntoViewIfNeeded\(\{ timeout: 2_000 \}\)\.catch\(\(\) => undefined\)/g)
+      ?.length,
     3,
   );
   assert.match(script, /await page\.waitForTimeout\(700\)/);
@@ -1287,6 +1316,10 @@ Status: recommended
 Surface: browser
 
 Reason: The changed setting is visible.
+
+Payoff: ui_interaction
+
+Payoff justification: The viewer sees the changed setting appear after interacting with the page.
 
 Entry: /settings
 

@@ -726,6 +726,10 @@ ${extra}
         status: "not_applicable",
         surface: "none",
         reason: "Live proof was not assessed because the Codex review failed.",
+        payoff: {
+          kind: "static_text",
+          justification: "No recording payoff was assessed because the Codex review failed.",
+        },
         entry: "",
         steps: [],
       },

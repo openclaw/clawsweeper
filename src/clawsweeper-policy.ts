@@ -14,6 +14,7 @@ import type {
   ImplementationComplexity,
   ItemCategory,
   LiveProofPlanStatus,
+  LiveProofPayoffKind,
   LiveProofSurface,
   MantisRecommendationScenario,
   MantisRecommendationStatus,
@@ -660,6 +661,13 @@ export const LIVE_PROOF_PLAN_STATUSES = new Set<LiveProofPlanStatus>([
   "declined_suspicious",
 ]);
 export const LIVE_PROOF_SURFACES = new Set<LiveProofSurface>(["browser", "terminal", "none"]);
+export const LIVE_PROOF_PAYOFF_KINDS = new Set<LiveProofPayoffKind>([
+  "progressive_output",
+  "ui_interaction",
+  "tui_or_color",
+  "animation",
+  "static_text",
+]);
 export const MANTIS_RECOMMENDATION_STATUSES = new Set<MantisRecommendationStatus>([
   "recommended",
   "not_recommended",
@@ -801,9 +809,11 @@ export const LIVE_PROOF_PLAN_SCHEMA_KEYS = new Set([
   "status",
   "surface",
   "reason",
+  "payoff",
   "entry",
   "steps",
 ]);
+export const LIVE_PROOF_PAYOFF_SCHEMA_KEYS = new Set(["kind", "justification"]);
 export const LIVE_PROOF_STEP_SCHEMA_KEYS = {
   goto: new Set(["action", "path"]),
   click: new Set(["action", "target"]),
