@@ -16,6 +16,13 @@ export interface LiveProofAttachOptions {
   dryRun: boolean;
 }
 
+export interface LiveProofDetachOptions {
+  recordPath: string;
+  repositorySlug: string;
+  item: number;
+  dryRun: boolean;
+}
+
 export interface LiveProofAttachDependencies {
   env?: NodeJS.ProcessEnv;
   runner?: MediaProofCommandRunner;
@@ -30,7 +37,7 @@ export interface LiveProofAttachDependencies {
   log?: (message: string) => void;
 }
 
-export type LiveProofAttachResult = "attached" | "skipped" | "dry-run";
+export type LiveProofAttachResult = "attached" | "detached" | "unchanged" | "skipped" | "dry-run";
 
 export async function attachLiveProof(
   options: LiveProofAttachOptions,
@@ -121,6 +128,55 @@ export async function attachLiveProof(
   return "attached";
 }
 
+export function detachLiveProof(
+  options: LiveProofDetachOptions,
+  dependencies: LiveProofAttachDependencies,
+): LiveProofAttachResult {
+  const log = dependencies.log ?? console.log;
+  const recordPath = resolve(options.recordPath);
+  const report = readFileSync(recordPath, "utf8");
+  validateDetachedReportIdentity(
+    report,
+    options.repositorySlug,
+    options.item,
+    dependencies.frontMatterValue,
+  );
+  const section = dependencies.sectionValue(report, dependencies.reviewSections.liveProof);
+  const markerIndex = section.lastIndexOf(LIVE_PROOF_RECORDING_MARKER);
+  if (markerIndex < 0) {
+    log(
+      `[live-proof-attach] detach: ${options.repositorySlug}#${options.item} has no recording block; no changes needed`,
+    );
+    return "unchanged";
+  }
+
+  const liveProofSection = section.slice(0, markerIndex).trimEnd();
+  if (!liveProofSection) throw new Error("record is missing the Live Proof plan section");
+  const updatedReport = dependencies.replaceSectionValue(
+    report,
+    dependencies.reviewSections.liveProof,
+    liveProofSection,
+  );
+  const closeReason = (dependencies.frontMatterValue(updatedReport, "close_reason") ??
+    "none") as CloseReason;
+  const comment = dependencies.renderReviewCommentFromReport(updatedReport, closeReason);
+  const markedComment = dependencies.markedReviewCommentBody(options.item, comment);
+
+  if (options.dryRun) {
+    log(
+      `[live-proof-attach] dry-run: replace ## ${dependencies.reviewSections.liveProof} in ${recordPath} with:\n${liveProofSection}`,
+    );
+    log(
+      `[live-proof-attach] dry-run: publish ${recordPath}, then upsert marker-backed review comment for ${options.repositorySlug}#${options.item}:\n${markedComment}`,
+    );
+    return "dry-run";
+  }
+
+  writeFileSync(recordPath, updatedReport, "utf8");
+  log(`[live-proof-attach] detached recording from ${options.repositorySlug}#${options.item}`);
+  return "detached";
+}
+
 export function syncLiveProofComment(
   options: Pick<LiveProofAttachOptions, "bundleDir" | "recordPath">,
   dependencies: LiveProofAttachDependencies,
@@ -149,6 +205,35 @@ export function syncLiveProofComment(
   );
 }
 
+export function syncDetachedLiveProofComment(
+  options: Omit<LiveProofDetachOptions, "dryRun">,
+  dependencies: LiveProofAttachDependencies,
+): void {
+  const recordPath = resolve(options.recordPath);
+  const report = readFileSync(recordPath, "utf8");
+  validateDetachedReportIdentity(
+    report,
+    options.repositorySlug,
+    options.item,
+    dependencies.frontMatterValue,
+  );
+  if (
+    dependencies
+      .sectionValue(report, dependencies.reviewSections.liveProof)
+      .includes(LIVE_PROOF_RECORDING_MARKER)
+  ) {
+    throw new Error("record still contains the Live Proof recording");
+  }
+  const closeReason = (dependencies.frontMatterValue(report, "close_reason") ??
+    "none") as CloseReason;
+  const comment = dependencies.renderReviewCommentFromReport(report, closeReason);
+  const markedComment = dependencies.markedReviewCommentBody(options.item, comment);
+  dependencies.upsertReviewComment(options.item, markedComment);
+  (dependencies.log ?? console.log)(
+    `[live-proof-attach] synced retracted marker-backed review comment for ${options.repositorySlug}#${options.item}`,
+  );
+}
+
 function validateReportIdentity(
   report: string,
   manifest: LiveProofManifest,
@@ -165,6 +250,29 @@ function validateReportIdentity(
   }
   if (frontMatterValue(report, "pull_head_sha")?.toLowerCase() !== manifest.head_sha) {
     throw new Error("record pull_head_sha does not match the live proof manifest");
+  }
+}
+
+function validateDetachedReportIdentity(
+  report: string,
+  repositorySlug: string,
+  item: number,
+  frontMatterValue: (markdown: string, key: string) => string | undefined,
+): void {
+  const repository = frontMatterValue(report, "repository") ?? "";
+  const actualSlug = repository
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (actualSlug !== repositorySlug.toLowerCase()) {
+    throw new Error("record repository does not match --repo-slug");
+  }
+  if (Number(frontMatterValue(report, "number")) !== item) {
+    throw new Error("record item number does not match --item");
+  }
+  if (frontMatterValue(report, "type") !== "pull_request") {
+    throw new Error("live proof can only be detached from a pull request report");
   }
 }
 

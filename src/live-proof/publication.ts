@@ -28,7 +28,7 @@ export async function publishLiveProofAttachment(
   for (let attempt = 1; attempt <= LIVE_PROOF_PUBLICATION_ATTEMPTS; attempt += 1) {
     await dependencies.hydrateRecord(attempt);
     const outcome = await dependencies.attachRecord(attempt);
-    if (outcome !== "attached") return outcome;
+    if (outcome !== "attached" && outcome !== "detached") return outcome;
 
     try {
       await dependencies.publishRecord(attempt);

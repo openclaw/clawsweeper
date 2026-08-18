@@ -3,6 +3,8 @@ import type { LiveProofPlan, MediaProofCommandRunner } from "../clawsweeper-type
 import type { RepositoryProfile } from "../repository-profiles.js";
 import {
   attachLiveProof,
+  detachLiveProof,
+  syncDetachedLiveProofComment,
   syncLiveProofComment,
   type LiveProofAttachDependencies,
 } from "./attach.js";
@@ -56,8 +58,25 @@ export function createLiveProofCommands(dependencies: LiveProofCommandDependenci
   }
 
   async function liveProofAttachCommand(args: Args) {
-    const bundleDir = requiredArg(args.bundle, "--bundle");
     const recordPath = requiredArg(args.record, "--record");
+    if (boolArg(args.detach)) {
+      return detachLiveProof(
+        {
+          recordPath,
+          repositorySlug: requiredRepositorySlugArg(args.repo_slug),
+          item: positiveIntegerArg(args.item ?? args.item_number, "--item"),
+          dryRun: boolArg(args.dry_run),
+        },
+        {
+          ...dependencies.attach,
+          fetchPullRequest,
+          ...(dependencies.runner ? { runner: dependencies.runner } : {}),
+          ...(dependencies.env ? { env: dependencies.env } : {}),
+          ...(dependencies.log ? { log: dependencies.log } : {}),
+        },
+      );
+    }
+    const bundleDir = requiredArg(args.bundle, "--bundle");
     return attachLiveProof(
       {
         bundleDir,
@@ -75,8 +94,25 @@ export function createLiveProofCommands(dependencies: LiveProofCommandDependenci
   }
 
   function liveProofCommentCommand(args: Args): void {
-    const bundleDir = requiredArg(args.bundle, "--bundle");
     const recordPath = requiredArg(args.record, "--record");
+    if (boolArg(args.detach)) {
+      syncDetachedLiveProofComment(
+        {
+          recordPath,
+          repositorySlug: requiredRepositorySlugArg(args.repo_slug),
+          item: positiveIntegerArg(args.item ?? args.item_number, "--item"),
+        },
+        {
+          ...dependencies.attach,
+          fetchPullRequest,
+          ...(dependencies.runner ? { runner: dependencies.runner } : {}),
+          ...(dependencies.env ? { env: dependencies.env } : {}),
+          ...(dependencies.log ? { log: dependencies.log } : {}),
+        },
+      );
+      return;
+    }
+    const bundleDir = requiredArg(args.bundle, "--bundle");
     syncLiveProofComment(
       { bundleDir, recordPath },
       {
@@ -157,6 +193,14 @@ function positiveIntegerArg(value: ArgValue, label: string): number {
   const result = Number(requiredArg(value, label));
   if (!Number.isSafeInteger(result) || result <= 0) {
     throw new Error(`${label} must be a positive integer`);
+  }
+  return result;
+}
+
+function requiredRepositorySlugArg(value: ArgValue): string {
+  const result = requiredArg(value, "--repo-slug");
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(result)) {
+    throw new Error("--repo-slug must be a canonical repository slug");
   }
   return result;
 }

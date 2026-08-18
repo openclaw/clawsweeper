@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { flushWorkflowActionEvents } from "./action-ledger-runtime.js";
-import { parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
+import { boolArg, parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
 import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-dispatch.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import { runText } from "./command.js";
@@ -1494,6 +1494,10 @@ async function liveProofAttachCommand(args: Args): Promise<void> {
     const repo = frontMatterValue(markdown, "repository");
     if (repo) setTargetRepo(repo);
   }
+  if (boolArg(args.detach) && !boolArg(args.dry_run)) {
+    await liveProofAttachPublishCommand(args);
+    return;
+  }
   await liveProofCommands.liveProofAttachCommand(args);
 }
 
@@ -1509,6 +1513,11 @@ async function liveProofAttachPublishCommand(args: Args): Promise<void> {
   if (!/^\d+$/.test(itemText) || !Number.isSafeInteger(item) || item < 1) {
     throw new Error("--item requires a positive safe integer");
   }
+  if (boolArg(args.dry_run)) {
+    await liveProofCommands.liveProofAttachCommand(args);
+    return;
+  }
+  const detaching = boolArg(args.detach);
   const recordsUrl = process.env.QUEUE_URL?.trim() || "https://clawsweeper.openclaw.ai";
   const canonicalBaselineRoots = new Map<number, string>();
 
@@ -1559,7 +1568,7 @@ async function liveProofAttachPublishCommand(args: Args): Promise<void> {
           "repair:publish-main",
           "--",
           "--message",
-          "chore: attach live proof",
+          detaching ? "chore: detach live proof" : "chore: attach live proof",
           "--path",
           recordPath,
           "--rebase-strategy",

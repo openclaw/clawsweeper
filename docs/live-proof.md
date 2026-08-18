@@ -122,6 +122,27 @@ node dist/clawsweeper.js live-proof-attach \
   --dry-run
 ```
 
+## Retracting a published recording
+
+Operators can retract a recording while preserving the legitimate Live Proof
+plan (status, surface, reason, entry, and steps). Detach mode needs no bundle
+and deliberately does not compare the record with the current PR head:
+
+```bash
+node dist/clawsweeper.js live-proof-attach \
+  --detach \
+  --record ./records/openclaw-openclaw/items/110714.md \
+  --repo-slug openclaw-openclaw \
+  --item 110714
+```
+
+The command hydrates the attempt-scoped canonical record, removes only the
+marker-backed recording block, publishes through the normal bounded-conflict
+path, and then re-renders the marker-backed GitHub comment. If the block is
+already absent, it exits successfully without publishing or updating the
+comment. Add `--dry-run` to print the report and comment mutations without
+hydrating, publishing, or changing any file.
+
 ## Security invariants
 
 - Classification is read-only and executes no target code.

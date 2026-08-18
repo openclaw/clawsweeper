@@ -9,7 +9,13 @@ import YAML from "yaml";
 import { REVIEW_SECTIONS } from "../dist/clawsweeper-policy.js";
 import type { LiveProofPlan, MediaProofCommandRunner } from "../dist/clawsweeper-types.js";
 import type { RepositoryProfile } from "../dist/repository-profiles.js";
-import { attachLiveProof, syncLiveProofComment } from "../dist/live-proof/attach.js";
+import {
+  attachLiveProof,
+  detachLiveProof,
+  syncDetachedLiveProofComment,
+  syncLiveProofComment,
+} from "../dist/live-proof/attach.js";
+import { createLiveProofCommands } from "../dist/live-proof/commands.js";
 import {
   driveTerminal,
   generatePlaywrightScript,
@@ -603,6 +609,234 @@ test("live-proof attach publishes the record before syncing its marker-backed co
   assert.match(publishedBody, /<!-- clawsweeper-review item=42 -->/);
 });
 
+test("live-proof detach removes only the recording block", () => {
+  const fixture = recordedAttachmentFixture();
+  const before = readFileSync(fixture.recordPath, "utf8");
+  const result = detachLiveProof(
+    {
+      recordPath: fixture.recordPath,
+      repositorySlug: "example-repo",
+      item: 42,
+      dryRun: false,
+    },
+    attachDependencies({
+      runner: mediaRunner([]),
+      fetchPullRequest: async () => {
+        throw new Error("detach must not fetch the pull request");
+      },
+      upsertReviewComment: () => {
+        throw new Error("detach must not sync the comment before publication");
+      },
+      logs: fixture.logs,
+    }),
+  );
+
+  const after = readFileSync(fixture.recordPath, "utf8");
+  assert.equal(result, "detached");
+  assert.equal(
+    after,
+    before.replace(
+      /\n\n<!-- clawsweeper-live-proof-recording -->[\s\S]*?(?=\n## Work Candidate)/,
+      "\n",
+    ),
+  );
+  assert.match(after, /Status: recommended[\s\S]*- \{"action":"expect_text","text":"Saved"\}/);
+  assert.match(after, /## Work Candidate\n\nCandidate: none/);
+  assert.doesNotMatch(after, /clawsweeper-live-proof-recording|Live proof recording|Recorded live/);
+});
+
+test("live-proof detach is a clean no-op when the record has no recording block", () => {
+  const fixture = attachmentFixture();
+  const before = readFileSync(fixture.recordPath, "utf8");
+  const result = detachLiveProof(
+    {
+      recordPath: fixture.recordPath,
+      repositorySlug: "example-repo",
+      item: 42,
+      dryRun: false,
+    },
+    attachDependencies({
+      runner: mediaRunner([]),
+      fetchPullRequest: async () => {
+        throw new Error("detach must not fetch the pull request");
+      },
+      upsertReviewComment: () => ({}),
+      logs: fixture.logs,
+    }),
+  );
+
+  assert.equal(result, "unchanged");
+  assert.equal(readFileSync(fixture.recordPath, "utf8"), before);
+  assert.match(fixture.logs.join("\n"), /has no recording block; no changes needed/);
+});
+
+test("live-proof detach syncs the marker-backed comment only after publication", async () => {
+  const fixture = recordedAttachmentFixture();
+  const calls: string[] = [];
+  const result = await publishLiveProofAttachment({
+    hydrateRecord: () => calls.push("hydrate"),
+    attachRecord: async () => {
+      calls.push("detach");
+      return detachLiveProof(
+        {
+          recordPath: fixture.recordPath,
+          repositorySlug: "example-repo",
+          item: 42,
+          dryRun: false,
+        },
+        attachDependencies({
+          runner: mediaRunner([]),
+          fetchPullRequest: async () => {
+            throw new Error("detach must not fetch the pull request");
+          },
+          upsertReviewComment: () => ({}),
+          logs: fixture.logs,
+        }),
+      );
+    },
+    publishRecord: () => calls.push("publish"),
+    syncComment: () => {
+      calls.push("comment");
+      syncDetachedLiveProofComment(
+        { recordPath: fixture.recordPath, repositorySlug: "example-repo", item: 42 },
+        attachDependencies({
+          runner: mediaRunner([]),
+          fetchPullRequest: async () => {
+            throw new Error("detach must not fetch the pull request");
+          },
+          upsertReviewComment: (_number, body) => {
+            assert.doesNotMatch(body, /clawsweeper-live-proof-recording|Live proof recording/);
+            return {};
+          },
+          logs: fixture.logs,
+        }),
+      );
+    },
+    isCanonicalConflict: isCanonicalPublicationConflict,
+  });
+
+  assert.equal(result, "detached");
+  assert.deepEqual(calls, ["hydrate", "detach", "publish", "comment"]);
+});
+
+test("live-proof detach dry-run prints mutations without changing the record", () => {
+  const fixture = recordedAttachmentFixture();
+  const before = readFileSync(fixture.recordPath, "utf8");
+  const result = detachLiveProof(
+    {
+      recordPath: fixture.recordPath,
+      repositorySlug: "example-repo",
+      item: 42,
+      dryRun: true,
+    },
+    attachDependencies({
+      runner: mediaRunner([]),
+      fetchPullRequest: async () => {
+        throw new Error("detach dry-run must not fetch the pull request");
+      },
+      upsertReviewComment: () => {
+        throw new Error("detach dry-run must not sync the comment");
+      },
+      logs: fixture.logs,
+    }),
+  );
+
+  assert.equal(result, "dry-run");
+  assert.equal(readFileSync(fixture.recordPath, "utf8"), before);
+  const output = fixture.logs.join("\n");
+  assert.match(output, /dry-run: replace ## Live Proof/);
+  assert.match(output, /dry-run: publish .* then upsert marker-backed review comment/);
+  assert.doesNotMatch(output, /Live proof recording/);
+});
+
+test("live-proof attach command accepts detach without a bundle", async () => {
+  const fixture = recordedAttachmentFixture();
+  const dependencies = attachDependencies({
+    runner: mediaRunner([]),
+    fetchPullRequest: async () => {
+      throw new Error("detach must not fetch the pull request");
+    },
+    upsertReviewComment: () => ({}),
+    logs: fixture.logs,
+  });
+  const commands = createLiveProofCommands({
+    repositoryProfileFor: () => profile(),
+    reportLiveProofPlan: () => recommendedPlan(),
+    parseLiveProofPlan: () => recommendedPlan(),
+    attach: dependencies,
+    fetchPullRequest: dependencies.fetchPullRequest,
+    log: dependencies.log,
+  });
+
+  const result = await commands.liveProofAttachCommand({
+    _: ["live-proof-attach"],
+    detach: true,
+    record: fixture.recordPath,
+    repo_slug: "example-repo",
+    item: "42",
+    dry_run: true,
+  });
+
+  assert.equal(result, "dry-run");
+});
+
+test("live-proof detach rejects record identity mismatches without requiring a manifest", () => {
+  const fixture = recordedAttachmentFixture();
+  const dependencies = attachDependencies({
+    runner: mediaRunner([]),
+    fetchPullRequest: async () => {
+      throw new Error("detach must not fetch the pull request");
+    },
+    upsertReviewComment: () => ({}),
+    logs: fixture.logs,
+  });
+
+  assert.throws(
+    () =>
+      detachLiveProof(
+        {
+          recordPath: fixture.recordPath,
+          repositorySlug: "other-repo",
+          item: 42,
+          dryRun: false,
+        },
+        dependencies,
+      ),
+    /record repository does not match --repo-slug/,
+  );
+  assert.throws(
+    () =>
+      detachLiveProof(
+        {
+          recordPath: fixture.recordPath,
+          repositorySlug: "example-repo",
+          item: 41,
+          dryRun: false,
+        },
+        dependencies,
+      ),
+    /record item number does not match --item/,
+  );
+  writeFileSync(
+    fixture.recordPath,
+    readFileSync(fixture.recordPath, "utf8").replace("type: pull_request", "type: issue"),
+    "utf8",
+  );
+  assert.throws(
+    () =>
+      detachLiveProof(
+        {
+          recordPath: fixture.recordPath,
+          repositorySlug: "example-repo",
+          item: 42,
+          dryRun: false,
+        },
+        dependencies,
+      ),
+    /live proof can only be detached from a pull request report/,
+  );
+});
+
 test("live-proof publication retries from a lagged hydration and publishes the fresh canonical baseline", async () => {
   const calls: string[] = [];
   const hydratedRevisions = ["revision-5", "revision-6"];
@@ -1017,6 +1251,27 @@ Candidate: none
     "utf8",
   );
   return { bundleDir, recordPath, logs };
+}
+
+function recordedAttachmentFixture() {
+  const fixture = attachmentFixture();
+  const report = readFileSync(fixture.recordPath, "utf8");
+  writeFileSync(
+    fixture.recordPath,
+    report.replace(
+      "\n## Work Candidate",
+      `
+<!-- clawsweeper-live-proof-recording -->
+
+[![Live proof recording](https://media.example.test/poster.jpg)](https://media.example.test/proof.mp4)
+
+*Recorded live on the PR head (\`${HEAD.slice(0, 12)}\`), 4s, browser surface.*
+
+## Work Candidate`,
+    ),
+    "utf8",
+  );
+  return fixture;
 }
 
 function mediaRunner(commands: string[]): MediaProofCommandRunner {
