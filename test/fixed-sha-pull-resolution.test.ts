@@ -7,7 +7,11 @@ import { closeDecision, item, reportFrontMatter } from "./helpers.ts";
 
 function statusContextWithCalls(
   defaultBranch = "main",
-  options: { rateLimitOnApplyRead?: boolean; rateLimitOnIssueRead?: boolean; freshApplyBody?: boolean } = {},
+  options: {
+    rateLimitOnApplyRead?: boolean;
+    rateLimitOnIssueRead?: boolean;
+    freshApplyBody?: boolean;
+  } = {},
 ) {
   const calls: string[] = [];
   const recentPulls = [

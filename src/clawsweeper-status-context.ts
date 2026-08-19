@@ -59,7 +59,8 @@ export function currentClosingPullRequestReferenceFromIssueTimeline(
   const data = (result as Record<string, unknown>).data;
   if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
   const repository = (data as Record<string, unknown>).repository;
-  if (typeof repository !== "object" || repository === null || Array.isArray(repository)) return null;
+  if (typeof repository !== "object" || repository === null || Array.isArray(repository))
+    return null;
   const issue = (repository as Record<string, unknown>).issue;
   if (typeof issue !== "object" || issue === null || Array.isArray(issue)) return null;
   const issueRecord = issue as Record<string, unknown>;
@@ -78,7 +79,9 @@ export function currentClosingPullRequestReferenceFromIssueTimeline(
         typeof node === "object" &&
         node !== null &&
         !Array.isArray(node) &&
-        ["ClosedEvent", "ReopenedEvent"].includes(String((node as Record<string, unknown>).__typename)),
+        ["ClosedEvent", "ReopenedEvent"].includes(
+          String((node as Record<string, unknown>).__typename),
+        ),
     )
     .map((node) => ({
       node,
@@ -570,12 +573,7 @@ ${profileStatusEnd(profile)}`;
     }
     try {
       const pull = asRecord(
-        ghJson<unknown>([
-          "api",
-          `repos/${targetRepo()}/pulls/${item.number}`,
-          "--jq",
-          "{body}",
-        ]),
+        ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${item.number}`, "--jq", "{body}"]),
       );
       if (typeof pull.body !== "string") {
         return "implemented-on-main close could not revalidate the pull request's current issue linkage";
