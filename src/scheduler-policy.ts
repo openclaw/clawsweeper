@@ -322,7 +322,11 @@ export function selectDueCandidates<
     for (const candidate of candidates) cohort.get(candidate.bucket)?.push(candidate);
     for (const bucketCandidates of cohort.values()) bucketCandidates.sort(compare);
     while (selected.length < capacity) {
-      const before = selected.length;
+      // Stop on candidates drained, not candidates selected. take() silently
+      // drops an already-selected duplicate, so a pass that consumed only
+      // duplicates is not evidence that the buckets are empty; measuring
+      // selection here would strand every candidate queued behind them.
+      let drained = 0;
       for (const [bucket, weight] of SCHEDULER_BUCKET_WEIGHTS) {
         const bucketCandidates = cohort.get(bucket);
         if (!bucketCandidates?.length) continue;
@@ -332,9 +336,10 @@ export function selectDueCandidates<
           index += 1
         ) {
           take(bucketCandidates.shift());
+          drained += 1;
         }
       }
-      if (selected.length === before) break;
+      if (drained === 0) break;
     }
   };
 
@@ -388,15 +393,21 @@ export function selectDueCandidates<
   }
 
   while (selected.length < capacity) {
-    const before = selected.length;
+    // Stop on candidates drained, not candidates selected. GitHub's paginated
+    // issue listing is sorted by `updated`, so an item touched mid-pagination
+    // can appear on two pages; take() drops that duplicate silently. Measuring
+    // selection here would read "hit a duplicate" as "buckets are drained" and
+    // abandon every remaining candidate while capacity is still free.
+    let drained = 0;
     for (const [bucket, weight] of SCHEDULER_BUCKET_WEIGHTS) {
       const candidates = buckets.get(bucket);
       if (!candidates?.length) continue;
       for (let i = 0; i < weight && candidates.length && selected.length < capacity; i += 1) {
         take(candidates.shift());
+        drained += 1;
       }
     }
-    if (selected.length === before) break;
+    if (drained === 0) break;
   }
 
   return selected;

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
+import { errorFingerprint } from "./error-fingerprint.js";
 import {
   applyEventSnapshot,
   applyEventSnapshotIfCurrent,
@@ -117,6 +117,15 @@ try {
       kind: completionKind,
       reasonCode,
       errorFingerprint: fingerprint,
+      ...(error instanceof GitHubRateLimitError
+        ? {
+            retryAt: error.retryAt,
+            rateLimitScope: error.scope,
+            rateLimitProvenance: error.provenance,
+            rateLimitAuthoritative: error.authoritative,
+            attempted: true,
+          }
+        : {}),
     });
   }
   writePublicationCompletionOutputs(
@@ -220,6 +229,14 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     exactEventPublication: options.exactEventPublication,
     legacyTuplelessReviewLease,
   });
+  const rateLimitYield = exactActions.find(
+    (action) =>
+      action.action === "skipped_runtime_budget" &&
+      /GitHub(?: API)? rate limited until/i.test(action.reason),
+  );
+  if (rateLimitYield) {
+    throw new GitHubRateLimitError(new Error(rateLimitYield.reason));
+  }
   if (options.exactEventPublication && legacyTuplelessReviewLease) {
     console.log(
       `Requeueing ${options.targetRepo}#${options.itemNumber}: legacy exact artifact lacks its durable review lease tuple`,
@@ -787,11 +804,6 @@ function writePublicationCompletionOutputs(
     ].join("\n"),
     "utf8",
   );
-}
-
-function errorFingerprint(error: unknown): string {
-  const message = error instanceof Error ? `${error.name}:${error.message}` : String(error);
-  return `sha256:${createHash("sha256").update(message).digest("hex")}`;
 }
 
 function validateTargetRepo(targetRepo: string): void {

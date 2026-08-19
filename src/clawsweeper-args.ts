@@ -67,10 +67,6 @@ export function argNumber(args: Args, key: string, fallback: number): number {
   return value;
 }
 
-export function argBool(args: Args, key: string): boolean {
-  return boolArg(args[key]);
-}
-
 export function itemNumbersArg(
   itemNumbers: string | boolean | string[] | undefined,
   itemNumber: string | boolean | string[] | undefined,

@@ -1,0 +1,30 @@
+{
+  "automerge_metrics": {
+    "6h": {
+      "before": 6600,
+      "after": 690
+    },
+    "24h": {
+      "before": 6600,
+      "after": 744
+    },
+    "7d": {
+      "before": 6600,
+      "after": 1176
+    }
+  },
+  "apply_observability": {
+    "6h": {
+      "before": 169,
+      "after": 2
+    },
+    "24h": {
+      "before": 169,
+      "after": 4
+    },
+    "7d": {
+      "before": 169,
+      "after": 16
+    }
+  }
+}

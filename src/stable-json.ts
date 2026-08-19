@@ -1,17 +1,51 @@
+/**
+ * Canonical JSON for content digests and equality checks.
+ *
+ * Keys are ordered by UTF-16 code unit, never by locale collation.
+ * `String.prototype.localeCompare` is unusable here for two reasons:
+ *
+ *   1. It is not a strict total order. Collation-ignorable characters (zero-width
+ *      joiner, soft hyphen, most control characters) make distinct keys compare
+ *      equal, and `Array.prototype.sort` is stable, so a tie leaves the keys in
+ *      property-insertion order. Two objects with the same key/value set then
+ *      serialize differently and hash differently.
+ *   2. It is locale and ICU dependent. With no locale argument it follows the
+ *      runtime default, and collation tables differ between locales and ICU
+ *      releases - `cs-CZ`, for example, orders `ch` after `h`, which reorders
+ *      keys such as `changedFiles` and `checksDigest`. A digest computed on one
+ *      runner would then not match the same input on another.
+ *
+ * `stableJsonCodeUnit` / `sortStableCodeUnit` are retained as explicit aliases;
+ * they are equivalent to the unsuffixed pair.
+ *
+ * One caveat: array-index-like keys ("0", "2", "10") are not emitted in code-unit
+ * order. `Object.fromEntries` rebuilds the object and the engine re-applies its
+ * own ascending-numeric ordering for those keys, which this comparator cannot
+ * override. That ordering is specified by ECMAScript and is locale independent,
+ * so the output stays canonical - it simply is not purely byte-ordered. Callers
+ * needing byte order for numeric keys should serialize them directly, as
+ * `actionLedgerJson` does.
+ */
+
 export function stableJson(value: unknown): string {
   return JSON.stringify(sortStable(value));
 }
 
 export function sortStable(value: unknown): unknown {
-  return sortStableWith(value, (left, right) => left.localeCompare(right));
+  return sortStableWith(value, compareCodeUnits);
 }
 
 export function stableJsonCodeUnit(value: unknown): string {
-  return JSON.stringify(sortStableCodeUnit(value));
+  return stableJson(value);
 }
 
 export function sortStableCodeUnit(value: unknown): unknown {
-  return sortStableWith(value, compareCodeUnits);
+  return sortStable(value);
+}
+
+/** Total order over UTF-16 code units; never returns 0 for distinct strings. */
+export function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function sortStableWith(
@@ -25,8 +59,4 @@ function sortStableWith(
       .sort(([left], [right]) => compareKeys(left, right))
       .map(([key, item]) => [key, sortStableWith(item, compareKeys)]),
   );
-}
-
-function compareCodeUnits(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }

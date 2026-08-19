@@ -49,4 +49,4 @@ Execution guard:
 - Already-closed refs must not receive `close_*` actions. Use `keep_closed` with `status: "skipped"` only if you must mention them in the action matrix.
 - If a safety condition blocks a mutation, return a non-mutating classification when possible and reserve `needs_human` for unresolved maintainer judgment.
 
-Final answer must match `schemas/codex-result.schema.json`.
+Final answer must match `schema/repair/codex-result.schema.json`.

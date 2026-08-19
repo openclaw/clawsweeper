@@ -363,6 +363,28 @@ test("failed review retry eligibility treats Codex rate limits as infrastructure
   assert.equal(isInfrastructureFailedReviewForTest(markdown), true);
 });
 
+test("failed review retry eligibility treats checkout inspection failures as infrastructure", () => {
+  const markdown = failedReviewReport({ review_checkout_inspection_failed: true })
+    .replace("Codex review failed: timeout.", "Codex review failed: codex execution failed.")
+    .replace(
+      "Codex worker timed out after 600000ms with ETIMEDOUT.",
+      "Read-only checkout inspection failed before model review.",
+    );
+
+  assert.equal(isInfrastructureFailedReviewForTest(markdown), true);
+  assert.equal(
+    failedReviewRetryEligibilityForTest({
+      markdown,
+      liveState: "open",
+      liveHeadSha: "abc123def456",
+      now: Date.parse("2026-06-05T20:00:00Z"),
+      maxAttempts: 2,
+      cooldownMs: 45 * 60 * 1000,
+    }).action,
+    "planned_failed_review_retry",
+  );
+});
+
 test("failed review retry eligibility treats model access failures as terminal", () => {
   const markdown = failedReviewReport({ review_terminal_failure: true })
     .replaceAll(
@@ -389,6 +411,19 @@ test("failed review retry eligibility treats model access failures as terminal",
     }).action,
     "skipped_non_infrastructure_failure",
   );
+});
+
+test("failed review retry eligibility rejects ambiguous terminal-failure metadata", () => {
+  const markdown = failedReviewReport().replace(
+    "review_status: failed",
+    [
+      "review_status: failed",
+      "review_terminal_failure: false",
+      "review_terminal_failure: false",
+    ].join("\n"),
+  );
+
+  assert.equal(isInfrastructureFailedReviewForTest(markdown), false);
 });
 
 test("failed review retry ignores terminal-looking text outside dedicated evidence", () => {

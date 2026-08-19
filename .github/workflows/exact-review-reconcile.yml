@@ -22,7 +22,25 @@ concurrency:
 jobs:
   reconcile:
     name: Observe and reconcile terminal review run
-    if: ${{ github.event_name == 'workflow_run' }}
+    # Schedule a runner only for titles the observer can classify. Queue-backed
+    # "Review exact item" runs and support runs otherwise start an ubuntu runner
+    # only to print "skipped", starving the Blacksmith jobs that must claim their
+    # six-minute queue reservations. The test suite keeps this allowlist aligned
+    # with REVIEW_RUN_OBSERVER_TITLE_LANES.
+    if: >-
+      ${{
+        github.event_name == 'workflow_run' &&
+        (
+          startsWith(github.event.workflow_run.display_title, 'Review scheduled hot item ') ||
+          startsWith(github.event.workflow_run.display_title, 'Review scheduled normal item ') ||
+          startsWith(github.event.workflow_run.display_title, 'Review event item') ||
+          startsWith(github.event.workflow_run.display_title, 'Review hot ClawSweeper items') ||
+          startsWith(github.event.workflow_run.display_title, 'Review hot target repo ') ||
+          startsWith(github.event.workflow_run.display_title, 'Retry failed Codex reviews') ||
+          startsWith(github.event.workflow_run.display_title, 'Review target repo ') ||
+          startsWith(github.event.workflow_run.display_title, 'Review ClawSweeper items')
+        )
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -215,6 +233,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET_WRITE_TOKEN: ${{ steps.target-write-token.outputs.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          REVIEW_PLACEHOLDER_CURSOR_STORE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           REVIEW_PLACEHOLDER_LOOKBACK_HOURS: ${{ vars.REVIEW_PLACEHOLDER_LOOKBACK_HOURS || '48' }}
           REVIEW_PLACEHOLDER_MAX_CHECKS: ${{ vars.REVIEW_PLACEHOLDER_MAX_CHECKS || '20' }}
           REVIEW_PLACEHOLDER_MAX_RECOVERIES: ${{ vars.REVIEW_PLACEHOLDER_MAX_RECOVERIES || '5' }}

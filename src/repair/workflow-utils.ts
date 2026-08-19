@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "./lib.js";
 import { isJsonObject } from "./json-types.js";
-import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "./limits.js";
+import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "../limits.js";
 import {
   fetchExactReviewQueuePressure,
   queuePressureLevel,
@@ -1411,6 +1411,7 @@ function selectedProposedItemCandidates(
             type === "pull_request" &&
             frontMatterValue(markdown, "review_status") === "complete" &&
             frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+            frontMatterValue(markdown, "local_checkout_access_source") === "runner_preflight_v1" &&
             hasPullRequestClosePromotionSignal(markdown, options.targetRepo, {
               staleMinAgeMs: options.staleMinAgeDays * 24 * 60 * 60 * 1000,
             }) &&
@@ -1848,39 +1849,93 @@ function hasRecommendedPauseOrCloseOption(markdown: string): boolean {
   });
 }
 
+const PR_RATING_TIER_VALUES = new Set(["S", "A", "B", "C", "D", "F", "NA"]);
+const PROOF_STATUS_VALUES = new Set([
+  "sufficient",
+  "override",
+  "insufficient",
+  "mock_only",
+  "missing",
+  "not_applicable",
+]);
+
+function trustedPromotionValue(
+  markdown: string,
+  key: string,
+  legacySectionValue: string,
+  allowed: ReadonlySet<string>,
+): { invalid: boolean; value: string } {
+  const field = frontMatterField(markdown, key);
+  if (field.status === "ambiguous") return { invalid: true, value: "" };
+  const value = field.status === "value" ? field.value : legacySectionValue;
+  return { invalid: Boolean(value) && !allowed.has(value), value };
+}
+
 function hasLowSignalPullRequestPromotionSignal(markdown: string): boolean {
   const ratingSection = sectionValue(markdown, "PR Rating");
   const proofSection = sectionValue(markdown, "Real Behavior Proof");
-  const overallTier =
-    sectionLineValue(ratingSection, "Overall tier") ||
-    frontMatterValue(markdown, "pr_rating_overall");
-  const proofTier =
-    sectionLineValue(ratingSection, "Proof tier") || frontMatterValue(markdown, "pr_rating_proof");
-  const proofStatus =
-    sectionLineValue(proofSection, "Status") ||
-    frontMatterValue(markdown, "real_behavior_proof_status");
+  const overallTier = trustedPromotionValue(
+    markdown,
+    "pr_rating_overall",
+    sectionLineValue(ratingSection, "Overall tier"),
+    PR_RATING_TIER_VALUES,
+  );
+  const proofTier = trustedPromotionValue(
+    markdown,
+    "pr_rating_proof",
+    sectionLineValue(ratingSection, "Proof tier"),
+    PR_RATING_TIER_VALUES,
+  );
+  const proofStatus = trustedPromotionValue(
+    markdown,
+    "real_behavior_proof_status",
+    sectionLineValue(proofSection, "Status"),
+    PROOF_STATUS_VALUES,
+  );
+  if (overallTier.invalid || proofTier.invalid || proofStatus.invalid) return false;
   return (
-    overallTier === "F" &&
-    (proofTier === "F" || ["missing", "mock_only", "insufficient"].includes(proofStatus))
+    overallTier.value === "F" &&
+    (proofTier.value === "F" ||
+      ["missing", "mock_only", "insufficient"].includes(proofStatus.value))
   );
 }
 
 function hasAuthorPrBudgetPromotionSignal(markdown: string): boolean {
   const ratingSection = sectionValue(markdown, "PR Rating");
   const proofSection = sectionValue(markdown, "Real Behavior Proof");
-  const overallTier =
-    sectionLineValue(ratingSection, "Overall tier") ||
-    frontMatterValue(markdown, "pr_rating_overall");
-  const proofStatus =
-    sectionLineValue(proofSection, "Status") ||
-    frontMatterValue(markdown, "real_behavior_proof_status");
-  if (["S", "A", "B"].includes(overallTier) && ["sufficient", "override"].includes(proofStatus)) {
+  const overallTier = trustedPromotionValue(
+    markdown,
+    "pr_rating_overall",
+    sectionLineValue(ratingSection, "Overall tier"),
+    PR_RATING_TIER_VALUES,
+  );
+  const proofStatus = trustedPromotionValue(
+    markdown,
+    "real_behavior_proof_status",
+    sectionLineValue(proofSection, "Status"),
+    PROOF_STATUS_VALUES,
+  );
+  if (overallTier.invalid || proofStatus.invalid) return false;
+  if (
+    ["S", "A", "B"].includes(overallTier.value) &&
+    ["sufficient", "override"].includes(proofStatus.value)
+  ) {
     return false;
   }
   return (
-    ["D", "F"].includes(overallTier) ||
-    ["missing", "mock_only", "insufficient"].includes(proofStatus)
+    ["D", "F"].includes(overallTier.value) ||
+    ["missing", "mock_only", "insufficient"].includes(proofStatus.value)
   );
+}
+
+export function pullRequestClosePromotionSignalsForTest(markdown: string): {
+  authorBudget: boolean;
+  lowSignal: boolean;
+} {
+  return {
+    authorBudget: hasAuthorPrBudgetPromotionSignal(markdown),
+    lowSignal: hasLowSignalPullRequestPromotionSignal(markdown),
+  };
 }
 
 function closePromotionSignalTexts(markdown: string): string[] {
@@ -1945,7 +2000,10 @@ export function commentSyncBatchOutput(options: CommentSyncBatchOptions): Record
       : candidates
           .filter((number) => number > 0 && !urgentSet.has(number))
           .slice(0, options.batchSize - urgent.length);
-  const selected = [...urgent, ...regular];
+  // The numeric frontier owns cursor progress. Run its first record before
+  // opportunistic urgent repairs so a slow urgent window cannot repeatedly
+  // exhaust the runtime budget without ever reaching the frontier.
+  const selected = regular.length > 0 ? [regular[0]!, ...urgent, ...regular.slice(1)] : urgent;
   const highestUrgent = urgent.length > 0 ? Math.max(...urgent) : cursor;
   const urgentCanAdvanceCursor =
     urgent.length > 0 &&
@@ -2268,7 +2326,8 @@ function commentSyncCandidates(
         actionTaken === "skipped_close_exempt_label" ||
         actionTaken === "skipped_invalid_decision";
       const verifiedLocalCheckout =
-        frontMatterValue(markdown, "local_checkout_access") === "verified";
+        frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+        frontMatterValue(markdown, "local_checkout_access_source") === "runner_preflight_v1";
       const storedReviewCommentId = frontMatterValue(markdown, "review_comment_id");
       const storedReviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
       const hasStoredReviewComment =
@@ -2537,13 +2596,27 @@ function checkpointNumber(name: string): number {
   return Number(name.match(/\d+/)?.[0] ?? 0);
 }
 
+type FrontMatterField =
+  | { status: "absent" }
+  | { status: "ambiguous" }
+  | { status: "value"; value: string };
+
+function frontMatterField(markdown: string, key: string): FrontMatterField {
+  const frontMatterMatch = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!frontMatterMatch) return { status: "absent" };
+  const frontMatter = frontMatterMatch[1] ?? "";
+  const remainder = markdown.slice(frontMatterMatch[0].length);
+  if (new RegExp(`^${key}:`, "m").test(remainder)) return { status: "ambiguous" };
+  const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.*)$`, "gm"))];
+  if (matches.length === 0) return { status: "absent" };
+  if (matches.length !== 1) return { status: "ambiguous" };
+  const value = matches[0]?.[1]?.trim().replace(/^"|"$/g, "") ?? "";
+  return value ? { status: "value", value } : { status: "ambiguous" };
+}
+
 function frontMatterValue(markdown: string, key: string): string {
-  return (
-    markdown
-      .match(new RegExp(`^${key}:\\s*(.+)$`, "m"))?.[1]
-      ?.trim()
-      .replace(/^"|"$/g, "") ?? ""
-  );
+  const field = frontMatterField(markdown, key);
+  return field.status === "value" ? field.value : "";
 }
 
 function jsonArrayFrontMatter(markdown: string, key: string): JsonValue[] {

@@ -1,0 +1,15 @@
+✔ restricted PR review can inspect changed blobs from a genuine blobless clone offline (838.357619ms)
+✔ missing partial-clone objects are fetched in one bounded network request (293.252076ms)
+✔ review hydration enforces per-review byte limits without fetching oversized blobs (593.233113ms)
+✔ multipart uploads stream fixed-size parts and enforce immutability at completion (6.799337ms)
+✔ chunked downloads retry transient 5xx responses and reject invalid ranges (762.054403ms)
+✔ blob listing pages with cursors and validates prefixes (8.336888ms)
+✔ materialize refuses partial trees only when the whole store is empty (8.439056ms)
+ℹ tests 3318
+ℹ suites 0
+ℹ pass 3310
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 8
+ℹ todo 0
+ℹ duration_ms 362873.722424

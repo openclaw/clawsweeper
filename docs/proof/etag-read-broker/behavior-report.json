@@ -1,0 +1,38 @@
+{
+  "schema": "clawsweeper-etag-read-broker-proof/v1",
+  "generated_at": "2026-08-14T06:10:14.600Z",
+  "tested_head": "2f5c5b98c136fc80411fde91ae5c7685eee00938",
+  "merge_base": "6a358d239c1e67cd38159d70de18eecbd9a5d844",
+  "key_schema": "[1, credential_pool, route_with_sorted_query, media_type]",
+  "storage": {
+    "max_entries": 2048,
+    "max_body_bytes": 524288,
+    "ttl_days": 30
+  },
+  "results": {
+    "first_read": "200_stored",
+    "unchanged_read": "304_confirmed_body_served",
+    "byte_identical": true,
+    "digest_asserted": true,
+    "changed_read": "200_replaced",
+    "page_2_carried_page_1_etag": false,
+    "final_guard_revalidated": true,
+    "bare_cache_reads": 0,
+    "wire_calls": 5,
+    "quota_charges": 3,
+    "telemetry": {
+      "cache_hit": 3,
+      "cache_miss": 2,
+      "cache_skip": 0,
+      "cache_200_stored": 3,
+      "cache_304_served": 2
+    },
+    "publisher_hmac_status": 200,
+    "operator_hmac_status": 401
+  },
+  "limits": [
+    "Loopback GitHub and credentials are deterministic fixtures.",
+    "The proof exercises production Worker routing and Durable Object SQL in memory, not production state.",
+    "GitHub documents REST 304 responses as zero primary-rate-limit points; the fixture models that accounting."
+  ]
+}

@@ -1,0 +1,53 @@
+CONTAINER_PHASE=environment
+v24.18.1
+11.10.0
+SQLITE3_BINARY=absent
+jq-linux-amd64: OK
+jq-1.8.2
+CONTAINER_PHASE=system-dependencies
+Setting up rsync (3.2.7-1+deb12u6) ...
+SQLITE3_BINARY_AFTER_SETUP=absent
+CONTAINER_PHASE=install
+Lockfile is up to date, resolution step is skipped
+Lockfile passes supply-chain policies (79 entries in 818ms)
+Done in 1.3s using pnpm v11.10.0
+CONTAINER_PHASE=focused-new-path
+✔ read-only SQLite queries preserve sqlite3 JSON integer behavior (22.710191ms)
+✔ related-context reads portable gitcrawl rows committed in a WAL sidecar (64.054329ms)
+✔ related-context and cluster importer query the legacy gitcrawl schema (108.933367ms)
+✔ related-context preserves empty, missing, and corrupt database fallbacks (62.820168ms)
+✔ gitcrawl importer CLIs query real WAL-backed fixtures without sqlite3 (151.968339ms)
+✔ gitcrawl importer CLIs preserve empty-result and database failure outcomes (330.957805ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1039.788403
+CONTAINER_PHASE=full-suite
+. check:dashboard-queue-boundary: dashboard queue boundary check passed
+. check:docs: Documentation checks passed.
+. format:check: All matched files use the correct format.
+. lint:src: Found 0 warnings and 0 errors.
+ℹ tests 12
+ℹ suites 0
+ℹ pass 12
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 261.598252
+ℹ all files               | 100.00 |    88.61 |  100.00 |
+ℹ tests 3333
+ℹ suites 0
+ℹ pass 3325
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 8
+ℹ todo 0
+ℹ duration_ms 122619.919772
+ℹ sqlite-readonly.js                           | 100.00 |    85.71 |  100.00 |
+ℹ all files                                     |  81.60 |    74.06 |   87.40 |
+CONTAINER_PROOF_RC=0

@@ -1,7 +1,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { CLAWSWEEPER_CO_AUTHOR, coAuthorKey } from "./co-author-credit.js";
 import { runCommand as run } from "./command-runner.js";
-import { parsePullRequestUrl } from "./github-ref.js";
+import { parsePullRequestUrl, sameRepoSlug } from "./github-ref.js";
 import { repoRoot } from "./lib.js";
 import { repairGhEnv as ghEnv } from "./process-env.js";
 import { uniqueStrings } from "./validation-command-utils.js";
@@ -60,7 +60,7 @@ export function sourceClosingReferences({
   const references: string[] = [];
   for (const source of fixArtifact.source_prs ?? []) {
     const parsed = parsePullRequestUrl(source);
-    if (!parsed || parsed.repo !== repo) continue;
+    if (!parsed || !sameRepoSlug(parsed.repo, repo)) continue;
     const view = JSON.parse(
       run("gh", ["pr", "view", String(parsed.number), "--repo", repo, "--json", "body"], {
         cwd: targetDir,
@@ -85,7 +85,7 @@ export function sourceContributorCredits({
   const byLogin = new Map<string, LooseRecord>();
   for (const source of fixArtifact.source_prs ?? []) {
     const parsed = parsePullRequestUrl(source);
-    if (!parsed || parsed.repo !== repo) continue;
+    if (!parsed || !sameRepoSlug(parsed.repo, repo)) continue;
     const view = fetchSourcePullRequestView({ repo, number: parsed.number, targetDir });
     const login = String(view.author?.login ?? "").trim();
     if (!login || view.author?.is_bot || isBotLogin(login)) continue;
@@ -143,15 +143,15 @@ export function supersededReplacementSources({
     Array.isArray(fixArtifact.supersede_source_prs) &&
     fixArtifact.supersede_source_prs.length > 0
   ) {
-    return fixArtifact.supersede_source_prs.filter(
-      (source: JsonValue) => parsePullRequestUrl(source)?.repo === repo,
+    return fixArtifact.supersede_source_prs.filter((source: JsonValue) =>
+      sameRepoSlug(parsePullRequestUrl(source)?.repo, repo),
     );
   }
 
   const blockerText = (fixArtifact.branch_update_blockers ?? []).join("\n");
   const directUneditableSources = (fixArtifact.source_prs ?? []).filter((source: JsonValue) => {
     const parsed = parsePullRequestUrl(source);
-    if (!parsed || parsed.repo !== repo) return false;
+    if (!parsed || !sameRepoSlug(parsed.repo, repo)) return false;
     const sourcePattern = new RegExp(`(?:#|pull/)${parsed.number}(?!\\d)[\\s\\S]{0,220}`, "i");
     const sourceBlocker = blockerText.match(sourcePattern)?.[0] ?? "";
     return /maintainer_can_modify\s*=\s*false|uneditable|cannot safely update|branch is unsafe|mergeability unknown/i.test(

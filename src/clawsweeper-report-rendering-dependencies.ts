@@ -18,7 +18,7 @@ import type {
   PublicPriority,
   RegressionAssessment,
   RealBehaviorProof,
-  VerifiedRegressionProvenance,
+  PublicRegressionProvenance,
   ReviewCommentRenderOptions,
   ReviewFinding,
   ReviewMetric,
@@ -65,7 +65,7 @@ export interface CreateReportRenderingDependencies {
   fixedInText: (decision: Decision) => string;
   fixedPullRequestFromReport: (markdown: string) => FixedPullRequest | null;
   regressionAssessmentFromReport: (markdown: string) => RegressionAssessment | null;
-  regressionProvenanceFromReport: (markdown: string) => VerifiedRegressionProvenance | null;
+  regressionProvenanceFromReport: (markdown: string) => PublicRegressionProvenance | null;
   formatReviewFreshnessTimestamp: (iso: string | undefined) => string;
   formattedMarkdownList: (
     values: readonly string[],
@@ -164,6 +164,7 @@ export interface CreateReportRenderingDependencies {
   reportAgentsPolicyStatus: (markdown: string) => AgentsPolicyStatus | undefined;
   reportEvidence: (markdown: string) => Evidence[];
   reportLikelyOwners: (markdown: string) => LikelyOwner[];
+  reportLiveProofRecordingBlock: (markdown: string) => string;
   reportMantisRecommendation: (markdown: string) => MantisRecommendation;
   reportOverallConfidenceScore: (markdown: string) => number;
   reportOverallCorrectness: (markdown: string) => OverallCorrectness;

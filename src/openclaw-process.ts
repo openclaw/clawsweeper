@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   DEFAULT_CODEX_OUTPUT_FILE_BYTES,
@@ -35,6 +35,7 @@ export interface OpenClawProcessOptions {
   outputFileBytes?: number;
   stdoutPath?: string;
   stderrPath?: string;
+  checkoutInspection?: { expectedText: string; expectedPath: string };
 }
 
 export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProcessResult {
@@ -47,18 +48,23 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
   const stderrPath = options.stderrPath ?? join(stateDir, "stderr.log");
   try {
     const timeoutSeconds = Math.max(1, Math.ceil(options.timeoutMs / 1_000));
-    writeFileSync(configPath, `${JSON.stringify(openclawConfig(options.env, timeoutSeconds))}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
+    writeFileSync(
+      configPath,
+      `${JSON.stringify(openclawConfig(options.env, timeoutSeconds, Boolean(options.checkoutInspection)))}\n`,
+      {
+        encoding: "utf8",
+        mode: 0o600,
+      },
+    );
     writeFileSync(promptPath, options.prompt, { encoding: "utf8", mode: 0o600 });
+    const sessionId = openclawSessionId(options.label);
     const args = [
       "agent",
       "--local",
       "--agent",
       "main",
       "--session-id",
-      openclawSessionId(options.label),
+      sessionId,
       "--model",
       options.model,
       "--message-file",
@@ -116,7 +122,17 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
     }
     const processResult = deserializeResult(JSON.parse(readFileSync(resultPath, "utf8")));
     if (worker.error) return { ...processResult, error: worker.error };
-    return normalizeOpenclawResult(processResult, readFileSync(stdoutPath, "utf8"));
+    return normalizeOpenclawResult(
+      processResult,
+      readFileSync(stdoutPath, "utf8"),
+      options.checkoutInspection,
+      {
+        cwd: options.cwd,
+        // OpenClaw persists an explicit local session under this agent-owned
+        // path; inspect it before the isolated state directory is removed.
+        transcriptPath: join(stateDir, "agents", "main", "sessions", `${sessionId}.jsonl`),
+      },
+    );
   } catch (error) {
     return failedResult(error instanceof Error ? error : new Error(String(error)));
   } finally {
@@ -156,7 +172,11 @@ export function parseOpenclawJsonEnvelope(
   };
 }
 
-function openclawConfig(env: NodeJS.ProcessEnv, timeoutSeconds: number): Record<string, unknown> {
+function openclawConfig(
+  env: NodeJS.ProcessEnv,
+  timeoutSeconds: number,
+  checkoutInspection: boolean,
+): Record<string, unknown> {
   const config: Record<string, unknown> = {
     agents: {
       defaults: {
@@ -165,11 +185,17 @@ function openclawConfig(env: NodeJS.ProcessEnv, timeoutSeconds: number): Record<
         timeoutSeconds,
       },
     },
-    tools: {
-      profile: "coding",
-      fs: { workspaceOnly: true },
-      exec: { host: "gateway", mode: "full" },
-    },
+    tools: checkoutInspection
+      ? {
+          allow: ["read"],
+          fs: { workspaceOnly: true },
+          exec: { host: "gateway", mode: "deny" },
+        }
+      : {
+          profile: "coding",
+          fs: { workspaceOnly: true },
+          exec: { host: "gateway", mode: "full" },
+        },
   };
   const providersJson = env.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON?.trim();
   if (!providersJson) {
@@ -203,14 +229,100 @@ function openclawConfig(env: NodeJS.ProcessEnv, timeoutSeconds: number): Record<
 function normalizeOpenclawResult(
   processResult: CodexProcessResult,
   completeStdout: string,
+  checkoutInspection?: { expectedText: string; expectedPath: string },
+  receipt?: { cwd: string; transcriptPath: string },
 ): CodexProcessResult {
   if (processResult.error || processResult.status !== 0) return processResult;
   const parsed = parseOpenclawJsonEnvelope(completeStdout, processResult.stderr);
-  if (!parsed.failure) return { ...processResult, stdout: parsed.text };
+  if (!parsed.failure) {
+    if (!checkoutInspection) return { ...processResult, stdout: parsed.text };
+    if (parsed.text.trim() !== checkoutInspection.expectedText) {
+      return failedInspectionResult(
+        processResult,
+        "OpenClaw checkout inspection did not return the runner challenge.",
+      );
+    }
+    // The runtime-owned session receipt binds the successful read to the
+    // host-selected tracked path, whose expected line never enters the prompt.
+    if (
+      !receipt ||
+      !hasSuccessfulReadReceipt({
+        ...receipt,
+        expectedPath: checkoutInspection.expectedPath,
+      })
+    ) {
+      return failedInspectionResult(
+        processResult,
+        "OpenClaw checkout inspection did not read the exact challenged path.",
+      );
+    }
+    return { ...processResult, stdout: "" };
+  }
   if (/\btimeout\b/i.test(parsed.failure.message)) {
     (parsed.failure as NodeJS.ErrnoException).code = "ETIMEDOUT";
   }
   return { ...processResult, status: 1, error: parsed.failure, stdout: parsed.text };
+}
+
+function hasSuccessfulReadReceipt(options: {
+  cwd: string;
+  transcriptPath: string;
+  expectedPath: string;
+}): boolean {
+  let transcript: string;
+  try {
+    transcript = readFileSync(options.transcriptPath, "utf8");
+  } catch {
+    return false;
+  }
+  const readCalls = new Map<string, { matchesExpectedPath: boolean; resolved: boolean }>();
+  let challengedReadSucceeded = false;
+  for (const line of transcript.split("\n")) {
+    if (!line.trim()) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      return false;
+    }
+    if (!isRecord(entry) || !isRecord(entry.message)) continue;
+    const message = entry.message;
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (!isRecord(block) || block.type !== "toolCall") continue;
+        if (
+          block.name !== "read" ||
+          typeof block.id !== "string" ||
+          !isRecord(block.arguments) ||
+          typeof block.arguments.path !== "string" ||
+          readCalls.has(block.id)
+        ) {
+          return false;
+        }
+        readCalls.set(block.id, {
+          matchesExpectedPath:
+            resolve(options.cwd, block.arguments.path) ===
+            resolve(options.cwd, options.expectedPath),
+          resolved: false,
+        });
+      }
+      continue;
+    }
+    if (message.role !== "toolResult") continue;
+    if (message.toolName !== "read" || typeof message.toolCallId !== "string") return false;
+    const call = readCalls.get(message.toolCallId);
+    if (!call || call.resolved || message.isError !== false) return false;
+    call.resolved = true;
+    if (call.matchesExpectedPath) challengedReadSucceeded = true;
+  }
+  return challengedReadSucceeded && [...readCalls.values()].every((call) => call.resolved);
+}
+
+function failedInspectionResult(
+  processResult: CodexProcessResult,
+  message: string,
+): CodexProcessResult {
+  return { ...processResult, status: 1, error: new Error(message), stdout: "" };
 }
 
 function openclawFailureDetail(

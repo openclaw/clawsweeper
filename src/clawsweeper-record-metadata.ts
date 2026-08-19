@@ -10,6 +10,7 @@ import {
   PAIR_BLOCKED_CLOSE_ACTIONS,
   REVIEW_SECTIONS,
 } from "./clawsweeper-policy.js";
+import { escapeRegExp } from "./clawsweeper-text.js";
 import type {
   ApplyKind,
   CloseReason,
@@ -50,6 +51,11 @@ interface RecordMetadataDependencies {
   numberForMarkdownFile: (file: string) => number;
 }
 
+export type FrontMatterField =
+  | { status: "absent" }
+  | { status: "ambiguous" }
+  | { status: "value"; value: string };
+
 export function createRecordMetadata({
   reportFileName,
   markdownRepository,
@@ -62,10 +68,27 @@ export function createRecordMetadata({
   markdownFiles,
   numberForMarkdownFile,
 }: RecordMetadataDependencies) {
+  function frontMatterField(markdown: string, key: string): FrontMatterField {
+    const frontMatterMatch = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    if (!frontMatterMatch) return { status: "absent" };
+    const frontMatter = frontMatterMatch[1] ?? "";
+    const remainder = markdown.slice(frontMatterMatch[0].length);
+    const escapedKey = escapeRegExp(key);
+    if (new RegExp(`^${escapedKey}:`, "m").test(remainder)) return { status: "ambiguous" };
+    const matches = [...frontMatter.matchAll(new RegExp(`^${escapedKey}:\\s*(.*)$`, "gm"))];
+    if (matches.length === 0) return { status: "absent" };
+    if (matches.length !== 1) return { status: "ambiguous" };
+    const value = matches[0]?.[1]?.trim();
+    if (!value) return { status: "ambiguous" };
+    return {
+      status: "value",
+      value: value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value,
+    };
+  }
+
   function frontMatterValue(markdown: string, key: string): string | undefined {
-    const match = markdown.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
-    const value = match?.[1]?.trim();
-    return value?.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
+    const field = frontMatterField(markdown, key);
+    return field.status === "value" ? field.value : undefined;
   }
 
   function reportCloseReason(markdown: string): CloseReason | undefined {
@@ -235,11 +258,16 @@ export function createRecordMetadata({
     );
   }
 
+  // `value` is record data — most often `JSON.stringify(item.labels)`, whose contents
+  // are GitHub label names. Passing it as a replacement *string* would let `$&`, `` $` ``
+  // and `$'` expand against the match, so a label containing them rewrites the field to
+  // something other than what was stored. A replacement function inserts the text
+  // literally, which is the only behavior this writer ever intended.
   function replaceFrontMatterValue(markdown: string, key: string, value: string): string {
     const line = `${key}: ${value}`;
-    const pattern = new RegExp(`^${key}:\\s*.*$`, "m");
-    if (pattern.test(markdown)) return markdown.replace(pattern, line);
-    return markdown.replace(/^---\n/, `---\n${line}\n`);
+    const pattern = new RegExp(`^${escapeRegExp(key)}:\\s*.*$`, "m");
+    if (pattern.test(markdown)) return markdown.replace(pattern, () => line);
+    return markdown.replace(/^---\n/, () => `---\n${line}\n`);
   }
 
   function exactEventReviewLeaseDisposition(
@@ -338,7 +366,9 @@ export function createRecordMetadata({
   }
 
   function reviewReportCanPromoteToClose(markdown: string): boolean {
-    return !frontMatterBoolean(markdown, "review_cache_hit");
+    const cacheHit = frontMatterField(markdown, "review_cache_hit");
+    if (cacheHit.status === "absent") return true;
+    return cacheHit.status === "value" && /^false$/i.test(cacheHit.value);
   }
 
   function reviewReportCanPromoteToCloseForTest(markdown: string): boolean {
@@ -471,20 +501,16 @@ export function createRecordMetadata({
     return markdown.includes("Codex review failed") ? "failed" : "complete";
   }
 
-  function hasBlockedLocalCheckoutAccess(markdown: string): boolean {
-    return /bwrap: loopback|sandbox wrapper|sandbox startup failed|sandboxed shell failed|local shell (?:access|commands|inspection).*unavailable|local shell .*blocked|local terminal commands were unavailable|could not run local shell/i.test(
-      markdown,
-    );
-  }
-
   function hasVerifiedLocalCheckoutAccess(markdown: string): boolean {
-    return frontMatterValue(markdown, "local_checkout_access") === "verified";
+    return (
+      frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+      frontMatterValue(markdown, "local_checkout_access_source") === "runner_preflight_v1"
+    );
   }
 
   function effectiveReviewStatus(markdown: string): string {
     const status = frontMatterValue(markdown, "review_status") ?? inferReviewStatus(markdown);
     if (status === "complete") {
-      if (hasBlockedLocalCheckoutAccess(markdown)) return "stale_local_checkout_blocked";
       if (!hasVerifiedLocalCheckoutAccess(markdown)) return "stale_local_checkout_unverified";
     }
     return status;
@@ -580,7 +606,31 @@ export function createRecordMetadata({
 
   function isInfrastructureFailedReview(markdown: string): boolean {
     const detail = failedReviewFailureDetail(markdown);
-    if (frontMatterBoolean(markdown, "review_terminal_failure")) return false;
+    const terminalFailure = frontMatterField(markdown, "review_terminal_failure");
+    const checkoutInspectionFailure = frontMatterField(
+      markdown,
+      "review_checkout_inspection_failed",
+    );
+    if (terminalFailure.status === "ambiguous") return false;
+    if (
+      terminalFailure.status === "value" &&
+      (!/^(?:true|false)$/i.test(terminalFailure.value) || /^true$/i.test(terminalFailure.value))
+    ) {
+      return false;
+    }
+    if (checkoutInspectionFailure.status === "ambiguous") return false;
+    if (
+      checkoutInspectionFailure.status === "value" &&
+      !/^(?:true|false)$/i.test(checkoutInspectionFailure.value)
+    ) {
+      return false;
+    }
+    if (
+      checkoutInspectionFailure.status === "value" &&
+      /^true$/i.test(checkoutInspectionFailure.value)
+    ) {
+      return true;
+    }
     return (
       isRetryableCodexTransportError(detail) ||
       /\b(?:ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|transport failure|codex transport|Codex worker timed out|Codex review failed: timeout|timed out after|shard timeout|workflow timeout|cancelledByParent)\b/i.test(
@@ -765,6 +815,7 @@ export function createRecordMetadata({
     failedReviewRetryResultRevision,
     failedReviewRetryRevisionForReport,
     frontMatterBoolean,
+    frontMatterField,
     frontMatterJsonArray,
     frontMatterStringArray,
     frontMatterValue,

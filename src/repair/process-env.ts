@@ -19,9 +19,11 @@ export function codexSubprocessEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...clawsweeperGitIdentityEnv(),
+    // pnpm 11 only honors npm_config_* env settings; keep PNPM_CONFIG_* for pnpm versions that read them.
     PNPM_CONFIG_IGNORE_SCRIPTS: "true",
     PNPM_CONFIG_IGNORE_PNPMFILE: "true",
     npm_config_ignore_scripts: "true",
+    npm_config_ignore_pnpmfile: "true",
   };
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
   const searchPath = env[pathKey];

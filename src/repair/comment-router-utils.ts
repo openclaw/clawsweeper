@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { rollUpStatusChecks } from "./status-check-rollup.js";
 
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const DEFAULT_IGNORED_CHECKS = [
@@ -82,24 +83,24 @@ export function hasSuccessfulDispatchExecutionJob(jobs: LooseRecord[], requiredJ
 }
 
 export function summarizeChecks(checks: LooseRecord[]) {
-  const ignored = ignoredCheckNames();
-  const latestChecks = latestCheckRuns(checks);
+  const rolledUpChecks = rollUpStatusChecks(
+    checks,
+    process.env.CLAWSWEEPER_COMMENT_ROUTER_IGNORE_CHECKS ?? DEFAULT_IGNORED_CHECKS.join(","),
+  );
   const counts: Record<string, number> = {};
   const blockers: LooseRecord[] = [];
   const pending: LooseRecord[] = [];
   const terminalBlockers: LooseRecord[] = [];
   const externalBlockers: LooseRecord[] = [];
   let gatingTotal = 0;
-  for (const check of latestChecks) {
+  for (const { check, ignored } of rolledUpChecks) {
     const name = String(check.name ?? check.context ?? "unknown check");
-    const workflow = String(check.workflowName ?? "");
-    const ignoredCheck = ignored.has(name.toLowerCase()) || ignored.has(workflow.toLowerCase());
     const status = String(check.status ?? check.state ?? "").toUpperCase();
     const conclusion = String(check.conclusion ?? "").toUpperCase();
     const externalActionRequired = isExternalActionRequiredCheck(check);
     const key = externalActionRequired ? "ACTION_REQUIRED" : conclusion || status || "UNKNOWN";
     counts[key] = (counts[key] ?? 0) + 1;
-    if (ignoredCheck) continue;
+    if (ignored) continue;
     gatingTotal += 1;
     if (externalActionRequired) {
       const blocker = `${name}:ACTION_REQUIRED`;
@@ -126,7 +127,7 @@ export function summarizeChecks(checks: LooseRecord[]) {
     }
   }
   return {
-    total: latestChecks.length,
+    total: rolledUpChecks.length,
     gatingTotal,
     counts,
     blockers,
@@ -142,32 +143,6 @@ function isExternalActionRequiredCheck(check: LooseRecord) {
   );
   if (/^https:\/\/vercel\.com\/git\/authorize\b/i.test(url)) return true;
   return false;
-}
-
-function latestCheckRuns(checks: LooseRecord[]) {
-  const byKey = new Map<string, LooseRecord>();
-  for (const check of checks) {
-    const key = checkIdentity(check);
-    const previous = byKey.get(key);
-    if (!previous || checkTimestamp(check) >= checkTimestamp(previous)) {
-      byKey.set(key, check);
-    }
-  }
-  return [...byKey.values()];
-}
-
-function checkIdentity(check: LooseRecord) {
-  const name = String(check.name ?? check.context ?? "unknown check").toLowerCase();
-  const workflow = String(check.workflowName ?? "").toLowerCase();
-  return `${workflow}\n${name}`;
-}
-
-function checkTimestamp(check: LooseRecord) {
-  for (const field of ["completedAt", "completed_at", "startedAt", "started_at"]) {
-    const parsed = Date.parse(String(check[field] ?? ""));
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return 0;
 }
 
 export function shouldSuppressProcessedCommentVersion(entry: LooseRecord) {
@@ -502,12 +477,6 @@ function commandRoutingTime(command: LooseRecord) {
   if (Number.isFinite(updated)) return updated;
   const created = Date.parse(String(command.comment_created_at ?? ""));
   return Number.isFinite(created) ? created : 0;
-}
-
-function ignoredCheckNames() {
-  return commaSet(
-    process.env.CLAWSWEEPER_COMMENT_ROUTER_IGNORE_CHECKS ?? DEFAULT_IGNORED_CHECKS.join(","),
-  );
 }
 
 export function readLedger(file: JsonValue) {

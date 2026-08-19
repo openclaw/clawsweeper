@@ -152,14 +152,16 @@ export type ActionEventShardImportResult = {
   paths: string[];
 };
 
-export type ExpectedActionEventProducer = {
+type ExpectedActionEventProducerIdentity = {
   repository: string;
   sha: string;
   workflow: string;
   job: string;
   runId: string;
-  runAttempt: number;
 };
+
+export type ExpectedActionEventProducer = ExpectedActionEventProducerIdentity &
+  ({ runAttempt: number; maxRunAttempt?: never } | { runAttempt?: never; maxRunAttempt: number });
 
 type ImportedActionEventShard = {
   relativePath: string;
@@ -995,7 +997,7 @@ export function importActionEventShards(
   } catch (error) {
     if (isNotFoundError(error) && expectedEventPaths === null) return emptyResult();
     if (isNotFoundError(error)) {
-      throw new Error("action event shard manifest source root is missing");
+      throw new Error("action event shard manifest source root is missing", { cause: error });
     }
     throw error;
   }
@@ -1111,6 +1113,17 @@ function validateImportedActionEventProducer(
   shards: readonly ImportedActionEventShard[],
   expected: ExpectedActionEventProducer,
 ): void {
+  if (
+    (expected.runAttempt === undefined) === (expected.maxRunAttempt === undefined) ||
+    (expected.runAttempt !== undefined &&
+      (!Number.isSafeInteger(expected.runAttempt) || expected.runAttempt < 1)) ||
+    (expected.maxRunAttempt !== undefined &&
+      (!Number.isSafeInteger(expected.maxRunAttempt) || expected.maxRunAttempt < 1))
+  ) {
+    throw new Error(
+      "action event shard producer provenance requires one positive run attempt constraint",
+    );
+  }
   for (const shard of shards) {
     const actual = shard.identity;
     const mismatched = (
@@ -1120,12 +1133,21 @@ function validateImportedActionEventProducer(
         ["workflow", actual.workflow, expected.workflow],
         ["job", actual.job, expected.job],
         ["run_id", actual.runId, expected.runId],
-        ["run_attempt", actual.runAttempt, expected.runAttempt],
       ] as const
     ).find(([, value, expectedValue]) => value !== expectedValue);
     if (mismatched) {
       throw new Error(
         `action event shard producer provenance mismatch for ${mismatched[0]}: expected ${mismatched[2]}, got ${mismatched[1]}`,
+      );
+    }
+    if (expected.runAttempt !== undefined && actual.runAttempt !== expected.runAttempt) {
+      throw new Error(
+        `action event shard producer provenance mismatch for run_attempt: expected ${expected.runAttempt}, got ${actual.runAttempt}`,
+      );
+    }
+    if (expected.maxRunAttempt !== undefined && actual.runAttempt > expected.maxRunAttempt) {
+      throw new Error(
+        `action event shard producer provenance mismatch for run_attempt: expected at most ${expected.maxRunAttempt}, got ${actual.runAttempt}`,
       );
     }
   }
@@ -1387,7 +1409,9 @@ function readImportedActionEventShards(
       content = readUtf8FileNoFollow(target, ACTION_EVENT_SHARD_IMPORT_LIMITS.maxFileBytes);
     } catch (error) {
       if (options.requireManifestPaths && isNotFoundError(error)) {
-        throw new Error(`action event shard manifest path is missing: ${relativePath}`);
+        throw new Error(`action event shard manifest path is missing: ${relativePath}`, {
+          cause: error,
+        });
       }
       throw error;
     }

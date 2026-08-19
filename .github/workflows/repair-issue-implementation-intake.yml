@@ -49,12 +49,6 @@ on:
         required: false
         default: blacksmith-16vcpu-ubuntu-2404
         type: string
-      model:
-        description: "Internal Codex model alias"
-        required: false
-        default: internal
-        type: string
-
 permissions:
   contents: write
   actions: read

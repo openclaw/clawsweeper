@@ -3,7 +3,8 @@
 ClawSweeper is the conservative maintenance bot for OpenClaw repositories. This
 guide is for people and coding agents preparing or updating a ClawSweeper pull
 request. It complements the repository's [README](README.md) and
-[AGENTS.md](AGENTS.md); the latter is the binding instruction file for agents.
+[documentation index](docs/README.md). [AGENTS.md](AGENTS.md) is the binding
+instruction file for agents.
 
 ## Before You Start
 
@@ -30,12 +31,22 @@ pnpm run build
 pnpm run check
 ```
 
+Corepack reads the pinned `pnpm@11.10.0` version from `package.json`; do not
+replace it with an unpinned global pnpm command in canonical examples.
+
 Use the narrowest meaningful validation for the changed surface first. For a
 docs-only change, run `git diff --check` and verify the changed links and
 commands. For code, test, workflow, queue, API, UI, package, or integration
 changes, follow `AGENTS.md`: satisfy the real-behavior proof contract and
 mandatory Codex review loop before opening even a draft PR or updating one.
 Only Martin may expressly approve an evidence-in-progress exception.
+
+Documentation-only changes should also classify new pages as active, proposed,
+compatibility-only, or historical. Active runbooks need a role owner, owning
+source, last-verified revision, and concrete update triggers; see the
+[documentation index](docs/README.md#document-lifecycle).
+Run `pnpm run check:docs` while editing documentation; the full `pnpm run check`
+gate runs it again through the static-check path.
 
 ## Create or Update a Pull Request
 

@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-13T05:48:07Z",
+  "provider": "local-container",
+  "lease_id": "cbx_06ffbac51895",
+  "slug": "golden-barnacle-c8f8",
+  "container_runtime": "docker",
+  "image": "node:24-bookworm",
+  "machine_type": "node_24-bookworm",
+  "tested_head": "66cb6daba4b3a55d27c86f99abe9351b5c1ea361",
+  "command": "crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --allow-env GH_TOKEN --timing-json --capture-stdout docs/proof/issue-fixedsha-batch/container-transcript.txt --capture-stderr docs/proof/issue-fixedsha-batch/container-stderr.txt --script docs/proof/issue-fixedsha-batch/run-proof.sh -- 66cb6daba4b3a55d27c86f99abe9351b5c1ea361",
+  "exit_code": 0,
+  "lease_stopped": true,
+  "sync_ms": 1080,
+  "command_ms": 120981,
+  "total_ms": 122093,
+  "node_version": "v24.19.0",
+  "pnpm_version": "11.10.0",
+  "jq_version": "jq-1.6",
+  "gh_version": "gh version 2.23.0 (2023-02-27 Debian 2.23.0+dfsg1-1)",
+  "counting_proof": {
+    "repeats": 4,
+    "cold": 3,
+    "cold_non_merge": 2,
+    "before_commit_pulls": 7,
+    "after_pull_lists": 1,
+    "after_commit_pulls": 2,
+    "repeat_github_calls": 0
+  },
+  "focused_tests": {
+    "total": 34,
+    "passed": 34,
+    "failed": 0
+  },
+  "live_transport": {
+    "read_only": true,
+    "repository": "openclaw/clawsweeper",
+    "issue": 1135,
+    "pull": 1138,
+    "setup_transport_calls": 3,
+    "resolver_transport_routes": ["repository", "pulls_list", "commit_pulls", "commit_pulls"],
+    "before_commit_pulls": 7,
+    "after_pull_lists": 1,
+    "after_commit_pulls": 2,
+    "repeat_github_calls": 0,
+    "result": "PASS"
+  },
+  "full_gate": {
+    "command": "pnpm run check",
+    "exit_code": 0,
+    "tests": 3408,
+    "passed": 3400,
+    "failed": 0,
+    "skipped": 8
+  },
+  "pre_commit_autoreview": {
+    "command": "autoreview --mode local --prompt <pr-a-scope> --stream-engine-output",
+    "exit_code": 0,
+    "accepted_or_actionable_findings": 0,
+    "result": "autoreview clean: no accepted/actionable findings reported"
+  },
+  "fix_round_autoreview": {
+    "command": "autoreview --mode local --prompt <shared-head-fix-scope> --stream-engine-output",
+    "exit_code": 0,
+    "accepted_or_actionable_findings": 0,
+    "result": "autoreview clean: no accepted/actionable findings reported"
+  },
+  "live_transport_autoreview": {
+    "command": "autoreview --mode local --prompt <live-transport-proof-scope> --stream-engine-output",
+    "exit_code": 0,
+    "accepted_or_actionable_findings": 0,
+    "result": "autoreview clean: no accepted/actionable findings reported"
+  },
+  "final_p2_pre_commit_autoreview": {
+    "command": "autoreview --mode local --max-priority P2 --prompt <final-p2-scope> --stream-engine-output",
+    "exit_code": 0,
+    "accepted_or_actionable_findings": 0,
+    "result": "autoreview clean: no accepted/actionable findings reported"
+  },
+  "content_sha256": {
+    "src/clawsweeper-review-command-dependencies.ts": "4fd611f268ae6e0a8478d8f8ee2255b90d558b70332b8a1633fd45a8a33dfb1f",
+    "src/clawsweeper-review-command-workflow.ts": "eb4291c487828ebe210ad5f23599318b66bd40f4a18dcef1b8f502e5d46398cd",
+    "src/clawsweeper-status-context.ts": "843b7a2c3eebee11299164fd368a99133f2af7d40bd23f8ec7e486115dc2d160",
+    "test/fixed-sha-pull-resolution.test.ts": "7462ff4cd158898d778b6fbee29da7b8eef3cef093222c0a185918a7b0dcd83f",
+    "docs/proof/issue-fixedsha-batch/README.md": "95745cb16b4e1494afd3f3aa4090af2cb67fe9641260d0b3e7d8ad90ef4e06c9",
+    "docs/proof/issue-fixedsha-batch/behavior-contract.md": "8b5a142e2e0ea08bbc0fa18d53f09a974db3b896e2e8b7a30a440876e473df37",
+    "docs/proof/issue-fixedsha-batch/run-proof.sh": "d987041b98003e5efb1674b56f41b6d0fbe9377658fc6bdbba9120d32e075cdd",
+    "docs/proof/issue-fixedsha-batch/real-transport-proof.mjs": "f8a2aaf3d9e690c2a218296c382a2562a0e541ce52f157abb4c00ac6379c2c94"
+  },
+  "transcript_sha256": "7be8e3b51b9be990f6e6edcf36329bc75511c1610b7b3969d08326b734d2509a",
+  "stderr_sha256": "f9551d11b5dc2544f7d064e9b578e5a881400fd212183cc5debd526d97cb2a27",
+  "secret_scan": {
+    "tool": "trufflehog 3.96.0",
+    "command": "trufflehog filesystem --no-update --results=verified,unknown --fail --fail-on-scan-errors docs/proof/issue-fixedsha-batch/container-transcript.txt docs/proof/issue-fixedsha-batch/container-stderr.txt",
+    "exit_code": 0,
+    "chunks": 59,
+    "bytes": 764970,
+    "verified_secrets": 0,
+    "unknown_secrets": 0
+  },
+  "cleanup": {
+    "owned_lease_absent_from_local_container_list": true,
+    "unrelated_preexisting_exited_lease_untouched": true,
+    "failed_run_captures_moved_to_macos_trash": true,
+    "credential_task_window_closed": true
+  }
+}

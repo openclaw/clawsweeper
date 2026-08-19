@@ -2,6 +2,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
+import { readRepairLoopComments } from "./comment-router-read-model.js";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import { CLOSE_PROTECTED_LABEL_NAMES } from "./exact-review-guard-labels.js";
 import {
@@ -42,7 +43,6 @@ import {
   buildAutomergeSquashMessage,
   commandHasAction,
   commandResponseMarker,
-  commandStatusMarkerFromBody,
   createCachedIssueCommentsLookup,
   createCachedIssueCommentsLookupAsync,
   createCachedLabelNumberLookup,
@@ -65,7 +65,6 @@ import {
   maintainerAutomergeOptInApprovesNeedsHuman as maintainerAutomergeOptInApprovesNeedsHumanReason,
   latestRepairLoopResumeTime,
   parseRoutedCommentCommand,
-  planCommandAckConvergence,
   pausedModeStatusBlocksReplay,
   parseTrustedAutomation,
   repairableCheckBlockers,
@@ -91,6 +90,11 @@ import {
   trustedCloseBlockReason,
   usesSharedAutomergeStatus,
 } from "./comment-router-core.js";
+import {
+  commandAckMarkerFromBody,
+  commandStatusMarkerFromBody,
+  planCommandAckConvergence,
+} from "./command-ack-convergence.js";
 import { mergeAutomergeTimelineSection } from "./automerge-status-timeline.js";
 import {
   automergeSessionId,
@@ -132,6 +136,7 @@ import {
   ghErrorText,
   ghJsonWithRetry as ghJson,
   ghJsonWithRetryAsync as ghJsonAsync,
+  ghPagedLimitWithRetry as ghPagedLimit,
   ghPagedWithRetry as ghPaged,
   ghPagedWithRetryAsync as ghPagedAsync,
   ghSpawn,
@@ -156,6 +161,8 @@ import {
   decideReviewDispatchCoordination,
   type ReviewDispatchCoordinationDecision,
 } from "./review-dispatch-coordination.js";
+import { directReReviewIntake } from "./direct-re-review-admission.js";
+import { postExactReviewCommandIntakeSync } from "./exact-review-command-queue.js";
 
 const automergeMetricWrites: Promise<boolean>[] = [];
 
@@ -186,6 +193,7 @@ const {
   maxAutoRepairsPerPr,
   lookupConcurrency,
   since,
+  sinceCommentIds,
   itemNumbers,
   commentIds,
   statusCommentId,
@@ -256,6 +264,9 @@ const collaboratorPermissionCache = new Map();
 const activeRepairRunsByPrefix = new Map<string, LooseRecord[]>();
 const liveTargetCache = new Map<number, LooseRecord>();
 const issueCommentsCache = new Map<number, JsonValue[]>();
+const throttledIssueCommentLookups = new Set<number>();
+const throttledCollaboratorLookups = new Set<string>();
+let deferredGitHubThrottle: GitHubRateLimitError | null = null;
 const MAX_MEDIA_PREPROCESSING_TIMEOUT_MS = 480_000;
 const PROOF_OVERRIDE_DESCRIPTION_MARKER = "<!-- clawsweeper-proof-override-note -->";
 const cachedIssueComments = createCachedIssueCommentsLookup(
@@ -271,6 +282,7 @@ const openIssueNumbersByLabel = createCachedLabelNumberLookup((label) =>
     `repos/${targetRepo}/issues?state=open&labels=${encodeURIComponent(label)}&per_page=100`,
   ).map((issue: JsonValue) => issue.number),
 );
+let recentCommentCursorCandidate: LooseRecord | null = null;
 const comments = measure("list_candidate_comments", () =>
   exactCommentVersionFastPath.suppress ? [] : listCandidateComments(),
 );
@@ -333,6 +345,7 @@ const report: LooseRecord = {
   lookup_concurrency: lookupConcurrency,
   commands,
   exact_comment_version_fast_path: exactCommentVersionFastPath,
+  routing_cursor_candidate: recentCommentCursorCandidate,
   short_circuited: exactCommentVersionFastPath.suppress,
 };
 
@@ -432,6 +445,7 @@ if (writeReport) writeReportFile(repoRoot(), report);
 await flushCommandActionEvents();
 await Promise.allSettled(automergeMetricWrites);
 console.log(JSON.stringify(report, null, 2));
+if (deferredGitHubThrottle) throw deferredGitHubThrottle;
 
 function measure<T>(name: string, fn: () => T): T {
   const start = Date.now();
@@ -822,13 +836,27 @@ async function prehydrateCommandLookups(
   );
 
   await Promise.all([
-    mapLimit(logins, lookupConcurrency, (login) => fetchCollaboratorPermissionAsync(login)),
+    mapLimit(logins, lookupConcurrency, async (login) => {
+      try {
+        await fetchCollaboratorPermissionAsync(login);
+      } catch (error) {
+        if (!(error instanceof GitHubRateLimitError)) throw error;
+        deferGitHubThrottle(error);
+        throttledCollaboratorLookups.add(login.toLowerCase());
+      }
+    }),
     mapLimit(issueNumbers, lookupConcurrency, async (number) => {
       liveTargetCache.set(number, await fetchLiveTargetAsync(number));
     }),
     mapLimit(issueNumbers, lookupConcurrency, async (number) => {
       if (options.refreshIssueComments) issueCommentsCache.delete(number);
-      await cachedIssueCommentsAsync(number);
+      try {
+        await cachedIssueCommentsAsync(number);
+      } catch (error) {
+        if (!(error instanceof GitHubRateLimitError)) throw error;
+        deferGitHubThrottle(error);
+        throttledIssueCommentLookups.add(number);
+      }
     }),
   ]);
 }
@@ -839,6 +867,16 @@ function classifyCommand(command: LooseRecord): JsonValue {
   }
   if (command.comment_version_key && supersededReReviewVersions.has(command.comment_version_key)) {
     return { ...command, status: "skipped", reason: SUPERSEDED_RE_REVIEW_REASON };
+  }
+  if (
+    throttledIssueCommentLookups.has(Number(command.issue_number)) ||
+    throttledCollaboratorLookups.has(String(command.author ?? "").toLowerCase())
+  ) {
+    return {
+      ...command,
+      status: "waiting",
+      reason: "GitHub throttled required routing context; the next cycle will retry",
+    };
   }
   let authorization: LooseRecord | null = null;
   if (command.trusted_bot) {
@@ -2427,6 +2465,12 @@ function executeCommandWithReceipt(command: LooseRecord) {
     queueAutomergeProductMetrics(command);
   } catch (error) {
     recordCommandFailure(command, error);
+    if (error instanceof GitHubRateLimitError) {
+      deferGitHubThrottle(error);
+      command.status = "waiting";
+      command.reason = "GitHub throttled command execution; the next cycle will retry";
+      return;
+    }
     throw error;
   }
 }
@@ -3318,9 +3362,8 @@ function trustedAutomationReviewLeaseBlockReason(
 }
 
 function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
-  const requiresCommandStatus = ["re_review", "autofix", "automerge"].includes(
-    String(command.intent ?? ""),
-  );
+  if (command.intent === "re_review") return enqueueClawSweeperReReview(command);
+  const requiresCommandStatus = ["autofix", "automerge"].includes(String(command.intent ?? ""));
   let dispatchKey = dispatchReceiptKey(command);
   const expectedTitle = `Review event item ${command.repo}#${command.issue_number} [${dispatchKey}]`;
   const claimed = claimedDispatchState({
@@ -3445,6 +3488,46 @@ function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
     repo: reviewRepo,
     item_number: command.issue_number,
     dispatch_key: dispatchKey,
+  };
+}
+
+function enqueueClawSweeperReReview(command: LooseRecord): LooseRecord {
+  const dispatchKey = dispatchReceiptKey(command);
+  const itemKind = command.target?.kind === "pull_request" ? "pull_request" : "issue";
+  const intake = directReReviewIntake({
+    targetRepo: command.repo,
+    targetBranch: command.target_branch || "main",
+    itemNumber: Number(command.issue_number),
+    itemKind,
+    installationId: Number(process.env.CLAWSWEEPER_TARGET_INSTALLATION_ID),
+    sourceCommentId: Number(command.comment_id),
+    sourceCommentUpdatedAt: String(command.comment_updated_at || ""),
+    commandBodyDigest: String(command.comment_body_sha256 || ""),
+    commandOrigin: "comment_router",
+    ...(command.status_comment_id ? { statusCommentId: Number(command.status_comment_id) } : {}),
+    additionalPrompt: freeformReviewPrompt(command),
+  });
+  command.command_status_revision = intake.commandVersionId;
+  const secret = process.env.CLAWSWEEPER_WEBHOOK_SECRET || "";
+  if (!secret) throw new Error("internal exact-review queue secret is required");
+  const result = runCommandMutation(command, {
+    kind: "review_queue_admission",
+    identity: intake,
+    operation: () =>
+      postExactReviewCommandIntakeSync({
+        queueUrl: process.env.QUEUE_URL || "https://clawsweeper.openclaw.ai",
+        secret,
+        intake,
+      }),
+  });
+  return {
+    workflow: reviewWorkflow,
+    event: "exact_review_queue",
+    repo: reviewRepo,
+    item_number: command.issue_number,
+    dispatch_key: dispatchKey,
+    command_version_id: intake.commandVersionId,
+    deduped: result.kind === "accepted" && result.deduped,
   };
 }
 
@@ -4465,9 +4548,44 @@ function existingJobPath(clusterId: string, repo: string = targetRepo) {
 }
 
 function listRecentComments() {
-  const list = ghPaged(
-    `repos/${targetRepo}/issues/comments?since=${encodeURIComponent(since)}&per_page=100`,
+  const readLimit = maxComments + sinceCommentIds.size;
+  const list = ghPagedLimit<LooseRecord>(
+    `repos/${targetRepo}/issues/comments?since=${encodeURIComponent(since)}&sort=updated&direction=asc`,
+    readLimit,
+  )
+    .filter(
+      (comment) =>
+        Date.parse(String(comment.updated_at ?? "")) !== Date.parse(since) ||
+        !sinceCommentIds.has(Number(comment.id)),
+    )
+    .slice(0, maxComments);
+  const latestUpdatedAt = list.reduce(
+    (latest, comment) =>
+      Date.parse(String(comment.updated_at ?? "")) > Date.parse(latest)
+        ? String(comment.updated_at)
+        : latest,
+    "1970-01-01T00:00:00.000Z",
   );
+  if (list.length > 0) {
+    recentCommentCursorCandidate = {
+      repo: targetRepo,
+      updated_at: new Date(latestUpdatedAt).toISOString(),
+      comment_ids: list
+        .filter(
+          (comment) =>
+            new Date(String(comment.updated_at ?? "")).toISOString() ===
+            new Date(latestUpdatedAt).toISOString(),
+        )
+        .map((comment) => Number(comment.id))
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    };
+  } else if (sinceCommentIds.size === 0) {
+    recentCommentCursorCandidate = {
+      repo: targetRepo,
+      updated_at: new Date(since).toISOString(),
+      comment_ids: [],
+    };
+  }
   return list;
 }
 
@@ -4505,10 +4623,17 @@ function listRepairLoopReviewComments() {
     ...listOpenIssueNumbersWithLabel(AUTOMERGE_LABEL),
   ]);
   return numbers.flatMap((number) =>
-    ghPaged<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`).filter(
-      isClawSweeperReviewMarkerComment,
-    ),
+    repairLoopIssueComments(number).filter(isClawSweeperReviewMarkerComment),
   );
+}
+
+function repairLoopIssueComments(number: number): JsonValue[] {
+  return readRepairLoopComments({
+    repository: targetRepo,
+    number,
+    liveRead: () =>
+      ghPaged<LooseRecord>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`),
+  });
 }
 
 function listRepairLoopSweepCommands(existingCommands: LooseRecord[]) {
@@ -4601,6 +4726,7 @@ function fetchLiveTarget(command: LooseRecord): LooseRecord {
     const pull = issue.pull_request ? fetchPullRequestView(command.issue_number) : null;
     return { issue, pull };
   } catch (error) {
+    if (error instanceof GitHubRateLimitError) deferGitHubThrottle(error);
     return {
       ...command,
       status: "waiting",
@@ -4615,6 +4741,7 @@ async function fetchLiveTargetAsync(number: number): Promise<LooseRecord> {
     const pull = issue.pull_request ? await fetchPullRequestViewAsync(number) : null;
     return { issue, pull };
   } catch (error) {
+    if (error instanceof GitHubRateLimitError) deferGitHubThrottle(error);
     return {
       issue_number: number,
       status: "waiting",
@@ -5050,10 +5177,6 @@ function commandAckMarkerForCommentId(commentId: JsonValue) {
   return `<!-- clawsweeper-command-ack:${commentId} -->`;
 }
 
-function commandAckMarkerFromBody(body: JsonValue) {
-  return String(body ?? "").match(/<!--\s*clawsweeper-command-ack:\d+\s*-->/)?.[0] ?? null;
-}
-
 function automergeTimelineEvents(command: LooseRecord, body: string) {
   const events: LooseRecord[] = [];
   const head = command.target?.head_sha ?? command.expected_head_sha ?? "unknown";
@@ -5405,6 +5528,10 @@ async function mapLimit<T, R>(
   });
   await Promise.all(workers);
   return results;
+}
+
+function deferGitHubThrottle(error: GitHubRateLimitError) {
+  deferredGitHubThrottle ??= error;
 }
 
 function ledgerPath() {

@@ -2071,7 +2071,7 @@ test("issue implementation workflow lets job intent choose dispatch capacity", (
     workflow.indexOf("\npermissions:"),
   );
 
-  assert.equal(dispatchInputs.match(/^      [a-z_]+:/gm)?.length, 10);
+  assert.equal(dispatchInputs.match(/^      [a-z_]+:/gm)?.length, 9);
   assert.doesNotMatch(workflow, /^\s+intake_runner:/m);
   assert.match(
     workflow,
@@ -2193,10 +2193,11 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.match(eventReviewBlock, /github\.event\.client_payload\.queue_lease_id != ''/);
   assert.match(legacyIntakeBlock, /Queue legacy exact-review event/);
   assert.match(legacyIntakeBlock, /\/internal\/exact-review\/enqueue/);
+  assert.match(legacyIntakeBlock, /\/internal\/exact-review\/branch-authority/);
   assert.match(legacyIntakeBlock, /x-clawsweeper-exact-review-signature/);
   assert.match(legacyIntakeBlock, /CLAWSWEEPER_WEBHOOK_SECRET/);
-  assert.match(legacyIntakeBlock, /gh api "repos\/\$target_repo" --jq \.default_branch/);
-  assert.match(legacyIntakeBlock, /targetBranch: process\.env\.TARGET_BRANCH/);
+  assert.doesNotMatch(legacyIntakeBlock, /gh api "repos\/\$target_repo" --jq \.default_branch/);
+  assert.match(legacyIntakeBlock, /targetBranch \? \{ targetBranch \} : \{\}/);
   assert.doesNotMatch(legacyIntakeBlock, /targetBranch: payload\.target_branch \|\| "main"/);
   assert.match(legacyIntakeBlock, /payload\.source_event === "pull_request_target"/);
   assert.match(legacyIntakeBlock, /payload\.ingress_route === "target_dispatcher"/);
@@ -2345,6 +2346,13 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
   assert.doesNotMatch(localCheck, /gpt-5\.5/);
   assert.match(action, /env -u OPENAI_API_KEY[\s\S]*-u CLAWSWEEPER_INTERNAL_MODEL/);
   assert.equal(action.match(/--ignore-scripts/g)?.length, 2);
+  assert.match(action, /runner\.os == 'Linux' && runner\.environment == 'github-hosted'/);
+  assert.match(action, /kernel\.unprivileged_userns_clone=1/);
+  assert.match(action, /kernel\.apparmor_restrict_unprivileged_userns=0/);
+  assert.match(
+    action,
+    /codex sandbox --permission-profile :read-only -C "\$GITHUB_WORKSPACE" -- \/bin\/true/,
+  );
   for (const workflow of workflows) {
     assert.match(workflow, /CLAWSWEEPER_MODEL: internal/);
     assert.match(workflow, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
@@ -3243,6 +3251,10 @@ test("GitHub retry classifier distinguishes throttle and transient failures", ()
   assert.equal(ghRetryKind(throttled), "throttle");
   assert.equal(shouldRetryGh(throttled), true);
   assert.equal(ghRetryKind(new Error("gh: HTTP 429: Too Many Requests")), "throttle");
+  assert.equal(
+    ghRetryKind(new Error("You have triggered an abuse detection mechanism")),
+    "throttle",
+  );
   assert.equal(ghRetryWaitMs("throttle", 0), 30_000);
   assert.equal(ghRetryWaitMs("throttle", 3), 60_000);
   assert.equal(ghRetryWaitMs("transient", 0), 2_000);
@@ -3314,17 +3326,36 @@ test("GitHub rate-limit deferrals preserve available reset hints and safe defaul
     now,
   );
   assert.equal(retryAfter.retryAt, "2026-08-05T10:02:00.000Z");
+  assert.equal(retryAfter.provenance, "retry_after");
+  assert.equal(retryAfter.authoritative, true);
+
+  const secondaryWithBothHints = new GitHubRateLimitError(
+    new Error(
+      `HTTP 403: secondary rate limit\nRetry-After: 30\nx-ratelimit-reset: ${now / 1_000 + 300}`,
+    ),
+    now,
+  );
+  assert.equal(secondaryWithBothHints.retryAt, "2026-08-05T10:01:00.000Z");
+  assert.equal(secondaryWithBothHints.provenance, "retry_after");
 
   const reset = new GitHubRateLimitError(
     new Error(`HTTP 403: API rate limit exceeded\nx-ratelimit-reset: ${now / 1_000 + 300}`),
     now,
   );
   assert.equal(reset.retryAt, "2026-08-05T10:05:00.000Z");
+  assert.equal(reset.provenance, "rate_limit_reset");
   assert.equal(new GitHubRateLimitError(reset, now + 1_000).retryAt, reset.retryAt);
-  assert.equal(
-    new GitHubRateLimitError(new Error("HTTP 429: rate limit reached"), now).retryAt,
-    "2026-08-05T10:01:00.000Z",
-  );
+  const fallback = new GitHubRateLimitError(new Error("HTTP 429: rate limit reached"), now);
+  const wrappedFallback = new GitHubRateLimitError(fallback, now + 1_000);
+  assert.equal(fallback.authoritative, false);
+  assert.equal(wrappedFallback.retryAt, fallback.retryAt);
+  assert.equal(wrappedFallback.provenance, "fallback");
+  assert.equal(wrappedFallback.authoritative, false);
+  assert.equal(fallback.retryAt, "2026-08-05T10:01:00.000Z");
+  const wrappedExpiredFallback = new GitHubRateLimitError(fallback, now + 61_000);
+  assert.equal(wrappedExpiredFallback.retryAt, "2026-08-05T10:02:01.000Z");
+  assert.equal(wrappedExpiredFallback.provenance, "fallback");
+  assert.equal(wrappedExpiredFallback.authoritative, false);
 });
 
 test("closing pull request references preserve fork repository identity", () => {

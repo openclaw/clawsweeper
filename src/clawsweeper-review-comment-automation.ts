@@ -88,7 +88,9 @@ export function createReviewCommentAutomation(
       return markers.join("\n");
     };
 
-    if (maintainerDecisionFromReport(markdown)?.required) {
+    try {
+      if (maintainerDecisionFromReport(markdown)?.required) return humanReviewMarkers();
+    } catch {
       return humanReviewMarkers();
     }
     if (frontMatterValue(markdown, "review_status") === "failed") {

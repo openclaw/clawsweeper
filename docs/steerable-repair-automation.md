@@ -1,5 +1,13 @@
 # Steerable Repair Automation
 
+- Status: active end-to-end architecture reference; not a routine runbook
+- Owner: ClawSweeper maintainers
+- Source of truth: repair source/workflows, CrabFleet integration, dashboard
+  telemetry, and controlled behavior proof
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
+- Update when: session lifecycle, steering, runner/auth boundary, capacity,
+  proof, dashboard, or recovery protocol changes
+
 Read this guide to understand how ClawSweeper turns GitHub work into bounded,
 observable, steerable Codex sessions. It covers issue-to-PR work, PR repair,
 GitCrawl cluster intake, GitHub App authentication, durable session resumption,

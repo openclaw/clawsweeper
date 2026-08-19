@@ -19,7 +19,11 @@ import type {
   WorkCandidateKind,
 } from "./clawsweeper-types.js";
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
-import { emptyMaintainerDecision, maintainerDecisionFromReport } from "./decision-packets.js";
+import {
+  emptyMaintainerDecision,
+  maintainerDecisionFromReport,
+  type MaintainerDecision,
+} from "./decision-packets.js";
 import type { CreateReportOrchestrationDependencies } from "./clawsweeper-report-orchestration-dependencies.js";
 import type { createReportOrchestrationFoundation } from "./clawsweeper-orchestration-foundation.js";
 import type { createReportRendering } from "./clawsweeper-report-rendering.js";
@@ -57,6 +61,7 @@ export function createPullRequestPromotionFacts(
     reportFeatureShowcase,
     reportFileName,
     reportLikelyOwners,
+    reportLiveProofPlan,
     reportMantisRecommendation,
     reportOverallConfidenceScore,
     reportOverallCorrectness,
@@ -97,7 +102,7 @@ export function createPullRequestPromotionFacts(
       likelyOwners: reportLikelyOwners(markdown),
       risks: [],
       bestSolution: reviewSectionValue(markdown, "bestSolution"),
-      maintainerDecision: maintainerDecisionFromReport(markdown) ?? emptyMaintainerDecision(),
+      maintainerDecision: ambiguityGuardedMaintainerDecision(markdown),
       triagePriority,
       impactLabels,
       mergeRiskLabels,
@@ -130,6 +135,7 @@ export function createPullRequestPromotionFacts(
       realBehaviorProof: reportRealBehaviorProof(markdown),
       prRating: reportPrRating(markdown),
       telegramVisibleProof: reportTelegramVisibleProof(markdown),
+      liveProofPlan: reportLiveProofPlan(markdown),
       mantisRecommendation: reportMantisRecommendation(markdown),
       featureShowcase: reportFeatureShowcase(markdown),
       overallCorrectness: reportOverallCorrectness(markdown),
@@ -630,4 +636,22 @@ export function createPullRequestPromotionFacts(
     proofPassedInLabels,
     unsafeCanonicalPullRequestReason,
   };
+}
+
+// Ambiguous (possibly spoofed) front matter must demote the item to human
+// review, not crash the promotion batch: close-decision gating blocks any
+// close while maintainerDecision.required is true.
+export function ambiguityGuardedMaintainerDecision(markdown: string): MaintainerDecision {
+  try {
+    return maintainerDecisionFromReport(markdown) ?? emptyMaintainerDecision();
+  } catch {
+    return {
+      required: true,
+      kind: "manual_review",
+      question: "Report front matter is ambiguous or possibly spoofed; review manually.",
+      rationale: "Duplicate front-matter metadata detected outside the leading block.",
+      options: [],
+      likelyOwner: { person: "", reason: "", confidence: "low" },
+    };
+  }
 }

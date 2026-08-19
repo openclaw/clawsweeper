@@ -122,7 +122,9 @@ export async function postDirectPublicationResult(options: {
       ) {
         return { kind: "accepted", attempts: attempt, response: payload };
       }
-      lastReason = String(payload.error || `http_${response.status}`);
+      const reason = String(payload.error || `http_${response.status}`);
+      const detail = typeof payload.detail === "string" ? payload.detail.trim() : "";
+      lastReason = detail ? `${reason}: ${detail}` : reason;
       if (
         response.status === 413 ||
         (response.status >= 400 && response.status < 500 && response.status !== 429)

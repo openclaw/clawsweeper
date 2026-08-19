@@ -1,0 +1,43 @@
+{
+  "schema": "clawsweeper-crabbox-proof-provenance/v1",
+  "claim": "docs/proof/dead-review-telemetry/run-proof.sh passes against the reviewed PR head inside a Docker-backed Crabbox local-container.",
+  "crabbox": {
+    "cli_version": "0.39.0",
+    "provider": "local-container",
+    "lease_id": "cbx_7e5d92b51d8b",
+    "slug": "quick-crayfish",
+    "machine_type": "node_24-bookworm",
+    "image": "node:24-bookworm",
+    "container_engine": "Docker 29.4.0 (OrbStack)",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1090 (clean remote checkout, --no-hydrate)",
+    "workdir": "/work/crabbox/cbx_7e5d92b51d8b/fresh-pr-openclaw-clawsweeper-1090",
+    "sync_ms": 10891,
+    "command_ms": 10872,
+    "total_ms": 21763,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0"
+  },
+  "reviewed_head": "087100c3ab9343563c42ac57243cde03ad1733a5",
+  "result": {
+    "proof_rc": 0
+  },
+  "observations": [
+    "legacy schema before upgrade: table plus three indexes present",
+    "upgrade queue request: HTTP 200; schema errors: none",
+    "legacy schema after upgrade: exact_review_review_telemetry table and indexes absent",
+    "/api/status: HTTP 200; exact_review_queue.review_telemetry_health absent",
+    "/api/health: HTTP 200; ok true",
+    "POST /internal/exact-review/review-run-telemetry: HTTP 200",
+    "/api/review-observability: HTTP 200; lanes exact_event,hot_intake,normal_backfill,recovery; normal_backfill run_count 1; item_count 3; last_run_at 2026-08-10T05:52:02.177Z",
+    "POST /internal/exact-review/review-telemetry: HTTP 404",
+    "GET /api/exact-review-queue/reviews: HTTP 404",
+    "run-level storage after upgrade: exact_review_run_telemetry present; posted run_id 1786341112221519968 present in inspected queue database"
+  ],
+  "determinism_note": "Earlier revisions of this proof passed on macOS and failed in this container. Root cause: stop_worker killed only the Wrangler parent, leaving the child workerd alive, so the restart was a no-op and the Durable Object was never re-initialized. The proof now terminates the full process tree, waits for /api/health to stop answering, and asserts the posted run_id is present in the inspected queue database before checking the retired schema.",
+  "posted_run_id": "1786341112221519968"
+}

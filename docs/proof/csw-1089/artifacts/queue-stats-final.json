@@ -1,0 +1,572 @@
+{
+  "generated_at": "2026-08-10T01:26:04.408Z",
+  "pending": 0,
+  "ready_pending": 0,
+  "admissible_pending": 0,
+  "shed_since_reset": 0,
+  "dispatching": 0,
+  "leased": 0,
+  "oldest_pending_at": null,
+  "oldest_pending_age_seconds": null,
+  "oldest_pending_key": null,
+  "oldest_dispatching_at": null,
+  "oldest_dispatching_age_seconds": null,
+  "oldest_leased_at": null,
+  "oldest_leased_age_seconds": null,
+  "handoff_health": {
+    "status": "idle",
+    "reason": "queue_empty",
+    "message": "No exact-review work is queued or active.",
+    "observed_at": "2026-08-10T01:26:04.408Z",
+    "warning_after_seconds": 120,
+    "stalled_after_seconds": 240,
+    "capacity": 128,
+    "active": 0,
+    "available_slots": 128,
+    "pending_depth": 0,
+    "shed_since_reset": 0,
+    "phases": {
+      "pending": {
+        "count": 0,
+        "oldest_at": null,
+        "oldest_age_seconds": null,
+        "oldest_key": null
+      },
+      "dispatching": {
+        "count": 0,
+        "oldest_at": null,
+        "oldest_age_seconds": null,
+        "oldest_key": null
+      },
+      "leased": {
+        "count": 0,
+        "oldest_at": null,
+        "oldest_age_seconds": null,
+        "oldest_key": null
+      }
+    }
+  },
+  "lanes": {
+    "review": {
+      "pending": 0,
+      "pending_depth": 0,
+      "shed_since_reset": 0,
+      "ready": 0,
+      "backoff": 0,
+      "backoff_reasons": {},
+      "dispatching": 0,
+      "leased": 0,
+      "parked": 0,
+      "parked_reasons": {},
+      "capacity": 128,
+      "active": 0,
+      "available_slots": 128,
+      "oldest_pending_at": null,
+      "oldest_pending_age_seconds": null,
+      "oldest_pending_key": null,
+      "oldest_ready_at": null,
+      "oldest_ready_age_seconds": null,
+      "oldest_backoff_at": null,
+      "oldest_backoff_age_seconds": null,
+      "next_attempt_at": null,
+      "enqueued_total": 0,
+      "completed_total": 0,
+      "superseded_total": 0,
+      "semantic_deduped_total": 0,
+      "shed_reasons_since_reset": {
+        "backpressure": 0,
+        "scheduled_rate": 0,
+        "unattributed": 0
+      },
+      "flow": {
+        "last_15_minutes": {
+          "window_minutes": 15,
+          "arrival": 0,
+          "successful": 0,
+          "retried": 0,
+          "shed": 0,
+          "shed_reasons": {
+            "backpressure": 0,
+            "scheduled_rate": 0
+          },
+          "arrival_rate_per_hour": 0,
+          "successful_rate_per_hour": 0,
+          "retried_rate_per_hour": 0,
+          "shed_rate_per_hour": 0,
+          "retry_amplification": null
+        }
+      }
+    },
+    "publication": {
+      "pending": 2,
+      "pending_depth": 2,
+      "shed_since_reset": 0,
+      "ready": 0,
+      "backoff": 2,
+      "backoff_reasons": {
+        "publication_retry": 2
+      },
+      "dispatching": 0,
+      "leased": 0,
+      "parked": 0,
+      "parked_reasons": {},
+      "capacity": 50,
+      "active": 0,
+      "available_slots": 50,
+      "oldest_pending_at": "2026-08-10T01:26:04.347Z",
+      "oldest_pending_age_seconds": 0,
+      "oldest_pending_key": "openclaw/openclaw#108901@publish:1089010:1",
+      "oldest_ready_at": null,
+      "oldest_ready_age_seconds": null,
+      "oldest_backoff_at": "2026-08-10T01:26:04.347Z",
+      "oldest_backoff_age_seconds": 0,
+      "next_attempt_at": "2026-08-10T01:27:09.176Z",
+      "enqueued_total": 2,
+      "completed_total": 0,
+      "published_total": 0,
+      "superseded_total": 0,
+      "semantic_deduped_total": 0,
+      "retried_total": 2,
+      "dead_lettered_total": 0,
+      "refreshed_total": 0,
+      "flow": {
+        "last_15_minutes": {
+          "window_minutes": 15,
+          "enqueued": 2,
+          "resolved": 0,
+          "published": 0,
+          "superseded": 0,
+          "semantic_deduped": 0,
+          "retried": 2,
+          "dead_lettered": 0,
+          "arrival_rate_per_hour": 8,
+          "resolved_rate_per_hour": 0,
+          "published_rate_per_hour": 0,
+          "superseded_rate_per_hour": 0,
+          "semantic_deduped_rate_per_hour": 0,
+          "retried_rate_per_hour": 8,
+          "dead_lettered_rate_per_hour": 0,
+          "net_drain_rate_per_hour": -8,
+          "retry_amplification": null
+        },
+        "last_60_minutes": {
+          "window_minutes": 60,
+          "enqueued": 2,
+          "resolved": 0,
+          "published": 0,
+          "superseded": 0,
+          "semantic_deduped": 0,
+          "retried": 2,
+          "dead_lettered": 0,
+          "arrival_rate_per_hour": 2,
+          "resolved_rate_per_hour": 0,
+          "published_rate_per_hour": 0,
+          "superseded_rate_per_hour": 0,
+          "semantic_deduped_rate_per_hour": 0,
+          "retried_rate_per_hour": 2,
+          "dead_lettered_rate_per_hour": 0,
+          "net_drain_rate_per_hour": -2,
+          "retry_amplification": null
+        }
+      },
+      "dead_letters": {
+        "open": 0,
+        "limit": 5000,
+        "oldest_failed_at": null,
+        "reasons": {}
+      },
+      "health": {
+        "status": "healthy",
+        "reason": null
+      },
+      "capacity_control": {
+        "mode": "adaptive",
+        "minimum": 50,
+        "base": 50,
+        "maximum": 50,
+        "ceiling": 50,
+        "demand_capacity": 50,
+        "demand_samples": 1,
+        "demand_tier": 0,
+        "last_scale_at": null,
+        "cooldown_until": null,
+        "recovery_successes": 0,
+        "last_failure_at": null,
+        "last_failure_kind": null
+      },
+      "batches": {
+        "enabled": true,
+        "max_items": 8,
+        "max_concurrent": 8,
+        "max_wait_seconds": 60,
+        "fresh_lane": {
+          "enabled": true,
+          "reserved_items": 2,
+          "max_age_seconds": 900,
+          "ready_items": 0,
+          "historical_ready_items": 0
+        },
+        "last_dispatch_at": null,
+        "last_dispatch_succeeded": null,
+        "dispatch_pending_until": null,
+        "leased": 0,
+        "completed": 2,
+        "expired": 0,
+        "active_items": 0,
+        "oldest_active_at": null,
+        "oldest_active_age_seconds": null,
+        "reclaimed_items_retained": 2,
+        "cleanup": {
+          "deleted_this_pass": 0,
+          "eligible_remaining": 0,
+          "limit": 100
+        }
+      },
+      "direct": {
+        "enabled": true,
+        "health": {
+          "status": "healthy",
+          "store": "durable_object_sqlite"
+        },
+        "pending": 0,
+        "retryable": 0,
+        "failed": 0,
+        "retained_receipts": 0,
+        "oldest_pending_at": null
+      }
+    }
+  },
+  "pressure": {
+    "status": "idle",
+    "reason": "no_ready_backlog",
+    "capacity": 128,
+    "active": 0,
+    "pending": 0,
+    "ready_pending": 0,
+    "admissible_pending": 0
+  },
+  "bay_projection": {
+    "sample_limit": 24,
+    "total": 2,
+    "stages": {
+      "arriving": 0,
+      "setting-up": 0,
+      "reviewing": 0,
+      "publishing": 2,
+      "applying": 0,
+      "repairing": 0
+    },
+    "items": [
+      {
+        "item_key": "openclaw/openclaw#108901",
+        "repository": "openclaw/openclaw",
+        "item_number": 108901,
+        "stage": "publishing",
+        "queue_state": "pending",
+        "created_at": "2026-08-10T01:26:04.347Z",
+        "updated_at": "2026-08-10T01:26:04.376Z",
+        "next_attempt_at": "2026-08-10T01:27:09.176Z"
+      },
+      {
+        "item_key": "openclaw/openclaw#108904",
+        "repository": "openclaw/openclaw",
+        "item_number": 108904,
+        "stage": "publishing",
+        "queue_state": "pending",
+        "created_at": "2026-08-10T01:26:04.386Z",
+        "updated_at": "2026-08-10T01:26:04.400Z",
+        "next_attempt_at": "2026-08-10T01:27:15.800Z"
+      }
+    ]
+  },
+  "next_wake_at": null,
+  "dispatcher": {
+    "state": "unknown",
+    "reason": null,
+    "workflow_state": null,
+    "checked_at": null,
+    "retry_at": null,
+    "dispatch_failure_status": null,
+    "dispatch_failure_class": null,
+    "dispatch_failure_at": null,
+    "dispatch_failure_fingerprint": null,
+    "dispatch_failure_detail": null,
+    "dispatch_consecutive_failures": 0
+  },
+  "target_stats": [
+    {
+      "target_repo": "openclaw/openclaw",
+      "pending": 2,
+      "dispatching": 0,
+      "leased": 0,
+      "oldest_pending_at": "2026-08-10T01:26:04.347Z"
+    }
+  ],
+  "delivery_receipts": 2,
+  "scheduled_feed": {
+    "target_rate_per_hour": 300,
+    "burst": 30,
+    "token_balance": 30,
+    "lanes": {
+      "hot_intake": {
+        "target_rate_per_hour": 105,
+        "burst": 10,
+        "token_balance": 10
+      },
+      "normal_backfill": {
+        "target_rate_per_hour": 195,
+        "burst": 20,
+        "token_balance": 20
+      }
+    }
+  },
+  "review_telemetry_health": {
+    "status": "healthy",
+    "refreshing": 0,
+    "slow_refreshing": 0,
+    "orphan_refreshing": 0,
+    "degraded_after_seconds": 1800,
+    "orphan_after_seconds": 9000,
+    "orphans": []
+  },
+  "reservation_claim_observability": {
+    "schema_version": 1,
+    "generated_at": "2026-08-10T01:26:04.408Z",
+    "publication_paths": {
+      "cloudflare_canonical_direct": {
+        "enabled": true,
+        "reservation_to_claim": "not_applicable",
+        "state_writer_timing": "not_applicable"
+      },
+      "legacy_state_repo_batch": {
+        "enabled": true,
+        "reservation_to_claim": "tracked",
+        "state_writer_timing": "tracked"
+      }
+    },
+    "queue_slots": {
+      "pending": 2,
+      "unassigned_pending": 2,
+      "active_items": 0,
+      "active_batches": 0,
+      "max_concurrent_batches": 8,
+      "available_batches": 8
+    },
+    "delay_buckets": {
+      "metric": "reservation_to_claim_ms",
+      "buckets": [
+        {
+          "id": "under_1m",
+          "count": 0
+        },
+        {
+          "id": "1m_to_5m",
+          "count": 0
+        },
+        {
+          "id": "5m_to_10m",
+          "count": 0
+        },
+        {
+          "id": "over_10m",
+          "count": 0
+        }
+      ]
+    },
+    "alerts": [],
+    "batches": [
+      {
+        "batch_id": "csw-1089-unknown-attempt-1",
+        "publication_path": "legacy_state_repo_batch",
+        "state": "completed",
+        "configured_batch_size": 1,
+        "claimed_at": "2026-08-10T01:26:04.392Z",
+        "batch_age_seconds": 0,
+        "dispatch": {
+          "id": null,
+          "at": null
+        },
+        "workflow": {
+          "run_id": null,
+          "run_attempt": null,
+          "runner_started_at": null
+        },
+        "timeline": {
+          "preparation_started_at": null,
+          "preparation_finished_at": null,
+          "state_writer_wait_at": null,
+          "state_writer_committed_at": null,
+          "final_github_apply_at": null,
+          "github_throttle_at": null
+        },
+        "items": [
+          {
+            "item_key": "openclaw/openclaw#108904@publish:1089040:1",
+            "revision": 1,
+            "claim_generation": 1,
+            "producer_run_id": "1089040",
+            "producer_run_attempt": 1,
+            "enqueued_at": "2026-08-10T01:26:04.386Z",
+            "reservation_to_claim_ms": null,
+            "enqueue_to_claim_ms": 6,
+            "terminal_outcome": "lease_expired"
+          }
+        ]
+      },
+      {
+        "batch_id": "csw-1089-429",
+        "publication_path": "legacy_state_repo_batch",
+        "state": "completed",
+        "configured_batch_size": 1,
+        "claimed_at": "2026-08-10T01:26:04.364Z",
+        "batch_age_seconds": 0,
+        "dispatch": {
+          "id": null,
+          "at": null
+        },
+        "workflow": {
+          "run_id": null,
+          "run_attempt": null,
+          "runner_started_at": null
+        },
+        "timeline": {
+          "preparation_started_at": null,
+          "preparation_finished_at": null,
+          "state_writer_wait_at": null,
+          "state_writer_committed_at": null,
+          "final_github_apply_at": null,
+          "github_throttle_at": null
+        },
+        "items": [
+          {
+            "item_key": "openclaw/openclaw#108901@publish:1089010:1",
+            "revision": 1,
+            "claim_generation": 1,
+            "producer_run_id": "1089010",
+            "producer_run_attempt": 1,
+            "enqueued_at": "2026-08-10T01:26:04.347Z",
+            "reservation_to_claim_ms": null,
+            "enqueue_to_claim_ms": 17,
+            "terminal_outcome": "lease_expired"
+          }
+        ]
+      }
+    ]
+  },
+  "state_writer": {
+    "schema_version": 1,
+    "collection": {
+      "status": "fresh",
+      "last_observed_at": "2026-08-10T01:26:04.376Z",
+      "rejected_total": 0,
+      "conflicted_total": 0
+    },
+    "mode": "batch",
+    "live": {
+      "tracked_holding": 0,
+      "tracked_waiting": 0,
+      "tracked_releasing": 0,
+      "freshness_seconds": null
+    },
+    "last_15_minutes": {
+      "operations": 1,
+      "acquired": 0,
+      "contention_timeouts": 0,
+      "state_commits": 0,
+      "materialized_items": 0,
+      "items_per_commit": null,
+      "wait_ms": {
+        "p50": 0,
+        "p95": 0,
+        "samples": 1
+      },
+      "hold_ms": {
+        "p50": null,
+        "p95": null,
+        "samples": 0
+      },
+      "git_duration_ms": {
+        "p50": 15022,
+        "p95": 15022,
+        "samples": 1
+      },
+      "actual_batch_size": {
+        "average": 1,
+        "p50": 1,
+        "p95": 1,
+        "samples": 1
+      },
+      "batch_wait_ms": {
+        "p50": 0,
+        "p95": 0,
+        "samples": 1
+      },
+      "batch_fullness": 1
+    },
+    "last_60_minutes": {
+      "operations": 1,
+      "acquired": 0,
+      "contention_timeouts": 0,
+      "state_commits": 0,
+      "materialized_items": 0,
+      "items_per_commit": null,
+      "wait_ms": {
+        "p50": 0,
+        "p95": 0,
+        "samples": 1
+      },
+      "hold_ms": {
+        "p50": null,
+        "p95": null,
+        "samples": 0
+      },
+      "git_duration_ms": {
+        "p50": 15022,
+        "p95": 15022,
+        "samples": 1
+      },
+      "actual_batch_size": {
+        "average": 1,
+        "p50": 1,
+        "p95": 1,
+        "samples": 1
+      },
+      "batch_wait_ms": {
+        "p50": 0,
+        "p95": 0,
+        "samples": 1
+      },
+      "batch_fullness": 1
+    },
+    "last_successful_materialization_at": null,
+    "diagnostics": {
+      "accepted_terminal_total": 1,
+      "duplicate_terminal_total": 0,
+      "rejected_terminal_total": 0,
+      "conflicted_terminal_total": 0,
+      "accepted_progress_total": 0,
+      "rejected_progress_total": 0,
+      "state_commits_total": 0,
+      "materialized_items_total": 0,
+      "contention_timeouts_total": 0
+    },
+    "coordinator": {
+      "queued": 0,
+      "leased": 0,
+      "queued_batch": 0,
+      "queued_intake": 0,
+      "queued_ordinary": 0,
+      "admitted": 0,
+      "completed": 0,
+      "expired": 0,
+      "recovered": 0,
+      "last_wait_ms": 0,
+      "max_wait_ms": 0,
+      "consecutive_batch_turns": 0,
+      "consecutive_intake_turns": 0,
+      "active": null
+    }
+  },
+  "storage_schema_version": 1,
+  "legacy_rollback_available": true
+}

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTION_EVENT_REASON_CODES, ACTION_EVENT_STATUSES } from "./action-ledger.js";
 import type { Args } from "./clawsweeper-args.js";
@@ -42,6 +42,45 @@ import {
 import { reviewContentCacheHit } from "./scheduler-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
+import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
+
+function reviewStartLeaseCommentUpdatedAt(
+  comment: Record<string, unknown> | undefined,
+): string | undefined {
+  for (const key of ["updated_at", "created_at"]) {
+    const value = comment?.[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
+}
+
+export function withRunnerPreflightProvenance(
+  markdown: string,
+  replaceFrontMatterValue: (markdown: string, key: string, value: string) => string,
+): string {
+  let promoted = replaceFrontMatterValue(markdown, "local_checkout_access", "verified");
+  promoted = replaceFrontMatterValue(
+    promoted,
+    "local_checkout_access_source",
+    "runner_preflight_v1",
+  );
+  return promoted;
+}
+
+export function localExactBootstrapReviewCommentBody(
+  markdown: string,
+  item: Pick<Item, "repo" | "number">,
+  frontMatterValue: (markdown: string, key: string) => string | undefined,
+  renderReviewCommentFromReport: (markdown: string, reason: "none") => string,
+): string {
+  if (
+    frontMatterValue(markdown, "repository")?.toLowerCase() !== item.repo.toLowerCase() ||
+    frontMatterValue(markdown, "number") !== String(item.number)
+  ) {
+    return "";
+  }
+  return renderReviewCommentFromReport(markdown, "none");
+}
 
 export function restoreVerifiedMaintainerPullRequestAuthorAssociation(
   item: Pick<Item, "kind" | "author" | "authorAssociation" | "labels">,
@@ -89,7 +128,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     displayDurationMs,
     displayPath,
     enforceExpectedIssueSourceRevision,
+    ensureDir,
     exactLocalReviewNoCandidateError,
+    extractClawSweeperReviewCommentBody,
     existingReview,
     extractLatestClawSweeperReview,
     fetchIssueReviewComments,
@@ -105,7 +146,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     itemContentDigest,
     itemSnapshotHash,
     liveClawSweeperReviewDigest,
+    localExactReviewHistoryPath,
+    localRangeHistoryApplies,
     makeTreeReadOnly,
+    materializePullRequestReviewTree,
     markdownFor,
     postReviewStartStatusComment,
     previousClawSweeperReviewDigestFromReport,
@@ -113,8 +157,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     pullHeadShaFromContext,
     pullRequestHeadSha,
     recordReviewLogPublication,
+    removePullRequestReviewTree,
     refreshRelatedItemsContext,
     replaceFrontMatterValue,
+    renderReviewCommentFromReport,
     reportFileName,
     reportReviewFindings,
     restoreTreeModes,
@@ -122,6 +168,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     reviewLeaseStillMatchesContext,
     reviewMutationRunner,
     reviewStructuralPullStateFromContext,
+    runReviewCheckoutInspection,
     runCodex,
     selectCandidates,
     startReviewActionLedger,
@@ -139,6 +186,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       localOnly,
       itemNumber,
       itemNumbers,
+      prCommentActivityRevisions,
       humanLocalReview,
       openclawDir,
       artifactDir,
@@ -153,6 +201,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       expectedSourceRevision,
       allowClosed,
       localRangeData,
+      localReviewHistoryPath,
       coordinationHeldPath,
       shardIndex,
       shardCount,
@@ -178,6 +227,44 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       // command creates itself must still be deleted, even for a read-only checkout.
       isSuppliedReviewStartLease(suppliedReviewLease, lease) ||
       deleteOwnedDedicatedReviewStartLease(itemNumber, lease);
+    const claimSuppliedReviewLease = (
+      itemNumber: number,
+      currentRevision: string,
+    ):
+      | { status: "claimed"; lease: AcquiredReviewStartLease }
+      | { status: "stale" }
+      | { status: "held"; retryAt: string } => {
+      if (!suppliedReviewLease) return { status: "stale" };
+      const freshLeases = freshDedicatedReviewStartLeases({
+        comments: issueReviewCommentState(itemNumber).leaseComments,
+        itemNumber,
+        headSha: currentRevision,
+        nowMs: Date.now(),
+      });
+      const winner = freshLeases[0];
+      const supplied = freshLeases.find(
+        (lease) =>
+          commentId(lease.comment) === suppliedReviewLease.commentId &&
+          lease.owner === suppliedReviewLease.owner,
+      );
+      if (!supplied || !winner) return { status: "stale" };
+      if (
+        commentId(winner.comment) !== suppliedReviewLease.commentId ||
+        winner.owner !== suppliedReviewLease.owner
+      ) {
+        return { status: "held", retryAt: winner.expiresAt };
+      }
+      return {
+        status: "claimed",
+        lease: {
+          owner: suppliedReviewLease.owner,
+          commentId: suppliedReviewLease.commentId,
+          headSha: currentRevision,
+          comment: supplied.comment,
+        },
+      };
+    };
+    const structuralCacheCoordinationEnabled = !skipStartComment || suppliedReviewLease !== null;
     let reviewLedger: ReviewActionLedger | null = null;
     let activeReviewItem: Item | null = null;
     let completed = 0;
@@ -263,8 +350,71 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const semanticCacheRevalidationReasons = new Map<string, number>();
       const codexFailureReports: string[] = [];
       const leaseAcquisitionFailureDetails: string[] = [];
+      const reviewTreeCleanupFailures: string[] = [];
       // oxfmt-ignore
       for (const item of candidates) {
+        const itemReadonlyModeSnapshots: ReturnType<typeof makeTreeReadOnly> = [];
+        let reviewOpenclawDir = openclawDir;
+        let pullRequestReviewTreeDir: string | null = null;
+        let pullRequestReviewTreeSha: string | null = null;
+        let pullRequestReviewTreeFailure: Error | null = null;
+        let cachePreflightState: "not_run" | "passed" | "failed" = "not_run";
+        const preparePullRequestReviewTree = (headSha: string): boolean => {
+          if (item.kind !== "pull_request") return true;
+          if (pullRequestReviewTreeDir && pullRequestReviewTreeSha === headSha) return true;
+          if (pullRequestReviewTreeDir) {
+            restoreTreeModes(itemReadonlyModeSnapshots);
+            itemReadonlyModeSnapshots.length = 0;
+            if (
+              !removePullRequestReviewTree({
+                targetDir: openclawDir,
+                worktreeDir: pullRequestReviewTreeDir,
+              })
+            ) {
+              return false;
+            }
+          }
+          const reviewTreesDir = join(artifactDir, "review-trees");
+          ensureDir(reviewTreesDir);
+          pullRequestReviewTreeDir = join(reviewTreesDir, String(item.number));
+          pullRequestReviewTreeSha = null;
+          reviewOpenclawDir = openclawDir;
+          if (
+            !materializePullRequestReviewTree({
+              targetDir: openclawDir,
+              worktreeDir: pullRequestReviewTreeDir,
+              itemNumber: item.number,
+              headSha,
+            })
+          ) {
+            return false;
+          }
+          pullRequestReviewTreeSha = headSha;
+          reviewOpenclawDir = pullRequestReviewTreeDir;
+          if (readonlyOpenclaw) {
+            makeTreeReadOnly(reviewOpenclawDir, itemReadonlyModeSnapshots);
+          }
+          return true;
+        };
+        const cachePreflightPasses = (headSha: string | null): boolean => {
+          if (cachePreflightState !== "not_run") return cachePreflightState === "passed";
+          if (item.kind === "pull_request" && (!headSha || !preparePullRequestReviewTree(headSha))) {
+            cachePreflightState = "failed";
+          } else {
+            const inspection = runReviewCheckoutInspection({
+              itemNumber: item.number,
+              openclawDir: reviewOpenclawDir,
+              preserveCodexAuth: localOnly,
+              timeoutMs,
+            });
+            cachePreflightState =
+              !inspection.error && inspection.status === 0 ? "passed" : "failed";
+          }
+          console.error(
+            `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} cache-checkout-preflight=${cachePreflightState} #${item.number}`,
+          );
+          return cachePreflightState === "passed";
+        };
         const restoredMaintainerAssociation =
           !localOnly &&
           restoreVerifiedMaintainerPullRequestAuthorAssociation(item, (author) =>
@@ -299,6 +449,32 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         } else {
           console.error(
             `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start #${item.number} (${completed + 1}/${candidates.length})`,
+          );
+        }
+        const itemLocalReviewHistoryPath = localRangeData
+          ? localReviewHistoryPath
+          : localOnly
+            ? localExactReviewHistoryPath(artifactDir, item.repo, item.number)
+            : null;
+        let previousLocalReviewCommentBody =
+          itemLocalReviewHistoryPath && existsSync(itemLocalReviewHistoryPath)
+            ? readFileSync(itemLocalReviewHistoryPath, "utf8")
+            : "";
+        if (
+          !previousLocalReviewCommentBody &&
+          localOnly &&
+          !localRangeData &&
+          existsSync(join(artifactDir, reportFileName(item.repo, item.number)))
+        ) {
+          const bootstrapReport = readFileSync(
+            join(artifactDir, reportFileName(item.repo, item.number)),
+            "utf8",
+          );
+          previousLocalReviewCommentBody = localExactBootstrapReviewCommentBody(
+            bootstrapReport,
+            item,
+            frontMatterValue,
+            renderReviewCommentFromReport,
           );
         }
         const existingPriorReview = localRangeData ? null : existingReview(item, itemsDir);
@@ -361,7 +537,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             reviewModel: PUBLIC_CODEX_MODEL,
             explicitDispatch,
             maintainerRequest,
-            coordinationEnabled: !skipStartComment,
+            coordinationEnabled: structuralCacheCoordinationEnabled,
           });
           if (!structuralProbeDecision.hit) {
             structuralCacheReasons.set(
@@ -393,7 +569,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             }
             preHydrationStructuralRecord = structuralRecord;
             if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
-            const structuralDecision = reviewStructuralCacheDecision({
+            const leaseRevision =
+              item.kind === "pull_request"
+                ? structuralRecord?.pullHeadSha
+                : priorReview?.itemSourceRevision;
+            const structuralDecisionInput = {
               review: priorReview,
               priorRecord: priorReview?.structuralRecord ?? null,
               currentRecord: structuralRecord,
@@ -401,8 +581,29 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               reviewModel: PUBLIC_CODEX_MODEL,
               explicitDispatch,
               maintainerRequest,
-              coordinationEnabled: !skipStartComment,
-            });
+              coordinationEnabled: structuralCacheCoordinationEnabled,
+            };
+            let suppliedLeaseClaim: ReturnType<typeof claimSuppliedReviewLease> | null = null;
+            let ownedReservationUpdatedAt: string | undefined;
+            let structuralDecision = reviewStructuralCacheDecision(structuralDecisionInput);
+            if (
+              structuralDecision.reason === "activity_changed" &&
+              suppliedReviewLease &&
+              leaseRevision
+            ) {
+              suppliedLeaseClaim = claimSuppliedReviewLease(item.number, leaseRevision);
+              if (suppliedLeaseClaim.status === "claimed") {
+                ownedReservationUpdatedAt = reviewStartLeaseCommentUpdatedAt(
+                  suppliedLeaseClaim.lease.comment,
+                );
+                if (ownedReservationUpdatedAt) {
+                  structuralDecision = reviewStructuralCacheDecision({
+                    ...structuralDecisionInput,
+                    ownedReservationUpdatedAt,
+                  });
+                }
+              }
+            }
             structuralCacheReasons.set(
               structuralDecision.reason,
               (structuralCacheReasons.get(structuralDecision.reason) ?? 0) + 1,
@@ -410,33 +611,57 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             if (structuralDecision.hit) {
               const initialStructuralRecord = structuralRecord;
               try {
-                const leaseRevision =
-                  item.kind === "pull_request"
-                    ? structuralRecord?.pullHeadSha
-                    : priorReview?.itemSourceRevision;
-                const startComment = postReviewStartStatusComment({
-                  item,
-                  headSha: leaseRevision ?? "",
-                  reviewTimeoutMs: timeoutMs,
-                  position: completed + 1,
-                  total: candidates.length,
-                  shardIndex,
-                  shardCount,
-                });
-                console.error(
-                  `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=${startComment.status} #${item.number}`,
-                );
-                if (startComment.status === "held") {
-                  coordinationHeldRetryAt = startComment.retryAt;
-                  continue;
-                }
-                acquiredReviewLease = startComment.lease;
-                if (!acquiredReviewLease) {
-                  throw new Error(
-                    `structural cache lease acquisition returned no identity for #${item.number}`,
+                if (suppliedReviewLease) {
+                  const claim =
+                    suppliedLeaseClaim ??
+                    (leaseRevision
+                      ? claimSuppliedReviewLease(item.number, leaseRevision)
+                      : ({ status: "stale" } as const));
+                  console.error(
+                    `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=${claim.status === "claimed" ? "reserved" : claim.status === "held" ? "held" : "stale-reservation"} #${item.number}`,
                   );
+                  if (claim.status === "held") {
+                    coordinationHeldRetryAt = claim.retryAt;
+                    continue;
+                  }
+                  if (claim.status === "stale") {
+                    coordinationHeldRetryAt = new Date(Date.now() + 60_000).toISOString();
+                    leaseAcquisitionFailures += 1;
+                    leaseAcquisitionFailureDetails.push(
+                      `#${item.number}: reserved review lease is no longer fresh for the cached revision`,
+                    );
+                    continue;
+                  }
+                  acquiredReviewLease = claim.lease;
+                  ownedReservationUpdatedAt ??= reviewStartLeaseCommentUpdatedAt(
+                    claim.lease.comment,
+                  );
+                  acquiredReviewLeases.push({ itemNumber: item.number, lease: claim.lease });
+                } else {
+                  const startComment = postReviewStartStatusComment({
+                    item,
+                    headSha: leaseRevision ?? "",
+                    reviewTimeoutMs: timeoutMs,
+                    position: completed + 1,
+                    total: candidates.length,
+                    shardIndex,
+                    shardCount,
+                  });
+                  console.error(
+                    `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache-start-comment=${startComment.status} #${item.number}`,
+                  );
+                  if (startComment.status === "held") {
+                    coordinationHeldRetryAt = startComment.retryAt;
+                    continue;
+                  }
+                  acquiredReviewLease = startComment.lease;
+                  if (!acquiredReviewLease) {
+                    throw new Error(
+                      `structural cache lease acquisition returned no identity for #${item.number}`,
+                    );
+                  }
+                  acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
                 }
-                acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
               } catch (error) {
                 leaseAcquisitionFailures += 1;
                 leaseAcquisitionFailureDetails.push(
@@ -478,12 +703,14 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 structuralCacheRevalidationMs += Date.now() - structuralRevalidationStartedAt;
               }
               const revalidationDecision = reviewStructuralCacheDecision({
-                review: priorReview
+                // A lease posted by this command owns activity through now. A
+                // supplied reservation owns activity only through its recorded timestamp.
+                review: priorReview && !suppliedReviewLease
                   ? {
                       ...priorReview,
                       reviewCommentSyncedAt: new Date().toISOString(),
                     }
-                  : null,
+                  : priorReview,
                 priorRecord: initialStructuralRecord,
                 currentRecord: revalidatedStructuralRecord,
                 reviewPolicy,
@@ -491,6 +718,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 explicitDispatch,
                 maintainerRequest,
                 coordinationEnabled: true,
+                ...(ownedReservationUpdatedAt ? { ownedReservationUpdatedAt } : {}),
               });
               const previousReviewIdentityMatches =
                 expectedPreviousReviewDigest !== null &&
@@ -530,6 +758,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 const confirmedStructuralRecord = revalidatedStructuralRecord!;
                 structuralRecord = confirmedStructuralRecord;
                 item.updatedAt = confirmedStructuralRecord.activityUpdatedAt;
+                if (
+                  !cachePreflightPasses(
+                    item.kind === "pull_request" ? confirmedStructuralRecord.pullHeadSha : null,
+                  )
+                ) {
+                  console.error(
+                    `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} structural-cache=checkout-preflight-miss hydrate #${item.number}`,
+                  );
+                } else {
                 const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
                 let carried = priorReview!.markdown;
                 carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
@@ -547,6 +784,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
                 carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
                 carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
+                carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
                 writeFileSync(reportPath, carried, "utf8");
                 finishReviewActionLedgerItem({
                   ledger: reviewLedger,
@@ -584,11 +822,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                   );
                 }
                 continue;
+                }
               }
             }
           }
         }
-        if (!skipStartComment && item.kind === "pull_request") {
+        if (!skipStartComment && !acquiredReviewLease && item.kind === "pull_request") {
           try {
             const startComment = postReviewStartStatusComment({
               item,
@@ -634,7 +873,42 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               fullTimelineForRelations: true,
               reviewCacheDigest: true,
               reviewCacheGitDir: openclawDir,
+              prHydrationSnapshot: existingPriorReview
+                ? parsePrHydrationSnapshot(
+                    frontMatterValue(existingPriorReview.markdown, "pr_hydration_snapshot"),
+                  )
+                : null,
+              prCommentActivityRevision: prCommentActivityRevisions.get(item.number) ?? null,
             });
+        if (!localRangeData && item.kind === "pull_request") {
+          const headSha = pullHeadShaFromContext(context);
+          if (!headSha || !preparePullRequestReviewTree(headSha)) {
+            pullRequestReviewTreeFailure = new Error(
+              `Read-only checkout inspection failed: pull request #${item.number} head ${headSha ?? "unknown"} was unavailable in the restricted review checkout`,
+            );
+            cachePreflightState = "failed";
+          }
+        }
+        if (previousLocalReviewCommentBody) {
+          const previousLocalReview = extractClawSweeperReviewCommentBody(
+            previousLocalReviewCommentBody,
+          );
+          const hasCompletedLocalReview =
+            previousLocalReview.completedReviewCycles > 0 &&
+            /^[0-9a-f]{40}$/iu.test(previousLocalReview.reviewedSha ?? "");
+          const appliesToRange =
+            !localRangeData ||
+            localRangeHistoryApplies(
+              openclawDir,
+              previousLocalReview?.reviewedSha ?? null,
+              localRangeData.headSha,
+            );
+          if (hasCompletedLocalReview && appliesToRange) {
+            context.previousClawSweeperReview = previousLocalReview;
+          } else {
+            previousLocalReviewCommentBody = "";
+          }
+        }
         if (bulkFilerDetection.context) context.bulkFiler = bulkFilerDetection.context;
         const contextElapsedMs = Date.now() - contextStartedAt;
         const contextItemUpdatedAt = stringOrUndefined(asRecord(context.issue).updatedAt);
@@ -655,19 +929,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             );
             continue;
           }
-          const freshLeases = freshDedicatedReviewStartLeases({
-            comments: issueReviewCommentState(item.number).leaseComments,
-            itemNumber: item.number,
-            headSha: currentRevision,
-            nowMs: Date.now(),
-          });
-          const winner = freshLeases[0];
-          const supplied = freshLeases.find(
-            (lease) =>
-              commentId(lease.comment) === suppliedReviewLease.commentId &&
-              lease.owner === suppliedReviewLease.owner,
-          );
-          if (!supplied || !winner) {
+          const claim = claimSuppliedReviewLease(item.number, currentRevision);
+          if (claim.status === "stale") {
             coordinationHeldRetryAt = new Date(Date.now() + 60_000).toISOString();
             leaseAcquisitionFailures += 1;
             leaseAcquisitionFailureDetails.push(
@@ -678,24 +941,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             );
             continue;
           }
-          if (
-            commentId(winner.comment) !== suppliedReviewLease.commentId ||
-            winner.owner !== suppliedReviewLease.owner
-          ) {
-            coordinationHeldRetryAt = winner.expiresAt;
+          if (claim.status === "held") {
+            coordinationHeldRetryAt = claim.retryAt;
             console.error(
               `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=held #${item.number}`,
             );
             continue;
           }
-          const claimedLease: AcquiredReviewStartLease = {
-            owner: suppliedReviewLease.owner,
-            commentId: suppliedReviewLease.commentId,
-            headSha: currentRevision,
-            comment: supplied.comment,
-          };
-          acquiredReviewLease = claimedLease;
-          acquiredReviewLeases.push({ itemNumber: item.number, lease: claimedLease });
+          acquiredReviewLease = claim.lease;
+          acquiredReviewLeases.push({ itemNumber: item.number, lease: claim.lease });
         }
         if (!localRangeData && contextItemUpdatedAt && preHydrationStructuralRecord) {
           structuralCacheRevalidations += 1;
@@ -935,6 +1189,14 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             (semanticCacheReasons.get(semanticDecision.reason) ?? 0) + 1,
           );
         }
+        if (
+          semanticDecision?.hit &&
+          !cachePreflightPasses(
+            item.kind === "pull_request" ? pullHeadShaFromContext(context) : null,
+          )
+        ) {
+          semanticDecision = null;
+        }
         if (semanticDecision?.hit) {
           semanticCacheRevalidations += 1;
           const initialSemanticRecord = semanticRecord;
@@ -1106,6 +1368,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
           carried = updateReviewStructuralFrontMatter(carried, structuralRecord, false);
           carried = updateReviewSemanticFrontMatter(carried, semanticRecord, true);
+          carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
           writeFileSync(reportPath, carried, "utf8");
           finishReviewActionLedgerItem({
             ledger: reviewLedger,
@@ -1143,15 +1406,19 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           (item.kind === "pull_request" && !completePullChecksContext(context.pullChecks))
             ? null
             : priorReview;
-        if (
-          reviewContentCacheHit({
+        const contentCacheHit = reviewContentCacheHit({
             review: contentCacheReview,
             reviewPolicy,
             contentDigest,
             now: Date.now(),
             explicitDispatch,
             maintainerRequest,
-          })
+          });
+        if (
+          contentCacheHit &&
+          cachePreflightPasses(
+            item.kind === "pull_request" ? pullHeadShaFromContext(context) : null,
+          )
         ) {
           structuralRecord = refreshStructuralRecordForVerdict();
           const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
@@ -1179,6 +1446,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
             : replaceFrontMatterValue(carried, "review_structural_cache_hit", "false");
           carried = updateReviewSemanticFrontMatter(carried, semanticRecord, false);
+          carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
           writeFileSync(reportPath, carried, "utf8");
           finishReviewActionLedgerItem({
             ledger: reviewLedger,
@@ -1233,6 +1501,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           null;
         const codexStartedAt = Date.now();
         try {
+          if (pullRequestReviewTreeFailure) throw pullRequestReviewTreeFailure;
           if (humanLocalReview) {
             console.error("");
             console.error("Running Codex review");
@@ -1249,7 +1518,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             context,
             git,
             model,
-            openclawDir,
+            openclawDir: reviewOpenclawDir,
             reasoningEffort,
             sandboxMode,
             serviceTier,
@@ -1289,8 +1558,13 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         } finally {
           codexElapsedMs = Date.now() - codexStartedAt;
         }
-        decision = attachFixedPullRequest(decision, item, context);
-        decision = verifyRegressionProvenance(decision, item, context, openclawDir, git);
+        decision = attachFixedPullRequest(
+          decision,
+          item,
+          context,
+          existingPriorReview?.markdown,
+        );
+        decision = verifyRegressionProvenance(decision, item, context, reviewOpenclawDir, git);
         const runtime = {
           model: PUBLIC_CODEX_MODEL,
           reasoningEffort,
@@ -1303,9 +1577,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const action = reviewActionForDecision({ item, decision, git, runtime });
         structuralRecord = refreshStructuralRecordForVerdict();
         const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
-        writeFileSync(
-          reportPath,
-          markdownFor({
+        const reportMarkdown = markdownFor({
             item,
             context,
             decision,
@@ -1324,9 +1596,23 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                   reviewLeaseCommentId: acquiredReviewLease.commentId,
                 }
               : {}),
-          }),
-          "utf8",
-        );
+        });
+        writeFileSync(reportPath, reportMarkdown, "utf8");
+        if (itemLocalReviewHistoryPath) {
+          const nextLocalReviewCommentBody =
+            frontMatterValue(reportMarkdown, "review_status") === "complete"
+              ? renderReviewCommentFromReport(
+                  reportMarkdown,
+                  "none",
+                  previousLocalReviewCommentBody
+                    ? { previousReviewCommentBody: previousLocalReviewCommentBody }
+                    : undefined,
+                )
+              : previousLocalReviewCommentBody;
+          if (nextLocalReviewCommentBody) {
+            writeFileSync(itemLocalReviewHistoryPath, nextLocalReviewCommentBody, "utf8");
+          }
+        }
         recordReviewLogPublication({
           ledger: reviewLedger,
           item,
@@ -1387,7 +1673,25 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               activeReviewItem = null;
             }
           } finally {
-            dependencies.activeReviewMutationRunner = previousReviewMutationRunner;
+            try {
+              dependencies.activeReviewMutationRunner = previousReviewMutationRunner;
+            } finally {
+              restoreTreeModes(itemReadonlyModeSnapshots);
+              if (
+                pullRequestReviewTreeDir &&
+                !removePullRequestReviewTree({
+                  targetDir: openclawDir,
+                  worktreeDir: pullRequestReviewTreeDir,
+                })
+              ) {
+                const detail = [
+                  "could not remove restricted review checkout",
+                  pullRequestReviewTreeDir,
+                ].join(" ");
+                reviewTreeCleanupFailures.push(detail);
+                console.error(`[review] ${new Date().toISOString()} ${detail}`);
+              }
+            }
           }
         }
       }
@@ -1463,6 +1767,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             leaseAcquisitionFailures === 1 ? "" : "s"
           }; the workflow recovery lane can requeue the planned set. ${leaseAcquisitionFailureDetails.join("; ")}`,
         );
+      }
+      if (reviewTreeCleanupFailures.length > 0) {
+        throw new Error(reviewTreeCleanupFailures.join("; "));
       }
       if (codexFailures > 0) {
         for (const reportPath of codexFailureReports) {

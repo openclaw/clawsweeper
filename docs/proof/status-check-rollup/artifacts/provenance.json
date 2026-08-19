@@ -1,0 +1,72 @@
+{
+  "schema": "clawsweeper-status-check-rollup-proof/v1",
+  "generated_at": "2026-08-10T20:05:04.670Z",
+  "proof_head": "10d0801364df699b697fad5cea1ba59a52b91cae",
+  "historical_source": {
+    "commit": "e13791786799f6a51a39806938847bbc48948e5e",
+    "path": "src/repair/finalize-open-prs.ts",
+    "extraction": "git show <commit>:<path> into an isolated temporary file"
+  },
+  "current_source": "src/repair/status-check-rollup.ts from the working tree",
+  "subject": {
+    "repository": "openclaw/clawsweeper",
+    "pull_request": 1099,
+    "url": "https://github.com/openclaw/clawsweeper/pull/1099",
+    "head_sha": "1aa53a6a09e543e4a6e4906f7e3cc0bf34a4bd65",
+    "check_count": 26,
+    "repeated_identity": "ClawSweeper Dispatch / dispatch",
+    "actions_run_ids": [
+      "31405430931",
+      "31405431390",
+      "31405432581",
+      "31405432821",
+      "31405433183",
+      "31405434030",
+      "31405434604",
+      "31405434910",
+      "31405435237",
+      "31405435360",
+      "31405849078",
+      "31405849118",
+      "31405849125",
+      "31405849128",
+      "31405850201",
+      "31405850424",
+      "31405851311",
+      "31405851663"
+    ],
+    "job_ids": [
+      "93510453087",
+      "93510455575",
+      "93510458988",
+      "93510462224",
+      "93510464217",
+      "93510465443",
+      "93510465554",
+      "93510465585",
+      "93510466101",
+      "93510466216",
+      "93510467337",
+      "93510467470",
+      "93510467678",
+      "93510469023",
+      "93511872037",
+      "93511872836",
+      "93511873241",
+      "93511874745",
+      "93511876697",
+      "93511876958",
+      "93511879192",
+      "93511932492"
+    ]
+  },
+  "acquisition": {
+    "command": "gh pr view 1099 --repo openclaw/clawsweeper --json number,url,headRefOid,statusCheckRollup",
+    "mode": "read-only"
+  },
+  "result": {
+    "historical_blockers": 2,
+    "current_blockers": 0
+  },
+  "redaction_note": "GitHub detailsUrl values are replaced with [redacted]; Actions run and job IDs are retained for reproducibility."
+}

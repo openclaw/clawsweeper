@@ -1,19 +1,42 @@
 # Target Repositories
 
+- Status: active configuration and onboarding reference
+- Owner: ClawSweeper maintainers
+- Source of truth: `config/target-repositories.json`, repository profiles,
+  target inventory, dashboard/apply configuration, and profile tests
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
+- Update when: profile policy, supported owners, inventory, dashboard targets,
+  apply membership, or onboarding requirements change
+
 Read when enabling ClawSweeper for another OpenClaw repository, changing
 `config/target-repositories.json`, or debugging `Unsupported target repo`
 failures.
 
 ClawSweeper has two target-repository paths:
 
-- configured dashboard targets in `config/target-repositories.json`
+- configured runtime profiles in `config/target-repositories.json`
 - conservative generic fallbacks for exact event/manual reviews of configured
   owner inventories such as `openclaw/*` and `steipete/*`
 
 `openclaw/openclaw` remains a built-in profile because it has broader
-auto-close policy. Other configured targets default to safer repo-local rules:
-issues are review/comment-only, and PRs may auto-close only when the same
-change is certainly already implemented on `main`.
+auto-close policy. Every other configured profile declares its own issue and PR
+close rules in `apply_close_rules`; do not infer those rules from whether the
+repository appears in the dashboard or receives scheduled work. The current
+configured profiles allow `implemented_on_main` for issues and PRs, and some
+profiles additionally allow age-gated `mostly_implemented_on_main` for PRs.
+
+Dashboard targets are configured separately with `TARGET_REPOS` in
+`dashboard/wrangler.toml`. Scheduled target selection comes from
+`target_inventory`, and apply-enabled targets use the dashboard's
+`APPLY_TARGET_REPOS` and `APPLY_OPTIONAL_TARGET_REPOS`. A runtime profile alone
+does not enable any of those surfaces.
+
+`PUBLIC_BAY_REPOS` is a separate public-output allowlist for the minimal
+repository/item reference cards shown by OpenClaw Bay and Overview. Add a
+repository only after confirming that it is public and intended to be visible
+on the unauthenticated dashboard. The Worker treats an absent or malformed
+allowlist as empty. Membership does not authorize titles, URLs, queries,
+failure data, opaque keys, credentials, tokens, or any private-repository data.
 
 ## Generic Fallbacks
 
@@ -25,8 +48,15 @@ without a TypeScript change. It is intentionally narrow:
 - denied repositories are rejected
 - scheduled fanout is public-only unless a private state publication path exists
 - auto-close policy comes from that owner fallback
-- `openclaw/*` issues cannot be auto-closed; PRs can auto-close only for
-  `implemented_on_main` or age-gated `mostly_implemented_on_main`
+- `live_test`, when present, supplies the default live-proof configuration to
+  matching built-in, configured, and generic profiles; an explicit repository
+  block can override it
+- live-test package installs suppress pnpm/npm/Bun lifecycle scripts by default;
+  `allow_install_scripts: true` is the explicit per-profile opt-in, and no
+  current repository opts in
+- generic `openclaw/*` issues can auto-close only for
+  `implemented_on_main`; PRs can auto-close for `implemented_on_main` or
+  age-gated `mostly_implemented_on_main`
 - `steipete/*` starts review/comment-only for issues and PRs
 - scheduled dashboard/backfill rows are added only through target fanout
 
@@ -46,10 +76,11 @@ workflow and GitHub App installation.
    `https://github.com/openclaw/clawsweeper/actions`.
 6. Confirm the target item gets one durable ClawSweeper review comment.
 
-For a repo that should appear in the README dashboard or scheduled queues, add
-it to `config/target-repositories.json` with an explicit prompt note and
-close-policy block. Keep the default policy unless the repo has a documented
-reason to allow broader issue closes.
+Add a `config/target-repositories.json` entry when a repository needs explicit
+review guidance, toolchain configuration, or close rules. Dashboard and
+scheduled-queue membership are separate changes; update their owning
+configuration only when that rollout is intended. Keep close rules narrow
+unless the repository has a documented reason for broader policy.
 
 ## Add Many Repositories
 

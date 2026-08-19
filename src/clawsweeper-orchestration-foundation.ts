@@ -30,6 +30,7 @@ export function createReportOrchestrationFoundation(
     frontMatterJsonArray,
     frontMatterStringArray,
     frontMatterValue,
+    ghJson,
     ghObservedMutationCommand,
     isBulkFilerExemptAuthorAssociation,
     isBulkFilerExemptRepositoryPermission,
@@ -394,6 +395,7 @@ export function createReportOrchestrationFoundation(
   }
 
   const labelSynchronization = createLabelSynchronization({
+    ghJson,
     ghObservedMutationCommand,
     hasNormalizedLabel,
     normalizeLabelName,

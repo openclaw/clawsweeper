@@ -38,4 +38,8 @@ export interface ReviewPlanningDependencies {
   ) => string;
   repoRelativePath: (filePath: string) => string;
   dashboardClosedAt: (markdown: string) => string | undefined;
+  githubReadModelRequestSync?: (
+    operation: "item" | "comments" | "activity" | "workflows" | "placeholders" | "repair",
+    payload: Record<string, unknown>,
+  ) => (Record<string, unknown> & { usable?: boolean; hit?: boolean }) | null;
 }

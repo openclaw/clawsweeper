@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 const MAX_REVIEW_FILES = 80;
 const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -15,6 +16,142 @@ export type ReviewBlobHydration = {
   hydrated: boolean;
   blobs: number;
 };
+
+function gitCommitExists(targetDir: string, sha: string): boolean {
+  return (
+    spawnSync("git", ["cat-file", "-e", `${sha}^{commit}`], {
+      cwd: targetDir,
+      env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+      stdio: "ignore",
+    }).status === 0
+  );
+}
+
+export function ensureReviewTreeCommit({
+  targetDir,
+  sha,
+  sourceRef,
+  destinationRef,
+}: {
+  targetDir: string;
+  sha: string;
+  sourceRef: string;
+  destinationRef: string;
+}): boolean {
+  if (!GIT_OBJECT_ID.test(sha)) return false;
+  if (gitCommitExists(targetDir, sha)) return true;
+  const fetched = spawnSync(
+    "git",
+    [
+      "fetch",
+      "--force",
+      "--filter=blob:none",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "--recurse-submodules=no",
+      "origin",
+      `${sourceRef}:${destinationRef}`,
+      "--depth=1",
+    ],
+    {
+      cwd: targetDir,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      stdio: "ignore",
+    },
+  );
+  return !fetched.error && fetched.status === 0 && gitCommitExists(targetDir, sha);
+}
+
+export function ensurePullRequestReviewHead({
+  targetDir,
+  itemNumber,
+  headSha,
+}: {
+  targetDir: string;
+  itemNumber: number;
+  headSha: string;
+}): boolean {
+  if (!Number.isSafeInteger(itemNumber) || itemNumber <= 0) return false;
+  const destinationRef = `refs/clawsweeper/review-cache/head-${itemNumber}`;
+  return (
+    ensureReviewTreeCommit({
+      targetDir,
+      sha: headSha,
+      sourceRef: `refs/pull/${itemNumber}/head`,
+      destinationRef,
+    }) ||
+    // The PR ref and REST head can briefly disagree after a force-push. Fetching the
+    // exact validated object keeps the model bound to the revision under review.
+    ensureReviewTreeCommit({
+      targetDir,
+      sha: headSha,
+      sourceRef: headSha,
+      destinationRef,
+    })
+  );
+}
+
+function reviewTreeMatchesCommit({ targetDir, sha }: { targetDir: string; sha: string }): boolean {
+  const head = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: targetDir,
+    encoding: "utf8",
+    env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+  });
+  if (head.error || head.status !== 0 || head.stdout.trim().toLowerCase() !== sha.toLowerCase()) {
+    return false;
+  }
+  const status = spawnSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
+    cwd: targetDir,
+    encoding: "utf8",
+    env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+  });
+  return !status.error && status.status === 0 && status.stdout.trim() === "";
+}
+
+export function materializePullRequestReviewTree({
+  targetDir,
+  worktreeDir,
+  itemNumber,
+  headSha,
+}: {
+  targetDir: string;
+  worktreeDir: string;
+  itemNumber: number;
+  headSha: string;
+}): boolean {
+  if (!ensurePullRequestReviewHead({ targetDir, itemNumber, headSha })) return false;
+  if (existsSync(worktreeDir)) return false;
+  const worktree = spawnSync(
+    "git",
+    ["worktree", "add", "--detach", "--force", worktreeDir, headSha],
+    {
+      cwd: targetDir,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      stdio: "ignore",
+    },
+  );
+  return (
+    !worktree.error &&
+    worktree.status === 0 &&
+    reviewTreeMatchesCommit({ targetDir: worktreeDir, sha: headSha })
+  );
+}
+
+export function removePullRequestReviewTree({
+  targetDir,
+  worktreeDir,
+}: {
+  targetDir: string;
+  worktreeDir: string;
+}): boolean {
+  if (!existsSync(worktreeDir)) return true;
+  const removed = spawnSync("git", ["worktree", "remove", "--force", worktreeDir], {
+    cwd: targetDir,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    stdio: "ignore",
+  });
+  return !removed.error && removed.status === 0 && !existsSync(worktreeDir);
+}
 
 export function hydratePullRequestReviewBlobs({
   targetDir,
@@ -76,30 +213,65 @@ export function hydratePullRequestReviewBlobs({
   }
 
   if (objectIds.size === 0) return { hydrated: true, blobs: 0 };
-  const objectInput = `${[...objectIds].join("\n")}\n`;
-  const localObjects = spawnSync(
+  // Git before 2.45 exits without batch output when GIT_NO_LAZY_FETCH blocks a promisor fetch.
+  // Traverse only the two commit trees: this emits their blobs without walking either history.
+  // rev-list's missing-object mode suppresses lazy fetches and reports them on older clients too.
+  const objectAvailability = spawnSync(
     "git",
-    ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+    [
+      "--literal-pathspecs",
+      "rev-list",
+      "--objects",
+      "--missing=print",
+      `${baseSha}^{tree}`,
+      `${headSha}^{tree}`,
+      "--",
+      ...new Set([...basePaths, ...headPaths]),
+    ],
     {
       cwd: targetDir,
       encoding: "utf8",
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1" },
-      input: objectInput,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
       maxBuffer: MAX_GIT_OUTPUT_BYTES,
     },
   );
-  if (localObjects.error || localObjects.status !== 0) return { hydrated: false, blobs: 0 };
-  const found = localObjects.stdout.trim().split("\n");
-  if (found.length !== objectIds.size) return { hydrated: false, blobs: 0 };
-  const sizes = new Map<string, number>();
+  if (objectAvailability.error || objectAvailability.status !== 0) {
+    return { hydrated: false, blobs: 0 };
+  }
+  const observed = new Set<string>();
   const missing = new Set<string>();
-  for (const entry of found) {
-    const [objectId, type, size] = entry.split(" ");
-    if (!objectId || !objectIds.has(objectId) || (type !== "blob" && type !== "missing")) {
-      return { hydrated: false, blobs: 0 };
+  for (const entry of objectAvailability.stdout.split("\n")) {
+    const match = entry.match(/^(\??)([0-9a-f]{40,64})(?: |$)/i);
+    if (!match || !objectIds.has(match[2]!)) continue;
+    observed.add(match[2]!);
+    if (match[1] === "?") missing.add(match[2]!);
+  }
+  if (observed.size !== objectIds.size) return { hydrated: false, blobs: 0 };
+
+  const sizes = new Map<string, number>();
+  const localObjectIds = [...objectIds].filter((objectId) => !missing.has(objectId));
+  if (localObjectIds.length > 0) {
+    const localObjects = spawnSync(
+      "git",
+      ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+      {
+        cwd: targetDir,
+        encoding: "utf8",
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1" },
+        input: `${localObjectIds.join("\n")}\n`,
+        maxBuffer: MAX_GIT_OUTPUT_BYTES,
+      },
+    );
+    if (localObjects.error || localObjects.status !== 0) return { hydrated: false, blobs: 0 };
+    const found = localObjects.stdout.trim().split("\n");
+    if (found.length !== localObjectIds.length) return { hydrated: false, blobs: 0 };
+    for (const entry of found) {
+      const [objectId, type, size] = entry.split(" ");
+      if (!objectId || !objectIds.has(objectId) || type !== "blob") {
+        return { hydrated: false, blobs: 0 };
+      }
+      sizes.set(objectId, Number(size));
     }
-    if (type === "missing") missing.add(objectId);
-    else sizes.set(objectId, Number(size));
   }
   if (missing.size > 0) {
     if (!resolveBlobSizes) return { hydrated: false, blobs: 0 };

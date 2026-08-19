@@ -349,35 +349,6 @@ export function acceptClusterIntakeIntent(value: unknown, secret: string): Clust
   };
 }
 
-export function clusterIntakeIntent(value: unknown): ClusterIntakeIntent {
-  const proposal = clusterIntakeProposal(value);
-  if (!isRecord(value) || !Array.isArray(value.jobs)) {
-    throw new Error("invalid accepted cluster intake intent");
-  }
-  const rawJobs = value.jobs;
-  const jobs = proposal.jobs.map((job, index): ClusterIntakeJob => {
-    const raw = rawJobs[index];
-    if (!isRecord(raw)) throw new Error("cluster intake job must be an object");
-    const acceptedIntentDigest = String(raw.accepted_intent_digest || "")
-      .trim()
-      .toLowerCase();
-    const acceptedIntentReceipt = String(raw.accepted_intent_receipt || "").trim();
-    const expectedDigest = clusterAcceptedIntentDigest(clusterAcceptedIntentFields(proposal, job));
-    if (acceptedIntentDigest !== expectedDigest) {
-      throw new Error(`cluster accepted-intent digest mismatch: ${job.cluster_id}`);
-    }
-    if (!/^sha256=[a-f0-9]{64}$/.test(acceptedIntentReceipt)) {
-      throw new Error(`invalid cluster accepted-intent receipt: ${job.cluster_id}`);
-    }
-    return {
-      ...job,
-      accepted_intent_digest: acceptedIntentDigest,
-      accepted_intent_receipt: acceptedIntentReceipt,
-    };
-  });
-  return { ...proposal, jobs };
-}
-
 export function clusterAcceptedIntentDigest(fields: ClusterAcceptedIntentFields): string {
   return createHash("sha256")
     .update(
@@ -681,7 +652,7 @@ export function validateClusterJobContent(
   try {
     frontmatter = parseSimpleYaml(match[1] ?? "");
   } catch (error) {
-    throw new Error(`invalid cluster intake job frontmatter: ${String(error)}`);
+    throw new Error(`invalid cluster intake job frontmatter: ${String(error)}`, { cause: error });
   }
   const validationErrors = validateJob({ frontmatter });
   if (validationErrors.length > 0) {
@@ -744,7 +715,7 @@ export function clusterJobTargetRepository(content: string): string {
   try {
     frontmatter = parseSimpleYaml(match[1] ?? "");
   } catch (error) {
-    throw new Error(`invalid cluster intake job frontmatter: ${String(error)}`);
+    throw new Error(`invalid cluster intake job frontmatter: ${String(error)}`, { cause: error });
   }
   const targetRepo = String(frontmatter.repo || "").trim();
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) {

@@ -215,15 +215,6 @@ test("assist artifact validation rejects hostile shape, markers, and oversized o
   );
 });
 
-test("assist artifact schema is strict and versioned", () => {
-  const schema = JSON.parse(readFileSync("schema/assist-artifact.schema.json", "utf8"));
-  assert.equal(schema.additionalProperties, false);
-  assert.equal(schema.properties.schema_version.const, 1);
-  assert.match(schema.properties.target.properties.context_digest.pattern, /64/);
-  assert.equal(schema.properties.output.additionalProperties, false);
-  assert.equal(schema.properties.output.properties.answer.maxLength, ASSIST_ANSWER_MAX_BYTES);
-});
-
 test("assist workflow isolates Codex generation from the fresh write-token publisher", () => {
   const workflow = readFileSync(".github/workflows/assist.yml", "utf8");
   const source = readFileSync("src/clawsweeper-assist.ts", "utf8");

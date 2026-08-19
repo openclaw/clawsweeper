@@ -24,29 +24,70 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
   const { ROOT, gitHubRuntime, labelAlreadyExistsError } = dependencies;
   const {
     GitHubRuntimeBudgetError,
+    claimPublicReadFallback,
     ensureGitHubRetryFits,
     ensureGitHubRuntimeAvailable,
     gh,
     ghOnce,
     ghWithPreparedTimeout,
     githubCommandTimeoutMs,
+    githubRateLimitError: runtimeGithubRateLimitError,
     githubRuntimeBudgetError,
     sleepBeforeGitHubRetry,
   } = gitHubRuntime;
+  const githubRateLimitError =
+    runtimeGithubRateLimitError ?? ((cause: unknown) => new GitHubRateLimitError(cause));
   function ghWithRetry(
     args: string[],
     attempts = configuredGitHubRetryAttempts(),
     options: GitHubRetryOptions = {},
   ): string {
+    let activeEnv: NodeJS.ProcessEnv | undefined;
     let lastError: unknown;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
-        return options.request?.(args, attempt) ?? gh(args);
+        return (
+          options.request?.(args, attempt) ??
+          (activeEnv ? ghWithPreparedTimeout(args, githubCommandTimeoutMs(), activeEnv) : gh(args))
+        );
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError) throw error;
         lastError = error;
         const retryKind = ghRetryKind(error);
-        if (retryKind === "throttle") throw new GitHubRateLimitError(error);
+        // Preserve the exhausted credential observation even when the current
+        // public read can finish through the bounded App-token fallback. That
+        // fallback is deliberately one-shot; later batch members must collapse
+        // instead of probing the same exhausted credential again.
+        const rateLimitError =
+          retryKind === "throttle" ? githubRateLimitError(error, args, activeEnv ?? {}) : null;
+        const fallback =
+          retryKind === "throttle" && !options.request ? claimPublicReadFallback(args) : null;
+        if (retryKind === "throttle" && fallback) {
+          activeEnv = fallback;
+          try {
+            return ghWithPreparedTimeout(args, githubCommandTimeoutMs(), fallback);
+          } catch (fallbackError) {
+            if (fallbackError instanceof GitHubRuntimeBudgetError) throw fallbackError;
+            lastError = fallbackError;
+            const fallbackRetryKind = ghRetryKind(fallbackError);
+            if (fallbackRetryKind === "throttle") {
+              throw githubRateLimitError(fallbackError, args, fallback);
+            }
+            ensureGitHubRuntimeAvailable("after GitHub operation");
+            if (fallbackRetryKind === "none" || attempt === attempts - 1) {
+              throw fallbackError;
+            }
+            const waitMs = ghRetryWaitMs(fallbackRetryKind, attempt);
+            ensureGitHubRetryFits(waitMs);
+            console.error(
+              `Transient GitHub API failure; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
+            );
+            if (options.sleepBeforeRetry) options.sleepBeforeRetry(waitMs);
+            else sleepBeforeGitHubRetry(waitMs);
+            continue;
+          }
+        }
+        if (rateLimitError) throw rateLimitError;
         ensureGitHubRuntimeAvailable("after GitHub operation");
         if (retryKind === "none" || attempt === attempts - 1) throw error;
         const waitMs = ghRetryWaitMs(retryKind, attempt);

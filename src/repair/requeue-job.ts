@@ -18,7 +18,7 @@ import {
 import { ghJson, ghText } from "./github-cli.js";
 import { sleepMs } from "./timing.js";
 import { REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
-import { AUTOMATION_LIMITS } from "./limits.js";
+import { AUTOMATION_LIMITS } from "../limits.js";
 import {
   flushCommandActionEvents,
   recordCommandLifecycleFailure,
@@ -31,6 +31,7 @@ import {
   deterministicRequeueDispatchKey,
   normalizedRequeueSourceJobPath,
 } from "./requeue-job-key.js";
+import { findFilesByBasenameSync } from "./glob-files.js";
 
 const DEFAULT_REPO = currentProjectRepo();
 const DEFAULT_WORKFLOW = REPAIR_CLUSTER_WORKFLOW;
@@ -227,11 +228,7 @@ function readPublishedRunRecord(runId: string) {
 }
 
 function findFirstFile(root: string, basename: string) {
-  for (const entry of fs.readdirSync(root, { recursive: true })) {
-    const candidate = path.join(root, String(entry));
-    if (path.basename(candidate) === basename && fs.statSync(candidate).isFile()) return candidate;
-  }
-  return null;
+  return findFilesByBasenameSync(root, basename)[0] ?? null;
 }
 
 function dispatchJob(

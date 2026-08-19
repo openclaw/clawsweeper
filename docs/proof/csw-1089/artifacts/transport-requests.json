@@ -1,0 +1,191 @@
+[
+  {
+    "scenario": "no-status",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batches/fetch",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 200
+  },
+  {
+    "scenario": "no-status",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batch-results",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "connection_reset": true
+  },
+  {
+    "scenario": "no-status",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batch-results",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "connection_reset": true
+  },
+  {
+    "scenario": "no-status",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batch-results",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "connection_reset": true
+  },
+  {
+    "scenario": "no-status",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batches/heartbeat",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 200
+  },
+  {
+    "scenario": "no-status",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batches/fetch",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 200
+  },
+  {
+    "scenario": "no-status",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batches/complete",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 200
+  },
+  {
+    "scenario": "429",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batches/fetch",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 200
+  },
+  {
+    "scenario": "429",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batch-results",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 429
+  },
+  {
+    "scenario": "429",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batch-results",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 429
+  },
+  {
+    "scenario": "429",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batch-results",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 429
+  },
+  {
+    "scenario": "429",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batches/heartbeat",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 200
+  },
+  {
+    "scenario": "429",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batches/fetch",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 200
+  },
+  {
+    "scenario": "429",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batches/complete",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 200
+  },
+  {
+    "scenario": "503",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batches/fetch",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 200
+  },
+  {
+    "scenario": "503",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batch-results",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 503
+  },
+  {
+    "scenario": "503",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batch-results",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 503
+  },
+  {
+    "scenario": "503",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batch-results",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 503
+  },
+  {
+    "scenario": "503",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batches/heartbeat",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 200
+  },
+  {
+    "scenario": "503",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batches/fetch",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 200
+  },
+  {
+    "scenario": "503",
+    "method": "POST",
+    "pathname": "/internal/exact-review/publication-batches/complete",
+    "signature_valid": true,
+    "local_address": "127.0.0.1",
+    "remote_address": "127.0.0.1",
+    "response_status": 200
+  }
+]

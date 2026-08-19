@@ -1,0 +1,68 @@
+{
+  "schema": "clawsweeper-crabbox-proof-provenance/v1",
+  "generated_at": "2026-08-10T20:09:28Z",
+  "claim": "docs/proof/status-check-rollup/run-proof.sh reproduces the real-GitHub historical-versus-current status-check classification on the pushed PR head inside a Docker-backed Crabbox local-container.",
+  "crabbox": {
+    "cli_version": "0.38.3-5-g2a79805d",
+    "provider": "local-container",
+    "lease_id": "cbx_7fcaae473719",
+    "slug": "jade-prawn-fb36",
+    "run_id": null,
+    "machine_type": "node_24-bookworm",
+    "image": "node:24-bookworm",
+    "container_engine": "Docker 29.4.0",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1109 (clean remote checkout, --no-hydrate)",
+    "workdir": "/work/crabbox/cbx_7fcaae473719/fresh-pr-openclaw-clawsweeper-1109",
+    "sync_ms": 11464,
+    "command_ms": 11200,
+    "total_ms": 22665,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0",
+    "gh": "2.97.0",
+    "jq": "1.8.1"
+  },
+  "reviewed_head": "283be4dbd4ff0f9bb0b0d5a4d64ebbdcfc8cf983",
+  "subject": {
+    "repository": "openclaw/clawsweeper",
+    "pull_request": 1099,
+    "head_sha": "1aa53a6a09e543e4a6e4906f7e3cc0bf34a4bd65",
+    "payload_checks": 26
+  },
+  "authentication": {
+    "github": "GH_TOKEN allowlisted into the single Crabbox process; value redacted and not persisted",
+    "gh_config": "isolated temporary GH_CONFIG_DIR"
+  },
+  "tool_verification": {
+    "gh_archive_sha256": "passed",
+    "jq_binary_sha256": "passed"
+  },
+  "result": {
+    "proof_rc": 0,
+    "historical_blockers": 2,
+    "current_blockers": 0,
+    "report_summary_needs_checks": 0,
+    "dispatch_enabled": false,
+    "dispatch_execute": false
+  },
+  "setup_attempts": [
+    {
+      "lease_id": "cbx_9c98bf11c3b0",
+      "image": "ubuntu:26.04",
+      "exit_code": 127,
+      "reason": "resolved local-container image lacked Node and Corepack; proof did not start",
+      "lease_stopped": true
+    },
+    {
+      "lease_id": "cbx_9dd06361a3bc",
+      "image": "node:24-bookworm",
+      "exit_code": 4,
+      "reason": "GitHub CLI required authentication; proof stopped before payload acquisition",
+      "lease_stopped": true
+    }
+  ]
+}

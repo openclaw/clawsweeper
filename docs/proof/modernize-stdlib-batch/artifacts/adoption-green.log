@@ -1,0 +1,7 @@
+adopted src/repair/action-ledger-cli.ts
+adopted src/repair/publish-main.ts
+adopted src/repair/collect-codex-debug.ts
+adopted scripts/exact-review-dead-letter-operator.mjs
+adopted scripts/hydrate-state.ts
+adopted scripts/e2e/automerge.mjs
+adopted scripts/e2e/automerge-container.mjs

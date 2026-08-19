@@ -1,0 +1,46 @@
+{
+  "schema": "clawsweeper-crabbox-proof-provenance/v1",
+  "generated_at": "2026-08-11T02:14:24Z",
+  "claim": "The real local Worker emits byte-identical normalized dashboard page HTML before and after renderer extraction in a clean pushed-PR container checkout.",
+  "crabbox": {
+    "cli_version": "0.38.3-5-g2a79805d",
+    "provider": "local-container",
+    "lease_id": "cbx_36172f52e311",
+    "slug": "golden-crayfish-3c9c",
+    "machine_type": "node_24-bookworm",
+    "image": "node:24-bookworm",
+    "runtime": "docker",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1116 --no-hydrate",
+    "workdir": "/work/crabbox/cbx_36172f52e311/fresh-pr-openclaw-clawsweeper-1116",
+    "sync_ms": 13465,
+    "command_ms": 10475,
+    "total_ms": 23942,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0",
+    "jq": "jq-1.8.1",
+    "jq_checksum_source": "https://github.com/jqlang/jq/releases/download/jq-1.8.1/sha256sum.txt",
+    "jq_checksum_result": "jq-linux-amd64: OK"
+  },
+  "proof": {
+    "base_sha": "5a964dadc8131e6e6dc33e9be3536b8141d1d107",
+    "head_sha": "a00e31c5ae40e33ab8718facac74d39d198dd994",
+    "routes": [
+      "/",
+      "/triage",
+      "/pr-proof-triage"
+    ],
+    "proof_rc": 0,
+    "container_proof_rc": 0,
+    "normalized_diff_empty": true,
+    "behavior": "satisfies_contract"
+  },
+  "suite_scope": {
+    "full_suite_run": false,
+    "blob_hydration_baseline": "not applicable; this container run exercised the exact real-Worker proof"
+  }
+}

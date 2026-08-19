@@ -32,7 +32,7 @@ jobs:
   automerge-e2e:
     name: production automerge flow
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ vars.CLAWSWEEPER_E2E_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}
     timeout-minutes: 15
     env:
       AUTOMERGE_E2E_BASE_ARCHIVE: /tmp/clawsweeper-automerge-e2e-base.tar

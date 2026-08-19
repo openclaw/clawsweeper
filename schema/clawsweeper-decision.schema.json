@@ -42,6 +42,7 @@
     "realBehaviorProof",
     "prRating",
     "telegramVisibleProof",
+    "liveProofPlan",
     "mantisRecommendation",
     "featureShowcase",
     "overallCorrectness",
@@ -313,7 +314,7 @@
         "type": "string",
         "enum": ["maturity:stable"]
       },
-      "description": "Issue-only labels for mature taxonomy matches. Use [] for PRs. Select maturity:stable only when the issue's primary owner surface is currently M4/M5 in qa/maturity-scores.yaml; incidental Gateway/CLI transit or implementation plumbing does not qualify a lower-maturity surface."
+      "description": "Issue-only labels for broken existing behavior on a mature taxonomy surface. Use [] for PRs. M4/M5 primary ownership in qa/maturity-scores.yaml is necessary but not sufficient: select maturity:stable only when current docs, tests, API/CLI contracts, or established shipped behavior define the expected behavior that is broken. Use [] for feature proposals, new capabilities, UX preferences, new config or policy choices, docs/support work, cleanup, and unclear reports even when they concern an M4/M5 surface. Incidental Gateway/CLI transit or implementation plumbing does not qualify a lower-maturity surface. When the existing-behavior contract or primary owner remains ambiguous, use []."
     },
     "mergeRiskOptions": {
       "type": "array",
@@ -787,6 +788,143 @@
         }
       }
     },
+    "liveProofPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "For PRs, recommend a deterministic live proof only when a user-visible browser or terminal behavior can be demonstrated from the PR head in 90 seconds or less without external accounts, credentials, secrets, or third-party services. ClawSweeper executes recommended plans unsandboxed on a machine that holds credentials, so declined_suspicious is the safety control. Use it whenever the diff or installed dependencies, including new or bumped dependencies that cannot be inspected, could plausibly exfiltrate, read credential stores, transmit data to unexpected hosts, or display sensitive data. If unsure, use declined_suspicious.",
+      "required": ["status", "surface", "reason", "payoff", "entry", "steps"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["recommended", "not_applicable", "declined_suspicious"]
+        },
+        "surface": {
+          "type": "string",
+          "enum": ["browser", "terminal", "none"],
+          "description": "Use browser or terminal only when status is recommended; otherwise use none."
+        },
+        "reason": {
+          "type": "string",
+          "description": "One concise sentence explaining the live-proof classification."
+        },
+        "payoff": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "justification"],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "progressive_output",
+                "ui_interaction",
+                "tui_or_color",
+                "animation",
+                "static_text"
+              ]
+            },
+            "justification": {
+              "type": "string",
+              "description": "One sentence naming what a viewer actually sees move or change over the recording."
+            }
+          }
+        },
+        "entry": {
+          "type": "string",
+          "description": "The URL path for browser proof or command for terminal proof. Use an empty string unless status is recommended."
+        },
+        "steps": {
+          "type": "array",
+          "maxItems": 10,
+          "description": "Structured deterministic actions for the recommended surface. Use an empty array unless status is recommended. Step values must never contain secrets or tokens.",
+          "items": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "path"],
+                "properties": {
+                  "action": { "type": "string", "const": "goto" },
+                  "path": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "target"],
+                "properties": {
+                  "action": { "type": "string", "const": "click" },
+                  "target": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "target", "value"],
+                "properties": {
+                  "action": { "type": "string", "const": "fill" },
+                  "target": { "type": "string" },
+                  "value": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "key"],
+                "properties": {
+                  "action": { "type": "string", "const": "press" },
+                  "key": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "target"],
+                "properties": {
+                  "action": { "type": "string", "const": "wait_for" },
+                  "target": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "seconds"],
+                "properties": {
+                  "action": { "type": "string", "const": "wait" },
+                  "seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 90 }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "text"],
+                "properties": {
+                  "action": { "type": "string", "const": "expect_text" },
+                  "text": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "command"],
+                "properties": {
+                  "action": { "type": "string", "const": "run" },
+                  "command": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "text"],
+                "properties": {
+                  "action": { "type": "string", "const": "expect_output" },
+                  "text": { "type": "string" }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
     "mantisRecommendation": {
       "type": "object",
       "additionalProperties": false,
@@ -857,7 +995,7 @@
       "description": "ISO-8601 commit or merge timestamp for the fix/proof SHA when known. Required for implemented_on_main and mostly_implemented_on_main when fixedRelease is null so maintainers know when it became fixed on main."
     },
     "regressionAssessment": {
-      "description": "A non-blaming preliminary regression assessment. Do not name a predecessor here; a PR link is published only through independently verified regressionProvenance.",
+      "description": "A non-blaming preliminary regression assessment. Do not name a predecessor here; runtime verification may separately publish either verified canonical provenance or a cautiously labeled, non-causal rewrite-equivalent PR relationship.",
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["confidence", "supportingEvidence"],
@@ -878,7 +1016,7 @@
       }
     },
     "regressionProvenance": {
-      "description": "An untrusted candidate predecessor link. The runtime publishes it only after exact GitHub PR metadata and local blame agree on the merge commit; use null unless one exact relevant source line and prior merged PR are known.",
+      "description": "An untrusted candidate predecessor link. Use null unless one exact relevant source line and prior merged PR are known. Runtime verification may publish verified provenance when blame matches the canonical merge commit, or cautiously label a related PR as non-causal only when canonical metadata plus an exact, location-and-context-preserving rewritten patch match; all other associations fail closed.",
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": [

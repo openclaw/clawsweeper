@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac, generateKeyPairSync } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
@@ -9,6 +9,7 @@ import {
   EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS,
   EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
   ExactReviewDirectPublicationStore,
+  validateCanonicalRecordTupleMutation,
   validateDirectPublicationPlan,
   type DirectPublicationPlan,
 } from "../dashboard/exact-review-direct-publication.ts";
@@ -31,9 +32,14 @@ class SqlCursor<T extends Record<string, unknown>> implements Iterable<T> {
 class TestStorage {
   private readonly database = new DatabaseSync(":memory:");
   private readonly values = new Map<string, unknown>();
+  private failSqlPattern: RegExp | null = null;
   private alarmAt: number | null = null;
   readonly sql = {
     exec: (query: string, ...bindings: unknown[]) => {
+      if (this.failSqlPattern?.test(query)) {
+        this.failSqlPattern = null;
+        throw new Error("injected telemetry state write failure");
+      }
       const statement = this.database.prepare(query);
       if (/^\s*(?:SELECT|WITH)\b/i.test(query) || /\bRETURNING\b/i.test(query)) {
         return new SqlCursor(statement.all(...bindings) as Record<string, unknown>[]);
@@ -42,6 +48,10 @@ class TestStorage {
       return new SqlCursor<Record<string, unknown>>([]);
     },
   };
+
+  failNextSqlMatching(pattern: RegExp) {
+    this.failSqlPattern = pattern;
+  }
   readonly kv = {
     get: (key: string) => this.values.get(key),
     put: (key: string, value: unknown) => this.values.set(key, structuredClone(value)),
@@ -431,6 +441,131 @@ test("direct publication validates tuple and per-file size caps", async () => {
   });
   await assert.rejects(validateDirectPublicationPlan(invalidPath), /outside openclaw-openclaw#8/);
   assert.equal(EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES, 4 * 1024 * 1024);
+});
+
+test("direct publication accepts repository-only path casing differences", async () => {
+  const mixedCase = directPlan("steipete/CodexBar#2516", 1, {
+    path: "records/steipete-CodexBar/items/2516.md",
+  });
+  const accepted = await validateDirectPublicationPlan(mixedCase);
+  assert.equal(accepted.operations[0]?.path, "records/steipete-codexbar/items/2516.md");
+  assert.equal(accepted.operations[0]?.repoSlug, "steipete-codexbar");
+  assert.equal(
+    accepted.operations[0]?.digest,
+    createHash("sha256").update(Buffer.from("result-1")).digest("hex"),
+  );
+
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  assert.equal(store.accept(accepted, 1_000).outcome, "accepted");
+  const normalizedRetry = await validateDirectPublicationPlan(
+    directPlan("steipete/CodexBar#2516", 1, {
+      path: "records/steipete-codexbar/items/2516.md",
+    }),
+  );
+  assert.equal(store.accept(normalizedRetry, 1_001).outcome, "deduped");
+  assert.equal(store.list().length, 1);
+  assert.equal(store.readCanonical("steipete-codexbar", "items", 2516)?.content, "result-1");
+  assert.equal(store.readCanonical("steipete-CodexBar", "items", 2516), null);
+  assert.equal(
+    storage.scalar(
+      `SELECT COUNT(*) AS value FROM exact_review_canonical_records
+        WHERE repo_slug = 'steipete-CodexBar'`,
+    ),
+    0,
+  );
+  assert.equal(
+    storage.scalar(
+      `SELECT COUNT(*) AS value FROM exact_review_record_export_index
+        WHERE repo_slug = 'steipete-CodexBar'`,
+    ),
+    0,
+  );
+  assert.deepEqual(store.get(accepted.fenceKey, accepted.revision)?.operations, [
+    {
+      path: "records/steipete-codexbar/items/2516.md",
+      bytes: Buffer.byteLength("result-1"),
+      digest: createHash("sha256").update(Buffer.from("result-1")).digest("hex"),
+      deleted: false,
+    },
+  ]);
+
+  const differentRepository = structuredClone(mixedCase);
+  differentRepository.operations[0]!.path = "records/steipete-other/items/2516.md";
+  await assert.rejects(
+    validateDirectPublicationPlan(differentRepository),
+    /direct publication path is outside steipete-CodexBar#2516/,
+  );
+
+  const invalidMode = structuredClone(mixedCase);
+  invalidMode.operations[0]!.mode = "100755" as "100644";
+  await assert.rejects(
+    validateDirectPublicationPlan(invalidMode),
+    /invalid mutation mode for records\/steipete-CodexBar\/items\/2516\.md/,
+  );
+
+  const invalidBytes = structuredClone(mixedCase);
+  invalidBytes.operations[0]!.bytes += 1;
+  await assert.rejects(
+    validateDirectPublicationPlan(invalidBytes),
+    /mutation byte count does not match content/,
+  );
+});
+
+test("lowercase direct publication preserves operation bytes exactly", async () => {
+  const input = directPlan("openclaw/openclaw#806", 1);
+  const accepted = await validateDirectPublicationPlan(input);
+  assert.equal(accepted.operations[0]?.path, input.operations[0]?.path);
+  assert.equal(accepted.operations[0]?.mode, input.operations[0]?.mode);
+  assert.equal(accepted.operations[0]?.bytes, input.operations[0]?.bytes);
+  assert.equal(accepted.operations[0]?.contentBase64, input.operations[0]?.contentBase64);
+  assert.deepEqual(
+    Buffer.from(accepted.operations[0]!.contentBase64!, "base64"),
+    Buffer.from(input.operations[0]!.contentBase64!, "base64"),
+  );
+});
+
+test("canonical tuple packet references ignore only repository casing", async () => {
+  const packet = JSON.stringify({ decision: "keep-open" });
+  const packetDigest = createHash("sha256").update(packet).digest("hex");
+  const item = [
+    "---",
+    `decision_packet_sha256: ${packetDigest}`,
+    "decision_packet_path: records/steipete-CodexBar/decision-packets/2516.json",
+    "---",
+    "",
+    "review",
+  ].join("\n");
+  const mutation = {
+    deliveryId: "record-tuple:mixed-packet-path:2516",
+    key: "steipete-CodexBar/2516",
+    operations: [
+      {
+        path: "records/steipete-codexbar/items/2516.md",
+        expectedDigest: null,
+        contentBase64: Buffer.from(item).toString("base64"),
+      },
+      { path: "records/steipete-codexbar/closed/2516.md", expectedDigest: null },
+      { path: "records/steipete-codexbar/plans/2516.md", expectedDigest: null },
+      {
+        path: "records/steipete-codexbar/decision-packets/2516.json",
+        expectedDigest: null,
+        contentBase64: Buffer.from(packet).toString("base64"),
+      },
+    ],
+  };
+
+  await assert.doesNotReject(validateCanonicalRecordTupleMutation(mutation));
+
+  const wrongDigest = structuredClone(mutation);
+  wrongDigest.operations[0]!.contentBase64 = Buffer.from(
+    item.replace(packetDigest, "0".repeat(64)),
+  ).toString("base64");
+  await assert.rejects(
+    validateCanonicalRecordTupleMutation(wrongDigest),
+    /decision packet reference is inconsistent/,
+  );
 });
 
 test("publication batches atomically select ready items without duplicate active ownership", () => {
@@ -1709,7 +1844,7 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
     if (url.pathname === "/app/installations/1000/access_tokens") {
       const body = JSON.parse(String(init?.body));
       assert.deepEqual(body, {
-        repository_names: ["openclaw"],
+        repositories: ["openclaw"],
         permissions: { issues: "read", pull_requests: "read" },
       });
       return new Response(JSON.stringify({ token: "target-token" }), {
@@ -3189,6 +3324,7 @@ test("retryable batch completion releases ownership and preserves queue retry po
               claim_generation: member.claim_generation,
               terminal_outcome: "retryable_failure",
               reason_code: "state_contention",
+              pool_class: "repository_actions",
               error_fingerprint: "state-contention-proof",
             },
           ],
@@ -3214,6 +3350,20 @@ test("retryable batch completion releases ownership and preserves queue retry po
     assert.equal(stats.lanes.publication.completed_total, 0);
     assert.equal(stats.lanes.publication.retried_total, 1);
     assert.equal(stats.lanes.publication.batches.leased, 0);
+    assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
+      {
+        transition: "retried",
+        stage: "state_commit",
+        completion_kind: "retryable_failure",
+        reason_code: "state_contention",
+        revision_relation: "same_revision",
+        pool_class: "repository_actions",
+        recovery_cause: "state_retry",
+        backoff_reason: "publication_retry",
+        attempt_bucket: "1",
+        count: 1,
+      },
+    ]);
 
     now += 10 * 60_000;
     const replacement = await (
@@ -3256,6 +3406,481 @@ test("retryable batch completion releases ownership and preserves queue retry po
       )
     ).json();
     assert.equal(fetchedReplacement.items.length, 1);
+
+    const published = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/complete", {
+          batch_id: replacement.batch.batch_id,
+          lease_owner: "worker-2",
+          items: [
+            {
+              item_key: replacement.batch.items[0].item_key,
+              revision: replacement.batch.items[0].revision,
+              claim_generation: replacement.batch.items[0].claim_generation,
+              terminal_outcome: "published",
+            },
+          ],
+        }),
+      )
+    ).json();
+    assert.equal(published.accepted, 1, JSON.stringify(published));
+
+    const completedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(completedStats.lanes.publication.pending, 0);
+    assert.equal(completedStats.lanes.publication.published_total, 1);
+    const publishedCause = completedStats.lanes.publication.flow.last_15_minutes.causes.rows.find(
+      (row: { transition: string }) => row.transition === "published",
+    );
+    assert.equal(publishedCause?.attempt_bucket, "1");
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("credential circuits persist, preserve healthy owners, and defer unattempted members without retry charge", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-08-10T14:00:00.000Z");
+  Date.now = () => now;
+  try {
+    const storage = new TestStorage();
+    let queue = new ExactReviewQueue(
+      { storage },
+      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+    );
+    for (let index = 0; index < 52; index += 1) {
+      await queue.fetch(
+        publicationRequest(`owner-a-${index}`, 201 + index, String(1201 + index), "aaa/repo"),
+      );
+    }
+    await queue.fetch(publicationRequest("owner-b", 300, "1300", "bbb/repo"));
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-owner-a",
+          lease_owner: "worker-a",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    const member = claim.batch.items[0];
+    assert.match(member.item_key, /^aaa\/repo#/);
+    const malformedUnattempted = await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-a",
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "retryable_failure",
+            reason_code: "github_rate_limit",
+            attempted: false,
+          },
+        ],
+      }),
+    );
+    assert.equal(malformedUnattempted.status, 400);
+    assert.deepEqual(await malformedUnattempted.json(), { error: "invalid_batch_completions" });
+    const longerReset = now + 120_000;
+    const completion = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/complete", {
+          batch_id: claim.batch.batch_id,
+          lease_owner: "worker-a",
+          github_rate_limit_observations: [
+            {
+              scope: "target_app",
+              target_owner: "aaa",
+              observed_at: new Date(now).toISOString(),
+              retry_at: new Date(longerReset).toISOString(),
+              provenance: "rate_limit_status",
+              authoritative: true,
+            },
+            {
+              scope: "target_app",
+              target_owner: "aaa",
+              observed_at: new Date(now + 1).toISOString(),
+              retry_at: new Date(now + 60_000).toISOString(),
+              provenance: "fallback",
+              authoritative: false,
+            },
+          ],
+          github_request_metrics: [
+            {
+              scope: "target_app",
+              category: "item_metadata",
+              mode: "read",
+              outcome: "throttle",
+              repeat_revision: false,
+              count: 1,
+            },
+          ],
+          items: [
+            {
+              item_key: member.item_key,
+              revision: member.revision,
+              claim_generation: member.claim_generation,
+              terminal_outcome: "retryable_failure",
+              reason_code: "github_rate_limit",
+              pool_class: "target_app",
+              retry_at: new Date(longerReset).toISOString(),
+              attempted: false,
+            },
+          ],
+        }),
+      )
+    ).json();
+    assert.equal(completion.accepted, 1, JSON.stringify(completion));
+
+    let stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.retried_total, 0);
+    assert.equal(stats.lanes.publication.credential_circuits.length, 1);
+    const { recovery_until: recoveryUntil, ...credentialCircuit } =
+      stats.lanes.publication.credential_circuits[0];
+    assert.deepEqual(credentialCircuit, {
+      pool: "target_app:aaa",
+      scope: "target_app",
+      target_owner: "aaa",
+      observed_at: new Date(now).toISOString(),
+      blocked_until: new Date(longerReset).toISOString(),
+      reset_source: "rate_limit_status",
+      authoritative: true,
+      active: true,
+      affected_pending: 52,
+    });
+    assert.ok(Date.parse(recoveryUntil) > longerReset);
+    assert.ok(Date.parse(recoveryUntil) <= longerReset + 30_000);
+    assert.equal(
+      stats.lanes.publication.github_request_metrics.counters[
+        "target_app:item_metadata:read:throttle:first"
+      ],
+      1,
+    );
+    assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, "github_rate_limit");
+    assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
+      {
+        transition: "backoff",
+        stage: "publication_apply",
+        completion_kind: "retryable_failure",
+        reason_code: "github_rate_limit",
+        revision_relation: "same_revision",
+        pool_class: "target_app",
+        recovery_cause: "credential_circuit",
+        backoff_reason: "publication_retry",
+        attempt_bucket: "0",
+        count: 1,
+      },
+    ]);
+
+    const lateReset = now + 180_000;
+    const lateTelemetry = {
+      batch_id: claim.batch.batch_id,
+      lease_owner: "worker-a",
+      github_telemetry_id: "a".repeat(64),
+      github_rate_limit_observations: [
+        {
+          scope: "target_app",
+          target_owner: "aaa",
+          observed_at: new Date(now + 2).toISOString(),
+          retry_at: new Date(lateReset).toISOString(),
+          provenance: "retry_after",
+          authoritative: true,
+        },
+      ],
+      github_request_metrics: [
+        {
+          scope: "target_app",
+          category: "workflow_dispatch",
+          mode: "mutation_or_private_read",
+          outcome: "throttle",
+          repeat_revision: true,
+          count: 1,
+        },
+      ],
+      items: [],
+    };
+    storage.failNextSqlMatching(/UPDATE exact_review_queue_meta/);
+    await assert.rejects(
+      queue.fetch(batchRequest("/publication-batches/complete", lateTelemetry)),
+      /injected telemetry state write failure/,
+    );
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(
+      stats.lanes.publication.github_request_metrics.counters[
+        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+      ],
+      undefined,
+    );
+    assert.equal(
+      stats.lanes.publication.credential_circuits[0].blocked_until,
+      new Date(longerReset).toISOString(),
+    );
+    const late = await (
+      await queue.fetch(batchRequest("/publication-batches/complete", lateTelemetry))
+    ).json();
+    assert.equal(late.accepted, 0);
+    assert.equal(late.telemetry_accepted, true);
+    const duplicate = await (
+      await queue.fetch(batchRequest("/publication-batches/complete", lateTelemetry))
+    ).json();
+    assert.equal(duplicate.telemetry_accepted, true);
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(
+      stats.lanes.publication.credential_circuits[0].blocked_until,
+      new Date(lateReset).toISOString(),
+    );
+    assert.equal(
+      stats.lanes.publication.github_request_metrics.counters[
+        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+      ],
+      1,
+    );
+    assert.equal(stats.lanes.publication.capacity_control.ceiling, 12);
+    queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" });
+    const healthyOwner = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-owner-b",
+          lease_owner: "worker-b",
+          max_items: 50,
+        }),
+      )
+    ).json();
+    assert.equal(healthyOwner.claimed, true, JSON.stringify(healthyOwner));
+    assert.match(healthyOwner.batch.items[0].item_key, /^bbb\/repo#/);
+    const replacementLeaseDuplicate = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/complete", {
+          ...lateTelemetry,
+          batch_id: healthyOwner.batch.batch_id,
+          lease_owner: "worker-b",
+        }),
+      )
+    ).json();
+    assert.equal(replacementLeaseDuplicate.telemetry_accepted, true);
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(
+      stats.lanes.publication.github_request_metrics.counters[
+        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+      ],
+      1,
+    );
+    const independentTelemetry = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/complete", {
+          ...lateTelemetry,
+          batch_id: healthyOwner.batch.batch_id,
+          lease_owner: "worker-b",
+          github_telemetry_id: "b".repeat(64),
+        }),
+      )
+    ).json();
+    assert.equal(independentTelemetry.telemetry_accepted, true);
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(
+      stats.lanes.publication.github_request_metrics.counters[
+        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+      ],
+      2,
+    );
+    assert.equal(stats.lanes.publication.capacity_control.ceiling, 6);
+    const retainedReceiptPayloads: Record<string, unknown>[] = [];
+    for (let index = 0; index < 201; index += 1) {
+      const payload = {
+        batch_id: healthyOwner.batch.batch_id,
+        lease_owner: "worker-b",
+        github_telemetry_id: index.toString(16).padStart(64, "0"),
+        github_request_metrics: lateTelemetry.github_request_metrics,
+        items: [],
+      };
+      retainedReceiptPayloads.push(payload);
+      const recorded = await (
+        await queue.fetch(batchRequest("/publication-batches/complete", payload))
+      ).json();
+      assert.equal(recorded.telemetry_accepted, true);
+    }
+    const delayedDuplicate = await (
+      await queue.fetch(batchRequest("/publication-batches/complete", retainedReceiptPayloads[0]))
+    ).json();
+    assert.equal(delayedDuplicate.telemetry_accepted, true);
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(
+      stats.lanes.publication.github_request_metrics.counters[
+        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+      ],
+      203,
+    );
+
+    const receiptFailureReset = lateReset + 60_000;
+    const receiptFailureTelemetry = {
+      batch_id: healthyOwner.batch.batch_id,
+      lease_owner: "worker-b",
+      github_telemetry_id: "c".repeat(64),
+      github_rate_limit_observations: [
+        {
+          scope: "target_app",
+          target_owner: "aaa",
+          observed_at: new Date(now + 3).toISOString(),
+          retry_at: new Date(receiptFailureReset).toISOString(),
+          provenance: "retry_after",
+          authoritative: true,
+        },
+      ],
+      items: [],
+    };
+    storage.failNextSqlMatching(/INSERT INTO exact_review_github_telemetry_receipts/);
+    await assert.rejects(
+      queue.fetch(batchRequest("/publication-batches/complete", receiptFailureTelemetry)),
+      /injected telemetry state write failure/,
+    );
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.capacity_control.ceiling, 6);
+    assert.equal(
+      stats.lanes.publication.credential_circuits[0].blocked_until,
+      new Date(lateReset).toISOString(),
+    );
+    const receiptReplay = await (
+      await queue.fetch(batchRequest("/publication-batches/complete", receiptFailureTelemetry))
+    ).json();
+    assert.equal(receiptReplay.telemetry_accepted, true);
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.capacity_control.ceiling, 4);
+    assert.equal(
+      stats.lanes.publication.credential_circuits[0].blocked_until,
+      new Date(receiptFailureReset).toISOString(),
+    );
+
+    const healthyMember = healthyOwner.batch.items[0];
+    const healthyCompletion = await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: healthyOwner.batch.batch_id,
+        lease_owner: "worker-b",
+        items: [
+          {
+            item_key: healthyMember.item_key,
+            revision: healthyMember.revision,
+            claim_generation: healthyMember.claim_generation,
+            terminal_outcome: "superseded",
+          },
+        ],
+      }),
+    );
+    assert.equal(
+      healthyCompletion.status,
+      200,
+      JSON.stringify(await healthyCompletion.clone().json()),
+    );
+
+    now = receiptFailureReset + 16 * 60_000;
+    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(stats.lanes.publication.credential_circuits[0].active, false);
+    const recoveredOwner = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-owner-a-recovered",
+          lease_owner: "worker-c",
+          max_items: 50,
+        }),
+      )
+    ).json();
+    assert.equal(recoveredOwner.claimed, true, JSON.stringify(recoveredOwner));
+    assert.match(recoveredOwner.batch.items[0].item_key, /^aaa\/repo#/);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("repository Actions circuit blocks every publication batch until reset", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-08-10T14:00:00.000Z");
+  Date.now = () => now;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+    );
+    await queue.fetch(publicationRequest("actions-a", 211, "1211", "aaa/repo"));
+    await queue.fetch(publicationRequest("actions-b", 212, "1212", "bbb/repo"));
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-actions-a",
+          lease_owner: "worker-a",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    const member = claim.batch.items[0];
+    const resetAt = now + 90_000;
+    const completed = await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-a",
+        github_rate_limit_observations: [
+          {
+            scope: "repository_actions",
+            observed_at: new Date(now).toISOString(),
+            retry_at: new Date(resetAt).toISOString(),
+            provenance: "rate_limit_status",
+            authoritative: true,
+          },
+        ],
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "retryable_failure",
+            reason_code: "github_rate_limit",
+            retry_at: new Date(resetAt).toISOString(),
+            attempted: false,
+          },
+        ],
+      }),
+    );
+    assert.equal(completed.status, 200, JSON.stringify(await completed.clone().json()));
+    const blocked = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-actions-blocked",
+          lease_owner: "worker-b",
+          max_items: 2,
+        }),
+      )
+    ).json();
+    assert.equal(blocked.claimed, false, JSON.stringify(blocked));
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(
+      stats.lanes.publication.credential_circuits[0].pool,
+      "actions:openclaw/clawsweeper",
+    );
+    assert.equal(stats.lanes.publication.credential_circuits[0].affected_pending, 2);
+    assert.ok(Date.parse(stats.lanes.publication.credential_circuits[0].recovery_until) > resetAt);
+
+    now = resetAt;
+    const resetBoundary = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-actions-reset-boundary",
+          lease_owner: "worker-boundary",
+          max_items: 2,
+        }),
+      )
+    ).json();
+    assert.equal(resetBoundary.claimed, false, JSON.stringify(resetBoundary));
+
+    now = resetAt + 31_000;
+    const recovered = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-actions-recovered",
+          lease_owner: "worker-c",
+          max_items: 2,
+        }),
+      )
+    ).json();
+    assert.equal(recovered.claimed, true, JSON.stringify(recovered));
   } finally {
     Date.now = originalNow;
   }
@@ -3370,6 +3995,32 @@ test("batch published completion preserves a newer revision owned by the same le
     assert.equal(stats.lanes.publication.pending, 1);
     assert.equal(stats.lanes.publication.published_total, 1);
     assert.equal(stats.lanes.publication.batches.leased, 0);
+    assert.equal(
+      stats.lanes.publication.flow.last_15_minutes.causes.reconciliation.published.complete,
+      true,
+    );
+    assert.deepEqual(
+      stats.lanes.publication.flow.last_15_minutes.causes.rows.map((row) => ({
+        transition: row.transition,
+        reason_code: row.reason_code,
+        revision_relation: row.revision_relation,
+        recovery_cause: row.recovery_cause,
+      })),
+      [
+        {
+          transition: "backoff",
+          reason_code: "publication_applied",
+          revision_relation: "newer_local_revision",
+          recovery_cause: "newer_revision",
+        },
+        {
+          transition: "published",
+          reason_code: "publication_applied",
+          revision_relation: "newer_local_revision",
+          recovery_cause: "newer_revision",
+        },
+      ],
+    );
 
     now += 1;
     const replacement = await (

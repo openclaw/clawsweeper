@@ -34,18 +34,25 @@ Examples:
 `;
 }
 
+export const REVIEW_RUN_OBSERVER_TITLE_LANES = Object.freeze({
+  "Review scheduled hot item ": "hot_intake",
+  "Review scheduled normal item ": "normal_backfill",
+  "Review event item": "exact_event",
+  "Review hot ClawSweeper items": "hot_intake",
+  "Review hot target repo ": "hot_intake",
+  "Retry failed Codex reviews": "recovery",
+  "Review target repo ": "normal_backfill",
+  "Review ClawSweeper items": "normal_backfill",
+});
+
 export function classifyReviewRun(run) {
   const title = String(run.display_title || run.name || "").trim();
   const event = String(run.event || "");
-  if (/^(Apply |Sync |Audit |Fan out )/.test(title)) return null;
-  let triggerLane;
-  if (title.startsWith("Review scheduled hot item")) triggerLane = "hot_intake";
-  else if (title.startsWith("Review scheduled normal item")) triggerLane = "normal_backfill";
-  else if (title.startsWith("Review event item")) triggerLane = "exact_event";
-  else if (/^Review hot (?:ClawSweeper items|target repo)/.test(title)) triggerLane = "hot_intake";
-  else if (title.startsWith("Retry failed Codex reviews")) triggerLane = "recovery";
-  else if (/^Review (?:target repo|ClawSweeper items)/.test(title)) triggerLane = "normal_backfill";
-  else return null;
+  const titleRule = Object.entries(REVIEW_RUN_OBSERVER_TITLE_LANES).find(([prefix]) =>
+    title.startsWith(prefix),
+  );
+  if (!titleRule) return null;
+  const triggerLane = titleRule[1];
 
   const command = /\[(?:router-|command:)/i.test(title);
   const triggerOrigin = title.startsWith("Review scheduled ")

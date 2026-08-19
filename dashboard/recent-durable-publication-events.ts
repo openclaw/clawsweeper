@@ -47,7 +47,8 @@ export function recentDurablePublicationEvents(options: {
     bucketMs,
   });
   const complete = direct.complete && batch.complete;
-  const observed = complete && direct.rows + batch.rows > 0;
+  const observed =
+    complete && direct.rows !== null && batch.rows !== null && direct.rows + batch.rows > 0;
   return {
     version: 1,
     captured_at: new Date(now).toISOString(),
@@ -103,7 +104,7 @@ function source(options: {
     // The approved public contract deliberately fails closed rather than
     // returning a partial aggregate when a raw retained-event window is over cap.
     if (rows.length > RECENT_DURABLE_PUBLICATION_EVENT_SCAN_LIMIT) return unknown(options.outcomes);
-    const counts = empty();
+    const counts: Record<string, number> = empty();
     const buckets = blankBuckets();
     let latest: number | null = null;
     for (const row of rows) {
@@ -115,10 +116,13 @@ function source(options: {
         !validTimestamp(observedAt)
       )
         return unknown(options.outcomes);
-      counts[outcome] += 1;
-      buckets[
-        Math.min(23, Math.max(0, Math.floor((observedAt - options.from) / options.bucketMs)))
-      ].counts[outcome] += 1;
+      counts[outcome] = (counts[outcome] ?? 0) + 1;
+      const bucket =
+        buckets[
+          Math.min(23, Math.max(0, Math.floor((observedAt - options.from) / options.bucketMs)))
+        ];
+      if (!bucket) return unknown(options.outcomes);
+      bucket.counts[outcome] = (bucket.counts[outcome] ?? 0) + 1;
       latest = Math.max(latest ?? observedAt, observedAt);
     }
     return {

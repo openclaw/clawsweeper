@@ -17,7 +17,7 @@ import {
   ghJsonWithRetry as ghJson,
   ghTextWithRetry as ghWithRetry,
 } from "./github-cli.js";
-import { parsePullRequestUrl } from "./github-ref.js";
+import { parsePullRequestUrl, sameRepoSlug } from "./github-ref.js";
 import { sleepMs } from "./timing.js";
 import {
   CLAWSWEEPER_LABEL,
@@ -31,6 +31,7 @@ import {
   writeRepairSquashMergeBody,
 } from "./repair-merge-message.js";
 import { compactText as compactPlainText } from "./text-utils.js";
+import { rollUpStatusChecks } from "./status-check-rollup.js";
 
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const FIX_PR_MERGE_STATES = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
@@ -161,7 +162,7 @@ function finalizeFixPr(action: LooseRecord) {
   }
 
   const parsed = parsePullRequestUrl(action.pr_url ?? action.target);
-  if (!parsed || parsed.repo !== result.repo) {
+  if (!parsed || !sameRepoSlug(parsed.repo, result.repo)) {
     return { ...base, status: "blocked", reason: "fix PR URL is missing or outside target repo" };
   }
 
@@ -512,12 +513,11 @@ function validateMergePreflight(preflight: LooseRecord) {
 
 function validateStatusChecks(checks: LooseRecord[]) {
   if (!Array.isArray(checks) || checks.length === 0) return "no PR checks found";
-  const ignored = ignoredCheckNames();
   const blockers: LooseRecord[] = [];
   let considered = 0;
-  for (const check of latestCheckRuns(checks)) {
+  for (const { check, ignored } of postFlightStatusCheckRollup(checks)) {
     const name = String(check.name ?? check.context ?? "unknown check");
-    if (isIgnoredStatusCheck(check, ignored)) continue;
+    if (ignored) continue;
     considered += 1;
     const status = String(check.status ?? check.state ?? "").toUpperCase();
     const conclusion = String(check.conclusion ?? "").toUpperCase();
@@ -552,68 +552,23 @@ function shouldWaitForIssueImplementationChecks(checkBlock: string, view: LooseR
 }
 
 function hasPendingChecks(checks: LooseRecord[]) {
-  const ignored = ignoredCheckNames();
-  return latestCheckRuns(checks ?? []).some((check: JsonValue) => {
-    if (isIgnoredStatusCheck(check, ignored)) return false;
+  return postFlightStatusCheckRollup(checks ?? []).some(({ check, ignored }) => {
+    if (ignored) return false;
     return isPendingStatusCheck(check);
   });
 }
 
-function isIgnoredStatusCheck(check: LooseRecord, ignored: Set<string>) {
-  const name = String(check.name ?? check.context ?? "unknown check").toLowerCase();
-  const workflow = String(check.workflowName ?? "").toLowerCase();
-  return ignored.has(name) || Boolean(workflow && ignored.has(workflow));
-}
-
-function latestCheckRuns(checks: LooseRecord[]) {
-  const byKey = new Map<string, LooseRecord>();
-  for (const check of checks) {
-    const key = checkIdentity(check);
-    const previous = byKey.get(key);
-    if (!previous || checkTimestamp(check) >= checkTimestamp(previous)) byKey.set(key, check);
-  }
-  return [...byKey.values()];
-}
-
-function checkIdentity(check: LooseRecord) {
-  const name = String(check.name ?? check.context ?? "unknown check").toLowerCase();
-  const workflow = String(check.workflowName ?? "").toLowerCase();
-  return `${workflow}\n${name}`;
-}
-
-function checkTimestamp(check: LooseRecord) {
-  for (const field of [
-    "startedAt",
-    "started_at",
-    "createdAt",
-    "created_at",
-    "completedAt",
-    "completed_at",
-  ]) {
-    const parsed = Date.parse(String(check[field] ?? ""));
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  if (isPendingStatusCheck(check)) return Number.MAX_SAFE_INTEGER;
-  return 0;
+function postFlightStatusCheckRollup(checks: LooseRecord[]) {
+  return rollUpStatusChecks(
+    checks,
+    process.env.CLAWSWEEPER_POST_FLIGHT_IGNORE_CHECKS ?? DEFAULT_IGNORED_CHECKS.join(","),
+  );
 }
 
 function isPendingStatusCheck(check: LooseRecord) {
   const status = String(check.status ?? check.state ?? "").toUpperCase();
   const conclusion = String(check.conclusion ?? "").toUpperCase();
   return !conclusion && Boolean(status) && !["COMPLETED", "SUCCESS"].includes(status);
-}
-
-function ignoredCheckNames() {
-  const configured = String(
-    process.env.CLAWSWEEPER_POST_FLIGHT_IGNORE_CHECKS ?? DEFAULT_IGNORED_CHECKS.join(","),
-  );
-  return new Set(
-    configured
-      .split(",")
-      .map((item: JsonValue) => item.trim())
-      .map((item: string) => item.toLowerCase())
-      .filter(Boolean),
-  );
 }
 
 function shouldRequirePrChecks() {

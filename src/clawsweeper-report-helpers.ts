@@ -137,7 +137,7 @@ export function createReportHelpers(dependencies: CreateReportHelpersDependencie
     // GitHub normalizes CRLF and bare CR to line endings, so normalize first or a
     // bare-CR line break could smuggle a heading past the per-line checks.
     return value
-      .replace(/\r\n?/g, "\n")
+      .replace(/\r\n?|[\u2028\u2029]/g, "\n")
       .split("\n")
       .map((line) => {
         // Strip blockquote/list container prefixes so nested heading constructs are

@@ -159,6 +159,7 @@ export interface ReviewStructuralCacheProbeOptions {
   explicitDispatch: boolean;
   maintainerRequest: boolean;
   coordinationEnabled: boolean;
+  ownedReservationUpdatedAt?: string | undefined;
   now?: number;
 }
 
@@ -1189,6 +1190,7 @@ function activityCoveredByReview(
   prior: ReviewStructuralRecord,
   current: ReviewStructuralRecord,
   review: ReviewStructuralPriorReview,
+  ownedReservationUpdatedAt?: string,
 ): boolean {
   if (current.activityUpdatedAt === prior.activityUpdatedAt) return true;
   // Timestamp equality only clears the activity-clock gate. The caller has
@@ -1201,6 +1203,7 @@ function activityCoveredByReview(
   const latestOwnedSync = Math.max(
     timestampMs(review.reviewCommentSyncedAt) ?? -Infinity,
     timestampMs(review.labelsSyncedAt) ?? -Infinity,
+    timestampMs(ownedReservationUpdatedAt) ?? -Infinity,
   );
   return (
     priorActivity !== null &&
@@ -1271,7 +1274,7 @@ export function reviewStructuralCacheDecision(
   if (prior.sourceRevision !== current.sourceRevision) {
     return { hit: false, reason: "source_changed" };
   }
-  if (!activityCoveredByReview(prior, current, review)) {
+  if (!activityCoveredByReview(prior, current, review, options.ownedReservationUpdatedAt)) {
     return { hit: false, reason: "activity_changed" };
   }
   if (current.relationSensitive) {

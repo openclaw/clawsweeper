@@ -1,0 +1,308 @@
+{
+  "runtime_exports": {
+    "AUTOMATION_LIMITS": {
+      "assist": {
+        "default": 10
+      },
+      "exact_review": {
+        "concurrent_max": 128,
+        "target_concurrent_max": 120
+      },
+      "issue_implementation": {
+        "dispatches_per_sweep_default": 5
+      },
+      "repair_live_runs": {
+        "automerge_default": 51,
+        "cluster_default": 2,
+        "default": 51,
+        "hard_cap": 128,
+        "issue_implementation_default": 51
+      },
+      "review_shards": {
+        "exact_item_default": 1,
+        "hard_cap": 128,
+        "hot_intake_default": 44,
+        "normal_active_floor": 38,
+        "normal_default": 89
+      }
+    },
+    "WORKER_CONFIG": {
+      "lanes": {
+        "assist": {
+          "max": 10
+        },
+        "exact_review": {
+          "max_concurrent": 128,
+          "target_max_concurrent": 120
+        },
+        "repair": {
+          "cluster_max_live_runs": 2
+        }
+      },
+      "workers": {
+        "expansion_reserve": 8,
+        "max": 128,
+        "minimum_background": 16,
+        "reserve_for_interactive": 16
+      }
+    },
+    "deriveAutomationLimits": {
+      "workers_max_128": {
+        "assist": {
+          "default": 10
+        },
+        "exact_review": {
+          "concurrent_max": 128,
+          "target_concurrent_max": 120
+        },
+        "issue_implementation": {
+          "dispatches_per_sweep_default": 5
+        },
+        "repair_live_runs": {
+          "automerge_default": 51,
+          "cluster_default": 2,
+          "default": 51,
+          "hard_cap": 128,
+          "issue_implementation_default": 51
+        },
+        "review_shards": {
+          "exact_item_default": 1,
+          "hard_cap": 128,
+          "hot_intake_default": 44,
+          "normal_active_floor": 38,
+          "normal_default": 89
+        }
+      },
+      "workers_max_256": {
+        "assist": {
+          "default": 10
+        },
+        "exact_review": {
+          "concurrent_max": 128,
+          "target_concurrent_max": 120
+        },
+        "issue_implementation": {
+          "dispatches_per_sweep_default": 10
+        },
+        "repair_live_runs": {
+          "automerge_default": 102,
+          "cluster_default": 2,
+          "default": 102,
+          "hard_cap": 256,
+          "issue_implementation_default": 102
+        },
+        "review_shards": {
+          "exact_item_default": 1,
+          "hard_cap": 256,
+          "hot_intake_default": 89,
+          "normal_active_floor": 76,
+          "normal_default": 179
+        }
+      },
+      "workers_max_64": {
+        "assist": {
+          "default": 10
+        },
+        "exact_review": {
+          "concurrent_max": 64,
+          "target_concurrent_max": 64
+        },
+        "issue_implementation": {
+          "dispatches_per_sweep_default": 2
+        },
+        "repair_live_runs": {
+          "automerge_default": 25,
+          "cluster_default": 2,
+          "default": 25,
+          "hard_cap": 64,
+          "issue_implementation_default": 25
+        },
+        "review_shards": {
+          "exact_item_default": 1,
+          "hard_cap": 64,
+          "hot_intake_default": 22,
+          "normal_active_floor": 19,
+          "normal_default": 44
+        }
+      }
+    },
+    "readWorkerConfig": {
+      "lanes": {
+        "assist": {
+          "max": 10
+        },
+        "exact_review": {
+          "max_concurrent": 128,
+          "target_max_concurrent": 120
+        },
+        "repair": {
+          "cluster_max_live_runs": 2
+        }
+      },
+      "workers": {
+        "expansion_reserve": 8,
+        "max": 128,
+        "minimum_background": 16,
+        "reserve_for_interactive": 16
+      }
+    },
+    "workerLimit": {
+      "workers_max_128": {
+        "active_workers": {
+          "assist": 10,
+          "automerge_repair": 51,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 44,
+          "issue_implementation": 51,
+          "normal_review": 86,
+          "repair": 51
+        },
+        "default": {
+          "assist": 10,
+          "automerge_repair": 51,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 44,
+          "issue_implementation": 51,
+          "normal_review": 89,
+          "repair": 51
+        },
+        "hard_pressure": {
+          "assist": 10,
+          "automerge_repair": 51,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 4,
+          "issue_implementation": 51,
+          "normal_review": 8,
+          "repair": 51
+        },
+        "soft_pressure": {
+          "assist": 10,
+          "automerge_repair": 51,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 22,
+          "issue_implementation": 51,
+          "normal_review": 43,
+          "repair": 51
+        },
+        "unknown_pressure": {
+          "assist": 10,
+          "automerge_repair": 51,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 4,
+          "issue_implementation": 51,
+          "normal_review": 8,
+          "repair": 51
+        }
+      },
+      "workers_max_256": {
+        "active_workers": {
+          "assist": 10,
+          "automerge_repair": 102,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 89,
+          "issue_implementation": 102,
+          "normal_review": 179,
+          "repair": 102
+        },
+        "default": {
+          "assist": 10,
+          "automerge_repair": 102,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 89,
+          "issue_implementation": 102,
+          "normal_review": 179,
+          "repair": 102
+        },
+        "hard_pressure": {
+          "assist": 10,
+          "automerge_repair": 102,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 8,
+          "issue_implementation": 102,
+          "normal_review": 17,
+          "repair": 102
+        },
+        "soft_pressure": {
+          "assist": 10,
+          "automerge_repair": 102,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 45,
+          "issue_implementation": 102,
+          "normal_review": 90,
+          "repair": 102
+        },
+        "unknown_pressure": {
+          "assist": 10,
+          "automerge_repair": 102,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 8,
+          "issue_implementation": 102,
+          "normal_review": 17,
+          "repair": 102
+        }
+      },
+      "workers_max_64": {
+        "active_workers": {
+          "assist": 10,
+          "automerge_repair": 25,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 22,
+          "issue_implementation": 25,
+          "normal_review": 22,
+          "repair": 25
+        },
+        "default": {
+          "assist": 10,
+          "automerge_repair": 25,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 22,
+          "issue_implementation": 25,
+          "normal_review": 40,
+          "repair": 25
+        },
+        "hard_pressure": {
+          "assist": 10,
+          "automerge_repair": 25,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 2,
+          "issue_implementation": 25,
+          "normal_review": 2,
+          "repair": 25
+        },
+        "soft_pressure": {
+          "assist": 10,
+          "automerge_repair": 25,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 11,
+          "issue_implementation": 25,
+          "normal_review": 11,
+          "repair": 25
+        },
+        "unknown_pressure": {
+          "assist": 10,
+          "automerge_repair": 25,
+          "cluster_repair": 2,
+          "exact_item": 1,
+          "hot_intake": 2,
+          "issue_implementation": 25,
+          "normal_review": 2,
+          "repair": 25
+        }
+      }
+    }
+  }
+}

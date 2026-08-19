@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "contract": "docs/proof/durable-command-intake/behavior-contract.md",
+  "target": "pinned-main and candidate Cloudflare Workers via wrangler dev --local",
+  "summary": { "pass": 6, "fail": 0, "blocked": 0, "out_of_scope": 0 },
+  "clauses": [
+    {
+      "id": "baseline_failure",
+      "result": "pass",
+      "evidence": "HTTP 500 followed one acknowledgement, one reaction, and one throttled dispatch."
+    },
+    {
+      "id": "baseline_not_durable",
+      "result": "pass",
+      "evidence": "No command-intake schema or command row existed after the baseline process group stopped."
+    },
+    {
+      "id": "candidate_acceptance",
+      "result": "pass",
+      "evidence": "Candidate returned HTTP 202 accepted=true before any acknowledgement or dispatch."
+    },
+    {
+      "id": "candidate_retry_durability",
+      "result": "pass",
+      "evidence": "After one throttled source-comment read, one intake and one pending receipt remained."
+    },
+    {
+      "id": "durable_object_instantiation",
+      "result": "pass",
+      "evidence": "All four exact-review command tables were present in local Durable Object SQLite."
+    },
+    {
+      "id": "boot_isolation",
+      "result": "pass",
+      "evidence": "Both Wrangler process groups exited after SIGTERM before the next boot or inspection."
+    }
+  ],
+  "anti_cheat_probes": [
+    "real loopback GITHUB_API_URL listener",
+    "separate baseline and candidate persistence roots",
+    "full process-group termination between boots",
+    "post-stop SQLite schema and receipt inspection"
+  ],
+  "findings": [],
+  "limits": [
+    "No live GitHub credentials or production mutations.",
+    "Executor completion and final public review publication were not exercised."
+  ]
+}

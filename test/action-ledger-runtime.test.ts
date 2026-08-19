@@ -3934,6 +3934,64 @@ test("state shard imports reject producer provenance outside the authenticated w
   );
 });
 
+test("state shard imports accept retained prior attempts only through an explicit upper bound", async () => {
+  const root = tempRoot();
+  const source = trustedChildRoot(root, "source");
+  const destination = trustedChildRoot(root, "destination");
+  const attemptOneEnv = workflowEnv({ GITHUB_RUN_ATTEMPT: "1" });
+  const event = recordReview(root, attemptOneEnv);
+  assert.ok(event);
+  await flushWorkflowActionEvents(root, {
+    env: attemptOneEnv,
+    outputRoot: source,
+  });
+  const expectedIdentity = {
+    repository: event.producer.repository,
+    sha: event.producer.sha,
+    workflow: event.producer.workflow,
+    job: event.producer.job,
+    runId: event.producer.run_id,
+  };
+
+  assert.throws(
+    () =>
+      importActionEventShards(source, destination, {
+        expectedProducer: { ...expectedIdentity, runAttempt: 2 },
+      }),
+    /producer provenance mismatch for run_attempt: expected 2, got 1/,
+  );
+  assert.equal(
+    importActionEventShards(source, destination, {
+      expectedProducer: { ...expectedIdentity, maxRunAttempt: 2 },
+    }).created,
+    1,
+  );
+
+  const futureRoot = tempRoot();
+  const futureSource = trustedChildRoot(futureRoot, "source");
+  const futureDestination = trustedChildRoot(futureRoot, "destination");
+  const attemptThreeEnv = workflowEnv({ GITHUB_RUN_ATTEMPT: "3" });
+  recordReview(futureRoot, attemptThreeEnv);
+  await flushWorkflowActionEvents(futureRoot, {
+    env: attemptThreeEnv,
+    outputRoot: futureSource,
+  });
+  assert.throws(
+    () =>
+      importActionEventShards(futureSource, futureDestination, {
+        expectedProducer: { ...expectedIdentity, maxRunAttempt: 2 },
+      }),
+    /producer provenance mismatch for run_attempt: expected at most 2, got 3/,
+  );
+  assert.throws(
+    () =>
+      importActionEventShards(source, trustedChildRoot(root, "invalid-constraint"), {
+        expectedProducer: { ...expectedIdentity, maxRunAttempt: Number.NaN },
+      }),
+    /requires one positive run attempt constraint/,
+  );
+});
+
 test("state shard imports validate duplicate and causal integrity across shard parts", () => {
   const root = tempRoot();
   const event = recordReview(root);

@@ -1,0 +1,52 @@
+{
+  "schema": "clawsweeper-crabbox-proof-provenance/v1",
+  "claim": "docs/proof/csw-1089/run-proof.sh passes against the reviewed PR head inside a Docker-backed Crabbox local-container.",
+  "crabbox": {
+    "cli_version": "0.39.0",
+    "provider": "local-container",
+    "lease_id": "cbx_9797931e8d4d",
+    "slug": "coral-prawn",
+    "machine_type": "node_24-bookworm",
+    "image": "node:24-bookworm",
+    "container_engine": "Docker 29.4.0 (OrbStack)",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1089 (clean remote checkout, --no-hydrate)",
+    "workdir": "/work/crabbox/cbx_9797931e8d4d/fresh-pr-openclaw-clawsweeper-1089",
+    "sync_ms": 10174,
+    "command_ms": 55596,
+    "total_ms": 65770,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0"
+  },
+  "reviewed_head": "d54d60abf5de708713e0fbedce496cd5a21dd251",
+  "result": {
+    "ok": true,
+    "assertions": 21
+  },
+  "observations": {
+    "state_contention": {
+      "item": "openclaw/openclaw#108901",
+      "state": "pending",
+      "backoff_reason": "publication_retry",
+      "attempts": 1,
+      "dead_letters": []
+    },
+    "unknown_failure_control_attempt_1": {
+      "item": "openclaw/openclaw#108904",
+      "state": "pending",
+      "backoff_reason": "publication_retry",
+      "attempts": 1,
+      "dead_letters": []
+    }
+  },
+  "limits": [
+    "Both observations are at attempt 1, where state_contention and unknown_failure behave identically; the budget divergence (48 attempts / 24h vs 14 attempts / 1h) is not demonstrated at the boundary.",
+    "Driving an authentic attempt 14 requires roughly 51 minutes of real publication backoff, so no dead-lettered result was produced or claimed.",
+    "The retry-budget mapping in dashboard/exact-review-publication-retry.ts is pre-existing code this PR does not modify; what this PR changes is which reason code the batch publisher emits, and that is what the transport chain above exercises end to end.",
+    "The publication endpoint requires HTTPS, so the run generates a disposable self-signed 127.0.0.1 certificate and a disposable local webhook secret. No production credential or endpoint is involved."
+  ]
+}

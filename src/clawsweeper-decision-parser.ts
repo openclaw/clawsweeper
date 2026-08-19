@@ -14,6 +14,12 @@ import {
   ITEM_CATEGORIES,
   LABEL_JUSTIFICATION_SCHEMA_KEYS,
   LIKELY_OWNER_SCHEMA_KEYS,
+  LIVE_PROOF_PLAN_SCHEMA_KEYS,
+  LIVE_PROOF_PLAN_STATUSES,
+  LIVE_PROOF_PAYOFF_KINDS,
+  LIVE_PROOF_PAYOFF_SCHEMA_KEYS,
+  LIVE_PROOF_STEP_SCHEMA_KEYS,
+  LIVE_PROOF_SURFACES,
   MANTIS_RECOMMENDATION_SCENARIOS,
   MANTIS_RECOMMENDATION_SCHEMA_KEYS,
   MANTIS_RECOMMENDATION_STATUSES,
@@ -56,6 +62,8 @@ import type {
   FeatureShowcase,
   ImpactLabelName,
   LabelJustification,
+  LiveProofPlan,
+  LiveProofStep,
   LikelyOwner,
   MantisRecommendation,
   MaturityLabelName,
@@ -117,6 +125,17 @@ export function createDecisionParser({
     throw new Error(`${path} must be a string or null`);
   }
 
+  function requireSingleLineString(value: unknown, path: string): string {
+    const text = requireString(value, path);
+    if (/[\r\n\u2028\u2029]/.test(text)) throw new Error(`${path} must be a single-line string`);
+    return text;
+  }
+
+  function requireNullableSingleLineString(value: unknown, path: string): string | null {
+    if (value === null) return null;
+    return requireSingleLineString(value, path);
+  }
+
   function requireNullableInteger(value: unknown, path: string): number | null {
     if (value === null) return value;
     if (typeof value === "number" && Number.isInteger(value)) return value;
@@ -155,6 +174,19 @@ export function createDecisionParser({
     return value.map((entry, index) => requireString(entry, `${path}[${index}]`));
   }
 
+  function requireReportText(value: unknown, path: string): string {
+    return neutralizeOwnedSectionSpoofing(requireString(value, path));
+  }
+
+  function requireReportTextArray(value: unknown, path: string): string[] {
+    return requireStringArray(value, path).map(neutralizeOwnedSectionSpoofing);
+  }
+
+  function requireSingleLineStringArray(value: unknown, path: string): string[] {
+    if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
+    return value.map((entry, index) => requireSingleLineString(entry, `${path}[${index}]`));
+  }
+
   function requireEnumArray<T extends string>(value: unknown, allowed: Set<T>, path: string): T[] {
     return requireStringArray(value, path).map((entry, index) =>
       requireEnum(entry, allowed, `${path}[${index}]`),
@@ -190,11 +222,11 @@ export function createDecisionParser({
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, MERGE_RISK_OPTION_SCHEMA_KEYS, path);
     return {
-      title: requireString(record.title, `${path}.title`).trim(),
-      body: requireString(record.body, `${path}.body`).trim(),
+      title: requireReportText(record.title, `${path}.title`).trim(),
+      body: requireReportText(record.body, `${path}.body`).trim(),
       category: requireEnum(record.category, MERGE_RISK_OPTION_CATEGORIES, `${path}.category`),
       recommended: requireBoolean(record.recommended, `${path}.recommended`),
-      automergeInstruction: requireString(
+      automergeInstruction: requireReportText(
         record.automergeInstruction,
         `${path}.automergeInstruction`,
       ).trim(),
@@ -238,9 +270,9 @@ export function createDecisionParser({
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, REVIEW_METRIC_SCHEMA_KEYS, path);
     const metric = {
-      label: requireString(record.label, `${path}.label`).trim(),
-      value: requireString(record.value, `${path}.value`).trim(),
-      reason: requireString(record.reason, `${path}.reason`).trim(),
+      label: requireReportText(record.label, `${path}.label`).trim(),
+      value: requireReportText(record.value, `${path}.value`).trim(),
+      reason: requireReportText(record.reason, `${path}.reason`).trim(),
     };
     if (!metric.label) throw new Error(`${path}.label must not be empty`);
     if (!metric.value) throw new Error(`${path}.value must not be empty`);
@@ -284,7 +316,7 @@ export function createDecisionParser({
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, LABEL_JUSTIFICATION_SCHEMA_KEYS, path);
     const label = requireEnum(record.label, REVIEW_LABEL_VALUES, `${path}.label`);
-    const reason = requireString(record.reason, `${path}.reason`).trim();
+    const reason = requireReportText(record.reason, `${path}.reason`).trim();
     if (!reason) throw new Error(`${path}.reason must not be empty`);
     return { label, reason };
   }
@@ -351,12 +383,12 @@ export function createDecisionParser({
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, EVIDENCE_SCHEMA_KEYS, path);
     return {
-      label: requireString(record.label, `${path}.label`),
-      detail: requireString(record.detail, `${path}.detail`),
-      file: requireNullableString(record.file, `${path}.file`),
+      label: requireReportText(record.label, `${path}.label`),
+      detail: requireReportText(record.detail, `${path}.detail`),
+      file: requireNullableSingleLineString(record.file, `${path}.file`),
       line: requireNullableInteger(record.line, `${path}.line`),
-      command: requireNullableString(record.command, `${path}.command`),
-      sha: requireNullableString(record.sha, `${path}.sha`),
+      command: requireNullableSingleLineString(record.command, `${path}.command`),
+      sha: requireNullableSingleLineString(record.sha, `${path}.sha`),
     };
   }
 
@@ -364,11 +396,11 @@ export function createDecisionParser({
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, LIKELY_OWNER_SCHEMA_KEYS, path);
     return {
-      person: requireString(record.person, `${path}.person`),
-      role: requireString(record.role, `${path}.role`),
-      reason: requireString(record.reason, `${path}.reason`),
-      commits: requireStringArray(record.commits, `${path}.commits`),
-      files: requireStringArray(record.files, `${path}.files`),
+      person: requireReportText(record.person, `${path}.person`),
+      role: requireReportText(record.role, `${path}.role`),
+      reason: requireReportText(record.reason, `${path}.reason`),
+      commits: requireSingleLineStringArray(record.commits, `${path}.commits`),
+      files: requireSingleLineStringArray(record.files, `${path}.files`),
       confidence: requireEnum(record.confidence, CONFIDENCES, `${path}.confidence`),
     };
   }
@@ -381,11 +413,11 @@ export function createDecisionParser({
     if (lineStart <= 0) throw new Error(`${path}.lineStart must be positive`);
     if (lineEnd < lineStart) throw new Error(`${path}.lineEnd must be >= lineStart`);
     const finding: ReviewFinding = {
-      title: requireString(record.title, `${path}.title`),
-      body: requireString(record.body, `${path}.body`),
+      title: requireReportText(record.title, `${path}.title`),
+      body: requireReportText(record.body, `${path}.body`),
       priority: requirePriority(record.priority, `${path}.priority`),
       confidenceScore: requireConfidenceScore(record.confidenceScore, `${path}.confidenceScore`),
-      file: requireString(record.file, `${path}.file`),
+      file: requireSingleLineString(record.file, `${path}.file`),
       lineStart,
       lineEnd,
     };
@@ -484,11 +516,11 @@ export function createDecisionParser({
     const line = requireNullableInteger(record.line, `${path}.line`);
     if (line !== null && line <= 0) throw new Error(`${path}.line must be positive`);
     return {
-      title: requireString(record.title, `${path}.title`),
-      body: requireString(record.body, `${path}.body`),
+      title: requireReportText(record.title, `${path}.title`),
+      body: requireReportText(record.body, `${path}.body`),
       severity: requireEnum(record.severity, SECURITY_CONCERN_SEVERITIES, `${path}.severity`),
       confidenceScore: requireConfidenceScore(record.confidenceScore, `${path}.confidenceScore`),
-      file: requireNullableString(record.file, `${path}.file`),
+      file: requireNullableSingleLineString(record.file, `${path}.file`),
       line,
     };
   }
@@ -505,7 +537,7 @@ export function createDecisionParser({
         })();
     return {
       status: requireEnum(record.status, SECURITY_REVIEW_STATUSES, `${path}.status`),
-      summary: requireString(record.summary, `${path}.summary`),
+      summary: requireReportText(record.summary, `${path}.summary`),
       concerns,
     };
   }
@@ -515,7 +547,7 @@ export function createDecisionParser({
     rejectUnexpectedKeys(record, REAL_BEHAVIOR_PROOF_SCHEMA_KEYS, path);
     return {
       status: requireEnum(record.status, REAL_BEHAVIOR_PROOF_STATUSES, `${path}.status`),
-      summary: requireString(record.summary, `${path}.summary`),
+      summary: requireReportText(record.summary, `${path}.summary`),
       evidenceKind: requireEnum(
         record.evidenceKind,
         REAL_BEHAVIOR_PROOF_EVIDENCE_KINDS,
@@ -535,8 +567,8 @@ export function createDecisionParser({
       proofTier: requireEnum(record.proofTier, PR_RATING_TIERS, `${path}.proofTier`),
       patchTier: requireEnum(record.patchTier, PR_RATING_TIERS, `${path}.patchTier`),
       overallTier: requireEnum(record.overallTier, PR_RATING_TIERS, `${path}.overallTier`),
-      summary: requireString(record.summary, `${path}.summary`),
-      nextSteps: requireStringArray(record.nextSteps, `${path}.nextSteps`).slice(0, 3),
+      summary: requireReportText(record.summary, `${path}.summary`),
+      nextSteps: requireReportTextArray(record.nextSteps, `${path}.nextSteps`).slice(0, 3),
     });
   }
 
@@ -545,8 +577,102 @@ export function createDecisionParser({
     rejectUnexpectedKeys(record, TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS, path);
     return {
       status: requireEnum(record.status, TELEGRAM_VISIBLE_PROOF_STATUSES, `${path}.status`),
-      summary: requireString(record.summary, `${path}.summary`),
+      summary: requireReportText(record.summary, `${path}.summary`),
     };
+  }
+
+  function parseLiveProofStep(value: unknown, path: string): LiveProofStep {
+    const record = requireRecord(value, path);
+    const action = requireSingleLineString(record.action, `${path}.action`);
+    if (!Object.hasOwn(LIVE_PROOF_STEP_SCHEMA_KEYS, action)) {
+      throw new Error(`${path}.action has invalid value`);
+    }
+    rejectUnexpectedKeys(
+      record,
+      LIVE_PROOF_STEP_SCHEMA_KEYS[action as keyof typeof LIVE_PROOF_STEP_SCHEMA_KEYS],
+      path,
+    );
+    const nonEmptyString = (key: string): string => {
+      const result = requireSingleLineString(record[key], `${path}.${key}`).trim();
+      if (!result) throw new Error(`${path}.${key} must not be empty`);
+      return result;
+    };
+    switch (action) {
+      case "goto": {
+        const step = { action, path: nonEmptyString("path") } as const;
+        if (!step.path.startsWith("/")) throw new Error(`${path}.path must be a URL path`);
+        return step;
+      }
+      case "click":
+        return { action, target: nonEmptyString("target") };
+      case "fill":
+        return { action, target: nonEmptyString("target"), value: nonEmptyString("value") };
+      case "press":
+        return { action, key: nonEmptyString("key") };
+      case "wait_for":
+        return { action, target: nonEmptyString("target") };
+      case "wait": {
+        const seconds = requireNumber(record.seconds, `${path}.seconds`);
+        if (seconds <= 0 || seconds > 90) {
+          throw new Error(`${path}.seconds must be greater than 0 and at most 90`);
+        }
+        return { action, seconds };
+      }
+      case "expect_text":
+        return { action, text: nonEmptyString("text") };
+      case "run":
+        return { action, command: nonEmptyString("command") };
+      case "expect_output":
+        return { action, text: nonEmptyString("text") };
+      default:
+        throw new Error(`${path}.action has invalid value`);
+    }
+  }
+
+  function parseLiveProofPlan(value: unknown, path: string): LiveProofPlan {
+    const record = requireRecord(value, path);
+    rejectUnexpectedKeys(record, LIVE_PROOF_PLAN_SCHEMA_KEYS, path);
+    const status = requireEnum(record.status, LIVE_PROOF_PLAN_STATUSES, `${path}.status`);
+    const surface = requireEnum(record.surface, LIVE_PROOF_SURFACES, `${path}.surface`);
+    const reason = neutralizeOwnedSectionSpoofing(
+      requireSingleLineString(record.reason, `${path}.reason`),
+    ).trim();
+    const payoffRecord = requireRecord(record.payoff, `${path}.payoff`);
+    rejectUnexpectedKeys(payoffRecord, LIVE_PROOF_PAYOFF_SCHEMA_KEYS, `${path}.payoff`);
+    const payoff = {
+      kind: requireEnum(payoffRecord.kind, LIVE_PROOF_PAYOFF_KINDS, `${path}.payoff.kind`),
+      justification: neutralizeOwnedSectionSpoofing(
+        requireSingleLineString(payoffRecord.justification, `${path}.payoff.justification`),
+      ).trim(),
+    };
+    const entry = requireSingleLineString(record.entry, `${path}.entry`).trim();
+    if (!reason) throw new Error(`${path}.reason must not be empty`);
+    if (!payoff.justification) throw new Error(`${path}.payoff.justification must not be empty`);
+    if (!Array.isArray(record.steps)) throw new Error(`${path}.steps must be an array`);
+    if (record.steps.length > 10) throw new Error(`${path}.steps must contain at most 10 items`);
+    const steps = record.steps.map((step, index) =>
+      parseLiveProofStep(step, `${path}.steps[${index}]`),
+    );
+    if (status !== "recommended") {
+      if (surface !== "none") throw new Error(`${path}.surface must be none unless recommended`);
+      if (entry) throw new Error(`${path}.entry must be empty unless recommended`);
+      if (steps.length) throw new Error(`${path}.steps must be empty unless recommended`);
+      return { status, surface, reason, payoff, entry, steps };
+    }
+    if (surface === "none") throw new Error(`${path}.surface must identify a recommended surface`);
+    if (!entry) throw new Error(`${path}.entry must not be empty when recommended`);
+    if (!steps.length) throw new Error(`${path}.steps must not be empty when recommended`);
+    if (surface === "browser" && !entry.startsWith("/")) {
+      throw new Error(`${path}.entry must be a URL path for browser proof`);
+    }
+    const allowedActions =
+      surface === "browser"
+        ? new Set(["goto", "click", "fill", "press", "wait_for", "wait", "expect_text"])
+        : new Set(["run", "wait", "expect_output"]);
+    if (steps.some((step) => !allowedActions.has(step.action))) {
+      throw new Error(`${path}.steps contain an action that does not match ${surface} proof`);
+    }
+    return { status, surface, reason, payoff, entry, steps };
   }
 
   function parseMantisRecommendation(value: unknown, path: string): MantisRecommendation {
@@ -555,8 +681,8 @@ export function createDecisionParser({
     return {
       status: requireEnum(record.status, MANTIS_RECOMMENDATION_STATUSES, `${path}.status`),
       scenario: requireEnum(record.scenario, MANTIS_RECOMMENDATION_SCENARIOS, `${path}.scenario`),
-      reason: requireString(record.reason, `${path}.reason`),
-      maintainerComment: requireString(record.maintainerComment, `${path}.maintainerComment`),
+      reason: requireReportText(record.reason, `${path}.reason`),
+      maintainerComment: requireReportText(record.maintainerComment, `${path}.maintainerComment`),
     };
   }
 
@@ -565,7 +691,7 @@ export function createDecisionParser({
     rejectUnexpectedKeys(record, FEATURE_SHOWCASE_SCHEMA_KEYS, path);
     return {
       status: requireEnum(record.status, FEATURE_SHOWCASE_STATUSES, `${path}.status`),
-      reason: requireString(record.reason, `${path}.reason`),
+      reason: requireReportText(record.reason, `${path}.reason`),
     };
   }
 
@@ -604,7 +730,7 @@ export function createDecisionParser({
         ROOT_CAUSE_RELATIONSHIPS,
         `${path}.relationship`,
       ),
-      reason,
+      reason: neutralizeOwnedSectionSpoofing(reason),
     };
   }
 
@@ -721,7 +847,7 @@ export function createDecisionParser({
       confidence: requireEnum(record.confidence, CONFIDENCES, `${path}.confidence`),
       canonicalRef,
       currentItemRelationship,
-      summary,
+      summary: neutralizeOwnedSectionSpoofing(summary),
       members,
     };
   }
@@ -746,7 +872,7 @@ export function createDecisionParser({
       readFully: requireBoolean(record.readFully, `${path}.readFully`),
       applied: requireBoolean(record.applied, `${path}.applied`),
       status: requireEnum(record.status, AGENTS_POLICY_STATUSES, `${path}.status`),
-      summary: requireString(record.summary, `${path}.summary`),
+      summary: requireReportText(record.summary, `${path}.summary`),
     };
   }
 
@@ -758,11 +884,11 @@ export function createDecisionParser({
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, REGRESSION_PROVENANCE_SCHEMA_KEYS, path);
     return {
-      repo: requireString(record.repo, `${path}.repo`),
+      repo: requireSingleLineString(record.repo, `${path}.repo`),
       pullRequestNumber: requireInteger(record.pullRequestNumber, `${path}.pullRequestNumber`),
-      pullRequestUrl: requireString(record.pullRequestUrl, `${path}.pullRequestUrl`),
-      mergeCommitSha: requireString(record.mergeCommitSha, `${path}.mergeCommitSha`),
-      sourcePath: requireString(record.sourcePath, `${path}.sourcePath`),
+      pullRequestUrl: requireSingleLineString(record.pullRequestUrl, `${path}.pullRequestUrl`),
+      mergeCommitSha: requireSingleLineString(record.mergeCommitSha, `${path}.mergeCommitSha`),
+      sourcePath: requireSingleLineString(record.sourcePath, `${path}.sourcePath`),
       sourceLine: requireInteger(record.sourceLine, `${path}.sourceLine`),
     };
   }
@@ -820,28 +946,41 @@ export function createDecisionParser({
       : (() => {
           throw new Error("decision.reviewFindings must be an array");
         })();
+    const maintainerDecision = parseMaintainerDecision(
+      record.maintainerDecision,
+      "decision.maintainerDecision",
+    );
     const decision: Decision = {
       decision: requireEnum(record.decision, DECISIONS, "decision.decision"),
       closeReason: requireEnum(record.closeReason, ALL_REASONS, "decision.closeReason"),
       confidence: requireEnum(record.confidence, CONFIDENCES, "decision.confidence"),
-      summary: requireString(record.summary, "decision.summary"),
-      changeSummary: requireString(record.changeSummary, "decision.changeSummary"),
-      systemContext: neutralizeOwnedSectionSpoofing(
-        requireString(record.systemContext, "decision.systemContext"),
-      ),
+      summary: requireReportText(record.summary, "decision.summary"),
+      changeSummary: requireReportText(record.changeSummary, "decision.changeSummary"),
+      systemContext: requireReportText(record.systemContext, "decision.systemContext"),
       architectureDiagram: sanitizeArchitectureDiagram(
         requireString(record.architectureDiagram, "decision.architectureDiagram"),
       ),
       evidence,
       likelyOwners,
-      risks: requireStringArray(record.risks, "decision.risks").filter(
+      risks: requireReportTextArray(record.risks, "decision.risks").filter(
         (risk) => !isEnvironmentAccessCaveat(risk),
       ),
-      bestSolution: requireString(record.bestSolution, "decision.bestSolution"),
-      maintainerDecision: parseMaintainerDecision(
-        record.maintainerDecision,
-        "decision.maintainerDecision",
-      ),
+      bestSolution: requireReportText(record.bestSolution, "decision.bestSolution"),
+      maintainerDecision: {
+        ...maintainerDecision,
+        question: neutralizeOwnedSectionSpoofing(maintainerDecision.question),
+        rationale: neutralizeOwnedSectionSpoofing(maintainerDecision.rationale),
+        options: maintainerDecision.options.map((option) => ({
+          ...option,
+          title: neutralizeOwnedSectionSpoofing(option.title),
+          body: neutralizeOwnedSectionSpoofing(option.body),
+        })),
+        likelyOwner: {
+          ...maintainerDecision.likelyOwner,
+          person: neutralizeOwnedSectionSpoofing(maintainerDecision.likelyOwner.person),
+          reason: neutralizeOwnedSectionSpoofing(maintainerDecision.likelyOwner.reason),
+        },
+      },
       triagePriority: requireEnum(
         record.triagePriority,
         TRIAGE_PRIORITIES,
@@ -873,14 +1012,20 @@ export function createDecisionParser({
         record.requiresProductDecision,
         "decision.requiresProductDecision",
       ),
-      reproductionAssessment: requireString(
+      reproductionAssessment: requireReportText(
         record.reproductionAssessment,
         "decision.reproductionAssessment",
       ),
-      solutionAssessment: requireString(record.solutionAssessment, "decision.solutionAssessment"),
+      solutionAssessment: requireReportText(
+        record.solutionAssessment,
+        "decision.solutionAssessment",
+      ),
       visionFit: requireEnum(record.visionFit, VISION_FIT_STATUSES, "decision.visionFit"),
-      visionFitReason: requireString(record.visionFitReason, "decision.visionFitReason"),
-      visionFitEvidence: requireStringArray(record.visionFitEvidence, "decision.visionFitEvidence"),
+      visionFitReason: requireReportText(record.visionFitReason, "decision.visionFitReason"),
+      visionFitEvidence: requireReportTextArray(
+        record.visionFitEvidence,
+        "decision.visionFitEvidence",
+      ),
       implementationComplexity: requireEnum(
         record.implementationComplexity,
         IMPLEMENTATION_COMPLEXITIES,
@@ -911,6 +1056,7 @@ export function createDecisionParser({
         record.telegramVisibleProof,
         "decision.telegramVisibleProof",
       ),
+      liveProofPlan: parseLiveProofPlan(record.liveProofPlan, "decision.liveProofPlan"),
       mantisRecommendation: parseMantisRecommendation(
         record.mantisRecommendation,
         "decision.mantisRecommendation",
@@ -925,9 +1071,9 @@ export function createDecisionParser({
         record.overallConfidenceScore,
         "decision.overallConfidenceScore",
       ),
-      fixedRelease: requireNullableString(record.fixedRelease, "decision.fixedRelease"),
-      fixedSha: requireNullableString(record.fixedSha, "decision.fixedSha"),
-      fixedAt: requireNullableString(record.fixedAt, "decision.fixedAt"),
+      fixedRelease: requireNullableSingleLineString(record.fixedRelease, "decision.fixedRelease"),
+      fixedSha: requireNullableSingleLineString(record.fixedSha, "decision.fixedSha"),
+      fixedAt: requireNullableSingleLineString(record.fixedAt, "decision.fixedAt"),
       regressionAssessment: parseRegressionAssessment(
         record.regressionAssessment,
         "decision.regressionAssessment",
@@ -936,15 +1082,24 @@ export function createDecisionParser({
         record.regressionProvenance,
         "decision.regressionProvenance",
       ),
-      closeComment: requireString(record.closeComment, "decision.closeComment"),
+      closeComment: requireReportText(record.closeComment, "decision.closeComment"),
       workCandidate: requireEnum(record.workCandidate, WORK_CANDIDATES, "decision.workCandidate"),
       workConfidence: requireEnum(record.workConfidence, CONFIDENCES, "decision.workConfidence"),
       workPriority: requireEnum(record.workPriority, CONFIDENCES, "decision.workPriority"),
-      workReason: requireString(record.workReason, "decision.workReason"),
-      workPrompt: requireString(record.workPrompt, "decision.workPrompt"),
-      workClusterRefs: requireStringArray(record.workClusterRefs, "decision.workClusterRefs"),
-      workValidation: requireStringArray(record.workValidation, "decision.workValidation"),
-      workLikelyFiles: requireStringArray(record.workLikelyFiles, "decision.workLikelyFiles"),
+      workReason: requireReportText(record.workReason, "decision.workReason"),
+      workPrompt: requireReportText(record.workPrompt, "decision.workPrompt"),
+      workClusterRefs: requireSingleLineStringArray(
+        record.workClusterRefs,
+        "decision.workClusterRefs",
+      ),
+      workValidation: requireSingleLineStringArray(
+        record.workValidation,
+        "decision.workValidation",
+      ),
+      workLikelyFiles: requireSingleLineStringArray(
+        record.workLikelyFiles,
+        "decision.workLikelyFiles",
+      ),
     };
     validateMergeRiskOptions(decision);
     validateMaintainerDecisionOwner(decision);
@@ -957,6 +1112,7 @@ export function createDecisionParser({
     parseDecision,
     parseGitHubItemRef,
     parseLabelJustification,
+    parseLiveProofPlan,
     parseMergeRiskOption,
     parseRootCauseCluster,
     selectedReviewLabels,

@@ -1,6 +1,6 @@
 import { currentHead } from "./git-repo-utils.js";
 import type { GitHubRef } from "./github-ref.js";
-import { parsePullRequestUrl } from "./github-ref.js";
+import { parsePullRequestUrl, sameRepoSlug } from "./github-ref.js";
 import type { JsonValue } from "./json-types.js";
 import { runCommand as run } from "./command-runner.js";
 
@@ -26,7 +26,7 @@ export function firstTargetSourcePullRequest(
 ): GitHubRef | null {
   for (const source of sourcePrs) {
     const parsed = parsePullRequestUrl(source);
-    if (parsed?.repo === repo) return parsed;
+    if (sameRepoSlug(parsed?.repo, repo)) return parsed;
   }
   return null;
 }
@@ -49,7 +49,7 @@ export function checkoutSourcePullRequestHead({
   sourcePr: GitHubRef;
   pull: JsonValue;
 }): SourcePullRequestCheckout {
-  if (sourcePr.repo !== repo) {
+  if (!sameRepoSlug(sourcePr.repo, repo)) {
     throw new Error(`source PR ${sourcePr.url} is not in target repo ${repo}`);
   }
 

@@ -27,7 +27,7 @@ A structural hit requires all of the following:
 - the complete hydrated PR state is unchanged, including head and base SHAs,
   draft and mergeability state, diff counts, and commit count; and
 - any item activity timestamp change is covered by the recorded ClawSweeper
-  comment or label synchronization boundary.
+  comment, label synchronization, or validated review-reservation boundary.
 
 Explicit reviews, maintainer prompts, close verdicts, failed reviews, legacy
 records, truncated metadata, malformed API responses, and probe failures always
@@ -41,11 +41,12 @@ timeline, review, and review-thread input; the final verdict probe must match
 that anchor again.
 
 Before carrying a structural hit, ClawSweeper acquires the normal durable review
-lease for the unchanged PR head or issue source revision. Missing coordination,
-an incomplete lease tuple, or a concurrent review always disables reuse.
-ClawSweeper then refreshes target and release state and repeats the bounded
-metadata and check-state probes under that lease; any intervening drift forces
-full hydration.
+lease for the unchanged PR head or issue source revision. Scheduled deliveries
+claim the lease already reserved by their workflow instead of posting a second
+lease comment. Missing coordination, an incomplete lease tuple, or a concurrent
+review always disables reuse. ClawSweeper then refreshes target and release state
+and repeats the bounded metadata and check-state probes under that lease; any
+intervening drift forces full hydration.
 
 ## Semantic Stage
 

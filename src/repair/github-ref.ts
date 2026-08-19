@@ -4,6 +4,23 @@ export type GitHubRef = {
   url: string;
 };
 
+/**
+ * GitHub repository slugs are case-insensitive: `OpenClaw/OpenClaw` and
+ * `openclaw/openclaw` address the same repository, and github.com serves both.
+ * The URL parsers below match case-insensitively, so a slug they return may not
+ * be byte-equal to a configured slug that names the same repository. Compare
+ * with this rather than `===`.
+ */
+export function sameRepoSlug(left: unknown, right: unknown): boolean {
+  const a = String(left ?? "")
+    .trim()
+    .toLowerCase();
+  const b = String(right ?? "")
+    .trim()
+    .toLowerCase();
+  return a.length > 0 && a === b;
+}
+
 export function parsePullRequestUrl(value: unknown): GitHubRef | null {
   const match = String(value ?? "")
     .trim()

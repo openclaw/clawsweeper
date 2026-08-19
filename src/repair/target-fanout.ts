@@ -5,6 +5,12 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveCommand } from "../command.js";
+import {
+  fetchDurableCursor,
+  putDurableCursor,
+  type DurableCursorSnapshot,
+  type DurableCursorStoreOptions,
+} from "../durable-cursor-store.js";
 import { fetchExactReviewQueuePressure } from "../queue-pressure.js";
 import { coverageTrackedCountsFromManifest } from "../review-coverage-manifest.js";
 import { parseArgs, repoRoot } from "./lib.js";
@@ -83,21 +89,8 @@ export interface ReviewFanoutRepository extends ReviewPlanningRepository {
   candidateCapacity: number;
 }
 
-export interface FanoutCursorSnapshot {
-  mode: FanoutMode;
-  nextCursor: number;
-  revision: number;
-  updatedAt: string | null;
-}
-
-export type FanoutCursorStoreOptions = {
-  baseUrl: string;
-  webhookSecret: string;
-  mode: FanoutMode;
-  attempts?: number;
-  fetchImpl?: typeof globalThis.fetch;
-  sleep?: (milliseconds: number) => Promise<void>;
-};
+export type FanoutCursorSnapshot = DurableCursorSnapshot<FanoutMode>;
+export type FanoutCursorStoreOptions = DurableCursorStoreOptions<FanoutMode>;
 
 interface FanoutOptions {
   mode: FanoutMode;
@@ -601,17 +594,7 @@ function workflowDispatchArgs(
 export async function fetchFanoutCursor(
   options: FanoutCursorStoreOptions,
 ): Promise<FanoutCursorSnapshot> {
-  const payload = await fanoutCursorRequest(options, "GET", "");
-  if (payload.mode !== options.mode) throw new Error("fanout cursor response mode mismatch");
-  return {
-    mode: options.mode,
-    nextCursor: nonNegativeNumber(payload.next_cursor, "fanout cursor next_cursor"),
-    revision: nonNegativeNumber(payload.revision, "fanout cursor revision"),
-    updatedAt:
-      payload.updated_at === null || typeof payload.updated_at === "string"
-        ? payload.updated_at
-        : null,
-  };
+  return fetchDurableCursor(options);
 }
 
 export async function putFanoutCursor(
@@ -619,18 +602,7 @@ export async function putFanoutCursor(
   nextCursor: number,
   expectedRevision: number,
 ): Promise<FanoutCursorSnapshot> {
-  const body = JSON.stringify({
-    next_cursor: nonNegativeNumber(nextCursor, "fanout cursor next_cursor"),
-    expected_revision: nonNegativeNumber(expectedRevision, "fanout cursor expected_revision"),
-  });
-  const payload = await fanoutCursorRequest(options, "PUT", body);
-  if (payload.mode !== options.mode) throw new Error("fanout cursor response mode mismatch");
-  return {
-    mode: options.mode,
-    nextCursor: nonNegativeNumber(payload.next_cursor, "fanout cursor next_cursor"),
-    revision: nonNegativeNumber(payload.revision, "fanout cursor revision"),
-    updatedAt: typeof payload.updated_at === "string" ? payload.updated_at : null,
-  };
+  return putDurableCursor(options, nextCursor, expectedRevision);
 }
 
 export async function loadFanoutCursor(
@@ -660,50 +632,6 @@ export async function persistFanoutCursorFailOpen(
     );
     return false;
   }
-}
-
-async function fanoutCursorRequest(
-  options: FanoutCursorStoreOptions,
-  method: "GET" | "PUT",
-  body: string,
-): Promise<JsonRecord> {
-  const baseUrl = options.baseUrl.replace(/\/$/, "");
-  if (!baseUrl.startsWith("https://")) {
-    throw new Error("fanout cursor store URL must use HTTPS");
-  }
-  if (!options.webhookSecret) throw new Error("fanout cursor webhook secret is required");
-  const signature = `sha256=${createHmac("sha256", options.webhookSecret).update(body).digest("hex")}`;
-  const attempts = Math.max(1, Math.min(5, Math.floor(options.attempts ?? 3)));
-  const request = options.fetchImpl ?? globalThis.fetch;
-  const sleep =
-    options.sleep ??
-    ((milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
-  let lastFailure = "fanout cursor request failed";
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      const init: RequestInit = {
-        method,
-        headers: {
-          "content-type": "application/json",
-          "x-clawsweeper-exact-review-signature": signature,
-        },
-        signal: AbortSignal.timeout(5_000),
-      };
-      if (method === "PUT") init.body = body;
-      const response = await request(
-        `${baseUrl}/internal/state/cursors/${encodeURIComponent(options.mode)}`,
-        init,
-      );
-      const payload = record(await response.json().catch(() => ({})), "fanout cursor response");
-      if (response.ok && payload.ok === true) return payload;
-      lastFailure = String(payload.error || `http_${response.status}`);
-      if (response.status >= 400 && response.status < 500 && response.status !== 429) break;
-    } catch (error) {
-      lastFailure = errorMessage(error);
-    }
-    if (attempt < attempts) await sleep(attempt * 1_000);
-  }
-  throw new Error(`${method} fanout cursor failed: ${lastFailure}`);
 }
 
 function runGh(args: readonly string[], env: NodeJS.ProcessEnv): string {

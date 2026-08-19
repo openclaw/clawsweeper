@@ -1,0 +1,54 @@
+{
+  "schema": "clawsweeper-real-boundary-proof-provenance/v1",
+  "claim": "The immutable 20-row production parked-review inventory from scheduled run 31449984643 is fully classified by the read-only operator when GitHub inspection uses Peter's personal gh token.",
+  "source": {
+    "run_id": 31449984643,
+    "run_url": "https://github.com/openclaw/clawsweeper/actions/runs/31449984643",
+    "job_id": 93652174867,
+    "head_sha": "1ee584328f2f07e8dde61dc70124c26da6c28af2",
+    "artifact_id": 9085971968,
+    "artifact_name": "exact-review-dlq-reconcile-31449984643-1",
+    "artifact_generated_at": "2026-08-11T01:40:11.708Z",
+    "artifact_sha256": "1187c6042803b5ba98048d64157cb98a5399c1cbde76b69ce25f18dffe23b88f",
+    "rows": 20,
+    "workflow_summary": "{\"action\":\"reconcile-parked\",\"dry_run\":false,\"inventory_complete\":true,\"queue_pressure\":\"idle\",\"inspected_targets\":20,\"terminal_targets\":0,\"repository_gone_targets\":0,\"resolved_targets\":0,\"open_targets\":0,\"recovered_targets\":0,\"skipped_targets\":20}"
+  },
+  "replay": {
+    "base_head": "c145b4599285969b43e40d0816071893d5090501",
+    "operator_generated_at": "2026-08-11T02:44:01.099Z",
+    "operator_inventory_sha256": "98c61eae4c5f86c860e4dcdc436f864fbe589f266fc658fd2110c4de4d386697",
+    "github_identity": "steipete",
+    "github_credential_source": "gh auth token",
+    "queue_pressure_source": "live public /api/exact-review-queue payload",
+    "queue_pressure": {
+      "status": "idle",
+      "capacity": 128,
+      "active": 7
+    },
+    "inventory_transport": "loopback replay of the production artifact's signed-list wire payload",
+    "execute": false,
+    "exit_code": 0,
+    "summary_artifact": "read-only-summary.json"
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0"
+  },
+  "gates": {
+    "build_all": "passed",
+    "test_no_build": {
+      "tests": 3316,
+      "passed": 3307,
+      "skipped": 9,
+      "failed": 0
+    },
+    "lint": "passed",
+    "format_check": "passed",
+    "check_active_surface": "passed"
+  },
+  "limits": [
+    "The environment-scoped EXACT_REVIEW_OPERATOR_SECRET is non-retrievable, so the fresh signed production inventory request could not be reproduced locally.",
+    "The replay exposed no mutation endpoints and the operator was not passed --execute.",
+    "GitHub target reads were live; the production inventory and workflow-token comparison came from immutable GitHub Actions evidence."
+  ]
+}
