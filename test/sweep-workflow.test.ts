@@ -777,8 +777,14 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     "Install exact live-proof recording tools",
   ]) {
     const install = step(reviewer, name).run ?? "";
-    assert.match(install, /timeout --foreground 5m sudo apt-get update/);
-    assert.match(install, /timeout --foreground 5m sudo apt-get install --yes/);
+    assert.match(install, /run_bounded_install\(\)/);
+    assert.match(install, /local install_timeout_seconds=300/);
+    assert.match(install, /setsid "\$@" &/);
+    assert.match(install, /kill -TERM -- "-\$install_pgid"/);
+    assert.match(install, /grace_second < install_grace_seconds/);
+    assert.match(install, /kill -KILL -- "-\$install_pgid"/);
+    assert.match(install, /run_bounded_install sudo apt-get update/);
+    assert.match(install, /run_bounded_install sudo apt-get install --yes/);
   }
   const reserveLease = step(reviewer, "Reserve exact review lease");
   assert.equal(reserveLease.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");

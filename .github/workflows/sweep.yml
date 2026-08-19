@@ -1354,14 +1354,98 @@ jobs:
       - name: Install exact live-proof terminal tools
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.inspect-exact-live-proof.outputs.requires_terminal == 'true' }}
         run: |
-          timeout --foreground 5m sudo apt-get update
-          timeout --foreground 5m sudo apt-get install --yes tmux
+          run_bounded_install() {
+            local install_timeout_seconds=300
+            local install_grace_seconds=5
+            local install_pid=""
+            local install_pgid=""
+            local watchdog_pid=""
+            terminate_install_group() {
+              [ -n "$install_pgid" ] || return 0
+              kill -TERM -- "-$install_pgid" 2>/dev/null || return 0
+              for ((grace_second = 0; grace_second < install_grace_seconds; grace_second += 1)); do
+                if ! kill -0 -- "-$install_pgid" 2>/dev/null; then
+                  return 0
+                fi
+                sleep 1
+              done
+              kill -KILL -- "-$install_pgid" 2>/dev/null || true
+            }
+            cleanup_install() {
+              [ -n "$watchdog_pid" ] && kill "$watchdog_pid" 2>/dev/null || true
+              [ -n "$watchdog_pid" ] && wait "$watchdog_pid" 2>/dev/null || true
+              terminate_install_group
+            }
+            trap cleanup_install EXIT INT TERM
+            setsid "$@" &
+            install_pid=$!
+            install_pgid=$install_pid
+            (
+              sleep "$install_timeout_seconds"
+              if kill -0 -- "-$install_pgid" 2>/dev/null; then
+                echo "::error::Exact live-proof package install exceeded ${install_timeout_seconds}s."
+                terminate_install_group
+              fi
+            ) &
+            watchdog_pid=$!
+            set +e
+            wait "$install_pid"
+            local install_exit_code=$?
+            set -e
+            cleanup_install
+            trap - EXIT INT TERM
+            return "$install_exit_code"
+          }
+          run_bounded_install sudo apt-get update
+          run_bounded_install sudo apt-get install --yes tmux
 
       - name: Install exact live-proof recording tools
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.inspect-exact-live-proof.outputs.record_media == 'true' }}
         run: |
-          timeout --foreground 5m sudo apt-get update
-          timeout --foreground 5m sudo apt-get install --yes ffmpeg x11-utils xfonts-base xvfb xterm
+          run_bounded_install() {
+            local install_timeout_seconds=300
+            local install_grace_seconds=5
+            local install_pid=""
+            local install_pgid=""
+            local watchdog_pid=""
+            terminate_install_group() {
+              [ -n "$install_pgid" ] || return 0
+              kill -TERM -- "-$install_pgid" 2>/dev/null || return 0
+              for ((grace_second = 0; grace_second < install_grace_seconds; grace_second += 1)); do
+                if ! kill -0 -- "-$install_pgid" 2>/dev/null; then
+                  return 0
+                fi
+                sleep 1
+              done
+              kill -KILL -- "-$install_pgid" 2>/dev/null || true
+            }
+            cleanup_install() {
+              [ -n "$watchdog_pid" ] && kill "$watchdog_pid" 2>/dev/null || true
+              [ -n "$watchdog_pid" ] && wait "$watchdog_pid" 2>/dev/null || true
+              terminate_install_group
+            }
+            trap cleanup_install EXIT INT TERM
+            setsid "$@" &
+            install_pid=$!
+            install_pgid=$install_pid
+            (
+              sleep "$install_timeout_seconds"
+              if kill -0 -- "-$install_pgid" 2>/dev/null; then
+                echo "::error::Exact live-proof package install exceeded ${install_timeout_seconds}s."
+                terminate_install_group
+              fi
+            ) &
+            watchdog_pid=$!
+            set +e
+            wait "$install_pid"
+            local install_exit_code=$?
+            set -e
+            cleanup_install
+            trap - EXIT INT TERM
+            return "$install_exit_code"
+          }
+          run_bounded_install sudo apt-get update
+          run_bounded_install sudo apt-get install --yes ffmpeg x11-utils xfonts-base xvfb xterm
 
       - name: Execute exact review live proof
         id: execute-exact-live-proof
