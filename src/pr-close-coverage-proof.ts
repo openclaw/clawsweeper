@@ -198,27 +198,10 @@ export function formatPrCloseCoverageProofDetailList(values: readonly string[]):
   return values.map((value) => `  - ${value}`).join("\n");
 }
 
-export function prCloseCoverageProofStateText(
-  covering: Pick<PrCloseCoverageProofPullRequestView, "mergedAt">,
-): string {
-  return covering.mergedAt ? `merged at ${covering.mergedAt}` : "still open as the covering PR";
-}
-
 export function prCloseCoverageProofCandidateCanClose(
   covering: Pick<PrCloseCoverageProofPullRequestView, "state" | "mergedAt">,
 ): boolean {
   return covering.state === "open" || Boolean(covering.mergedAt);
-}
-
-export function summarizePrCloseCoverageProofPullRequest(
-  pull: PrCloseCoverageProofPullRequestView,
-): string {
-  const body = compactPrCloseCoverageProofText(pull.body);
-  const bodyText = body ? ` Body: ${body}` : "";
-  const commentText = pull.comments.length
-    ? ` Comments hydrated: ${pull.comments.length}${pull.commentsTruncated ? " (truncated)" : ""}.`
-    : "";
-  return `#${pull.number} ${pull.title}.${bodyText}${commentText}`;
 }
 
 function stringifyPrCloseCoverageProofPromptJson(value: unknown, space?: number): string {
@@ -232,7 +215,7 @@ function prCloseCoverageProofReportMarkdown(markdown: string): string {
   if (!match) return markdown.trim();
   const frontMatter = (match[2] ?? "")
     .split(/\r?\n/)
-    .filter((line) => !/^automation_item_updated_at\s*:/.test(line))
+    .filter((line) => !/^(?:automation_item_updated_at|labels_synced_at)\s*:/.test(line))
     .join("\n");
   return `${match[1] ?? "---\n"}${frontMatter}${match[3] ?? "\n---\n"}${markdown.slice(
     match[0].length,
@@ -352,6 +335,7 @@ export function runPrCloseCoverageProofModel(options: {
           } and wrote invalid JSON or schema-invalid output to ${outputPath}: ${
             error instanceof Error ? error.message : String(error)
           }.\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."}`,
+          { cause: error },
         );
       }
     }

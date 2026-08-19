@@ -193,13 +193,6 @@ jobs:
           path: gitcrawl-store
           fetch-depth: 1
 
-      - name: Ensure SQLite CLI
-        run: |
-          if ! command -v sqlite3 >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y sqlite3
-          fi
-
       - name: Prepare intake
         id: prepare
         env:
@@ -211,13 +204,11 @@ jobs:
           set -euo pipefail
           if [ "$ENABLED" != "1" ]; then
             echo "should_import=false" >> "$GITHUB_OUTPUT"
-            echo "should_dispatch=false" >> "$GITHUB_OUTPUT"
             echo "Cluster repair intake is disabled for this manual dispatch."
             exit 0
           fi
           if [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ "$SCHEDULE_ENABLED" != "1" ]; then
             echo "should_import=false" >> "$GITHUB_OUTPUT"
-            echo "should_dispatch=false" >> "$GITHUB_OUTPUT"
             echo "Scheduled cluster repair intake is disabled. Set CLAWSWEEPER_FEATURE_CLUSTER_REPAIR_ENABLED=1."
             exit 0
           fi
@@ -256,14 +247,12 @@ jobs:
 
           if [ "$FORCE_STORE" != "1" ] && [ -n "$store_sha" ] && [ "$store_sha" = "$previous_sha" ]; then
             echo "should_import=false" >> "$GITHUB_OUTPUT"
-            echo "should_dispatch=false" >> "$GITHUB_OUTPUT"
             echo "Already processed gitcrawl-store SHA ${store_sha}; skipping intake."
             exit 0
           fi
           echo "should_import=true" >> "$GITHUB_OUTPUT"
 
       - name: Prepare unprocessed cluster candidates
-        id: import
         if: ${{ steps.prepare.outputs.should_import == 'true' }}
         env:
           TARGET_REPO: ${{ steps.prepare.outputs.target_repo }}
@@ -289,10 +278,8 @@ jobs:
 
           mapfile -t generated < <(grep '^jobs/' "$generated_log" || true)
           printf '%s\n' "${generated[@]}" > .artifacts/cluster-repair-intake/generated-paths.txt
-          echo "count=${#generated[@]}" >> "$GITHUB_OUTPUT"
 
       - name: Select one useful cluster or none
-        id: select
         if: ${{ steps.prepare.outputs.should_import == 'true' }}
         env:
           TARGET_REPO: ${{ steps.prepare.outputs.target_repo }}
@@ -318,15 +305,6 @@ jobs:
             fi
           done < "$candidates_file"
           mv "$selected_file" "$candidates_file"
-          mapfile -t selected < "$candidates_file"
-          {
-            echo "count=${#selected[@]}"
-            if [ "${#selected[@]}" -gt 0 ]; then
-              echo "should_dispatch=true"
-            else
-              echo "should_dispatch=false"
-            fi
-          } >> "$GITHUB_OUTPUT"
 
       - name: Build durable intake intent
         if: ${{ steps.prepare.outputs.should_import == 'true' }}

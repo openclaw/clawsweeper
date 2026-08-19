@@ -1,5 +1,14 @@
 # Exact-review queue Worker split runbook
 
+- Status: proposed; not approved for production execution
+- Owner: ClawSweeper maintainers and the designated Cloudflare operator
+- Source of truth: `dashboard/wrangler.toml`,
+  `dashboard/exact-review-queue.ts`, and the deployed Worker settings
+- Last verified:
+  `openclaw/clawsweeper@2cc2c0df8d533677c5ff82cf3b86a148dd869554`
+- Update when: queue bindings, migrations, runtime variables, routes,
+  publication/state writing, verification, rollback, or approval changes
+
 This runbook moves the existing SQLite-backed `ExactReviewQueue` Durable Object
 namespace from the `clawsweeper-status` Worker script to a dedicated Worker
 script. It is a future operational plan only. Do not change either production
@@ -47,6 +56,20 @@ Copy these queue-runtime values to the destination without changing them:
 - `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS`
 - `EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS`
 - `EXACT_REVIEW_PENDING_SOFT_LIMIT`
+- `EXACT_REVIEW_TARGET_RATE_PER_HOUR`
+- `EXACT_REVIEW_TARGET_BURST`
+- `EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED`
+- `EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED`
+- `EXACT_REVIEW_STATE_REPO`
+- `EXACT_REVIEW_STATE_REF`
+- `EXACT_REVIEW_PUBLICATION_BATCH_SIZE`
+- `EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT`
+- `EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED`
+- `EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS`
+- `EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS`
+- `EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS`
+- `EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_COOLDOWN_MS`
+- `EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_RESERVATION_MS`
 - `CLAWSWEEPER_ENABLE_CLAWHUB`, when set in the deployed environment
 - GitHub App identity used for Actions reads and dispatch:
   `CLAWSWEEPER_APP_ID` or `CLAWSWEEPER_APP_CLIENT_ID`, optional

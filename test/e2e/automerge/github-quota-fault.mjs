@@ -151,6 +151,7 @@ function quotaProofReport() {
     "type: issue",
     "review_status: complete",
     "local_checkout_access: verified",
+    "local_checkout_access_source: runner_preflight_v1",
     "decision: keep_open",
     "action_taken: kept_open",
     "item_snapshot_hash: quota-proof",

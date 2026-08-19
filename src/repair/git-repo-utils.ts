@@ -72,10 +72,6 @@ export function isAncestor({
   return child.status === 0;
 }
 
-export function remoteBranchExists(options: TargetBranch): boolean {
-  return Boolean(remoteBranchSha(options));
-}
-
 export function remoteBranchSha({ targetDir, branch }: TargetBranch): string {
   const child = runGitCommand(["ls-remote", "--heads", "origin", branch], {
     targetDir,

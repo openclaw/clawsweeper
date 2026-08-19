@@ -5,16 +5,19 @@ for review records, R2 is canonical for immutable action ledgers and published
 assets, and the `state` branch of `openclaw/clawsweeper-state` retains only the
 operational paths that have not migrated yet.
 
-| Logical paths | Canonical owner | Git state status |
-| --- | --- | --- |
-| `records/**` | Durable Object record store with R2 snapshots | Never checked out or written |
-| fanout cursor per mode | ExactReviewQueue Durable Object KV | Never checked out or written |
-| `ledger/v1/**` | R2 immutable blobs | Never checked out or written |
-| `assets/**` | R2 mutable blobs | Never checked out or written |
-| `jobs/**` | `clawsweeper-state` `state` branch | Retained until its own migration |
-| `results/**` | `clawsweeper-state` `state` branch | Retained until its own migration |
-| `notifications/**` | `clawsweeper-state` `state` branch | Retained until its own migration |
-| `apply-report.json`, `repair-apply-report.json` | `clawsweeper-state` `state` branch | Retained until their own migration |
+| Logical paths                                                                         | Canonical owner                               | Git state status                   |
+| ------------------------------------------------------------------------------------- | --------------------------------------------- | ---------------------------------- |
+| `records/**`                                                                          | Durable Object record store with R2 snapshots | Never checked out or written       |
+| fanout and placeholder-recovery cursors per mode                                      | ExactReviewQueue Durable Object KV            | Never checked out or written       |
+| exact re-review command intakes, version watermarks, receipts, and per-item revisions | ExactReviewQueue Durable Object SQLite        | Never checked out or written       |
+| bounded GitHub ETag, JSON body, digest, and validation timestamp entries              | ExactReviewQueue Durable Object SQLite        | Never checked out or written       |
+| `ledger/v1/**`                                                                        | R2 immutable blobs                            | Never checked out or written       |
+| `assets/**`                                                                           | R2 mutable blobs                              | Never checked out or written       |
+| `artifacts/exact-review/v1/<sha256>`                                                  | R2 immutable cache blobs                      | Never checked out or written       |
+| `jobs/**`                                                                             | `clawsweeper-state` `state` branch            | Retained until its own migration   |
+| `results/**`                                                                          | `clawsweeper-state` `state` branch            | Retained until its own migration   |
+| `notifications/**`                                                                    | `clawsweeper-state` `state` branch            | Retained until its own migration   |
+| `apply-report.json`, `repair-apply-report.json`                                       | `clawsweeper-state` `state` branch            | Retained until their own migration |
 
 `setup-state` always hydrates records from the Worker and ledger/assets from R2.
 Jobs that need operational Git state receive a sparse checkout containing only
@@ -26,12 +29,36 @@ ordinary fetch/commit/push. The former Git lease refs, atomic multi-ref pushes,
 shallow-history deepening, remote-head rebuilds, record reconciliation, and
 immutable-ledger scratch branches no longer exist.
 
-Target fanout reads and updates `/internal/state/cursors/<mode>` with the same
-HMAC authentication as canonical record operations. Each record carries a
-monotonic revision so concurrent writers cannot silently overwrite one another.
-Cursor reads and writes are fail-open: an unavailable store emits a prominent
-warning, but repository dispatch continues so bookkeeping cannot block fleet
-coverage.
+Target fanout and bounded placeholder recovery read and update
+`/internal/state/cursors/<mode>` with the same HMAC authentication as canonical
+record operations. Each record carries a monotonic revision so concurrent
+writers cannot silently overwrite one another. Cursor reads and writes are
+fail-open: an unavailable store emits a prominent warning, but productive work
+continues and remains safe to retry.
+
+Eligible `@clawsweeper re-review` comment versions cross the durable boundary
+before acknowledgement or Actions dispatch. The queue keeps one immutable
+identity per comment id, update timestamp, and body digest; a newer edit
+supersedes older pending work, while retries reuse the same receipt. Detailed
+terminal receipts use the same 30-day horizon as resolved dead letters, and the
+per-comment watermark remains after receipt compaction.
+
+Exact-review publication retries use R2 only as a cache in front of GitHub
+Artifacts. After a GitHub download passes the normal bundle validator, the
+publisher stores a deterministic byte-preserving archive at
+`artifacts/exact-review/v1/<sha256>` and records a queue receipt binding that
+digest to producer run id/attempt, artifact name, canonical item key, lease
+revision, and protocol version. Reuse requires an exact tuple match and a
+verified object digest; every miss or mismatch falls back to GitHub. Receipts
+expire after 30 days, and cache traffic incrementally prunes expired receipts
+plus old unreferenced R2 objects (including upload orphans) in bounded batches.
+
+GitHub conditional-read entries stay in queue SQLite rather than runner-local
+files because publication runners are ephemeral. They share the 30-day receipt
+retention convention, cap the store at 2,048 entries and each JSON body at 512
+KiB, and evict least-recently validated entries when full. The durable body is
+returned only by the post-304 confirmation operation; a lookup alone returns
+only its ETag and digest.
 
 Git-backed reports, dashboard status, and post-dispatch cursors are best-effort
 after their productive side effect or canonical publication succeeds. Git

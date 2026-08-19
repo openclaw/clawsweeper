@@ -2,6 +2,29 @@
 
 # 🐠 ClawSweeper
 
+- Status: active repair entry point and local command reference
+- Owner: ClawSweeper maintainers
+- Source of truth: repair source, workflows, `package.json`, and focused repair
+  tests; [operations](operations.md) is canonical for live procedures
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
+- Update when: repair modes, command entry points, job/result shape, or linked
+  canonical guides change
+
+## Use the right repair document
+
+| Need | Canonical page |
+| --- | --- |
+| Understand repair concepts, modes, artifacts, or local CLI entry points | This page |
+| Run or recover live repair work | [Operations](operations.md) |
+| Change implementation objects, stages, ledgers, or extension points | [Internal feature map](internal-features.md) |
+| Change trusted PR autofix/automerge behavior | [Auto-updating PRs](auto-update-prs.md) |
+| Understand the end-to-end steerable session protocol | [Steerable repair automation](../steerable-repair-automation.md) |
+
+The operations runbook is the single source for live command trust, mutation
+gates, runner selection, token boundaries, routing, recovery, and promotion.
+This entry point keeps the conceptual model and local command catalog. It does
+not grant authority to open an execution or merge gate.
+
 ClawSweeper is a conservative OpenClaw maintainer tool for one-cluster issue and PR cleanup.
 
 It takes a curated GitHub issue/PR cluster, asks a Codex worker to classify the items, and applies only narrow, auditable cleanup actions when the evidence is strong. It shares the same ClawSweeper repo and GitHub App as the backlog sweeper, but runs as a separate repair lane with stricter mutation gates.
@@ -113,8 +136,8 @@ Each cluster job:
 4. Runs Codex with repo-local policy prompts and JSON output schema in a read-only sandbox when a planning pass is needed. Adopted automerge/autofix PR repairs skip this read-only model pass after live hydration and emit a generic fix artifact directly.
 5. Writes structured run artifacts under `.clawsweeper-repair/runs/`.
 6. Reviews the worker artifact with deterministic safety checks.
-7. Executes credited fix artifacts through `scripts/execute-fix-artifact.ts` when the fix gate is open: repair a writable contributor branch first, treating same-repo head branches as writable even when GitHub reports `maintainer_can_modify=false`; otherwise raise a narrow replacement PR, copy source labels, add non-bot source PR authors as replacement co-authors, and close the uneditable source PR after the replacement push succeeds.
-8. Applies guarded close/comment and explicit merge actions through `scripts/apply-result.ts`.
+7. Executes credited fix artifacts through `src/repair/execute-fix-artifact.ts` when the fix gate is open: repair a writable contributor branch first, treating same-repo head branches as writable even when GitHub reports `maintainer_can_modify=false`; otherwise raise a narrow replacement PR, copy source labels, add non-bot source PR authors as replacement co-authors, and close the uneditable source PR after the replacement push succeeds.
+8. Applies guarded close/comment and explicit merge actions through `src/repair/apply-result.ts`.
 9. Publishes a sanitized result ledger back to `openclaw/clawsweeper-state`
    under `results/`, `jobs/openclaw/closed/`, `repair-apply-report.json`, and
    `notifications/`; the external dashboard and Discord notification dedupe
@@ -143,108 +166,39 @@ Full worker prompts, Codex transcripts, and raw artifacts stay in GitHub Actions
 - `autonomous`: adds live cluster preflight and fix-artifact generation. It may recommend and drive a canonical fix path; direct mutation still goes through the fix executor and applicator gates.
 - `route_security`: quarantines true security-sensitive refs without poisoning unrelated cluster work.
 - `needs_human`: only product-direction, trust-boundary, canonical-choice, merge-path, or contributor-credit decisions that remain unclear after the hydrated artifact and single-item review/check/decide pass.
-- Automated reviewer feedback must be cleared during autonomous PR work. Greptile, Codex, Asile, CodeRabbit, Copilot, and similar bot comments must be addressed, proven non-actionable, or escalated before any merge or post-merge closeout recommendation.
-- Merge preflight: no PR can merge until `CLAWSWEEPER_ALLOW_MERGE=1`, security issues are cleared, comments are resolved, review findings are addressed, changed-surface validation is clean, and the pushed head passes exact-head ClawSweeper review plus GitHub checks. With the merge gate closed, ClawSweeper Repair labels merge-ready targets for human review instead of merging.
-- Final base sync: every inner edit, validation, and review attempt stays pinned to one captured base SHA. Before push, ClawSweeper fetches latest `origin/main` exactly once. If main moved, the worker reconciles once, then runs one validation and Codex review against that synchronized base/tree before publication. Validation failures confined to base-identical files outside the repair delta stop as external base blockers instead of consuming repair attempts. The fresh exact-head ClawSweeper review and GitHub checks still gate merge.
-- Repair ladder: make the useful contributor PR mergeable when its branch is writable; same-repo PRs are writable by the GitHub App contents permission even when the raw maintainer-edit flag is false. If a fork push is rejected because the rebase would create or update workflow files without effective workflow permission, publish the already-prepared repair as a base-repo replacement PR instead of rerunning Codex. Otherwise replace draft, stale, unmergeable, uneditable, or unsafe branches with a narrow credited fix PR. When fix PR mode is enabled, "wait or replace" is already answered: replace, preserve credit and labels, then supersede only the source PR that could not be safely updated.
+
+Reviewer-feedback, base-sync, repair-ladder, exact-head, and merge requirements
+are canonical in [Auto-Updating ClawSweeper PRs](auto-update-prs.md). Live gate
+handling and runner/token procedure are canonical in [Operations](operations.md).
 
 ## Maintainer Comment Commands
 
-ClawSweeper can route maintainer comments from target repositories back into the
-cloud repair workflow. It recognizes both command styles:
+ClawSweeper routes trusted review, status, issue implementation, PR repair,
+autofix, automerge, approval, explanation, and stop requests through its
+maintainer comment router. The command matrix, accepted authors and mentions,
+idempotency behavior, execution switch, and recovery procedure are canonical in
+[Operations: Maintainer Comment Routing](operations.md#maintainer-comment-routing).
+The trusted PR state contract and label behavior are canonical in
+[Auto-Updating ClawSweeper PRs](auto-update-prs.md).
 
-```text
-/clawsweeper status
-@openclaw-clawsweeper status
-@clawsweeper status
-```
+Keep these boundaries visible from the entry point:
 
-Accepted mentions are `@clawsweeper`, `@clawsweeper[bot]`,
-`@openclaw-clawsweeper`, or `@openclaw-clawsweeper[bot]`.
-
-Only maintainers can trigger it. The router checks GitHub `author_association`
-and accepts `OWNER`, `MEMBER`, and `COLLABORATOR` by default. Contributor and
-unknown comments are ignored without a reply.
-
-Supported commands:
-
-```text
-/review
-/clawsweeper status
-/clawsweeper re-review
-/clawsweeper re-run
-/clawsweeper implement
-/clawsweeper build
-/clawsweeper fix ci
-/clawsweeper address review
-/clawsweeper rebase
-/clawsweeper autofix
-/clawsweeper automerge
-/clawsweeper auto merge
-/clawsweeper approve
-/clawsweeper explain
-/clawsweeper stop
-@clawsweeper re-review
-@clawsweeper re-run
-@clawsweeper review
-@clawsweeper implement
-@clawsweeper fix
-@clawsweeper build
-@clawsweeper create pr
-@clawsweeper fix issue
-@openclaw-clawsweeper fix ci
-@clawsweeper why did automerge stop here?
-```
-
-`status` and `explain` post a short status reply. `review`, `re-review`, and
-`re-run` dispatch ClawSweeper review again for an open issue or PR. Issue and PR
-authors may use only these read-only review commands on their own open item.
-`fix ci`, `address review`,
-and `rebase` dispatch the normal `repair-cluster-worker.yml` repair path, but only for
-existing ClawSweeper PRs identified by the `clawsweeper/*` branch.
-`implement`, `fix`, `build`, `create pr`, and `fix issue` work only on open issues.
-The router creates or reuses one durable `issue-<repo>-<number>` job and
-dispatches the normal repair worker to verify the issue on latest `main` and
-open or update one narrow implementation PR. This lane never merges or closes
-the issue; broad, underspecified, security-sensitive, or already-fixed issues
-become a blocked repair result instead of a public PR.
-Outside `openclaw/openclaw` and `openclaw/clawhub`, the normal review publisher
-also dispatches this same worker for newly reviewed issues and bounded backfill
-from existing open issue reports when automatic issue implementation is
-enabled. Codex discovers the implementation and validation from the
-repository; deterministic intake still blocks protected/security signals,
-opt-outs, stale issue state, queued issue jobs, and duplicate or linked PRs.
-Generated PRs receive `clawsweeper:autogenerated` plus
-`clawsweeper:autofix`, continue through exact-head review/fix/re-review, and
-remain open for manual merge.
-Freeform maintainer mentions such as `@clawsweeper why did automerge stop here?`
-dispatch a read-only assist review. The answer lands in the next ClawSweeper
-comment; action-looking prose can only become existing structured
-recommendations and still passes the normal deterministic gates.
-`autofix` opts an open PR into the bounded review/fix loop and never merges.
-`automerge` opts an open PR into the bounded review/fix/merge loop, but draft
-PRs stay fix-only until GitHub marks them ready for review. `approve` is
-maintainer-only exact-head approval after a human-review pause; it clears pause
-labels and merges only when the normal automerge readiness checks and merge
-gate pass. A later trusted pass for the exact current head also clears stale
-pause labels before continuing automerge. `stop` labels the item for human review.
-It also removes repair-loop labels, so older automerge/autofix commands and
-trusted pass markers cannot continue the loop after the stop.
-
-The router writes an idempotency marker into each reply and records processed
-comments in `results/comment-router.json`. The scheduled workflow is dry by
-default; set `CLAWSWEEPER_COMMENT_ROUTER_EXECUTE=1` to let scheduled runs post
-replies and dispatch workers.
-
-Scheduled runs also sweep open PRs with `clawsweeper:autofix` or
-`clawsweeper:automerge` labels. When a labelled PR is stale, failing checks, or
-dirty/behind its base branch, the router can synthesize an internal trusted
-repair-loop command and re-enter the normal repair path without waiting for a
-new GitHub comment. `clawsweeper:human-review` still pauses that path.
+- item authors may request read-only review of their own open item; repair and
+  mutation commands require maintainer trust
+- `autofix` never merges, and `automerge` still requires every exact-head,
+  proof, review, check, mergeability, security, and global merge gate
+- issue implementation never merges or closes the source issue
+- `stop` pauses repair and removes continuation labels
+- freeform questions are read-only and cannot bypass structured command gates
 
 ## Local Run
 
 Requires Node 24.
+
+Validation, rendering, dry-run, and artifact-building commands below are local
+development surfaces. Commands that dispatch workflows, pass `--execute`, open
+gates, alter labels, or publish live state are operator-only; use
+[Operations](operations.md) for their authority, preflight, and recovery steps.
 
 ```bash
 # Validate all job files.
@@ -382,6 +336,10 @@ git diff --check
 ```
 
 ## GitHub Actions Setup
+
+This section is the canonical inventory of repair Actions configuration. It
+does not authorize changing a live variable or secret. Gate-window and token
+procedures remain canonical in [Operations](operations.md).
 
 The workflow needs:
 

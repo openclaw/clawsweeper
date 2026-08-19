@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { querySqliteRows, querySqliteScalar } from "../sqlite-readonly.js";
 import { parseArgs, repoRoot } from "./lib.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
 import {
   existingGitcrawlClusterIds,
   existingGitcrawlMemberRefs,
 } from "./gitcrawl-cluster-history.js";
+import { resolveGitcrawlDbPath } from "./gitcrawl-store.js";
 
 const args = parseArgs(process.argv.slice(2));
 const repo = String(args.repo ?? "openclaw/openclaw");
@@ -48,33 +48,6 @@ if (clusterIds.length === 0) {
   );
   process.exit(2);
 }
-function gitcrawlStoreDbFileName(repoFullName: string): string {
-  return `${repoFullName
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_.-]+/g, "__")}.sync.db`;
-}
-
-function resolveGitcrawlDbPath(repoFullName: string, explicitDb?: string): string {
-  const configured = explicitDb?.trim() || process.env.CLAWSWEEPER_GITCRAWL_DB?.trim();
-  if (configured) return path.resolve(configured);
-  const storeDbFileName = gitcrawlStoreDbFileName(repoFullName);
-  const candidates = [
-    path.join(repoRoot(), "..", "gitcrawl-store", "data", storeDbFileName),
-    path.join(
-      os.homedir(),
-      ".config",
-      "gitcrawl",
-      "stores",
-      "gitcrawl-store",
-      "data",
-      storeDbFileName,
-    ),
-    path.join(os.homedir(), ".config", "gitcrawl", "gitcrawl.db"),
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates.at(-1)!;
-}
-
 fs.mkdirSync(outDir, { recursive: true });
 
 const historyRoots = [
@@ -342,22 +315,12 @@ function memberSqlForClusterIds(clusterIds: JsonValue[]) {
   `;
 }
 
-function sqliteJson(sql: JsonValue) {
-  const output = execFileSync("sqlite3", ["-json", dbPath, sql], {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    maxBuffer: 256 * 1024 * 1024,
-  }).trim();
-  return JSON.parse(output || "[]");
+function sqliteJson(sql: JsonValue): JsonValue {
+  return querySqliteRows(dbPath, String(sql));
 }
 
 function sqliteScalar(sql: string) {
-  const output = execFileSync("sqlite3", [dbPath, sql], {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    maxBuffer: 1024 * 1024,
-  }).trim();
-  return output;
+  return querySqliteScalar(dbPath, sql);
 }
 
 function detectClusterSource() {

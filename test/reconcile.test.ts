@@ -329,3 +329,55 @@ if (args[0] === "api" && args[1]?.includes("/issues?state=open")) {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("unscoped reconciliation defers without mutations when the open-state scan is rate limited", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const itemsDir = join(root, "items");
+  const closedDir = join(root, "closed");
+  const plansDir = join(root, "plans");
+  for (const dir of [itemsDir, closedDir, plansDir]) mkdirSync(dir, { recursive: true });
+  const openReport = reportFrontMatter({ number: 11, current_state: "open" });
+  const closedReport = reportFrontMatter({ number: 12, current_state: "closed" });
+  writeFileSync(join(itemsDir, "11.md"), openReport);
+  writeFileSync(join(closedDir, "12.md"), closedReport);
+  const ghMock = `
+process.stderr.write("gh: API rate limit exceeded for installation. (HTTP 403)\\n");
+process.exit(1);
+`;
+
+  try {
+    let stdout = "";
+    withMockGh(root, ghMock, () => {
+      stdout = execFileSync(
+        process.execPath,
+        [
+          "dist/clawsweeper.js",
+          "reconcile",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--closed-dir",
+          closedDir,
+          "--plans-dir",
+          plansDir,
+          "--skip-closed-at",
+        ],
+        { encoding: "utf8" },
+      );
+    });
+
+    const result = JSON.parse(stdout);
+    assert.equal(result.deferred?.reason, "github_rate_limited");
+    assert.match(result.deferred?.retryAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(result.openItemsSeen, 0);
+    assert.equal(result.movedToClosed, 0);
+    assert.equal(result.movedToItems, 0);
+    assert.deepEqual(result.changedItemNumbers, []);
+    assert.deepEqual(result.changedRecordFiles, []);
+    assert.equal(readFileSync(join(itemsDir, "11.md"), "utf8"), openReport);
+    assert.equal(readFileSync(join(closedDir, "12.md"), "utf8"), closedReport);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

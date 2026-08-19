@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { boolArg, itemNumbersArg, numberArg, stringArg } from "./clawsweeper-args.js";
 import {
   DEFAULT_CODEX_MODEL,
@@ -16,6 +16,7 @@ import {
 } from "./commit-sweeper.js";
 import type { Args } from "./clawsweeper-args.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
+import { parsePrCommentActivityRevisionMap } from "./pr-hydration-snapshot.js";
 
 const AUTOMATIC_REVIEW_SOURCE_ACTIONS = new Set([
   "scheduled_hot_intake",
@@ -38,6 +39,7 @@ export function prepareReviewCommand(
     DEFAULT_PLAN_BATCH_SIZE,
     defaultItemsDir,
     defaultLocalRangeArtifactDir,
+    defaultLocalRangeHistoryPath,
     defaultReviewArtifactDir,
     ensureDir,
     gitInfo,
@@ -59,6 +61,9 @@ export function prepareReviewCommand(
   const itemNumbers = hasItemNumbersInput
     ? itemNumbersArg(args.item_numbers, undefined)
     : undefined;
+  const prCommentActivityRevisions = parsePrCommentActivityRevisionMap(
+    stringArg(args.pr_comment_activity_revisions, ""),
+  );
   if (localRange && (itemNumber !== undefined || itemNumbers !== undefined)) {
     throw new UserFacingCommandError(
       "--item-number / --item-numbers cannot be combined with --local-range (local-range reviews " +
@@ -127,6 +132,10 @@ export function prepareReviewCommand(
     ? buildLocalRangeReview(openclawDir, targetRepo(), stringArg(args.base, ""))
     : undefined;
   ensureDir(artifactDir);
+  const localReviewHistoryPath = localRangeData
+    ? defaultLocalRangeHistoryPath(openclawDir, targetRepo(), localRangeData.baseSha)
+    : null;
+  if (localReviewHistoryPath) ensureDir(dirname(localReviewHistoryPath));
   const coordinationHeldPath = join(artifactDir, "coordination-held.json");
   if (existsSync(coordinationHeldPath)) unlinkSync(coordinationHeldPath);
   if (localRangeData) {
@@ -182,6 +191,7 @@ export function prepareReviewCommand(
     localOnly,
     itemNumber,
     itemNumbers,
+    prCommentActivityRevisions,
     humanLocalReview,
     openclawDir,
     artifactDir,
@@ -197,6 +207,7 @@ export function prepareReviewCommand(
     additionalPrompt,
     allowClosed,
     localRangeData,
+    localReviewHistoryPath,
     coordinationHeldPath,
     shardIndex,
     shardCount,

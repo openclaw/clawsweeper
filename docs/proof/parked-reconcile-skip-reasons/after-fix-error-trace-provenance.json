@@ -1,0 +1,49 @@
+{
+  "schema": "clawsweeper-real-boundary-proof-provenance/v1",
+  "claim": "The current source-tree operator attributes loopback GitHub issue lookup failures per parked target while replaying the immutable 20-row production inventory read-only.",
+  "generated_at": "2026-08-11T03:36:07.839Z",
+  "source": {
+    "run_id": 31449984643,
+    "run_url": "https://github.com/openclaw/clawsweeper/actions/runs/31449984643",
+    "artifact_id": 9085971968,
+    "artifact_name": "exact-review-dlq-reconcile-31449984643-1",
+    "artifact_file": "parked-reviews.json",
+    "artifact_sha256": "1187c6042803b5ba98048d64157cb98a5399c1cbde76b69ce25f18dffe23b88f",
+    "rows": 20
+  },
+  "execution": {
+    "operator": "scripts/exact-review-dead-letter-operator.mjs",
+    "operator_sha256": "65142cf590de47947dd9dd6c6086f51883f7cc68c6b7397141e6afcbe7957930",
+    "command": "node scripts/exact-review-dead-letter-operator.mjs --action reconcile-parked --max-targets 100 --max-recoveries 5 --output <temporary-path>",
+    "execute": false,
+    "transport": "real Node HTTP listener bound to 127.0.0.1 on an ephemeral port",
+    "github_api_url": "http://127.0.0.1:<ephemeral-port>",
+    "github_token": "unset",
+    "node": "v24.19.0"
+  },
+  "scenarios": {
+    "all_403": {
+      "github_issue_responses": {
+        "http_403": 20
+      },
+      "request_count": 22,
+      "summary_artifact": "all-403-summary.json"
+    },
+    "mixed": {
+      "github_issue_responses": {
+        "http_200_open": 4,
+        "http_403": 18
+      },
+      "unique_open_targets": 2,
+      "request_count": 24,
+      "summary_artifact": "mixed-summary.json"
+    }
+  },
+  "trace_artifact": "after-fix-error-trace.jsonl",
+  "limits": [
+    "The production artifact supplies inventory rows; queue pressure and GitHub responses are deterministic loopback HTTP responses.",
+    "The artifact's explicit excluded_reason null values are omitted when replayed because the Worker wire payload omits that optional field; all substantive row values are unchanged.",
+    "The operator ran without --execute, and the listener implemented no mutation endpoint.",
+    "The trace records method, pathname, scenario, and response status only; request headers and local signing material are omitted."
+  ]
+}

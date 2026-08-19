@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "./lib.js";
 import { isJsonObject } from "./json-types.js";
-import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "./limits.js";
+import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "../limits.js";
 import {
   fetchExactReviewQueuePressure,
   queuePressureLevel,
@@ -1411,6 +1411,7 @@ function selectedProposedItemCandidates(
             type === "pull_request" &&
             frontMatterValue(markdown, "review_status") === "complete" &&
             frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+            frontMatterValue(markdown, "local_checkout_access_source") === "runner_preflight_v1" &&
             hasPullRequestClosePromotionSignal(markdown, options.targetRepo, {
               staleMinAgeMs: options.staleMinAgeDays * 24 * 60 * 60 * 1000,
             }) &&
@@ -1999,7 +2000,10 @@ export function commentSyncBatchOutput(options: CommentSyncBatchOptions): Record
       : candidates
           .filter((number) => number > 0 && !urgentSet.has(number))
           .slice(0, options.batchSize - urgent.length);
-  const selected = [...urgent, ...regular];
+  // The numeric frontier owns cursor progress. Run its first record before
+  // opportunistic urgent repairs so a slow urgent window cannot repeatedly
+  // exhaust the runtime budget without ever reaching the frontier.
+  const selected = regular.length > 0 ? [regular[0]!, ...urgent, ...regular.slice(1)] : urgent;
   const highestUrgent = urgent.length > 0 ? Math.max(...urgent) : cursor;
   const urgentCanAdvanceCursor =
     urgent.length > 0 &&
@@ -2322,7 +2326,8 @@ function commentSyncCandidates(
         actionTaken === "skipped_close_exempt_label" ||
         actionTaken === "skipped_invalid_decision";
       const verifiedLocalCheckout =
-        frontMatterValue(markdown, "local_checkout_access") === "verified";
+        frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+        frontMatterValue(markdown, "local_checkout_access_source") === "runner_preflight_v1";
       const storedReviewCommentId = frontMatterValue(markdown, "review_comment_id");
       const storedReviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
       const hasStoredReviewComment =

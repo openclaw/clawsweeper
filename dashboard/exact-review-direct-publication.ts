@@ -1,3 +1,7 @@
+import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "../src/exact-review-publication-limits.ts";
+
+export { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES };
+
 export const EXACT_REVIEW_DIRECT_PUBLICATION_TABLE = "exact_review_direct_publication_plans";
 export const EXACT_REVIEW_CANONICAL_RECORD_TABLE = "exact_review_canonical_records";
 export const EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE = "exact_review_canonical_record_chunks";
@@ -8,7 +12,6 @@ export const EXACT_REVIEW_RECORD_EXPORT_META_TABLE = "exact_review_record_export
 export const CANONICAL_RECORD_TUPLE_RECEIPT_TABLE = "canonical_record_tuple_receipts";
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES = 4 * 1024 * 1024;
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES = 4;
-export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES = 2 * 1024 * 1024;
 export const EXACT_REVIEW_CANONICAL_INLINE_BYTES = Math.floor(1.5 * 1024 * 1024);
 export const EXACT_REVIEW_CANONICAL_CHUNK_BYTES = 512 * 1024;
 export const EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1403,13 +1406,15 @@ export async function validateCanonicalRecordTupleMutation(
   ) {
     throw new Error("invalid canonical tuple delivery id");
   }
-  const key = String(mutation.key || "").trim();
-  const keyMatch = /^([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\/([1-9]\d*)$/.exec(key);
-  const repoSlug = validateRepoSlug(keyMatch?.[1]);
+  const inputKey = String(mutation.key || "").trim();
+  const keyMatch = /^([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\/([1-9]\d*)$/.exec(inputKey);
+  const inputRepoSlug = validateRepoSlug(keyMatch?.[1]);
+  const repoSlug = inputRepoSlug?.toLowerCase() ?? null;
   const itemId = Number(keyMatch?.[2]);
   if (!repoSlug || !Number.isSafeInteger(itemId) || itemId < 1) {
     throw new Error("invalid canonical tuple key");
   }
+  const key = `${repoSlug}/${itemId}`;
   if (!Array.isArray(mutation.operations) || mutation.operations.length !== 4) {
     throw new Error("canonical tuple publication must include all four record sections");
   }
@@ -1420,9 +1425,10 @@ export async function validateCanonicalRecordTupleMutation(
     const operation =
       raw && typeof raw === "object" ? raw : ({} as CanonicalRecordTupleMutationOperation);
     const tuple = canonicalTuplePath(String(operation.path || ""));
-    if (!tuple || tuple.repoSlug !== repoSlug || tuple.itemId !== itemId) {
-      throw new Error(`canonical tuple path is outside ${key}: ${String(operation.path)}`);
+    if (!tuple || !repositoryNamesEqual(tuple.repoSlug, repoSlug) || tuple.itemId !== itemId) {
+      throw new Error(`canonical tuple path is outside ${inputKey}: ${String(operation.path)}`);
     }
+    const storagePath = canonicalTupleStoragePath(repoSlug, tuple.section, tuple.itemId);
     if (sections.has(tuple.section)) {
       throw new Error(`canonical tuple repeats section ${tuple.section}`);
     }
@@ -1434,11 +1440,13 @@ export async function validateCanonicalRecordTupleMutation(
     expectedDigests.set(tuple.section, expectedDigest);
     if (operation.contentBase64 === undefined) {
       operations.push({
-        path: operation.path,
+        path: storagePath,
         deleted: true,
         mode: "100644",
         bytes: 0,
-        ...tuple,
+        repoSlug,
+        section: tuple.section,
+        itemId: tuple.itemId,
         content: null,
         digest: null,
       });
@@ -1463,12 +1471,14 @@ export async function validateCanonicalRecordTupleMutation(
       throw new Error(`canonical tuple content is not UTF-8: ${operation.path}`);
     }
     operations.push({
-      path: operation.path,
+      path: storagePath,
       deleted: false,
       mode: "100644",
       bytes: bytes.byteLength,
       contentBase64: operation.contentBase64,
-      ...tuple,
+      repoSlug,
+      section: tuple.section,
+      itemId: tuple.itemId,
       content,
       digest: await sha256Hex(bytes),
     });
@@ -1544,7 +1554,7 @@ function validateCanonicalTuplePacketReference(
     }
     return;
   }
-  if (digest !== packet.digest || pointer !== packet.path) {
+  if (digest !== packet.digest || !recordPathsEqualIgnoringRepositoryCase(pointer, packet.path)) {
     throw new Error(`canonical tuple decision packet reference is inconsistent: ${key}`);
   }
 }
@@ -1586,35 +1596,51 @@ export async function validateDirectPublicationPlan(
   if (plan.operations.length > EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES) {
     throw new Error("a direct publication plan exceeds the exact-review tuple file limit");
   }
-  const repoSlug = `${itemIdentity[1]}-${itemIdentity[2]}`;
+  const inputRepoSlug = `${itemIdentity[1]}-${itemIdentity[2]}`;
+  const repoSlug = inputRepoSlug.toLowerCase();
   const itemId = Number(itemIdentity[3]);
   const paths = new Set<string>();
   let totalBytes = 0;
   const operations: CanonicalDirectPublicationOperation[] = [];
   for (const raw of plan.operations) {
     const operation = raw && typeof raw === "object" ? raw : ({} as DirectPublicationOperation);
-    const path = canonicalPath(operation.path);
-    if (path !== operation.path || paths.has(path)) {
+    const inputPath = canonicalPath(operation.path);
+    if (inputPath !== operation.path) {
+      throw new Error(`invalid or repeated direct publication path: ${String(operation.path)}`);
+    }
+    const tuple = canonicalTuplePath(inputPath);
+    if (!tuple || !repositoryNamesEqual(tuple.repoSlug, inputRepoSlug) || tuple.itemId !== itemId) {
+      throw new Error(
+        `direct publication path is outside ${inputRepoSlug}#${itemId}: ${inputPath}`,
+      );
+    }
+    const path = canonicalTupleStoragePath(repoSlug, tuple.section, tuple.itemId);
+    if (paths.has(path)) {
       throw new Error(`invalid or repeated direct publication path: ${String(operation.path)}`);
     }
     paths.add(path);
-    const tuple = canonicalTuplePath(path);
-    if (!tuple || tuple.repoSlug !== repoSlug || tuple.itemId !== itemId) {
-      throw new Error(`direct publication path is outside ${repoSlug}#${itemId}: ${path}`);
-    }
-    if (operation.mode !== "100644") throw new Error(`invalid mutation mode for ${path}`);
+    if (operation.mode !== "100644") throw new Error(`invalid mutation mode for ${inputPath}`);
     if (
       !Number.isSafeInteger(operation.bytes) ||
       operation.bytes < 0 ||
       operation.bytes > EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES
     ) {
-      throw new Error(`invalid mutation byte count for ${path}`);
+      throw new Error(`invalid mutation byte count for ${inputPath}`);
     }
     if (operation.deleted === true) {
       if (operation.bytes !== 0 || operation.contentBase64 !== undefined) {
-        throw new Error(`deleted mutation paths must not carry content: ${path}`);
+        throw new Error(`deleted mutation paths must not carry content: ${inputPath}`);
       }
-      operations.push({ ...operation, path, ...tuple, content: null, digest: null, bytes: 0 });
+      operations.push({
+        ...operation,
+        path,
+        repoSlug,
+        section: tuple.section,
+        itemId: tuple.itemId,
+        content: null,
+        digest: null,
+        bytes: 0,
+      });
       continue;
     }
     const contentBase64 = operation.contentBase64;
@@ -1622,21 +1648,30 @@ export async function validateDirectPublicationPlan(
       typeof contentBase64 !== "string" ||
       !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(contentBase64)
     ) {
-      throw new Error(`missing or invalid mutation content for ${path}`);
+      throw new Error(`missing or invalid mutation content for ${inputPath}`);
     }
     const bytes = base64Bytes(contentBase64);
     if (bytes.byteLength !== operation.bytes) {
-      throw new Error(`mutation byte count does not match content for ${path}`);
+      throw new Error(`mutation byte count does not match content for ${inputPath}`);
     }
     let content: string;
     try {
       content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     } catch {
-      throw new Error(`canonical record content is not UTF-8: ${path}`);
+      throw new Error(`canonical record content is not UTF-8: ${inputPath}`);
     }
     const digest = await sha256Hex(bytes);
     totalBytes += bytes.byteLength;
-    operations.push({ ...operation, path, ...tuple, contentBase64, content, digest });
+    operations.push({
+      ...operation,
+      path,
+      repoSlug,
+      section: tuple.section,
+      itemId: tuple.itemId,
+      contentBase64,
+      content,
+      digest,
+    });
   }
   if (!Number.isSafeInteger(plan.totalBytes) || plan.totalBytes !== totalBytes) {
     throw new Error("direct publication total does not match its operations");
@@ -1789,6 +1824,32 @@ function canonicalTuplePath(path: string) {
   const section = match[2] as ExactReviewTupleRecordSection;
   if ((section === "decision-packets") !== (match[4] === "json")) return null;
   return { repoSlug: match[1]!, section, itemId: Number(match[3]) };
+}
+
+function canonicalTupleStoragePath(
+  repoSlug: string,
+  section: ExactReviewTupleRecordSection,
+  itemId: number,
+) {
+  const extension = section === "decision-packets" ? "json" : "md";
+  return `records/${repoSlug}/${section}/${itemId}.${extension}`;
+}
+
+function repositoryNamesEqual(left: string, right: string) {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+function recordPathsEqualIgnoringRepositoryCase(left: string | undefined, right: string) {
+  if (left === undefined) return false;
+  const leftTuple = canonicalTuplePath(left);
+  const rightTuple = canonicalTuplePath(right);
+  return Boolean(
+    leftTuple &&
+    rightTuple &&
+    repositoryNamesEqual(leftTuple.repoSlug, rightTuple.repoSlug) &&
+    leftTuple.section === rightTuple.section &&
+    leftTuple.itemId === rightTuple.itemId,
+  );
 }
 
 function boundedItemKey(value: unknown) {
@@ -2022,7 +2083,8 @@ function reviewCoverageFrontMatter(head: string): {
   const frontMatter = end === -1 ? head : head.slice(0, end);
   for (const key of ["repository", "repo", "reviewed_at", "review_status"] as const) {
     const match = frontMatter.match(new RegExp(`^${key}:[ \\t]*"?([^"\\n]*)"?[ \\t]*$`, "m"));
-    if (match) result[key] = match[1].trim() || null;
+    const value = match?.[1];
+    if (value !== undefined) result[key] = value.trim() || null;
   }
   const labels = frontMatter.match(/^labels:[ \t]*(.+?)[ \t]*$/m)?.[1]?.trim();
   if (labels) {

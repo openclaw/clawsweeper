@@ -1,0 +1,144 @@
+[
+  {
+    "operation": "state_contention_enqueue",
+    "status": 202,
+    "body": {
+      "ok": true,
+      "queued": true,
+      "item_key": "openclaw/openclaw#108901@publish:1089010:1",
+      "superseded_publications": 0
+    }
+  },
+  {
+    "operation": "state_contention_claim",
+    "status": 200,
+    "body": {
+      "ok": true,
+      "claimed": true,
+      "batch": {
+        "batch_id": "csw-1089-429",
+        "state": "leased",
+        "lease_owner": "csw-1089-proof-worker",
+        "lease_expires_at": "2026-08-10T01:56:04.364Z",
+        "configured_batch_size": 1,
+        "attempt": 1,
+        "created_at": "2026-08-10T01:26:04.364Z",
+        "completed_at": null,
+        "state_commit_sha": null,
+        "failure_fingerprint": null,
+        "items": [
+          {
+            "item_key": "openclaw/openclaw#108901@publish:1089010:1",
+            "revision": 1,
+            "claim_generation": 1,
+            "terminal_outcome": null
+          }
+        ]
+      },
+      "configured_batch_size": 1,
+      "batch_wait_ms": 17,
+      "requested_max_items": 1,
+      "effective_max_items": 1
+    }
+  },
+  {
+    "operation": "state_contention_complete",
+    "status": 200,
+    "body": {
+      "ok": true,
+      "accepted": 1,
+      "skipped": 0,
+      "batch": {
+        "batch_id": "csw-1089-429",
+        "state": "completed",
+        "lease_owner": "csw-1089-proof-worker",
+        "lease_expires_at": "2026-08-10T01:56:04.364Z",
+        "configured_batch_size": 1,
+        "attempt": 1,
+        "created_at": "2026-08-10T01:26:04.364Z",
+        "completed_at": "2026-08-10T01:26:04.376Z",
+        "state_commit_sha": null,
+        "failure_fingerprint": null,
+        "items": [
+          {
+            "item_key": "openclaw/openclaw#108901@publish:1089010:1",
+            "revision": 1,
+            "claim_generation": 1,
+            "terminal_outcome": "lease_expired"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "operation": "unknown_enqueue",
+    "status": 202,
+    "body": {
+      "ok": true,
+      "queued": true,
+      "item_key": "openclaw/openclaw#108904@publish:1089040:1",
+      "superseded_publications": 0
+    }
+  },
+  {
+    "operation": "unknown_claim",
+    "status": 200,
+    "body": {
+      "ok": true,
+      "claimed": true,
+      "batch": {
+        "batch_id": "csw-1089-unknown-attempt-1",
+        "state": "leased",
+        "lease_owner": "csw-1089-proof-worker",
+        "lease_expires_at": "2026-08-10T01:56:04.392Z",
+        "configured_batch_size": 1,
+        "attempt": 1,
+        "created_at": "2026-08-10T01:26:04.392Z",
+        "completed_at": null,
+        "state_commit_sha": null,
+        "failure_fingerprint": null,
+        "items": [
+          {
+            "item_key": "openclaw/openclaw#108904@publish:1089040:1",
+            "revision": 1,
+            "claim_generation": 1,
+            "terminal_outcome": null
+          }
+        ]
+      },
+      "configured_batch_size": 1,
+      "batch_wait_ms": 6,
+      "requested_max_items": 1,
+      "effective_max_items": 1
+    }
+  },
+  {
+    "operation": "unknown_complete",
+    "status": 200,
+    "body": {
+      "ok": true,
+      "accepted": 1,
+      "skipped": 0,
+      "batch": {
+        "batch_id": "csw-1089-unknown-attempt-1",
+        "state": "completed",
+        "lease_owner": "csw-1089-proof-worker",
+        "lease_expires_at": "2026-08-10T01:56:04.392Z",
+        "configured_batch_size": 1,
+        "attempt": 1,
+        "created_at": "2026-08-10T01:26:04.392Z",
+        "completed_at": "2026-08-10T01:26:04.400Z",
+        "state_commit_sha": null,
+        "failure_fingerprint": null,
+        "items": [
+          {
+            "item_key": "openclaw/openclaw#108904@publish:1089040:1",
+            "revision": 1,
+            "claim_generation": 1,
+            "terminal_outcome": "lease_expired"
+          }
+        ]
+      }
+    }
+  }
+]

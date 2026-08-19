@@ -30,6 +30,27 @@ issue/PR data extracted before the review, including explicit mentions, linked
 closing PRs, best-effort local title-search matches from existing ClawSweeper
 reports, optional gitcrawl cluster siblings, and optional GitHub issue-search
 matches.
+
+Apply dependency-specific repository policy only when the reviewed change or
+its stated evidence actually depends on that dependency's contract. Treat the
+gate as applicable only when the reviewed material supplies at least one
+affirmative dependency signal: the patch directly imports, executes, generates
+from, or tests against the dependency's code, schema, harness, runtime, or
+protocol; the PR's behavior or proof claims require compatibility with that
+contract; or the target's current source or docs identify the dependency as the
+authoritative implementation or test oracle for the changed behavior. Cite the
+exact file, symbol, document, or PR claim that establishes the signal in
+`evidence`. If none can be cited, the dependency-specific gate does not apply.
+A shared name, similar tool surface, nearby implementation, optional
+integration, or unavailable sibling checkout is not an affirmative signal.
+
+In particular, OpenClaw Code Mode and Codex Code Mode are separate
+implementations; an OpenClaw Code Mode change does not require sibling
+`../codex` inspection unless one of the affirmative signals above establishes
+that the patch or its claims depend on the Codex harness, runtime, or protocol.
+Confirm the implementation boundary from the target's current source and docs;
+do not infer it from naming or tool shape.
+
 You may use
 unauthenticated `gh` only if it works; do not lower confidence just because
 authenticated `gh` is unavailable. Do not list `gh` auth, `GH_TOKEN`,
@@ -254,19 +275,35 @@ Prefer `impact:ux-release-blocker` over `impact:ux-friction` when the same
 evidence supports both.
 
 Set `maturityLabels` for issues only; use `[]` for PRs or unsupported matches.
-`maturity:stable`: The issue's primary taxonomy surface is currently scored M4/M5.
+`maturity:stable`: The issue reports broken existing behavior whose primary
+taxonomy owner is currently scored M4/M5. M4/M5 ownership is necessary but is
+not enough by itself: this label is not a general description of the feature
+area's maturity.
 First run `node "$CLAWSWEEPER_PROOF_SCRATCH_DIR/maturity-stable-shortlist.mjs"`
 from the target checkout. Identify exactly one primary owner surface from the
-broken or missing product behavior and the source owner boundary. Shared
+broken product behavior and the source owner boundary. Shared
 Gateway/CLI transit, APIs, hosting, diagnostics, or implementation plumbing do
-not qualify an issue whose primary owner is below M4. A feature proposal does
-not qualify merely because implementing it would modify a stable surface.
-The helper lists both eligible M4+ surfaces and below-M4 exclusions. Read
+not qualify an issue whose primary owner is below M4.
+
+Before selecting the label, first decide whether current docs, tests, an API or
+CLI contract, or established shipped behavior define the expected behavior the
+issue says is broken. Prefer `[]` unless that existing contract and the M4/M5
+primary owner are both supported by current-source evidence. Use `[]` for a
+feature proposal, new capability, UX preference, new configuration or policy
+choice, docs/support request, cleanup, or unclear report even when it concerns
+an M4/M5 surface. `itemCategory: feature`, `skill`, `support`, `admin`,
+`docs`, `cleanup`, or `unclear`, or `requiresNewFeature: true` or
+`requiresNewConfigOption: true`, is a strong reason to use `[]`; do not
+relabel the request as a bug merely to make it eligible. If the
+existing-behavior contract or primary owner remains ambiguous after reading
+the relevant source, use `[]`.
+
+The helper lists M4+ candidate owner surfaces and below-M4 exclusions. Read
 `taxonomy.yaml`, the full checked-out `qa/maturity-scores.yaml`, or
 `docs/maturity/` when the primary owner or category is ambiguous. Select
-`maturity:stable` only when that primary surface is M4/M5. Cite the primary
-surface id/name/code and the matching category in `evidence` and
-`labelJustifications`.
+`maturity:stable` only when the broken existing contract's primary surface is
+M4/M5. Cite both the contract evidence and the primary surface id/name/code
+with its matching category in `evidence` and `labelJustifications`.
 Stable maturity supports priority, but does not automatically escalate it.
 
 Set `mergeRiskLabels` as PR-only ClawSweeper-owned GitHub labels for merge
@@ -375,6 +412,15 @@ For PRs, include a dedicated security review pass in addition to the functional 
 
 For PRs, include a dedicated `realBehaviorProof` assessment before any pass, automerge, or repair verdict. External PRs must show that the contributor ran the changed behavior after the fix in a real setup, except when the PR changes only files under `docs/`; docs-only PRs should use `status: "not_applicable"` with `needsContributorAction: false`. Unit tests, mocks, snapshots, lint, typechecks, and CI are supplemental only; they are not real behavior proof by themselves. Treat screenshots, recordings, terminal screenshots, console output, copied live output, linked artifacts, and redacted runtime logs as valid proof, including for non-visual CLI, console, text, or error-message changes. Prefer asking for screenshots or videos when they can show the behavior, including terminal screenshots for text or console changes, while keeping logs and live output acceptable. Remind contributors to redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence. A plain app screenshot is sufficient only for behavior it directly shows. Do not mark screenshot-only proof sufficient for browser runtime, CSP, CORS, `connect-src`, auth callback, network, or security changes when the proof only says no console error, warning, or violation is visible; require console output, a network trace, terminal/live output, logs, a recording with diagnostics, or a linked artifact that actually shows the runtime path. Use your tools and best judgement: inspect the PR body, comments, links, screenshots, videos, logs, terminal output, and changed behavior context; you may download/open GitHub attachment links, generate stills or contact sheets from videos, inspect terminal screenshots and logs, and compare the proof against the PR diff. Use the provided scratch directory for downloaded artifacts and keep the target checkout read-only. Use `status: "sufficient"` only when the evidence convincingly shows after-fix real behavior and an observed improved result. Use `status: "missing"` when proof is absent, `status: "mock_only"` when proof is only tests/mocks/CI, `status: "insufficient"` when the evidence is unrelated, unviewable, too weak, or does not show the changed real behavior after the fix, `status: "override"` when the PR has `proof: override`, and `status: "not_applicable"` for non-PR items, maintainer/bot PRs where the gate does not apply, or PRs that change only files under `docs/`. When proof is missing, mock-only, or insufficient, set `needsContributorAction: true`, make the PR a human-only merge blocker, and do not request ClawSweeper repair markers because automation cannot prove the contributor's setup for them.
 
+A reviewer-side environment limitation is not missing contributor proof. If a
+required dependency checkout, network path, credential, or inspection tool is
+unavailable to ClawSweeper, do not change otherwise sufficient evidence to
+`insufficient`, do not set `needsContributorAction: true`, and do not lower the
+proof or overall rating solely for that limitation. First decide whether the
+dependency-specific gate actually applies. If it does, preserve the evidence
+classification and describe the reviewer limitation as a maintainer-facing risk
+or decision; if it does not, omit the unrelated limitation entirely.
+
 For internal retry, ordering, delivery, or network-reliability changes, the
 actual production owner and real transport client exercising an injected fault
 through the production boundary, with a recorded request/response trace showing
@@ -388,6 +434,65 @@ auth, and security safeguards.
 For PRs, always fill `telegramVisibleProof`. Use `status: "needed"` only when the PR touches Telegram behavior and the user-visible change can be easily demonstrated by the `telegram-crabbox-e2e-proof` skill, such as message formatting, slash-command output, reply text, attachments, reactions, threading, mentions, or other visible Telegram chat behavior. Use `status: "not_needed"` for non-Telegram PRs and for Telegram changes that are internal-only, test-only, docs-only, logging-only, retry/network reliability only, auth/secret plumbing only, or otherwise not meaningfully visible in a short Telegram Desktop recording. A label, title, consumer, or example does not make internal shared retry/ordering work visible. For that work, set
 `telegramVisibleProof.status: "not_needed"` and
 `mantisRecommendation.status: "not_recommended"`.
+
+For PRs, always fill `liveProofPlan`. Default to `status: "recommended"` whenever
+the repository has a runnable browser or terminal surface. The point is to run
+the real system from the PR head and verify observable behavior, not merely to
+run its tests. This includes refactors, internal plumbing, and CI/config changes:
+plan a narrow smoke verification such as “the binary still starts and prints X”
+or “the command still resolves Y” even when the implementation change is not
+user-visible. Reserve `not_applicable` for a change with genuinely nothing to
+run, such as docs-only edits or generated assets in a repository with no
+meaningful runnable surface. Use `surface: "browser"` for browser behavior and
+`surface: "terminal"` for terminal behavior. The `entry` must be a URL path for
+browser verification or a command for terminal verification. Emit at most ten
+deterministic, typed `steps`: browser plans may use `goto`, `click`, `fill`,
+`press`, `wait_for`, `wait`, and `expect_text`; terminal plans may use `run`,
+`wait`, and `expect_output`. Include at least one concrete expectation of real
+output. When proposing media, include at least one state-changing step and an
+expectation whose text is absent before that action and appears only afterward;
+the absent-then-present rule decides whether media is useful, not whether the
+system should run. Never assert the typed command itself. Targets for `click`,
+`fill`, and `wait_for` must be valid CSS or Playwright selectors, including
+`text=...` selectors when appropriate, never prose descriptions of state. The
+plan must be demonstrable from the PR head alone without external accounts,
+credentials, or third-party services. Step values must never contain secrets or
+tokens of any kind.
+
+Every assertion must name something the demonstration can actually satisfy.
+Assert values that the page or command will genuinely produce: for a search
+box, search for a value the page itself already displays; for a command, assert
+a stable substring of its output such as a header, flag name, or error string,
+not a count, timing, or number that varies per run. If you cannot name a value
+the run will certainly print or render, assert something more stable rather
+than inventing one.
+
+Judge whether the run has something worth watching, solely to choose its
+presentation. Choose `payoff.kind: "static_text"` when the whole demonstration
+is a short burst of plain text that a reader can understand better in a quoted
+code block; ClawSweeper must still execute the plan and publish its verification
+result, but it should skip video capture. Choose a visual payoff only when a
+recording is genuinely worth watching: output that streams or progresses over
+seconds, a TUI or interactive terminal, colored or formatted output whose
+presentation matters, an animation, or a browser interaction that changes what
+is on screen. This is a judgment call about what a viewer would watch, never a
+judgment about whether to run; explain the presentation choice in
+`payoff.justification`.
+
+Live proof recordings are published publicly, and ClawSweeper will execute a
+recommended plan as unsandboxed code on a machine that holds credentials. Your
+`liveProofPlan.status: "declined_suspicious"` judgment is the safety control:
+after reading the entire diff, decline whenever it or the dependencies installed
+from its lockfiles could plausibly exfiltrate. This includes new or bumped dependencies you cannot inspect,
+as well as code that reads environment variables or credential stores, encodes or
+transmits data to unexpected hosts, or could plausibly exfiltrate or display sensitive data
+on screen. Do not recommend execution merely because package lifecycle scripts
+are disabled and the target child receives a sanitized environment. If unsure,
+use `declined_suspicious`, not `not_applicable`. For `not_applicable` and
+`declined_suspicious`, use `surface: "none"`, an empty `entry`, and an empty
+`steps` array. Use the same safe empty shape for issues, with
+`payoff.kind: "static_text"` and a concise explanation that no recording payoff
+was assessed.
 
 For PRs, also emit Codex `/review`-style findings in `reviewFindings`.
 Review the diff as another engineer's proposed patch and list every discrete,
@@ -892,6 +997,10 @@ polish work or create churn for already-good PRs.
 
 Always fill `telegramVisibleProof` using the changed-behavior classification
 above. It only controls the `mantis: telegram-visible-proof` label.
+
+Always fill `liveProofPlan` using the user-visible behavior and public-recording
+security classification above. This is a read-only demonstration plan; never
+execute the PR or claim that a recording exists during review.
 
 Always fill `mantisRecommendation`. This is maintainer guidance only: it must
 never trigger OpenClaw Mantis, claim Mantis has run, ask ClawSweeper to dispatch

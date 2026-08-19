@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import {
+  ensurePullRequestReviewHead,
   githubReviewBlobSizes,
   hydratePullRequestReviewBlobs,
+  materializePullRequestReviewTree,
+  removePullRequestReviewTree,
 } from "../dist/clawsweeper-review-blobs.js";
 
 function git(cwd: string, ...args: string[]): string {
@@ -17,7 +20,8 @@ function git(cwd: string, ...args: string[]): string {
 function partialCloneFixture({
   extraFiles = 0,
   largeFiles = [],
-}: { extraFiles?: number; largeFiles?: number[] } = {}) {
+  prefetchHead = true,
+}: { extraFiles?: number; largeFiles?: number[]; prefetchHead?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-promisor-"));
   const origin = join(root, "origin.git");
   const source = join(root, "source");
@@ -69,15 +73,17 @@ function partialCloneFixture({
     `file://${origin}`,
     target,
   );
-  git(
-    target,
-    "fetch",
-    "-q",
-    "--filter=blob:none",
-    "origin",
-    "refs/pull/982/head:refs/clawsweeper/review-cache/head-982",
-    "--depth=1",
-  );
+  if (prefetchHead) {
+    git(
+      target,
+      "fetch",
+      "-q",
+      "--filter=blob:none",
+      "origin",
+      "refs/pull/982/head:refs/clawsweeper/review-cache/head-982",
+      "--depth=1",
+    );
+  }
   return { root, source, target, baseSha, headSha, addedBlobSha, changedBlobSha };
 }
 
@@ -144,6 +150,68 @@ test("restricted PR review can inspect changed blobs from a genuine blobless clo
   }
 });
 
+test("restricted review materializes the exact pull request head before model execution", () => {
+  const fixture = partialCloneFixture({ prefetchHead: false });
+  const reviewTree = join(fixture.root, "review-tree");
+  try {
+    assert.equal(objectExistsOffline(fixture.target, fixture.headSha), false);
+    assert.equal(git(fixture.target, "rev-parse", "HEAD"), fixture.baseSha);
+    assert.equal(readFileSync(join(fixture.target, "changed.txt"), "utf8"), "before\n");
+
+    assert.equal(
+      materializePullRequestReviewTree({
+        targetDir: fixture.target,
+        worktreeDir: reviewTree,
+        itemNumber: 982,
+        headSha: fixture.headSha,
+      }),
+      true,
+    );
+    assert.equal(objectExistsOffline(fixture.target, fixture.headSha), true);
+    assert.equal(git(fixture.target, "rev-parse", "HEAD"), fixture.baseSha);
+    assert.equal(readFileSync(join(fixture.target, "changed.txt"), "utf8"), "before\n");
+    assert.equal(git(reviewTree, "rev-parse", "HEAD"), fixture.headSha);
+    assert.equal(readFileSync(join(reviewTree, "changed.txt"), "utf8"), "after\n");
+    assert.equal(readFileSync(join(reviewTree, "added.txt"), "utf8"), "new implementation\n");
+    assert.equal(git(fixture.target, "status", "--porcelain"), "");
+    assert.equal(git(reviewTree, "status", "--porcelain"), "");
+    assert.equal(
+      git(fixture.target, "rev-parse", "refs/clawsweeper/review-cache/head-982"),
+      fixture.headSha,
+    );
+    assert.equal(
+      removePullRequestReviewTree({ targetDir: fixture.target, worktreeDir: reviewTree }),
+      true,
+    );
+    assert.equal(existsSync(reviewTree), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("restricted review binds a force-pushed pull request to the exact REST head", () => {
+  const fixture = partialCloneFixture({ prefetchHead: false });
+  try {
+    git(fixture.source, "push", "-q", "origin", "HEAD:refs/heads/feature");
+    git(fixture.source, "push", "-q", "--force", "origin", `${fixture.baseSha}:refs/pull/982/head`);
+
+    assert.equal(
+      ensurePullRequestReviewHead({
+        targetDir: fixture.target,
+        itemNumber: 982,
+        headSha: fixture.headSha,
+      }),
+      true,
+    );
+    assert.equal(
+      git(fixture.target, "rev-parse", "refs/clawsweeper/review-cache/head-982"),
+      fixture.headSha,
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("review blob hydration rejects unsafe paths and oversized changes without fetching", () => {
   const fixture = partialCloneFixture();
   try {
@@ -179,16 +247,35 @@ test("missing partial-clone objects are fetched in one bounded network request",
   const previousTrace = process.env.GIT_TRACE2_EVENT;
   const trace = join(fixture.root, "git-trace.jsonl");
   try {
+    const paths = Array.from({ length: 12 }, (_, index) => `additional-${index}.txt`);
+    const expectedBlobIds = paths.map((path) => git(fixture.source, "rev-parse", `HEAD:${path}`));
+    const probeOutput = git(
+      fixture.target,
+      "--literal-pathspecs",
+      "rev-list",
+      "--objects",
+      "--missing=print",
+      `${fixture.baseSha}^{tree}`,
+      `${fixture.headSha}^{tree}`,
+      "--",
+      ...paths,
+    );
+    const probedObjectIds = new Set(
+      probeOutput.split("\n").map((entry) => entry.match(/^\??([0-9a-f]{40,64})(?: |$)/i)?.[1]),
+    );
+    assert.deepEqual(
+      expectedBlobIds.filter((objectId) => !probedObjectIds.has(objectId)),
+      [],
+      "availability probe must emit every blob ID reached from the bounded commit trees",
+    );
+
     process.env.GIT_TRACE2_EVENT = trace;
     const result = hydratePullRequestReviewBlobs({
       targetDir: fixture.target,
       baseSha: fixture.baseSha,
       headSha: fixture.headSha,
       resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
-      files: Array.from({ length: 12 }, (_, index) => ({
-        filename: `additional-${index}.txt`,
-        status: "added",
-      })),
+      files: paths.map((filename) => ({ filename, status: "added" })),
     });
     if (previousTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
     else process.env.GIT_TRACE2_EVENT = previousTrace;
@@ -197,11 +284,26 @@ test("missing partial-clone objects are fetched in one bounded network request",
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as { event: string; argv?: string[] });
-    const fetches = traceEvents.filter(
+    const revLists = traceEvents.filter(
+      (event) => event.event === "start" && event.argv?.includes("rev-list"),
+    );
+    const nestedFetches = traceEvents.filter(
+      (event) => event.event === "child_start" && event.argv?.includes("fetch"),
+    );
+    const explicitFetches = traceEvents.filter(
       (event) => event.event === "start" && event.argv?.includes("fetch"),
     );
     assert.deepEqual(result, { hydrated: true, blobs: 12 });
-    assert.equal(fetches.length, 1);
+    assert.equal(revLists.length, 1);
+    assert.ok(revLists[0]!.argv?.includes(`${fixture.baseSha}^{tree}`));
+    assert.ok(revLists[0]!.argv?.includes(`${fixture.headSha}^{tree}`));
+    assert.equal(
+      revLists[0]!.argv?.some((argument) => argument.startsWith("--no-walk")),
+      false,
+    );
+    assert.equal(nestedFetches.length, 0, "availability probe must not lazy-fetch blobs");
+    assert.equal(explicitFetches.length, 1, "hydration must perform one explicit bounded fetch");
+    assert.ok(explicitFetches[0]!.argv?.includes("--stdin"));
   } finally {
     if (previousTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
     else process.env.GIT_TRACE2_EVENT = previousTrace;

@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "provider": "local-container",
+  "lease_id": "cbx_d1a06e39d867",
+  "lease_slug": "golden-prawn-16e4",
+  "machine_type": "node_24-bookworm",
+  "image": "node:24-bookworm",
+  "crabbox_cli": "0.38.3-5-g2a79805d",
+  "lease_stopped": true,
+  "cleanup": {
+    "owned_lease_absent_from_local_container_list": true,
+    "unrelated_preexisting_exited_lease_untouched": true
+  },
+  "tested_head_sha": "f84b7d60daa24d979eef6299be0d9c2a55fdab62",
+  "tested_head_tree": "7e7afa01638ca5940bb7c1aa4cdc6b43b63c61a4",
+  "base_sha": "dc738b3845655ad36f91ea9584d90abdd4df3ca3",
+  "cat_file_cross_check": {
+    "head_commit": true,
+    "head_tree": true,
+    "base_commit": true
+  },
+  "git_transport": "temporary bundle removed before validation and omitted from the receipt commit",
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0"
+  },
+  "timing_ms": {
+    "sync": 2177,
+    "command": 132552,
+    "total": 134785
+  },
+  "command_phases_ms": {
+    "git_metadata_and_setup": 1759,
+    "tools": 1647,
+    "install": 2712,
+    "focused": 324,
+    "check": 126109
+  },
+  "focused_tests": {
+    "passed": 9,
+    "failed": 0
+  },
+  "full_gate": {
+    "command": "pnpm run check",
+    "passed": true,
+    "tests": 3428,
+    "passed_tests": 3420,
+    "failed_tests": 0,
+    "skipped_tests": 8
+  },
+  "runner_inventory": [
+    {
+      "file": ".github/workflows/assist.yml",
+      "job": "assist",
+      "runner": "${{ vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
+    },
+    {
+      "file": ".github/workflows/automerge-e2e.yml",
+      "job": "automerge-e2e",
+      "runner": "${{ vars.CLAWSWEEPER_E2E_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}"
+    },
+    {
+      "file": ".github/workflows/maintainer-report-discord.yml",
+      "job": "notify",
+      "runner": "${{ vars.CLAWSWEEPER_REPORT_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
+    },
+    {
+      "file": ".github/workflows/repair-cluster-intake.yml",
+      "job": "intake",
+      "runner": "${{ github.event.inputs.runner || vars.CLAWSWEEPER_CLUSTER_REPAIR_INTAKE_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
+    },
+    {
+      "file": ".github/workflows/repair-conflict-self-heal.yml",
+      "job": "self-heal",
+      "runner": "${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
+    },
+    {
+      "file": ".github/workflows/repair-containment-smoke.yml",
+      "job": "containment-smoke",
+      "runner": "${{ vars.CLAWSWEEPER_E2E_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}"
+    },
+    {
+      "file": ".github/workflows/repair-publish-results.yml",
+      "job": "publish",
+      "runner": "${{ vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
+    },
+    {
+      "file": ".github/workflows/repair-self-heal.yml",
+      "job": "self-heal",
+      "runner": "${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.CLAWSWEEPER_WORKER_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
+    },
+    {
+      "file": ".github/workflows/spam-comment-intake.yml",
+      "job": "intake",
+      "runner": "${{ vars.CLAWSWEEPER_SPAM_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
+    },
+    {
+      "file": ".github/workflows/spam-scanner.yml",
+      "job": "scan",
+      "runner": "${{ vars.CLAWSWEEPER_SPAM_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}"
+    }
+  ],
+  "limits": [
+    "Static workflow parsing and repository validation only.",
+    "No workflow was dispatched and no repository variable was set.",
+    "The receipt commit adds proof artifacts only after the tested workflow tree."
+  ]
+}

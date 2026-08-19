@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createLabelSynchronization } from "../dist/clawsweeper-label-sync.js";
 import {
   featureShowcaseLabelsForTest,
   goodFirstIssueLabelOptedOutForTest,
@@ -733,13 +734,52 @@ test("ClawSweeper maturity labels remove stale owned labels and preserve unrelat
     {
       name: "maturity:stable",
       color: "1F883D",
-      description: "Issue's primary taxonomy surface is currently scored M4/M5.",
+      description: "Broken existing behavior primarily owned by an M4/M5 scorecard surface.",
     },
   ]);
   assert.deepEqual(maturityLabelsForTest(["bug"], ["maturity:stable"]), ["bug", "maturity:stable"]);
   assert.deepEqual(maturityLabelsForTest(["bug", "maturity:stable", "impact:security"], []), [
     "bug",
     "impact:security",
+  ]);
+});
+
+test("ClawSweeper updates managed maturity label metadata before applying it", () => {
+  const commands: string[][] = [];
+  const labels = createLabelSynchronization({
+    ghObservedMutationCommand: ({ args }: { args: string[] }) => {
+      commands.push(args);
+      return "";
+    },
+    hasNormalizedLabel: (current: readonly string[], label: string) =>
+      current.some((candidate) => candidate.toLowerCase() === label.toLowerCase()),
+    normalizeLabelName: (label: string) => label.toLowerCase(),
+    protectedLabels: () => [],
+    isBulkFilerExemptAuthorAssociation: () => false,
+    isBulkFilerExemptRepositoryPermission: () => false,
+    frontMatterValue: () => undefined,
+    frontMatterStringArray: () => [],
+    reportSecurityReview: () => ({ status: "not_applicable", evidence: [] }),
+    reviewSectionValue: () => "",
+    labelPolicy: {},
+  } as never);
+
+  labels.syncMaturityLabels({
+    number: 42,
+    labels: ["bug"],
+    maturityLabels: ["maturity:stable"],
+    dryRun: false,
+  });
+
+  assert.deepEqual(commands[0], [
+    "label",
+    "create",
+    "maturity:stable",
+    "--force",
+    "--color",
+    "1F883D",
+    "--description",
+    "Broken existing behavior primarily owned by an M4/M5 scorecard surface.",
   ]);
 });
 

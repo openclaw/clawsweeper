@@ -1,0 +1,9 @@
+head=964d9d8d88b7e0a2394f7d555fa9b6d5cf0f923e
+branch=crabbox-pr-1118
+worktree_changes=1
+node=v24.19.0
+git=git version 2.39.5
+pnpm=11.10.0
+jq=jq-1.8.1
+jq_sha256=020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d
+jq_checksum=passed

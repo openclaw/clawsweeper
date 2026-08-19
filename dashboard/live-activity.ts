@@ -1,9 +1,7 @@
 export const LIVE_ACTIVITY_MAX_AGE_MS = 60_000;
-// This is the configured 128 review-worker maximum plus the 50 concurrent
-// publication workers. The panel samples its output, but accepts a complete
-// bounded status snapshot first.
-export const LIVE_ACTIVITY_SOURCE_LIMIT = 178;
-export const LIVE_ACTIVITY_SAMPLE_LIMIT = 16;
+// Public status deliberately caps the complete worker census at 100 rows.
+// Larger or explicitly incomplete inputs are never summarized as complete.
+export const LIVE_ACTIVITY_SOURCE_LIMIT = 100;
 
 export type LiveActivityKind = "worker" | "repair" | "scheduler" | "publisher" | "reconciliation";
 
@@ -21,15 +19,8 @@ export type LiveActivityBaySnapshot = {
   freshness: { maximum_age_ms: number; expires_at: string };
   collection: { state: "complete" } | { state: "unknown"; reason: LiveActivityUnknownReason };
   activity: {
-    limit: number;
-    returned: number;
-    omitted: number;
-    signals: Array<{
-      kind: LiveActivityKind;
-      label: string;
-      source: "github-actions";
-      observed_at: string;
-    }>;
+    total: number;
+    by_kind: Record<LiveActivityKind, number>;
   } | null;
 };
 
@@ -51,7 +42,8 @@ export function liveActivityBaySnapshot(
     activity: null,
   });
   const snapshot = object(source);
-  const generatedAt = Date.parse(String(snapshot.generated_at || ""));
+  const generatedAtText = publicTimestamp(snapshot.generated_at);
+  const generatedAt = generatedAtText ? Date.parse(generatedAtText) : Number.NaN;
   if (!Number.isFinite(generatedAt) || generatedAt > now + LIVE_ACTIVITY_MAX_AGE_MS)
     return unknown("malformed");
   if (now - generatedAt > LIVE_ACTIVITY_MAX_AGE_MS) return unknown("stale");
@@ -60,48 +52,40 @@ export function liveActivityBaySnapshot(
     return unknown("unavailable");
   if (!Array.isArray(snapshot.workers)) return unknown("malformed");
   if (snapshot.workers.length > LIVE_ACTIVITY_SOURCE_LIMIT) return unknown("over_cap");
+  const bay = object(snapshot.bay);
+  if (bay.active_census_complete === false) {
+    return unknown(
+      snapshot.workers.length >= LIVE_ACTIVITY_SOURCE_LIMIT ? "over_cap" : "unavailable",
+    );
+  }
+  if (bay.active_census_complete !== true) return unknown("malformed");
   const controlPlane = object(snapshot.control_plane);
   const lanes = [
-    ["publishers", "publisher", "publication scheduler"],
-    ["comment_routers", "scheduler", "comment router"],
-    ["reconcilers", "reconciliation", "lease reconciler"],
+    ["publishers", "publisher"],
+    ["comment_routers", "scheduler"],
+    ["reconcilers", "reconciliation"],
   ] as const;
   if (!lanes.every(([name]) => validLane(controlPlane[name]))) return unknown("mixed");
 
   const observedAt = new Date(generatedAt).toISOString();
-  const signals: Array<{
-    kind: LiveActivityKind;
-    label: string;
-    source: "github-actions";
-    observed_at: string;
-  }> = [];
+  const byKind: Record<LiveActivityKind, number> = {
+    worker: 0,
+    repair: 0,
+    scheduler: 0,
+    publisher: 0,
+    reconciliation: 0,
+  };
   for (const worker of snapshot.workers) {
     const row = object(worker);
     if (!validWorker(row)) return unknown("mixed");
     const repair =
       row.work_kind === "repair_cluster" || row.work_kind === "pr_repair" || row.mode === "repair";
-    signals.push({
-      kind: repair ? "repair" : "worker",
-      label: repair ? "repair worker active" : "worker active",
-      source: "github-actions",
-      observed_at: observedAt,
-    });
+    byKind[repair ? "repair" : "worker"] += 1;
   }
-  for (const [name, kind, label] of lanes) {
+  for (const [name, kind] of lanes) {
     const lane = object(controlPlane[name]);
-    const active = Number(lane.running) + Number(lane.waiting);
-    if (active > 0) {
-      signals.push({
-        kind,
-        label: `${label} active`,
-        source: "github-actions",
-        observed_at: observedAt,
-      });
-    }
+    byKind[kind] = Number(lane.running) + Number(lane.waiting);
   }
-  signals.sort(
-    (left, right) => left.kind.localeCompare(right.kind) || left.label.localeCompare(right.label),
-  );
   return {
     version: 1,
     source: "dashboard-status-v1",
@@ -112,12 +96,24 @@ export function liveActivityBaySnapshot(
     },
     collection: { state: "complete" },
     activity: {
-      limit: LIVE_ACTIVITY_SAMPLE_LIMIT,
-      returned: Math.min(LIVE_ACTIVITY_SAMPLE_LIMIT, signals.length),
-      omitted: Math.max(0, signals.length - LIVE_ACTIVITY_SAMPLE_LIMIT),
-      signals: signals.slice(0, LIVE_ACTIVITY_SAMPLE_LIMIT),
+      total: Object.values(byKind).reduce((sum, count) => sum + count, 0),
+      by_kind: byKind,
     },
   };
+}
+
+function publicTimestamp(value: unknown): string | null {
+  if (
+    typeof value !== "string" ||
+    value.length > 35 ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+  ) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed >= Date.UTC(2020, 0, 1) && parsed < Date.UTC(2100, 0, 1)
+    ? new Date(parsed).toISOString()
+    : null;
 }
 
 function object(value: unknown): ObjectRecord {
@@ -126,8 +122,17 @@ function object(value: unknown): ObjectRecord {
 
 function validWorker(value: ObjectRecord) {
   return (
-    typeof value.work_kind === "string" &&
-    typeof value.mode === "string" &&
+    ["issue_to_pr", "pr_repair", "repair_cluster", "other"].includes(String(value.work_kind)) &&
+    [
+      "assist",
+      "automerge",
+      "background-review",
+      "commit-review",
+      "exact-review",
+      "apply",
+      "hot-review",
+      "repair",
+    ].includes(String(value.mode)) &&
     typeof value.status === "string" &&
     ["queued", "in_progress", "waiting", "requested", "pending"].includes(value.status)
   );

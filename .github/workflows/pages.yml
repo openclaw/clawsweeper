@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "docs/**"
+      - "config/documentation-site.json"
       - "scripts/build-docs-site.mjs"
       - ".github/workflows/pages.yml"
   workflow_dispatch:

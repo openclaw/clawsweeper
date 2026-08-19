@@ -1175,7 +1175,9 @@ function searchOpenPullRequestsMentioningIssue(repo: string, number: number): Lo
     );
     return Array.isArray(result) ? result : [];
   } catch (error) {
-    throw new Error(`failed to search open PRs mentioning issue: ${ghErrorText(error)}`);
+    throw new Error(`failed to search open PRs mentioning issue: ${ghErrorText(error)}`, {
+      cause: error,
+    });
   }
 }
 

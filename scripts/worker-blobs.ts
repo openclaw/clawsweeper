@@ -22,7 +22,6 @@ import path from "node:path";
 import { WorkerRecordRequestError, signedPost, signedRequest } from "./worker-records.ts";
 
 export const STATE_BLOB_TREES = ["ledger/v1", "assets"] as const;
-export const STATE_BLOB_SINGLE_PUT_MAX_BYTES = 24 * 1024 * 1024;
 export const STATE_BLOB_DOWNLOAD_CHUNK_BYTES = 32 * 1024 * 1024;
 
 export type StateBlobDescriptor = {
@@ -47,95 +46,6 @@ type BlobRequestOptions = {
   webhookSecret: string;
   fetch?: typeof globalThis.fetch;
 };
-
-export async function uploadStateBlob(
-  options: BlobRequestOptions & {
-    blobPath: string;
-    content: Buffer;
-    // Test seams: production callers use the defaults.
-    singlePutMaxBytes?: number;
-    partBytes?: number;
-  },
-): Promise<{ path: string; bytes: number; digest: string; unchanged: boolean; transport: string }> {
-  const digest = sha256(options.content);
-  const singlePutMaxBytes = options.singlePutMaxBytes ?? STATE_BLOB_SINGLE_PUT_MAX_BYTES;
-  if (options.content.byteLength <= singlePutMaxBytes) {
-    const response = await blobPost<{ unchanged: boolean }>(options, "put", {
-      path: options.blobPath,
-      digest,
-      contentBase64: options.content.toString("base64"),
-    });
-    return {
-      path: options.blobPath,
-      bytes: options.content.byteLength,
-      digest,
-      unchanged: response.unchanged === true,
-      transport: "single",
-    };
-  }
-  const started = await blobPost<{
-    unchanged: boolean;
-    uploadId: string | null;
-    partBytes: number;
-  }>(options, "multipart/start", {
-    path: options.blobPath,
-    digest,
-    bytes: options.content.byteLength,
-  });
-  if (started.unchanged === true || !started.uploadId) {
-    return {
-      path: options.blobPath,
-      bytes: options.content.byteLength,
-      digest,
-      unchanged: true,
-      transport: "multipart",
-    };
-  }
-  const partBytes = options.partBytes ?? started.partBytes;
-  if (!Number.isSafeInteger(partBytes) || partBytes < 1 || partBytes > started.partBytes) {
-    throw new Error(`Worker returned an invalid multipart part size: ${started.partBytes}`);
-  }
-  try {
-    const parts: Array<{ partNumber: number; etag: string }> = [];
-    for (let offset = 0; offset < options.content.byteLength; offset += partBytes) {
-      const chunk = options.content.subarray(
-        offset,
-        Math.min(offset + partBytes, options.content.byteLength),
-      );
-      const uploaded = await blobPost<{ part: { partNumber: number; etag: string } }>(
-        options,
-        "multipart/part",
-        {
-          path: options.blobPath,
-          uploadId: started.uploadId,
-          partNumber: parts.length + 1,
-          contentBase64: Buffer.from(chunk).toString("base64"),
-        },
-      );
-      parts.push(uploaded.part);
-    }
-    await blobPost(options, "multipart/complete", {
-      path: options.blobPath,
-      uploadId: started.uploadId,
-      digest,
-      bytes: options.content.byteLength,
-      parts,
-    });
-  } catch (error) {
-    await blobPost(options, "multipart/abort", {
-      path: options.blobPath,
-      uploadId: started.uploadId,
-    }).catch(() => undefined);
-    throw error;
-  }
-  return {
-    path: options.blobPath,
-    bytes: options.content.byteLength,
-    digest,
-    unchanged: false,
-    transport: "multipart",
-  };
-}
 
 export async function statStateBlob(
   options: BlobRequestOptions & { blobPath: string },
@@ -375,8 +285,4 @@ function validateDescriptor(blob: StateBlobDescriptor): StateBlobDescriptor {
     digest: blob.digest,
     digestVerified: blob.digestVerified === true,
   };
-}
-
-function sha256(content: Buffer) {
-  return createHash("sha256").update(content).digest("hex");
 }

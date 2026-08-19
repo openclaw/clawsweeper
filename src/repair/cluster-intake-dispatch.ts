@@ -11,7 +11,7 @@ import {
 } from "./comment-router-utils.js";
 import { ghJson } from "./github-cli.js";
 import { liveWorkerCapacity } from "./live-worker-capacity.js";
-import { workerLimit } from "./limits.js";
+import { workerLimit } from "../limits.js";
 import {
   clusterDispatchAuthenticationTag,
   clusterIntakeLedger,

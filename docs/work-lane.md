@@ -195,10 +195,13 @@ lists the opt-out labels. The live dashboard groups those lifecycle events by
 source issue and shows the issue title, current phase, active worker, run, and
 generated PR.
 
-Promote a candidate from this checkout:
+### Operator-only promotion
+
+This is a production mutation path, not developer setup. Follow
+[Repair operations](repair/operations.md), confirm the execution window and
+authority, and run from the repository root:
 
 ```bash
-cd ~/Projects/clawsweeper
 pnpm run repair:create-job -- \
   --from-report records/openclaw-openclaw/items/123.md
 pnpm run repair:validate-job -- jobs/openclaw/inbox/clawsweeper-openclaw-openclaw-123.md

@@ -272,7 +272,7 @@ Durable relative data paths must use portable ASCII segments beneath one of
 `.artifacts/`, `artifacts/`, `jobs/`, `ledger/`, `logs/`, `notifications/`,
 `records/`, or `results/`. Arbitrary prose, bare namespaces, hidden child
 segments, traversal, encoded octets, and absolute paths are rejected by both
-runtime validation and the checked-in schema.
+runtime validation.
 
 Durable JSON files must already be the exact canonical encoding with unique
 object keys that the writer emits, including the trailing newline. Readers
@@ -281,8 +281,7 @@ and reject other noncanonical bytes before accepting the value. Direct event
 and shard reads cap allocation at 1 MiB and 2 MiB respectively.
 
 Every event records a privacy classification, redaction version, and fields
-dropped. The checked-in JSON schema is
-[`schema/state-ledger-event.schema.json`](../schema/state-ledger-event.schema.json).
+dropped.
 
 ## Event Families
 

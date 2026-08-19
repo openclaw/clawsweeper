@@ -1,0 +1,45 @@
+{
+  "schema": "clawsweeper-dashboard-page-extraction-proof/v1",
+  "base_sha": "5a964dadc8131e6e6dc33e9be3536b8141d1d107",
+  "head_sha": "22d7808c136a10503fc9929fd9ba5904e005542f",
+  "normalization": [
+    "ISO-8601 timestamps",
+    "40-character hexadecimal SHAs"
+  ],
+  "pages": [
+    {
+      "page": "root",
+      "route": "/",
+      "before_bytes": 162536,
+      "after_bytes": 162536,
+      "before_sha256": "319af378a93ab82c5b20af7dbab40d04a0596606b1d1dab8b7db0ac34e2c52df",
+      "after_sha256": "319af378a93ab82c5b20af7dbab40d04a0596606b1d1dab8b7db0ac34e2c52df",
+      "normalized_before_sha256": "319af378a93ab82c5b20af7dbab40d04a0596606b1d1dab8b7db0ac34e2c52df",
+      "normalized_after_sha256": "319af378a93ab82c5b20af7dbab40d04a0596606b1d1dab8b7db0ac34e2c52df",
+      "normalized_equal": true
+    },
+    {
+      "page": "triage",
+      "route": "/triage",
+      "before_bytes": 36015,
+      "after_bytes": 36015,
+      "before_sha256": "3cb7bac49a71f1c5fe7be9420b31a087ff6c00d696b23f3b48cb99fb5dbb03b5",
+      "after_sha256": "3cb7bac49a71f1c5fe7be9420b31a087ff6c00d696b23f3b48cb99fb5dbb03b5",
+      "normalized_before_sha256": "3cb7bac49a71f1c5fe7be9420b31a087ff6c00d696b23f3b48cb99fb5dbb03b5",
+      "normalized_after_sha256": "3cb7bac49a71f1c5fe7be9420b31a087ff6c00d696b23f3b48cb99fb5dbb03b5",
+      "normalized_equal": true
+    },
+    {
+      "page": "pr-proof-triage",
+      "route": "/pr-proof-triage",
+      "before_bytes": 35833,
+      "after_bytes": 35833,
+      "before_sha256": "ded1952e9e89e99407cadfd754162e31b87caa4d4d8886d6c3673da290c69dc8",
+      "after_sha256": "ded1952e9e89e99407cadfd754162e31b87caa4d4d8886d6c3673da290c69dc8",
+      "normalized_before_sha256": "ded1952e9e89e99407cadfd754162e31b87caa4d4d8886d6c3673da290c69dc8",
+      "normalized_after_sha256": "ded1952e9e89e99407cadfd754162e31b87caa4d4d8886d6c3673da290c69dc8",
+      "normalized_equal": true
+    }
+  ],
+  "normalized_diff_empty": true
+}

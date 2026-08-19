@@ -1,0 +1,87 @@
+{
+  "schema": "clawsweeper-real-boundary-proof-provenance/v1",
+  "claim": "The pushed node:sqlite migration passes its real gitcrawl fixtures and the full repository check in a fresh PR checkout mounted into a container with no sqlite3 executable.",
+  "pull_request": "https://github.com/openclaw/clawsweeper/pull/1126",
+  "reviewed_head": "31386dccd6ee9f77fe480ab6c705253647f4aaf2",
+  "crabbox": {
+    "run_cli_version": "0.38.3-5-g2a79805d",
+    "cleanup_cli_version": "0.41.1",
+    "provider": "aws",
+    "lease_id": "cbx_3ddd8eadc1bb",
+    "slug": "amber-barnacle-28b5",
+    "run_id": "run_61e78be4ed53",
+    "machine_type": "c7a.8xlarge",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1126 --no-hydrate",
+    "container_image": "node:24-bookworm",
+    "sync_ms": 28841,
+    "command_ms": 187543,
+    "total_ms": 218120,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true,
+    "lease_stop_status": "Initial release calls timed out through the older project-local wrapper; Crabbox 0.41.1 explicitly released the same provider-bound lease and a provider-specific list returned empty."
+  },
+  "runtime": {
+    "node": "v24.18.1",
+    "pnpm": "11.10.0",
+    "jq": "jq-1.8.2",
+    "jq_asset": "jq-linux-amd64",
+    "jq_sha256": "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
+    "jq_checksum_source": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/sha256sum.txt",
+    "jq_checksum_verified": true,
+    "rsync": "3.2.7-1+deb12u6",
+    "sqlite3_before_setup": "absent",
+    "sqlite3_after_setup": "absent"
+  },
+  "result": {
+    "proof_rc": 0,
+    "focused_new_path": {
+      "tests": 6,
+      "passed": 6,
+      "failed": 0
+    },
+    "full_check": {
+      "tests": 3333,
+      "passed": 3325,
+      "skipped": 8,
+      "failed": 0,
+      "line_coverage_percent": 81.6,
+      "branch_coverage_percent": 74.06,
+      "function_coverage_percent": 87.4
+    },
+    "stdout": {
+      "full_capture_bytes": 571547,
+      "full_capture_sha256": "28669d632e2d5387d901c76504611ab37a19bd23de0c29453767e2bf5efe5c76",
+      "committed_excerpt": "container-stdout.log",
+      "secret_scan": "container-secret-scan.json"
+    }
+  },
+  "discarded_attempts": [
+    {
+      "run_id": "run_a89db9823eff",
+      "lease_id": "cbx_ee91b67ca4e2",
+      "exit_code": 1,
+      "reason": "Checksum-verified jq was not added to PATH; six workflow fixtures took their jq-unavailable branches.",
+      "lease_stopped": true
+    },
+    {
+      "run_id": "run_b79ada848eae",
+      "lease_id": "cbx_f537a4c19fb2",
+      "exit_code": 1,
+      "reason": "Debian login shells reset the temporary jq PATH; the harness moved jq to /usr/local/bin.",
+      "lease_stopped": true
+    },
+    {
+      "run_id": "run_86c974950519",
+      "lease_id": "cbx_ed3ea0261b4d",
+      "exit_code": 1,
+      "reason": "The full suite reached a maintainer-report fixture requiring rsync, which the base image did not contain.",
+      "lease_stopped": true
+    }
+  ],
+  "limits": [
+    "The container intentionally cannot run the old sqlite3 subprocess path because sqlite3 is absent before and after dependency setup.",
+    "Old-versus-new byte equivalence runs on the host and is recorded separately in equivalence.json.",
+    "Fixtures are disposable local files and do not contact Gitcrawl, GitHub APIs, Worker storage, or production services."
+  ]
+}

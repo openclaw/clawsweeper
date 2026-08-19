@@ -71,12 +71,12 @@ async function main() {
   if (!html.includes("ClawSweeper Live")) throw new Error("dashboard HTML title missing");
   if (!html.includes("System Overview")) throw new Error("dashboard system overview missing");
   if (!html.includes('id="worker-dialog"')) throw new Error("dashboard worker drill-down missing");
-  if (!html.includes('href="/bay-demo"')) {
+  if (!html.includes('href="/bay"')) {
     throw new Error("public Bay route is missing from the overview navigation");
   }
 
-  const bayResponse = await fetch(`${baseUrl}/bay-demo`);
-  if (!bayResponse.ok) throw new Error(`${baseUrl}/bay-demo returned ${bayResponse.status}`);
+  const bayResponse = await fetch(`${baseUrl}/bay`);
+  if (!bayResponse.ok) throw new Error(`${baseUrl}/bay returned ${bayResponse.status}`);
   if (bayResponse.headers.get("cache-control") !== "no-store") {
     throw new Error("Bay HTML is not marked no-store");
   }
@@ -104,9 +104,11 @@ async function main() {
     throw new Error("Bay contains a direct browser-to-GitHub request");
   }
 
-  const unpublishedBay = await fetch(`${baseUrl}/bay`);
-  if (unpublishedBay.status !== 404) {
-    throw new Error(`${baseUrl}/bay returned ${unpublishedBay.status}, expected 404`);
+  const legacyBay = await fetch(`${baseUrl}/bay-demo?repo=openclaw%2Fopenclaw&q=proof`, {
+    redirect: "manual",
+  });
+  if (!isCanonicalLegacyBayRedirect(legacyBay, baseUrl)) {
+    throw new Error("legacy Bay route did not strip its query in a permanent redirect");
   }
 
   const bayAssets = {};
@@ -141,8 +143,8 @@ async function main() {
         cache_state: cacheState,
         status_fetch_ms: statusFetchMs,
         diagnostic_errors: status.diagnostics?.errors || [],
-        bay_demo: {
-          route: "/bay-demo",
+        bay: {
+          route: "/bay",
           public: true,
           indexable: true,
           direct_github_requests: 0,
@@ -209,6 +211,10 @@ async function fetchText(url) {
 
 export function containsDirectGitHubApiUrl(html) {
   return /(?:^|[^a-z0-9.-])api\.github\.com\.?(?=$|[^a-z0-9.-])/iu.test(html);
+}
+
+export function isCanonicalLegacyBayRedirect(response, baseUrl) {
+  return response.status === 308 && response.headers.get("location") === `${baseUrl}/bay`;
 }
 
 function positiveInteger(value, fallback) {

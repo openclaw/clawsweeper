@@ -1200,48 +1200,6 @@ function parseActionEventShardImportCompletion(
   }
 }
 
-export function readSpooledActionEvents(
-  root: string | SafeReadRoot,
-  repository: string,
-): ActionEvent[] {
-  const safeRoot =
-    typeof root === "string" ? prepareSafeReadRoot(root, "action event spool") : root;
-  const normalizedRepository = requiredRepo(repository);
-  const relativeDirectory = path.join(
-    ".clawsweeper-repair",
-    "action-events",
-    actionEventSpoolRepositoryDirectory(normalizedRepository),
-  );
-  let entries;
-  try {
-    entries = readDirectoryEntriesNoFollow(
-      safeRoot,
-      relativeDirectory,
-      "action event spool",
-      ACTION_EVENT_SPOOL_READ_LIMITS.maxEntriesPerRepository,
-    );
-  } catch (error) {
-    if (isNotFoundError(error)) return [];
-    throw error;
-  }
-  const budget = createActionEventSpoolReadBudget();
-  for (const entry of entries) {
-    if (!entry.isFile()) {
-      throw new Error(
-        `refusing unsafe action event spool entry: ${path.join(relativeDirectory, entry.name)}`,
-      );
-    }
-    if (!entry.name.endsWith(".json")) continue;
-    const relativePath = path.join(relativeDirectory, entry.name);
-    const event = readActionEventTarget(
-      prepareSafeReadTarget(safeRoot, relativePath, "action event spool entry"),
-    );
-    assertCanonicalSpooledEventPath(event, relativePath, normalizedRepository);
-    retainSpooledActionEvent(budget, event);
-  }
-  return budget.events.sort(compareEvents);
-}
-
 export function readAllSpooledActionEvents(root: string | SafeReadRoot): ActionEvent[] {
   const safeRoot =
     typeof root === "string" ? prepareSafeReadRoot(root, "action event spool") : root;

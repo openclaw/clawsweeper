@@ -1,0 +1,37 @@
+{
+  "schema": "clawsweeper-tree-traversal-proof/v1",
+  "generated_at": "2026-08-11T08:23:30Z",
+  "claim": "The availability probe traverses only the exact base and head trees, emits every selected blob ID without an implicit fetch, and leaves hydration to one explicit bounded fetch.",
+  "source": {
+    "branch": "steipete/blob-hydration-env-gate",
+    "base_head": "72936cc72849554c72a1cdfd433a283b194d136b",
+    "state": "after-fix working tree before the repair commit"
+  },
+  "crabbox": {
+    "cli_version": "0.38.3-5-g2a79805d",
+    "provider": "aws",
+    "lease_id": "cbx_7e3080158c5c",
+    "slug": "coral-lobster-9594",
+    "run_id": "run_0a87aaf605e6",
+    "machine_type": "c7a.8xlarge",
+    "container_image": "node:24-bookworm",
+    "container_git": "2.39.5",
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "result": {
+    "expected_blob_ids": 4,
+    "observed_blob_ids": 4,
+    "missing_blob_ids": 2,
+    "probe_nested_fetches": 0,
+    "bounded_fetches": 1,
+    "bounded_fetch_uses_stdin": true,
+    "hydrated": true,
+    "hydrated_blobs": 4,
+    "history_commit_objects_observed": false,
+    "unrelated_history_blob_observed": false,
+    "unrelated_ref_blob_observed": false
+  },
+  "limits": "The fixture uses a real local filter-capable origin and blobless clone. Remote size resolution is supplied by the fixture source repository rather than GitHub GraphQL."
+}

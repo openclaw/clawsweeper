@@ -1,0 +1,124 @@
+{
+  "overall_behavior": "satisfies_contract",
+  "overall_confidence": 0.99,
+  "target": {
+    "type": "loopback API",
+    "access": "dashboard Worker /api/status through Wrangler dev, the SQLite Durable Object, and a loopback GitHub HTTP fixture"
+  },
+  "checks": [
+    {
+      "contract_clause": "Completed stale snapshot run",
+      "status": "pass",
+      "severity": null,
+      "evidence": "A 60-minute queued snapshot row with an expired confirmation was answered by the exact-run fixture as completed; /api/status returned healthy with queued_over_threshold=0, the row disappeared, and eviction telemetry named the completed verdict.",
+      "reproduction_steps": [
+        "Seed a queued workflow row older than the workflow confirmation TTL",
+        "Preserve it across a fresh census boundary",
+        "Return completed from the exact GitHub run endpoint",
+        "Read /api/status and inspect the read model plus telemetry"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Absent stale snapshot run",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The same stale row with an exact-run 404 produced healthy status, zero queued-over-threshold count, durable eviction, and telemetry with verdict=absent.",
+      "reproduction_steps": [
+        "Seed and preserve the stale queued row",
+        "Return HTTP 404 from the exact GitHub run endpoint",
+        "Read /api/status and inspect the read model plus telemetry"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Genuine queued run still alerts",
+      "status": "pass",
+      "severity": null,
+      "evidence": "When the exact-run fixture still returned queued, /api/status remained degraded with queued_over_threshold=1 and the row's confirmation timestamp advanced.",
+      "reproduction_steps": [
+        "Seed and preserve the stale queued row",
+        "Return queued from the exact GitHub run endpoint",
+        "Read /api/status and inspect health plus the refreshed observation"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Missing subscription preserves live polling",
+      "status": "pass",
+      "severity": null,
+      "evidence": "A repair-fed row and complete census without any workflow_run delivery remained unusable with reason=never_observed; the empty live status census produced healthy status and zero queued-over-threshold count.",
+      "reproduction_steps": [
+        "Seed a workflow row only through repair",
+        "Persist complete census coverage without a workflow_run delivery",
+        "Return an empty live Actions status census",
+        "Read /api/status"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Fixed-size oldest-first revalidation backlog",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The real Worker fixture seeded 205 stale backlog rows plus the original completed and absent rows. The first refresh issued exactly 10 exact reads for the oldest rows, reported batch_size=10 and omitted_count=197, returned unknown with queued_over_threshold=0, and completed in 157 ms. Successive refreshes never exceeded 10 reads, selected all 207 candidates exactly once across 21 batches, and ended healthy with only the 25-hour zombie retained.",
+      "reproduction_steps": [
+        "Seed 205 stale queued rows plus completed, absent, and zombie fixtures through signed webhook HTTP requests",
+        "Wait through the production five-minute confirmation TTL",
+        "Read /api/status and inspect exact-run requests, health, and batch telemetry",
+        "Repeat status refreshes until the Durable Object backlog drains"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Failed exact verification never invents degradation",
+      "status": "pass",
+      "severity": null,
+      "evidence": "An HTTP 503 exact-run response produced operational status unknown and queued_over_threshold=0 rather than counting the unconfirmed row.",
+      "reproduction_steps": [
+        "Seed and preserve the stale queued row",
+        "Return HTTP 503 from the exact GitHub run endpoint",
+        "Read /api/status"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Zombie rows remain outside exact verification",
+      "status": "pass",
+      "severity": null,
+      "evidence": "A 25-hour queued snapshot row remained healthy with zombie_queued_runs=1 and generated zero exact-run requests.",
+      "reproduction_steps": [
+        "Seed a queued row older than 24 hours with an expired confirmation",
+        "Read /api/status",
+        "Inspect health and the exact-run request counter"
+      ],
+      "confidence": 0.99
+    }
+  ],
+  "anti_cheat_probes": [
+    {
+      "probe": "Changed the exact-run response from completed or absent to queued",
+      "result": "The alert returned with degraded status and one over-threshold queued run"
+    },
+    {
+      "probe": "Removed workflow_run delivery coverage while retaining repair census data",
+      "result": "The snapshot became unusable and the live status poll determined health"
+    },
+    {
+      "probe": "Made exact verification unavailable",
+      "result": "Health became unknown instead of healthy or phantom-degraded"
+    },
+    {
+      "probe": "Read the read model after terminal verification",
+      "result": "The phantom workflow run remained absent"
+    },
+    {
+      "probe": "Aged the row beyond the 24-hour zombie boundary",
+      "result": "The zombie remained separately observable and no exact verification request was made"
+    },
+    {
+      "probe": "Expanded the stale fixture from one row to 205 rows and delayed every exact response",
+      "result": "One refresh remained capped at 10 exact reads, omitted rows produced unknown rather than degradation, oldest rows were selected first, and 21 refreshes drained the full backlog"
+    }
+  ],
+  "blockers": []
+}

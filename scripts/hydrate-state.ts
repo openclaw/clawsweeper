@@ -2,6 +2,7 @@
 import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseArgs as parseNodeArgs } from "node:util";
 
 import { materializeStateBlobs } from "./worker-blobs.ts";
 import {
@@ -137,26 +138,55 @@ function copyGeneratedPath(stateRoot: string, worktreeRoot: string, relativePath
 }
 
 function parseArgs(argv: string[]): Args {
-  const parsed: Args = {};
+  const normalized: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--") continue;
-    if (arg === "--state-dir") parsed.stateDir = requiredValue(argv, ++index, arg);
-    else if (arg === "--worktree") parsed.worktree = requiredValue(argv, ++index, arg);
-    else if (arg === "--records-url") parsed.recordsUrl = requiredValue(argv, ++index, arg);
-    else if (arg === "--skip-state-blobs") parsed.hydrateStateBlobs = false;
-    else if (arg === "--skip-git-state") parsed.hydrateGitState = false;
-    else if (arg === "--records-item-number") {
-      const value = requiredValue(argv, ++index, arg);
-      if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 1) {
-        throw new Error("--records-item-number requires a positive safe integer");
-      }
-      parsed.recordsItemNumber = Number(value);
-    } else if (arg === "--records-repo-slugs") {
-      parsed.recordsRepoSlugs = parseRepoSlugs(requiredValue(argv, ++index, arg)) ?? [];
-    } else throw new Error(`Unknown argument: ${arg}`);
+    if (
+      [
+        "--state-dir",
+        "--worktree",
+        "--records-url",
+        "--records-item-number",
+        "--records-repo-slugs",
+      ].includes(arg)
+    ) {
+      normalized.push(`${arg}=${requiredValue(argv, ++index, arg)}`);
+    } else if (arg === "--skip-state-blobs" || arg === "--skip-git-state") normalized.push(arg);
+    else throw new Error(`Unknown argument: ${arg}`);
   }
-  return parsed;
+  const { values } = parseNodeArgs({
+    args: normalized,
+    options: {
+      "state-dir": { type: "string" },
+      worktree: { type: "string" },
+      "records-url": { type: "string" },
+      "skip-state-blobs": { type: "boolean" },
+      "skip-git-state": { type: "boolean" },
+      "records-item-number": { type: "string" },
+      "records-repo-slugs": { type: "string" },
+    },
+  });
+  const itemNumber = values["records-item-number"];
+  if (
+    itemNumber !== undefined &&
+    (!/^\d+$/.test(itemNumber) ||
+      !Number.isSafeInteger(Number(itemNumber)) ||
+      Number(itemNumber) < 1)
+  ) {
+    throw new Error("--records-item-number requires a positive safe integer");
+  }
+  return {
+    stateDir: values["state-dir"],
+    worktree: values.worktree,
+    recordsUrl: values["records-url"],
+    hydrateStateBlobs: values["skip-state-blobs"] ? false : undefined,
+    hydrateGitState: values["skip-git-state"] ? false : undefined,
+    recordsItemNumber: itemNumber === undefined ? undefined : Number(itemNumber),
+    ...(values["records-repo-slugs"] === undefined
+      ? {}
+      : { recordsRepoSlugs: parseRepoSlugs(values["records-repo-slugs"]) ?? [] }),
+  };
 }
 
 function parseRepoSlugs(value: string | undefined) {

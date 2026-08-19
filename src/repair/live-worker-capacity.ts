@@ -1,7 +1,7 @@
 import { ghJson } from "./github-cli.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
-import { AUTOMATION_LIMITS } from "./limits.js";
+import { AUTOMATION_LIMITS } from "../limits.js";
 import { currentProjectRepo } from "./project-repo.js";
 import { sleepMs } from "./timing.js";
 

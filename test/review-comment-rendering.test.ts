@@ -131,6 +131,14 @@ test("structural cache probes before hydration but acquires a lease before carry
   );
   const structuralWrite = reviewLoop.indexOf("writeFileSync(reportPath, carried", structuralLease);
   const contentCache = reviewLoop.indexOf("reviewContentCacheHit({");
+  const structuralPreflight = reviewLoop.indexOf("cachePreflightPasses(", structuralRevalidation);
+  const contentWrite = reviewLoop.indexOf("writeFileSync(reportPath, carried", contentCache);
+  const contentPreflight = reviewLoop.indexOf("cachePreflightPasses(", contentCache);
+  const provenancePromotions = [
+    ...reviewLoop.matchAll(
+      /carried = withRunnerPreflightProvenance\(carried, replaceFrontMatterValue\)/g,
+    ),
+  ];
   const hydration = reviewLoop.indexOf("collectItemContext(item");
   const mediaPrep = reviewLoop.indexOf("prepareMediaProofArtifacts(context", contentCache);
 
@@ -142,8 +150,17 @@ test("structural cache probes before hydration but acquires a lease before carry
   assert.ok(structuralLease > structuralHit);
   assert.ok(structuralRevalidation > structuralLease);
   assert.ok(structuralWrite > structuralRevalidation);
+  assert.ok(structuralPreflight > structuralRevalidation);
+  assert.ok(structuralPreflight < structuralWrite);
   assert.ok(structuralWrite < hydration);
   assert.ok(contentCache > structuralLease);
+  assert.ok(contentPreflight > contentCache);
+  assert.ok(contentPreflight < contentWrite);
+  assert.equal(provenancePromotions.length, 3);
+  assert.ok(provenancePromotions[0]!.index > structuralPreflight);
+  assert.ok(provenancePromotions[0]!.index < structuralWrite);
+  assert.ok(provenancePromotions[2]!.index > contentPreflight);
+  assert.ok(provenancePromotions[2]!.index < contentWrite);
   assert.ok(mediaPrep > contentCache);
   assert.match(
     reviewLoop.slice(structuralHit, structuralWrite),
@@ -225,6 +242,7 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
     "semanticCacheRevalidations += 1",
     semanticDecision,
   );
+  const semanticPreflight = reviewLoop.indexOf("cachePreflightPasses(", semanticDecision);
   const checkRevalidation = reviewLoop.indexOf("pullChecksContext(", semanticRevalidation);
   const priorReviewRevalidation = reviewLoop.indexOf(
     "fetchIssueReviewComments(item.number)",
@@ -242,6 +260,10 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
     "writeFileSync(reportPath, carried",
     semanticRevalidation,
   );
+  const semanticProvenance = reviewLoop.indexOf(
+    "carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue)",
+    semanticRevalidation,
+  );
   const contentCache = reviewLoop.indexOf("reviewContentCacheHit({", semanticWrite);
 
   assert.ok(hydration >= 0);
@@ -251,12 +273,16 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
   assert.ok(issueReviewRevalidation < semanticRecord);
   assert.ok(semanticRecord > hydration);
   assert.ok(semanticDecision > semanticRecord);
+  assert.ok(semanticPreflight > semanticDecision);
+  assert.ok(semanticPreflight < semanticWrite);
   assert.ok(semanticRevalidation > semanticDecision);
   assert.ok(checkRevalidation > semanticRevalidation);
   assert.ok(priorReviewRevalidation > checkRevalidation);
   assert.ok(relationRevalidation > priorReviewRevalidation);
   assert.ok(revalidatedRecord > relationRevalidation);
   assert.ok(semanticWrite > revalidatedRecord);
+  assert.ok(semanticProvenance > revalidatedRecord);
+  assert.ok(semanticProvenance < semanticWrite);
   assert.ok(contentCache > semanticWrite);
   assert.match(
     reviewLoop.slice(semanticRevalidation, semanticWrite),
@@ -524,6 +550,7 @@ test("review item source revision ignores advisory labels but tracks protected l
           { name: "mantis: telegram-visible-proof" },
           { name: "triage: needs-real-behavior-proof" },
           { name: "clawsweeper:reviewed" },
+          { name: "clawsweeper-recovery-stuck" },
           { name: "no-stale" },
           { name: "stale" },
         ],
@@ -909,14 +936,16 @@ test("verified regression provenance renders the predecessor PR without local so
       regression_provenance_evidence_type: "blame_to_merge_commit",
       regression_provenance_merged_at: "2026-07-31T12:00:00Z",
       regression_provenance_reviewed_sha: "b".repeat(40),
+      regression_provenance_source_commit_sha: mergeSha,
+      regression_provenance_source_author: "Source Author",
     }),
     "implemented_on_main",
   );
   assert.match(
     closeComment,
-    /Verified regression provenance: \[#936\]\(https:\/\/github\.com\/openclaw\/clawsweeper\/pull\/936\)/,
+    /Regression provenance — verified: source commit `aaaaaaaaaaaa` by Source Author; canonical PR \[#936\]\(https:\/\/github\.com\/openclaw\/clawsweeper\/pull\/936\)/,
   );
-  assert.match(closeComment, /blame-to-merge-commit; `aaaaaaaaaaaa`/);
+  assert.match(closeComment, /\(blame-to-merge-commit\)/);
   assert.doesNotMatch(closeComment, /src\/clawsweeper-review-runtime\.ts/);
   assert.doesNotMatch(closeComment, new RegExp(mergeSha));
 
@@ -933,6 +962,8 @@ test("verified regression provenance renders the predecessor PR without local so
       regression_provenance_evidence_type: "blame_to_merge_commit",
       regression_provenance_merged_at: "2026-07-31T12:00:00Z",
       regression_provenance_reviewed_sha: "b".repeat(40),
+      regression_provenance_source_commit_sha: mergeSha,
+      regression_provenance_source_author: "Source Author",
     })}
 
 ## Summary
@@ -945,6 +976,33 @@ Keep open while the regression is fixed.
   assert.match(
     keepOpenComment,
     /\[#936\]\(https:\/\/github\.com\/openclaw\/clawsweeper\/pull\/936\)/,
+  );
+});
+
+test("legacy verified regression provenance remains visible without inventing an author", () => {
+  const mergeSha = "a".repeat(40);
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_provenance_repo: "openclaw/clawsweeper",
+      regression_provenance_pr_url: "https://github.com/openclaw/clawsweeper/pull/936",
+      regression_provenance_pr_number: "936",
+      regression_provenance_merge_sha: mergeSha,
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_evidence_type: "blame_to_merge_commit",
+      regression_provenance_merged_at: "2026-07-31T12:00:00Z",
+      regression_provenance_reviewed_sha: "b".repeat(40),
+      regression_provenance_source_commit_sha: "unknown",
+      regression_provenance_source_author: "unknown",
+    }),
+    "implemented_on_main",
+  );
+
+  assert.match(comment, /source commit `aaaaaaaaaaaa`/);
+  assert.match(comment, /source author not recorded in this legacy report/);
+  assert.match(
+    comment,
+    /canonical PR \[#936\]\(https:\/\/github\.com\/openclaw\/clawsweeper\/pull\/936\)/,
   );
 });
 
@@ -966,6 +1024,256 @@ test("unverified regression-provenance front matter cannot render a predecessor"
 
   assert.doesNotMatch(comment, /Verified regression provenance/);
   assert.doesNotMatch(comment, /pull\/936/);
+});
+
+test("verified provenance rejects a source commit that differs from the merge commit", () => {
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_provenance_repo: "openclaw/clawsweeper",
+      regression_provenance_pr_url: "https://github.com/openclaw/clawsweeper/pull/936",
+      regression_provenance_pr_number: "936",
+      regression_provenance_merge_sha: "a".repeat(40),
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_evidence_type: "blame_to_merge_commit",
+      regression_provenance_merged_at: "2026-07-31T12:00:00Z",
+      regression_provenance_reviewed_sha: "b".repeat(40),
+      regression_provenance_source_commit_sha: "c".repeat(40),
+      regression_provenance_source_author: "Source Author",
+    }),
+    "implemented_on_main",
+  );
+
+  assert.doesNotMatch(comment, /Regression provenance.*verified|canonical PR \[#936\]/);
+});
+
+test("verified provenance accepts equivalent normalized source commit text", () => {
+  const sha = "a".repeat(40);
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_provenance_repo: "openclaw/clawsweeper",
+      regression_provenance_pr_url: "https://github.com/openclaw/clawsweeper/pull/936",
+      regression_provenance_pr_number: "936",
+      regression_provenance_merge_sha: sha,
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_evidence_type: "blame_to_merge_commit",
+      regression_provenance_merged_at: "2026-07-31T12:00:00Z",
+      regression_provenance_reviewed_sha: "b".repeat(40),
+      regression_provenance_source_commit_sha: ` ${sha.toUpperCase()} `,
+      regression_provenance_source_author: "Source Author",
+    }),
+    "implemented_on_main",
+  );
+
+  assert.match(comment, /Regression provenance.*verified/);
+  assert.match(comment, /source commit `aaaaaaaaaaaa`/);
+});
+
+test("verified provenance rejects Unicode direction controls in author names", () => {
+  const sha = "a".repeat(40);
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_provenance_repo: "openclaw/clawsweeper",
+      regression_provenance_pr_url: "https://github.com/openclaw/clawsweeper/pull/936",
+      regression_provenance_pr_number: "936",
+      regression_provenance_merge_sha: sha,
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_evidence_type: "blame_to_merge_commit",
+      regression_provenance_merged_at: "2026-07-31T12:00:00Z",
+      regression_provenance_reviewed_sha: "b".repeat(40),
+      regression_provenance_source_commit_sha: sha,
+      regression_provenance_source_author: "safe\u202eevil",
+    }),
+    "implemented_on_main",
+  );
+
+  assert.doesNotMatch(comment, /Regression provenance.*verified|safe/);
+});
+
+test("verified provenance rejects email-shaped author names", () => {
+  const sha = "a".repeat(40);
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_provenance_repo: "openclaw/clawsweeper",
+      regression_provenance_pr_url: "https://github.com/openclaw/clawsweeper/pull/936",
+      regression_provenance_pr_number: "936",
+      regression_provenance_merge_sha: sha,
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_evidence_type: "blame_to_merge_commit",
+      regression_provenance_merged_at: "2026-07-31T12:00:00Z",
+      regression_provenance_reviewed_sha: "b".repeat(40),
+      regression_provenance_source_commit_sha: sha,
+      regression_provenance_source_author: "Private Author <private@localhost>",
+    }),
+    "implemented_on_main",
+  );
+
+  assert.doesNotMatch(comment, /Regression provenance.*verified|private@/);
+});
+
+test("suspected provenance renders commit, author, status, and only a verified related PR", () => {
+  const base = {
+    regression_assessment_confidence: "suspected",
+    regression_assessment_evidence: "reviewed_change",
+    regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+    regression_provenance_source_line: "42",
+    regression_provenance_source_commit_sha: "c".repeat(40),
+    regression_provenance_source_author: "Source Author",
+    regression_provenance_evidence_type: "source_line",
+  };
+  const unlinked = renderReviewCommentFromReport(
+    implementedCloseReport(base),
+    "implemented_on_main",
+  );
+  assert.match(unlinked, /suspected predecessor, not a causality claim/);
+  assert.match(unlinked, /source commit `cccccccccccc` by Source Author; no PR verified/);
+
+  const linked = renderReviewCommentFromReport(
+    implementedCloseReport({
+      ...base,
+      regression_provenance_evidence_type: "rewrite_equivalent",
+      regression_provenance_related_pr_number: "1023",
+      regression_provenance_related_pr_url: "https://github.com/openclaw/clawsweeper/pull/1023",
+      regression_provenance_related_repo: "openclaw/clawsweeper",
+    }),
+    "implemented_on_main",
+  );
+  assert.match(linked, /safely related PR \[#1023\]/);
+
+  const spoofed = renderReviewCommentFromReport(
+    implementedCloseReport({
+      ...base,
+      regression_provenance_evidence_type: "rewrite_equivalent",
+      regression_provenance_related_pr_number: "1023",
+      regression_provenance_related_pr_url: "https://example.test/not-a-pr",
+      regression_provenance_related_repo: "openclaw/clawsweeper",
+    }),
+    "implemented_on_main",
+  );
+  assert.doesNotMatch(spoofed, /example\.test|safely related PR/);
+
+  const impossibleLine = renderReviewCommentFromReport(
+    implementedCloseReport({
+      ...base,
+      regression_provenance_source_line: "0",
+    }),
+    "implemented_on_main",
+  );
+  assert.doesNotMatch(impossibleLine, /suspected predecessor|source commit `cccccccccccc`/);
+});
+
+test("suspected provenance supplements rather than suppresses regression assessment", () => {
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_assessment_confidence: "probable",
+      regression_assessment_evidence: "reproduction,reviewed_change",
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_source_commit_sha: "c".repeat(40),
+      regression_provenance_source_author: "Source Author",
+      regression_provenance_evidence_type: "source_line",
+    }),
+    "implemented_on_main",
+  );
+
+  assert.match(comment, /suspected predecessor, not a causality claim/);
+  assert.match(comment, /Possible regression \u2014 probable \(reproduction; reviewed change\)/);
+});
+
+test("rewrite-equivalent provenance and assessment do not contradict each other", () => {
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_assessment_confidence: "probable",
+      regression_assessment_evidence: "reproduction,reviewed_change",
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_source_commit_sha: "c".repeat(40),
+      regression_provenance_source_author: "Source Author",
+      regression_provenance_evidence_type: "rewrite_equivalent",
+      regression_provenance_related_pr_number: "1023",
+      regression_provenance_related_pr_url: "https://github.com/openclaw/clawsweeper/pull/1023",
+      regression_provenance_related_repo: "openclaw/clawsweeper",
+    }),
+    "implemented_on_main",
+  );
+
+  assert.match(comment, /safely related PR \[#1023\]/);
+  assert.match(comment, /Possible regression \u2014 probable \(reproduction; reviewed change\)\./);
+  assert.doesNotMatch(comment, /No predecessor PR is attributed/);
+});
+
+test("provenance author names cannot trigger GitHub mentions", () => {
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_assessment_confidence: "suspected",
+      regression_assessment_evidence: "reviewed_change",
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_source_commit_sha: "c".repeat(40),
+      regression_provenance_source_author: "@openclaw/maintainers",
+      regression_provenance_evidence_type: "source_line",
+    }),
+    "implemented_on_main",
+  );
+
+  assert.doesNotMatch(comment, /@openclaw\/maintainers/);
+  assert.match(comment, /@\u200bopenclaw\/maintainers/);
+});
+
+test("a provenance author literally named unknown remains visible", () => {
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_assessment_confidence: "suspected",
+      regression_assessment_evidence: "reviewed_change",
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_source_commit_sha: "c".repeat(40),
+      regression_provenance_source_author: "unknown",
+      regression_provenance_evidence_type: "source_line",
+    }),
+    "implemented_on_main",
+  );
+
+  assert.match(comment, /source commit `cccccccccccc` by unknown; no PR verified/);
+});
+
+test("suspected provenance rejects Unicode direction controls in author names", () => {
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_assessment_confidence: "suspected",
+      regression_assessment_evidence: "reviewed_change",
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_source_commit_sha: "c".repeat(40),
+      regression_provenance_source_author: "safe\u202eevil",
+      regression_provenance_evidence_type: "source_line",
+    }),
+    "implemented_on_main",
+  );
+
+  assert.doesNotMatch(comment, /suspected predecessor|safe/);
+  assert.match(comment, /Possible regression \u2014 suspected/);
+});
+
+test("suspected provenance rejects email-shaped author names", () => {
+  const comment = renderReviewCommentFromReport(
+    implementedCloseReport({
+      regression_assessment_confidence: "suspected",
+      regression_assessment_evidence: "reviewed_change",
+      regression_provenance_source_path: "src/clawsweeper-review-runtime.ts",
+      regression_provenance_source_line: "42",
+      regression_provenance_source_commit_sha: "c".repeat(40),
+      regression_provenance_source_author: "Private Author <private@localhost>",
+      regression_provenance_evidence_type: "source_line",
+    }),
+    "implemented_on_main",
+  );
+
+  assert.doesNotMatch(comment, /suspected predecessor|private@/);
+  assert.match(comment, /Possible regression \u2014 suspected/);
 });
 
 test("probable regression assessments render evidence without attributing a predecessor", () => {
@@ -1481,27 +1789,38 @@ test("publishing the durable review comment sweeps superseded placeholders", () 
 
   const applyStart = source.indexOf('syncReasons.push("updated durable Codex review comment")');
   assert.ok(applyStart >= 0);
-  const applyWindow = source.slice(applyStart, applyStart + 1200);
+  const applyCatch = source.indexOf("const commentAuthError", applyStart);
+  assert.ok(applyCatch > applyStart);
+  const applyWindow = source.slice(applyStart, applyCatch);
   assert.match(applyWindow, /cleanupSupersededReviewPlaceholderComments\(\{/);
 });
 
-test("completed durable publication clears a recovery escalation only after the review exists", () => {
+test("recovery cleanup preserves durable-review ordering and exact publication batching", () => {
   const source = readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8");
+  const delayedBatch = source.indexOf("const delayIssueLabelBatchForRecoveryCleanup =");
   const publication = source.indexOf("syncedComment = upsertReviewComment(");
   const recoveryCleanup = source.indexOf("clearResolvedReviewRecoveryLabel({", publication);
-  const nextCatch = source.indexOf("} catch (error)", recoveryCleanup);
+  const delayedFlush = source.indexOf(
+    "if (delayIssueLabelBatchForRecoveryCleanup)",
+    recoveryCleanup,
+  );
+  const nextCatch = source.indexOf("} catch (error)", delayedFlush);
 
+  assert.ok(delayedBatch >= 0);
+  assert.ok(delayedBatch < publication);
   assert.ok(publication >= 0);
   assert.ok(recoveryCleanup > publication);
+  assert.ok(delayedFlush > recoveryCleanup);
   assert.match(
-    source.slice(publication, recoveryCleanup),
-    /if \(complete && item\.labels\.includes\(REVIEW_RECOVERY_STUCK_LABEL\)\)/,
+    source.slice(delayedBatch, publication),
+    /if \(!delayIssueLabelBatchForRecoveryCleanup\)/,
   );
+  assert.match(source.slice(recoveryCleanup, delayedFlush), /if \(issueLabelBatchActive\)/);
+  assert.match(source.slice(delayedFlush, nextCatch), /flushIssueLabelBatchForDurableComment\(\);/);
   assert.match(source.slice(recoveryCleanup, nextCatch), /removeLabel:\s*removeIssueLabel/);
-  assert.match(source.slice(recoveryCleanup, nextCatch), /"labels_synced_at"/);
 });
 
-test("placeholder sweep retries on every apply pass independent of comment body sync", () => {
+test("placeholder sweep waits for an authorized durable-comment mutation", () => {
   const source = readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8");
   const earlyLeaseStart = source.indexOf("const earlyLeaseState = refreshReviewStartLeaseState();");
   assert.ok(earlyLeaseStart >= 0);
@@ -1511,6 +1830,6 @@ test("placeholder sweep retries on every apply pass independent of comment body 
   );
   assert.ok(needsReviewCommentSyncStart > earlyLeaseStart);
   const earlyWindow = source.slice(earlyLeaseStart, needsReviewCommentSyncStart);
-  assert.match(earlyWindow, /cleanupSupersededReviewPlaceholderComments\(\{/);
-  assert.match(earlyWindow, /comments:\s*earlyLeaseState\.comments/);
+  assert.doesNotMatch(earlyWindow, /cleanupSupersededReviewPlaceholderComments\(\{/);
+  assert.match(earlyWindow, /acquireApplyMutationLease\(lateLeaseState\)/);
 });

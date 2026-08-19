@@ -16,10 +16,39 @@ import {
   shouldReviewItem,
 } from "./scheduler-policy.js";
 import type { ReviewPlanningDependencies } from "./clawsweeper-review-planning-dependencies.js";
+import {
+  prCommentActivityRevision,
+  prCommentActivityRevisionQuery,
+  PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
+  PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE,
+} from "./pr-comment-activity-revision.js";
+import {
+  generationReadKey,
+  type LiveReadGeneration,
+  type LiveReadOptions,
+} from "./live-read-generation.js";
+import {
+  githubReadModelItemObject,
+  githubReadModelRequestSync,
+  usableGithubReadModelResponse,
+} from "./github-webhook-read-model-client.js";
+
+export {
+  PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
+  PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE,
+} from "./pr-comment-activity-revision.js";
+
+export interface PlannedPrActivityRevisions {
+  revisions: Record<string, string | null>;
+  requestCount: number;
+  pageSize: number;
+  connectionLimit: number;
+}
 
 export function createReviewPlanningInventory(dependencies: ReviewPlanningDependencies) {
   const { targetRepo, ghJson, ghJsonLines, normalizeAuthorAssociation, indexedExistingReview } =
     dependencies;
+  const readModelRequest = dependencies.githubReadModelRequestSync ?? githubReadModelRequestSync;
 
   function isFresh(
     review: { reviewedAt: string | undefined; reviewStatus: string | undefined } | null,
@@ -162,19 +191,63 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
       pagesScanned: result.pagesScanned,
     };
   }
-  function fetchItem(number: number): { item: Item; state: string } {
-    const issue = ghJson<
-      GitHubIssueListItem & {
-        active_lock_reason?: string | null;
-        locked?: boolean;
-        state?: string;
+  function fetchItem(
+    number: number,
+    options: LiveReadOptions & { liveReadGeneration?: LiveReadGeneration } = {},
+  ): { item: Item; state: string } {
+    const args = ["api", `repos/${targetRepo()}/issues/${number}`];
+    const readIssue = () =>
+      ghJson<
+        GitHubIssueListItem & {
+          active_lock_reason?: string | null;
+          locked?: boolean;
+          state?: string;
+        }
+      >(args);
+    const issue = (() => {
+      if (options.liveReadGeneration) {
+        return options.liveReadGeneration.read(generationReadKey("json", args), readIssue, options);
       }
-    >([
-      "api",
-      `repos/${targetRepo()}/issues/${number}`,
-      "--jq",
-      "{number,title,html_url,created_at,updated_at,closed_at,state,locked,active_lock_reason,author_association,user:{login:.user.login},labels:[.labels[].name],pull_request:(.pull_request // null)}",
-    ]);
+      if (!options.bypassGenerationCache) {
+        const snapshot = readModelRequest("item", {
+          repository: targetRepo(),
+          number,
+        });
+        if (
+          usableGithubReadModelResponse(snapshot, "review_planning_item", "issues_or_pull_requests")
+        ) {
+          const value = snapshot.item;
+          if (value && typeof value === "object" && !Array.isArray(value)) {
+            return value as GitHubIssueListItem & {
+              active_lock_reason?: string | null;
+              locked?: boolean;
+              state?: string;
+            };
+          }
+        }
+      }
+      const live = readIssue();
+      if (!options.bypassGenerationCache) {
+        const object = githubReadModelItemObject(
+          targetRepo(),
+          live as unknown as Record<string, unknown>,
+        );
+        if (object) {
+          readModelRequest("repair", {
+            repository: targetRepo(),
+            repair_kind: "items",
+            objects: [object],
+          });
+        }
+      }
+      return live;
+    })();
+    const labels = (issue.labels ?? []).flatMap((label: unknown) => {
+      if (typeof label === "string") return [label];
+      if (!label || typeof label !== "object" || Array.isArray(label)) return [];
+      const name = (label as { name?: unknown }).name;
+      return typeof name === "string" ? [name] : [];
+    });
     return {
       item: {
         repo: targetRepo(),
@@ -187,7 +260,7 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
         closedAt: issue.closed_at,
         author: issue.user?.login ?? "unknown",
         authorAssociation: normalizeAuthorAssociation(issue.author_association),
-        labels: issue.labels ?? [],
+        labels,
         locked: issue.locked === true,
         activeLockReason: issue.active_lock_reason ?? null,
       },
@@ -213,6 +286,74 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
     };
   }
 
+  function fetchPlannedPrActivityRevisions(
+    items: readonly Pick<Item, "kind" | "number">[],
+  ): PlannedPrActivityRevisions {
+    const numbers = [
+      ...new Set(
+        items
+          .filter((item) => item.kind === "pull_request")
+          .map((item) => item.number)
+          .filter((number) => Number.isSafeInteger(number) && number > 0),
+      ),
+    ].sort((left, right) => left - right);
+    const revisions: Record<string, string | null> = Object.fromEntries(
+      numbers.map((number) => [String(number), null]),
+    );
+    if (numbers.length === 0) {
+      return {
+        revisions,
+        requestCount: 0,
+        pageSize: PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE,
+        connectionLimit: PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
+      };
+    }
+    const [owner, name] = targetRepo().split("/");
+    if (!validGraphQlName(owner) || !validGraphQlName(name)) {
+      console.error(
+        `[plan] unable to validate PR comment activity revisions for invalid repo ${targetRepo()}; hydration cache validation will fail closed`,
+      );
+      return {
+        revisions,
+        requestCount: 0,
+        pageSize: PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE,
+        connectionLimit: PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
+      };
+    }
+
+    let requestCount = 0;
+    for (let offset = 0; offset < numbers.length; offset += PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE) {
+      const page = numbers.slice(offset, offset + PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE);
+      requestCount += 1;
+      try {
+        const response = ghJson<unknown>([
+          "api",
+          "graphql",
+          "-f",
+          `query=${prCommentActivityRevisionQuery(owner, name, page)}`,
+        ]);
+        const root = jsonRecord(response);
+        if (Array.isArray(root.errors) && root.errors.length > 0) {
+          throw new Error("GitHub GraphQL returned errors");
+        }
+        const repository = jsonRecord(jsonRecord(root.data).repository);
+        for (const number of page) {
+          revisions[String(number)] = prCommentActivityRevision(repository[`pr_${number}`]);
+        }
+      } catch (error) {
+        console.error(
+          `[plan] unable to validate PR comment activity revisions for ${targetRepo()} items ${page[0]}-${page.at(-1)}; hydration cache validation will fail closed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    return {
+      revisions,
+      requestCount,
+      pageSize: PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE,
+      connectionLimit: PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
+    };
+  }
+
   return {
     isFresh,
     isCurrentForCadence,
@@ -224,5 +365,16 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
     fetchOpenItemNumbers,
     fetchItem,
     fetchOpenItemCounts,
+    fetchPlannedPrActivityRevisions,
   };
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function validGraphQlName(value: string | undefined): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_.-]+$/.test(value);
 }

@@ -1,0 +1,53 @@
+{
+  "schema": "clawsweeper-crabbox-proof-provenance/v1",
+  "generated_at": "2026-08-11T07:20:06Z",
+  "claim": "The pushed PR hydrates genuine blobless-clone review objects on Git 2.39.5 and completes the full ClawSweeper gate suite with zero failures.",
+  "crabbox": {
+    "cli_version": "0.38.3-5-g2a79805d",
+    "provider": "local-container",
+    "lease_id": "cbx_553522239697",
+    "slug": "quick-crab-969a",
+    "run_id": null,
+    "machine_type": "node_24-bookworm",
+    "image": "node:24-bookworm",
+    "container_engine": "Docker 29.4.0",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1118 (clean remote checkout, --no-hydrate)",
+    "workdir": "/work/crabbox/cbx_553522239697/fresh-pr-openclaw-clawsweeper-1118",
+    "sync_ms": 26760,
+    "command_ms": 375055,
+    "total_ms": 401893,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "git": "2.39.5",
+    "pnpm": "11.10.0",
+    "jq": "1.8.1"
+  },
+  "tool_verification": {
+    "jq_release": "https://github.com/jqlang/jq/releases/tag/jq-1.8.1",
+    "jq_linux_amd64_sha256": "020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d",
+    "jq_checksum": "passed",
+    "corepack_install_directory": "$HOME/.local/bin"
+  },
+  "pull_request": {
+    "url": "https://github.com/openclaw/clawsweeper/pull/1118",
+    "base_sha": "ae04c61896effe1fb7795ef021c4feac99ddaea3",
+    "reviewed_head": "964d9d8d88b7e0a2394f7d555fa9b6d5cf0f923e"
+  },
+  "result": {
+    "build_all": "passed",
+    "test_no_build": "passed",
+    "lint": "passed",
+    "format_check": "passed",
+    "check_active_surface": "passed",
+    "tests": 3318,
+    "passed": 3310,
+    "failed": 0,
+    "skipped": 8,
+    "target_blob_hydration_tests": "3 passed, 0 skipped"
+  },
+  "limits": "Fixture blob sizes use the local source repository; the production GitHub GraphQL transport is covered separately. No live GitHub mutation or deployment was exercised."
+}

@@ -15,11 +15,12 @@ import type {
   ReviewFinding,
   ReviewRuntime,
   RootCauseClusterAssessment,
-  VerifiedRegressionProvenance,
+  PublicRegressionProvenance,
   SecurityReview,
 } from "./clawsweeper-types.js";
 import {
   isRegressionAssessment,
+  isPublicRegressionProvenance,
   isVerifiedRegressionProvenance,
   regressionAssessmentPublicLine,
   regressionProvenancePublicLine,
@@ -88,7 +89,7 @@ export function createReportCommentHelpers(
     likelyOwners?: LikelyOwner[];
     fixedPullRequest?: FixedPullRequest | null;
     regressionAssessment?: RegressionAssessment | null;
-    regressionProvenance?: VerifiedRegressionProvenance | null;
+    regressionProvenance?: PublicRegressionProvenance | null;
     securityReview?: SecurityReview;
     rootCauseCluster?: RootCauseClusterAssessment;
     reviewLine: string;
@@ -107,10 +108,17 @@ export function createReportCommentHelpers(
         )}.`,
       );
     }
-    const regressionProvenanceLine =
-      regressionProvenancePublicLine(options.regressionProvenance) ??
-      regressionAssessmentPublicLine(options.regressionAssessment);
+    const regressionProvenanceLine = regressionProvenancePublicLine(
+      options.regressionProvenance,
+      options.regressionAssessment,
+    );
+    const regressionAssessmentLine = regressionAssessmentPublicLine(options.regressionAssessment, {
+      predecessorAttributed: options.regressionProvenance?.evidenceType === "rewrite_equivalent",
+    });
     if (regressionProvenanceLine) lines.push("", regressionProvenanceLine);
+    if (regressionAssessmentLine && !isVerifiedRegressionProvenance(options.regressionProvenance)) {
+      lines.push("", regressionAssessmentLine);
+    }
     const rootCauseCluster = publicRootCauseClusterBlock(options.rootCauseCluster);
     if (rootCauseCluster) lines.push("", "**Root-cause cluster**", rootCauseCluster);
     const bestSolutionLine = sentence(options.bestSolution ?? "");
@@ -232,7 +240,7 @@ export function createReportCommentHelpers(
       regressionAssessment: isRegressionAssessment(decision.regressionAssessment)
         ? decision.regressionAssessment
         : null,
-      regressionProvenance: isVerifiedRegressionProvenance(decision.regressionProvenance)
+      regressionProvenance: isPublicRegressionProvenance(decision.regressionProvenance)
         ? decision.regressionProvenance
         : null,
       securityReview: decision.securityReview,
@@ -639,6 +647,7 @@ export function createReportCommentHelpers(
     "merge readiness",
     "review scores",
     "verification",
+    "live proof",
     "how this fits together",
     "decision needed",
     "before merge",

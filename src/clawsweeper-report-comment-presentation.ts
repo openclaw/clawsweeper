@@ -1,5 +1,6 @@
 import type { CloseReason, ItemKind, ReviewCommentRenderOptions } from "./clawsweeper-types.js";
 import {
+  isVerifiedRegressionProvenance,
   regressionAssessmentPublicLine,
   regressionProvenancePublicLine,
 } from "./clawsweeper-regression-provenance.js";
@@ -66,6 +67,7 @@ export function createReportCommentPresentation(
     reportAgentsPolicyStatus,
     reportEvidence,
     reportLikelyOwners,
+    reportLiveProofRecordingBlock,
     reportMantisRecommendation,
     reportOverallConfidenceScore,
     reportOverallCorrectness,
@@ -110,12 +112,25 @@ export function createReportCommentPresentation(
     const securityReview = reportSecurityReview(markdown);
     const realBehaviorProof = reportRealBehaviorProof(markdown);
     const prRating = reportPrRating(markdown);
+    const liveProofRecordingBlock = reportLiveProofRecordingBlock(markdown);
     const mantisRecommendation = reportMantisRecommendation(markdown);
     const agentsPolicyStatus = reportAgentsPolicyStatus(markdown);
     const rootCauseCluster = reportRootCauseCluster(markdown);
-    const regressionProvenanceLine =
-      regressionProvenancePublicLine(regressionProvenanceFromReport(markdown)) ??
-      regressionAssessmentPublicLine(regressionAssessmentFromReport(markdown));
+    const regressionProvenance = regressionProvenanceFromReport(markdown);
+    const regressionAssessment = regressionAssessmentFromReport(markdown);
+    const regressionProvenanceLine = regressionProvenancePublicLine(
+      regressionProvenance,
+      regressionAssessment,
+    );
+    const regressionAssessmentLine = regressionAssessmentPublicLine(regressionAssessment, {
+      predecessorAttributed: regressionProvenance?.evidenceType === "rewrite_equivalent",
+    });
+    const regressionPublicLine = [
+      regressionProvenanceLine,
+      !isVerifiedRegressionProvenance(regressionProvenance) ? regressionAssessmentLine : null,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join("\n\n");
     const summary = reviewSectionValue(markdown, "summary");
     const changeSummary = reviewSectionValue(markdown, "changeSummary");
     const systemContext = neutralizeOwnedSectionSpoofing(
@@ -306,8 +321,8 @@ export function createReportCommentPresentation(
       });
       lines.push("# ClawSweeper review", "");
       appendHeadingSection(lines, "What this changes", changeSummaryLine);
-      if (regressionProvenanceLine) {
-        appendHeadingSection(lines, "Regression provenance", regressionProvenanceLine);
+      if (regressionPublicLine) {
+        appendHeadingSection(lines, "Regression provenance", regressionPublicLine);
       }
       appendHeadingSection(
         lines,
@@ -342,6 +357,9 @@ export function createReportCommentPresentation(
             securityReview,
           ),
         );
+      }
+      if (liveProofRecordingBlock) {
+        lines.push("", "### Live Verification", "", liveProofRecordingBlock, "");
       }
       if (systemContext && architectureDiagram) {
         appendHeadingSection(
@@ -428,8 +446,8 @@ export function createReportCommentPresentation(
       lines.push("", collapsedDetailsBlock("<strong>Agent review details</strong>", agentDetails));
     } else {
       appendPublicSection(lines, "Summary", publicSummaryBody(summaryLine, reproductionAssessment));
-      if (regressionProvenanceLine) {
-        appendPublicSection(lines, "Regression provenance", regressionProvenanceLine);
+      if (regressionPublicLine) {
+        appendPublicSection(lines, "Regression provenance", regressionPublicLine);
       }
       if (rootCauseClusterBlock) {
         appendPublicSection(lines, "Root-cause cluster", rootCauseClusterBlock);

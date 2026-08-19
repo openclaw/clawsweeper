@@ -36,6 +36,14 @@ shard posts a short status placeholder with the same durable identity marker.
 The placeholder is intentionally light and crustacean-friendly, then the final
 review sync edits that exact comment in place.
 
+Interactive re-review commands have a separate durable intake marker. The
+ExactReviewQueue records the exact source-comment version before creating or
+editing its acknowledgement, then converges on one status comment containing
+both `clawsweeper-command-ack:<source-comment-id>` and a version-specific
+`clawsweeper-command-status` marker. Retries may repeat GitHub reads and writes,
+but they must reuse the command receipt and must not enqueue the same comment
+version twice.
+
 After a newer source revision wins its lease, ClawSweeper may delete dedicated
 review-start placeholders for older revisions. The candidate comment snapshot
 is captured first, then the worker must still own the exact queue

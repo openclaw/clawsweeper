@@ -3,6 +3,7 @@ import type { JsonValue, LooseRecord } from "./json-types.js";
 import { validateRepairContractShape } from "./repair-contract.js";
 import fs from "node:fs";
 import path from "node:path";
+import { findFilesByBasenameSync } from "./glob-files.js";
 import { parseArgs, parseJob, repoRoot } from "./lib.js";
 
 const CLOSE_ACTIONS = new Set([
@@ -71,14 +72,7 @@ function findResultPaths(inputPath: string) {
   if (fs.statSync(inputPath).isFile()) {
     return path.basename(inputPath) === "result.json" ? [inputPath] : [];
   }
-  const out: JsonValue[] = [];
-  for (const entry of fs.readdirSync(inputPath, { recursive: true })) {
-    const candidate = path.join(inputPath, String(entry));
-    if (path.basename(candidate) === "result.json" && fs.statSync(candidate).isFile()) {
-      out.push(candidate);
-    }
-  }
-  return out.sort();
+  return findFilesByBasenameSync(inputPath, "result.json").sort();
 }
 
 function reviewResult(resultPath: string): JsonValue {
@@ -555,12 +549,8 @@ function validateFixArtifact(fixArtifact: LooseRecord, failures: LooseRecord[]) 
 function readSiblingJson(runDir: string, filename: string) {
   const direct = path.join(runDir, filename);
   if (fs.existsSync(direct)) return JSON.parse(fs.readFileSync(direct, "utf8"));
-  for (const entry of fs.readdirSync(runDir, { recursive: true })) {
-    const candidate = path.join(runDir, String(entry));
-    if (path.basename(candidate) === filename && fs.statSync(candidate).isFile()) {
-      return JSON.parse(fs.readFileSync(candidate, "utf8"));
-    }
-  }
+  const [candidate] = findFilesByBasenameSync(runDir, filename);
+  if (candidate) return JSON.parse(fs.readFileSync(candidate, "utf8"));
   return null;
 }
 

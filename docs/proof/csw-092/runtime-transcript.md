@@ -22,10 +22,8 @@ GitHub, or production mutations.
 ## Observations
 
 - The real built Bay document rendered a populated **Recent durable events**
-  card. The captured frame is
-  [`01a-mini-control-board.jpg`](./01a-mini-control-board.jpg): the fixture's
-  24-hour aggregate displayed direct `accepted 3`, `deduped 1`, and batch
-  `retryable 2` counts.
+  card. The fixture's 24-hour aggregate displayed direct `accepted 3`,
+  `deduped 1`, and batch `retryable 2` counts.
 - The Worker route test exercised `/api/recent-durable-publication-events` for
   the six-hour window, checked a complete result and public redaction, then
   repeated that request and observed only the first direct/batch source reads

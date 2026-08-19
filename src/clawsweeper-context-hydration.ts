@@ -11,13 +11,18 @@ import {
 } from "./clawsweeper-policy.js";
 import { createRelatedContext } from "./clawsweeper-related-context.js";
 import {
+  ensurePullRequestReviewHead,
+  ensureReviewTreeCommit,
   githubReviewBlobSizes,
   hydratePullRequestReviewBlobs,
+  materializePullRequestReviewTree,
+  removePullRequestReviewTree,
 } from "./clawsweeper-review-blobs.js";
 import {
   filterReviewComments,
   latestClawSweeperReview,
   latestClawSweeperReviewFromHydration,
+  previousClawSweeperReviewFromComment,
   timestampValueMs,
 } from "./clawsweeper-review-comments.js";
 import { truncateText } from "./clawsweeper-text.js";
@@ -94,11 +99,6 @@ interface CreateContextHydrationDependencies {
       | "closeComment",
   ) => string;
   ROOT: string;
-  run: (
-    command: string,
-    args: string[],
-    options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number | undefined },
-  ) => string;
   stringOrUndefined: (value: unknown) => string | undefined;
   targetRepo: () => string;
 }
@@ -133,7 +133,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     reviewCommentBodyDigest,
     reviewSectionValue,
     ROOT,
-    run,
     stringOrUndefined,
     targetRepo,
   } = dependencies;
@@ -229,6 +228,10 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     number: number,
   ): PreviousClawSweeperReview | null {
     return latestClawSweeperReview(comments, number, reviewCommentContext);
+  }
+
+  function extractClawSweeperReviewCommentBody(body: string): PreviousClawSweeperReview {
+    return previousClawSweeperReviewFromComment({ body }, reviewCommentContext);
   }
 
   function filterReviewContextCommentsForTest(
@@ -917,45 +920,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     return status;
   }
 
-  function gitCommitExists(targetDir: string, sha: string): boolean {
-    try {
-      run("git", ["cat-file", "-e", `${sha}^{commit}`], {
-        cwd: targetDir,
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  function ensureReviewTreeCommit(options: {
-    targetDir: string;
-    sha: string;
-    sourceRef: string;
-    destinationRef: string;
-  }): boolean {
-    if (!/^[0-9a-f]{40}$/i.test(options.sha)) return false;
-    if (gitCommitExists(options.targetDir, options.sha)) return true;
-    try {
-      run(
-        "git",
-        [
-          "fetch",
-          "--force",
-          "--filter=blob:none",
-          "origin",
-          `${options.sourceRef}:${options.destinationRef}`,
-          "--depth=1",
-        ],
-        { cwd: options.targetDir },
-      );
-    } catch {
-      return false;
-    }
-    return gitCommitExists(options.targetDir, options.sha);
-  }
-
   function gitTreeEntry(
     targetDir: string,
     sha: string,
@@ -1031,11 +995,10 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
         sourceRef: `refs/heads/${baseRef}`,
         destinationRef: `refs/clawsweeper/review-cache/base-${options.itemNumber}`,
       }) &&
-      ensureReviewTreeCommit({
+      ensurePullRequestReviewHead({
         targetDir: options.targetDir,
-        sha: headSha,
-        sourceRef: `refs/pull/${options.itemNumber}/head`,
-        destinationRef: `refs/clawsweeper/review-cache/head-${options.itemNumber}`,
+        itemNumber: options.itemNumber,
+        headSha,
       });
 
     if (commitsAvailable) {
@@ -1116,6 +1079,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     detectBulkFiler,
     detectBulkFilerForTest,
     extractLatestClawSweeperReview,
+    extractClawSweeperReviewCommentBody,
     extractLatestClawSweeperReviewForTest,
     extractLatestClawSweeperReviewFromHydration,
     extractLatestClawSweeperReviewFromHydrationForTest,
@@ -1143,6 +1107,9 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     relatedTitleSearchTerms,
     sameAuthorCounterpartApplyReason,
     semanticPullFilesWithTreeIdentity,
+    ensurePullRequestReviewHead,
+    materializePullRequestReviewTree,
+    removePullRequestReviewTree,
     staleVersionBugCloseEnabled,
     structuralExternalRelationSensitivity,
     unconfirmedProductDirectionCloseEnabled,

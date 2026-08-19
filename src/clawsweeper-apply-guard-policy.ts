@@ -40,8 +40,6 @@ export function createApplyGuardPolicy(
     const issue = ghJson<{ assignees?: unknown[] }>([
       "api",
       `repos/${targetRepo()}/issues/${number}`,
-      "--jq",
-      "{assignees:[.assignees[]? | {login:.login}]}",
     ]);
     if ((issue.assignees ?? []).length > 0) return "assigned PR has maintainer/human signal";
 
@@ -121,16 +119,12 @@ export function createApplyGuardPolicy(
     const issue = ghJson<{ assignees?: unknown[] }>([
       "api",
       `repos/${targetRepo()}/issues/${number}`,
-      "--jq",
-      "{assignees:[.assignees[]? | {login:.login}]}",
     ]);
     if ((issue.assignees ?? []).length > 0) return "assigned PR has active human signal";
 
     const pull = ghJson<{ requested_reviewers?: unknown[]; requested_teams?: unknown[] }>([
       "api",
       `repos/${targetRepo()}/pulls/${number}`,
-      "--jq",
-      "{requested_reviewers:[.requested_reviewers[]? | {login:.login}],requested_teams:[.requested_teams[]? | {slug:.slug}]}",
     ]);
     if ((pull.requested_reviewers ?? []).length > 0 || (pull.requested_teams ?? []).length > 0) {
       return "requested reviewers or teams indicate active review signal";

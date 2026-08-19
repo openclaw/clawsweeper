@@ -2561,6 +2561,7 @@ function rollbackTargetHead(
       throw new Error(`repair commit rollback found unexpected HEAD ${actual}`);
     }
   } catch (rollbackError) {
+    // oxlint-disable-next-line preserve-caught-error -- AggregateError retains both failures.
     throw new Error("repair commit ref update failed and HEAD rollback was not proven", {
       cause: new AggregateError([cause, rollbackError]),
     });
@@ -2596,6 +2597,7 @@ function restoreTargetIndexAfterFailure(snapshot: TargetIndexSnapshot, cause: un
   try {
     restoreTargetIndexSnapshot(snapshot);
   } catch (rollbackError) {
+    // oxlint-disable-next-line preserve-caught-error -- AggregateError retains both failures.
     throw new Error("target index mutation failed and rollback was not proven", {
       cause: new AggregateError([cause, rollbackError]),
     });
@@ -2871,6 +2873,7 @@ function assertValidationCheckoutIdentityWithinCommand(
     ) {
       throw error;
     }
+    // oxlint-disable-next-line preserve-caught-error -- A caller-supplied command failure owns the public cause.
     throw new Error(
       `unsafe validation command checkout identity could not be verified (${rendered})`,
       { cause: cause ?? error },

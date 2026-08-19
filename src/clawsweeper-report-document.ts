@@ -7,6 +7,8 @@ import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import { hasShinyProof, themedRatingName } from "./clawsweeper-rating.js";
 import {
   isRegressionAssessment,
+  isPublicRegressionProvenance,
+  isSuspectedRegressionProvenance,
   isVerifiedRegressionProvenance,
   regressionAssessmentPublicLine,
   regressionProvenancePublicLine,
@@ -30,6 +32,31 @@ import {
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import type { createReportContextRendering } from "./clawsweeper-report-context.js";
 import type { createReportCommentHelpers } from "./clawsweeper-report-comment-helpers.js";
+import {
+  fitPrHydrationSnapshotToPublicationLimit,
+  serializePrHydrationSnapshot,
+} from "./pr-hydration-snapshot.js";
+
+export function localCheckoutAccessForDecision(
+  decision: Pick<Decision, "localCheckoutAccess">,
+): "verified" | "unverified" {
+  return decision.localCheckoutAccess === "verified" ? "verified" : "unverified";
+}
+
+export function localCheckoutAccessSourceForDecision(
+  decision: Pick<Decision, "localCheckoutAccess">,
+): "runner_preflight_v1" | "unknown" {
+  return decision.localCheckoutAccess === undefined ? "unknown" : "runner_preflight_v1";
+}
+
+export function reviewStatusForDecision(
+  decision: Pick<Decision, "localCheckoutAccess" | "summary">,
+): "complete" | "failed" {
+  return localCheckoutAccessForDecision(decision) === "verified" &&
+    !decision.summary.startsWith("Codex review failed")
+    ? "complete"
+    : "failed";
+}
 
 export function createReportDocumentRendering(
   dependencies: CreateReportRenderingDependencies &
@@ -261,6 +288,26 @@ export function createReportDocumentRendering(
     ].join("\n");
   }
 
+  function renderLiveProofReportSection(decision: Decision): string {
+    return [
+      `Status: ${decision.liveProofPlan.status}`,
+      "",
+      `Surface: ${decision.liveProofPlan.surface}`,
+      "",
+      `Reason: ${sentence(decision.liveProofPlan.reason)}`,
+      "",
+      `Payoff: ${decision.liveProofPlan.payoff.kind}`,
+      "",
+      `Payoff justification: ${sentence(decision.liveProofPlan.payoff.justification)}`,
+      "",
+      `Entry: ${decision.liveProofPlan.entry.trim()}`,
+      "",
+      "Steps:",
+      "",
+      markdownList(decision.liveProofPlan.steps.map((step) => JSON.stringify(step))),
+    ].join("\n");
+  }
+
   function renderMantisRecommendationReportSection(decision: Decision): string {
     return [
       `Status: ${decision.mantisRecommendation.status}`,
@@ -455,16 +502,31 @@ export function createReportDocumentRendering(
     const labels = options.item.labels.length ? options.item.labels.join(", ") : "none";
     const reviewedAt = new Date().toISOString();
     const fixedPullRequest = options.decision.fixedPullRequest;
-    const regressionProvenance = isVerifiedRegressionProvenance(
-      options.decision.regressionProvenance,
-    )
+    const regressionProvenance = isPublicRegressionProvenance(options.decision.regressionProvenance)
       ? options.decision.regressionProvenance
       : null;
     const regressionAssessment = isRegressionAssessment(options.decision.regressionAssessment)
       ? options.decision.regressionAssessment
       : null;
-    const regressionProvenanceLine = regressionProvenancePublicLine(regressionProvenance);
-    const regressionAssessmentLine = regressionAssessmentPublicLine(regressionAssessment);
+    const regressionProvenanceLine = regressionProvenancePublicLine(
+      regressionProvenance,
+      regressionAssessment,
+    );
+    const regressionAssessmentLine = regressionAssessmentPublicLine(regressionAssessment, {
+      predecessorAttributed: regressionProvenance?.evidenceType === "rewrite_equivalent",
+    });
+    const verifiedRegressionProvenance = isVerifiedRegressionProvenance(regressionProvenance)
+      ? regressionProvenance
+      : null;
+    const suspectedRegressionProvenance = isSuspectedRegressionProvenance(regressionProvenance)
+      ? regressionProvenance
+      : null;
+    const regressionPublicLines = [
+      regressionProvenanceLine,
+      !verifiedRegressionProvenance ? regressionAssessmentLine : null,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join("\n\n");
     const evidence = options.decision.evidence.length
       ? options.decision.evidence
           .map((entry) => {
@@ -509,6 +571,7 @@ export function createReportDocumentRendering(
     const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
     const prRating = renderPrRatingReportSection(options.decision);
     const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
+    const liveProof = renderLiveProofReportSection(options.decision);
     const mantisRecommendation = renderMantisRecommendationReportSection(options.decision);
     const featureShowcase = renderFeatureShowcaseReportSection(options.decision);
     const agentsPolicyStatus = renderAgentsPolicyStatusReportSection(options.decision);
@@ -520,7 +583,7 @@ export function createReportDocumentRendering(
     const dataModelChange = dataModelChangeFromContext(options.item.repo, options.context);
     const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
     const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
-    return `---
+    const markdown = `---
 number: ${options.item.number}
 repository: ${options.item.repo}
 type: ${options.item.kind}
@@ -538,6 +601,7 @@ review_lease_owner: ${options.reviewLeaseOwner ?? "unknown"}
 review_lease_comment_id: ${options.reviewLeaseCommentId ?? "unknown"}
 main_sha: ${options.git.mainSha}
 pull_head_sha: ${pullHeadShaFromContext(options.context) ?? "unknown"}
+pr_hydration_snapshot: ${serializePrHydrationSnapshot(options.context.prHydrationSnapshot)}
 reviewed_pull_state_digest: ${
       reviewedPullStateDigest
         ? (reviewStructuralPullStateDigest(reviewedPullStateDigest) ?? "unknown")
@@ -557,15 +621,20 @@ fixed_pr_confidence: ${fixedPullRequest?.confidence ?? "unknown"}
 fixed_pr_source: ${fixedPullRequest ? JSON.stringify(fixedPullRequest.source) : "unknown"}
 regression_assessment_confidence: ${regressionAssessment?.confidence ?? "unknown"}
 regression_assessment_evidence: ${regressionAssessment?.supportingEvidence.join(",") ?? "unknown"}
-regression_provenance_repo: ${regressionProvenance?.repo ?? "unknown"}
-regression_provenance_pr_url: ${regressionProvenance?.pullRequestUrl ?? "unknown"}
-regression_provenance_pr_number: ${regressionProvenance?.pullRequestNumber ?? "unknown"}
-regression_provenance_merge_sha: ${regressionProvenance?.mergeCommitSha ?? "unknown"}
+regression_provenance_repo: ${verifiedRegressionProvenance?.repo ?? "unknown"}
+regression_provenance_pr_url: ${verifiedRegressionProvenance?.pullRequestUrl ?? "unknown"}
+regression_provenance_pr_number: ${verifiedRegressionProvenance?.pullRequestNumber ?? "unknown"}
+regression_provenance_merge_sha: ${verifiedRegressionProvenance?.mergeCommitSha ?? "unknown"}
 regression_provenance_source_path: ${regressionProvenance?.sourcePath ?? "unknown"}
 regression_provenance_source_line: ${regressionProvenance?.sourceLine ?? "unknown"}
 regression_provenance_evidence_type: ${regressionProvenance?.evidenceType ?? "unknown"}
-regression_provenance_merged_at: ${regressionProvenance?.mergedAt ?? "unknown"}
-regression_provenance_reviewed_sha: ${regressionProvenance?.reviewedCommitSha ?? "unknown"}
+regression_provenance_merged_at: ${verifiedRegressionProvenance?.mergedAt ?? "unknown"}
+regression_provenance_reviewed_sha: ${regressionProvenance && "reviewedCommitSha" in regressionProvenance ? regressionProvenance.reviewedCommitSha : "unknown"}
+regression_provenance_source_commit_sha: ${regressionProvenance?.sourceCommitSha ?? "unknown"}
+regression_provenance_source_author: ${regressionProvenance?.sourceAuthor ?? "unknown"}
+regression_provenance_related_pr_url: ${suspectedRegressionProvenance?.relatedPullRequestUrl ?? "unknown"}
+regression_provenance_related_pr_number: ${suspectedRegressionProvenance?.relatedPullRequestNumber ?? "unknown"}
+regression_provenance_related_repo: ${suspectedRegressionProvenance?.relatedRepo ?? "unknown"}
 review_policy: ${options.reviewPolicy}
 review_model: ${options.runtime.model}
 review_reasoning_effort: ${options.runtime.reasoningEffort}
@@ -579,9 +648,11 @@ review_additional_prompt_chars: ${reviewTelemetryNumber(options.runtime.addition
 review_context_elapsed_ms: ${reviewTelemetryNumber(options.runtime.contextElapsedMs)}
 review_codex_elapsed_ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
 review_mode: ${options.reviewMode}
-review_status: ${options.decision.summary.startsWith("Codex review failed") ? "failed" : "complete"}
+review_status: ${reviewStatusForDecision(options.decision)}
 review_terminal_failure: ${options.decision.codexTerminalFailure === true}
-local_checkout_access: verified
+review_checkout_inspection_failed: ${options.decision.checkoutInspectionFailed === true}
+local_checkout_access: ${localCheckoutAccessForDecision(options.decision)}
+local_checkout_access_source: ${localCheckoutAccessSourceForDecision(options.decision)}
 item_snapshot_hash: ${options.snapshotHash}
 review_content_digest: ${options.contentDigest}
 last_full_review_at: ${reviewedAt}
@@ -667,6 +738,8 @@ pr_rating_overall: ${options.decision.prRating.overallTier}
 pr_rating_proof: ${options.decision.prRating.proofTier}
 pr_rating_patch: ${options.decision.prRating.patchTier}
 telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}
+live_proof_status: ${options.decision.liveProofPlan.status}
+live_proof_surface: ${options.decision.liveProofPlan.surface}
 mantis_recommendation_status: ${options.decision.mantisRecommendation.status}
 mantis_recommendation_scenario: ${options.decision.mantisRecommendation.scenario}
 feature_showcase_status: ${options.decision.featureShowcase.status}
@@ -701,7 +774,7 @@ Latest release at review time: ${
 
 Fixed in: ${fixedInText(options.decision)}
 
-${regressionProvenanceLine ?? regressionAssessmentLine ?? "Regression provenance: not assessed."}
+${regressionPublicLines || "Regression provenance: not assessed."}
 
 ## Decision
 
@@ -774,6 +847,10 @@ ${prRating}
 ## ${REVIEW_SECTIONS.telegramVisibleProof}
 
 ${telegramVisibleProof}
+
+## ${REVIEW_SECTIONS.liveProof}
+
+${liveProof}
 
 ## ${REVIEW_SECTIONS.mantisRecommendation}
 
@@ -855,6 +932,7 @@ ${renderReviewContextBudget(options.context)}
 - context collection ms: ${reviewTelemetryNumber(options.runtime.contextElapsedMs)}
 - Codex review ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
   `;
+    return fitPrHydrationSnapshotToPublicationLimit(markdown);
   }
 
   return {
@@ -869,6 +947,7 @@ ${renderReviewContextBudget(options.context)}
     renderPrRatingAssessmentReportSection,
     renderPrRatingReportSection,
     renderTelegramVisibleProofReportSection,
+    renderLiveProofReportSection,
     renderMantisRecommendationReportSection,
     renderFeatureShowcaseReportSection,
     renderRootCauseClusterAssessmentReportSection,
