@@ -112,6 +112,28 @@ user-writable prefix (the lease runs as an unprivileged user), builds the Node l
 and then runs the fixtures twice: once against the module compiled from the base
 commit, and once against the built module on this branch.
 
+### Running it without Crabbox
+
+The proof needs a Node 24 Linux environment, not Crabbox specifically. Any of these
+produce the same result, so a reviewer without the `crabbox` binary on PATH can
+still reproduce it:
+
+```bash
+# 1. Plain Docker - closest to the recorded lease.
+docker run --rm -v "$PWD:/src:ro" -e PROOF_HEAD -w /work node:24 bash -lc '
+  mkdir -p /work
+  tar -C /src --exclude=node_modules --exclude=dist --exclude=.git -cf - . | tar -C /work -xf -
+  cd /work && bash docs/proof/record-front-matter-body-scope/run-proof.sh'
+
+# 2. Host with Node >= 24 already installed.
+bash docs/proof/record-front-matter-body-scope/stage-before.sh
+pnpm install --frozen-lockfile && pnpm run build:node
+node docs/proof/record-front-matter-body-scope/run-proof.mjs
+```
+
+`run-proof.sh` refuses to run below Node 24, so option 2 fails loudly rather than
+reporting a result from the wrong runtime.
+
 ## Observed result
 
 Against the pre-fix module, four of the five bodies make at least one field
