@@ -35,6 +35,7 @@ type ApplyCloseExecutionDependencies = Pick<
   | "implementedOnMainPullRequestProvenanceApplyBlock"
   | "issueRecentHumanCommentBlockReasonSafe"
   | "lowSignalUnmergeablePrApplyBlockReasonSafe"
+  | "mutationErrorMessage"
   | "normalizeLabelName"
   | "removeCurrentCursorTraceItem"
   | "replaceFrontMatterValue"
@@ -151,6 +152,7 @@ export function executeApplyClose(
     implementedOnMainPullRequestProvenanceApplyBlock,
     issueRecentHumanCommentBlockReasonSafe,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
+    mutationErrorMessage,
     normalizeLabelName,
     removeCurrentCursorTraceItem,
     replaceFrontMatterValue,
@@ -321,17 +323,26 @@ export function executeApplyClose(
   const closeMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
   if (closeMutationLeaseBlockReason) return skipLease(closeMutationLeaseBlockReason);
   logProgress(`closing #${number}`);
-  const closeAppliedCommentReason =
-    item.kind === "pull_request"
-      ? ensureCloseAppliedComment({
-          number,
-          closeReason,
-          markdown: getMarkdown(),
-          itemUrl: item.url,
-          dryRun,
-        })
-      : null;
+  let closeAppliedCommentReason: string | null = null;
   if (dryRun) {
+    const finalImplementationProvenanceBlock = implementedOnMainPullRequestProvenanceApplyBlock(
+      getMarkdown(),
+      item,
+      closeReason,
+    );
+    if (finalImplementationProvenanceBlock) {
+      return skip("kept_open", finalImplementationProvenanceBlock);
+    }
+    closeAppliedCommentReason =
+      item.kind === "pull_request"
+        ? ensureCloseAppliedComment({
+            number,
+            closeReason,
+            markdown: getMarkdown(),
+            itemUrl: item.url,
+            dryRun,
+          })
+        : null;
     const stop = onClosed(
       {
         number,
@@ -361,7 +372,29 @@ export function executeApplyClose(
     }
   }
   // Preserve the archive label after an uncertain close; the revival watcher reconciles it.
+  // The earlier check avoids unnecessary apply work; this one closes the race with the mutation.
+  const finalImplementationProvenanceBlock = implementedOnMainPullRequestProvenanceApplyBlock(
+    getMarkdown(),
+    item,
+    closeReason,
+  );
+  if (finalImplementationProvenanceBlock) {
+    return skip("kept_open", finalImplementationProvenanceBlock);
+  }
   closeItem({ number, kind: item.kind, reason: closeReason });
+  if (item.kind === "pull_request") {
+    try {
+      closeAppliedCommentReason = ensureCloseAppliedComment({
+        number,
+        closeReason,
+        markdown: getMarkdown(),
+        itemUrl: item.url,
+        dryRun,
+      });
+    } catch (error) {
+      closeAppliedCommentReason = `close-applied comment failed after close: ${mutationErrorMessage(error)}`;
+    }
+  }
   let postCloseRuntimeYieldReason: string | null = null;
   try {
     ensureRuntimeDelayFits(closeDelayMs, "before close delay");

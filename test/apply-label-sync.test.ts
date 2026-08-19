@@ -3698,53 +3698,68 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   }
 });
 
-test("apply-decisions posts an explicit close-time note before closing PR proposals", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    const logPath = join(root, "gh.log");
-    const postedBodiesPath = join(root, "posted-bodies.jsonl");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
-    const closeReport = `${workPlanCandidateReport({
-      type: "pull_request",
-      decision: "close",
-      action_taken: "proposed_close",
-      close_reason: "implemented_on_main",
-      confidence: "high",
-      item_snapshot_hash: "reviewed-snapshot",
-      item_updated_at: "2026-05-01T00:00:00Z",
-      reproduction_status: "reproduced",
-      reproduction_confidence: "high",
-      fixed_pr_url: "https://github.com/openclaw/clawsweeper/pull/900",
-      fixed_pr_number: "900",
-      fixed_pr_confidence: "high",
-      fixed_pr_source: "GitHub verified implementation landing",
-      fixed_pr_merged_at: "2026-05-01T02:00:00Z",
-      fixed_sha: "1234567890abcdef1234567890abcdef12345678",
-      fixed_at: "2026-05-01T02:00:00Z",
-    })}\n\n## Evidence\n\n- **main fix:** git show confirms current main has the replacement implementation and it is not in the latest release yet\n  - file: [src/clawsweeper.ts](https://github.com/openclaw/clawsweeper/blob/1234567890abcdef1234567890abcdef12345678/src/clawsweeper.ts)\n  - sha: [1234567890ab](https://github.com/openclaw/clawsweeper/commit/1234567890abcdef1234567890abcdef12345678)\n\n## Close Comment\n\nClosing this PR because the fix is already on main.\n`;
-    const synced = reportWithSyncedReviewComment(closeReport, 321, "implemented_on_main");
-    writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");
+test("apply-decisions posts an explicit close-time note after closing PR proposals", () => {
+  for (const { lifecycleDrift, closeAppliedCommentFails } of [
+    { lifecycleDrift: false, closeAppliedCommentFails: false },
+    { lifecycleDrift: true, closeAppliedCommentFails: false },
+    { lifecycleDrift: false, closeAppliedCommentFails: true },
+  ]) {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "items");
+      const closedDir = join(root, "closed");
+      const plansDir = join(root, "plans");
+      const reportPath = join(root, "apply-report.json");
+      const logPath = join(root, "gh.log");
+      const postedBodiesPath = join(root, "posted-bodies.jsonl");
+      mkdirSync(itemsDir, { recursive: true });
+      mkdirSync(plansDir, { recursive: true });
+      const closeReport = `${workPlanCandidateReport({
+        type: "pull_request",
+        decision: "close",
+        action_taken: "proposed_close",
+        close_reason: "implemented_on_main",
+        confidence: "high",
+        item_snapshot_hash: "reviewed-snapshot",
+        item_updated_at: "2026-05-01T00:00:00Z",
+        reproduction_status: "reproduced",
+        reproduction_confidence: "high",
+        fixed_pr_url: "https://github.com/openclaw/clawsweeper/pull/900",
+        fixed_pr_number: "900",
+        fixed_pr_confidence: "high",
+        fixed_pr_source: "GitHub verified implementation landing",
+        fixed_pr_merged_at: "2026-05-01T02:00:00Z",
+        fixed_sha: "1234567890abcdef1234567890abcdef12345678",
+        fixed_at: "2026-05-01T02:00:00Z",
+      })}\n\n## Evidence\n\n- **main fix:** git show confirms current main has the replacement implementation and it is not in the latest release yet\n  - file: [src/clawsweeper.ts](https://github.com/openclaw/clawsweeper/blob/1234567890abcdef1234567890abcdef12345678/src/clawsweeper.ts)\n  - sha: [1234567890ab](https://github.com/openclaw/clawsweeper/commit/1234567890abcdef1234567890abcdef12345678)\n\n## Close Comment\n\nClosing this PR because the fix is already on main.\n`;
+      const synced = reportWithSyncedReviewComment(closeReport, 321, "implemented_on_main");
+      writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");
 
-    const ghMock = `
-const { appendFileSync, readFileSync } = require("fs");
+      const ghMock = `
+const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("fs");
 const logPath = ${JSON.stringify(logPath)};
 const postedBodiesPath = ${JSON.stringify(postedBodiesPath)};
+const graphqlStatePath = ${JSON.stringify(join(root, "graphql-reads"))};
 const comment = ${JSON.stringify(synced.comment)};
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args[1] || "";
+const lifecycleDrift = ${lifecycleDrift};
+const closeAppliedCommentFails = ${closeAppliedCommentFails};
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "api" && args[1] === "graphql") {
-  console.log(JSON.stringify({ data: { repository: { issue: { state: "CLOSED", timelineItems: { nodes: [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, url: "https://github.com/openclaw/clawsweeper/pull/900", mergedAt: "2026-05-01T02:00:00Z", repository: { nameWithOwner: "openclaw/clawsweeper" } } }] } } } } }));
+  const graphqlReads = existsSync(graphqlStatePath) ? Number(readFileSync(graphqlStatePath, "utf8")) : 0;
+  writeFileSync(graphqlStatePath, String(graphqlReads + 1), "utf8");
+  const currentState = lifecycleDrift && graphqlReads + 1 > 2 ? "OPEN" : "CLOSED";
+  console.log(JSON.stringify({ data: { repository: { issue: { state: currentState, timelineItems: { nodes: [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, url: "https://github.com/openclaw/clawsweeper/pull/900", mergedAt: "2026-05-01T02:00:00Z", repository: { nameWithOwner: "openclaw/clawsweeper" } } }] } } } } }));
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   if (args.includes("--method") && args.includes("POST")) {
+    if (closeAppliedCommentFails) {
+      console.error("simulated close-applied comment failure");
+      process.exit(1);
+    }
     const input = args[args.indexOf("--input") + 1];
     const payload = JSON.parse(readFileSync(input, "utf8"));
     appendFileSync(postedBodiesPath, JSON.stringify(payload.body) + "\\n");
@@ -3820,55 +3835,99 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   process.exit(1);
 }
 `;
-    withMockGh(root, ghMock, () => {
-      runApplyDecisionsForTest({
-        itemsDir,
-        closedDir,
-        plansDir,
-        reportPath,
-        extraArgs: ["--apply-kind", "all", "--processed-limit", "2"],
+      withMockGh(root, ghMock, () => {
+        runApplyDecisionsForTest({
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: ["--apply-kind", "all", "--processed-limit", "2"],
+        });
       });
-    });
-    const calls = readFileSync(logPath, "utf8")
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as string[]);
-    const postIndex = calls.findIndex(
-      (args) =>
-        args[0] === "api" &&
-        (args[1] ?? "").endsWith("/issues/321/comments") &&
-        args.includes("POST"),
-    );
-    const closeIndex = calls.findIndex(
-      (args) => args[0] === "pr" && args[1] === "close" && args[2] === "321",
-    );
-    assert.ok(postIndex >= 0);
-    assert.ok(closeIndex > postIndex);
-    const postedBodies = readFileSync(postedBodiesPath, "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as string);
-    assert.equal(postedBodies.length, 1);
-    assert.match(postedBodies[0], /ClawSweeper applied the proposed close for this PR/);
-    assert.match(postedBodies[0], /Close reason: already implemented on main/);
-    assert.match(postedBodies[0], /Implementation evidence: \[fix PR #900\]/);
-    assert.match(postedBodies[0], /clawsweeper-close-applied item=321/);
-    assert.ok(existsSync(join(closedDir, "321.md")));
-    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
-      {
-        number: 321,
-        action: "review_comment_synced",
-        reason: "updated durable Codex review comment",
-      },
-      {
-        number: 321,
-        action: "closed",
-        reason: "already implemented on main; posted close-applied comment",
-      },
-    ]);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+      const calls = readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as string[]);
+      const postIndex = calls.findIndex(
+        (args) =>
+          args[0] === "api" &&
+          (args[1] ?? "").endsWith("/issues/321/comments") &&
+          args.includes("POST"),
+      );
+      const closeIndex = calls.findIndex(
+        (args) => args[0] === "pr" && args[1] === "close" && args[2] === "321",
+      );
+      const graphqlIndices = calls
+        .map((args, index) => (args[0] === "api" && args[1] === "graphql" ? index : -1))
+        .filter((index) => index >= 0);
+      assert.equal(graphqlIndices.length, 3);
+      if (lifecycleDrift) {
+        assert.equal(closeIndex, -1);
+        assert.equal(postIndex, -1);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some((entry) => entry.action === "closed"),
+          false,
+        );
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "kept_open" &&
+              entry.reason.includes("current GitHub-verified fixing pull request provenance"),
+          ),
+          true,
+        );
+        continue;
+      }
+      assert.ok(closeIndex > graphqlIndices[2]!);
+      assert.ok(postIndex > closeIndex);
+      if (closeAppliedCommentFails) {
+        assert.equal(existsSync(postedBodiesPath), false);
+        assert.ok(existsSync(join(closedDir, "321.md")));
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "closed" &&
+              entry.reason.includes("close-applied comment failed after close"),
+          ),
+          true,
+        );
+        continue;
+      }
+      const postedBodies = readFileSync(postedBodiesPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string);
+      assert.equal(postedBodies.length, 1);
+      assert.match(postedBodies[0], /ClawSweeper applied the proposed close for this PR/);
+      assert.match(postedBodies[0], /Close reason: already implemented on main/);
+      assert.match(postedBodies[0], /Implementation evidence: \[fix PR #900\]/);
+      assert.match(postedBodies[0], /clawsweeper-close-applied item=321/);
+      assert.ok(existsSync(join(closedDir, "321.md")));
+      assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+        {
+          number: 321,
+          action: "review_comment_synced",
+          reason: "updated durable Codex review comment",
+        },
+        {
+          number: 321,
+          action: "closed",
+          reason: "already implemented on main; posted close-applied comment",
+        },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 
