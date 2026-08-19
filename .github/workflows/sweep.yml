@@ -1354,14 +1354,14 @@ jobs:
       - name: Install exact live-proof terminal tools
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.inspect-exact-live-proof.outputs.requires_terminal == 'true' }}
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes tmux
+          timeout --foreground 5m sudo apt-get update
+          timeout --foreground 5m sudo apt-get install --yes tmux
 
       - name: Install exact live-proof recording tools
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.inspect-exact-live-proof.outputs.record_media == 'true' }}
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes ffmpeg x11-utils xfonts-base xvfb xterm
+          timeout --foreground 5m sudo apt-get update
+          timeout --foreground 5m sudo apt-get install --yes ffmpeg x11-utils xfonts-base xvfb xterm
 
       - name: Execute exact review live proof
         id: execute-exact-live-proof
