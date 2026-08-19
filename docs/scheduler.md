@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: `.github/workflows/sweep.yml`, planner/runtime source,
   `config/automation-limits.json`, and focused scheduler tests
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: cadence, fanout, admission, retry, publication, apply, or
   state-writing behavior changes
 
@@ -86,6 +86,17 @@ parked inventory is uploaded beside the publication dead-letter inventory.
 Parked records carrying maintainer-command context remain visible with an
 exclusion reason but cannot be resolved or fresh-recovered by this background
 reconciliation path.
+Publication dead letters whose recorded pull-request head no longer matches the
+live head are never replayed or resolved from head drift alone. The reconciler
+may resolve them as superseded only when the existing HMAC-authenticated
+canonical-record read for the same target contains a complete review at that
+live head, then rechecks the same open GitHub node and head immediately before
+the guarded resolution. Each cycle checks at most ten such targets and resolves at most 20
+rows per target; missing or mismatched evidence remains open as
+`head_mismatch_unproven`. `tuple_protocol_invalid` and `workflow_cancelled`
+rows are excluded from this path. Executed resolutions retain an audit note
+with the newer head and canonical endpoint and increment the publication
+completed and superseded totals; dry runs perform no mutation.
 This drains the existing queue state and does not add a dashboard health input
 or an OpenClaw Bay action: Bay remains observer-only.
 GitHub throttle deferrals use the same per-item jitter band when the queue turns
@@ -93,6 +104,13 @@ the reported cooldown into its next-attempt timestamp, preventing a parked
 cohort from becoming eligible in lockstep; coordination and ordinary failure
 retries keep their existing timing.
 Review publication and apply/comment sync use separate non-dropping queues.
+Apply treats a typed GitHub installation or abuse-rate-limit response as a
+bounded yield, not a failed scan. It checkpoints completed item work, records
+the interrupted item as `skipped_runtime_budget`, returns that item to the
+cursor, and exits successfully so a later scheduled or continuation cycle can
+retry it. This applies to comment-only sync and close-mode apply. Folder
+reconciliation also defers before mutation when its open-item scan is
+rate-limited; ordinary non-rate-limit failures remain fatal.
 The source fallback publication minimum, base, and maximum are 4, 24, and 48,
 but production overrides them to 8, 32, and 40. The adaptive controller
 classifies GitHub pressure:
@@ -112,10 +130,11 @@ Batch admission is additionally gated by persisted GitHub credential circuits.
 Every batch needs the `actions:openclaw/clawsweeper` pool for producer artifact
 download, while target App circuits are owner-scoped so one exhausted
 installation does not stop healthy owners. A blocked pool prevents workflow
-dispatch, state hydration, and artifact download until its reported reset; the
-alarm wakes at the earliest circuit deadline. The current batch collapses after
-the first pool failure, and unattempted members return without advancing their
-retry budget. Reset recovery is spread by deterministic item jitter.
+dispatch, state hydration, and artifact download for each matching member until
+its reset-plus-deterministic-jitter recovery boundary; the alarm wakes at the
+earliest pending member boundary. The current batch collapses after the first
+pool failure, and unattempted members return without advancing their retry
+budget. Recovery is staggered rather than released as one cohort.
 An owner-scoped target App circuit also defers new exact-review admission for
 that owner, because review and publication share the installation quota; other
 owners remain admissible.

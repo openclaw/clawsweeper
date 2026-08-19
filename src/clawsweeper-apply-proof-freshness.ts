@@ -7,7 +7,10 @@ import type {
   PrCloseCoverageProofGateBlock,
   PrCloseCoverageProofGateResult,
 } from "./clawsweeper-types.js";
-import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
+import {
+  compareReviewedPrActivityCursors,
+  isReviewedPrActivityCursor,
+} from "./review-activity-cursor.js";
 import { stableJson } from "./stable-json.js";
 
 export interface ApplySelfMutationItemReceipt {
@@ -87,7 +90,7 @@ export function createApplyProofFreshnessGuards({
     ) {
       return null;
     }
-    const refreshed = fetchItem(number);
+    const refreshed = fetchItem(number, { bypassGenerationCache: true });
     if (refreshed.state !== "open") {
       return {
         reason: `state changed to ${refreshed.state}`,
@@ -102,6 +105,7 @@ export function createApplyProofFreshnessGuards({
         (refreshedContext ??= collectItemContext(refreshed.item, {
           fullTimelineForRelations: true,
           reviewCacheDigest: true,
+          bypassGenerationCache: true,
         })),
       );
     const candidateItemReceipts = selfMutationItemReceipts.filter(
@@ -113,6 +117,7 @@ export function createApplyProofFreshnessGuards({
       refreshedContext ??= collectItemContext(refreshed.item, {
         fullTimelineForRelations: true,
         reviewCacheDigest: true,
+        bypassGenerationCache: true,
       });
     }
     const refreshedCompleteActivityContext = refreshedContext?.[completeActivityContextSymbol];
@@ -135,18 +140,28 @@ export function createApplyProofFreshnessGuards({
         (itemKind !== "pull_request" ||
           (freshPullRequestReviewHead(reviewMarkdown, refreshedContext) &&
             isReviewedPrActivityCursor(expectedReviewActivityCursor) &&
-            receipt.reviewActivityCursor === expectedReviewActivityCursor &&
-            refreshedReviewActivityCursor === expectedReviewActivityCursor)),
+            compareReviewedPrActivityCursors(
+              receipt.reviewActivityCursor,
+              expectedReviewActivityCursor,
+            ) === "equal" &&
+            compareReviewedPrActivityCursors(
+              refreshedReviewActivityCursor,
+              expectedReviewActivityCursor,
+            ) === "equal")),
     );
     const refreshedCompleteReceiptMatchesReview = (): boolean => {
       refreshedContext ??= collectItemContext(refreshed.item, {
         fullTimelineForRelations: true,
         reviewCacheDigest: true,
+        bypassGenerationCache: true,
       });
       if (!completeReviewActivityReceiptMatches(refreshedContext)) return false;
       return (
         itemKind !== "pull_request" ||
-        refreshedReviewActivityCursor === expectedReviewActivityCursor
+        compareReviewedPrActivityCursors(
+          refreshedReviewActivityCursor,
+          expectedReviewActivityCursor,
+        ) === "equal"
       );
     };
     const persistedAutomationReceiptMatches =
@@ -162,6 +177,7 @@ export function createApplyProofFreshnessGuards({
       refreshedContext ??= collectItemContext(refreshed.item, {
         fullTimelineForRelations: true,
         reviewCacheDigest: true,
+        bypassGenerationCache: true,
       });
       const proofSecondStartMs = Math.floor(prCloseCoverageProofStartedAtMs / 1000) * 1000;
       return contextHasNonAutomationActivityAfter(refreshedContext, proofSecondStartMs - 1, {
@@ -198,6 +214,7 @@ export function createApplyProofFreshnessGuards({
         (refreshedContext ??= collectItemContext(refreshed.item, {
           fullTimelineForRelations: true,
           reviewCacheDigest: true,
+          bypassGenerationCache: true,
         })),
       );
       if (refreshedHash !== storedHash) {

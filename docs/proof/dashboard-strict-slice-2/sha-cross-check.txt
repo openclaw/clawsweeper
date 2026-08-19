@@ -1,0 +1,5 @@
+PROOF_REVISION_OBJECT_CROSS_CHECK
+scanner=rg --pcre2 standalone lowercase 40-hex strings
+OK 96b8703e4c0b4782dfcc488b46777559149326bb type=commit
+OK b1828132c3f36445ce75b7ea618255bb818f9422 type=commit
+RESULT=PASS objects=2

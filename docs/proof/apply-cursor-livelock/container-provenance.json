@@ -1,0 +1,113 @@
+{
+  "schema": "clawsweeper-real-boundary-proof-provenance/v1",
+  "claim": "The committed apply-cursor livelock fix passes its production-shaped fixture, adversarial apply-loop scenario, and wrap/cycle probes inside node:24-bookworm.",
+  "pull_request": "https://github.com/openclaw/clawsweeper/pull/1129",
+  "reviewed_head": "2ebe882831f99d9f22dd6f696f48d2a4e80f3195",
+  "crabbox": {
+    "cli_version": "0.38.3-5-g2a79805d",
+    "provider": "aws",
+    "lease_id": "cbx_a9f86ad7a357",
+    "slug": "quick-prawn-5920",
+    "run_id": "run_61dcc42eb8d2",
+    "machine_type": "c7a.8xlarge",
+    "checkout": "clean committed worktree raw-sync, --no-hydrate",
+    "sync_ms": 20819,
+    "command_ms": 24276,
+    "total_ms": 46687,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "container": {
+    "image": "node:24-bookworm",
+    "engine": "Docker 29.7.1",
+    "node": "v24.18.1",
+    "pnpm": "11.10.0",
+    "corepack": "enabled",
+    "jq": "jq-1.8.2",
+    "jq_asset": "jq-linux-amd64",
+    "jq_sha256": "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
+    "jq_checksum_source": "Repository-pinned jq_sha256 in container-proof.sh, sourced from the official jq 1.8.2 release manifest",
+    "jq_checksum_verified": true,
+    "jq_install_path": "/usr/local/bin/jq"
+  },
+  "result": {
+    "command": "docker run --rm -e APPLY_CURSOR_PROOF_HEAD=2ebe882831f99d9f22dd6f696f48d2a4e80f3195 -v $PWD:/workspace -w /workspace node:24-bookworm bash docs/proof/apply-cursor-livelock/container-proof.sh",
+    "fixture_assertions": {
+      "old_order_livelocks": true,
+      "current_order_advances_terminal_frontier": true,
+      "clipped_frontier_blocks": true,
+      "apply_loop_executes_frontier_first": true,
+      "adversarial_order_advances_terminal_frontier": true
+    },
+    "tests": 5,
+    "passed": 5,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "proof_rc": 0
+  },
+  "prior_runs": [
+    {
+      "run_id": "run_f29c14106b53",
+      "lease_id": "cbx_e7d5148b9beb",
+      "reviewed_head": "07e0a7764cc39a014eea119db12e1fb82806f998",
+      "reason": "Raw sync intentionally omitted linked-worktree Git metadata required by the original proof wrapper.",
+      "product_tests_started": false,
+      "lease_released": true
+    },
+    {
+      "run_id": "run_fdaf84682c9e",
+      "lease_id": "cbx_e0ec212513fc",
+      "reviewed_head": "54db6da068abec31758a09e8fc1217626b26c2e5",
+      "reason": "The adversarial synthetic record allowed an incidental GitHub probe; the final fixture forces the credential-free path.",
+      "fixture_started": true,
+      "lease_released": true
+    },
+    {
+      "run_id": "run_5af9ddacd3db",
+      "lease_id": "cbx_32c86f65b7c1",
+      "reviewed_head": "8225b9d13e774d766ec75c224b3960a81cc0ebdc",
+      "reason": "The Docker-mounted linked ownership required an explicit Git safe.directory.",
+      "product_tests_started": false,
+      "lease_released": true
+    },
+    {
+      "run_id": "run_28f54a2542a6",
+      "lease_id": "cbx_32c86f65b7c1",
+      "reason": "A no-sync reuse targeted the lease default checkout instead of the fresh PR checkout.",
+      "product_tests_started": false,
+      "lease_released": true
+    },
+    {
+      "run_id": "run_b0bd5a3ab475",
+      "lease_id": "cbx_32c86f65b7c1",
+      "reviewed_head": "8225b9d13e774d766ec75c224b3960a81cc0ebdc",
+      "reason": "The fixture's nested login shell reset PATH before resolving the checksum-verified jq binary.",
+      "fixture_started": true,
+      "lease_released": true
+    },
+    {
+      "run_id": "run_1b6a7eb1c3b3",
+      "lease_id": "cbx_c61a1e135fc9",
+      "reviewed_head": "33badc338a04f4bb30c2a09ad2c701f7c60e4fe6",
+      "reason": "Two wrap/helper tests launched their own login shells and could not resolve jq from a temporary directory.",
+      "fixture_assertions_passed": true,
+      "lease_released": true
+    },
+    {
+      "run_id": "run_1623fae6fdec",
+      "lease_id": "cbx_b2223e33b8a4",
+      "reviewed_head": "c87bd96db0bc34a0f7dcad95067973fe1853951a",
+      "result": "succeeded",
+      "reason_superseded": "A fresh ClawSweeper review requested a repository-controlled checksum trust root.",
+      "tests_passed": 4,
+      "lease_released": true
+    }
+  ],
+  "limits": [
+    "Synthetic filesystem records; no GitHub API calls or credentials were present in the container.",
+    "The run proves selector/completion and wrap/cycle behavior, not production GitHub latency.",
+    "The receipt commit changes documentation only; reviewed_head is the exact committed code and proof-harness head exercised by Crabbox."
+  ]
+}

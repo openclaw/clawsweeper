@@ -10,6 +10,7 @@
  */
 
 import path from "node:path";
+import { parseArgs as parseNodeArgs } from "node:util";
 import { AUTOMERGE_E2E_SCENARIOS, runAutomergeE2E } from "../../test/e2e/automerge/run.mjs";
 import { AUTOMERGE_E2E_FIXTURES } from "../../test/e2e/automerge/target-fixtures.mjs";
 
@@ -89,22 +90,43 @@ try {
 }
 
 function parseArgs(argv) {
-  const out = {};
+  const normalized = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--") continue;
-    if (arg === "-h" || arg === "--help") out.help = true;
-    else if (arg === "--list-scenarios") out.listScenarios = true;
-    else if (arg === "--list-fixtures") out.listFixtures = true;
-    else if (arg === "--keep") out.keep = true;
-    else if (arg === "--scenario") out.scenario = requiredValue(argv, ++index, arg);
-    else if (arg === "--fixture") out.fixture = requiredValue(argv, ++index, arg);
-    else if (arg === "--expect") out.expect = requiredValue(argv, ++index, arg);
-    else if (arg === "--candidate-root") out.candidateRoot = requiredValue(argv, ++index, arg);
-    else if (arg === "--output") out.output = requiredValue(argv, ++index, arg);
-    else throw new Error(`unknown option: ${arg}; use --help for usage`);
+    if (["-h", "--help", "--list-scenarios", "--list-fixtures", "--keep"].includes(arg)) {
+      normalized.push(arg);
+    } else if (
+      ["--scenario", "--fixture", "--expect", "--candidate-root", "--output"].includes(arg)
+    ) {
+      normalized.push(`${arg}=${requiredValue(argv, ++index, arg)}`);
+    } else throw new Error(`unknown option: ${arg}; use --help for usage`);
   }
-  return out;
+  const { values } = parseNodeArgs({
+    args: normalized,
+    options: {
+      help: { type: "boolean", short: "h" },
+      "list-scenarios": { type: "boolean" },
+      "list-fixtures": { type: "boolean" },
+      keep: { type: "boolean" },
+      scenario: { type: "string" },
+      fixture: { type: "string" },
+      expect: { type: "string" },
+      "candidate-root": { type: "string" },
+      output: { type: "string" },
+    },
+  });
+  return {
+    help: values.help,
+    listScenarios: values["list-scenarios"],
+    listFixtures: values["list-fixtures"],
+    keep: values.keep,
+    scenario: values.scenario,
+    fixture: values.fixture,
+    expect: values.expect,
+    candidateRoot: values["candidate-root"],
+    output: values.output,
+  };
 }
 
 function requiredValue(argv, index, option) {

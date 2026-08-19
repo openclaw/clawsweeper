@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { runAgentProcess } from "./agent-runner.js";
+import { runAgentCheckoutInspection, runAgentProcess } from "./agent-runner.js";
 import { stringArg, type Args } from "./clawsweeper-args.js";
 import {
   mediaProofRuntimeHints,
@@ -37,7 +37,7 @@ import type {
   RootCauseClusterAssessment,
 } from "./clawsweeper-types.js";
 import { codexLoginConfig, redactInternalCodexModel } from "./codex-env.js";
-import { codexProcessErrorCode } from "./codex-process.js";
+import { codexProcessErrorCode, type CodexProcessResult } from "./codex-process.js";
 import {
   codexJsonlFailureDetail,
   codexRetryDelayMs,
@@ -216,6 +216,42 @@ export function createReviewRuntime({
     return resolve(targetDir, gitArtifactRoot, `local-range-${Date.now()}-${process.pid}`);
   }
 
+  function defaultLocalRangeHistoryPath(targetDir: string, repo: string, baseSha: string): string {
+    const gitArtifactRoot = run("git", ["rev-parse", "--git-path", "clawsweeper/reviews"], {
+      cwd: targetDir,
+    }).trim();
+    return resolve(
+      targetDir,
+      gitArtifactRoot,
+      `local-range-review-history-${repositoryProfileFor(repo).slug}-${baseSha}.md`,
+    );
+  }
+
+  function localExactReviewHistoryPath(
+    artifactDir: string,
+    repo: string,
+    itemNumber: number,
+  ): string {
+    return join(
+      artifactDir,
+      `local-review-history-${repositoryProfileFor(repo).slug}-${itemNumber}.md`,
+    );
+  }
+
+  function localRangeHistoryApplies(
+    targetDir: string,
+    reviewedSha: string | null,
+    headSha: string,
+  ): boolean {
+    if (!reviewedSha || !/^[0-9a-f]{40}$/i.test(reviewedSha)) return false;
+    try {
+      run("git", ["merge-base", "--is-ancestor", reviewedSha, headSha], { cwd: targetDir });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function resolveReviewCheckout(options: {
     args: Args;
     artifactDir: string;
@@ -355,6 +391,14 @@ export function createReviewRuntime({
     return defaultReviewArtifactDir(localOnly, itemNumber, itemNumbers);
   }
 
+  function localExactReviewHistoryPathForTest(
+    artifactDir: string,
+    repo: string,
+    itemNumber: number,
+  ): string {
+    return localExactReviewHistoryPath(artifactDir, repo, itemNumber);
+  }
+
   function prepareManagedLocalReviewCheckoutForTest(
     options: ManagedLocalReviewCheckoutOptions,
   ): void {
@@ -380,7 +424,12 @@ export function createReviewRuntime({
   }
 
   function contextJsonForPrompt(context: ItemContext): string {
-    const { semanticPullFiles: _, pullCommitsRevision: __, ...promptContext } = context;
+    const {
+      semanticPullFiles: _,
+      pullCommitsRevision: __,
+      prHydrationSnapshot: ___,
+      ...promptContext
+    } = context;
     return JSON.stringify(promptContext, null, 2);
   }
 
@@ -673,6 +722,17 @@ ${extra}
         status: "not_needed",
         summary: "Telegram visible proof was not assessed because the Codex review failed.",
       },
+      liveProofPlan: {
+        status: "not_applicable",
+        surface: "none",
+        reason: "Live proof was not assessed because the Codex review failed.",
+        payoff: {
+          kind: "static_text",
+          justification: "No recording payoff was assessed because the Codex review failed.",
+        },
+        entry: "",
+        steps: [],
+      },
       mantisRecommendation: {
         status: "not_recommended",
         scenario: "none",
@@ -685,6 +745,8 @@ ${extra}
       },
       overallCorrectness: "not a patch",
       overallConfidenceScore: 0,
+      localCheckoutAccess: "unverified",
+      checkoutInspectionFailed: /^Read-only checkout inspection failed\b/.test(failureDetail),
       codexTerminalFailure: Boolean(terminalError),
       fixedRelease: null,
       fixedSha: null,
@@ -863,6 +925,34 @@ ${extra}
     return stringArg(args.codex_forced_login_method, "");
   }
 
+  function runReviewCheckoutInspection(options: {
+    itemNumber: number;
+    openclawDir: string;
+    preserveCodexAuth?: boolean;
+    timeoutMs: number;
+  }): CodexProcessResult {
+    const dirtyBefore = openclawDirtyStatus(options.openclawDir);
+    if (dirtyBefore) {
+      return {
+        status: 1,
+        signal: null,
+        error: new Error(
+          `OpenClaw checkout is dirty before reviewing #${options.itemNumber}:\n${dirtyBefore}`,
+        ),
+        stdout: "",
+        stderr: "",
+      };
+    }
+    return runAgentCheckoutInspection({
+      cwd: options.openclawDir,
+      env: untrustedCodexEnv({
+        ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
+        preserveCodexAuth: options.preserveCodexAuth,
+      }),
+      timeoutMs: Math.min(options.timeoutMs, 30_000),
+    });
+  }
+
   function runCodex(options: {
     item: Item;
     context: ItemContext;
@@ -903,18 +993,37 @@ ${extra}
         mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
       ).text;
     writeFileSync(promptPath, prompt, "utf8");
-    const dirtyBefore = openclawDirtyStatus(options.openclawDir);
-    if (dirtyBefore) {
-      throw new Error(
-        `OpenClaw checkout is dirty before reviewing #${options.item.number}:\n${dirtyBefore}`,
-      );
+    const codexEnv = untrustedCodexEnv({
+      ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
+      preserveCodexAuth: options.preserveCodexAuth,
+    });
+    const startedAt = Date.now();
+    const checkoutInspection = runReviewCheckoutInspection({
+      itemNumber: options.item.number,
+      openclawDir: options.openclawDir,
+      timeoutMs: options.timeoutMs,
+      ...(options.preserveCodexAuth === undefined
+        ? {}
+        : { preserveCodexAuth: options.preserveCodexAuth }),
+    });
+    if (checkoutInspection.error || checkoutInspection.status !== 0) {
+      const stderr = redactedOutputTail(checkoutInspection.stderr);
+      const stdout = redactedOutputTail(checkoutInspection.stdout);
+      throw new CodexReviewError({
+        message: `Read-only checkout inspection failed for #${options.item.number}: ${stderr || stdout || checkoutInspection.error?.message || "unknown sandbox failure"}`,
+        status: checkoutInspection.status,
+        stdout,
+        stderr,
+        errorCode: codexProcessErrorCode(checkoutInspection.error),
+        signal: checkoutInspection.signal,
+        retryable: true,
+      });
     }
     const configuredAttempts = Number(process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS ?? 3);
     const maxAttempts = Math.min(
       5,
       Math.max(1, Number.isFinite(configuredAttempts) ? Math.floor(configuredAttempts) : 3),
     );
-    const startedAt = Date.now();
     const runReviewPass = (reasoningEffort: string, passAttempts: number): Decision => {
       const codexConfig = ['approval_policy="never"'];
       if (options.forcedLoginMethod) {
@@ -955,13 +1064,7 @@ ${extra}
             "-",
           ],
           cwd: options.openclawDir,
-          env: {
-            ...untrustedCodexEnv({
-              ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
-              preserveCodexAuth: options.preserveCodexAuth,
-            }),
-            CLAWSWEEPER_PROOF_SCRATCH_DIR: proofScratchDir,
-          },
+          env: { ...codexEnv, CLAWSWEEPER_PROOF_SCRATCH_DIR: proofScratchDir },
           stderrPath: join(options.workDir, `${options.item.number}.${attempt}.codex.stderr.log`),
           stdoutPath: join(options.workDir, `${options.item.number}.${attempt}.codex.stdout.log`),
           timeoutMs: remainingMs,
@@ -995,7 +1098,7 @@ ${extra}
                 );
               }
             }
-            return decision;
+            return { ...decision, localCheckoutAccess: "verified" };
           } catch (error) {
             failureDetail = `Codex review failed for #${options.item.number} with exit ${
               result.status ?? "unknown"
@@ -1083,6 +1186,7 @@ ${extra}
     codexFailureLogKindForTest,
     codexReviewFailureRetryableForTest,
     defaultReviewArtifactDirForTest,
+    localExactReviewHistoryPathForTest,
     makeTreeReadOnlyForTest,
     prepareManagedLocalReviewCheckoutForTest,
     restoreTreeModesForTest,
@@ -1099,17 +1203,21 @@ ${extra}
     codexFailureReason,
     codexReviewFailureRetryable,
     defaultLocalRangeArtifactDir,
+    defaultLocalRangeHistoryPath,
     defaultReviewArtifactDir,
     displayDurationMs,
     displayPath,
     gitInfo,
     isSafeGitBranchName,
     localExactReviewItem,
+    localExactReviewHistoryPath,
+    localRangeHistoryApplies,
     makeTreeReadOnly,
     prCloseCoverageProofPromptTemplate,
     resolveReviewCheckout,
     restoreTreeModes,
     reviewCodexForcedLoginMethod,
+    runReviewCheckoutInspection,
     runCodex,
   };
 }

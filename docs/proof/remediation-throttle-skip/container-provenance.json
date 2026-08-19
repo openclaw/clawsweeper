@@ -1,0 +1,87 @@
+{
+  "schema": "clawsweeper-crabbox-proof-provenance/v1",
+  "claim": "The remediation throttle red/green scenario suite passes on the reviewed PR head inside a Docker-backed Crabbox local-container while the merge-base production script reproduces the old failure.",
+  "tested_source_head": "98fae30ad6336f525b654e90f961e6909b5f61e7",
+  "merge_base": "e0dc54438e5e346f573af5e6d2cb07c6c1620a8f",
+  "crabbox": {
+    "cli_version": "0.38.3-5-g2a79805d",
+    "provider": "local-container",
+    "lease_id": "cbx_efa770db5e6d",
+    "lease_slug": "quick-crab-b89a",
+    "run_id": null,
+    "machine_type": "node_24-bookworm",
+    "container_image": "node:24-bookworm",
+    "container_engine": "Docker 29.4.0",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1144",
+    "workdir": "/work/crabbox/cbx_efa770db5e6d/fresh-pr-openclaw-clawsweeper-1144",
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0"
+  },
+  "timing_ms": {
+    "sync": 10727,
+    "command": 4920,
+    "total": 15648,
+    "command_phases": [
+      { "name": "user-command", "ms": 1894 },
+      { "name": "install", "ms": 2128 },
+      { "name": "red", "ms": 156 },
+      { "name": "green", "ms": 741 }
+    ]
+  },
+  "result": {
+    "red_test_exit": 1,
+    "old_production_throttled_child_exit": 1,
+    "green_test_exit": 0,
+    "focused_scenarios": 6,
+    "focused_scenarios_passed": 6,
+    "new_production_throttled_child_exit": 0,
+    "asserted_skip_line": {
+      "event": "stuck_queued_remediation_skipped",
+      "skip_reasons": { "github_throttled": 1 },
+      "phase": "discovery",
+      "request_path": "/actions/runs?status=queued&per_page=100&page=1"
+    },
+    "persistent_5xx_child_exit": 1,
+    "persistent_5xx_attempts": 3,
+    "workflow_shape": "pass",
+    "production_script_restored": true,
+    "proof_marker": "PROOF_EXIT=0",
+    "transcript": {
+      "path": "docs/proof/remediation-throttle-skip/container-transcript.txt",
+      "bytes": 4325,
+      "sha256": "9164bc9f37c2e9f815261c4174dd5e94a99661da909d422d3fd878b5e65e65c1",
+      "secret_scan": "docs/proof/remediation-throttle-skip/container-secret-scan.json"
+    },
+    "launcher": {
+      "path": "docs/proof/remediation-throttle-skip/run-container-proof.sh",
+      "bytes": 3635,
+      "sha256": "7e702a4322269238884b60e8594deeda82ec34b1b7aec909ed2d06719b7768a6"
+    }
+  },
+  "discarded_attempts": [
+    {
+      "lease_id": "cbx_12a0f57a1b2c",
+      "lease_slug": "amber-hermit",
+      "exit_code": 128,
+      "reason": "The pre-existing proof named a non-existent base SHA; the launcher stopped before dependency installation or tests.",
+      "lease_stopped": true
+    },
+    {
+      "lease_id": "cbx_38a3bb9d35e3",
+      "lease_slug": "coral-prawn-c06a",
+      "exit_code": 1,
+      "reason": "The evidence extractor expected TAP ok lines, but Node 24 emitted the Unicode spec reporter; RED ran and GREEN executed before the extractor rejected the output format.",
+      "lease_stopped": true
+    }
+  ],
+  "limits": [
+    "The GitHub API is a loopback fixture; no production workflow run was cancelled.",
+    "Workflow behavior is parsed and asserted structurally rather than proven by dispatching the production schedule.",
+    "The receipt-containing evidence commit changes proof files only; the tested runtime and workflow source remain the recorded source head."
+  ]
+}

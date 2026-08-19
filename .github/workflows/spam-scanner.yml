@@ -66,7 +66,7 @@ concurrency:
 
 jobs:
   scan:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.CLAWSWEEPER_SPAM_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7

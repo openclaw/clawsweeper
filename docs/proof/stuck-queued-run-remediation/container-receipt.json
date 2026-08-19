@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "tested_commit": "b46b579b6d12d940cb068b32da20a23e8c39b000",
+  "provider": "local-container",
+  "lease_id": "cbx_821f20930574",
+  "lease_slug": "amber-shrimp-5247",
+  "run_id": null,
+  "machine_type": "node_24-bookworm",
+  "container_image": "node:24-bookworm",
+  "fresh_pr": "https://github.com/openclaw/clawsweeper/pull/1131",
+  "command": "verify pushed HEAD; install with the pinned pnpm; run 71 focused tests; run the loopback production-script scenarios; run check:static, build:all, and lint",
+  "result": {
+    "status": "succeeded",
+    "exit_code": 0,
+    "focused_tests": {
+      "total": 71,
+      "passed": 71,
+      "failed": 0
+    },
+    "loopback_assertions": {
+      "stranded_cancelled_exactly_once": true,
+      "young_run_untouched": true,
+      "zombie_500_500_persisted": true
+    },
+    "gates": [
+      "dependency lockfile and supply-chain policy",
+      "active-surface, dashboard-boundary, documentation, limits, and formatting checks",
+      "main, repair, and dashboard TypeScript builds",
+      "main, repair, dashboard, script, and test lint"
+    ]
+  },
+  "timing_ms": {
+    "sync": 12395,
+    "command": 18323,
+    "total": 30800,
+    "phases": {
+      "install": 3571,
+      "focused_tests": 10656,
+      "loopback_proof": 251,
+      "static_build_lint_gates": 3634
+    }
+  },
+  "lease_stopped": true,
+  "limits": [
+    "The GitHub API was a loopback fixture; no production run was cancelled.",
+    "The full pnpm run check gate ran in the clean host checkout: 3345 tests, 3336 passes, 9 platform skips, 0 failures."
+  ]
+}

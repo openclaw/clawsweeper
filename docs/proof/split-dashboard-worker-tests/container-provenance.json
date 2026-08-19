@@ -1,0 +1,86 @@
+{
+  "schema": "clawsweeper-real-boundary-proof-provenance/v1",
+  "claim": "The pushed dashboard Worker test split passes the full repository suite from a clean PR checkout inside a Linux Docker container with checksum-verified jq.",
+  "pull_request": "https://github.com/openclaw/clawsweeper/pull/1127",
+  "reviewed_head": "07d5ef9528ad69b7b4a2aaafa1050c199b2506c6",
+  "crabbox": {
+    "run_cli_version": "0.38.3-5-g2a79805d",
+    "cleanup_cli_version": "0.41.1",
+    "provider": "aws",
+    "lease_id": "cbx_a6899c138d00",
+    "slug": "jade-lobster-c3f0",
+    "run_id": "run_8980401fcc5d",
+    "machine_type": "c7a.8xlarge",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1127 --no-hydrate",
+    "container_image": "node:24-bookworm",
+    "sync_ms": 7979,
+    "command_ms": 135750,
+    "total_ms": 143928,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true,
+    "lease_stop_status": "The successful command's older run wrapper timed out awaiting the release acknowledgement and reported leaseStopped=false. Crabbox 0.41.1 explicitly released the same provider-bound lease; a subsequent provider-specific list returned empty."
+  },
+  "runtime": {
+    "node": "v24.18.1",
+    "pnpm": "11.10.0",
+    "jq": "jq-1.8.2",
+    "jq_asset": "jq-linux-amd64",
+    "jq_sha256": "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
+    "jq_checksum_source": "Repository-pinned in container-proof.sh from the official jq 1.8.2 release manifest",
+    "jq_checksum_verified": true,
+    "rsync_package": "3.2.7-1+deb12u6"
+  },
+  "result": {
+    "proof_rc": 0,
+    "full_suite": {
+      "tests": 3333,
+      "passed": 3325,
+      "skipped": 8,
+      "failed": 0,
+      "duration_ms": 111853.757098
+    },
+    "stdout": {
+      "bytes": 522855,
+      "sha256": "dbc6510b36b5b50ce8bc8fb7e201fde0dcc05281871e92e20433408c5520da3e",
+      "committed_excerpt": "container-stdout.log",
+      "secret_scan": "container-secret-scan.json"
+    },
+    "stderr": {
+      "bytes": 451,
+      "sha256": "a63eae761de33822bb804442dddbab9c488141b7e387935fb6bbc1aac6953a41"
+    }
+  },
+  "discarded_attempts": [
+    {
+      "run_id": "run_3967f6ca93be",
+      "lease_id": "cbx_444f2f04b612",
+      "reviewed_head": "097ec97f40066397027514d5b59fbe61417feafa",
+      "exit_code": 1,
+      "reason": "Checksum-verified jq was not placed on PATH and rsync was absent; unrelated workflow fixtures took missing-tool branches.",
+      "lease_stopped": true
+    },
+    {
+      "run_id": "run_3f56ddff442a",
+      "lease_id": "cbx_bfa511cacfcb",
+      "reviewed_head": "a1f198c0caf25419aaab9522a32b2e87b0db6a08",
+      "exit_code": 1,
+      "reason": "Login-shell fixtures reset the temporary jq PATH and the container still lacked rsync.",
+      "lease_stopped": true
+    }
+  ],
+  "superseded_successful_runs": [
+    {
+      "run_id": "run_496cd5ae7c07",
+      "lease_id": "cbx_891cde76c278",
+      "reviewed_head": "c54565b253df36d03e49f3acd8499e4b29f9d516",
+      "exit_code": 0,
+      "reason": "The full suite passed, but the run was superseded after ClawSweeper required repository-pinned jq digests.",
+      "lease_stopped": true
+    }
+  ],
+  "limits": [
+    "This proof exercises repository build and test behavior only; it does not deploy the Worker or mutate GitHub, queue, or production state.",
+    "The successful container used Linux, so one test skipped on macOS ran and one macOS-only test skipped; the total and test-name inventory remained 3333."
+  ]
+}

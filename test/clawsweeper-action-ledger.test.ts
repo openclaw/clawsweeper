@@ -526,6 +526,25 @@ test("review candidates start lazily and deferred items cannot remain active", (
   assert.match(reviewBatchTerminal, /mutation: options\.ledger\.mutationObserved/);
 
   const reviewCommandStart = source.indexOf("function reviewCommand(args:");
+  const materializationHelper = source.indexOf(
+    "const preparePullRequestReviewTree =",
+    reviewCommandStart,
+  );
+  const exactHeadMaterialization = source.indexOf(
+    "materializePullRequestReviewTree({",
+    materializationHelper,
+  );
+  const contextCollection = source.indexOf("const context = localRangeData", reviewCommandStart);
+  const sourceAvailabilityGate = source.indexOf(
+    "preparePullRequestReviewTree(headSha)",
+    contextCollection,
+  );
+  const modelReview = source.indexOf("decision = runCodex({", sourceAvailabilityGate);
+  assert.ok(materializationHelper >= 0);
+  assert.ok(exactHeadMaterialization > materializationHelper);
+  assert.ok(contextCollection >= 0);
+  assert.ok(sourceAvailabilityGate > contextCollection);
+  assert.ok(modelReview > sourceAvailabilityGate);
   const reviewCatchStart = source.indexOf(
     "} catch (error) {\n      if (reviewLedger) {",
     reviewCommandStart,
@@ -574,7 +593,7 @@ test("apply receipts start per item and persist mutation observation before fina
     source,
     /const commentMutationOccurred = result\.commentMutationOccurred === true;[\s\S]*applyActionEventDisposition\([\s\S]*commentMutationOccurred,[\s\S]*reviewCommentPublicationEventDisposition\([\s\S]*commentMutationOccurred,/,
   );
-  assert.match(applyLoop, /executeApplyClose\(dependencies, \{/);
+  assert.match(applyLoop, /executeApplyClose\(\s*\{/);
   assert.match(
     readText("src/clawsweeper-apply-close-execution.ts"),
     /closeItem\(\{ number, kind: item\.kind/,

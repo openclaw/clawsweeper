@@ -1,0 +1,492 @@
+jq-linux-amd64: OK
+node=v24.19.0
+head=50a3749343b28b045e02722010aa91893c63a9f1
+pnpm=11.10.0
+jq=jq-1.8.1
+pnpm_run_check=passed
+Already up to date
+Done in 232ms using pnpm v11.10.0
+{
+  "schema": "queue-policy-readmodel-body-identity/v1",
+  "merge_base": "5439582beebe57b7e79dc4e3d7bb44acd9f7d65c",
+  "compared_functions": 64,
+  "all_byte_identical": true,
+  "functions": [
+    {
+      "name": "exactReviewDecisionFrom",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 1169,
+      "sha256": "4445888f8840045bbc70cbd6ca20291d1ebda78d6d4eb000614b0d382e97ff87",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewDecisionWithoutSourceAuthority",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 500,
+      "sha256": "e235ad814c7836376b49a8f9a5ec309e48d0a3e36ec59af10934303b00a286be",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewBranchAuthorityDecisionFrom",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 371,
+      "sha256": "1b0a7203ee1d0df4ae4af796442f564fc22b443bb3ff414bd721889a26a5ece9",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewBranchAuthorityReservationKey",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 100,
+      "sha256": "7b57f9ac7b443f3840f68cfe6ef0d12e650be17f27aa56abcc00902f9ec11117",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewBranchAuthorityReservationFrom",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 1497,
+      "sha256": "002a11411f8bed9184a58dd43e127b76654873e316a510aab8b340e2a67ba00d",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewSourceAuthorityReservationKey",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 100,
+      "sha256": "ffb8429da5cfc06ab246650eb91ae7f8a275b3412a7cb61f7127fe4003a396ba",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewSourceAuthorityReservationFrom",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 1345,
+      "sha256": "e86ef3d93a07cec085263d54b5bc253a621ccefc58b478503b8894c89c26cc36",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewIngressFrom",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 367,
+      "sha256": "929f8a5240e87fa6915828b4d70180745342a03f9a0a643f24c5f817a75af568",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewIngressCanPromoteFallback",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 333,
+      "sha256": "676712918d193ec9efae3a75815de59a1b7830d1dd44587d5478ca21f9080b3c",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewBaseDecisionFrom",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 5193,
+      "sha256": "1232c91b8d5968f7e61bc488e582935e055f3bacdc6c84a6b32c918dd517afdf",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewEditedSemanticInput",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 1769,
+      "sha256": "6b920de47097a7929a868e8626a8f70471edcdb0e6e764fb842bc6f24a874eac",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewPublicationRevision",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 278,
+      "sha256": "df00cd5f146c237d2e44a11b7c6960658fb35f1a35f4358a00053b1bcc74c1f9",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewPublicationLineage",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 385,
+      "sha256": "0cb13451645ca3ca84df28abdc17d62c03fe6798e3da54950f338812ea6e9175",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewPublicationLineageKey",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 99,
+      "sha256": "bc7d919609c1439cff442e15683bbd4ab916a5b4915db3e69ab626777161b8fb",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewPublicationProducerIsNewer",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 230,
+      "sha256": "3f4b4a75a39d7cfd2fe83cfb056f00153cfa0f6926b49f8eab9f561c4d77e7df",
+      "byte_identical": true
+    },
+    {
+      "name": "compareDecimalIdentifiers",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 296,
+      "sha256": "7cadbfd79fa2c19686b2b1a0e60a4223335cf82c27e04483662b2cd8ebec8a13",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewPublicationFrom",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 2685,
+      "sha256": "4b2ae9e22e18c6efb042da672f972de7bc040ddf52ca58324fd0b828d8a0c5a7",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewDirectLifecycleReceiptFrom",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 592,
+      "sha256": "c24678b71f470fc7581babdd13ab50aecc493e6d6e2188c0b907a2ef37db13d9",
+      "byte_identical": true
+    },
+    {
+      "name": "mergePendingExactReviewDecision",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 509,
+      "sha256": "b34027469fddbfa35f54fbbfdf44984d2821a38de21649c4d3adaa76db948bda",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewDecisionAtLiveHead",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 334,
+      "sha256": "3f6524f9575682cb5f0bc4c8de5cc1fdb8c7cc368f5fab6bb62d9e62e043cafe",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueHasStaleLiveHead",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 244,
+      "sha256": "81e96ec7df327e9cf4fa6a0911be5b982e91ad40e831b943a1102b4fed1cca08",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewDecisionCanSupersedeReview",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 1732,
+      "sha256": "ba78ea1c594eef7c047bb3512b7ef69873a4ff7aa7cdb0bf992320eb853a558c",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewSourceAuthorityWatermark",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 350,
+      "sha256": "f17d59460cb183b77ecb350a6716cff0f78e436a7731b6c2f2d220d264be2f0e",
+      "byte_identical": true
+    },
+    {
+      "name": "advanceExactReviewSourceAuthorityWatermark",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 130,
+      "sha256": "e842456903570e90d03f343fe53a093eff8488e1ccce87229a1f80c2a4ae1edb",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewItemKey",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 214,
+      "sha256": "28d12ed54b24c23e76b73f340b490963537b317d1602142f5924ec3522a78b50",
+      "byte_identical": true
+    },
+    {
+      "name": "isExactReviewQueueTargetEnabled",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 126,
+      "sha256": "4fe866e3383e1a8ef69de1c41df36c8bd87ae925b30b5f2a27d8b3126ec37669",
+      "byte_identical": true
+    },
+    {
+      "name": "isImmediateExactReviewDecision",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 270,
+      "sha256": "63fbad3ce6c8493610348d5d4a746b10a5d1f412167d6d842b6b343d52cd842b",
+      "byte_identical": true
+    },
+    {
+      "name": "isLowPriorityExactReviewDecision",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 81,
+      "sha256": "1eb4d03d5e1a78831108bf029e58b415ec9eb1c76c2cc3cbe37f99206b20334a",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueIsPublication",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 88,
+      "sha256": "02dedd2a258143e43f4bd7614248b5b09e884b74da06abe61c2335e5fd63092d",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueIsBatchablePublication",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 353,
+      "sha256": "d643b504fc7ea5b2d15cbfcbb5553b06b1ac405986e7ba6a67becf2093ddcb9d",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueHasCommandContext",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 141,
+      "sha256": "82c034b712ad04d4054a2dba329ad7ce126dd8559fc08f1e13dc273e3c57d6ec",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueCommandStatusAddress",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 274,
+      "sha256": "dc661539c20e349dac446336af290507a321194e50e4e68be0c32c6ca05241b8",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewTerminalFinalizationSharesCommandStatus",
+      "candidate_file": "dashboard/exact-review-decision.ts",
+      "bytes": 417,
+      "sha256": "a997ed1c2c89bff3f0d46095193b8f1c667c9f2a75f8ef9aa46e7fd3c9246900",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueLane",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 853,
+      "sha256": "9b5a6c8a35ad0b6af4496329e31288256b51e8a24f292044757cec0fd8085a7e",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueBayStage",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 853,
+      "sha256": "9b5a6c8a35ad0b6af4496329e31288256b51e8a24f292044757cec0fd8085a7e",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueBayStagePriority",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 52,
+      "sha256": "2d4f9d7a7865af2710263632b29057b604f48d55563ad29e0d9f4b892c4f39ea",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueBayPriorityKeys",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 315,
+      "sha256": "df16d5384e6da2abb54af4704cbe12111def68e932646afbb37947ef194be865",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueBayProjection",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 3294,
+      "sha256": "f9f49941bd72c70fbf72ef3ecb6a4fa36914c183968eca29f73f61dd82dfdab3",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueActiveReviewCount",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 184,
+      "sha256": "9f6121fb38ac55fab00236cbdcd66c29de95dad8afb88a388f7c9e1b368e68fa",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueActivePublicationCount",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 183,
+      "sha256": "9c62b3e321e1d0cbf380d4007790174f26746c9b59d8ca2667ceda52e9ba7d2f",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewPrioritizePublicationItems",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 416,
+      "sha256": "d58201a691bb2b7cead11fcd9ed85d05997baeebcbac962e0a32752423e3ad27",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueAdmittedItems",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 3145,
+      "sha256": "4254532d7b899666b7857b5428d69cf0ed73c7b191f21bce0ad5e5bdb78658d8",
+      "byte_identical": true
+    },
+    {
+      "name": "sumFor",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 124,
+      "sha256": "956217fbd04622123794deff5d42ed014f956d995ca9e2a601b0ef2b186ea3d7",
+      "byte_identical": true
+    },
+    {
+      "name": "percentileFor",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 376,
+      "sha256": "c8a05aa543977d8944e3ff3500abc1c53f4036f63bae92262c7b2c8f80ff53a6",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueStats",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 5779,
+      "sha256": "22d34b825fce3c8b7cf259e1cc05e56256334285ff56e08df9674e38720545c2",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueLaneStats",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 2824,
+      "sha256": "119e347a164f15d165a01d8f627f695ad839b6ff576809ad91829898621b0154",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueBackoffReason",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 546,
+      "sha256": "5f23790d8c4bad18c4140c21f34304d09cb6e346a29391164c60fb05725daac3",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueReasonCounts",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 150,
+      "sha256": "a3617e75f66bf5d40d0349e40b44c4d87c946a22bb392d75a70a0e8583a92e6b",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueNextWakeAt",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 4730,
+      "sha256": "bbd175f3c50340f9a6359b1e91852d1924051c8d983bf3a8067258ea39fd51c6",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewQueueCapacity",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 243,
+      "sha256": "1260383023cf5baa4a2c88559ff645591f77e4428d7b2b3898f5b8ee109ba6bc",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewDispatchFailureDetailJson",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 141,
+      "sha256": "868244a90f6ba324dbabc13fd40a1e58799cc52fb579feaa65c419d9c8bbe8a5",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewEffectiveLeaseExpiresAt",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 608,
+      "sha256": "735680a160284e977ab0e72e42bcc5b5d95b9f954fff7d9ecb1f995ad6824b4b",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewParkedRecoveryDelayMs",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 488,
+      "sha256": "99d497fbc540d49dd711b9b7cc8bd20150ea28b3f7ec9a95a9c4e9325ebdef17",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewParkedRecoveryAt",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 425,
+      "sha256": "8d88b7e4edfaffc36ab92d1c64ed8f8081e326d258d54a3afb43603d26bd6d13",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewParkedRecoveryAttempts",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 114,
+      "sha256": "e921127b4c83df7b27f1b55543d5b9b7ca28526fe8488a11421cf42f139cea0a",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewParkedOperatorEligible",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 306,
+      "sha256": "d527cf7c3a26f82e7b1bff63f00824c233620ff1cb2b8dfa2f4c6d92ef8d541f",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewParkedTerminalCheckAt",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 218,
+      "sha256": "0663dc1591914959c505bb03ae74e9f800e98006cbe947f9d424fa3515d17bbf",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewParkedTerminalGlobalCheckAt",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 283,
+      "sha256": "a54a8f1ad1b0c5cd62c6955dbbad59a11f67cae52c52c38253430f72d72a2611",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewShedSinceReset",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 117,
+      "sha256": "db2da428c8f53dc6bc443ef21e51d5fbed5218ac846c9e38f6f3adbcbd4d099d",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewGithubCredentialCircuits",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 247,
+      "sha256": "4bf5ade90a5799a06e07d71c883eb0097ad62bef99037db721e5b908e1c63e24",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewGithubTargetAppCircuitRetryAt",
+      "candidate_file": "dashboard/exact-review-read-model.ts",
+      "bytes": 320,
+      "sha256": "23b532414a1e8756a69e000faa3f43d9242b4161d1e045b27166eec23a222b66",
+      "byte_identical": true
+    },
+    {
+      "name": "exactReviewScheduledLane",
+      "candidate_file": "dashboard/exact-review-queue-shared.ts",
+      "bytes": 226,
+      "sha256": "fb315de0b745933f7402d8f03f0f7d460cdac26c63ae19c92a00e05cd57e8378",
+      "byte_identical": true
+    },
+    {
+      "name": "objectValue",
+      "candidate_file": "dashboard/exact-review-queue-shared.ts",
+      "bytes": 86,
+      "sha256": "736b479e528b8398e89bd4c8746d1878865b922424c66a1014c47e4da8cda399",
+      "byte_identical": true
+    },
+    {
+      "name": "numberFrom",
+      "candidate_file": "dashboard/exact-review-queue-shared.ts",
+      "bytes": 89,
+      "sha256": "8de67ac90e403c1f18925695652076490627a43d01b075cd0fc37d7f982dba23",
+      "byte_identical": true
+    }
+  ]
+}
+{
+  "schema": "queue-policy-readmodel-worker-equivalence/v1",
+  "merge_base": "5439582beebe57b7e79dc4e3d7bb44acd9f7d65c",
+  "candidate_head": "50a3749343b28b045e02722010aa91893c63a9f1",
+  "worker": "wrangler dev --local",
+  "durable_object": "SQLite-backed ExactReviewQueue",
+  "seeded_items": 6,
+  "seed_route": "/internal/exact-review/enqueue",
+  "responses": [
+    {
+      "route": "/api/exact-review-queue",
+      "byte_identical": true,
+      "normalized_bytes": 10746,
+      "normalized_sha256": "502ef4b842487f726531cb97d78168e715f65ce2844ea679408f1de505d1016d"
+    },
+    {
+      "route": "/api/status",
+      "byte_identical": true,
+      "normalized_bytes": 24197,
+      "normalized_sha256": "4a782cd47c24c917e97576ba871b61bad2d3c055eb6844eee3f39a9e61d2e997"
+    }
+  ],
+  "all_normalized_responses_byte_identical": true,
+  "production_mutations": 0,
+  "openclaw_bay_affected": false,
+  "limits": "Synthetic pending issue reviews; no GitHub, lease, publication, or production mutation."
+}
+PROOF_RC=0

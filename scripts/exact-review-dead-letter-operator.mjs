@@ -4,6 +4,15 @@ import { createHash, createHmac } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
+import { parseArgs as parseNodeArgs } from "node:util";
+import {
+  GitHubRequestError,
+  createGithubAppTokenFor,
+  githubAppCredentials,
+  githubAppInstallationId,
+  signGithubAppJwt,
+} from "../dashboard/github-api.ts";
+import { classifyOperatorSkipReason, isGitHubThrottleFailure } from "./operator-skip-reasons.mjs";
 
 const DEFAULT_OUTPUT = ".artifacts/exact-review-dlq/inventory.json";
 const MAX_SELECTED_IDS = 2;
@@ -13,16 +22,20 @@ const MAX_PARKED_RECONCILE_RECOVERIES = 5;
 const MAX_PARKED_INVENTORY_PAGE_SIZE = 50;
 const MAX_TERMINAL_TARGET_RECHECKS = 10;
 const MAX_RESOLUTION_IDS = 20;
+const MAX_HEAD_MISMATCH_SUPERSEDE_TARGETS = 10;
 const MAX_INVENTORY_ROWS = 10_000;
 const MAX_RECONCILE_INVENTORY_PAGES = 250;
 const MAX_RECONCILE_INVENTORY_REFRESHES = 2;
 const GRAPHQL_IDENTITY_BATCH_SIZE = 40;
+const MAX_CONSECUTIVE_GITHUB_THROTTLES = 3;
 const ACTIVE_RECOVERY_REASONS = new Set(["fresh_review_already_active", "publication_item_active"]);
+const HEAD_MISMATCH_SUPERSEDE_EXCLUDED_REASONS = new Set(["workflow_cancelled"]);
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9:._-]{1,200}$/;
 const OPERATOR_REQUEST_TIMEOUT_MS = 20_000;
 const OPERATOR_DEADLINE_SETTLE_MS = 25;
 const MAX_SKIP_SAMPLES = 3;
 const MAX_SKIP_REASON_LENGTH = 240;
+const TARGET_READ_TOKEN_MODE_ENV = "EXACT_REVIEW_TARGET_TOKEN_MODE";
 
 class DeadLetterInventoryChangedError extends Error {
   constructor(summary, rowIds, targetKeys, blockedGroups) {
@@ -36,12 +49,163 @@ class DeadLetterInventoryChangedError extends Error {
 }
 
 class CanonicalTargetInspectionError extends Error {
-  constructor(error, { inspectedTargets = [], failedTargets = [], notInspectedTargets = [] }) {
+  constructor(
+    error,
+    {
+      inspectedTargets = [],
+      classifiedFailures = [],
+      failedTargets = [],
+      notInspectedTargets = [],
+    },
+  ) {
     super(error instanceof Error ? error.message : String(error), { cause: error });
     this.name = "CanonicalTargetInspectionError";
     this.inspectedTargets = inspectedTargets;
+    this.classifiedFailures = classifiedFailures;
     this.failedTargets = failedTargets;
     this.notInspectedTargets = notInspectedTargets;
+  }
+}
+
+class GitHubInspectionHttpError extends Error {
+  constructor(message, response) {
+    super(message);
+    this.name = "GitHubInspectionHttpError";
+    this.status = response.status;
+    this.retryAfter = response.headers.get("retry-after");
+    this.rateLimitRemaining = response.headers.get("x-ratelimit-remaining");
+  }
+}
+
+class TargetInstallationMissingError extends Error {
+  constructor(targetRepo, options) {
+    super(`GitHub App installation is missing or revoked for ${targetRepo}`, options);
+    this.name = "TargetInstallationMissingError";
+  }
+}
+
+class TargetAppSetupThrottleError extends Error {
+  constructor(error, { owner, stage }) {
+    const status = Number.isInteger(error?.status) ? error.status : "unknown";
+    super(
+      `github_throttled scope=app_setup stage=${stage} owner=${owner.toLowerCase()} status=${status}`,
+      { cause: error },
+    );
+    this.name = "TargetAppSetupThrottleError";
+    this.status = error?.status;
+    this.rateLimited = true;
+  }
+}
+
+class TargetReadTokenCache {
+  constructor(env) {
+    this.env = env;
+    this.mode = String(env[TARGET_READ_TOKEN_MODE_ENV] || "github-app").trim();
+    if (this.mode !== "github-app" && this.mode !== "actions") {
+      throw new Error(`${TARGET_READ_TOKEN_MODE_ENV} must be github-app or actions`);
+    }
+    this.fallbackToken = String(env.GH_TOKEN || "").trim() || String(env.GITHUB_TOKEN || "").trim();
+    this.tokensByOwner = new Map();
+    this.mintsByRepository = new Map();
+    if (this.mode === "actions") {
+      if (!this.fallbackToken) {
+        throw new Error(
+          `GH_TOKEN or GITHUB_TOKEN is required when ${TARGET_READ_TOKEN_MODE_ENV}=actions`,
+        );
+      }
+      this.credentials = null;
+      this.appJwt = null;
+      return;
+    }
+
+    const missing = [];
+    if (
+      !String(env.CLAWSWEEPER_APP_ID || "").trim() &&
+      !String(env.CLAWSWEEPER_APP_CLIENT_ID || "").trim()
+    ) {
+      missing.push("CLAWSWEEPER_APP_CLIENT_ID or CLAWSWEEPER_APP_ID");
+    }
+    if (!String(env.CLAWSWEEPER_APP_PRIVATE_KEY || "").trim()) {
+      missing.push("CLAWSWEEPER_APP_PRIVATE_KEY");
+    }
+    if (missing.length) {
+      throw new Error(
+        `${TARGET_READ_TOKEN_MODE_ENV}=github-app requires complete GitHub App credentials; missing ${missing.join(" and ")}`,
+      );
+    }
+    this.credentials = githubAppCredentials(env);
+    if (!this.credentials) {
+      throw new Error(
+        `${TARGET_READ_TOKEN_MODE_ENV}=github-app requires complete GitHub App credentials`,
+      );
+    }
+    this.appJwt = signGithubAppJwt(this.credentials.issuer, this.credentials.privateKey);
+  }
+
+  async tokenFor(target) {
+    const { owner, repo } = parseTargetRepository(target);
+    if (this.mode === "actions") {
+      return this.fallbackToken;
+    }
+    const ownerKey = owner.toLowerCase();
+    const repositoryKey = `${owner}/${repo}`.toLowerCase();
+    // Successful tokens and setup throttles are installation-scoped, so they remain owner-cached.
+    // Selected-repository installations still authorize each repo on its own REST/GraphQL read,
+    // whose 403/404 handling fails closed. An installation-missing 404 is repository-specific,
+    // so keep the in-flight/rejected mint under the repository key until its outcome is known.
+    let token = this.tokensByOwner.get(ownerKey);
+    if (token) return token;
+
+    token = this.mintsByRepository.get(repositoryKey);
+    if (!token) {
+      token = this.mintForOwner(`${owner}/${repo}`);
+      this.mintsByRepository.set(repositoryKey, token);
+    }
+    try {
+      const mintedToken = await token;
+      this.tokensByOwner.set(ownerKey, Promise.resolve(mintedToken));
+      return mintedToken;
+    } catch (error) {
+      if (error instanceof TargetAppSetupThrottleError) {
+        this.tokensByOwner.set(ownerKey, token);
+      }
+      throw error;
+    }
+  }
+
+  async mintForOwner(targetRepo) {
+    const [owner] = targetRepo.split("/");
+    let installationId;
+    try {
+      const appJwt = await this.appJwt;
+      installationId = await githubAppInstallationId(appJwt, targetRepo, this.env);
+    } catch (error) {
+      if (error instanceof GitHubRequestError && error.status === 404) {
+        throw new TargetInstallationMissingError(targetRepo, { cause: error });
+      }
+      if (error instanceof GitHubRequestError && error.rateLimited) {
+        throw new TargetAppSetupThrottleError(error, { owner, stage: "installation_lookup" });
+      }
+      throw error;
+    }
+    try {
+      const appJwt = await this.appJwt;
+      return await createGithubAppTokenFor({
+        env: this.env,
+        appJwt,
+        installationId,
+        label: targetRepo,
+        permissions: { contents: "read", issues: "read", pull_requests: "read" },
+      });
+    } catch (error) {
+      if (error instanceof GitHubRequestError && error.status === 404) {
+        throw new TargetInstallationMissingError(targetRepo, { cause: error });
+      }
+      if (error instanceof GitHubRequestError && error.rateLimited) {
+        throw new TargetAppSetupThrottleError(error, { owner, stage: "token_mint" });
+      }
+      throw error;
+    }
   }
 }
 
@@ -60,6 +224,8 @@ Options:
   -h, --help                    Show this help
 
 The operator always inventories open dead letters first. It never exposes raw replay.
+Target reads use GitHub App credentials by default. Set EXACT_REVIEW_TARGET_TOKEN_MODE=actions
+only to opt explicitly into GH_TOKEN or GITHUB_TOKEN for target reads.
 `;
 
 async function main(argv) {
@@ -71,6 +237,7 @@ async function main(argv) {
 
   const queueUrl = String(process.env.EXACT_REVIEW_QUEUE_URL || "").replace(/\/$/, "");
   const secret = String(process.env.CLAWSWEEPER_WEBHOOK_SECRET || "");
+  const targetReadTokens = new TargetReadTokenCache(process.env);
   if (!queueUrl || !secret) {
     throw new Error("EXACT_REVIEW_QUEUE_URL and CLAWSWEEPER_WEBHOOK_SECRET are required");
   }
@@ -85,7 +252,14 @@ async function main(argv) {
     });
     await mkdir(dirname(resolve(args.output)), { recursive: true });
     await writeFile(args.output, `${JSON.stringify(inventory, null, 2)}\n`, "utf8");
-    await reconcileParkedReviews({ inventory, queueUrl, secret, args, deadlineAt });
+    await reconcileParkedReviews({
+      inventory,
+      queueUrl,
+      secret,
+      args,
+      deadlineAt,
+      targetReadTokens,
+    });
     return;
   }
 
@@ -110,11 +284,19 @@ async function main(argv) {
       countedSkippedTargets: new Set(),
       inspectedTargetIds: new Set(),
       pendingRecoveryTargetIds: new Set(),
+      supersessionTargetIds: new Set(),
       terminalTargetRechecks: 0,
     };
     for (let refreshes = 0; refreshes <= MAX_RECONCILE_INVENTORY_REFRESHES; refreshes += 1) {
       try {
-        await reconcileDeadLetters({ inventory, queueUrl, secret, args, progress });
+        await reconcileDeadLetters({
+          inventory,
+          queueUrl,
+          secret,
+          args,
+          progress,
+          targetReadTokens,
+        });
         return;
       } catch (error) {
         if (!(error instanceof DeadLetterInventoryChangedError)) throw error;
@@ -125,6 +307,7 @@ async function main(argv) {
           error.summary.unparked !== 0 ||
           error.summary.skipped !== error.rowIds.length
         ) {
+          // oxlint-disable-next-line preserve-caught-error -- Keep the guarded mutation invariant stable and bounded.
           throw new Error("guarded dead-letter cleanup was not atomic; refusing stale recovery");
         }
         if (
@@ -135,7 +318,7 @@ async function main(argv) {
           // Never recover against stale aliases if producers keep changing the
           // inventory faster than this bounded operator can inspect it. Keep
           // the original target cap and accumulated counters across refreshes.
-          printResult({
+          printReconcileResult({
             ...progress.summary,
             inventory_changed: true,
             skipped_rows: error.summary.skipped,
@@ -192,7 +375,7 @@ async function main(argv) {
     if (new Set(recoveryTargets).size !== recoveryTargets.length) {
       throw new Error("selected dead letters must map to distinct fresh recovery targets");
     }
-    const canonicalTargetIds = await assertOpenRecoveryTargets(recoveryTargets);
+    const canonicalTargetIds = await assertOpenRecoveryTargets(recoveryTargets, targetReadTokens);
     if (new Set(canonicalTargetIds).size !== canonicalTargetIds.length) {
       throw new Error("selected dead letters must resolve to distinct GitHub items");
     }
@@ -237,44 +420,57 @@ async function main(argv) {
 }
 
 function parseArgs(argv) {
-  const args = {
-    action: "",
-    ids: [],
-    idempotencyKey: "",
-    note: "",
-    execute: false,
-    maxTargets: MAX_RECONCILE_TARGETS,
-    maxRecoveries: MAX_RECONCILE_RECOVERIES,
-    maxRecoveriesProvided: false,
-    output: DEFAULT_OUTPUT,
-    help: false,
-  };
+  const normalized = [];
+  const stringOptions = new Set([
+    "--action",
+    "--ids",
+    "--idempotency-key",
+    "--note",
+    "--max-targets",
+    "--max-recoveries",
+    "--output",
+  ]);
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
-    if (value === "-h" || value === "--help") args.help = true;
-    else if (value === "--execute") args.execute = true;
-    else if (value === "--action") args.action = String(argv[++index] || "");
-    else if (value === "--ids") {
-      args.ids = String(argv[++index] || "")
-        .split(",")
-        .map((id) => id.trim())
-        .filter(Boolean);
-    } else if (value === "--idempotency-key") {
-      args.idempotencyKey = String(argv[++index] || "").trim();
-    } else if (value === "--note") args.note = String(argv[++index] || "").trim();
-    else if (value === "--max-targets") {
-      args.maxTargets = boundedInteger(argv[++index], "--max-targets", 1, MAX_RECONCILE_TARGETS);
-    } else if (value === "--max-recoveries") {
-      args.maxRecoveriesProvided = true;
-      args.maxRecoveries = boundedInteger(
-        argv[++index],
-        "--max-recoveries",
-        0,
-        MAX_RECONCILE_RECOVERIES,
-      );
-    } else if (value === "--output") args.output = String(argv[++index] || "").trim();
+    if (value === "-h" || value === "--help" || value === "--execute") normalized.push(value);
+    else if (stringOptions.has(value)) normalized.push(`${value}=${String(argv[++index] || "")}`);
     else throw new Error(`unknown option ${value}; use --help`);
   }
+  const { values } = parseNodeArgs({
+    args: normalized,
+    options: {
+      help: { type: "boolean", short: "h" },
+      execute: { type: "boolean" },
+      action: { type: "string" },
+      ids: { type: "string" },
+      "idempotency-key": { type: "string" },
+      note: { type: "string" },
+      "max-targets": { type: "string" },
+      "max-recoveries": { type: "string" },
+      output: { type: "string" },
+    },
+  });
+  const maxRecoveriesProvided = values["max-recoveries"] !== undefined;
+  const args = {
+    action: values.action ?? "",
+    ids: String(values.ids ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean),
+    idempotencyKey: String(values["idempotency-key"] ?? "").trim(),
+    note: String(values.note ?? "").trim(),
+    execute: values.execute ?? false,
+    maxTargets:
+      values["max-targets"] === undefined
+        ? MAX_RECONCILE_TARGETS
+        : boundedInteger(values["max-targets"], "--max-targets", 1, MAX_RECONCILE_TARGETS),
+    maxRecoveries: maxRecoveriesProvided
+      ? boundedInteger(values["max-recoveries"], "--max-recoveries", 0, MAX_RECONCILE_RECOVERIES)
+      : MAX_RECONCILE_RECOVERIES,
+    maxRecoveriesProvided,
+    output: String(values.output ?? DEFAULT_OUTPUT).trim(),
+    help: values.help ?? false,
+  };
   if (args.help) return args;
   if (
     !["inventory", "recover-fresh", "resolve", "reconcile", "reconcile-parked"].includes(
@@ -319,7 +515,14 @@ function boundedInteger(value, flag, minimum, maximum) {
   return parsed;
 }
 
-async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progress }) {
+async function reconcileDeadLetters({
+  inventory,
+  queueUrl,
+  secret,
+  args,
+  progress,
+  targetReadTokens,
+}) {
   const initialPressure = await readQueuePressure(queueUrl);
   const openIds = new Set(inventory.dead_letters.map((row) => row.dead_letter_id));
   const summary = (progress.summary ??= {
@@ -330,6 +533,9 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
     inspected_targets: 0,
     recovered_targets: 0,
     resolved_rows: 0,
+    supersession_checked_targets: 0,
+    superseded_targets: 0,
+    superseded_rows: 0,
     invalid_rows: 0,
     closed_rows: 0,
     duplicate_rows: 0,
@@ -384,11 +590,11 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
       blockedResolutions.flatMap((error) => error.blockedGroups),
     );
   };
-  const accountSkippedTarget = (nodeId, reasonClass) => {
+  const accountSkippedTarget = (nodeId, target, reasonClass, reason) => {
     if (progress.countedSkippedTargets.has(nodeId)) return;
     progress.countedSkippedTargets.add(nodeId);
     summary.skipped_targets += 1;
-    if (reasonClass) recordSkipReasonCount(summary, reasonClass, 1);
+    if (reasonClass) recordClassifiedSkips(summary, [target], reasonClass, reason);
   };
   const canInspectTarget = (nodeId) =>
     progress.inspectedTargetIds.has(nodeId) || summary.inspected_targets < args.maxTargets;
@@ -417,17 +623,44 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
       summary.invalid_rows += resolution.resolved;
     }
     refreshBlockedInventory();
-    summary.skipped_targets += groups.size;
-    printResult(summary);
+    accountClassifiedSkips(
+      summary,
+      selectedRecoveryTargets(groups),
+      "inventory_incomplete",
+      new Error("dead-letter inventory is incomplete"),
+    );
+    printReconcileResult(summary);
     return;
   }
 
   const selectedGroups = [...groups.values()];
   let identities;
   try {
-    identities = await inspectCanonicalTargets(selectedGroups, args.maxTargets);
+    const inspection = await inspectCanonicalTargets(
+      selectedGroups,
+      args.maxTargets,
+      targetReadTokens,
+    );
+    identities = inspection.identities;
+    for (const failure of inspection.failedTargets) {
+      recordInspectionSkips(summary, [failure.target], failure.error);
+    }
+    if (inspection.notInspectedTargets.length) {
+      recordInspectionSkips(
+        summary,
+        inspection.notInspectedTargets,
+        new Error(
+          "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
+        ),
+      );
+    }
+    summary.skipped_targets +=
+      inspection.failedTargets.length + inspection.notInspectedTargets.length;
   } catch (error) {
     if (error instanceof CanonicalTargetInspectionError) {
+      for (const failure of error.classifiedFailures) {
+        recordInspectionSkips(summary, [failure.target], failure.error);
+      }
       recordAbortedInspectionSkips(summary, {
         inspectedTargets: error.inspectedTargets,
         failedTargets: error.failedTargets,
@@ -435,9 +668,10 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
         error: error.cause ?? error,
       });
     } else {
-      recordInspectionSkips(
+      recordClassifiedSkips(
         summary,
         selectedGroups.map((group) => group.target),
+        "discovery_failed",
         error,
       );
     }
@@ -455,15 +689,21 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
     }
     refreshBlockedInventory();
     summary.skipped_targets += groups.size;
-    printResult(summary);
+    printReconcileResult(summary);
     return;
   }
   const canonicalGroups = new Map();
   for (const group of groups.values()) {
     const live = identities.get(normalizeRecoveryTargetKey(group.target));
-    if (!live || !["open", "closed"].includes(live.state)) {
-      summary.skipped_targets += groups.size;
-      printResult(summary);
+    if (!live) continue;
+    if (!["open", "closed"].includes(live.state)) {
+      accountClassifiedSkips(
+        summary,
+        selectedInspectedRecoveryTargets(groups, identities),
+        "identity_not_actionable",
+        new Error("canonical target identity is not open or closed"),
+      );
+      printReconcileResult(summary);
       return;
     }
     const canonical = canonicalGroups.get(live.node_id) ?? {
@@ -493,36 +733,71 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
       ]),
     ];
     if (groupAliases.some((alias) => progress.blockedTargets.has(alias))) {
-      accountSkippedTarget(live.node_id);
+      accountSkippedTarget(
+        live.node_id,
+        canonicalTarget,
+        "blocked_alias",
+        new Error("canonical target is blocked by an unchanged alias"),
+      );
       continue;
     }
-    if (
-      hasActiveWork ||
-      (live.state === "open" && !rows.some((row) => row.fresh_recovery.eligible))
-    ) {
-      accountSkippedTarget(live.node_id);
+    if (hasActiveWork) {
+      accountSkippedTarget(
+        live.node_id,
+        canonicalTarget,
+        "active_work",
+        new Error("canonical target has active review or publication work"),
+      );
+      continue;
+    }
+    if (live.state === "open" && !rows.some((row) => row.fresh_recovery.eligible)) {
+      accountSkippedTarget(
+        live.node_id,
+        canonicalTarget,
+        "no_eligible_rows",
+        new Error("canonical target has no eligible dead-letter rows"),
+      );
       continue;
     }
     if (live.state === "closed") {
       if (!canInspectTarget(live.node_id)) {
-        accountSkippedTarget(live.node_id);
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "inspection_cap",
+          new Error("reconciliation target inspection cap reached"),
+        );
         continue;
       }
       if (progress.terminalTargetRechecks >= MAX_TERMINAL_TARGET_RECHECKS) {
-        accountSkippedTarget(live.node_id);
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "terminal_recheck_cap",
+          new Error("terminal target recheck cap reached"),
+        );
         continue;
       }
       progress.terminalTargetRechecks += 1;
       let current;
       try {
-        current = await inspectRecoveryTarget(canonicalTarget);
+        current = await inspectRecoveryTarget(canonicalTarget, targetReadTokens);
       } catch (error) {
-        recordInspectionSkips(summary, [canonicalTarget], error);
-        accountSkippedTarget(live.node_id);
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          classifyOperatorSkipReason(error),
+          error,
+        );
         continue;
       }
       if (current.state !== "closed" || current.node_id !== live.node_id) {
-        accountSkippedTarget(live.node_id);
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "closed_state_changed",
+          new Error("live target state or canonical identity changed during terminal recheck"),
+        );
         continue;
       }
       reserveTargetInspection(live.node_id);
@@ -542,7 +817,7 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
       summary.resolved_rows += resolution.resolved;
       summary.closed_rows += resolution.resolved;
       if (resolution.unparked) {
-        printResult(summary);
+        printReconcileResult(summary);
         return;
       }
       continue;
@@ -554,11 +829,135 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
           row.fresh_recovery.source_head_sha === live.head_sha),
     );
     if (!primary) {
-      accountSkippedTarget(live.node_id);
+      const eligibleStaleRows = rows.filter(
+        (row) =>
+          row.fresh_recovery.eligible &&
+          row.fresh_recovery.source_head_sha &&
+          row.fresh_recovery.source_head_sha !== live.head_sha,
+      );
+      const supersedeRows = eligibleStaleRows.filter(
+        (row) => !HEAD_MISMATCH_SUPERSEDE_EXCLUDED_REASONS.has(row.reason_code),
+      );
+      const excludedRows = eligibleStaleRows.filter((row) =>
+        HEAD_MISMATCH_SUPERSEDE_EXCLUDED_REASONS.has(row.reason_code),
+      );
+      if (!supersedeRows.length) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "head_mismatch_out_of_scope",
+          new Error("head-mismatched dead letters have only excluded resolution reasons"),
+        );
+        continue;
+      }
+      if (
+        !progress.supersessionTargetIds.has(live.node_id) &&
+        progress.supersessionTargetIds.size >= MAX_HEAD_MISMATCH_SUPERSEDE_TARGETS
+      ) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "head_mismatch_resolution_cap",
+          new Error("head-mismatch supersession target cap reached"),
+        );
+        continue;
+      }
+      if (!progress.supersessionTargetIds.has(live.node_id)) {
+        progress.supersessionTargetIds.add(live.node_id);
+        summary.supersession_checked_targets += 1;
+      }
+      const evidence = await inspectCanonicalSupersessionEvidence({
+        queueUrl,
+        secret,
+        target: live.canonical_target || canonicalTarget,
+        liveHeadSha: live.head_sha,
+      });
+      if (!evidence.proven) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "head_mismatch_unproven",
+          new Error(evidence.reason),
+        );
+        continue;
+      }
+      let current;
+      try {
+        current = await inspectRecoveryTarget(
+          live.canonical_target || canonicalTarget,
+          targetReadTokens,
+        );
+      } catch (error) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          classifyOperatorSkipReason(error),
+          error,
+        );
+        continue;
+      }
+      if (
+        current.state !== "open" ||
+        current.node_id !== live.node_id ||
+        current.head_sha !== live.head_sha
+      ) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "head_mismatch_revalidation_changed",
+          new Error(
+            "live pull-request identity or head changed after canonical supersession evidence",
+          ),
+        );
+        continue;
+      }
+      const resolutionAliases = [
+        ...new Set([
+          ...groupAliases,
+          ...(current.canonical_target
+            ? [normalizeRecoveryTargetKey(current.canonical_target)]
+            : []),
+        ]),
+      ];
+      const selectedRows = supersedeRows.slice(0, MAX_RESOLUTION_IDS);
+      const resolution = await resolveForReconciliation({
+        queueUrl,
+        secret,
+        rows: selectedRows,
+        note: `automatic reconciliation: stale publication superseded by completed canonical record at newer head ${live.head_sha}; evidence=${evidence.source}`,
+        outcome: "superseded",
+        execute: args.execute,
+        openIds,
+        canonicalTarget: current.canonical_target || live.canonical_target,
+        aliases: resolutionAliases,
+      });
+      if (resolution.blocked) continue;
+      summary.resolved_rows += resolution.resolved;
+      summary.superseded_rows += resolution.resolved;
+      if (resolution.resolved) summary.superseded_targets += 1;
+      if (resolution.unparked) {
+        printReconcileResult(summary);
+        return;
+      }
+      if (supersedeRows.length > selectedRows.length) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "head_mismatch_resolution_partial",
+          new Error("head-mismatch supersession row cap reached"),
+        );
+      } else if (excludedRows.length) {
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "head_mismatch_out_of_scope",
+          new Error("excluded head-mismatched dead letters remain open"),
+        );
+      }
       continue;
     }
     if (summary.recovered_targets + recoveries.length >= args.maxRecoveries) {
-      accountSkippedTarget(live.node_id, "recovery_cap");
+      accountSkippedTarget(live.node_id, canonicalTarget, "recovery_cap");
       continue;
     }
     const pressure = await readQueuePressure(queueUrl);
@@ -566,12 +965,19 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
     if (pressure.status !== "idle" || pressure.availableSlots <= recoveries.length) {
       accountSkippedTarget(
         live.node_id,
-        pressure.status === "idle" ? undefined : "recovery_deferred_pressure",
+        canonicalTarget,
+        pressure.status === "idle" ? "recovery_capacity" : "recovery_deferred_pressure",
+        pressure.status === "idle" ? new Error("no queue recovery slot is available") : undefined,
       );
       continue;
     }
     if (!reserveTargetInspection(live.node_id)) {
-      accountSkippedTarget(live.node_id);
+      accountSkippedTarget(
+        live.node_id,
+        canonicalTarget,
+        "inspection_cap",
+        new Error("reconciliation target inspection cap reached"),
+      );
       continue;
     }
     const duplicates = rows.filter((row) => row.dead_letter_id !== primary.dead_letter_id);
@@ -597,9 +1003,14 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
         resolution.resolved !== selectedDuplicates.length ||
         duplicates.length > MAX_RESOLUTION_IDS
       ) {
-        accountSkippedTarget(live.node_id);
+        accountSkippedTarget(
+          live.node_id,
+          canonicalTarget,
+          "duplicate_resolution_partial",
+          new Error("duplicate resolution did not fully drain the canonical target"),
+        );
         if (resolution.unparked) {
-          printResult(summary);
+          printReconcileResult(summary);
           return;
         }
         continue;
@@ -626,43 +1037,86 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
     summary.resolved_rows += resolution.resolved;
     summary.invalid_rows += resolution.resolved;
     if (resolution.unparked) {
-      printResult(summary);
+      printReconcileResult(summary);
       return;
     }
   }
 
   refreshBlockedInventory();
   if (recoveries.length) {
+    const revalidatedRecoveries = [];
+    let consecutiveThrottles = 0;
+    let individuallySkipped = 0;
     for (const [index, recovery] of recoveries.entries()) {
       let current;
       try {
-        current = await inspectRecoveryTarget(recovery.canonicalTarget);
+        current = await inspectRecoveryTarget(recovery.canonicalTarget, targetReadTokens);
       } catch (error) {
+        if (error instanceof TargetInstallationMissingError) {
+          accountInspectionSkips(summary, [recovery.canonicalTarget], error);
+          individuallySkipped += 1;
+          continue;
+        }
+        if (isThrottleInspectionError(error)) {
+          accountInspectionSkips(summary, [recovery.canonicalTarget], error);
+          individuallySkipped += 1;
+          consecutiveThrottles += 1;
+          if (consecutiveThrottles >= MAX_CONSECUTIVE_GITHUB_THROTTLES) {
+            const notInspectedTargets = recoveries
+              .slice(index + 1)
+              .map((candidate) => candidate.canonicalTarget);
+            accountInspectionSkips(
+              summary,
+              notInspectedTargets,
+              new Error(
+                "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
+              ),
+            );
+            individuallySkipped += notInspectedTargets.length;
+            break;
+          }
+          continue;
+        }
         recordAbortedInspectionSkips(summary, {
-          inspectedTargets: recoveries
-            .slice(0, index)
-            .map((candidate) => candidate.canonicalTarget),
+          inspectedTargets: revalidatedRecoveries.map((candidate) => candidate.canonicalTarget),
           failedTargets: [recovery.canonicalTarget],
           notInspectedTargets: recoveries
             .slice(index + 1)
             .map((candidate) => candidate.canonicalTarget),
           error,
         });
-        summary.skipped_targets += recoveries.length;
-        printResult(summary);
+        summary.skipped_targets += recoveries.length - individuallySkipped;
+        printReconcileResult(summary);
         return;
       }
+      consecutiveThrottles = 0;
       if (current.state !== "open" || current.node_id !== recovery.live.node_id) {
-        summary.skipped_targets += recoveries.length;
-        printResult(summary);
+        recordRecoveryRevalidationAbort(
+          summary,
+          revalidatedRecoveries,
+          recovery,
+          recoveries.slice(index + 1),
+          "closed_state_changed",
+          new Error("live target state or canonical identity changed during recovery recheck"),
+        );
+        summary.skipped_targets += recoveries.length - individuallySkipped;
+        printReconcileResult(summary);
         return;
       }
       if (
         recovery.primary.fresh_recovery.source_head_sha &&
         recovery.primary.fresh_recovery.source_head_sha !== current.head_sha
       ) {
-        summary.skipped_targets += recoveries.length;
-        printResult(summary);
+        recordRecoveryRevalidationAbort(
+          summary,
+          revalidatedRecoveries,
+          recovery,
+          recoveries.slice(index + 1),
+          "head_mismatch",
+          new Error("eligible dead-letter source head does not match the live pull-request head"),
+        );
+        summary.skipped_targets += recoveries.length - individuallySkipped;
+        printReconcileResult(summary);
         return;
       }
       if (current.canonical_target) {
@@ -672,19 +1126,36 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
         ];
       }
       recovery.currentHeadSha = current.head_sha || null;
+      revalidatedRecoveries.push(recovery);
+    }
+    if (!revalidatedRecoveries.length) {
+      printReconcileResult(summary);
+      return;
     }
     const finalPressure = await readQueuePressure(queueUrl);
     summary.queue_pressure = finalPressure.status;
     if (finalPressure.status !== "idle" || finalPressure.availableSlots < 1) {
-      summary.skipped_targets += recoveries.length;
+      summary.skipped_targets += revalidatedRecoveries.length;
       if (finalPressure.status !== "idle") {
-        recordSkipReasonCount(summary, "recovery_deferred_pressure", recoveries.length);
+        recordSkipReasonCount(summary, "recovery_deferred_pressure", revalidatedRecoveries.length);
+      } else {
+        recordClassifiedSkips(
+          summary,
+          revalidatedRecoveries.map((recovery) => recovery.canonicalTarget),
+          "recovery_capacity",
+          new Error("no queue recovery slot is available"),
+        );
       }
-      printResult(summary);
+      printReconcileResult(summary);
       return;
     }
-    const admitted = recoveries.slice(0, finalPressure.availableSlots);
-    summary.skipped_targets += recoveries.length - admitted.length;
+    const admitted = revalidatedRecoveries.slice(0, finalPressure.availableSlots);
+    accountClassifiedSkips(
+      summary,
+      revalidatedRecoveries.slice(admitted.length).map((recovery) => recovery.canonicalTarget),
+      "recovery_capacity",
+      new Error("no queue recovery slot is available"),
+    );
     const ids = admitted.map(({ primary }) => primary.dead_letter_id);
     if (args.execute) {
       const identity = admitted
@@ -714,16 +1185,29 @@ async function reconcileDeadLetters({ inventory, queueUrl, secret, args, progres
       const recovered = mutationSummary("recover-fresh", result);
       summary.recovered_targets += recovered.recovered + recovered.deduped;
       summary.resolved_rows += recovered.recovered + recovered.deduped;
-      summary.skipped_targets += recovered.skipped;
+      accountClassifiedSkips(
+        summary,
+        admitted.slice(0, recovered.skipped).map((recovery) => recovery.canonicalTarget),
+        "recovery_mutation_skipped",
+        new Error("recovery mutation skipped an admitted target"),
+        recovered.skipped,
+      );
     } else {
       summary.recovered_targets += ids.length;
       summary.resolved_rows += ids.length;
     }
   }
-  printResult(summary);
+  printReconcileResult(summary);
 }
 
-async function reconcileParkedReviews({ inventory, queueUrl, secret, args, deadlineAt }) {
+async function reconcileParkedReviews({
+  inventory,
+  queueUrl,
+  secret,
+  args,
+  deadlineAt,
+  targetReadTokens,
+}) {
   const pressure = parkedReconcileDeadlineReached(deadlineAt)
     ? { status: "unknown", availableSlots: 0 }
     : await readQueuePressure(queueUrl, deadlineAt);
@@ -766,7 +1250,11 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args, deadl
     summary.inspected_targets += 1;
     let target;
     try {
-      target = await inspectParkedReviewTarget(`${row.target_repo}#${row.item_number}`, deadlineAt);
+      target = await inspectParkedReviewTarget(
+        `${row.target_repo}#${row.item_number}`,
+        targetReadTokens,
+        deadlineAt,
+      );
     } catch (error) {
       if (parkedReconcileDeadlineReached(deadlineAt)) {
         stopForDeadline(selectedRows.length - index + terminal.length + recoverable.length);
@@ -803,7 +1291,11 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args, deadl
     }
     let current;
     try {
-      current = await inspectParkedReviewTarget(candidate.target.requested_target, deadlineAt);
+      current = await inspectParkedReviewTarget(
+        candidate.target.requested_target,
+        targetReadTokens,
+        deadlineAt,
+      );
     } catch (error) {
       if (parkedReconcileDeadlineReached(deadlineAt)) {
         stopForDeadline(terminal.length - index + recoverable.length);
@@ -855,7 +1347,11 @@ async function reconcileParkedReviews({ inventory, queueUrl, secret, args, deadl
       }
       let current;
       try {
-        current = await inspectParkedReviewTarget(candidate.target.requested_target, deadlineAt);
+        current = await inspectParkedReviewTarget(
+          candidate.target.requested_target,
+          targetReadTokens,
+          deadlineAt,
+        );
       } catch (error) {
         if (parkedReconcileDeadlineReached(deadlineAt)) {
           stopForDeadline(admitted.length + selectedRecoveries.length - index);
@@ -1027,9 +1523,13 @@ function operatorRequestSignal(deadlineAt = Number.POSITIVE_INFINITY) {
   return AbortSignal.timeout(Math.min(OPERATOR_REQUEST_TIMEOUT_MS, remaining));
 }
 
-async function inspectParkedReviewTarget(target, deadlineAt = Number.POSITIVE_INFINITY) {
+async function inspectParkedReviewTarget(
+  target,
+  targetReadTokens,
+  deadlineAt = Number.POSITIVE_INFINITY,
+) {
   const apiUrl = String(process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
-  const token = String(process.env.GITHUB_TOKEN || "");
+  const token = await targetReadTokens.tokenFor(target);
   const match = /^([^/]+)\/([^#]+)#([1-9]\d*)$/.exec(target);
   if (!match) throw new Error(`invalid parked review target: ${target}`);
   const [, owner, repo, number] = match;
@@ -1058,7 +1558,10 @@ async function inspectParkedReviewTarget(target, deadlineAt = Number.POSITIVE_IN
     throw new Error(`parked review target is missing from an existing repository: ${target}`);
   }
   if (!response.ok) {
-    throw new Error(`parked review target check failed for ${target} with ${response.status}`);
+    throw await githubInspectionHttpError(
+      response,
+      `parked review target check failed for ${target} with ${response.status}`,
+    );
   }
   const item = await response.json();
   if (
@@ -1113,6 +1616,7 @@ async function reconcileResolve({
   openIds,
   canonicalTarget,
   aliases = [],
+  outcome,
 }) {
   if (!execute) {
     for (const row of rows) openIds?.delete(row.dead_letter_id);
@@ -1125,6 +1629,7 @@ async function reconcileResolve({
     payload: {
       ids: rows.map((row) => row.dead_letter_id),
       note,
+      ...(outcome ? { resolution_outcome: outcome } : {}),
       resolution_aliases: rows.map((row) => ({
         id: row.dead_letter_id,
         aliases: [
@@ -1153,6 +1658,89 @@ async function reconcileResolve({
   }
   for (const row of rows) openIds?.delete(row.dead_letter_id);
   return summary;
+}
+
+async function inspectCanonicalSupersessionEvidence({ queueUrl, secret, target, liveHeadSha }) {
+  const match = /^([^/]+)\/([^#]+)#([1-9]\d*)$/.exec(target);
+  if (!match || !/^[0-9a-f]{40}$/.test(String(liveHeadSha || ""))) {
+    return {
+      proven: false,
+      reason: "canonical target or live pull-request head is invalid",
+    };
+  }
+  const [, owner, repo, number] = match;
+  const repoSlug = `${owner}-${repo}`.toLowerCase();
+  const source = `/internal/state/records/${repoSlug}/items/${number}`;
+  let response;
+  try {
+    response = await signedGet({ queueUrl, secret, path: source });
+  } catch {
+    return {
+      proven: false,
+      reason: "canonical completed review record lookup was unavailable",
+    };
+  }
+  if (response.status === 404) {
+    await response.body?.cancel().catch(() => {});
+    return {
+      proven: false,
+      reason: "canonical completed review record was not found for the live pull-request head",
+    };
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    return {
+      proven: false,
+      reason: `canonical completed review record lookup returned ${response.status}`,
+    };
+  }
+  let envelope;
+  try {
+    envelope = await response.json();
+  } catch {
+    return { proven: false, reason: "canonical completed review record returned invalid JSON" };
+  }
+  const content = typeof envelope?.content === "string" ? envelope.content : "";
+  const digest = String(envelope?.digest || "").toLowerCase();
+  const revision = Number(envelope?.revision);
+  if (
+    !content ||
+    !/^[0-9a-f]{64}$/.test(digest) ||
+    createHash("sha256").update(content).digest("hex") !== digest ||
+    !Number.isSafeInteger(revision) ||
+    revision < 1
+  ) {
+    return { proven: false, reason: "canonical completed review record envelope is invalid" };
+  }
+  const frontMatter = canonicalRecordFrontMatter(content);
+  const expectedRepository = `${owner}/${repo}`.toLowerCase();
+  if (
+    !frontMatter ||
+    String(frontMatter.get("repository") || "").toLowerCase() !== expectedRepository ||
+    frontMatter.get("number") !== number ||
+    frontMatter.get("type") !== "pull_request" ||
+    frontMatter.get("review_status") !== "complete" ||
+    String(frontMatter.get("pull_head_sha") || "").toLowerCase() !== liveHeadSha
+  ) {
+    return {
+      proven: false,
+      reason: "canonical completed review record does not prove the live pull-request head",
+    };
+  }
+  return { proven: true, source };
+}
+
+function canonicalRecordFrontMatter(markdown) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(markdown);
+  if (!match) return null;
+  const fields = new Map();
+  for (const line of match[1].split(/\r?\n/)) {
+    const field = /^([a-z][a-z0-9_]*):[ \t]*(.*)$/.exec(line);
+    if (!field) continue;
+    if (fields.has(field[1])) return null;
+    fields.set(field[1], field[2].trim());
+  }
+  return fields;
 }
 
 function deadLetterInventoryFingerprint(ids) {
@@ -1223,33 +1811,103 @@ async function loadInventory(options) {
   };
 }
 
-async function inspectCanonicalTargets(groups, maxTargets) {
+async function inspectCanonicalTargets(groups, maxTargets, targetReadTokens) {
   const identities = new Map();
+  const failedTargets = [];
+  let consecutiveThrottles = 0;
+  const countedSetupThrottles = new WeakSet();
+  const throttleFuseReached = (error) => {
+    if (error instanceof TargetAppSetupThrottleError) {
+      if (countedSetupThrottles.has(error)) return false;
+      countedSetupThrottles.add(error);
+    }
+    consecutiveThrottles += 1;
+    return consecutiveThrottles >= MAX_CONSECUTIVE_GITHUB_THROTTLES;
+  };
   if (groups.length <= Math.min(maxTargets, MAX_RECONCILE_RECOVERIES)) {
     const inspectedTargets = [];
     for (const [index, group] of groups.entries()) {
       try {
         identities.set(
           normalizeRecoveryTargetKey(group.target),
-          await inspectRecoveryTarget(group.target),
+          await inspectRecoveryTarget(group.target, targetReadTokens),
         );
         inspectedTargets.push(group.target);
+        consecutiveThrottles = 0;
       } catch (error) {
+        if (error instanceof TargetInstallationMissingError) {
+          failedTargets.push({ target: group.target, error });
+          continue;
+        }
+        if (isThrottleInspectionError(error)) {
+          failedTargets.push({ target: group.target, error });
+          if (throttleFuseReached(error)) {
+            return {
+              identities,
+              failedTargets,
+              notInspectedTargets: groups.slice(index + 1).map((candidate) => candidate.target),
+            };
+          }
+          continue;
+        }
         throw new CanonicalTargetInspectionError(error, {
           inspectedTargets,
+          classifiedFailures: failedTargets,
           failedTargets: [group.target],
           notInspectedTargets: groups.slice(index + 1).map((candidate) => candidate.target),
         });
       }
     }
-    return identities;
+    return { identities, failedTargets, notInspectedTargets: [] };
   }
 
   const apiUrl = String(process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
-  const token = String(process.env.GITHUB_TOKEN || "");
-  if (!token) throw new Error("GITHUB_TOKEN is required for canonical target discovery");
-  for (let offset = 0; offset < groups.length; offset += GRAPHQL_IDENTITY_BATCH_SIZE) {
-    const selected = groups.slice(offset, offset + GRAPHQL_IDENTITY_BATCH_SIZE);
+  const inspectedTargets = [];
+  const groupsByOwner = new Map();
+  for (const group of groups) {
+    const { owner } = parseTargetRepository(group.target);
+    const ownerGroups = groupsByOwner.get(owner.toLowerCase()) ?? [];
+    ownerGroups.push(group);
+    groupsByOwner.set(owner.toLowerCase(), ownerGroups);
+  }
+  const batches = [...groupsByOwner.values()].flatMap((ownerGroups) => {
+    const ownerBatches = [];
+    for (let offset = 0; offset < ownerGroups.length; offset += GRAPHQL_IDENTITY_BATCH_SIZE) {
+      ownerBatches.push(ownerGroups.slice(offset, offset + GRAPHQL_IDENTITY_BATCH_SIZE));
+    }
+    return ownerBatches;
+  });
+  for (const [batchIndex, selected] of batches.entries()) {
+    const remainingTargets = batches
+      .slice(batchIndex + 1)
+      .flat()
+      .map((candidate) => candidate.target);
+    let token;
+    try {
+      token = await targetReadTokens.tokenFor(selected[0].target);
+    } catch (error) {
+      if (error instanceof TargetInstallationMissingError) {
+        for (const group of selected) failedTargets.push({ target: group.target, error });
+        continue;
+      }
+      if (isThrottleInspectionError(error)) {
+        for (const group of selected) failedTargets.push({ target: group.target, error });
+        if (throttleFuseReached(error)) {
+          return {
+            identities,
+            failedTargets,
+            notInspectedTargets: remainingTargets,
+          };
+        }
+        continue;
+      }
+      throw new CanonicalTargetInspectionError(error, {
+        inspectedTargets,
+        classifiedFailures: failedTargets,
+        failedTargets: selected.map((group) => group.target),
+        notInspectedTargets: remainingTargets,
+      });
+    }
     const fields = selected.map(({ target }, index) => {
       const match = /^([^/]+)\/([^#]+)#([1-9]\d*)$/.exec(target);
       if (!match) throw new Error(`invalid fresh recovery target: ${target}`);
@@ -1267,10 +1925,41 @@ async function inspectCanonicalTargets(groups, maxTargets) {
       body: JSON.stringify({ query: `query{${fields.join(" ")}}` }),
       signal: AbortSignal.timeout(20_000),
     });
-    if (!response.ok) throw new Error(`canonical target discovery failed (${response.status})`);
+    if (!response.ok) {
+      const error = await githubInspectionHttpError(
+        response,
+        `canonical target discovery failed (${response.status})`,
+      );
+      if (isThrottleInspectionError(error)) {
+        for (const group of selected) failedTargets.push({ target: group.target, error });
+        if (throttleFuseReached(error)) {
+          return {
+            identities,
+            failedTargets,
+            notInspectedTargets: remainingTargets,
+          };
+        }
+        continue;
+      }
+      throw new CanonicalTargetInspectionError(error, {
+        inspectedTargets,
+        classifiedFailures: failedTargets,
+        failedTargets: selected.map((group) => group.target),
+        notInspectedTargets: remainingTargets,
+      });
+    }
+    consecutiveThrottles = 0;
     const result = await response.json();
     if (!result || !result.data || (Array.isArray(result.errors) && result.errors.length)) {
-      throw new Error("canonical target discovery returned incomplete GitHub identities");
+      throw new CanonicalTargetInspectionError(
+        new Error("canonical target discovery returned incomplete GitHub identities"),
+        {
+          inspectedTargets,
+          classifiedFailures: failedTargets,
+          failedTargets: selected.map((group) => group.target),
+          notInspectedTargets: remainingTargets,
+        },
+      );
     }
     for (const [index, group] of selected.entries()) {
       const item = result.data[`target${index}`]?.item;
@@ -1289,15 +1978,22 @@ async function inspectCanonicalTargets(groups, maxTargets) {
           ? { head_sha: item.headRefOid.toLowerCase() }
           : {}),
       });
+      inspectedTargets.push(group.target);
     }
   }
-  return identities;
+  return { identities, failedTargets, notInspectedTargets: [] };
 }
 
 function normalizeRecoveryTargetKey(target) {
   const match = /^([^/]+)\/([^#]+)#([1-9]\d*)$/.exec(target);
   if (!match) return target;
   return `${match[1].toLowerCase()}/${match[2].toLowerCase()}#${match[3]}`;
+}
+
+function parseTargetRepository(target) {
+  const match = /^([^/]+)\/([^#]+)(?:#[1-9]\d*)?$/.exec(String(target));
+  if (!match) throw new Error(`invalid GitHub target repository: ${target}`);
+  return { owner: match[1], repo: match[2] };
 }
 
 function sanitizeRow(row) {
@@ -1350,11 +2046,38 @@ function countBy(rows, keyFor) {
   );
 }
 
+function selectedRecoveryTargets(groups) {
+  return [...groups.values()].map((group) => group.target);
+}
+
+function selectedInspectedRecoveryTargets(groups, identities) {
+  return [...groups.values()]
+    .filter((group) => identities.has(normalizeRecoveryTargetKey(group.target)))
+    .map((group) => group.target);
+}
+
+function accountClassifiedSkips(summary, targets, reasonClass, reason, count = targets.length) {
+  if (count < 1) return;
+  summary.skipped_targets += count;
+  recordClassifiedSkips(summary, targets, reasonClass, reason, count);
+}
+
+function accountInspectionSkips(summary, targets, error) {
+  if (targets.length === 0) return;
+  summary.skipped_targets += targets.length;
+  recordInspectionSkips(summary, targets, error);
+}
+
 function recordInspectionSkips(summary, targets, error) {
   if (targets.length === 0) return;
+  const reasonClass = classifyOperatorSkipReason(error);
+  recordClassifiedSkips(summary, targets, reasonClass, error);
+}
+
+function recordClassifiedSkips(summary, targets, reasonClass, error, count = targets.length) {
+  recordSkipReasonCount(summary, reasonClass, count);
+  if (error === undefined) return;
   const reason = sanitizeSkipReason(error);
-  const reasonClass = classifySkipReason(reason);
-  recordSkipReasonCount(summary, reasonClass, targets.length);
   for (const target of targets) {
     if (summary.skip_samples.length >= MAX_SKIP_SAMPLES) break;
     summary.skip_samples.push({ target: normalizeRecoveryTargetKey(target), reason });
@@ -1364,6 +2087,26 @@ function recordInspectionSkips(summary, targets, error) {
 function recordSkipReasonCount(summary, reasonClass, count) {
   if (count < 1) return;
   summary.skip_reasons[reasonClass] = (summary.skip_reasons[reasonClass] || 0) + count;
+}
+
+function isThrottleInspectionError(error) {
+  if (isGitHubThrottleFailure(error)) return true;
+  return (
+    error instanceof GitHubInspectionHttpError &&
+    error.status === 403 &&
+    (Boolean(error.retryAfter) || error.rateLimitRemaining === "0")
+  );
+}
+
+async function githubInspectionHttpError(response, context) {
+  let detail = "";
+  try {
+    const body = await response.json();
+    detail = String(body?.message || body?.error || "").trim();
+  } catch {
+    // The HTTP status and headers still preserve the fail-closed classification.
+  }
+  return new GitHubInspectionHttpError(`${context}${detail ? `: ${detail}` : ""}`, response);
 }
 
 function recordAbortedInspectionSkips(
@@ -1387,6 +2130,31 @@ function recordAbortedInspectionSkips(
   );
 }
 
+function recordRecoveryRevalidationAbort(
+  summary,
+  inspectedRecoveries,
+  failedRecovery,
+  notInspectedRecoveries,
+  reasonClass,
+  error,
+) {
+  recordInspectionSkips(
+    summary,
+    inspectedRecoveries.map((recovery) => recovery.canonicalTarget),
+    new Error(
+      "canonical target was inspected but reconciliation aborted after another target inspection failed",
+    ),
+  );
+  recordClassifiedSkips(summary, [failedRecovery.canonicalTarget], reasonClass, error);
+  recordInspectionSkips(
+    summary,
+    notInspectedRecoveries.map((recovery) => recovery.canonicalTarget),
+    new Error(
+      "canonical target was not inspected because canonical discovery aborted after another target inspection failed",
+    ),
+  );
+}
+
 function sanitizeSkipReason(error) {
   const raw = error instanceof Error ? error.message : String(error);
   const redacted = raw
@@ -1402,33 +2170,6 @@ function sanitizeSkipReason(error) {
     .replace(/\s+/g, " ")
     .trim();
   return (sanitized || "unknown inspection failure").slice(0, MAX_SKIP_REASON_LENGTH);
-}
-
-function classifySkipReason(reason) {
-  const normalized = reason.toLowerCase();
-  if (normalized.includes("not inspected because canonical discovery aborted")) {
-    return "not_inspected_abort";
-  }
-  if (normalized.includes("inspected but reconciliation aborted")) {
-    return "inspected_before_abort";
-  }
-  if (normalized.includes("missing from an existing repository")) {
-    return "missing_from_existing_repository";
-  }
-  if (
-    normalized.includes("invalid identity") ||
-    normalized.includes("invalid canonical identity")
-  ) {
-    return "invalid_identity";
-  }
-  if (/\b(timeout|timed out|aborterror|timeouterror)\b/.test(normalized)) return "timeout";
-  const status = /(?:\bwith|\breturned|\()\s*([1-5]\d{2})\)?\b/.exec(normalized)?.[1];
-  if (status === "403") return "http_403";
-  if (status === "429") return "http_429";
-  if (status?.startsWith("5")) return "http_5xx";
-  if (status?.startsWith("4")) return "http_4xx";
-  if (status?.startsWith("3")) return "http_3xx";
-  return "other";
 }
 
 async function signedPost({
@@ -1461,10 +2202,19 @@ async function signedPost({
   return result;
 }
 
-async function assertOpenRecoveryTargets(targets) {
+function signedGet({ queueUrl, secret, path }) {
+  const signature = `sha256=${createHmac("sha256", secret).update("").digest("hex")}`;
+  return fetch(`${queueUrl}${path}`, {
+    method: "GET",
+    headers: { "x-clawsweeper-exact-review-signature": signature },
+    signal: operatorRequestSignal(),
+  });
+}
+
+async function assertOpenRecoveryTargets(targets, targetReadTokens) {
   const canonicalTargetIds = [];
   for (const target of targets) {
-    const item = await inspectRecoveryTarget(target);
+    const item = await inspectRecoveryTarget(target, targetReadTokens);
     if (item?.state !== "open") {
       throw new Error(`fresh recovery target is not open: ${target}`);
     }
@@ -1476,9 +2226,9 @@ async function assertOpenRecoveryTargets(targets) {
   return canonicalTargetIds;
 }
 
-async function inspectRecoveryTarget(target) {
+async function inspectRecoveryTarget(target, targetReadTokens) {
   const apiUrl = String(process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
-  const token = String(process.env.GITHUB_TOKEN || "");
+  const token = await targetReadTokens.tokenFor(target);
   const match = /^([^/]+)\/([^#]+)#([1-9]\d*)$/.exec(target);
   if (!match) throw new Error(`invalid fresh recovery target: ${target}`);
   const [, owner, repo, number] = match;
@@ -1493,7 +2243,12 @@ async function inspectRecoveryTarget(target) {
       signal: AbortSignal.timeout(20_000),
     },
   );
-  if (!response.ok) throw new Error(`live target check failed for ${target} (${response.status})`);
+  if (!response.ok) {
+    throw await githubInspectionHttpError(
+      response,
+      `live target check failed for ${target} (${response.status})`,
+    );
+  }
   let item;
   try {
     item = await response.json();
@@ -1520,7 +2275,12 @@ async function inspectRecoveryTarget(target) {
       signal: AbortSignal.timeout(20_000),
     },
   );
-  if (!pullResponse.ok) throw new Error(`live pull-request check failed for ${target}`);
+  if (!pullResponse.ok) {
+    throw await githubInspectionHttpError(
+      pullResponse,
+      `live pull-request check failed for ${target} (${pullResponse.status})`,
+    );
+  }
   const pull = await pullResponse.json();
   const headSha = String(pull?.head?.sha || "").toLowerCase();
   if (pull?.node_id !== item.node_id || !/^[0-9a-f]{40}$/.test(headSha)) {
@@ -1565,6 +2325,23 @@ function requiredCount(result, key) {
 
 function printResult(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+function printReconcileResult(summary) {
+  const accountedSkips = Object.values(summary.skip_reasons).reduce(
+    (total, count) => total + count,
+    0,
+  );
+  if (accountedSkips !== summary.skipped_targets) {
+    process.stderr.write(
+      `${JSON.stringify({
+        event: "reconcile_skip_accounting_inconsistent",
+        skipped_targets: summary.skipped_targets,
+        accounted_skips: accountedSkips,
+      })}\n`,
+    );
+  }
+  printResult(summary);
 }
 
 main(process.argv.slice(2)).catch((error) => {

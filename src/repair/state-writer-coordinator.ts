@@ -115,8 +115,8 @@ export function acquireStateWriterCoordinator(
     } catch (error) {
       ambiguousRequestFailures += 1;
       if (ambiguousRequestFailures >= COORDINATOR_AMBIGUOUS_REQUEST_LIMIT) {
-        throw new Error(
-          `state writer coordinator acquire could not recover its durable ticket: ${errorMessage(error)}`,
+        throwUnrecoverableCoordinatorAcquire(
+          sanitizedCoordinatorRequestError(error, config.secret),
         );
       }
       // Re-read the same ticket identity. The prior request may have committed
@@ -214,6 +214,21 @@ function coordinatorConfig(env: NodeJS.ProcessEnv) {
     throw new Error("state writer coordinator secret is required when coordinator mode is enabled");
   }
   return { queueUrl, secret };
+}
+
+function sanitizedCoordinatorRequestError(error: unknown, secret: string): Error {
+  return new Error(
+    errorMessage(error)
+      .replaceAll(secret, "[REDACTED]")
+      .replace(/\bsha256=[a-f0-9]{64}\b/gi, "sha256=[REDACTED]"),
+  );
+}
+
+function throwUnrecoverableCoordinatorAcquire(error: Error): never {
+  throw new Error(
+    `state writer coordinator acquire could not recover its durable ticket: ${error.message}`,
+    { cause: error },
+  );
 }
 
 function signedCoordinatorRequest(config: { queueUrl: string; secret: string }) {

@@ -46,6 +46,7 @@ jobs:
     environment: exact-review-operator
     env:
       EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+      CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -66,6 +67,8 @@ jobs:
           IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}
           NOTE: ${{ inputs.note }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}
+          CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          EXACT_REVIEW_TARGET_TOKEN_MODE: github-app
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail

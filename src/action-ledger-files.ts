@@ -199,6 +199,7 @@ function writeUtf8FileExclusiveNoFollowWithIdentity(
         removeFileNoFollow(target, createdIdentity);
       } catch (cleanupError) {
         if (!isNotFoundError(cleanupError)) {
+          // oxlint-disable-next-line preserve-caught-error -- AggregateError retains both failures.
           throw new AggregateError(
             [error, cleanupError],
             `failed to clean up ${target.label} after lock creation failure`,
@@ -239,6 +240,7 @@ export function tryAcquireUtf8FileLockNoFollow(
         try {
           published = pathMatchesFileIdentity(target.path, identity, target.label);
         } catch (identityError) {
+          // oxlint-disable-next-line preserve-caught-error -- AggregateError retains both failures.
           throw new AggregateError(
             [error, identityError],
             `failed to determine whether ${target.label} lock was published`,

@@ -13,6 +13,11 @@ import type {
   ItemContext,
   ReviewStartStatusCommentOptions,
 } from "./clawsweeper-types.js";
+import {
+  generationReadKey,
+  type LiveReadGeneration,
+  type LiveReadOptions,
+} from "./live-read-generation.js";
 import { normalizeRepo } from "./repository-profiles.js";
 import { trailingHtmlComments } from "./review-comment-markers.js";
 import { neutralizeReviewControlMarkers } from "./review-history.js";
@@ -233,6 +238,7 @@ export function createReviewCommentState(
   function issueReviewCommentState(
     number: number,
     fallbackBodies: readonly string[] = [],
+    options: LiveReadOptions & { liveReadGeneration?: LiveReadGeneration } = {},
   ): {
     comments: Record<string, unknown>[];
     reviewComment: Record<string, unknown> | undefined;
@@ -241,7 +247,16 @@ export function createReviewCommentState(
     dedicatedLeaseComment: Record<string, unknown> | undefined;
     dedicatedLeaseComments: Record<string, unknown>[];
   } {
-    const comments = fetchIssueReviewComments(number);
+    const commentsPath = `repos/${targetRepo()}/issues/${number}/comments`;
+    const comments = options.liveReadGeneration
+      ? options.liveReadGeneration
+          .read(
+            generationReadKey("paged", [commentsPath]),
+            () => ghPaged<unknown>(commentsPath),
+            options,
+          )
+          .map(asRecord)
+      : fetchIssueReviewComments(number);
     const reviewComment = selectIssueReviewComment(number, comments, fallbackBodies);
     const dedicatedLeaseComments = selectDedicatedReviewStartLeaseComments(number, comments);
     const dedicatedLeaseComment = selectDedicatedReviewStartLeaseComment(number, comments);

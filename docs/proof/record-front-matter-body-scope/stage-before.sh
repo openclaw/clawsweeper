@@ -10,7 +10,7 @@ set -euo pipefail
 
 PROOF_DIR="docs/proof/record-front-matter-body-scope"
 SOURCE="src/clawsweeper-record-metadata.ts"
-BASE="${PROOF_BASE:-$(git merge-base HEAD main 2>/dev/null || git merge-base HEAD origin/main)}"
+BASE="${PROOF_BASE:-$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main)}"
 
 mkdir -p "$PROOF_DIR/before"
 git show "$BASE:$SOURCE" >"$PROOF_DIR/before/record-metadata-before.ts"

@@ -53,7 +53,7 @@ function fixture(): string {
     "docs/README.md": "# Documentation Home\n",
     "docs/API_(legacy).md": "# Legacy API\n",
     "docs/live-dashboard.md":
-      "# Dashboard\n\nqueued runs from 30 through 1440 minutes old degrade operational health. queued runs older than 1440 minutes are reported separately as zombies. in-progress runs become stalled after 150 minutes. `zombie_queued_runs` `oldest_zombie_queued_minutes` `approval_gated_runs` `oldest_approval_gated_minutes`\n",
+      "# Dashboard\n\nqueued runs from 30 through 1440 minutes old degrade operational health. queued runs older than 1440 minutes are reported separately as zombies. pre-queue pending reruns older than 60 minutes are reported separately as wedged. in-progress runs become stalled after 150 minutes. `zombie_queued_runs` `oldest_zombie_queued_minutes` `wedged_rerun_runs` `oldest_wedged_rerun_minutes` `approval_gated_runs` `oldest_approval_gated_minutes`\n",
     "docs/public-api.md": "# Public API\n",
     "docs/operator-configuration.md": "# Operator configuration\n",
     "scripts/example.mjs": "export {};\n",
@@ -61,11 +61,14 @@ function fixture(): string {
     "dashboard/wrangler.toml": 'CAPACITY = "50"\n',
     "dashboard/operational-health.ts": [
       "export const OPERATIONAL_QUEUE_DEGRADED_MS = 30 * 60 * 1000;",
+      "export const OPERATIONAL_WEDGED_RERUN_MS = 60 * 60 * 1000;",
       "export const OPERATIONAL_QUEUE_ZOMBIE_MS = 24 * 60 * 60 * 1000;",
       "export const OPERATIONAL_RUNNING_STALLED_MS = 150 * 60 * 1000;",
       "export type OperationalHealth = {",
       "  zombie_queued_runs: number;",
       "  oldest_zombie_queued_minutes: number;",
+      "  wedged_rerun_runs: number;",
+      "  oldest_wedged_rerun_minutes: number;",
       "  approval_gated_runs: number;",
       "  oldest_approval_gated_minutes: number;",
       "};",

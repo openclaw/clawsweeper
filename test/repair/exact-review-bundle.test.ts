@@ -16,11 +16,14 @@ function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-exact-review-"));
   const report = path.join(root, "42.md");
   const ledgerRoot = path.join(root, "ledger-root");
+  const liveProofDir = path.join(root, "live-proof");
   const ledger = path.join(
     ledgerRoot,
     "ledger/v1/events/2026/07/15/openclaw/openclaw/events.jsonl",
   );
   fs.writeFileSync(report, "# Review\n\nVerified.\n");
+  fs.mkdirSync(liveProofDir);
+  fs.writeFileSync(path.join(liveProofDir, "live-verification.json"), '{"schema_version":1}\n');
   fs.mkdirSync(path.dirname(ledger), { recursive: true });
   fs.writeFileSync(ledger, '{"schema_version":1}\n');
   const context: ExactReviewBundleContext = {
@@ -50,7 +53,7 @@ function fixture() {
     liveTerminalMissing: false,
     liveGuardedOpen: false,
   };
-  return { root, report, ledgerRoot, bundleDir: path.join(root, "bundle"), context };
+  return { root, report, ledgerRoot, liveProofDir, bundleDir: path.join(root, "bundle"), context };
 }
 
 test("exact review bundle binds immutable workflow and queue context", () => {
@@ -59,6 +62,7 @@ test("exact review bundle binds immutable workflow and queue context", () => {
     bundleDir: value.bundleDir,
     reviewPath: value.report,
     actionLedgerRoot: value.ledgerRoot,
+    liveProofDir: value.liveProofDir,
     createdAt: "2026-07-15T12:00:00Z",
     context: value.context,
   });
@@ -68,7 +72,11 @@ test("exact review bundle binds immutable workflow and queue context", () => {
   assert.equal(validated.review.artifact_present, true);
   assert.deepEqual(
     validated.files.map((file) => file.path),
-    ["action-ledger/ledger/v1/events/2026/07/15/openclaw/openclaw/events.jsonl", "review/42.md"],
+    [
+      "action-ledger/ledger/v1/events/2026/07/15/openclaw/openclaw/events.jsonl",
+      "live-proof/42/live-verification.json",
+      "review/42.md",
+    ],
   );
 });
 

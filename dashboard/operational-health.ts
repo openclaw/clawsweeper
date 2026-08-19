@@ -1,8 +1,15 @@
 export const OPERATIONAL_QUEUE_DEGRADED_MS = 30 * 60 * 1000;
+export const OPERATIONAL_WEDGED_RERUN_MS = 60 * 60 * 1000;
 export const OPERATIONAL_QUEUE_ZOMBIE_MS = 24 * 60 * 60 * 1000;
 export const OPERATIONAL_RUNNING_STALLED_MS = 150 * 60 * 1000;
 export const HEALTH_HISTORY_SAMPLE_MS = 5 * 60 * 1000;
 export const HEALTH_HISTORY_RETENTION_DAYS = 7;
+const HEALTH_HISTORY_MAX_COUNT = 10_000_000;
+const HEALTH_HISTORY_MAX_TOTAL = 1_000_000_000_000;
+const HEALTH_HISTORY_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+const HEALTH_HISTORY_TIMESTAMP_MIN_MS = Date.UTC(2020, 0, 1);
+const HEALTH_HISTORY_TIMESTAMP_MAX_MS = Date.UTC(2100, 0, 1);
 
 // "waiting" runs sit behind a deployment approval gate: a human decision, not
 // runner congestion. A forgotten approval would otherwise pin
@@ -15,6 +22,7 @@ type WorkflowRun = {
   status?: string;
   created_at?: string;
   run_started_at?: string;
+  run_attempt?: number;
 };
 
 export type OperationalHealth = {
@@ -27,6 +35,8 @@ export type OperationalHealth = {
   oldest_queued_minutes: number;
   zombie_queued_runs: number;
   oldest_zombie_queued_minutes: number;
+  wedged_rerun_runs: number;
+  oldest_wedged_rerun_minutes: number;
   approval_gated_runs: number;
   oldest_approval_gated_minutes: number;
   running_runs: number;
@@ -73,14 +83,14 @@ export type ExactReviewLaneHistorySample = {
 export type StateWriterHistorySample = {
   collection_ok: boolean;
   terminal_collection_ok?: boolean;
-  mode?: "single_item" | "batch" | "mixed" | "unknown";
-  tracked_holding?: number;
-  tracked_waiting?: number;
-  tracked_releasing?: number;
-  accepted_operations_total?: number;
-  state_commits_total?: number;
-  materialized_items_total?: number;
-  contention_timeouts_total?: number;
+  mode?: "single_item" | "batch" | "mixed" | "unknown" | undefined;
+  tracked_holding?: number | undefined;
+  tracked_waiting?: number | undefined;
+  tracked_releasing?: number | undefined;
+  accepted_operations_total?: number | undefined;
+  state_commits_total?: number | undefined;
+  materialized_items_total?: number | undefined;
+  contention_timeouts_total?: number | undefined;
   wait_ms?: { p50: number | null; p95: number | null; samples: number };
   hold_ms?: { p50: number | null; p95: number | null; samples: number };
   last_successful_materialization_at?: string | null;
@@ -98,20 +108,48 @@ export function summarizeOperationalHealth(
     APPROVAL_GATED_STATUSES.has(String(run.status || "")),
   );
   const runningRuns = runs.filter((run) => run.status === "in_progress");
-  const queuedAges = queuedRuns.map((run) => ageMs(run.created_at, now));
+  const queuedAgeRecords = queuedRuns.map((run) => ({
+    run,
+    age: ageMs(run.created_at, now),
+  }));
   const runningAges = runningRuns
     // GitHub exposes queue admission and execution start separately. Falling
     // back keeps older payloads observable without charging queue time when
     // the authoritative execution timestamp is present.
     .map((run) => ageMs(run.run_started_at || run.created_at, now));
-  const validQueuedAges = queuedAges.filter((age): age is number => age !== null);
+  const validQueuedAgeRecords = queuedAgeRecords.filter(
+    (record): record is { run: WorkflowRun; age: number } => record.age !== null,
+  );
+  const validQueuedAges = validQueuedAgeRecords.map((record) => record.age);
+  // Pre-queue reruns normally leave pending within seconds. After an hour,
+  // GitHub cannot cancel or rerun them, so they are not live queue pressure.
+  const wedgedRerunAges = validQueuedAgeRecords
+    .filter(
+      ({ run, age }) =>
+        run.status === "pending" &&
+        Number(run.run_attempt) > 1 &&
+        age > OPERATIONAL_WEDGED_RERUN_MS,
+    )
+    .map(({ age }) => age);
+  const liveQueuedAgeRecords = validQueuedAgeRecords.filter(
+    ({ run, age }) =>
+      !(
+        run.status === "pending" &&
+        Number(run.run_attempt) > 1 &&
+        age > OPERATIONAL_WEDGED_RERUN_MS
+      ),
+  );
   // Normal queue waits are measured in minutes. Seventeen production runs are
   // stranded past 24 hours (three from Jul 13/17 and fourteen from one Aug 7
   // incident), and both cancel and force-cancel return HTTP 500 for every one.
   // Excluding those unremediable zombies is the only way to keep live queue
   // pressure observable without pinning operational health indefinitely.
-  const zombieQueuedAges = validQueuedAges.filter((age) => age > OPERATIONAL_QUEUE_ZOMBIE_MS);
-  const liveQueuedAges = validQueuedAges.filter((age) => age <= OPERATIONAL_QUEUE_ZOMBIE_MS);
+  const zombieQueuedAges = liveQueuedAgeRecords
+    .filter(({ age }) => age > OPERATIONAL_QUEUE_ZOMBIE_MS)
+    .map(({ age }) => age);
+  const liveQueuedAges = liveQueuedAgeRecords
+    .filter(({ age }) => age <= OPERATIONAL_QUEUE_ZOMBIE_MS)
+    .map(({ age }) => age);
   const validRunningAges = runningAges.filter((age): age is number => age !== null);
   const hasCompleteAges =
     validQueuedAges.length === queuedRuns.length && validRunningAges.length === runningRuns.length;
@@ -139,6 +177,8 @@ export function summarizeOperationalHealth(
     oldest_queued_minutes: oldestMinutes(liveQueuedAges),
     zombie_queued_runs: zombieQueuedAges.length,
     oldest_zombie_queued_minutes: oldestMinutes(zombieQueuedAges),
+    wedged_rerun_runs: wedgedRerunAges.length,
+    oldest_wedged_rerun_minutes: oldestMinutes(wedgedRerunAges),
     approval_gated_runs: approvalGatedRuns.length,
     oldest_approval_gated_minutes: oldestMinutes(
       approvalGatedRuns
@@ -155,8 +195,8 @@ export function summarizeOperationalHealth(
 export function normalizeHealthHistorySample(value: unknown): HealthHistorySample | null {
   if (!value || typeof value !== "object") return null;
   const sample = value as Record<string, unknown>;
-  const at = String(sample.at || "");
-  if (!Number.isFinite(Date.parse(at))) return null;
+  const at = canonicalHistoryTimestamp(sample.at);
+  if (!at) return null;
   const countFields = [
     "queued",
     "queued_over_30m",
@@ -235,9 +275,7 @@ export function stateWriterHistorySample(value: unknown): StateWriterHistorySamp
     wait_ms: historyPercentiles(window.wait_ms),
     hold_ms: historyPercentiles(window.hold_ms),
     last_successful_materialization_at:
-      typeof writer.last_successful_materialization_at === "string"
-        ? writer.last_successful_materialization_at
-        : null,
+      canonicalHistoryTimestamp(writer.last_successful_materialization_at) ?? null,
   };
 }
 
@@ -329,21 +367,24 @@ function normalizeStateWriterHistorySample(value: unknown): StateWriterHistorySa
     integerFields.map((field) => [field, optionalNonNegativeInteger(sample[field])]),
   ) as Record<(typeof integerFields)[number], number | undefined | null>;
   if (!mode || Object.values(values).some((entry) => entry === null)) return null;
+  const validValues = values as Record<(typeof integerFields)[number], number | undefined>;
   const wait = normalizeHistoryPercentiles(sample.wait_ms);
   const hold = normalizeHistoryPercentiles(sample.hold_ms);
   if (!wait || !hold) return null;
   const lastSuccessfulMaterialization =
     sample.last_successful_materialization_at === null ||
-    (typeof sample.last_successful_materialization_at === "string" &&
-      Number.isFinite(Date.parse(sample.last_successful_materialization_at)))
-      ? (sample.last_successful_materialization_at as string | null)
-      : null;
+    sample.last_successful_materialization_at === undefined
+      ? null
+      : canonicalHistoryTimestamp(sample.last_successful_materialization_at);
+  if (lastSuccessfulMaterialization === null && sample.last_successful_materialization_at != null) {
+    return null;
+  }
   return {
     collection_ok: true,
     terminal_collection_ok:
       typeof sample.terminal_collection_ok === "boolean" ? sample.terminal_collection_ok : true,
     mode,
-    ...values,
+    ...validValues,
     wait_ms: wait,
     hold_ms: hold,
     last_successful_materialization_at: lastSuccessfulMaterialization,
@@ -395,8 +436,8 @@ function laneHistorySample(
   shedValue: unknown,
 ): ExactReviewLaneHistorySample | null {
   const pending = nonNegativeInteger(pendingValue);
-  const enqueuedTotal = optionalNonNegativeInteger(enqueuedValue);
-  const completedTotal = optionalNonNegativeInteger(completedValue);
+  const enqueuedTotal = optionalNonNegativeInteger(enqueuedValue, HEALTH_HISTORY_MAX_TOTAL);
+  const completedTotal = optionalNonNegativeInteger(completedValue, HEALTH_HISTORY_MAX_TOTAL);
   const shedTotal = optionalNonNegativeInteger(shedValue);
   if (pending === null || enqueuedTotal === null || completedTotal === null || shedTotal === null) {
     return null;
@@ -413,18 +454,23 @@ export function mergeHealthHistorySample(
   current: unknown,
   sample: HealthHistorySample,
 ): HealthHistorySample[] {
-  const slot = historySlot(sample.at);
   const entries = Array.isArray(current) ? current : [];
   const normalized = entries
     .map((entry) => normalizeHealthHistorySample(entry))
     .filter((entry): entry is HealthHistorySample => Boolean(entry));
+  const normalizedSample = normalizeHealthHistorySample(sample);
+  if (!normalizedSample)
+    return normalized.sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
+  const slot = historySlot(normalizedSample.at);
   const latestInSlot = normalized
     .filter((entry) => historySlot(entry.at) === slot)
     .sort((left, right) => Date.parse(right.at) - Date.parse(left.at))[0];
   // Cron retries may finish out of order. Slot deduplication must not let an
   // older observation erase a newer health transition that already landed.
   const winner =
-    latestInSlot && Date.parse(latestInSlot.at) > Date.parse(sample.at) ? latestInSlot : sample;
+    latestInSlot && Date.parse(latestInSlot.at) > Date.parse(normalizedSample.at)
+      ? latestInSlot
+      : normalizedSample;
   return [...normalized.filter((entry) => historySlot(entry.at) !== slot), winner].sort(
     (left, right) => Date.parse(left.at) - Date.parse(right.at),
   );
@@ -439,13 +485,24 @@ function ageMs(value: string | undefined, now: number) {
   return Number.isFinite(timestamp) ? Math.max(0, now - timestamp) : null;
 }
 
-function nonNegativeInteger(value: unknown) {
-  const number = Number(value);
-  return Number.isFinite(number) ? Math.max(0, Math.round(number)) : null;
+function nonNegativeInteger(value: unknown, maximum = HEALTH_HISTORY_MAX_COUNT) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum
+    ? value
+    : null;
 }
 
-function optionalNonNegativeInteger(value: unknown) {
-  return value === undefined ? undefined : nonNegativeInteger(value);
+function optionalNonNegativeInteger(value: unknown, maximum = HEALTH_HISTORY_MAX_COUNT) {
+  return value === undefined ? undefined : nonNegativeInteger(value, maximum);
+}
+
+function canonicalHistoryTimestamp(value: unknown) {
+  if (typeof value !== "string" || !HEALTH_HISTORY_TIMESTAMP_PATTERN.test(value)) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) &&
+    timestamp >= HEALTH_HISTORY_TIMESTAMP_MIN_MS &&
+    timestamp < HEALTH_HISTORY_TIMESTAMP_MAX_MS
+    ? new Date(timestamp).toISOString()
+    : null;
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

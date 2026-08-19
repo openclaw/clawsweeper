@@ -1,0 +1,86 @@
+{
+  "schema": "clawsweeper-real-worker-proof-provenance/v1",
+  "tested_commit": "a7e4e37adb18c939bd3b57e9d9f6ffc4610a9bd6",
+  "merge_base": "408c28329c188c15e2d3dbefe98a2393cbca4989",
+  "crabbox": {
+    "cli_version": "0.38.3-5-g2a79805d",
+    "provider": "local-container",
+    "lease_id": "cbx_dda9e37f1731",
+    "lease_slug": "crimson-hermit-cceb",
+    "run_id": "run_686d05277f14",
+    "machine_type": "node_24-bookworm",
+    "container_image": "node:24-bookworm",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1132 with explicit origin/main remote-tracking fetch",
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0",
+    "wrangler": "4.107.0",
+    "jq": "jq-1.8.1",
+    "jq_asset": "jq-linux-arm64",
+    "jq_sha256": "6bc62f25981328edd3cfcfe6fe51b073f2d7e7710d7ef7fcdac28d4e384fc3d4"
+  },
+  "timing_ms": {
+    "lease": 14809,
+    "bootstrap": 78,
+    "sync": 14962,
+    "command": 32529,
+    "total": 47542,
+    "end_to_end": 62362,
+    "command_phases": [
+      { "name": "user-command", "ms": 7052 },
+      { "name": "build", "ms": 396 },
+      { "name": "worker-proof", "ms": 16184 },
+      { "name": "build", "ms": 396 },
+      { "name": "worker-proof", "ms": 8499 }
+    ]
+  },
+  "result": {
+    "dashboard_build_runs": 2,
+    "dashboard_builds_passed": 2,
+    "worker_proof_runs": 2,
+    "worker_fixtures_compared_per_run": 4,
+    "worker_fixtures_identical_per_run": 4,
+    "worker_fixture_differences_per_run": 0,
+    "output_path": ".artifacts/typed-webhook-ingress/behavior-report.json",
+    "checkout_clean_before": true,
+    "checkout_clean_after_first_run": true,
+    "checkout_clean_after_second_run": true,
+    "proof_marker": "TYPED_WEBHOOK_INGRESS_CURRENT_HEAD_PROOF_RC=0",
+    "report": {
+      "bytes_per_run": 2580,
+      "first_run_generated_at": "2026-08-12T05:29:02.294Z",
+      "first_run_sha256": "ea09db2adfea2bfe912b1b544429bd4be06c24f7a563c5552cdc16d6d307d452",
+      "second_run_generated_at": "2026-08-12T05:29:11.661Z",
+      "second_run_sha256": "7242f444bab6f0f9ba65d6fdbeea77542668417f10274df6927c35b11706c274"
+    },
+    "stdout": {
+      "bytes": 6639,
+      "sha256": "07748fdf35543cd980c144973d6b1ab1b8b0db7bf8356a618b3e01226d6ab799"
+    },
+    "stderr": {
+      "bytes": 149,
+      "sha256": "4f119d7539454d9dcfc031557c85a91c2360b479e577737a8365125abf66b730"
+    }
+  },
+  "discarded_setup_attempts": [
+    {
+      "lease_id": "cbx_c3f6213ec43c",
+      "lease_slug": "coral-crayfish-2f12",
+      "run_id": "run_e052ec43551b",
+      "tested_commit": "a7e4e37adb18c939bd3b57e9d9f6ffc4610a9bd6",
+      "exit_code": 1,
+      "reason": "The fresh-pr uploaded-script transport created an untracked .crabbox directory before the baseline cleanliness assertion; the successful temporary launcher removed that transport residue before observing proof behavior.",
+      "lease_stopped": true
+    }
+  ],
+  "limits": [
+    "Fixtures and webhook credentials were synthetic.",
+    "The proof exercised real local Worker routing, signature verification, classification, and local Durable Objects without live GitHub API calls or production mutation.",
+    "The current-head proof ran twice to verify that routine output remains under the ignored .artifacts directory and leaves git status --porcelain empty.",
+    "The evidence commit containing this refreshed receipt was not part of the tested source commit; it changes this receipt and its README summary only, not the proof launcher or runtime source."
+  ]
+}

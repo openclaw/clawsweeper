@@ -335,6 +335,7 @@ export function runPrCloseCoverageProofModel(options: {
           } and wrote invalid JSON or schema-invalid output to ${outputPath}: ${
             error instanceof Error ? error.message : String(error)
           }.\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."}`,
+          { cause: error },
         );
       }
     }

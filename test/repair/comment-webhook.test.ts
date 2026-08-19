@@ -34,9 +34,15 @@ test("comment webhook accepts maintainer ClawSweeper commands", () => {
     targetRepo: "openclaw/openclaw",
     targetBranch: "trunk",
     itemNumber: 71898,
+    itemKind: "issue",
+    itemState: "",
     commentId: 456,
     installationId: 123,
     sourceAction: "created",
+    commentBody: "@clawsweeper automerge",
+    commentAuthor: "",
+    commentUrl: "",
+    maintainerAuthorized: true,
   });
 });
 
@@ -187,9 +193,15 @@ test("comment webhook accepts author read-only re-review commands", () => {
     targetRepo: "openclaw/openclaw",
     targetBranch: "main",
     itemNumber: 76991,
+    itemKind: "issue",
+    itemState: "",
     commentId: 456,
     installationId: 123,
     sourceAction: "created",
+    commentBody: "@clawsweeper Re-run",
+    commentAuthor: "NickMOpen",
+    commentUrl: "",
+    maintainerAuthorized: false,
   });
 });
 
@@ -253,9 +265,15 @@ test("comment webhook still accepts post-close re-review commands for router res
     targetRepo: "openclaw/openclaw",
     targetBranch: "main",
     itemNumber: 76991,
+    itemKind: "pull_request",
+    itemState: "closed",
     commentId: 456,
     installationId: 123,
     sourceAction: "created",
+    commentBody: "@clawsweeper re-review",
+    commentAuthor: "user",
+    commentUrl: "",
+    maintainerAuthorized: true,
     commentUpdatedAt: "2026-05-19T05:03:00Z",
     commentBodySha256: crypto.createHash("sha256").update("@clawsweeper re-review").digest("hex"),
   });

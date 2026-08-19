@@ -10,6 +10,8 @@ import {
   PAIR_BLOCKED_CLOSE_ACTIONS,
   REVIEW_SECTIONS,
 } from "./clawsweeper-policy.js";
+import { escapeRegExp } from "./clawsweeper-text.js";
+import { competingFrontMatterBlocks } from "./front-matter-blocks.js";
 import type {
   ApplyKind,
   CloseReason,
@@ -67,79 +69,19 @@ export function createRecordMetadata({
   markdownFiles,
   numberForMarkdownFile,
 }: RecordMetadataDependencies) {
-  const FRONT_MATTER_KEY_LINE = /^[A-Za-z0-9_.-]+:/;
-  const CODE_FENCE = /^\s*(`{3,}|~{3,})/;
-
-  // A report body is model-authored review text, so `key:` at the start of a line is
-  // ordinary prose (a quoted PR field, a findings row) far more often than a competing
-  // record. What makes a field genuinely ambiguous is a *complete* second metadata
-  // block: a run of `key: value` lines closed by a `---` delimiter.
-  //
-  // The scan must cover the whole body, not just its opening lines. A block appended
-  // after paragraphs of prose is exactly as capable of impersonating a record as one
-  // concatenated directly onto the leading block, so stopping at the first prose line
-  // would reopen the spoofing gap this guard exists to close. Fenced code is skipped:
-  // a ```yaml sample is quoted illustration, and no reader treats it as record state.
-  function competingFrontMatterBlocks(remainder: string): string[] {
-    const lines = remainder.split(/\r?\n/);
-    const blocks: string[] = [];
-
-    // Returns the block starting at `start`, or null when the run is interrupted by
-    // prose or never reaches a closing delimiter — an unterminated run is not a record.
-    const readBlock = (start: number): { body: string; end: number } | null => {
-      const body: string[] = [];
-      let index = start;
-      for (; index < lines.length; index += 1) {
-        const line = lines[index] ?? "";
-        if (line === "---") break;
-        if (!FRONT_MATTER_KEY_LINE.test(line)) return null;
-        body.push(line);
-      }
-      if (index >= lines.length || body.length === 0) return null;
-      return { body: body.join("\n"), end: index };
-    };
-
-    // The leading block's closing `---` doubles as the opener of a record pasted
-    // straight onto it, so the remainder can begin part-way through one.
-    let index = 0;
-    const leading = readBlock(0);
-    if (leading) {
-      blocks.push(leading.body);
-      index = leading.end;
-    }
-
-    let fence: string | null = null;
-    for (; index < lines.length; index += 1) {
-      const line = lines[index] ?? "";
-      const fenceMatch = CODE_FENCE.exec(line);
-      if (fence !== null) {
-        if (fenceMatch && (fenceMatch[1] ?? "").startsWith(fence)) fence = null;
-        continue;
-      }
-      if (fenceMatch) {
-        fence = fenceMatch[1] ?? "";
-        continue;
-      }
-      if (line !== "---") continue;
-      const block = readBlock(index + 1);
-      if (block) {
-        blocks.push(block.body);
-        index = block.end;
-      }
-    }
-    return blocks;
-  }
-
   function frontMatterField(markdown: string, key: string): FrontMatterField {
     const frontMatterMatch = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
     if (!frontMatterMatch) return { status: "absent" };
     const frontMatter = frontMatterMatch[1] ?? "";
     const remainder = markdown.slice(frontMatterMatch[0].length);
-    const keyLine = new RegExp(`^${key}:`, "m");
+    // Keys stay escaped so a key carrying regex syntax is matched literally, as the
+    // `key: string` signature advertises; the scan below decides *where* to look.
+    const escapedKey = escapeRegExp(key);
+    const keyLine = new RegExp(`^${escapedKey}:`, "m");
     if (competingFrontMatterBlocks(remainder).some((block) => keyLine.test(block))) {
       return { status: "ambiguous" };
     }
-    const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.*)$`, "gm"))];
+    const matches = [...frontMatter.matchAll(new RegExp(`^${escapedKey}:\\s*(.*)$`, "gm"))];
     if (matches.length === 0) return { status: "absent" };
     if (matches.length !== 1) return { status: "ambiguous" };
     const value = matches[0]?.[1]?.trim();
@@ -322,11 +264,16 @@ export function createRecordMetadata({
     );
   }
 
+  // `value` is record data — most often `JSON.stringify(item.labels)`, whose contents
+  // are GitHub label names. Passing it as a replacement *string* would let `$&`, `` $` ``
+  // and `$'` expand against the match, so a label containing them rewrites the field to
+  // something other than what was stored. A replacement function inserts the text
+  // literally, which is the only behavior this writer ever intended.
   function replaceFrontMatterValue(markdown: string, key: string, value: string): string {
     const line = `${key}: ${value}`;
-    const pattern = new RegExp(`^${key}:\\s*.*$`, "m");
-    if (pattern.test(markdown)) return markdown.replace(pattern, line);
-    return markdown.replace(/^---\n/, `---\n${line}\n`);
+    const pattern = new RegExp(`^${escapeRegExp(key)}:\\s*.*$`, "m");
+    if (pattern.test(markdown)) return markdown.replace(pattern, () => line);
+    return markdown.replace(/^---\n/, () => `---\n${line}\n`);
   }
 
   function exactEventReviewLeaseDisposition(
@@ -560,20 +507,16 @@ export function createRecordMetadata({
     return markdown.includes("Codex review failed") ? "failed" : "complete";
   }
 
-  function hasBlockedLocalCheckoutAccess(markdown: string): boolean {
-    return /bwrap: loopback|sandbox wrapper|sandbox startup failed|sandboxed shell failed|local shell (?:access|commands|inspection).*unavailable|local shell .*blocked|local terminal commands were unavailable|could not run local shell/i.test(
-      markdown,
-    );
-  }
-
   function hasVerifiedLocalCheckoutAccess(markdown: string): boolean {
-    return frontMatterValue(markdown, "local_checkout_access") === "verified";
+    return (
+      frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+      frontMatterValue(markdown, "local_checkout_access_source") === "runner_preflight_v1"
+    );
   }
 
   function effectiveReviewStatus(markdown: string): string {
     const status = frontMatterValue(markdown, "review_status") ?? inferReviewStatus(markdown);
     if (status === "complete") {
-      if (hasBlockedLocalCheckoutAccess(markdown)) return "stale_local_checkout_blocked";
       if (!hasVerifiedLocalCheckoutAccess(markdown)) return "stale_local_checkout_unverified";
     }
     return status;
@@ -670,12 +613,29 @@ export function createRecordMetadata({
   function isInfrastructureFailedReview(markdown: string): boolean {
     const detail = failedReviewFailureDetail(markdown);
     const terminalFailure = frontMatterField(markdown, "review_terminal_failure");
+    const checkoutInspectionFailure = frontMatterField(
+      markdown,
+      "review_checkout_inspection_failed",
+    );
     if (terminalFailure.status === "ambiguous") return false;
     if (
       terminalFailure.status === "value" &&
       (!/^(?:true|false)$/i.test(terminalFailure.value) || /^true$/i.test(terminalFailure.value))
     ) {
       return false;
+    }
+    if (checkoutInspectionFailure.status === "ambiguous") return false;
+    if (
+      checkoutInspectionFailure.status === "value" &&
+      !/^(?:true|false)$/i.test(checkoutInspectionFailure.value)
+    ) {
+      return false;
+    }
+    if (
+      checkoutInspectionFailure.status === "value" &&
+      /^true$/i.test(checkoutInspectionFailure.value)
+    ) {
+      return true;
     }
     return (
       isRetryableCodexTransportError(detail) ||

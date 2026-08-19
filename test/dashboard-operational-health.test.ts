@@ -10,10 +10,10 @@ import {
   summarizeOperationalHealth,
 } from "../dashboard/operational-health.ts";
 
-const CHECKED_AT = "2026-07-15T14:00:00Z";
+const CHECKED_AT = "2026-07-15T14:00:00.000Z";
 
-function run(status: string, createdAt: string) {
-  return { status, created_at: createdAt };
+function run(status: string, createdAt: string, runAttempt?: number) {
+  return { status, created_at: createdAt, ...(runAttempt ? { run_attempt: runAttempt } : {}) };
 }
 
 function legacyHistorySample() {
@@ -112,6 +112,49 @@ test("operational health treats exactly 24 hours as live queue pressure", () => 
   assert.equal(health.oldest_zombie_queued_minutes, 0);
 });
 
+test("operational health excludes wedged pre-queue reruns without hiding real queue pressure", () => {
+  const wedged = summarizeOperationalHealth(
+    [run("pending", "2026-07-15T12:30:00Z", 2)],
+    CHECKED_AT,
+    true,
+  );
+  assert.equal(wedged.status, "healthy");
+  assert.equal(wedged.queued_runs, 1);
+  assert.equal(wedged.queued_over_threshold, 0);
+  assert.equal(wedged.oldest_queued_minutes, 0);
+  assert.equal(wedged.wedged_rerun_runs, 1);
+  assert.equal(wedged.oldest_wedged_rerun_minutes, 90);
+
+  const freshRerun = summarizeOperationalHealth(
+    [run("pending", "2026-07-15T13:58:00Z", 2)],
+    CHECKED_AT,
+    true,
+  );
+  assert.equal(freshRerun.status, "healthy");
+  assert.equal(freshRerun.queued_runs, 1);
+  assert.equal(freshRerun.oldest_queued_minutes, 2);
+  assert.equal(freshRerun.wedged_rerun_runs, 0);
+  assert.equal(freshRerun.oldest_wedged_rerun_minutes, 0);
+
+  const thresholdRerun = summarizeOperationalHealth(
+    [run("pending", "2026-07-15T13:00:00Z", 2)],
+    CHECKED_AT,
+    true,
+  );
+  assert.equal(thresholdRerun.status, "degraded");
+  assert.equal(thresholdRerun.queued_over_threshold, 1);
+  assert.equal(thresholdRerun.wedged_rerun_runs, 0);
+
+  const genuinelyQueued = summarizeOperationalHealth(
+    [run("queued", "2026-07-15T12:30:00Z", 2)],
+    CHECKED_AT,
+    true,
+  );
+  assert.equal(genuinelyQueued.status, "degraded");
+  assert.equal(genuinelyQueued.queued_over_threshold, 1);
+  assert.equal(genuinelyQueued.wedged_rerun_runs, 0);
+});
+
 test("operational health fails closed when active-run telemetry is incomplete", () => {
   const health = summarizeOperationalHealth([], CHECKED_AT, false);
   assert.equal(health.status, "unknown");
@@ -148,12 +191,12 @@ test("health history replaces duplicate five-minute slots", () => {
     true,
   );
   const first = { ...legacyHistorySample(), status: health.status };
-  const replacement = { ...first, at: "2026-07-15T14:04:59Z", queued: 2 };
+  const replacement = { ...first, at: "2026-07-15T14:04:59.000Z", queued: 2 };
   const next = mergeHealthHistorySample([first], replacement);
   assert.equal(next.length, 1);
   assert.equal(next[0].queued, 2);
 
-  const lateOlderSample = { ...first, at: "2026-07-15T14:01:00Z", queued: 1 };
+  const lateOlderSample = { ...first, at: "2026-07-15T14:01:00.000Z", queued: 1 };
   const preserved = mergeHealthHistorySample(next, lateOlderSample);
   assert.equal(preserved.length, 1);
   assert.equal(preserved[0].at, replacement.at);
@@ -168,11 +211,15 @@ test("health history preserves legacy samples and normalizes exact-review backlo
     lanes: {
       review: {
         pending: 317,
-        enqueued_total: 90,
-        completed_total: 70,
+        enqueued_total: 10_000_090,
+        completed_total: 10_000_070,
         shed_since_reset: 3,
       },
-      publication: { pending: 1502, enqueued_total: 50, completed_total: 42 },
+      publication: {
+        pending: 1502,
+        enqueued_total: 10_000_050,
+        completed_total: 10_000_042,
+      },
     },
     handoff_health: {
       status: "degraded",
@@ -186,8 +233,17 @@ test("health history preserves legacy samples and normalizes exact-review backlo
   const normalized = normalizeHealthHistorySample({ ...legacy, exact_review: exactReview });
   assert.deepEqual(normalized?.exact_review, {
     collection_ok: true,
-    review: { pending: 317, enqueued_total: 90, completed_total: 70, shed_total: 3 },
-    publication: { pending: 1502, enqueued_total: 50, completed_total: 42 },
+    review: {
+      pending: 317,
+      enqueued_total: 10_000_090,
+      completed_total: 10_000_070,
+      shed_total: 3,
+    },
+    publication: {
+      pending: 1502,
+      enqueued_total: 10_000_050,
+      completed_total: 10_000_042,
+    },
     handoff: { status: "degraded", pending: 317, dispatching: 8, leased: 34 },
   });
   assert.deepEqual(normalizeHealthHistorySample({ at: CHECKED_AT, exact_review: exactReview }), {
@@ -217,7 +273,7 @@ test("health history preserves legacy samples and normalizes exact-review backlo
     })?.exact_review,
     undefined,
   );
-  assert.deepEqual(
+  assert.equal(
     normalizeHealthHistorySample({
       at: CHECKED_AT,
       exact_review: {
@@ -225,12 +281,19 @@ test("health history preserves legacy samples and normalizes exact-review backlo
         review: { pending: 1, enqueued_total: -1, completed_total: 0 },
         publication: { pending: 1, enqueued_total: 0, completed_total: 0 },
       },
-    })?.exact_review,
-    {
-      collection_ok: true,
-      review: { pending: 1, enqueued_total: 0, completed_total: 0 },
-      publication: { pending: 1, enqueued_total: 0, completed_total: 0 },
-    },
+    }),
+    null,
+  );
+  assert.equal(
+    normalizeHealthHistorySample({
+      at: CHECKED_AT,
+      exact_review: {
+        collection_ok: true,
+        review: { pending: 1, enqueued_total: 1_000_000_000_001, completed_total: 0 },
+        publication: { pending: 1, enqueued_total: 0, completed_total: 0 },
+      },
+    }),
+    null,
   );
 });
 
@@ -303,4 +366,69 @@ test("health history rejects non-finite or incomplete samples", () => {
   const { running, ...incomplete } = sample;
   assert.equal(running, 0);
   assert.equal(normalizeHealthHistorySample(incomplete), null);
+});
+
+test("health history strictly bounds stored counts and canonicalizes timestamps", () => {
+  const sample = legacyHistorySample();
+  for (const queued of ["0", -1, 1.5, Number.MAX_SAFE_INTEGER, 10_000_001]) {
+    assert.equal(normalizeHealthHistorySample({ ...sample, queued }), null);
+  }
+
+  assert.equal(
+    normalizeHealthHistorySample({ ...sample, at: "2026-07-15T15:00:00+01:00" })?.at,
+    CHECKED_AT,
+  );
+  assert.equal(normalizeHealthHistorySample({ ...sample, at: `${CHECKED_AT} unexpected` }), null);
+  assert.equal(normalizeHealthHistorySample({ ...sample, at: "1171-01-01T00:00:00Z" }), null);
+  assert.deepEqual(
+    normalizeHealthHistorySample({
+      at: CHECKED_AT,
+      state_writer: {
+        collection_ok: true,
+        mode: "batch",
+        tracked_holding: 0,
+        tracked_waiting: 0,
+        tracked_releasing: 0,
+        accepted_operations_total: 0,
+        state_commits_total: 0,
+        materialized_items_total: 0,
+        contention_timeouts_total: 0,
+        wait_ms: { p50: null, p95: null, samples: 0 },
+        hold_ms: { p50: null, p95: null, samples: 0 },
+        last_successful_materialization_at: "2026-07-15T15:00:00+01:00",
+      },
+    })?.state_writer?.last_successful_materialization_at,
+    CHECKED_AT,
+  );
+  assert.equal(
+    normalizeHealthHistorySample({
+      at: CHECKED_AT,
+      state_writer: {
+        collection_ok: true,
+        mode: "batch",
+        tracked_holding: 0,
+        tracked_waiting: 0,
+        tracked_releasing: 0,
+        accepted_operations_total: 0,
+        state_commits_total: 0,
+        materialized_items_total: 0,
+        contention_timeouts_total: 0,
+        wait_ms: { p50: null, p95: null, samples: 0 },
+        hold_ms: { p50: null, p95: null, samples: 0 },
+        last_successful_materialization_at: "1171-01-01T00:00:00Z",
+      },
+    })?.state_writer?.last_successful_materialization_at,
+    undefined,
+  );
+  assert.equal(
+    normalizeHealthHistorySample({
+      at: CHECKED_AT,
+      exact_review: {
+        collection_ok: true,
+        review: { pending: "1" },
+        publication: { pending: 0 },
+      },
+    }),
+    null,
+  );
 });

@@ -1,0 +1,19 @@
+debconf: delaying package configuration, since apt-utils is not installed
+! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-11.10.0.tgz
+$ pnpm run build && pnpm run build:repair && pnpm run build:dashboard
+$ tsc -p tsconfig.json
+$ tsc -p tsconfig.repair.json
+$ tsc -p tsconfig.dashboard.json
+$ node scripts/check-dashboard-strict.mjs
+$ pnpm run check:parallel
+$ pnpm run check:static && pnpm run build:all && pnpm run lint && pnpm run test:coverage:changed:no-build && pnpm run test:coverage:no-build
+$ pnpm run "/^(check:active-surface|check:dashboard-queue-boundary|check:dashboard-strict|check:docs|check:limits|format:check)$/"
+$ pnpm run build && pnpm run build:repair && pnpm run build:dashboard
+$ tsc -p tsconfig.json
+$ tsc -p tsconfig.repair.json
+$ tsc -p tsconfig.dashboard.json
+$ pnpm run "/^lint:.*/"
+$ node scripts/run-node-tests.mjs fix-prompt-builder -- --experimental-test-coverage --test-coverage-include='dist/repair/fix-prompt-builder.js' --test-coverage-lines=85 --test-coverage-branches=85 --test-coverage-functions=85
+[run-node-tests] target=fix-prompt-builder concurrency=16 files=1
+$ node scripts/run-node-tests.mjs all -- --experimental-test-coverage --test-coverage-include='dist/**/*.js' --test-coverage-exclude='dist/repair/*.test.js' --test-coverage-lines=49 --test-coverage-branches=66 --test-coverage-functions=57
+[run-node-tests] target=all concurrency=16 files=263

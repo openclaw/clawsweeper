@@ -229,6 +229,14 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     exactEventPublication: options.exactEventPublication,
     legacyTuplelessReviewLease,
   });
+  const rateLimitYield = exactActions.find(
+    (action) =>
+      action.action === "skipped_runtime_budget" &&
+      /GitHub(?: API)? rate limited until/i.test(action.reason),
+  );
+  if (rateLimitYield) {
+    throw new GitHubRateLimitError(new Error(rateLimitYield.reason));
+  }
   if (options.exactEventPublication && legacyTuplelessReviewLease) {
     console.log(
       `Requeueing ${options.targetRepo}#${options.itemNumber}: legacy exact artifact lacks its durable review lease tuple`,

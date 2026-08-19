@@ -5,7 +5,7 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: `src/commit-sweeper.ts`, `prompts/review-commit.md`, package
   scripts, and local-review tests
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: local range selection, network/token isolation, model-service
   requirements, output artifacts, or the retired hosted boundary changes
 

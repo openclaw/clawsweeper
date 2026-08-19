@@ -9,6 +9,7 @@
     { "path": "/api/exact-review-queue/item", "method": "GET" },
     { "path": "/api/exact-review-queue/reviews", "method": "GET" },
     { "path": "/api/review-observability", "method": "GET" },
+    { "path": "/api/github-egress-observability", "method": "GET" },
     { "path": "/api/review-coverage", "method": "GET" },
     { "path": "/api/apply-observability", "method": "GET" },
     { "path": "/api/health-history", "method": "GET" },
@@ -19,6 +20,7 @@
   ],
   "auditedDashboardVariables": [
     "CLAWSWEEPER_REPO",
+    "PUBLIC_BAY_REPOS",
     "WORKER_DETAIL_RUN_LIMIT",
     "WORKER_JOB_FETCH_CONCURRENCY",
     "WORKER_JOB_CACHE_TTL_SECONDS",

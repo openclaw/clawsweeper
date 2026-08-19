@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-14T03:46:00Z",
+  "claim": "The v2 GraphQL cursor preserves stable PR activity decisions while reducing one check from six requests to two and an eight-PR batch from forty-eight requests to two.",
+  "source": {
+    "head": "221ba1c2cd159dfbc7c2e5a5fb12dbad73467bd7",
+    "tree": "0f041426798f21da69efd4214bcc2912672db3e2",
+    "commit_object_verified": true,
+    "tree_object_verified": true
+  },
+  "crabbox": {
+    "provider": "local-container",
+    "lease_id": "cbx_d96385e7eb89",
+    "slug": "harbor-krill-8b2b",
+    "runtime": "docker",
+    "image": "ubuntu:26.04",
+    "architecture": "arm64",
+    "node": "v24.19.0",
+    "pnpm": "11.10.0",
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true,
+    "total_ms": 10799
+  },
+  "transport": "loopback HTTP via GITHUB_API_URL and GITHUB_GRAPHQL_URL",
+  "requests": {
+    "single": {
+      "v1": 6,
+      "v2": 2
+    },
+    "batch": {
+      "size": 8,
+      "v1": 48,
+      "v2": 2
+    },
+    "fail_closed_fallback": 7,
+    "concurrent_change": 2
+  },
+  "assertions": {
+    "single_request_reduction": true,
+    "batch_request_reduction": true,
+    "fallback_decision_unchanged": true,
+    "fallback_telemetry_lines": 1,
+    "concurrent_change_unstable": true,
+    "double_read_preserved": true
+  },
+  "limits": [
+    "The proof uses deterministic loopback GitHub fixtures rather than live target mutations.",
+    "Connections over 100 reviews, 100 threads, or 100 comments per thread intentionally activate the complete v1 path.",
+    "The receipt source commit precedes only this proof-artifact commit; the verification recipe rejects any intervening non-proof change."
+  ]
+}

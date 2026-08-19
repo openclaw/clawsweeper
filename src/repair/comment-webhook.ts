@@ -13,6 +13,12 @@ import {
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import { isExactReviewCloseGuardLabel } from "./exact-review-guard-labels.js";
 import { commentBodySha256 } from "./comment-router-utils.js";
+import {
+  directReReviewAdditionalPrompt,
+  reReviewContextFromClawSweeperComment,
+} from "./comment-command-text.js";
+import { directReReviewIntake } from "./direct-re-review-admission.js";
+import { postExactReviewCommandIntake } from "./exact-review-command-queue.js";
 
 const DEFAULT_PORT = 8787;
 const REVIEW_REPO = "openclaw/clawsweeper";
@@ -39,9 +45,15 @@ type AcceptedIssueCommentWebhook = {
   targetRepo: string;
   targetBranch: string;
   itemNumber: number;
+  itemKind: "issue" | "pull_request";
+  itemState: string;
   commentId: number;
   installationId: number;
   sourceAction: string;
+  commentBody: string;
+  commentAuthor: string;
+  commentUrl: string;
+  maintainerAuthorized: boolean;
   commentUpdatedAt?: string;
   commentBodySha256?: string;
 };
@@ -102,8 +114,13 @@ async function handleRequest(request: http.IncomingMessage, response: http.Serve
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[clawsweeper webhook] ${message}`);
-    response.writeHead(400, { "content-type": "application/json" });
-    response.end(`${JSON.stringify({ ok: false, error: message })}\n`);
+    const retryable = /command intake failed \(HTTP (?:429|5\d\d)\)|aborted|timed out/i.test(
+      message,
+    );
+    response.writeHead(retryable ? 503 : 400, { "content-type": "application/json" });
+    response.end(
+      `${JSON.stringify(retryable ? { ok: false, retryable: true } : { ok: false, error: message })}\n`,
+    );
   }
 }
 
@@ -117,6 +134,39 @@ export async function handleGitHubWebhook({
   const decision = classifyWebhook({ event, payload });
   if (!decision.accepted) return { statusCode: 202, body: decision };
   const accepted = decision as AcceptedWebhook;
+
+  if (
+    accepted.type === "issue_comment" &&
+    accepted.itemState === "open" &&
+    reReviewContextFromClawSweeperComment(accepted.commentBody) !== null
+  ) {
+    const intake = directReReviewIntake({
+      targetRepo: accepted.targetRepo,
+      targetBranch: accepted.targetBranch,
+      itemNumber: accepted.itemNumber,
+      itemKind: accepted.itemKind,
+      installationId: accepted.installationId,
+      sourceCommentId: accepted.commentId,
+      sourceCommentUpdatedAt: accepted.commentUpdatedAt ?? "",
+      commandBodyDigest: accepted.commentBodySha256 ?? "",
+      commandOrigin: "hosted_webhook",
+      additionalPrompt: directReReviewAdditionalPrompt({
+        body: accepted.commentBody,
+        maintainerAuthorized: accepted.maintainerAuthorized,
+        author: accepted.commentAuthor,
+        commentUrl: accepted.commentUrl,
+      }),
+    });
+    const result = await postExactReviewCommandIntake({
+      queueUrl:
+        process.env.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL ||
+        process.env.QUEUE_URL ||
+        "https://clawsweeper.openclaw.ai",
+      secret: process.env.CLAWSWEEPER_WEBHOOK_SECRET || "",
+      intake,
+    });
+    return { statusCode: 202, body: { ok: true, ...result } };
+  }
 
   const appJwt = createAppJwt();
   const dispatchToken = await createReviewRepoDispatchToken({ appJwt });
@@ -244,9 +294,15 @@ export function classifyIssueCommentWebhook({
     targetRepo,
     targetBranch,
     itemNumber,
+    itemKind: issue.pull_request ? "pull_request" : "issue",
+    itemState: String(issue.state ?? "").toLowerCase(),
     commentId,
     installationId,
     sourceAction: String(payload.action ?? "created"),
+    commentBody: String(comment.body ?? ""),
+    commentAuthor: String(asRecord(comment.user).login ?? ""),
+    commentUrl: String(comment.html_url ?? ""),
+    maintainerAuthorized: ALLOWED_ASSOCIATIONS.has(association),
     ...(commentUpdatedAt
       ? {
           commentUpdatedAt,

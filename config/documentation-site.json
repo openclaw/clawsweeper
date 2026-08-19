@@ -9,6 +9,7 @@
       "name": "Review and policy",
       "pages": [
         "commit-sweeper.md",
+        "live-proof.md",
         "review-cache.md",
         "pr-review-comments.md",
         "pr-proof-triage-dashboard.md",
@@ -24,6 +25,8 @@
       "pages": [
         "limits.md",
         "public-api.md",
+        "github-egress-telemetry.md",
+        "github-webhook-read-model.md",
         "operator-configuration.md",
         "live-dashboard.md",
         "openclaw-bay-demo.md",

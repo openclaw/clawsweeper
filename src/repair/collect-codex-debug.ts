@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseArgs as parseNodeArgs } from "node:util";
 import { redactInternalCodexModel } from "../codex-env.js";
 
 type CollectOptions = {
@@ -157,19 +158,37 @@ function safeRelative(root: string, filePath: string) {
 }
 
 function parseArgs(argv: string[]) {
-  const args: Record<string, string | boolean> = {};
+  const normalized: string[] = [];
+  const known = new Set([
+    "--out",
+    "--label",
+    "--since-minutes",
+    "--max-bytes",
+    "--codex-home",
+    "--repair-runs-dir",
+  ]);
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (!value?.startsWith("--")) continue;
-    const key = value.slice(2);
     const next = argv[index + 1];
-    if (!next || next.startsWith("--")) args[key] = true;
-    else {
-      args[key] = next;
-      index += 1;
+    if (!known.has(value) || !next || next.startsWith("--")) {
+      if (next && !next.startsWith("--")) index += 1;
+      continue;
     }
+    normalized.push(`${value}=${next}`);
+    index += 1;
   }
-  return args;
+  return parseNodeArgs({
+    args: normalized,
+    options: {
+      out: { type: "string" },
+      label: { type: "string" },
+      "since-minutes": { type: "string" },
+      "max-bytes": { type: "string" },
+      "codex-home": { type: "string" },
+      "repair-runs-dir": { type: "string" },
+    },
+  }).values;
 }
 
 function numberArg(value: string | boolean | undefined, fallback: number) {

@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers and target-repository maintainers
 - Source of truth: the embedded dispatcher workflow, receiver workflow,
   repository profiles, and dispatcher tests
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: forwarded events, authentication, payloads, permissions, close
   authority, or installation steps change
 
@@ -352,19 +352,29 @@ right before posting; when a superseding event arrives during that wait, the
 shared concurrency group cancels the sleeping run before it posts.
 
 Comments are a lightweight trigger only when the body contains a ClawSweeper
-command, and generated proof-nudge comments are explicitly ignored before command
-matching. The target workflow reacts with `eyes` and creates one visible queued
-status comment for maintainer-authored commands when target write permission is
-available, but both acknowledgement writes are best-effort. It must still dispatch
-`clawsweeper_comment` to the comment router when acknowledgement or queued-comment
-creation gets a target-repository 403. The dispatch carries the exact source
-comment id and, when available, the queued status comment id. The router edits
-that queued comment in place instead of posting a second reply.
+command, and generated proof-nudge comments are explicitly ignored before
+command matching. Eligible open-item `review` and `re-review` command versions
+go directly into the ExactReviewQueue Durable Object before any acknowledgement
+or Actions dispatch. The identity binds the comment id, GitHub update timestamp,
+and body digest. The queue verifies that exact live comment, binds a live PR head,
+and retries GitHub dependencies with bounded 15-second-to-15-minute backoff.
+Only after durable admission does it converge the marker-backed status comment
+and `eyes` reaction. Redelivery is therefore idempotent, and App-token throttling
+cannot leave an optimistic “router queued” comment as the only record of intent.
+
+Other commands retain the comment-router path. The target workflow reacts with
+`eyes` and creates one visible queued status comment for maintainer-authored
+commands when target write permission is available, but both acknowledgement
+writes are best-effort. It must still dispatch `clawsweeper_comment` to the
+comment router when acknowledgement or queued-comment creation gets a
+target-repository 403. The dispatch carries the exact source comment id and,
+when available, the queued status comment id. The router edits that queued
+comment in place instead of posting a second reply.
 Exact comment dispatches scan only that comment and use a per-comment receiver
 concurrency group, so one maintainer command does not wait behind an unrelated
 command on the same repository. The scheduled sweep remains a five-minute
-fallback. Bot-authored label churn is also ignored. Human
-Label changes never directly trigger an exact review. Content-changing events
+fallback. Bot-authored label churn is also ignored. Label changes never
+directly trigger an exact review. Content-changing events
 such as issue edits and PR synchronizes update the desired review revision. The
 receiver coalesces by repository and item number, then dispatches only a leased
 executor for the newest revision.
@@ -377,7 +387,8 @@ endpoint is `/github/webhook`; the local equivalent is
 `steipete/*` `issue_comment`, `issues`, and `pull_request` events, mints a
 target installation token for acknowledgement/comment reactions, mints the
 `openclaw/clawsweeper` installation token for repository dispatch, and queues
-exact `clawsweeper_comment` or `clawsweeper_item` work. The durable Worker
+exact `clawsweeper_comment` or `clawsweeper_item` work. Re-review commands take
+the direct durable command-intake route described above. The durable Worker
 queue dispatches at most 128 leased exact-review executors, with up to 120 active
 reviews per target repository. Keep the Actions
 dispatcher installed as a compatibility fallback; its legacy dispatch is

@@ -31,12 +31,11 @@ export async function fetchExactReviewQueuePressure({
   fetchImpl = fetch,
   timeoutMs = QUEUE_PRESSURE_FETCH_TIMEOUT_MS,
 }: FetchExactReviewQueuePressureOptions): Promise<ExactReviewQueuePressure> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
     const response = await fetchImpl(
       new URL("/api/exact-review-queue", `${queueUrl.replace(/\/+$/, "")}/`),
-      { signal: controller.signal },
+      { signal },
     );
     if (!response.ok) return { ok: false, reason: `http_${response.status}` };
 
@@ -89,10 +88,8 @@ export async function fetchExactReviewQueuePressure({
   } catch (error) {
     return {
       ok: false,
-      reason: controller.signal.aborted ? "timeout" : errorReason(error),
+      reason: signal.aborted ? "timeout" : errorReason(error),
     };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

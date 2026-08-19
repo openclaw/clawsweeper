@@ -1,0 +1,46 @@
+{
+  "overall_behavior": "satisfies_contract",
+  "overall_confidence": 0.98,
+  "target": {
+    "type": "operator CLI",
+    "access": "loopback GITHUB_API_URL"
+  },
+  "checks": [
+    {
+      "contract_clause": "Throttle defer",
+      "status": "pass",
+      "severity": null,
+      "evidence": "Installation 403, abuse 403, and 429 emitted github_throttled and exited 0; the mixed batch retained waiting work and completed the routable command.",
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Cursor persistence",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The deferred cursor stayed unchanged; recovery requested issues/comments?since=2026-08-13T11%3A50%3A00.000Z&sort=updated&direction=asc and advanced to the next id.",
+      "confidence": 0.98
+    },
+    {
+      "contract_clause": "Real errors fail",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The non-throttle 422 scenario exited nonzero.",
+      "confidence": 0.99
+    }
+  ],
+  "anti_cheat_probes": [
+    {
+      "probe": "Vary installation 403, abuse 403, and 429",
+      "result": "All three classified as github_throttled"
+    },
+    {
+      "probe": "Reuse a processed id at the exact cursor timestamp",
+      "result": "The saved id was filtered and the next id advanced the cursor"
+    },
+    {
+      "probe": "Replace the throttle with 422",
+      "result": "The router remained fatal"
+    }
+  ],
+  "blockers": []
+}

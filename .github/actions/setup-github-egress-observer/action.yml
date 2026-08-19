@@ -1,0 +1,71 @@
+name: Set up GitHub egress observer
+description: Install the fail-open Phase 0 gh transport observation seam
+
+inputs:
+  metrics-path:
+    description: Repository-relative JSONL path for bounded egress metrics
+    required: true
+  rate-limit-path:
+    description: Repository-relative JSONL path for sanitized 403/429 details
+    required: true
+  pool-class:
+    description: Default credential pool class for direct gh calls
+    required: true
+  stage:
+    description: Publication lifecycle stage for direct gh calls
+    required: true
+  source-action:
+    description: Durable source action; normalized to a closed telemetry class
+    required: false
+    default: ""
+  claim-generation:
+    description: Durable claim generation for first/repeat attribution
+    required: false
+    default: ""
+  repeat-revision:
+    description: Whether this durable item revision has a prior publication failure
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install observer shim
+      shell: bash
+      env:
+        METRICS_PATH: ${{ inputs.metrics-path }}
+        RATE_LIMIT_PATH: ${{ inputs.rate-limit-path }}
+        POOL_CLASS: ${{ inputs.pool-class }}
+        STAGE: ${{ inputs.stage }}
+        SOURCE_ACTION: ${{ inputs.source-action }}
+        CLAIM_GENERATION: ${{ inputs.claim-generation }}
+        REPEAT_REVISION: ${{ inputs.repeat-revision }}
+      run: |
+        set -euo pipefail
+        [[ "$METRICS_PATH" =~ ^\.artifacts/[A-Za-z0-9._/-]+\.jsonl$ ]]
+        [[ "$RATE_LIMIT_PATH" =~ ^\.artifacts/[A-Za-z0-9._/-]+\.jsonl$ ]]
+        [[ "$POOL_CLASS" =~ ^(repository_actions|target_app|public_read_fallback)$ ]]
+        [[ "$STAGE" =~ ^(publication_prepare|publication_apply|publication_router|publication_recovery)$ ]]
+        [[ -z "$SOURCE_ACTION" || "$SOURCE_ACTION" =~ ^[A-Za-z0-9_.:-]{1,80}$ ]] || SOURCE_ACTION=""
+        [[ -z "$CLAIM_GENERATION" || "$CLAIM_GENERATION" =~ ^[0-9]{1,9}$ ]] || CLAIM_GENERATION=""
+        [[ -z "$REPEAT_REVISION" || "$REPEAT_REVISION" =~ ^(true|false)$ ]] || REPEAT_REVISION=""
+        real_gh="$(command -v gh)"
+        test -x "$real_gh"
+        observer_bin="$RUNNER_TEMP/clawsweeper-github-egress-observer"
+        rm -rf "$observer_bin"
+        mkdir -p "$observer_bin"
+        cp "$GITHUB_WORKSPACE/scripts/github-egress-observer.sh" "$observer_bin/gh"
+        chmod 0755 "$observer_bin/gh"
+        {
+          echo "CLAWSWEEPER_REAL_GH_BIN=$real_gh"
+          echo "CLAWSWEEPER_GITHUB_OBSERVER_ROOT=$GITHUB_WORKSPACE"
+          echo "CLAWSWEEPER_DEPLOYMENT_REVISION=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+          echo "CLAWSWEEPER_GITHUB_EGRESS_METRICS_PATH=$METRICS_PATH"
+          echo "CLAWSWEEPER_GITHUB_RATE_LIMIT_DETAILS_PATH=$RATE_LIMIT_PATH"
+          echo "CLAWSWEEPER_GITHUB_POOL_CLASS=$POOL_CLASS"
+          echo "CLAWSWEEPER_GITHUB_STAGE=$STAGE"
+          echo "CLAWSWEEPER_GITHUB_SOURCE_ACTION=$SOURCE_ACTION"
+          echo "CLAWSWEEPER_GITHUB_CLAIM_GENERATION=$CLAIM_GENERATION"
+          echo "CLAWSWEEPER_GITHUB_REQUEST_REPEAT=$REPEAT_REVISION"
+        } >> "$GITHUB_ENV"
+        echo "$observer_bin" >> "$GITHUB_PATH"

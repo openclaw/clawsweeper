@@ -58,6 +58,20 @@ a review that quotes a PR field takes the item offline. The two are intentionall
 different scopes: the audit may over-report; the parser fails closed on exactly the
 shape that can impersonate a record.
 
+## Scope: the repair lane keeps its own reader
+
+`src/repair/workflow-utils.ts` has a reader of the same shape and it is left alone
+on purpose. That one gates **close-promotion**, where the conservative reading is
+the safe one: a spoofed `pr_rating_overall:` line in a body must not enable a close,
+and `test/repair/workflow-utils.test.ts` ("repair close-promotion readers fail
+closed on body metadata after the leading block") pins exactly that. Routing it
+through this scanner turns that test red — verified, not assumed.
+
+The asymmetry is the point. Failing closed in the repair lane costs a promotion;
+failing closed in the review lane costs the whole record. Same code shape, opposite
+risk, so the two readers stay separate and `src/front-matter-blocks.ts` documents
+why.
+
 ## Command and environment
 
 ```
