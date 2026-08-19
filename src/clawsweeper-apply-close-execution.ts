@@ -18,6 +18,10 @@ import type {
 } from "./clawsweeper-types.js";
 import type { MaintainerDecision } from "./decision-packets.js";
 import { IDEA_ARCHIVE_LABEL } from "./idea-archive-revival.js";
+import {
+  isGitHubRequiresAuthenticationError,
+  isLockedConversationCommentError,
+} from "./github-retry.js";
 
 type ApplyCloseExecutionDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
@@ -35,7 +39,6 @@ type ApplyCloseExecutionDependencies = Pick<
   | "implementedOnMainPullRequestProvenanceApplyBlock"
   | "issueRecentHumanCommentBlockReasonSafe"
   | "lowSignalUnmergeablePrApplyBlockReasonSafe"
-  | "mutationErrorMessage"
   | "normalizeLabelName"
   | "removeCurrentCursorTraceItem"
   | "replaceFrontMatterValue"
@@ -122,6 +125,9 @@ interface ApplyCloseExecutionOptions {
   proofResult: () => PrCloseCoverageProofGateResult | undefined;
   recordApplySkipped: (action: ActionTaken, reason: string) => boolean;
   recordMutation: (parentEventId?: string | null) => void;
+  rememberSelfMutationUpdatedAt: (options?: {
+    allowsPostReviewAutomationActivity?: boolean;
+  }) => void;
   recordReviewLeaseSkip: (reason: string, preserveLease?: boolean) => boolean;
   recordRuntimeBudgetYield: (reason: string) => void;
   repo: string;
@@ -152,7 +158,6 @@ export function executeApplyClose(
     implementedOnMainPullRequestProvenanceApplyBlock,
     issueRecentHumanCommentBlockReasonSafe,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
-    mutationErrorMessage,
     normalizeLabelName,
     removeCurrentCursorTraceItem,
     replaceFrontMatterValue,
@@ -196,6 +201,7 @@ export function executeApplyClose(
     proofResult,
     recordApplySkipped,
     recordMutation,
+    rememberSelfMutationUpdatedAt,
     recordReviewLeaseSkip,
     recordRuntimeBudgetYield,
     repo,
@@ -362,14 +368,44 @@ export function executeApplyClose(
   const preCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
   if (preCloseMutationLeaseBlockReason) return skipLease(preCloseMutationLeaseBlockReason);
   ensureRuntimeDelayFits(closeDelayMs, "before close");
-  if (closeReason === "unsponsored_feature_request") {
-    const needsIdeaArchiveLabel = !item.labels.map(normalizeLabelName).includes(IDEA_ARCHIVE_LABEL);
-    ensureIdeaArchiveLabel(recordMutation);
-    if (needsIdeaArchiveLabel) {
-      addIssueLabel(number, IDEA_ARCHIVE_LABEL, recordMutation);
-      item.labels.push(IDEA_ARCHIVE_LABEL);
-      setMarkdown(replaceFrontMatterValue(getMarkdown(), "labels", JSON.stringify(item.labels)));
+  try {
+    closeAppliedCommentReason =
+      item.kind === "pull_request"
+        ? ensureCloseAppliedComment({
+            number,
+            closeReason,
+            markdown: getMarkdown(),
+            itemUrl: item.url,
+            dryRun,
+          })
+        : null;
+  } catch (error) {
+    if (isGitHubRequiresAuthenticationError(error)) {
+      return skip(
+        "skipped_comment_auth",
+        "GitHub rejected closeout evidence comment write with Requires authentication",
+      );
     }
+    if (isLockedConversationCommentError(error)) {
+      return skip(
+        "skipped_locked_conversation",
+        "conversation was locked while recording closeout evidence",
+        true,
+      );
+    }
+    throw error;
+  }
+  if (/^(?:posted|updated) close-applied comment$/.test(closeAppliedCommentReason ?? "")) {
+    // The comment updates the PR's activity timestamp. Admit only this verified
+    // self-mutation before the final freshness guard; it still rejects any
+    // intervening contributor activity or source/head drift.
+    rememberSelfMutationUpdatedAt({ allowsPostReviewAutomationActivity: true });
+  }
+  const finalFreshnessBlock = postProofFreshnessBlock();
+  if (finalFreshnessBlock) return markChangedSinceReview(finalFreshnessBlock) ? "stop" : "next";
+  const finalCoveringPrFreshnessBlock = postProofCoveringPrFreshnessBlock();
+  if (finalCoveringPrFreshnessBlock) {
+    return skip(finalCoveringPrFreshnessBlock.actionTaken, finalCoveringPrFreshnessBlock.reason);
   }
   // Preserve the archive label after an uncertain close; the revival watcher reconciles it.
   // The earlier check avoids unnecessary apply work; this one closes the race with the mutation.
@@ -381,20 +417,18 @@ export function executeApplyClose(
   if (finalImplementationProvenanceBlock) {
     return skip("kept_open", finalImplementationProvenanceBlock);
   }
-  closeItem({ number, kind: item.kind, reason: closeReason });
-  if (item.kind === "pull_request") {
-    try {
-      closeAppliedCommentReason = ensureCloseAppliedComment({
-        number,
-        closeReason,
-        markdown: getMarkdown(),
-        itemUrl: item.url,
-        dryRun,
-      });
-    } catch (error) {
-      closeAppliedCommentReason = `close-applied comment failed after close: ${mutationErrorMessage(error)}`;
+  if (closeReason === "unsponsored_feature_request") {
+    const needsIdeaArchiveLabel = !item.labels.map(normalizeLabelName).includes(IDEA_ARCHIVE_LABEL);
+    ensureIdeaArchiveLabel(recordMutation);
+    if (needsIdeaArchiveLabel) {
+      addIssueLabel(number, IDEA_ARCHIVE_LABEL, recordMutation);
+      item.labels.push(IDEA_ARCHIVE_LABEL);
+      setMarkdown(replaceFrontMatterValue(getMarkdown(), "labels", JSON.stringify(item.labels)));
     }
   }
+  const finalCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
+  if (finalCloseMutationLeaseBlockReason) return skipLease(finalCloseMutationLeaseBlockReason);
+  closeItem({ number, kind: item.kind, reason: closeReason });
   let postCloseRuntimeYieldReason: string | null = null;
   try {
     ensureRuntimeDelayFits(closeDelayMs, "before close delay");

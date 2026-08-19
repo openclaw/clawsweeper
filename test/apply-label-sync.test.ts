@@ -3698,12 +3698,10 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   }
 });
 
-test("apply-decisions posts an explicit close-time note after closing PR proposals", () => {
-  for (const { lifecycleDrift, closeAppliedCommentFails } of [
-    { lifecycleDrift: false, closeAppliedCommentFails: false },
-    { lifecycleDrift: true, closeAppliedCommentFails: false },
-    { lifecycleDrift: false, closeAppliedCommentFails: true },
-  ]) {
+test("apply-decisions verifies provenance after a closeout note and before closing PR proposals", () => {
+  for (const scenario of ["normal", "lifecycle_drift", "locked_closeout_comment"] as const) {
+    const lifecycleDrift = scenario === "lifecycle_drift";
+    const lockedCloseoutComment = scenario === "locked_closeout_comment";
     const root = mkdtempSync(tmpPrefix);
     try {
       const itemsDir = join(root, "items");
@@ -3746,7 +3744,7 @@ const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args[1] || "";
 const lifecycleDrift = ${lifecycleDrift};
-const closeAppliedCommentFails = ${closeAppliedCommentFails};
+const lockedCloseoutComment = ${lockedCloseoutComment};
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "api" && args[1] === "graphql") {
@@ -3756,8 +3754,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   console.log(JSON.stringify({ data: { repository: { issue: { state: currentState, timelineItems: { nodes: [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, url: "https://github.com/openclaw/clawsweeper/pull/900", mergedAt: "2026-05-01T02:00:00Z", repository: { nameWithOwner: "openclaw/clawsweeper" } } }] } } } } }));
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   if (args.includes("--method") && args.includes("POST")) {
-    if (closeAppliedCommentFails) {
-      console.error("simulated close-applied comment failure");
+    if (lockedCloseoutComment) {
+      console.error("gh: conversation is locked (HTTP 403)");
       process.exit(1);
     }
     const input = args[args.indexOf("--input") + 1];
@@ -3861,10 +3859,27 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       const graphqlIndices = calls
         .map((args, index) => (args[0] === "api" && args[1] === "graphql" ? index : -1))
         .filter((index) => index >= 0);
+      if (lockedCloseoutComment) {
+        assert.equal(closeIndex, -1);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "skipped_locked_conversation" &&
+              entry.reason === "conversation was locked while recording closeout evidence",
+          ),
+          true,
+        );
+        continue;
+      }
       assert.equal(graphqlIndices.length, 3);
       if (lifecycleDrift) {
         assert.equal(closeIndex, -1);
-        assert.equal(postIndex, -1);
+        assert.ok(postIndex >= 0);
         assert.equal(existsSync(join(closedDir, "321.md")), false);
         const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
           action: string;
@@ -3884,31 +3899,17 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         );
         continue;
       }
+      assert.ok(postIndex < graphqlIndices[2]!);
       assert.ok(closeIndex > graphqlIndices[2]!);
-      assert.ok(postIndex > closeIndex);
-      if (closeAppliedCommentFails) {
-        assert.equal(existsSync(postedBodiesPath), false);
-        assert.ok(existsSync(join(closedDir, "321.md")));
-        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
-          action: string;
-          reason: string;
-        }>;
-        assert.equal(
-          report.some(
-            (entry) =>
-              entry.action === "closed" &&
-              entry.reason.includes("close-applied comment failed after close"),
-          ),
-          true,
-        );
-        continue;
-      }
       const postedBodies = readFileSync(postedBodiesPath, "utf8")
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as string);
       assert.equal(postedBodies.length, 1);
-      assert.match(postedBodies[0], /ClawSweeper applied the proposed close for this PR/);
+      assert.match(
+        postedBodies[0],
+        /ClawSweeper recorded implementation evidence for this proposed close/,
+      );
       assert.match(postedBodies[0], /Close reason: already implemented on main/);
       assert.match(postedBodies[0], /Implementation evidence: \[fix PR #900\]/);
       assert.match(postedBodies[0], /clawsweeper-close-applied item=321/);

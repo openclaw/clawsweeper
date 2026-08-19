@@ -530,7 +530,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let currentApplyMutationBoundaryBlockReason = (): string | null => null;
       let deferredSelfMutationReceipt = false;
       let publishedIssueLabelMutation = false;
-      let rememberSelfMutationUpdatedAt = (): void => {};
+      let rememberSelfMutationUpdatedAt = (
+        _options: { allowsPostReviewAutomationActivity?: boolean } = {},
+      ): void => {};
       let reconcileSkippedIssueLabelAdditions = (_labels: readonly string[]): void => {};
       let refreshRenderedReviewComment = (): void => {};
       let restoreDiscardedIssueLabelState = (): void => {};
@@ -1116,7 +1118,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const initialCanonicalCommentSyncGuard = applyCanonicalCommentSyncGuard();
       if (initialCanonicalCommentSyncGuard.stopApply) break;
       if (initialCanonicalCommentSyncGuard.skipCurrentItem) continue;
-      rememberSelfMutationUpdatedAt = (): void => {
+      rememberSelfMutationUpdatedAt = (
+        options?: { allowsPostReviewAutomationActivity?: boolean },
+      ): void => {
         if (dryRun) return;
         const automationItem = fetchApplyItem(number).item;
         const automationItemUpdatedAt = automationItem.updatedAt;
@@ -1139,13 +1143,27 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             persistedPrHydrationSnapshot?.commentActivityRevision ?? null,
           requireFullyValidatedPrHydrationSnapshot: true,
         });
-        if (!completeReviewActivityReceiptMatches(receiptContext)) return;
+        const allowsPostReviewAutomationActivity =
+          options?.allowsPostReviewAutomationActivity === true;
+        if (
+          !allowsPostReviewAutomationActivity &&
+          !completeReviewActivityReceiptMatches(receiptContext)
+        )
+          return;
+        if (
+          allowsPostReviewAutomationActivity &&
+          (receiptContext.sourceRevision !== reviewedSourceRevision ||
+            (item.kind === "pull_request" &&
+              !freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext)))
+        )
+          return;
         const completeActivityContext = receiptContext[completeActivityContextSymbol];
         if (!completeActivityContext) return;
         selfMutationItemReceipts.push({
           updatedAt: automationItemUpdatedAt,
           sourceRevision: reviewedSourceRevision,
           activityReceipt: stableJson(completeActivityContext),
+          allowsPostReviewAutomationActivity,
           prHeadMatches:
             item.kind !== "pull_request" ||
             freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext),
@@ -2343,6 +2361,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         proofResult: () => coverageProofState.cachedPrCloseCoverageProofGateResult,
         recordApplySkipped,
         recordMutation,
+        rememberSelfMutationUpdatedAt,
         recordReviewLeaseSkip,
         recordRuntimeBudgetYield,
         repo,

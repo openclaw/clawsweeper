@@ -527,6 +527,31 @@ test("PR implementation provenance accepts only explicit same-repository closing
     [118669, 118670],
   );
   assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody("Fixes #118669.", "openclaw/openclaw"),
+    [118669],
+  );
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody(
+      "Fixes #118669, fixes #118670 and #118671.",
+      "openclaw/openclaw",
+    ),
+    [118669, 118670, 118671],
+  );
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody(
+      "- Fixes #118669 - carried with the current implementation.",
+      "openclaw/openclaw",
+    ),
+    [118669],
+  );
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody(
+      "1. Fixes #118669\n- [x] Fixes #118670",
+      "openclaw/openclaw",
+    ),
+    [118669, 118670],
+  );
+  assert.deepEqual(
     linkedIssueNumbersForPullRequestBody(
       "Resolves https://github.com/openclaw/openclaw/issues/118669",
       "openclaw/openclaw",
@@ -539,6 +564,13 @@ test("PR implementation provenance accepts only explicit same-repository closing
   );
   assert.equal(
     linkedIssueNumbersForPullRequestBody("Related to #118669", "openclaw/openclaw"),
+    null,
+  );
+  assert.equal(
+    linkedIssueNumbersForPullRequestBody(
+      "Do not write `Fixes #118669` in this explanation.\n\n> Fixes #118670\n\n```md\nFixes #118671\n```\n\n````md\n```\nFixes #118672\n````",
+      "openclaw/openclaw",
+    ),
     null,
   );
 });

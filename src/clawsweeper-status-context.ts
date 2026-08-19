@@ -24,20 +24,62 @@ export function linkedIssueNumbersForPullRequestBody(
   body: string,
   targetRepo: string,
 ): readonly number[] | null {
+  let fence: { delimiter: "`" | "~"; length: number } | null = null;
+  const semanticBody = body
+    .split(/\r?\n/)
+    .filter((line) => {
+      const fenceMatch = line.match(/^[\t ]*(`{3,}|~{3,})/);
+      if (fenceMatch) {
+        const marker = fenceMatch[1] ?? "";
+        const delimiter = marker[0] as "`" | "~" | undefined;
+        if (!delimiter) return false;
+        if (!fence) {
+          fence = { delimiter, length: marker.length };
+        } else if (fence.delimiter === delimiter && marker.length >= fence.length) {
+          fence = null;
+        }
+        return false;
+      }
+      return !fence && !/^[\t ]*>/.test(line) && !line.includes("`");
+    })
+    .join("\n");
   const escapedRepo = escapeRegExp(targetRepo);
-  const closingReference = new RegExp(
-    `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b[\\t ]*(?::[\\t ]*)?` +
-      `(?:#(\\d+)\\b|(${escapedRepo})#(\\d+)\\b|https?:\\/\\/github\\.com\\/(${escapedRepo})\\/issues\\/(\\d+)\\b|([A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+)#(\\d+)\\b|https?:\\/\\/github\\.com\\/([A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+)\\/issues\\/(\\d+)\\b)`,
-    "gi",
+  const closingVerb = "(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)";
+  const issueReference =
+    `(?:#(\\d+)\\b|(${escapedRepo})#(\\d+)\\b|https?:\\/\\/github\\.com\\/(${escapedRepo})\\/issues\\/(\\d+)\\b|` +
+    `([A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+)#(\\d+)\\b|https?:\\/\\/github\\.com\\/([A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+)\\/issues\\/(\\d+)\\b)`;
+  const closingDirective = new RegExp(
+    `^[\\t ]*(?:(?:[-*+][\\t ]+(?:\\[[ xX]\\][\\t ]+)?)|(?:\\d+[.)][\\t ]+))?` +
+      `${closingVerb}[\\t ]*(?::[\\t ]*)?(.*)$`,
+    "i",
+  );
+  const issueReferencePattern = new RegExp(issueReference, "gi");
+  const additionalReferenceSeparator = new RegExp(
+    `^[\\t ]*(?:,|\\band\\b)[\\t ]*(?:${closingVerb}[\\t ]*(?::[\\t ]*)?)?$`,
+    "i",
   );
   const issueNumbers = new Set<number>();
-  for (const match of body.matchAll(closingReference)) {
-    const linkedRepo = match[2] ?? match[4] ?? match[6] ?? match[8] ?? targetRepo;
-    if (linkedRepo.toLowerCase() !== targetRepo.toLowerCase()) return null;
-    const rawNumber = match[1] ?? match[3] ?? match[5] ?? match[7] ?? match[9];
-    const number = rawNumber ? Number(rawNumber) : NaN;
-    if (!Number.isSafeInteger(number) || number <= 0) return null;
-    issueNumbers.add(number);
+  for (const line of semanticBody.split(/\r?\n/)) {
+    const directive = line.match(closingDirective);
+    if (!directive) continue;
+    const referenceTail = directive[1] ?? "";
+    const references = [...referenceTail.matchAll(issueReferencePattern)];
+    const firstReference = references[0];
+    if (!firstReference || firstReference.index !== 0) return null;
+    for (const [index, match] of references.entries()) {
+      if (index > 0) {
+        const previous = references[index - 1];
+        if (!previous || previous.index === undefined || match.index === undefined) return null;
+        const separator = referenceTail.slice(previous.index + previous[0].length, match.index);
+        if (!additionalReferenceSeparator.test(separator)) return null;
+      }
+      const linkedRepo = match[2] ?? match[4] ?? match[6] ?? match[8] ?? targetRepo;
+      if (linkedRepo.toLowerCase() !== targetRepo.toLowerCase()) return null;
+      const rawNumber = match[1] ?? match[3] ?? match[5] ?? match[7] ?? match[9];
+      const number = rawNumber ? Number(rawNumber) : NaN;
+      if (!Number.isSafeInteger(number) || number <= 0) return null;
+      issueNumbers.add(number);
+    }
   }
   return issueNumbers.size > 0 ? [...issueNumbers].sort((left, right) => left - right) : null;
 }

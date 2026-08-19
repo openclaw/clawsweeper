@@ -17,6 +17,7 @@ export interface ApplySelfMutationItemReceipt {
   updatedAt: string;
   sourceRevision: string;
   activityReceipt: string;
+  allowsPostReviewAutomationActivity?: boolean;
   prHeadMatches: boolean;
   reviewActivityCursor: string | null;
 }
@@ -131,24 +132,37 @@ export function createApplyProofFreshnessGuards({
         refreshed.item.updatedAt === storedUpdatedAt)
         ? fetchReviewedPrActivityCursor(number)
         : null;
-    const refreshedItemReceiptMatches = candidateItemReceipts.some(
-      (receipt) =>
-        refreshedContext?.sourceRevision === receipt.sourceRevision &&
-        refreshedActivityReceipt === receipt.activityReceipt &&
-        receipt.prHeadMatches &&
-        refreshedContext !== null &&
-        (itemKind !== "pull_request" ||
-          (freshPullRequestReviewHead(reviewMarkdown, refreshedContext) &&
-            isReviewedPrActivityCursor(expectedReviewActivityCursor) &&
-            compareReviewedPrActivityCursors(
-              receipt.reviewActivityCursor,
-              expectedReviewActivityCursor,
-            ) === "equal" &&
-            compareReviewedPrActivityCursors(
-              refreshedReviewActivityCursor,
-              expectedReviewActivityCursor,
-            ) === "equal")),
-    );
+    const refreshedItemReceiptMatches = candidateItemReceipts.some((receipt) => {
+      if (
+        refreshedContext?.sourceRevision !== receipt.sourceRevision ||
+        refreshedActivityReceipt !== receipt.activityReceipt ||
+        !receipt.prHeadMatches ||
+        refreshedContext === null
+      ) {
+        return false;
+      }
+      if (itemKind !== "pull_request") return true;
+      if (!freshPullRequestReviewHead(reviewMarkdown, refreshedContext)) return false;
+      if (!isReviewedPrActivityCursor(expectedReviewActivityCursor)) return false;
+      if (receipt.allowsPostReviewAutomationActivity) {
+        return (
+          compareReviewedPrActivityCursors(
+            receipt.reviewActivityCursor,
+            refreshedReviewActivityCursor,
+          ) === "equal"
+        );
+      }
+      return (
+        compareReviewedPrActivityCursors(
+          receipt.reviewActivityCursor,
+          expectedReviewActivityCursor,
+        ) === "equal" &&
+        compareReviewedPrActivityCursors(
+          refreshedReviewActivityCursor,
+          expectedReviewActivityCursor,
+        ) === "equal"
+      );
+    });
     const refreshedCompleteReceiptMatchesReview = (): boolean => {
       refreshedContext ??= collectItemContext(refreshed.item, {
         fullTimelineForRelations: true,

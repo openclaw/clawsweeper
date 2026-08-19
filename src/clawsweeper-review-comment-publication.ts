@@ -246,9 +246,9 @@ export function createReviewCommentPublication(
   }): string {
     const coverageProofLine = closeAppliedCoverageProofLine(options.markdown);
     return [
-      "ClawSweeper applied the proposed close for this PR.",
+      "ClawSweeper recorded implementation evidence for this proposed close.",
       "",
-      "- Action: closed this PR.",
+      "- Action: close remains subject to final live verification.",
       `- Close reason: ${closeReasonText(options.closeReason)}.`,
       `- Implementation evidence: ${closeAppliedEvidenceLink(options.markdown, options.itemUrl)}.`,
       coverageProofLine,
@@ -278,24 +278,38 @@ export function createReviewCommentPublication(
     dryRun: boolean;
   }): string {
     const marker = closeAppliedCommentMarker(options.number);
-    if (issueCommentWithMarker(options.number, marker)) {
+    const body = renderCloseAppliedComment(options);
+    const existing = issueCommentWithMarker(options.number, marker);
+    if (existing?.body === body) {
       return "matching ClawSweeper close-applied comment already exists";
     }
-    const body = renderCloseAppliedComment(options);
     if (options.dryRun) return "dry-run: would post close-applied comment";
     const payload = writeCommentPayload(options.number, body);
+    const existingId = commentId(existing);
+    const updateExisting = existingId !== null && canPatchReviewComment(existing);
     ghObservedMutationCommand({
       identity: `close_applied_comment:${options.number}:${sha256(body)}`,
-      args: [
-        "api",
-        `repos/${targetRepo()}/issues/${options.number}/comments`,
-        "--method",
-        "POST",
-        "--input",
-        payload,
-      ],
+      args: updateExisting
+        ? [
+            "api",
+            `repos/${targetRepo()}/issues/comments/${existingId}`,
+            "--method",
+            "PATCH",
+            "--input",
+            payload,
+          ]
+        : [
+            "api",
+            `repos/${targetRepo()}/issues/${options.number}/comments`,
+            "--method",
+            "POST",
+            "--input",
+            payload,
+          ],
+      knownNoMutation: (error) =>
+        isGitHubRequiresAuthenticationError(error) || isLockedConversationCommentError(error),
     });
-    return "posted close-applied comment";
+    return updateExisting ? "updated close-applied comment" : "posted close-applied comment";
   }
 
   return {
