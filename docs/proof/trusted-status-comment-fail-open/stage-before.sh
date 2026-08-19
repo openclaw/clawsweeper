@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Regenerate the committed pre-fix source used by the contrast in run-proof.sh.
 #
-# before/comment-router.ts is a verbatim copy of the base-commit blob. It is
-# committed because container images carry no .git, so the pre-fix source cannot
-# be recovered inside a lease. run-proof.sh rewrites it from git whenever git is
-# reachable, so this script is only needed to refresh it after a rebase.
+# before/comment-router.ts is a verbatim copy of the base-commit blob. It is written
+# here as an *untracked* file and rsynced into the lease, because container images
+# carry no .git and the pre-fix source cannot be recovered inside one. It is
+# deliberately not committed: it is a 5,400-line duplicate of production code that
+# git already stores, and the docs/ retention rule asks proof records to stay light.
+#
+# Because it is untracked, writing it cannot alter the head under test - the
+# tracked-state guard in run-proof.sh ignores untracked paths and would abort if a
+# tracked file moved.
 set -euo pipefail
 
 PROOF_DIR="docs/proof/trusted-status-comment-fail-open"

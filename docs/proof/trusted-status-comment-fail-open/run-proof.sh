@@ -53,7 +53,7 @@ if git rev-parse HEAD >/dev/null 2>&1 \
   git show "$BASE_REF:src/repair/comment-router.ts" >"$STAGED_PREFIX"
   echo "pre-fix source: re-derived from git at $BASE_REF"
 elif [ -s "$STAGED_PREFIX" ]; then
-  echo "pre-fix source: committed fixture (no git in this environment)"
+  echo "pre-fix source: staged copy (no git in this environment)"
   echo "fixture sha256: $(sha256sum "$STAGED_PREFIX" | cut -d' ' -f1)"
 else
   echo "FAIL: no pre-fix copy of src/repair/comment-router.ts is available,"

@@ -107,11 +107,14 @@ image that carries no `.git`. Both are fixed:
   `node_modules/`, which is untracked build state. This mirrors how
   `docs/proof/openclaw-bay/run-proof.sh` provisions Playwright under `/tmp`.
 - `stage-before.sh` writes the base-commit copy of `comment-router.ts` to
-  `before/` on the host, where rsync picks it up as an untracked file. It is not
-  committed: it is a 5,400-line verbatim copy of a blob git already stores, and
-  the retention rule asks proof records to stay lightweight. Where git *is*
-  reachable the script re-derives it, so a stale copy cannot weaken the contrast,
-  and it aborts with the exact staging command if the copy is missing.
+  `before/` on the host, where rsync picks it up as an **untracked** file. It is
+  not committed: a 5,400-line verbatim duplicate of a blob git already stores is
+  exactly the kind of payload the docs/ retention rule asks proof records to avoid,
+  and an earlier revision of this branch did commit it. Because it is untracked,
+  writing it cannot alter the head under test — the tracked-state guard ignores
+  untracked paths and aborts if a tracked file moves. Where git *is* reachable the
+  script re-derives it, so a stale copy cannot weaken the contrast, and it fails
+  with the exact staging command if the copy is missing.
 - The script records `package.json` and `pnpm-lock.yaml` digests plus
   `git status --porcelain` at sync, then re-checks them after the fixture step,
   after dependency installation, and at the end of the run. Any drift aborts with
