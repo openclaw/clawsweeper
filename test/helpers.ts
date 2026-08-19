@@ -438,6 +438,20 @@ export function implementedCloseReport(overrides = {}) {
   })}\n\n## Evidence\n\n- **main fix:** git show confirms current main has the replacement implementation and it is not in the latest release yet\n  - file: [src/clawsweeper.ts](https://github.com/openclaw/clawsweeper/blob/1234567890abcdef1234567890abcdef12345678/src/clawsweeper.ts)\n  - sha: [1234567890ab](https://github.com/openclaw/clawsweeper/commit/1234567890abcdef1234567890abcdef12345678)\n\n## Close Comment\n\nClosing this because the requested behavior is already on main.\n`;
 }
 
+export function verifiedImplementationPullRequestReport(overrides = {}) {
+  const repository = String(
+    (overrides as { repository?: unknown }).repository ?? "openclaw/clawsweeper",
+  );
+  return implementedCloseReport({
+    fixed_pr_url: `https://github.com/${repository}/pull/900`,
+    fixed_pr_number: "900",
+    fixed_pr_merged_at: "2026-05-01T02:00:00Z",
+    fixed_pr_confidence: "high",
+    fixed_pr_source: "GitHub linked-issue current closing PR",
+    ...overrides,
+  });
+}
+
 export function stalePullRequestReport(overrides = {}) {
   return `${workPlanCandidateReport({
     repository: "openclaw/openclaw",
