@@ -5,6 +5,7 @@ import test from "node:test";
 
 import {
   contextHasNonAutomationActivityAfterForTest,
+  implementedOnMainCloseProvenanceBlock,
   isExactEventSourceRevisionChange,
   itemSourceRevisionSha256ForTest,
   renderReviewStartStatusComment,
@@ -24,6 +25,39 @@ import {
   withMockGh,
   workPlanCandidateReport,
 } from "./helpers.ts";
+
+test("apply-time implementation provenance keeps incomplete PR closeout metadata open", () => {
+  const incomplete = `repository: openclaw/openclaw
+fixed_pr_url: unknown
+fixed_pr_number: unknown
+fixed_pr_confidence: unknown
+fixed_pr_source: unknown
+fixed_pr_merged_at: unknown`;
+  assert.equal(
+    implementedOnMainCloseProvenanceBlock(
+      incomplete,
+      "pull_request",
+      118679,
+      "implemented_on_main",
+    ),
+    "implemented-on-main close requires a GitHub-verified, same-repository merged fixing pull request",
+  );
+
+  const verified = `repository: openclaw/openclaw
+fixed_pr_url: https://github.com/openclaw/openclaw/pull/456
+fixed_pr_number: 456
+fixed_pr_confidence: high
+fixed_pr_source: GitHub linked-issue closing PR reference
+fixed_pr_merged_at: 2026-08-18T12:00:00Z`;
+  assert.equal(
+    implementedOnMainCloseProvenanceBlock(verified, "pull_request", 118679, "implemented_on_main"),
+    null,
+  );
+  assert.equal(
+    implementedOnMainCloseProvenanceBlock(verified, "pull_request", 456, "implemented_on_main"),
+    "implemented-on-main close requires a GitHub-verified, same-repository merged fixing pull request",
+  );
+});
 
 test("same-item comment payloads never overwrite an earlier pending mutation", () => {
   const root = mkdtempSync(tmpPrefix);
@@ -425,7 +459,6 @@ if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
         extraArgs: ["--sync-comments-only", "--item-numbers", String(number)],
       });
     });
-
     const calls = readFileSync(logPath, "utf8")
       .trim()
       .split("\n")
@@ -547,7 +580,6 @@ if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
         extraArgs: ["--sync-comments-only", "--item-numbers", String(number)],
       });
     });
-
     const calls = readFileSync(logPath, "utf8")
       .trim()
       .split("\n")
@@ -3583,6 +3615,8 @@ const path = args[1] || "";
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   const timeline = Array.from({ length: 100 }, (_, index) => ({ id: index + 1 }));
   console.log('HTTP/2 200\\nlink: <https://api.github.com/repos/openclaw/clawsweeper/issues/321/timeline?per_page=100&page=2>; rel="last"\\n\\n' + JSON.stringify(timeline));
+} else if (args[0] === "api" && args[1] === "graphql") {
+  console.log(JSON.stringify({ data: { repository: { issue: { state: "CLOSED", timelineItems: { nodes: [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, repository: { nameWithOwner: "openclaw/clawsweeper" } } }] } } } } }));
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[{
     id: 9321,
@@ -3687,6 +3721,9 @@ test("apply-decisions posts an explicit close-time note before closing PR propos
       reproduction_confidence: "high",
       fixed_pr_url: "https://github.com/openclaw/clawsweeper/pull/900",
       fixed_pr_number: "900",
+      fixed_pr_confidence: "high",
+      fixed_pr_source: "GitHub verified implementation landing",
+      fixed_pr_merged_at: "2026-05-01T02:00:00Z",
       fixed_sha: "1234567890abcdef1234567890abcdef12345678",
       fixed_at: "2026-05-01T02:00:00Z",
     })}\n\n## Evidence\n\n- **main fix:** git show confirms current main has the replacement implementation and it is not in the latest release yet\n  - file: [src/clawsweeper.ts](https://github.com/openclaw/clawsweeper/blob/1234567890abcdef1234567890abcdef12345678/src/clawsweeper.ts)\n  - sha: [1234567890ab](https://github.com/openclaw/clawsweeper/commit/1234567890abcdef1234567890abcdef12345678)\n\n## Close Comment\n\nClosing this PR because the fix is already on main.\n`;
@@ -3704,6 +3741,8 @@ appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args[1] || "";
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && args[1] === "graphql") {
+  console.log(JSON.stringify({ data: { repository: { issue: { state: "CLOSED", timelineItems: { nodes: [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, url: "https://github.com/openclaw/clawsweeper/pull/900", mergedAt: "2026-05-01T02:00:00Z", repository: { nameWithOwner: "openclaw/clawsweeper" } } }] } } } } }));
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   if (args.includes("--method") && args.includes("POST")) {
     const input = args[args.indexOf("--input") + 1];
@@ -3741,6 +3780,20 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     comments: 1,
     pull_request: { url: "https://api.github.com/repos/openclaw/clawsweeper/pulls/321" }
   }));
+} else if (args[0] === "api" && path === "repos/openclaw/clawsweeper") {
+  console.log(JSON.stringify({ default_branch: "main" }));
+} else if (args[0] === "api" && /\\/pulls\\/900$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 900,
+    title: "fix: rendered work plans",
+    html_url: "https://github.com/openclaw/clawsweeper/pull/900",
+    state: "closed",
+    merged: true,
+    merged_at: "2026-05-01T02:00:00Z",
+    merge_commit_sha: "fixed-sha",
+    head: { sha: "fixed-head" },
+    base: { ref: "main" }
+  }));
 } else if (args[0] === "api" && /\\/pulls\\/321$/.test(path)) {
   console.log(JSON.stringify({
     number: 321,
@@ -3749,6 +3802,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     changed_files: 0,
     commits: 0,
     review_comments: 0,
+    body: "Fixes #456",
     head: { sha: "head-sha", ref: "branch", repo: { full_name: "fork/clawsweeper" } },
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/clawsweeper" } },
     user: { login: "reporter" }
@@ -3775,7 +3829,6 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         extraArgs: ["--apply-kind", "all", "--processed-limit", "2"],
       });
     });
-
     const calls = readFileSync(logPath, "utf8")
       .trim()
       .split("\n")
@@ -3799,7 +3852,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     assert.equal(postedBodies.length, 1);
     assert.match(postedBodies[0], /ClawSweeper applied the proposed close for this PR/);
     assert.match(postedBodies[0], /Close reason: already implemented on main/);
-    assert.match(postedBodies[0], /durable ClawSweeper review/);
+    assert.match(postedBodies[0], /Implementation evidence: \[fix PR #900\]/);
     assert.match(postedBodies[0], /clawsweeper-close-applied item=321/);
     assert.ok(existsSync(join(closedDir, "321.md")));
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [

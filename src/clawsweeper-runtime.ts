@@ -25,6 +25,7 @@ import { stableJson } from "./stable-json.js";
 
 import { createActionCommands } from "./clawsweeper-action-commands.js";
 import { createApplyDecisionWorkflow } from "./clawsweeper-apply-decision-workflow.js";
+import { implementedOnMainCloseProvenanceBlock } from "./clawsweeper-apply-close-execution.js";
 import { createApplyGuards } from "./clawsweeper-apply-guards.js";
 import { createAssistWorkflow } from "./clawsweeper-assist.js";
 import { isDocsPath } from "./clawsweeper-change-detection.js";
@@ -98,7 +99,12 @@ import { createReviewPlanning } from "./clawsweeper-review-planning.js";
 import { createReviewPresentation } from "./clawsweeper-review-presentation.js";
 import { createReviewRuntime } from "./clawsweeper-review-runtime.js";
 import { createSourceRevisionTools } from "./clawsweeper-source-revision.js";
-import { createStatusContext } from "./clawsweeper-status-context.js";
+import {
+  currentClosingPullRequestReferenceFromIssueTimeline,
+  createStatusContext,
+  linkedIssueNumbersForImplementationProvenance,
+  linkedIssueNumbersForPullRequestBody,
+} from "./clawsweeper-status-context.js";
 import { createSweepStatus } from "./clawsweeper-sweep-status.js";
 import type {
   Decision,
@@ -803,7 +809,18 @@ const statusContext = createStatusContext({
   recordOrUndefined,
 });
 export const { fixedPullRequestFromCommitPullsForTest } = statusContext;
-const { attachFixedPullRequest, displayTitle, readSweepStatusSummary } = statusContext;
+export {
+  currentClosingPullRequestReferenceFromIssueTimeline,
+  implementedOnMainCloseProvenanceBlock,
+  linkedIssueNumbersForPullRequestBody,
+  linkedIssueNumbersForImplementationProvenance,
+};
+const {
+  attachFixedPullRequest,
+  displayTitle,
+  implementedOnMainPullRequestProvenanceApplyBlock,
+  readSweepStatusSummary,
+} = statusContext;
 
 const regressionProvenanceVerifier = createRegressionProvenanceVerifier({
   fetchPull: (repo, number) =>
@@ -1320,6 +1337,7 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   isBulkFilerExemptAuthorAssociation,
   ...sourceRevisionTools,
   isMaintainerAuthorAssociation,
+  implementedOnMainPullRequestProvenanceApplyBlock,
   isVerifiedFixedCloseReason,
   login,
   mutationErrorMessage,

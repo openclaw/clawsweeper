@@ -32,6 +32,7 @@ type ApplyCloseExecutionDependencies = Pick<
   | "ensureIdeaArchiveLabel"
   | "ensureRuntimeDelayFits"
   | "GitHubRuntimeBudgetError"
+  | "implementedOnMainPullRequestProvenanceApplyBlock"
   | "issueRecentHumanCommentBlockReasonSafe"
   | "lowSignalUnmergeablePrApplyBlockReasonSafe"
   | "normalizeLabelName"
@@ -52,6 +53,42 @@ type ReviewFreshnessBlock = {
   currentUpdatedAt?: string;
   currentSnapshotHash?: string;
 };
+
+export function implementedOnMainCloseProvenanceBlock(
+  markdown: string,
+  itemKind: Item["kind"],
+  itemNumber: number,
+  closeReason: CloseReason,
+): string | null {
+  if (
+    itemKind !== "pull_request" ||
+    !["implemented_on_main", "mostly_implemented_on_main"].includes(closeReason)
+  ) {
+    return null;
+  }
+  const fixedPrUrl = markdown.match(/^fixed_pr_url: (.+)$/m)?.[1]?.trim();
+  const repository = markdown.match(/^repository: (.+)$/m)?.[1]?.trim();
+  const fixedPrNumber = markdown.match(/^fixed_pr_number: (\d+)$/m)?.[1]?.trim();
+  const fixedPrConfidence = markdown.match(/^fixed_pr_confidence: (.+)$/m)?.[1]?.trim();
+  const fixedPrSource = markdown.match(/^fixed_pr_source: (.+)$/m)?.[1]?.trim();
+  const fixedPrMergedAt = markdown.match(/^fixed_pr_merged_at: (.+)$/m)?.[1]?.trim();
+  if (
+    fixedPrUrl &&
+    repository &&
+    fixedPrNumber &&
+    fixedPrNumber !== String(itemNumber) &&
+    fixedPrUrl === `https://github.com/${repository}/pull/${fixedPrNumber}` &&
+    fixedPrConfidence === "high" &&
+    fixedPrSource &&
+    fixedPrSource !== "unknown" &&
+    fixedPrSource.includes("GitHub ") &&
+    fixedPrMergedAt &&
+    fixedPrMergedAt !== "unknown"
+  ) {
+    return null;
+  }
+  return "implemented-on-main close requires a GitHub-verified, same-repository merged fixing pull request";
+}
 
 interface ApplyCloseExecutionOptions {
   applyCloseReasons: ReadonlySet<CloseReason> | null;
@@ -111,6 +148,7 @@ export function executeApplyClose(
     ensureIdeaArchiveLabel,
     ensureRuntimeDelayFits,
     GitHubRuntimeBudgetError,
+    implementedOnMainPullRequestProvenanceApplyBlock,
     issueRecentHumanCommentBlockReasonSafe,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
     normalizeLabelName,
@@ -191,6 +229,21 @@ export function executeApplyClose(
   }
   if (!closeReasonEnabled(closeReason, applyCloseReasons)) {
     return recordSkip("kept_open", `close reason ${closeReason} is not enabled for this apply run`);
+  }
+  const implementationProvenanceBlock = implementedOnMainCloseProvenanceBlock(
+    getMarkdown(),
+    item.kind,
+    item.number,
+    closeReason,
+  );
+  if (implementationProvenanceBlock) return skip("kept_open", implementationProvenanceBlock);
+  const currentImplementationProvenanceBlock = implementedOnMainPullRequestProvenanceApplyBlock(
+    getMarkdown(),
+    item,
+    closeReason,
+  );
+  if (currentImplementationProvenanceBlock) {
+    return skip("kept_open", currentImplementationProvenanceBlock);
   }
 
   const currentReportValidation = validateCloseDecision(

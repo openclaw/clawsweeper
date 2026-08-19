@@ -226,6 +226,11 @@ export interface CreateApplyDecisionWorkflowDependencies {
   hasVerifiedLocalCheckoutAccess: (markdown: string) => boolean;
   impactLabelsFromReport: (markdown: string) => ImpactLabelName[];
   isApplyCloseCandidateReport: (markdown: string) => boolean;
+  implementedOnMainPullRequestProvenanceApplyBlock: (
+    markdown: string,
+    item: Item,
+    closeReason: Decision["closeReason"],
+  ) => string | null;
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
   isExactEventSourceRevisionChange: (itemKind: Item["kind"], reason: string) => boolean;
   isGoodFirstIssue: (state: IssueAdvisoryLabelState, currentLabels: readonly string[]) => boolean;

@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createStatusContext } from "../dist/clawsweeper-status-context.js";
+import { GitHubRateLimitError } from "../dist/github-retry.js";
 import { closeDecision, item, reportFrontMatter } from "./helpers.ts";
 
-function statusContextWithCalls() {
+function statusContextWithCalls(
+  defaultBranch = "main",
+  options: { rateLimitOnApplyRead?: boolean; rateLimitOnIssueRead?: boolean; freshApplyBody?: boolean } = {},
+) {
   const calls: string[] = [];
   const recentPulls = [
     pull(701, "cold-list-a", 101),
@@ -34,8 +38,40 @@ function statusContextWithCalls() {
   const ghJson = <T>(args: string[]): T => {
     const path = args[1] ?? "";
     calls.push(path);
-    if (path === "repos/openclaw/openclaw") return { default_branch: "main" } as T;
+    if (path === "graphql") {
+      if (options.rateLimitOnIssueRead) throw new GitHubRateLimitError("API rate limit exceeded");
+      return {
+        data: {
+          repository: {
+            issue: {
+              state: "CLOSED",
+              timelineItems: {
+                nodes: [
+                  {
+                    __typename: "ClosedEvent",
+                    createdAt: "2026-08-19T12:00:00Z",
+                    closer: {
+                      __typename: "PullRequest",
+                      number: 900,
+                      repository: { nameWithOwner: "openclaw/openclaw" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      } as T;
+    }
+    if (path === "repos/openclaw/openclaw") return { default_branch: defaultBranch } as T;
     if (path.startsWith("repos/openclaw/openclaw/pulls?")) return recentPulls as T;
+    if (path === "repos/openclaw/openclaw/pulls/123") {
+      if (options.rateLimitOnApplyRead) throw new GitHubRateLimitError("API rate limit exceeded");
+      return { body: options.freshApplyBody ? "Fixes #456" : "No longer linked" } as T;
+    }
+    if (path === "repos/openclaw/openclaw/pulls/900") {
+      return { ...pull(900, "current", 456), base: { ref: defaultBranch } } as T;
+    }
     const fallback = path.match(/^repos\/openclaw\/openclaw\/commits\/([^/]+)\/pulls$/);
     if (fallback?.[1]) return (fallbackPulls.get(fallback[1]) ?? []) as T;
     const commit = path.match(/^repos\/openclaw\/openclaw\/commits\/([^/]+)$/);
@@ -199,4 +235,66 @@ test("a changed fixed SHA does not reuse a prior association", () => {
 
   assert.equal(resolved.fixedPullRequest?.number, 701);
   assert.equal(calls.filter((path) => path.includes("/pulls?state=all")).length, 1);
+});
+
+test("PR implementation closeout revalidates current issue linkage on the repository default branch", () => {
+  const { calls, context } = statusContextWithCalls("master");
+  const resolved = context.attachFixedPullRequest(
+    closeDecision({ fixedSha: "same-sha" }),
+    item({ number: 123, kind: "pull_request" }),
+    { pullRequest: { body: "Fixes #456" } },
+    persistedReview(123, "same-sha", 999),
+  );
+
+  assert.equal(resolved.fixedPullRequest?.number, 900);
+  assert.equal(resolved.fixedPullRequest?.source, "GitHub linked-issue current closing PR");
+  assert.deepEqual(calls, [
+    "graphql",
+    "repos/openclaw/openclaw",
+    "repos/openclaw/openclaw/pulls/900",
+  ]);
+});
+
+test("apply-time PR closeout rejects stale issue linkage", () => {
+  const { calls, context } = statusContextWithCalls();
+  const block = context.implementedOnMainPullRequestProvenanceApplyBlock(
+    reportFrontMatter({ fixed_pr_number: "900" }),
+    item({ number: 123, kind: "pull_request" }),
+    "implemented_on_main",
+  );
+
+  assert.equal(
+    block,
+    "implemented-on-main close no longer has a current explicit same-repository issue link",
+  );
+  assert.deepEqual(calls, ["repos/openclaw/openclaw/pulls/123"]);
+});
+
+test("apply-time PR closeout propagates GitHub rate limits", () => {
+  const { context } = statusContextWithCalls("main", { rateLimitOnApplyRead: true });
+  assert.throws(
+    () =>
+      context.implementedOnMainPullRequestProvenanceApplyBlock(
+        reportFrontMatter({ fixed_pr_number: "900" }),
+        item({ number: 123, kind: "pull_request" }),
+        "implemented_on_main",
+      ),
+    GitHubRateLimitError,
+  );
+});
+
+test("apply-time PR closeout propagates linked-issue GitHub rate limits", () => {
+  const { context } = statusContextWithCalls("main", {
+    freshApplyBody: true,
+    rateLimitOnIssueRead: true,
+  });
+  assert.throws(
+    () =>
+      context.implementedOnMainPullRequestProvenanceApplyBlock(
+        reportFrontMatter({ fixed_pr_number: "900" }),
+        item({ number: 123, kind: "pull_request" }),
+        "implemented_on_main",
+      ),
+    GitHubRateLimitError,
+  );
 });

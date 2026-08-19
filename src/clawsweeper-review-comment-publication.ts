@@ -224,16 +224,16 @@ export function createReviewCommentPublication(
   }
 
   function closeAppliedEvidenceLink(markdown: string, itemUrl: string): string {
-    const reviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
-    if (reviewCommentUrl && reviewCommentUrl !== "unknown") {
-      return markdownLink("durable ClawSweeper review", reviewCommentUrl);
-    }
     const fixedPrUrl = frontMatterValue(markdown, "fixed_pr_url");
     const fixedPrNumber = frontMatterValue(markdown, "fixed_pr_number");
     if (fixedPrUrl && fixedPrUrl !== "unknown") {
       const label =
         fixedPrNumber && fixedPrNumber !== "unknown" ? `fix PR #${fixedPrNumber}` : "fix PR";
       return markdownLink(label, fixedPrUrl);
+    }
+    const reviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
+    if (reviewCommentUrl && reviewCommentUrl !== "unknown") {
+      return markdownLink("durable ClawSweeper review", reviewCommentUrl);
     }
     return markdownLink("closed PR", itemUrl);
   }
@@ -250,7 +250,7 @@ export function createReviewCommentPublication(
       "",
       "- Action: closed this PR.",
       `- Close reason: ${closeReasonText(options.closeReason)}.`,
-      `- Evidence: ${closeAppliedEvidenceLink(options.markdown, options.itemUrl)}.`,
+      `- Implementation evidence: ${closeAppliedEvidenceLink(options.markdown, options.itemUrl)}.`,
       coverageProofLine,
       "",
       closeAppliedCommentMarker(options.number),

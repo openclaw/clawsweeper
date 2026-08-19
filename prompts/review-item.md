@@ -75,6 +75,13 @@ whether the fix is in the latest release or main-only, and whether a merged or
 open related PR now owns the work. When current `main` solves the issue with
 high-confidence source, history, and release/main-only evidence, prefer an
 `implemented_on_main` close even if the fix has not shipped in a release yet.
+For a pull request, source resemblance, an overlapping feature, or a current
+main commit alone is never sufficient to propose `implemented_on_main` or
+`mostly_implemented_on_main`. Require a GitHub-verified, merged fixing PR in
+the same repository, with an explicit connection to the requested behavior.
+If that connection is incomplete, ambiguous, cross-repository, or only
+inferred from filenames/commit text, keep the PR open and do not close any
+linked issue. A linked issue is not permission or proof to close either item.
 If a meaningful requested behavior remains missing, keep the item open or link
 the canonical remaining work.
 
@@ -689,6 +696,11 @@ Use reason-specific anchors:
   release tag/version. If it is only on current `main`, say that and include the
   commit timestamp. If you cannot establish either the shipped release or the
   main-only timestamp with high confidence, keep the item open.
+  For PR closure, additionally require a same-repository merged fixing PR that
+  GitHub formally identifies as closing the relevant issue or request; cite its
+  PR URL in the review and final closeout. A commit with no such PR, a PR that
+  only happens to touch nearby code, an unverified issue link, or an ambiguous
+  partial implementation is a keep-open result, not an automatic close.
 - For `cannot_reproduce`, distinguish missing reporter evidence from a report
   whose concrete mechanism is disproved. Search the complete current tree,
   source history, renamed paths, and shipped version when identified; trace the

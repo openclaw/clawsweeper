@@ -15,8 +15,91 @@ import {
   isRegressionAssessment,
   isPublicRegressionProvenance,
 } from "./clawsweeper-regression-provenance.js";
-import { isGitHubNotFoundError } from "./github-retry.js";
+import { GitHubRateLimitError, isGitHubNotFoundError } from "./github-retry.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
+
+export const MAX_IMPLEMENTATION_LINKED_ISSUE_REFERENCES = 5;
+
+export function linkedIssueNumbersForPullRequestBody(
+  body: string,
+  targetRepo: string,
+): readonly number[] | null {
+  const escapedRepo = escapeRegExp(targetRepo);
+  const closingReference = new RegExp(
+    `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b[\\t ]*(?::[\\t ]*)?` +
+      `(?:#(\\d+)\\b|(${escapedRepo})#(\\d+)\\b|https?:\\/\\/github\\.com\\/(${escapedRepo})\\/issues\\/(\\d+)\\b|([A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+)#(\\d+)\\b|https?:\\/\\/github\\.com\\/([A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+)\\/issues\\/(\\d+)\\b)`,
+    "gi",
+  );
+  const issueNumbers = new Set<number>();
+  for (const match of body.matchAll(closingReference)) {
+    const linkedRepo = match[2] ?? match[4] ?? match[6] ?? match[8] ?? targetRepo;
+    if (linkedRepo.toLowerCase() !== targetRepo.toLowerCase()) return null;
+    const rawNumber = match[1] ?? match[3] ?? match[5] ?? match[7] ?? match[9];
+    const number = rawNumber ? Number(rawNumber) : NaN;
+    if (!Number.isSafeInteger(number) || number <= 0) return null;
+    issueNumbers.add(number);
+  }
+  return issueNumbers.size > 0 ? [...issueNumbers].sort((left, right) => left - right) : null;
+}
+
+export function linkedIssueNumbersForImplementationProvenance(
+  body: string,
+  targetRepo: string,
+): readonly number[] | null {
+  const issueNumbers = linkedIssueNumbersForPullRequestBody(body, targetRepo);
+  return issueNumbers && issueNumbers.length <= MAX_IMPLEMENTATION_LINKED_ISSUE_REFERENCES
+    ? issueNumbers
+    : null;
+}
+
+export function currentClosingPullRequestReferenceFromIssueTimeline(
+  result: unknown,
+): Record<string, unknown> | null {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) return null;
+  const data = (result as Record<string, unknown>).data;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
+  const repository = (data as Record<string, unknown>).repository;
+  if (typeof repository !== "object" || repository === null || Array.isArray(repository)) return null;
+  const issue = (repository as Record<string, unknown>).issue;
+  if (typeof issue !== "object" || issue === null || Array.isArray(issue)) return null;
+  const issueRecord = issue as Record<string, unknown>;
+  if (typeof issueRecord.state !== "string" || issueRecord.state.toUpperCase() !== "CLOSED") {
+    return null;
+  }
+  const timelineItems = issueRecord.timelineItems;
+  if (typeof timelineItems !== "object" || timelineItems === null || Array.isArray(timelineItems)) {
+    return null;
+  }
+  const nodes = (timelineItems as Record<string, unknown>).nodes;
+  if (!Array.isArray(nodes)) return null;
+  const lifecycleEvents = nodes
+    .filter(
+      (node): node is Record<string, unknown> =>
+        typeof node === "object" &&
+        node !== null &&
+        !Array.isArray(node) &&
+        ["ClosedEvent", "ReopenedEvent"].includes(String((node as Record<string, unknown>).__typename)),
+    )
+    .map((node) => ({
+      node,
+      createdAt: typeof node.createdAt === "string" ? Date.parse(node.createdAt) : NaN,
+    }))
+    .filter((event) => Number.isFinite(event.createdAt));
+  if (lifecycleEvents.length === 0) return null;
+  const latestCreatedAt = Math.max(...lifecycleEvents.map((event) => event.createdAt));
+  const latestEvents = lifecycleEvents.filter((event) => event.createdAt === latestCreatedAt);
+  if (
+    latestEvents.length !== 1 ||
+    latestEvents[0]?.node.__typename !== "ClosedEvent" ||
+    typeof latestEvents[0].node.closer !== "object" ||
+    latestEvents[0].node.closer === null ||
+    Array.isArray(latestEvents[0].node.closer)
+  ) {
+    return null;
+  }
+  const closer = latestEvents[0].node.closer as Record<string, unknown>;
+  return closer.__typename === "PullRequest" ? closer : null;
+}
 
 interface StatusContextDependencies {
   targetProfile: () => RepositoryProfile;
@@ -400,6 +483,120 @@ ${profileStatusEnd(profile)}`;
     return candidates[0] ?? null;
   }
 
+  function fixedPullRequestForLinkedIssue(issueNumber: number): FixedPullRequest | null {
+    try {
+      const [owner, name] = targetRepo().split("/");
+      if (!owner || !name) return null;
+      const timeline = ghJson<unknown>([
+        "api",
+        "graphql",
+        "-f",
+        "query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { state timelineItems(last: 100, itemTypes: [CLOSED_EVENT, REOPENED_EVENT]) { nodes { __typename ... on ClosedEvent { createdAt closer { __typename ... on PullRequest { number url mergedAt repository { nameWithOwner } } } } ... on ReopenedEvent { createdAt } } } } } }",
+        "-F",
+        `owner=${owner}`,
+        "-F",
+        `name=${name}`,
+        "-F",
+        `number=${issueNumber}`,
+      ]);
+      const reference = currentClosingPullRequestReferenceFromIssueTimeline(timeline);
+      if (!reference) return null;
+      const record = asRecord(reference);
+      const number = record.number;
+      const repository = asRecord(record.repository);
+      if (
+        typeof number !== "number" ||
+        !Number.isInteger(number) ||
+        repository.nameWithOwner !== targetRepo()
+      ) {
+        return null;
+      }
+      const defaultBranch = defaultBranchForFixedSha();
+      if (!defaultBranch) return null;
+      const pull = ghJson<unknown>([
+        "api",
+        `repos/${targetRepo()}/pulls/${number}`,
+        "--jq",
+        "{number,title,state,html_url,merged,merged_at,merge_commit_sha,head:{sha:.head.sha},base:{ref:.base.ref}}",
+      ]);
+      return pullTargetsBranch(pull, defaultBranch)
+        ? fixedPullRequestFromUnknown(pull, "GitHub linked-issue current closing PR")
+        : null;
+    } catch (error) {
+      if (error instanceof GitHubRateLimitError) throw error;
+      // Missing or unreadable linkage must not turn into an inferred close.
+      return null;
+    }
+  }
+
+  function fixedPullRequestFromLinkedPullRequest(
+    item: Item,
+    context: ItemContext,
+    decision: Decision,
+  ): FixedPullRequest | null {
+    if (item.kind !== "pull_request") return null;
+    if (decision.decision !== "close" || decision.confidence !== "high") return null;
+    if (!["implemented_on_main", "mostly_implemented_on_main"].includes(decision.closeReason)) {
+      return null;
+    }
+    const body = asRecord(context.pullRequest).body;
+    if (typeof body !== "string") return null;
+    const issueNumbers = linkedIssueNumbersForImplementationProvenance(body, targetRepo());
+    if (!issueNumbers) return null;
+    let first: FixedPullRequest | null = null;
+    for (const issueNumber of issueNumbers) {
+      const pull = fixedPullRequestForLinkedIssue(issueNumber);
+      if (!pull || pull.number === item.number) return null;
+      if (first && pull.number !== first.number) return null;
+      first = pull;
+    }
+    return first;
+  }
+
+  function implementedOnMainPullRequestProvenanceApplyBlock(
+    markdown: string,
+    item: Item,
+    closeReason: Decision["closeReason"],
+  ): string | null {
+    if (
+      item.kind !== "pull_request" ||
+      !["implemented_on_main", "mostly_implemented_on_main"].includes(closeReason)
+    ) {
+      return null;
+    }
+    const expectedNumber = Number(frontMatterValue(markdown, "fixed_pr_number"));
+    if (!Number.isInteger(expectedNumber) || expectedNumber <= 0) {
+      return "implemented-on-main close requires current GitHub-verified fixing pull request provenance";
+    }
+    try {
+      const pull = asRecord(
+        ghJson<unknown>([
+          "api",
+          `repos/${targetRepo()}/pulls/${item.number}`,
+          "--jq",
+          "{body}",
+        ]),
+      );
+      if (typeof pull.body !== "string") {
+        return "implemented-on-main close could not revalidate the pull request's current issue linkage";
+      }
+      const issueNumbers = linkedIssueNumbersForImplementationProvenance(pull.body, targetRepo());
+      if (!issueNumbers) {
+        return "implemented-on-main close no longer has a current explicit same-repository issue link";
+      }
+      for (const issueNumber of issueNumbers) {
+        const fixedPullRequest = fixedPullRequestForLinkedIssue(issueNumber);
+        if (!fixedPullRequest || fixedPullRequest.number !== expectedNumber) {
+          return "implemented-on-main close no longer has current GitHub-verified fixing pull request provenance";
+        }
+      }
+      return null;
+    } catch (error) {
+      if (error instanceof GitHubRateLimitError) throw error;
+      return "implemented-on-main close could not revalidate current GitHub provenance";
+    }
+  }
+
   function fixedPullRequestFromCommitPulls(
     pulls: readonly unknown[],
     source: string,
@@ -589,11 +786,19 @@ ${profileStatusEnd(profile)}`;
     context: ItemContext,
     priorReviewMarkdown?: string,
   ): Decision {
+    if (
+      item.kind === "pull_request" &&
+      ["implemented_on_main", "mostly_implemented_on_main"].includes(decision.closeReason)
+    ) {
+      const fixedPullRequest = fixedPullRequestFromLinkedPullRequest(item, context, decision);
+      return { ...decision, fixedPullRequest };
+    }
     if (decision.fixedPullRequest) return decision;
     const fixedPullRequest =
       fixedPullRequestFromContext(item, context, decision) ??
       persistedFixedPullRequest(decision, priorReviewMarkdown) ??
-      (item.kind === "issue" ? fixedPullRequestFromCommitSha(decision, item.number) : null);
+      (item.kind === "issue" ? fixedPullRequestFromCommitSha(decision, item.number) : null) ??
+      fixedPullRequestFromLinkedPullRequest(item, context, decision);
     return fixedPullRequest ? { ...decision, fixedPullRequest } : decision;
   }
 
@@ -683,7 +888,9 @@ ${profileStatusEnd(profile)}`;
 
   return {
     fixedPullRequestFromCommitPullsForTest,
+    linkedIssueNumbersForPullRequestBodyForTest: linkedIssueNumbersForPullRequestBody,
     attachFixedPullRequest,
+    implementedOnMainPullRequestProvenanceApplyBlock,
     currentWorkflowStatusBlock,
     displayTitle,
     fixedInReportText,
