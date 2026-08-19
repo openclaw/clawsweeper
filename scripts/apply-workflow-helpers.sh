@@ -55,6 +55,13 @@ normalize_comment_sync_mode() {
   fi
 }
 
+prepare_comment_sync_cursor_arg() {
+  comment_sync_cursor_arg=()
+  if [ "${sync_open_pr_batch:-false}" = "true" ]; then
+    comment_sync_cursor_arg=(--comment-sync-cursor "${comment_sync_initial_cursor:-0}")
+  fi
+}
+
 trim_comment_sync_cycle_batch() {
   if [ "${comment_sync_cycle_wrapped:-false}" != "true" ] ||
     [ "${comment_sync_cycle_start:-0}" -le 0 ] ||
@@ -242,13 +249,26 @@ complete_comment_sync_batch() {
       completed_csv="${completed_csv:+$completed_csv,}$selected_item"
     fi
   done
+  # Apply removes an interrupted current item before writing this trace, so
+  # completed_csv is the terminal execution prefix. An empty prefix returns
+  # below before any wrap-cycle state can be persisted.
+  local execution_order_items=()
+  if [ -n "$completed_csv" ]; then
+    IFS=, read -r -a execution_order_items <<<"$completed_csv"
+  fi
+  for selected_item in "${selected_items[@]}"; do
+    case ",$completed_csv," in
+      *",$selected_item,"*) ;;
+      *) execution_order_items+=("$selected_item") ;;
+    esac
+  done
   local completed_count=0
   local cursor_count=0
   local safe_cursor=""
   local blocked_prefix=false
   local initial_cursor="${comment_sync_initial_cursor:-0}"
   local unfinished_items=()
-  for selected_item in "${selected_items[@]}"; do
+  for selected_item in "${execution_order_items[@]}"; do
     case ",$completed_csv," in
       *",$selected_item,"*)
         completed_count=$((completed_count + 1))
@@ -310,8 +330,8 @@ complete_comment_sync_batch() {
         ! comment_sync_uses_automatic_policy; }; then
       local cycle_start="${comment_sync_cycle_start:-0}"
       local cycle_wrapped="${comment_sync_cycle_wrapped:-false}"
-      if [ "${#selected_items[@]}" -gt 0 ] &&
-        [ "${selected_items[0]}" -le "$initial_cursor" ] &&
+      if [ "${#execution_order_items[@]}" -gt 0 ] &&
+        [ "${execution_order_items[0]}" -le "$initial_cursor" ] &&
         [ "$initial_cursor" -gt 0 ] &&
         [ "$safe_cursor" -le "$initial_cursor" ]; then
         cycle_wrapped=true
@@ -335,8 +355,8 @@ complete_comment_sync_batch() {
         fi
       fi
       if [ "$cycle_wrapped" = "true" ] &&
-        [ "${#selected_items[@]}" -gt 0 ] &&
-        [ "${selected_items[0]}" -le "$cycle_start" ] &&
+        [ "${#execution_order_items[@]}" -gt 0 ] &&
+        [ "${execution_order_items[0]}" -le "$cycle_start" ] &&
         [ "$safe_cursor" -ge "$cycle_start" ]; then
         lookahead_count=0
       fi

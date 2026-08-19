@@ -96,6 +96,7 @@ export async function postCanonicalRecordTuple(options: {
     ) {
       throw error;
     }
+    // oxlint-disable-next-line preserve-caught-error -- A cause would retain credentials after sanitization.
     throw new Error(redactStateAppendSecrets(errorMessage(error)));
   }
 }
@@ -146,6 +147,7 @@ export async function postCanonicalCommitRecords(options: {
     }
     return { inserted, unchanged };
   } catch (error) {
+    // oxlint-disable-next-line preserve-caught-error -- A cause would retain credentials after sanitization.
     throw new Error(redactStateAppendSecrets(errorMessage(error)));
   }
 }

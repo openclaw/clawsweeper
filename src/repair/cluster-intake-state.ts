@@ -652,7 +652,7 @@ export function validateClusterJobContent(
   try {
     frontmatter = parseSimpleYaml(match[1] ?? "");
   } catch (error) {
-    throw new Error(`invalid cluster intake job frontmatter: ${String(error)}`);
+    throw new Error(`invalid cluster intake job frontmatter: ${String(error)}`, { cause: error });
   }
   const validationErrors = validateJob({ frontmatter });
   if (validationErrors.length > 0) {
@@ -715,7 +715,7 @@ export function clusterJobTargetRepository(content: string): string {
   try {
     frontmatter = parseSimpleYaml(match[1] ?? "");
   } catch (error) {
-    throw new Error(`invalid cluster intake job frontmatter: ${String(error)}`);
+    throw new Error(`invalid cluster intake job frontmatter: ${String(error)}`, { cause: error });
   }
   const targetRepo = String(frontmatter.repo || "").trim();
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) {

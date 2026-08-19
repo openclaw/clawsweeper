@@ -109,8 +109,15 @@ export function latestClawSweeperReview(
     .filter((comment) => isDurableReviewComment(comment, number, context))
     .sort((left, right) => commentTimestampMs(right) - commentTimestampMs(left))[0];
   if (!latest) return null;
-  const comment = asRecord(latest);
-  const body = rawCommentBody(latest);
+  return previousClawSweeperReviewFromComment(latest, context);
+}
+
+export function previousClawSweeperReviewFromComment(
+  value: unknown,
+  context: ReviewCommentContext,
+): PreviousClawSweeperReview {
+  const comment = asRecord(value);
+  const body = rawCommentBody(value);
   const verdictMarker = htmlMarkerWithPrefix(body, "clawsweeper-verdict:");
   const actionMarker = htmlMarkerWithPrefix(body, "clawsweeper-action:");
   const history = parseReviewHistory(body);

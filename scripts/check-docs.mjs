@@ -536,6 +536,8 @@ function checkOperationalHealthDocumentation({ root, findings }) {
   const documentedFields = [
     "zombie_queued_runs",
     "oldest_zombie_queued_minutes",
+    "wedged_rerun_runs",
+    "oldest_wedged_rerun_minutes",
     "approval_gated_runs",
     "oldest_approval_gated_minutes",
   ];
@@ -559,6 +561,7 @@ function checkOperationalHealthDocumentation({ root, findings }) {
   const expected = [
     `queued runs from ${minutes("OPERATIONAL_QUEUE_DEGRADED_MS")} through ${minutes("OPERATIONAL_QUEUE_ZOMBIE_MS")} minutes old degrade operational health`,
     `queued runs older than ${minutes("OPERATIONAL_QUEUE_ZOMBIE_MS")} minutes are reported separately as zombies`,
+    `pre-queue pending reruns older than ${minutes("OPERATIONAL_WEDGED_RERUN_MS")} minutes are reported separately as wedged`,
     `in-progress runs become stalled after ${minutes("OPERATIONAL_RUNNING_STALLED_MS")} minutes`,
     ...documentedFields,
   ];

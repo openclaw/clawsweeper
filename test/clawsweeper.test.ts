@@ -2346,6 +2346,13 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
   assert.doesNotMatch(localCheck, /gpt-5\.5/);
   assert.match(action, /env -u OPENAI_API_KEY[\s\S]*-u CLAWSWEEPER_INTERNAL_MODEL/);
   assert.equal(action.match(/--ignore-scripts/g)?.length, 2);
+  assert.match(action, /runner\.os == 'Linux' && runner\.environment == 'github-hosted'/);
+  assert.match(action, /kernel\.unprivileged_userns_clone=1/);
+  assert.match(action, /kernel\.apparmor_restrict_unprivileged_userns=0/);
+  assert.match(
+    action,
+    /codex sandbox --permission-profile :read-only -C "\$GITHUB_WORKSPACE" -- \/bin\/true/,
+  );
   for (const workflow of workflows) {
     assert.match(workflow, /CLAWSWEEPER_MODEL: internal/);
     assert.match(workflow, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);

@@ -1,0 +1,296 @@
+PROOF_PHASE=environment
+provider=local-container
+image=node:24-bookworm
+head=080904359d54c6e2cdf9b0e314bf44471c09d196
+v24.19.0
+11.17.0
+PROOF_PHASE=git_snapshot
+PROOF_PHASE=corepack
+
+added 1 package in 366ms
+11.10.0
+PROOF_PHASE=install
+? Verifying lockfile against supply-chain policies (79 entries)...
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +19
++++++++++++++++++++
+
+   ╭───────────────────────────────────────────────╮
+   │                                               │
+   │     Update available! 11.10.0 → 11.21.0.      │
+   │     Changelog: https://pnpm.io/v/11.21.0      │
+   │   To update, run: corepack use pnpm@11.21.0   │
+   │                                               │
+   ╰───────────────────────────────────────────────╯
+
+✓ Lockfile passes supply-chain policies (79 entries in 641ms)
+Progress: resolved 19, reused 0, downloaded 15, added 15
+Progress: resolved 19, reused 0, downloaded 19, added 19, done
+
+dependencies:
++ typescript 7.0.2
++ yaml 2.9.0
+
+devDependencies:
++ @types/node 24.13.3
++ markdown-it 15.0.0
++ oxfmt 0.58.0
++ oxlint 1.73.0
++ oxlint-tsgolint 0.24.0
+
+Done in 2.4s using pnpm v11.10.0
+PROOF_PHASE=build
+PROOF_PHASE=behavior
+✔ canonical record operator auth is scoped to items (42.516133ms)
+direct publication plan rejected: invalid bounded state mutation path: https://[REDACTED]@example.invalid/GITHUB_TOKEN=[REDACTED]
+direct publication plan rejected: conflicting direct publication retry
+direct exact-review publication truncated: request exceeds 4 MB
+✔ direct publication endpoint authenticates, dedupes, and returns a structured 413 (85.394141ms)
+✔ direct publication keeps GitHub casing while using lowercase canonical record slugs (41.696716ms)
+✔ fetching a stale publication batch records a durable superseded telemetry outcome (11.696169ms)
+✔ non-batch publication completions record durable terminal outcomes without inferring acceptance (12.307044ms)
+✔ direct lifecycle requeue becomes a fresh fenced source-drift revision (22.745004ms)
+✔ direct lifecycle requeue preserves a newer command follow-up revision (14.502128ms)
+✔ direct lifecycle router completion preserves a newer command follow-up revision (17.39667ms)
+✔ durable direct command acknowledgement survives successor lease expiry (20.28942ms)
+✔ terminal disposition materializes a direct acknowledgement driver after lease expiry (19.292004ms)
+✔ fallback canonical routing materializes an acknowledgement driver after lease expiry (19.023003ms)
+✔ a successor splits a pending terminal finalizer before command merge (7.774626ms)
+✔ terminal acknowledgement dispatch rejection remains a durable fenced retry (57.279636ms)
+✔ direct command publication retains its terminal acknowledgement driver after durable handoff (10.012586ms)
+✔ authenticated fanout cursors round-trip through durable storage (11.508585ms)
+✔ placeholder recovery cursor survives queue reconstruction (10.980377ms)
+✔ Worker lifecycle projection permits one command acknowledgement after durable routing (14.186045ms)
+✔ signed Worker records a status-ID-only terminal acknowledgement (15.193336ms)
+✔ Worker lifecycle acknowledgement preserves canonical GitHub repository casing (14.376211ms)
+✔ Worker converges legacy and non-review acknowledgement receipts without webhook races (43.842883ms)
+✔ Worker binds legacy webhooks while preserving marker-only command addresses (28.601213ms)
+✔ signed terminal receipts bind legacy migration to its admitted status comment (7.860001ms)
+✔ signed migrated receipts cannot complete a newer same-marker lifecycle revision (6.570376ms)
+✔ dead-letter workflow is manual, serialized, and bounded to safe actions (5.769835ms)
+✔ automatic dead-letter reconciliation is scheduled, bounded, and least privileged (8.289751ms)
+✔ target-read App mode fails at startup for every incomplete credential pair (517.144766ms)
+✔ parked review reconciliation plans by default and executes terminal resolve plus open recovery (467.088548ms)
+✔ parked review reconciliation reports bounded HTTP and timeout skip diagnostics (147.144945ms)
+✔ parked review reconciliation stops safely at the workflow deadline (1021.053946ms)
+✔ automatic reconciliation resolves terminal rows and recovers one fresh review per target (153.003571ms)
+✔ automatic reconciliation skips fresh recovery under pressure and enforces hard caps (352.658692ms)
+✔ automatic recovery rechecks authoritative pressure and deduplicates canonical GitHub identities (352.541317ms)
+✔ duplicate cleanup finishes before target-scoped recovery and safely resumes after failure (448.540127ms)
+✔ concurrent duplicate cleanup refreshes inventory before safe recovery (216.850084ms)
+✔ an unchanged blocked cleanup cannot starve independent fresh recovery (128.180357ms)
+✔ a blocked targetless legacy row cannot starve independent fresh recovery (130.363233ms)
+✔ many blocked targetless legacy rows cannot exhaust the inventory refresh budget (128.344858ms)
+✔ multiple independently blocked groups share one authoritative refresh (152.32107ms)
+✔ blocked canonical targets are counted only once across inventory refreshes (150.032112ms)
+✔ active and capped targets are counted only once across blocked inventory refreshes (307.012267ms)
+✔ staged recovery retains its original target budget across a blocked refresh (131.470609ms)
+✔ blocked duplicate cleanup fences its primary without starving another target (128.149441ms)
+✔ only unchanged blocked groups fence aliases after an aggregated refresh (145.009736ms)
+✔ a blocked transferred alias fences its whole target without starving another (144.467569ms)
+✔ reconciliation rejects a non-atomic guarded cleanup response (106.811187ms)
+✔ reconciliation rejects a malformed zero-mutation guarded cleanup response (107.465646ms)
+✔ independent cleanup races refresh once before recovering current aliases (178.304993ms)
+✔ inventory refreshes preserve the original per-run target budget (110.855438ms)
+✔ inventory refreshes preserve cleanup counters when later target discovery fails (118.340106ms)
+✔ automatic recovery rechecks pressure immediately after duplicate cleanup (110.641688ms)
+✔ renamed aliases are grouped before recovery and active siblings block every alias (327.719188ms)
+✔ active publication siblings block recovery beyond the first resolution page (116.633314ms)
+✔ automatic recovery refuses aliases omitted by caps or failed GitHub checks (353.617109ms)
+✔ bounded canonical discovery deduplicates transferred eligible aliases (110.14498ms)
+✔ incomplete bounded inventories drain invalid rows without recovering unknown aliases (1393.351016ms)
+✔ automatic recovery defers after cleanup unparks previously hidden aliases (113.24223ms)
+✔ terminal cleanup stops immediately when it unparks new inventory (111.317771ms)
+✔ automatic recovery stops after a successful recovery unparks hidden aliases (111.201105ms)
+✔ automatic recovery stops when a skipped recovery unparks a hidden active alias (110.658313ms)
+✔ automatic reconciliation preserves every independently active review fence (235.005337ms)
+✔ singleton active sentinels cannot starve actionable canonical targets (112.994479ms)
+✔ permanently ineligible targets cannot starve bounded recoveries (117.498481ms)
+✔ distinct active publication and review fences survive transferred aliases (115.193147ms)
+✔ every independently active transferred alias remains fenced (102.933894ms)
+✔ reconciliation fully inventories more than 2,000 supported dead letters (673.207128ms)
+✔ 100-target reconciliation batches canonical lookups within the GitHub token budget (214.28275ms)
+✔ batched canonical discovery skips a throttled batch and inspects later targets (155.545155ms)
+✔ batched canonical discovery aborts on an authorization 403 (107.672437ms)
+✔ terminal target rechecks stay bounded for closed issues and pull requests (356.247859ms)
+✔ mid-sized closed pull-request inventories use GraphQL identity batching (372.187112ms)
+✔ direct reconciliation defaults match the 100-target, ten-recovery schedule (174.480783ms)
+✔ merged GraphQL pull requests are terminal and do not block other targets (239.503088ms)
+✔ automatic recovery respects current and shrinking queue capacity (532.729643ms)
+✔ capacity-blocked open targets cannot starve later closed-target cleanup (107.408188ms)
+✔ automatic recovery includes the authoritative transferred GitHub target alias (107.957395ms)
+✔ automatic recovery preserves the only duplicate matching the current pull-request head (109.477896ms)
+✔ duplicate resolution fences every transferred canonical sibling alias (110.198688ms)
+✔ automatic reconciliation does not resolve a target that has reopened (111.568563ms)
+✔ inaccessible canonical targets cannot starve independently invalid dead letters (114.287147ms)
+✔ serial canonical discovery skips one throttle and recovers later targets (120.478148ms)
+✔ multi-owner reconciliation recovers installed targets and reports missing installations (202.135038ms)
+✔ a missing selected repository does not hide an accessible repository under the same owner (138.41461ms)
+✔ throttled owner token mint 429 skips that owner's targets and recovers another owner (225.43796ms)
+✔ throttled owner token mint 403 skips that owner's targets and recovers another owner (178.715368ms)
+✔ throttled installation lookup skips that owner's targets and recovers another owner (159.136114ms)
+✔ an installation removed before token mint remains a bounded missing-installation skip (138.746693ms)
+✔ batched discovery skips a throttled owner setup and continues with another owner (210.96104ms)
+✔ a cached setup throttle spanning three batches counts once and later owners continue (146.822862ms)
+✔ ordinary installation_lookup 401 remains fail-closed (129.843358ms)
+✔ ordinary installation_lookup 403 remains fail-closed (177.972784ms)
+✔ ordinary token_mint 401 remains fail-closed (136.140401ms)
+✔ ordinary token_mint 403 remains fail-closed (158.48028ms)
+✔ persistent setup throttling trips the shared fuse before another owner is attempted (181.752826ms)
+✔ authorization 403 with a valid owner installation remains fail-closed (121.653065ms)
+✔ serial canonical discovery aborts on an authorization 403 (109.403063ms)
+✔ serial canonical discovery aborts after three consecutive throttles (104.566812ms)
+✔ serial recovery revalidation skips one throttle and recovers later targets (130.596025ms)
+✔ serial recovery revalidation aborts on an authorization 403 (110.681438ms)
+✔ serial recovery revalidation aborts after three consecutive throttles (110.943813ms)
+✔ automatic reconciliation leaves an advanced pull-request head open without canonical proof (219.182626ms)
+✔ automatic reconciliation resolves a stale publication only with canonical newer-head proof (103.064769ms)
+✔ head-mismatch supersession revalidates the live head immediately before resolution (105.753229ms)
+✔ head-mismatch supersession enforces target and row caps (321.026686ms)
+✔ head-mismatch supersession includes proven tuple failures but excludes workflow cancellation (214.579583ms)
+✔ automatic reconciliation recovers a current-head tuple failure instead of superseding it (101.504311ms)
+✔ automatic recovery revalidates the live GitHub target after cleanup (105.162228ms)
+✔ automatic reconciliation classifies every deterministic skip path (932.938637ms)
+✔ automatic reconciliation explains every skipped target in a mixed scenario (125.81844ms)
+✔ operator inventories every page, signs requests, and reports unique targets (101.861603ms)
+✔ operator previews by default and caps mutations at two audited ids (1011.830318ms)
+✔ direct publication canonically stores, dedupes, and ratchets revisions (13.814878ms)
+✔ direct publication makes section moves canonical with sibling and stale-sidecar tombstones (5.851084ms)
+✔ direct publication idempotency compares canonical content (4.34946ms)
+✔ direct publication preserves canonical targets and exact publication fences independently (5.007501ms)
+✔ direct publication retains an immutable lifecycle recovery plan without backfill (6.125876ms)
+✔ direct publication dedupes an accepted tuple after its batch fence is reclaimed (2.517ms)
+✔ direct publication preserves a reclaimed superseded fence outcome (3.919792ms)
+✔ direct publication does not order independent fences by their local revisions (13.805086ms)
+✔ direct publication chunks large canonical values without projection rows (210.754624ms)
+✔ direct publication prunes terminal plan receipts after seven days but keeps records (3.567334ms)
+✔ direct publication replaces a retired pending plan with canonical state (3.532293ms)
+✔ direct publication validates tuple and per-file size caps (0.997458ms)
+✔ direct publication accepts repository-only path casing differences (7.789418ms)
+✔ lowercase direct publication preserves operation bytes exactly (0.728292ms)
+✔ canonical tuple packet references ignore only repository casing (2.74875ms)
+✔ publication batches atomically select ready items without duplicate active ownership (2.333709ms)
+✔ publication batches allow a bounded number of disjoint active owners (1.537376ms)
+✔ batch schema migration derives a safe cap for an active legacy lease (0.883875ms)
+✔ fresh batch schema remains writable by the current-main insert after rollback (0.703209ms)
+✔ expired unfinished membership is reclaimable with a new fencing generation (1.366333ms)
+✔ batch completion is fenced per item and retains publication metadata (1.354ms)
+✔ bounded cleanup preserves active batches and open dead letters (1.562834ms)
+✔ cleanup retains fencing generations when a batch id is reused (1.091209ms)
+exact-review legacy state-batch reconciliation could not read producer runs github app is not configured
+exact-review legacy state-batch reconciliation could not read producer runs github app is not configured
+✔ batch claims retain lifecycle identity until canonical routing is durable (41.166758ms)
+✔ queue batch claim defaults off and additive schema keeps the legacy version (25.25163ms)
+✔ critical publication health does not override review pressure (19.232671ms)
+✔ legacy queue migration preserves receipts while adding empty batch tables (6.018251ms)
+✔ batch claim honors the existing dispatcher pause gate (7.321335ms)
+✔ an active batch blocks the legacy publisher until its lease expires (10.328544ms)
+✔ queue claims distinct batches up to the configured concurrent owner cap (10.278211ms)
+✔ batch claim serializes distinct publication events for the same durable item (8.392502ms)
+✔ publication ingress is never shed by the review pending soft limit (7.600252ms)
+✔ newer publication revisions supersede unowned pending rows at enqueue (6.612001ms)
+✔ semantic lineage dedupe cannot leave obsolete rows eligible for a batch (59.636803ms)
+✔ stale publication ingress is acknowledged without replacing a newer revision (7.123502ms)
+✔ publication reconcile preserves active batches and removes older revisions after expiry (8.710919ms)
+✔ publication reconcile backfills historical duplicate lineages in bounded passes (10.325919ms)
+✔ publication lineage reconcile defers the whole lineage while a batch owns it (9.376793ms)
+✔ batch claim scans beyond but cannot exceed the configured rollout size (10.173043ms)
+exact-review publication terminal check failed for openclaw/openclaw#110@publish:1010:1 live review item state network failure
+exact-review publication terminal check failed for openclaw/openclaw#111@publish:1011:1 live review item state network failure
+exact-review publication terminal check failed for openclaw/openclaw#112@publish:1012:1 live review item state network failure
+exact-review publication terminal check failed for aaa/repo#115@publish:1014:1 GitHub App installation network failure
+✔ rollout dispatches one full batch workflow without admitting legacy publishers (81.724641ms)
+exact-review publication terminal check failed for openclaw/openclaw#150@publish:5150:1 GitHub App installation network failure
+exact-review publication terminal check failed for openclaw/openclaw#151@publish:5151:1 GitHub App installation network failure
+exact-review publication terminal check failed for openclaw/openclaw#152@publish:5152:1 GitHub App installation network failure
+exact-review publication terminal check failed for openclaw/openclaw#153@publish:5153:1 GitHub App installation network failure
+✔ rollout refills concurrent batch owner slots without exceeding the cap (65.004221ms)
+✔ batch rollout wakes a retryable publication at its next eligibility time (5.693543ms)
+✔ batch protocol routes require the shared internal signature (1.90075ms)
+✔ batch claims reject partial dispatch metadata (5.156376ms)
+✔ publication batch observability always retains active leases beside bounded history (1.325917ms)
+✔ publication batch observability retains the most recently completed terminal history (1.165459ms)
+✔ reservation-to-claim observability traces one batch without exposing lease credentials (12.305836ms)
+✔ authenticated publication reconciliation dry-run reports without mutation (7.440668ms)
+✔ queue fetch terminalizes a stale batch revision before dispatch (10.525336ms)
+✔ batch heartbeat extends only the active fenced lease (8.905793ms)
+✔ batch admission keeps one target owner for least-privilege credentials (6.704084ms)
+✔ batch ask widens owner scanning without exceeding the configured lease size (9.104669ms)
+✔ fresh publication admission reserves bounded service and preserves historical FIFO (10.515711ms)
+✔ continuously replenished fresh work preserves historical progress across batches (14.051795ms)
+✔ fresh publication admission flag restores strict historical FIFO (6.318251ms)
+✔ batch fetch supersedes a claimed publication when the source head advances (7.617627ms)
+✔ idempotent batch claims retain the cap recorded by the original lease (12.035753ms)
+✔ queue completion atomically removes only the owned publication revision (15.742794ms)
+✔ direct fenced cleanup treats an expired batch as an idempotent no-op (6.300668ms)
+✔ retryable batch completion releases ownership and preserves queue retry policy (9.015502ms)
+✔ credential circuits persist, preserve healthy owners, and defer unattempted members without retry charge (437.844834ms)
+✔ repository Actions circuit blocks every publication batch until reset (17.044004ms)
+✔ batch failure completion requeues a newer revision owned by the same lease (8.945251ms)
+✔ batch published completion preserves a newer revision owned by the same lease (7.646668ms)
+✔ partial batch completion publishes healthy members and releases retryable members (7.155543ms)
+✔ batch completion schedules the remaining partial batch at its departure deadline (6.390793ms)
+ℹ tests 176
+ℹ suites 0
+ℹ pass 176
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 19379.240454
+PROOF_PHASE=full_gate
+. check:active-surface$ node scripts/check-active-surface.ts
+. check:dashboard-queue-boundary$ node scripts/check-dashboard-queue-boundary.ts
+. check:dashboard-strict$ node scripts/check-dashboard-strict.mjs
+. check:docs$ node scripts/check-docs.mjs
+. check:dashboard-queue-boundary: dashboard queue boundary check passed
+. check:dashboard-queue-boundary: Done
+. check:limits$ node scripts/check-limits.ts
+. check:limits: Done
+. format:check$ oxfmt --check src scripts test dashboard package.json tsconfig.json tsconfig.repair.json tsconfig.dashboard.json tsconfig.dashboard-strict.json .oxfmtrc.json config schema .github/actions .github/workflows
+. check:active-surface: Done
+. format:check: Checking formatting...
+. check:dashboard-strict: Done
+. check:docs: Documentation checks failed (36):
+. check:docs: - docs/proof/blob-hydration-env/README.md:60 [link] target does not exist: docs/proof/blob-hydration-env/artifacts/current-git-tree-traversal.log
+. check:docs: - docs/proof/blob-hydration-env/README.md:62 [link] target does not exist: docs/proof/blob-hydration-env/artifacts/git-2.39.5-tree-traversal.log
+. check:docs: - docs/proof/blob-hydration-env/README.md:97 [link] target does not exist: docs/proof/blob-hydration-env/artifacts/full-suite-result.log
+. check:docs: - docs/proof/blob-hydration-env/README.md:98 [link] target does not exist: docs/proof/blob-hydration-env/artifacts/gates.txt
+. check:docs: - docs/proof/blob-hydration-env/README.md:99 [link] target does not exist: docs/proof/blob-hydration-env/artifacts/runtime.txt
+. check:docs: - docs/proof/blob-hydration-env/README.md:105 [link] target does not exist: docs/proof/blob-hydration-env/artifacts/crabbox-provenance.json
+. check:docs: - docs/proof/bounded-status-store-reads/README.md:70 [link] target does not exist: docs/proof/bounded-status-store-reads/artifacts/local-summary.json
+. check:docs: - docs/proof/bounded-status-store-reads/README.md:71 [link] target does not exist: docs/proof/bounded-status-store-reads/artifacts/row-counts.json
+. check:docs: - docs/proof/bounded-status-store-reads/README.md:72 [link] target does not exist: docs/proof/bounded-status-store-reads/artifacts/response-comparison.json
+. check:docs: - docs/proof/csw-1089/README.md:107 [link] target does not exist: docs/proof/csw-1089/artifacts/crabbox-local-container-provenance.json
+. check:docs: - docs/proof/csw-1089/README.md:109 [link] target does not exist: docs/proof/csw-1089/artifacts/crabbox-local-container-stdout.log
+. check:docs: - docs/proof/dead-review-telemetry/README.md:40 [link] target does not exist: docs/proof/dead-review-telemetry/artifacts/crabbox-local-container-provenance.json
+. check:docs: - docs/proof/dead-review-telemetry/README.md:41 [link] target does not exist: docs/proof/dead-review-telemetry/artifacts/crabbox-local-container-stdout.log
+. check:docs: - docs/proof/extract-dashboard-pages/README.md:54 [link] target does not exist: docs/proof/extract-dashboard-pages/artifacts/crabbox-local-container-provenance.json
+. check:docs: - docs/proof/modernize-stdlib-batch/README.md:11 [link] target does not exist: docs/proof/modernize-stdlib-batch/artifacts/adoption-green.log
+. check:docs: - docs/proof/modernize-stdlib-batch/README.md:11 [link] target does not exist: docs/proof/modernize-stdlib-batch/artifacts/adoption-red.log
+. check:docs: - docs/proof/modernize-stdlib-batch/README.md:13 [link] target does not exist: docs/proof/modernize-stdlib-batch/artifacts/cli-after.txt
+. check:docs: - docs/proof/modernize-stdlib-batch/README.md:13 [link] target does not exist: docs/proof/modernize-stdlib-batch/artifacts/cli-before.txt
+. check:docs: - docs/proof/modernize-stdlib-batch/README.md:13 [link] target does not exist: docs/proof/modernize-stdlib-batch/artifacts/cli-transcript.diff
+. check:docs: - docs/proof/queue-policy-readmodel-extraction/README.md:51 [link] target does not exist: docs/proof/queue-policy-readmodel-extraction/artifacts/crabbox-local-container-provenance.json
+. check:docs: - docs/proof/queue-policy-readmodel-extraction/README.md:52 [link] target does not exist: docs/proof/queue-policy-readmodel-extraction/artifacts/crabbox-local-container-stdout.log
+. check:docs: - docs/proof/status-check-rollup/README.md:39 [link] target does not exist: docs/proof/status-check-rollup/artifacts/classification-pair.json
+. check:docs: - docs/proof/status-check-rollup/README.md:44 [link] target does not exist: docs/proof/status-check-rollup/artifacts/check-runs.redacted.json
+. check:docs: - docs/proof/status-check-rollup/README.md:47 [link] target does not exist: docs/proof/status-check-rollup/artifacts/report-only-finalizer.txt
+. check:docs: - docs/proof/status-check-rollup/README.md:50 [link] target does not exist: docs/proof/status-check-rollup/artifacts/provenance.json
+. check:docs: - docs/proof/status-check-rollup/README.md:79 [link] target does not exist: docs/proof/status-check-rollup/artifacts/crabbox-local-container-provenance.json
+. check:docs: - docs/proof/status-check-rollup/README.md:80 [link] target does not exist: docs/proof/status-check-rollup/artifacts/crabbox-local-container-stdout.log
+. check:docs: - docs/proof/unify-automation-limits/README.md:37 [link] target does not exist: docs/proof/unify-automation-limits/artifacts/value-equivalence.diff
+. check:docs: - docs/proof/unify-automation-limits/README.md:38 [link] target does not exist: docs/proof/unify-automation-limits/artifacts/check-limits.log
+. check:docs: - docs/proof/unify-automation-limits/README.md:39 [link] target does not exist: docs/proof/unify-automation-limits/artifacts/baseline.json
+. check:docs: - docs/proof/unify-automation-limits/README.md:57 [link] target does not exist: docs/proof/unify-automation-limits/artifacts/crabbox-local-container-provenance.json
+. check:docs: - docs/proof/unify-automation-limits/README.md:58 [link] target does not exist: docs/proof/unify-automation-limits/artifacts/crabbox-local-container-stdout.log
+. check:docs: - docs/proof/unify-github-app-auth/README.md:53 [link] target does not exist: docs/proof/unify-github-app-auth/artifacts/proof-summary.json
+. check:docs: - docs/proof/unify-github-app-auth/README.md:54 [link] target does not exist: docs/proof/unify-github-app-auth/artifacts/github-requests.redacted.json
+. check:docs: - docs/proof/unify-github-app-auth/README.md:69 [link] target does not exist: docs/proof/unify-github-app-auth/artifacts/crabbox-local-container-provenance.json
+. check:docs: - docs/proof/unify-github-app-auth/README.md:70 [link] target does not exist: docs/proof/unify-github-app-auth/artifacts/crabbox-local-container-summary.log
+. check:docs: Failed
+[ELIFECYCLE] Command failed with exit code 1.
+[ELIFECYCLE] Command failed with exit code 1.
+[ELIFECYCLE] Command failed with exit code 1.
+[ELIFECYCLE] Command failed with exit code 1.

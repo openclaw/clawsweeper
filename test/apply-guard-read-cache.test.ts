@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createApplyGuards } from "../dist/clawsweeper-apply-guards.js";
+import { LiveReadGeneration } from "../dist/live-read-generation.js";
 
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -134,26 +135,23 @@ test("apply guard read cache resets between items", () => {
   ]);
 });
 
-test("apply guard read cache distinguishes full request arguments", () => {
+test("apply policy guards share canonical full-object reads", () => {
   const calls = [];
   const guards = createGuards({
     ghJson: (args) => {
       calls.push(args);
       const path = args[1];
       if (path?.endsWith("/issues/42")) return { assignees: [] };
-      if (path?.endsWith("/pulls/42")) {
-        return args.includes("--jq")
-          ? { requested_reviewers: [], requested_teams: [] }
-          : {
-              created_at: "2025-01-01T00:00:00Z",
-              mergeable: false,
-              mergeable_state: "dirty",
-              requested_reviewers: [],
-              requested_teams: [],
-              user: { login: "contributor" },
-              head: {},
-            };
-      }
+      if (path?.endsWith("/pulls/42"))
+        return {
+          created_at: "2025-01-01T00:00:00Z",
+          mergeable: false,
+          mergeable_state: "dirty",
+          requested_reviewers: [],
+          requested_teams: [],
+          user: { login: "contributor" },
+          head: {},
+        };
       return {};
     },
   });
@@ -163,13 +161,31 @@ test("apply guard read cache distinguishes full request arguments", () => {
   guards.lowSignalUnmergeablePrApplyBlockReasonSafe(42, 30);
 
   const pullCalls = calls.filter((args) => args[1] === "repos/openclaw/openclaw/pulls/42");
-  assert.equal(pullCalls.length, 2);
-  assert.equal(
-    pullCalls.some((args) => args.includes("--jq")),
-    true,
+  assert.equal(pullCalls.length, 1);
+  assert.equal(pullCalls[0]?.includes("--jq"), false);
+});
+
+test("apply guards follow generation invalidation and explicit bypass", () => {
+  let calls = 0;
+  const guards = createGuards({
+    ghPaged: () => {
+      calls += 1;
+      return [];
+    },
+  });
+  const generation = new LiveReadGeneration();
+  guards.setGuardReadGeneration(generation);
+
+  guards.issueRecentHumanCommentBlockReasonSafe(42, 30);
+  guards.issueRecentHumanCommentBlockReasonSafe(42, 30);
+  assert.equal(calls, 1);
+
+  generation.invalidate();
+  guards.issueRecentHumanCommentBlockReasonSafe(42, 30);
+  assert.equal(calls, 2);
+
+  guards.withGuardReadOptions({ bypassGenerationCache: true }, () =>
+    guards.issueRecentHumanCommentBlockReasonSafe(42, 30),
   );
-  assert.equal(
-    pullCalls.some((args) => !args.includes("--jq")),
-    true,
-  );
+  assert.equal(calls, 3);
 });

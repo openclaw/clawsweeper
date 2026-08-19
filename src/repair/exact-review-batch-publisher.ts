@@ -17,4 +17,5 @@ export type ExactReviewBatchCompletion = ExactReviewBatchMember & {
   errorFingerprint?: string;
   retryAt?: string;
   attempted?: boolean;
+  poolClass?: "repository_actions" | "target_app";
 };

@@ -162,6 +162,17 @@ export function closeDecision(overrides = {}) {
       status: "not_needed",
       summary: "This non-PR issue triage does not need Telegram visible proof.",
     },
+    liveProofPlan: {
+      status: "not_applicable",
+      surface: "none",
+      reason: "This non-PR issue triage does not need live proof.",
+      payoff: {
+        kind: "static_text",
+        justification: "No recording payoff exists for this non-PR issue triage.",
+      },
+      entry: "",
+      steps: [],
+    },
     mantisRecommendation: {
       status: "not_recommended",
       scenario: "none",
@@ -224,7 +235,7 @@ export function changelogReviewDecision(overrides = {}) {
 }
 
 export function reportFrontMatter(overrides = {}) {
-  const values = {
+  const values: Record<string, unknown> = {
     repository: "openclaw/openclaw",
     type: "issue",
     decision: "keep_open",
@@ -233,6 +244,12 @@ export function reportFrontMatter(overrides = {}) {
     action_taken: "kept_open",
     ...overrides,
   };
+  if (
+    values.local_checkout_access === "verified" &&
+    !Object.hasOwn(values, "local_checkout_access_source")
+  ) {
+    Object.assign(values, { local_checkout_access_source: "runner_preflight_v1" });
+  }
   if (values.type === "pull_request" && !Object.hasOwn(values, "review_activity_cursor")) {
     Object.assign(values, { review_activity_cursor: emptyReviewedPrActivityCursor });
   }
@@ -366,6 +383,7 @@ export function workPlanCandidateReport(overrides = {}) {
     reviewed_at: new Date().toISOString(),
     review_status: "complete",
     local_checkout_access: "verified",
+    local_checkout_access_source: "runner_preflight_v1",
     decision: "keep_open",
     action_taken: "kept_open",
     work_candidate: "queue_fix_pr",

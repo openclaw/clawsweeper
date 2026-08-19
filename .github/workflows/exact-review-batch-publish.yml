@@ -66,6 +66,16 @@ jobs:
         with:
           build-script: build:all
 
+      - uses: ./.github/actions/setup-github-egress-observer
+        id: github-egress-observer
+        continue-on-error: true
+        with:
+          metrics-path: .artifacts/exact-review-batch/github-egress-v2.jsonl
+          rate-limit-path: .artifacts/exact-review-batch/github-rate-limit-details-v2.jsonl
+          pool-class: repository_actions
+          stage: publication_prepare
+          source-action: exact_review_artifact_publish
+
       - name: Claim one durable publication batch
         id: batch
         env:
@@ -105,10 +115,21 @@ jobs:
           hydrate-git-state: "false"
           hydrate-state-blobs: "false"
 
+      - name: Install exact live-proof media validators
+        if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+
       - name: Prepare each item independently
         if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_SECRET_ACCESS_KEY }}
+          CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT }}
+          CLAWSWEEPER_LIVE_PROOF_BUCKET: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BUCKET }}
+          CLAWSWEEPER_LIVE_PROOF_BASE_URL: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BASE_URL }}
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
           REPO_TOKEN: ${{ github.token }}
         run: |
@@ -207,10 +228,16 @@ jobs:
             item_number="$(jq -r '.decision.itemNumber' <<<"$item")"
             source_action="$(jq -r '.decision.publication.producerDecision.sourceAction' <<<"$item")"
             repeat_revision="$(jq -r '.repeatRevision == true' <<<"$item")"
+            claim_generation="$(jq -r '.claimGeneration' <<<"$item")"
             fence_key="$(jq -r '.itemKey' <<<"$item")"
             revision="$(jq -r '.revision' <<<"$item")"
             export TARGET_REPO="$target_repo" ITEM_NUMBER="$item_number" FENCE_KEY="$fence_key" REVISION="$revision"
             export EXACT_REVIEW_GITHUB_REQUEST_REPEAT="$repeat_revision"
+            export CLAWSWEEPER_GITHUB_POOL_CLASS=repository_actions
+            export CLAWSWEEPER_GITHUB_STAGE=publication_router
+            export CLAWSWEEPER_GITHUB_SOURCE_ACTION="$source_action"
+            export CLAWSWEEPER_GITHUB_CLAIM_GENERATION="$claim_generation"
+            export CLAWSWEEPER_GITHUB_REQUEST_REPEAT="$repeat_revision"
             lifecycle_terminal=""
             lifecycle_router_outcome=""
             lifecycle_deferred_coverage="false"
@@ -387,6 +414,13 @@ jobs:
           EXACT_REVIEW_BATCH_OBSERVATION=final_github_apply \
             pnpm run --silent repair:exact-review-batch observe || true
           pnpm run --silent repair:exact-review-batch complete
+
+      - name: Submit batch GitHub egress telemetry
+        if: ${{ always() && steps.github-egress-observer.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: pnpm run --silent repair:github-egress-telemetry submit
 
       - name: Release unfinished batch members
         if: ${{ always() && steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}

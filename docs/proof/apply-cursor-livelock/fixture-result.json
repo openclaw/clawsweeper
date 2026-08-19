@@ -1,0 +1,77 @@
+{
+  "schema": "clawsweeper-apply-cursor-livelock-proof/v1",
+  "production_run": "https://github.com/openclaw/clawsweeper/actions/runs/31544381133",
+  "fixture": {
+    "initial_cursor": 105854,
+    "frontier": 105870,
+    "clipped_item": 85937,
+    "selected_count": 40,
+    "terminal_urgent_count": 26
+  },
+  "old_order": {
+    "first_item": 97566,
+    "frontier_index": 39,
+    "persisted_cursor": 105854,
+    "cursor_advance_count": 0,
+    "next_cursor": null,
+    "stdout": [
+      "Comment sync made no cursor progress; the next scheduled batch retries it.",
+      "RESULT cursor=105854 count=0 next="
+    ]
+  },
+  "current_order": {
+    "first_item": 105870,
+    "frontier_index": 0,
+    "selector_next_cursor": 105870,
+    "persisted_cursor": 105870,
+    "cursor_advance_count": 1,
+    "next_cursor": 105870,
+    "stdout": [
+      "Comment synchronization yielded its bounded cursor window to scheduled maintenance.",
+      "RESULT cursor=105870 count=1 next=105870"
+    ]
+  },
+  "adversarial_order": {
+    "input_order": [
+      87267,
+      95788,
+      97566,
+      105342,
+      105870
+    ],
+    "frontier_input_index": 4,
+    "first_executed": 105870,
+    "examined_item_numbers": [
+      105870
+    ],
+    "completion": {
+      "persisted_cursor": 105870,
+      "cursor_advance_count": 1,
+      "next_cursor": 105870,
+      "stdout": [
+        "Comment synchronization yielded its bounded cursor window to scheduled maintenance.",
+        "RESULT cursor=105870 count=1 next=105870"
+      ]
+    }
+  },
+  "clipped_frontier": {
+    "persisted_cursor": 105854,
+    "cursor_advance_count": 0,
+    "next_cursor": null,
+    "stdout": [
+      "Comment sync made no cursor progress; the next scheduled batch retries it.",
+      "RESULT cursor=105854 count=0 next="
+    ]
+  },
+  "assertions": {
+    "old_order_livelocks": true,
+    "current_order_advances_terminal_frontier": true,
+    "clipped_frontier_blocks": true,
+    "apply_loop_executes_frontier_first": true,
+    "adversarial_order_advances_terminal_frontier": true
+  },
+  "limits": [
+    "Synthetic filesystem records; no GitHub API calls or credentials.",
+    "The fixture proves cursor ordering and completion semantics, not production API latency."
+  ]
+}

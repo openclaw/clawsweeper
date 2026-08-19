@@ -107,11 +107,8 @@ async function main() {
   const legacyBay = await fetch(`${baseUrl}/bay-demo?repo=openclaw%2Fopenclaw&q=proof`, {
     redirect: "manual",
   });
-  if (
-    legacyBay.status !== 308 ||
-    legacyBay.headers.get("location") !== `${baseUrl}/bay?repo=openclaw%2Fopenclaw&q=proof`
-  ) {
-    throw new Error("legacy Bay route did not preserve its query in a permanent redirect");
+  if (!isCanonicalLegacyBayRedirect(legacyBay, baseUrl)) {
+    throw new Error("legacy Bay route did not strip its query in a permanent redirect");
   }
 
   const bayAssets = {};
@@ -214,6 +211,10 @@ async function fetchText(url) {
 
 export function containsDirectGitHubApiUrl(html) {
   return /(?:^|[^a-z0-9.-])api\.github\.com\.?(?=$|[^a-z0-9.-])/iu.test(html);
+}
+
+export function isCanonicalLegacyBayRedirect(response, baseUrl) {
+  return response.status === 308 && response.headers.get("location") === `${baseUrl}/bay`;
 }
 
 function positiveInteger(value, fallback) {

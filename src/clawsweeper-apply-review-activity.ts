@@ -2,6 +2,7 @@ import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-appl
 import { trimMiddle } from "./clawsweeper-text.js";
 import type { ItemKind } from "./clawsweeper-types.js";
 import {
+  compareReviewedPrActivityCursors,
   isReviewedPrActivityCursor,
   readStableReviewedPrActivityCursor,
   ReviewedPrActivityChangedDuringReadError,
@@ -28,8 +29,11 @@ export function createApplyReviewActivityGuard(
         fetchReviewedPrActivityCursor(number),
       );
       if (!currentCursor) return "pull request review activity exceeds the bounded reviewed cursor";
-      if (currentCursor !== expectedCursor)
-        return "pull request review activity changed since review";
+      const comparison = compareReviewedPrActivityCursors(expectedCursor, currentCursor);
+      if (comparison === "rebaseline") {
+        return "stored pull request review activity cursor version requires a fresh review";
+      }
+      if (comparison === "changed") return "pull request review activity changed since review";
       return null;
     } catch (error) {
       if (error instanceof GitHubRuntimeBudgetError) throw error;

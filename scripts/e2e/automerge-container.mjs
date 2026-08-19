@@ -13,6 +13,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { parseArgs as parseNodeArgs } from "node:util";
 
 const args = parseArgs(process.argv.slice(2));
 if (args.help) {
@@ -171,22 +172,50 @@ function assertRunSucceeded(command, child) {
 }
 
 function parseArgs(argv) {
-  const parsed = {};
+  const normalized = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--") continue;
-    if (arg === "-h" || arg === "--help") parsed.help = true;
-    else if (arg === "--no-build") parsed.noBuild = true;
-    else if (arg === "--scenario") parsed.scenario = requiredValue(argv, ++index, arg);
-    else if (arg === "--fixture") parsed.fixture = requiredValue(argv, ++index, arg);
-    else if (arg === "--expect") parsed.expect = requiredValue(argv, ++index, arg);
-    else if (arg === "--candidate-root") parsed.candidateRoot = requiredValue(argv, ++index, arg);
-    else if (arg === "--output") parsed.output = requiredValue(argv, ++index, arg);
-    else if (arg === "--image") parsed.image = requiredValue(argv, ++index, arg);
-    else if (arg === "--base-image") parsed.baseImage = requiredValue(argv, ++index, arg);
-    else throw new Error(`unknown option: ${arg}; use --help for usage`);
+    if (["-h", "--help", "--no-build"].includes(arg)) normalized.push(arg);
+    else if (
+      [
+        "--scenario",
+        "--fixture",
+        "--expect",
+        "--candidate-root",
+        "--output",
+        "--image",
+        "--base-image",
+      ].includes(arg)
+    ) {
+      normalized.push(`${arg}=${requiredValue(argv, ++index, arg)}`);
+    } else throw new Error(`unknown option: ${arg}; use --help for usage`);
   }
-  return parsed;
+  const { values } = parseNodeArgs({
+    args: normalized,
+    options: {
+      help: { type: "boolean", short: "h" },
+      "no-build": { type: "boolean" },
+      scenario: { type: "string" },
+      fixture: { type: "string" },
+      expect: { type: "string" },
+      "candidate-root": { type: "string" },
+      output: { type: "string" },
+      image: { type: "string" },
+      "base-image": { type: "string" },
+    },
+  });
+  return {
+    help: values.help,
+    noBuild: values["no-build"],
+    scenario: values.scenario,
+    fixture: values.fixture,
+    expect: values.expect,
+    candidateRoot: values["candidate-root"],
+    output: values.output,
+    image: values.image,
+    baseImage: values["base-image"],
+  };
 }
 
 function requiredValue(argv, index, option) {

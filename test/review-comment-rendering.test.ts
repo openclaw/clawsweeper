@@ -131,6 +131,14 @@ test("structural cache probes before hydration but acquires a lease before carry
   );
   const structuralWrite = reviewLoop.indexOf("writeFileSync(reportPath, carried", structuralLease);
   const contentCache = reviewLoop.indexOf("reviewContentCacheHit({");
+  const structuralPreflight = reviewLoop.indexOf("cachePreflightPasses(", structuralRevalidation);
+  const contentWrite = reviewLoop.indexOf("writeFileSync(reportPath, carried", contentCache);
+  const contentPreflight = reviewLoop.indexOf("cachePreflightPasses(", contentCache);
+  const provenancePromotions = [
+    ...reviewLoop.matchAll(
+      /carried = withRunnerPreflightProvenance\(carried, replaceFrontMatterValue\)/g,
+    ),
+  ];
   const hydration = reviewLoop.indexOf("collectItemContext(item");
   const mediaPrep = reviewLoop.indexOf("prepareMediaProofArtifacts(context", contentCache);
 
@@ -142,8 +150,17 @@ test("structural cache probes before hydration but acquires a lease before carry
   assert.ok(structuralLease > structuralHit);
   assert.ok(structuralRevalidation > structuralLease);
   assert.ok(structuralWrite > structuralRevalidation);
+  assert.ok(structuralPreflight > structuralRevalidation);
+  assert.ok(structuralPreflight < structuralWrite);
   assert.ok(structuralWrite < hydration);
   assert.ok(contentCache > structuralLease);
+  assert.ok(contentPreflight > contentCache);
+  assert.ok(contentPreflight < contentWrite);
+  assert.equal(provenancePromotions.length, 3);
+  assert.ok(provenancePromotions[0]!.index > structuralPreflight);
+  assert.ok(provenancePromotions[0]!.index < structuralWrite);
+  assert.ok(provenancePromotions[2]!.index > contentPreflight);
+  assert.ok(provenancePromotions[2]!.index < contentWrite);
   assert.ok(mediaPrep > contentCache);
   assert.match(
     reviewLoop.slice(structuralHit, structuralWrite),
@@ -225,6 +242,7 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
     "semanticCacheRevalidations += 1",
     semanticDecision,
   );
+  const semanticPreflight = reviewLoop.indexOf("cachePreflightPasses(", semanticDecision);
   const checkRevalidation = reviewLoop.indexOf("pullChecksContext(", semanticRevalidation);
   const priorReviewRevalidation = reviewLoop.indexOf(
     "fetchIssueReviewComments(item.number)",
@@ -242,6 +260,10 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
     "writeFileSync(reportPath, carried",
     semanticRevalidation,
   );
+  const semanticProvenance = reviewLoop.indexOf(
+    "carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue)",
+    semanticRevalidation,
+  );
   const contentCache = reviewLoop.indexOf("reviewContentCacheHit({", semanticWrite);
 
   assert.ok(hydration >= 0);
@@ -251,12 +273,16 @@ test("semantic cache runs after hydration and revalidates under the acquired lea
   assert.ok(issueReviewRevalidation < semanticRecord);
   assert.ok(semanticRecord > hydration);
   assert.ok(semanticDecision > semanticRecord);
+  assert.ok(semanticPreflight > semanticDecision);
+  assert.ok(semanticPreflight < semanticWrite);
   assert.ok(semanticRevalidation > semanticDecision);
   assert.ok(checkRevalidation > semanticRevalidation);
   assert.ok(priorReviewRevalidation > checkRevalidation);
   assert.ok(relationRevalidation > priorReviewRevalidation);
   assert.ok(revalidatedRecord > relationRevalidation);
   assert.ok(semanticWrite > revalidatedRecord);
+  assert.ok(semanticProvenance > revalidatedRecord);
+  assert.ok(semanticProvenance < semanticWrite);
   assert.ok(contentCache > semanticWrite);
   assert.match(
     reviewLoop.slice(semanticRevalidation, semanticWrite),
@@ -1794,7 +1820,7 @@ test("recovery cleanup preserves durable-review ordering and exact publication b
   assert.match(source.slice(recoveryCleanup, nextCatch), /removeLabel:\s*removeIssueLabel/);
 });
 
-test("placeholder sweep retries on every apply pass independent of comment body sync", () => {
+test("placeholder sweep waits for an authorized durable-comment mutation", () => {
   const source = readFileSync("src/clawsweeper-apply-decision-workflow.ts", "utf8");
   const earlyLeaseStart = source.indexOf("const earlyLeaseState = refreshReviewStartLeaseState();");
   assert.ok(earlyLeaseStart >= 0);
@@ -1804,6 +1830,6 @@ test("placeholder sweep retries on every apply pass independent of comment body 
   );
   assert.ok(needsReviewCommentSyncStart > earlyLeaseStart);
   const earlyWindow = source.slice(earlyLeaseStart, needsReviewCommentSyncStart);
-  assert.match(earlyWindow, /cleanupSupersededReviewPlaceholderComments\(\{/);
-  assert.match(earlyWindow, /comments:\s*earlyLeaseState\.comments/);
+  assert.doesNotMatch(earlyWindow, /cleanupSupersededReviewPlaceholderComments\(\{/);
+  assert.match(earlyWindow, /acquireApplyMutationLease\(lateLeaseState\)/);
 });

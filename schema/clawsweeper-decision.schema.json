@@ -42,6 +42,7 @@
     "realBehaviorProof",
     "prRating",
     "telegramVisibleProof",
+    "liveProofPlan",
     "mantisRecommendation",
     "featureShowcase",
     "overallCorrectness",
@@ -784,6 +785,143 @@
         "summary": {
           "type": "string",
           "description": "One concise sentence explaining why the PR should or should not receive the mantis: telegram-visible-proof label."
+        }
+      }
+    },
+    "liveProofPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "For PRs, recommend a deterministic live proof only when a user-visible browser or terminal behavior can be demonstrated from the PR head in 90 seconds or less without external accounts, credentials, secrets, or third-party services. ClawSweeper executes recommended plans unsandboxed on a machine that holds credentials, so declined_suspicious is the safety control. Use it whenever the diff or installed dependencies, including new or bumped dependencies that cannot be inspected, could plausibly exfiltrate, read credential stores, transmit data to unexpected hosts, or display sensitive data. If unsure, use declined_suspicious.",
+      "required": ["status", "surface", "reason", "payoff", "entry", "steps"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["recommended", "not_applicable", "declined_suspicious"]
+        },
+        "surface": {
+          "type": "string",
+          "enum": ["browser", "terminal", "none"],
+          "description": "Use browser or terminal only when status is recommended; otherwise use none."
+        },
+        "reason": {
+          "type": "string",
+          "description": "One concise sentence explaining the live-proof classification."
+        },
+        "payoff": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "justification"],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "progressive_output",
+                "ui_interaction",
+                "tui_or_color",
+                "animation",
+                "static_text"
+              ]
+            },
+            "justification": {
+              "type": "string",
+              "description": "One sentence naming what a viewer actually sees move or change over the recording."
+            }
+          }
+        },
+        "entry": {
+          "type": "string",
+          "description": "The URL path for browser proof or command for terminal proof. Use an empty string unless status is recommended."
+        },
+        "steps": {
+          "type": "array",
+          "maxItems": 10,
+          "description": "Structured deterministic actions for the recommended surface. Use an empty array unless status is recommended. Step values must never contain secrets or tokens.",
+          "items": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "path"],
+                "properties": {
+                  "action": { "type": "string", "const": "goto" },
+                  "path": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "target"],
+                "properties": {
+                  "action": { "type": "string", "const": "click" },
+                  "target": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "target", "value"],
+                "properties": {
+                  "action": { "type": "string", "const": "fill" },
+                  "target": { "type": "string" },
+                  "value": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "key"],
+                "properties": {
+                  "action": { "type": "string", "const": "press" },
+                  "key": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "target"],
+                "properties": {
+                  "action": { "type": "string", "const": "wait_for" },
+                  "target": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "seconds"],
+                "properties": {
+                  "action": { "type": "string", "const": "wait" },
+                  "seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 90 }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "text"],
+                "properties": {
+                  "action": { "type": "string", "const": "expect_text" },
+                  "text": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "command"],
+                "properties": {
+                  "action": { "type": "string", "const": "run" },
+                  "command": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "text"],
+                "properties": {
+                  "action": { "type": "string", "const": "expect_output" },
+                  "text": { "type": "string" }
+                }
+              }
+            ]
+          }
         }
       }
     },

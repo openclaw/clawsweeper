@@ -10,6 +10,7 @@ import {
   PAIR_BLOCKED_CLOSE_ACTIONS,
   REVIEW_SECTIONS,
 } from "./clawsweeper-policy.js";
+import { escapeRegExp } from "./clawsweeper-text.js";
 import type {
   ApplyKind,
   CloseReason,
@@ -72,8 +73,9 @@ export function createRecordMetadata({
     if (!frontMatterMatch) return { status: "absent" };
     const frontMatter = frontMatterMatch[1] ?? "";
     const remainder = markdown.slice(frontMatterMatch[0].length);
-    if (new RegExp(`^${key}:`, "m").test(remainder)) return { status: "ambiguous" };
-    const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.*)$`, "gm"))];
+    const escapedKey = escapeRegExp(key);
+    if (new RegExp(`^${escapedKey}:`, "m").test(remainder)) return { status: "ambiguous" };
+    const matches = [...frontMatter.matchAll(new RegExp(`^${escapedKey}:\\s*(.*)$`, "gm"))];
     if (matches.length === 0) return { status: "absent" };
     if (matches.length !== 1) return { status: "ambiguous" };
     const value = matches[0]?.[1]?.trim();
@@ -256,11 +258,16 @@ export function createRecordMetadata({
     );
   }
 
+  // `value` is record data — most often `JSON.stringify(item.labels)`, whose contents
+  // are GitHub label names. Passing it as a replacement *string* would let `$&`, `` $` ``
+  // and `$'` expand against the match, so a label containing them rewrites the field to
+  // something other than what was stored. A replacement function inserts the text
+  // literally, which is the only behavior this writer ever intended.
   function replaceFrontMatterValue(markdown: string, key: string, value: string): string {
     const line = `${key}: ${value}`;
-    const pattern = new RegExp(`^${key}:\\s*.*$`, "m");
-    if (pattern.test(markdown)) return markdown.replace(pattern, line);
-    return markdown.replace(/^---\n/, `---\n${line}\n`);
+    const pattern = new RegExp(`^${escapeRegExp(key)}:\\s*.*$`, "m");
+    if (pattern.test(markdown)) return markdown.replace(pattern, () => line);
+    return markdown.replace(/^---\n/, () => `---\n${line}\n`);
   }
 
   function exactEventReviewLeaseDisposition(
@@ -494,20 +501,16 @@ export function createRecordMetadata({
     return markdown.includes("Codex review failed") ? "failed" : "complete";
   }
 
-  function hasBlockedLocalCheckoutAccess(markdown: string): boolean {
-    return /bwrap: loopback|sandbox wrapper|sandbox startup failed|sandboxed shell failed|local shell (?:access|commands|inspection).*unavailable|local shell .*blocked|local terminal commands were unavailable|could not run local shell/i.test(
-      markdown,
-    );
-  }
-
   function hasVerifiedLocalCheckoutAccess(markdown: string): boolean {
-    return frontMatterValue(markdown, "local_checkout_access") === "verified";
+    return (
+      frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+      frontMatterValue(markdown, "local_checkout_access_source") === "runner_preflight_v1"
+    );
   }
 
   function effectiveReviewStatus(markdown: string): string {
     const status = frontMatterValue(markdown, "review_status") ?? inferReviewStatus(markdown);
     if (status === "complete") {
-      if (hasBlockedLocalCheckoutAccess(markdown)) return "stale_local_checkout_blocked";
       if (!hasVerifiedLocalCheckoutAccess(markdown)) return "stale_local_checkout_unverified";
     }
     return status;
@@ -604,12 +607,29 @@ export function createRecordMetadata({
   function isInfrastructureFailedReview(markdown: string): boolean {
     const detail = failedReviewFailureDetail(markdown);
     const terminalFailure = frontMatterField(markdown, "review_terminal_failure");
+    const checkoutInspectionFailure = frontMatterField(
+      markdown,
+      "review_checkout_inspection_failed",
+    );
     if (terminalFailure.status === "ambiguous") return false;
     if (
       terminalFailure.status === "value" &&
       (!/^(?:true|false)$/i.test(terminalFailure.value) || /^true$/i.test(terminalFailure.value))
     ) {
       return false;
+    }
+    if (checkoutInspectionFailure.status === "ambiguous") return false;
+    if (
+      checkoutInspectionFailure.status === "value" &&
+      !/^(?:true|false)$/i.test(checkoutInspectionFailure.value)
+    ) {
+      return false;
+    }
+    if (
+      checkoutInspectionFailure.status === "value" &&
+      /^true$/i.test(checkoutInspectionFailure.value)
+    ) {
+      return true;
     }
     return (
       isRetryableCodexTransportError(detail) ||

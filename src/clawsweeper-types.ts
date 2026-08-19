@@ -4,6 +4,7 @@ import type { RepositoryProfile } from "./repository-profiles.js";
 import type { ReviewHistoryCycle } from "./review-history.js";
 import type { ReviewSemanticRecord } from "./review-semantic-cache.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
+import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import type { SchedulerDueCandidate } from "./scheduler-policy.js";
 
 /** Shared ClawSweeper domain, review, scheduling, and dashboard shapes. */
@@ -125,6 +126,27 @@ export type PrStatusLabelKind =
   | "ready_for_maintainer_look";
 export type FeatureShowcaseStatus = "showcase" | "none";
 export type TelegramVisibleProofStatus = "needed" | "not_needed";
+export type LiveProofPlanStatus = "recommended" | "not_applicable" | "declined_suspicious";
+export type LiveProofSurface = "browser" | "terminal" | "none";
+export type LiveProofPayoffKind =
+  | "progressive_output"
+  | "ui_interaction"
+  | "tui_or_color"
+  | "animation"
+  | "static_text";
+export type LiveProofBrowserStep =
+  | { action: "goto"; path: string }
+  | { action: "click"; target: string }
+  | { action: "fill"; target: string; value: string }
+  | { action: "press"; key: string }
+  | { action: "wait_for"; target: string }
+  | { action: "wait"; seconds: number }
+  | { action: "expect_text"; text: string };
+export type LiveProofTerminalStep =
+  | { action: "run"; command: string }
+  | { action: "wait"; seconds: number }
+  | { action: "expect_output"; text: string };
+export type LiveProofStep = LiveProofBrowserStep | LiveProofTerminalStep;
 export type MantisRecommendationStatus = "recommended" | "not_recommended";
 export type MantisRecommendationScenario =
   | "none"
@@ -389,6 +411,18 @@ export interface TelegramVisibleProof {
   summary: string;
 }
 
+export interface LiveProofPlan {
+  status: LiveProofPlanStatus;
+  surface: LiveProofSurface;
+  reason: string;
+  payoff: {
+    kind: LiveProofPayoffKind;
+    justification: string;
+  };
+  entry: string;
+  steps: LiveProofStep[];
+}
+
 export interface MantisRecommendation {
   status: MantisRecommendationStatus;
   scenario: MantisRecommendationScenario;
@@ -550,10 +584,15 @@ export interface Decision {
   realBehaviorProof: RealBehaviorProof;
   prRating: PrRating;
   telegramVisibleProof: TelegramVisibleProof;
+  liveProofPlan: LiveProofPlan;
   mantisRecommendation: MantisRecommendation;
   featureShowcase: FeatureShowcase;
   overallCorrectness: OverallCorrectness;
   overallConfidenceScore: number;
+  /** Runner-owned repository inspection result. Never populated from model output. */
+  localCheckoutAccess?: "verified" | "unverified";
+  /** Runner-owned failure classification for scheduled infrastructure retries. */
+  checkoutInspectionFailed?: boolean;
   codexTerminalFailure?: boolean;
   fixedRelease?: string | null;
   fixedSha?: string | null;
@@ -613,6 +652,7 @@ export interface ItemContext {
   pullReviewComments?: unknown[];
   pullReviewCommentsRevision?: string;
   pullReviewActivityCursor?: string;
+  prHydrationSnapshot?: PrHydrationSnapshot;
   pullChecks?: unknown;
   bulkFiler?: BulkFilerReviewContext;
   counts?: {
@@ -951,6 +991,7 @@ export interface ReconcileResult {
   fetchedClosedAt: number;
   changedItemNumbers: number[];
   changedRecordFiles: string[];
+  deferred?: { reason: "github_rate_limited"; retryAt: string };
 }
 
 export type AuditRecordLocation = "items" | "closed";
@@ -1182,6 +1223,11 @@ export type ManagedLocalReviewCheckoutOptions = {
 export type MediaProofCommandRunner = (
   command: string,
   args: readonly string[],
+  options?: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+  },
 ) => {
   status: number | null;
   stdout?: string | Buffer;

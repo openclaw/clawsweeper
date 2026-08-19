@@ -164,6 +164,7 @@ export interface CreateReportRenderingDependencies {
   reportAgentsPolicyStatus: (markdown: string) => AgentsPolicyStatus | undefined;
   reportEvidence: (markdown: string) => Evidence[];
   reportLikelyOwners: (markdown: string) => LikelyOwner[];
+  reportLiveProofRecordingBlock: (markdown: string) => string;
   reportMantisRecommendation: (markdown: string) => MantisRecommendation;
   reportOverallConfidenceScore: (markdown: string) => number;
   reportOverallCorrectness: (markdown: string) => OverallCorrectness;

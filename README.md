@@ -36,6 +36,8 @@ At a high level ClawSweeper:
 - reviews open issues and pull requests on a schedule and on exact GitHub events
 - writes one durable markdown report per item in generated state
 - syncs one marker-backed public review comment per issue or PR, edited in place
+- can record and attach deterministic browser or terminal live proof for
+  user-visible changes in explicitly opted-in repositories
 - closes only unchanged, high-confidence, policy-allowed proposals
 - routes maintainer commands such as `@clawsweeper review`,
   `@clawsweeper fix`, `@clawsweeper autofix`, and `@clawsweeper automerge`
@@ -117,8 +119,9 @@ packets; labels and report prose do not reconstruct the decision. Pass
 profile's default records directory.
 
 Canonical review records live in the Cloudflare Durable Object store and are
-snapshotted to R2. Immutable `ledger/v1/` action events and published `assets/`
-also live in R2. The `state` branch of `openclaw/clawsweeper-state` now retains
+snapshotted to R2. Immutable `ledger/v1/` action events, published `assets/`,
+and the bounded content-addressed `artifacts/exact-review/v1/` retry cache also
+live in R2. The `state` branch of `openclaw/clawsweeper-state` now retains
 only `jobs/`, `results/`, `notifications/`, `apply-report.json`, and
 `repair-apply-report.json`; its `main` branch remains the dashboard renderer
 source. `scripts/hydrate-state.ts` combines those sources for local commands.
@@ -292,9 +295,11 @@ Users with repository write access and issue/PR authors may ask
 Other contributor commands are ignored without a reply. Scheduled comment routing is dry unless
 `CLAWSWEEPER_COMMENT_ROUTER_EXECUTE=1`; workflow dispatch with `execute=true`
 can be used for one-off live routing.
-For fast intake, the ClawSweeper GitHub App webhook can post the same queued
-status comment and enqueue exact `clawsweeper_comment` or `clawsweeper_item`
-work from eligible public `openclaw/*` and `steipete/*` repositories. Exact
+For fast intake, the ClawSweeper GitHub App webhook durably records eligible
+`review` and `re-review` comment versions before it acknowledges them. Other
+commands still enqueue exact `clawsweeper_comment` work, and item events enqueue
+`clawsweeper_item` work, from eligible public `openclaw/*` and `steipete/*`
+repositories. Exact
 item work is coalesced and leased by the dashboard Worker before it dispatches
 an executor, so webhook bursts do not create capacity-waiting Actions runners.
 The target-side dispatcher remains a scheduled-intake fallback until it adopts
@@ -643,7 +648,16 @@ This mode withholds GitHub token variables, points `gh` at an empty config
 directory inside the run artifacts, disables Codex web search, skips host-side
 URL/media preprocessing, and makes no GitHub reads or writes. It is not
 air-gapped: the Codex model invocation still uses its configured network
-service. Reports use a unique
+service. Repeated local reviews preserve the latest local result in the same
+bounded review-history format used by hosted review. The next run receives the
+previous findings and dispositions so it can verify fixes and avoid re-raising
+resolved findings. Exact-item history stays in the selected artifact directory.
+Committed-range history stays under `.git/clawsweeper/reviews/` and is reused
+only for the same target repository and resolved base when its reviewed commit
+is an ancestor of the current `HEAD`; changing the base or switching to an
+unrelated branch starts a fresh history.
+
+Reports use a unique
 `.git/clawsweeper/reviews/local-range-<time>-<pid>/` directory so the default
 run leaves the checkout clean. `--artifact-dir` overrides that location.
 
@@ -740,7 +754,6 @@ The dispatcher sends `repository_dispatch` events to this repository with the
 target repo and exact item number; ClawSweeper then runs one event job that
 reviews, comments, and checks immediate safe apply instead of waiting for the
 next hot-intake cron or bulk publish lane.
-
 
 ## Checks
 

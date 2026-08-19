@@ -1,6 +1,9 @@
 export const EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE = "exact_review_lifecycle_projection_v1";
 export const EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS = 5 * 60 * 1000;
-export const EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT = 512;
+// Keep the public reader bounded, but leave enough headroom for the durable
+// history between normal retention passes. The former 512-row ceiling turned
+// a healthy, append-only store into a permanently unknown public snapshot.
+export const EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT = 24;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_PAGE_MAX = 100;
@@ -173,6 +176,7 @@ export type ExactReviewLifecycleProjection = {
   admission: {
     deliveryId: string;
     sourceDeliveryId?: string;
+    bayJourneyDeliveryId?: string;
     sourceAction: string;
     commandOriginated: boolean;
     statusMarker: string | null;
@@ -228,6 +232,16 @@ type ProjectionIdentity = {
   fenceKey: string;
   revision: number;
 };
+type LifecycleAdmissionInput = ProjectionIdentity & {
+  deliveryId: string;
+  sourceDeliveryId?: string;
+  bayJourneyDeliveryId?: string;
+  sourceAction: string;
+  commandOriginated: boolean;
+  statusMarker: string | null;
+  statusCommentId: number | null;
+  observedAt: number;
+};
 
 export class ExactReviewLifecycleProjectionStore {
   private readonly storage: DurableStorage;
@@ -259,26 +273,37 @@ export class ExactReviewLifecycleProjectionStore {
           ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
           (updated_at DESC, canonical_target_key, fence_key, revision)`,
     );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_repository_v2
+          ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          (
+            LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)),
+            updated_at DESC,
+            canonical_target_key,
+            fence_key,
+            revision DESC
+          )`,
+    );
     this.schemaReady = true;
   }
 
-  recordAdmission(
-    input: ProjectionIdentity & {
-      deliveryId: string;
-      sourceDeliveryId?: string;
-      sourceAction: string;
-      commandOriginated: boolean;
-      statusMarker: string | null;
-      statusCommentId: number | null;
-      observedAt: number;
-    },
-  ) {
+  recordAdmission(input: LifecycleAdmissionInput) {
+    return this.storage.transactionSync(() => this.recordAdmissionSync(input));
+  }
+
+  recordAdmissionSync(input: LifecycleAdmissionInput) {
     this.validateIdentity(input);
     if (!validText(input.deliveryId, 1, 300) || !validText(input.sourceAction, 1, 200)) {
       throw new Error("invalid lifecycle admission fact");
     }
     if (input.sourceDeliveryId !== undefined && !validText(input.sourceDeliveryId, 1, 200)) {
       throw new Error("invalid lifecycle source delivery identity");
+    }
+    if (
+      input.bayJourneyDeliveryId !== undefined &&
+      !validText(input.bayJourneyDeliveryId, 1, 200)
+    ) {
+      throw new Error("invalid lifecycle Bay journey delivery identity");
     }
     if (input.statusMarker !== null && !validText(input.statusMarker, 1, 300)) {
       throw new Error("invalid lifecycle status marker");
@@ -287,51 +312,51 @@ export class ExactReviewLifecycleProjectionStore {
       throw new Error("invalid lifecycle status comment id");
     }
     this.ensureSchemaSync();
-    return this.storage.transactionSync(() => {
-      const existing = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
-      if (existing) {
-        this.assertIdentity(existing, input);
-        const admission = existing.admission;
-        if (
-          admission.deliveryId !== input.deliveryId ||
-          admission.sourceDeliveryId !== input.sourceDeliveryId ||
-          admission.sourceAction !== input.sourceAction ||
-          admission.commandOriginated !== input.commandOriginated ||
-          admission.statusMarker !== input.statusMarker ||
-          admission.statusCommentId !== input.statusCommentId
-        ) {
-          throw new Error("conflicting lifecycle admission fact");
-        }
-        return existing;
+    const existing = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
+    if (existing) {
+      this.assertIdentity(existing, input);
+      const admission = existing.admission;
+      if (
+        admission.deliveryId !== input.deliveryId ||
+        admission.sourceDeliveryId !== input.sourceDeliveryId ||
+        admission.bayJourneyDeliveryId !== input.bayJourneyDeliveryId ||
+        admission.sourceAction !== input.sourceAction ||
+        admission.commandOriginated !== input.commandOriginated ||
+        admission.statusMarker !== input.statusMarker ||
+        admission.statusCommentId !== input.statusCommentId
+      ) {
+        throw new Error("conflicting lifecycle admission fact");
       }
-      const projection: ExactReviewLifecycleProjection = {
-        version: 1,
-        canonicalTargetKey: input.canonicalTargetKey,
-        fenceKey: input.fenceKey,
-        revision: input.revision,
-        admission: {
-          deliveryId: input.deliveryId,
-          ...(input.sourceDeliveryId ? { sourceDeliveryId: input.sourceDeliveryId } : {}),
-          sourceAction: input.sourceAction,
-          commandOriginated: input.commandOriginated,
-          statusMarker: input.statusMarker,
-          statusCommentId: input.statusCommentId,
-          admittedAt: input.observedAt,
-        },
-        claims: [],
-        reviewResults: [],
-        githubEffect: null,
-        canonicalReceipts: [],
-        routerReceipts: [],
-        routerReceipt: null,
-        acknowledgement: { required: input.commandOriginated, attempts: [], observed: null },
-        terminalDispositions: [],
-        terminalDisposition: null,
-        updatedAt: input.observedAt,
-      };
-      this.writeSync(projection);
-      return projection;
-    });
+      return existing;
+    }
+    const projection: ExactReviewLifecycleProjection = {
+      version: 1,
+      canonicalTargetKey: input.canonicalTargetKey,
+      fenceKey: input.fenceKey,
+      revision: input.revision,
+      admission: {
+        deliveryId: input.deliveryId,
+        ...(input.sourceDeliveryId ? { sourceDeliveryId: input.sourceDeliveryId } : {}),
+        ...(input.bayJourneyDeliveryId ? { bayJourneyDeliveryId: input.bayJourneyDeliveryId } : {}),
+        sourceAction: input.sourceAction,
+        commandOriginated: input.commandOriginated,
+        statusMarker: input.statusMarker,
+        statusCommentId: input.statusCommentId,
+        admittedAt: input.observedAt,
+      },
+      claims: [],
+      reviewResults: [],
+      githubEffect: null,
+      canonicalReceipts: [],
+      routerReceipts: [],
+      routerReceipt: null,
+      acknowledgement: { required: input.commandOriginated, attempts: [], observed: null },
+      terminalDispositions: [],
+      terminalDisposition: null,
+      updatedAt: input.observedAt,
+    };
+    this.writeSync(projection);
+    return projection;
   }
 
   recordClaim(
@@ -484,25 +509,17 @@ export class ExactReviewLifecycleProjectionStore {
     },
   ) {
     this.validateIdentity(input);
-    return this.mutate(input, (projection) => {
-      const next = { kind: input.kind, observedAt: input.observedAt };
-      const current = projection.terminalDisposition;
-      if (!current) {
-        projection.terminalDispositions.push(next);
-        projection.terminalDisposition = next;
-        return projection;
-      }
-      if (current.kind === next.kind) return projection;
-      // A newer source can requeue a just-routed revision before its final
-      // queue completion lands. Requeue remains an immutable history fact and
-      // a later durable handoff may still complete the same admitted revision.
-      if (next.kind !== "requeue" && current.kind !== "requeue") {
-        throw new Error("conflicting lifecycle terminal disposition");
-      }
-      projection.terminalDispositions.push(next);
-      projection.terminalDisposition = next;
-      return projection;
-    });
+    return this.mutate(input, (projection) => applyTerminalDisposition(projection, input));
+  }
+
+  recordTerminalDispositionSync(
+    input: ProjectionIdentity & {
+      kind: LifecycleTerminalDisposition;
+      observedAt: number;
+    },
+  ) {
+    this.validateIdentity(input);
+    return this.mutateSync(input, (projection) => applyTerminalDisposition(projection, input));
   }
 
   authorizeCommandAcknowledgement(
@@ -769,12 +786,29 @@ export class ExactReviewLifecycleProjectionStore {
     return this.readSync(canonicalTargetKey, fenceKey, revision);
   }
 
+  maxRevision(canonicalTargetKey: string) {
+    if (!validCanonicalTargetKey(canonicalTargetKey)) return 0;
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT MAX(revision) AS max_revision
+           FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          WHERE canonical_target_key = ?`,
+        canonicalTargetKey,
+      ),
+    )[0] as { max_revision?: unknown } | undefined;
+    const revision = Number(row?.max_revision || 0);
+    return Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
+  }
+
   /**
-   * This reader is intentionally side-effect free. In particular, it does not
-   * ensure schema, normalize legacy rows, or write an index: the public Bay
-   * route must never turn an observation into queue maintenance.
+   * This reader is intentionally side-effect free. Its caller provisions the
+   * table and indexes through the Durable Object constructor barrier; this
+   * method does not ensure schema, normalize legacy rows, or write an index.
    */
-  readBaySnapshot(now = Date.now()): DurableLifecycleBaySnapshot {
+  readBaySnapshot(
+    now = Date.now(),
+    allowedRepositories?: ReadonlySet<string>,
+  ): DurableLifecycleBaySnapshot {
     const unknown = (reason: DurableLifecycleBayUnknownReason): DurableLifecycleBaySnapshot => ({
       version: 1,
       source: "exact-review-lifecycle-projection-v1",
@@ -786,17 +820,55 @@ export class ExactReviewLifecycleProjectionStore {
       sample: null,
     });
 
+    const repositories = allowedRepositories
+      ? [
+          ...new Set([...allowedRepositories].map((repository) => repository.trim().toLowerCase())),
+        ].sort()
+      : null;
+    if (
+      repositories &&
+      (repositories.length > 32 ||
+        repositories.some((repository) => !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repository)))
+    ) {
+      return unknown("malformed");
+    }
+
     let rows: Array<Record<string, unknown>>;
     try {
-      rows = Array.from(
-        this.storage.sql.exec(
-          `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-           ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
-           LIMIT ?`,
-          EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1,
-        ),
-      );
-      // The fixed 512+1 public source bound is deliberately fail-closed. Do
+      if (repositories?.length === 0) {
+        rows = [];
+      } else if (repositories) {
+        rows = [];
+        for (const repository of repositories) {
+          const remaining = EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1 - rows.length;
+          const repositoryRows = Array.from(
+            this.storage.sql.exec(
+              `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+               INDEXED BY exact_review_lifecycle_projection_bay_repository_v2
+               WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?
+               ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+               LIMIT ?`,
+              repository,
+              remaining,
+            ),
+          );
+          rows.push(...repositoryRows);
+          if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT) {
+            return unknown("over_cap");
+          }
+        }
+      } else {
+        rows = Array.from(
+          this.storage.sql.exec(
+            `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+             INDEXED BY exact_review_lifecycle_projection_bay
+            ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+            LIMIT ?`,
+            EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1,
+          ),
+        );
+      }
+      // The fixed bounded public source read is deliberately fail-closed. Do
       // not paginate, prune, or otherwise maintain storage while observing it.
       if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT) return unknown("over_cap");
     } catch {
@@ -814,7 +886,6 @@ export class ExactReviewLifecycleProjectionStore {
     } catch {
       return unknown("mixed");
     }
-
     const maxRevisionByTarget = new Map<string, number>();
     for (const projection of projections) {
       maxRevisionByTarget.set(
@@ -1133,18 +1204,24 @@ export class ExactReviewLifecycleProjectionStore {
     apply: (projection: ExactReviewLifecycleProjection) => T,
     writeResult = true,
   ): T {
+    return this.storage.transactionSync(() => this.mutateSync(input, apply, writeResult));
+  }
+
+  private mutateSync<T>(
+    input: ProjectionIdentity,
+    apply: (projection: ExactReviewLifecycleProjection) => T,
+    writeResult = true,
+  ): T {
     this.ensureSchemaSync();
-    return this.storage.transactionSync(() => {
-      const projection = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
-      if (!projection) throw new Error("missing lifecycle admission fact");
-      this.assertIdentity(projection, input);
-      const result = apply(projection);
-      if (writeResult) {
-        projection.updatedAt = Date.now();
-        this.writeSync(projection);
-      }
-      return result;
-    });
+    const projection = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
+    if (!projection) throw new Error("missing lifecycle admission fact");
+    this.assertIdentity(projection, input);
+    const result = apply(projection);
+    if (writeResult) {
+      projection.updatedAt = Date.now();
+      this.writeSync(projection);
+    }
+    return result;
   }
 
   private readSync(canonicalTargetKey: string, fenceKey: string, revision: number) {
@@ -1196,6 +1273,28 @@ export class ExactReviewLifecycleProjectionStore {
       throw new Error("conflicting lifecycle projection identity");
     }
   }
+}
+
+function applyTerminalDisposition(
+  projection: ExactReviewLifecycleProjection,
+  input: ProjectionIdentity & { kind: LifecycleTerminalDisposition; observedAt: number },
+) {
+  const next = { kind: input.kind, observedAt: input.observedAt };
+  const current = projection.terminalDisposition;
+  if (!current) {
+    projection.terminalDispositions.push(next);
+    projection.terminalDisposition = next;
+    return projection;
+  }
+  if (current.kind === next.kind) return projection;
+  // A newer source can requeue a just-routed revision before its final queue
+  // completion lands. Only a requeue may transition to another terminal fact.
+  if (next.kind !== "requeue" && current.kind !== "requeue") {
+    throw new Error("conflicting lifecycle terminal disposition");
+  }
+  projection.terminalDispositions.push(next);
+  projection.terminalDisposition = next;
+  return projection;
 }
 
 export function lifecycleState(projection: ExactReviewLifecycleProjection): LifecycleState {
@@ -1340,10 +1439,13 @@ function durableLifecycleBayCard(
 function canonicalTarget(value: string) {
   const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(value);
   if (!match) return null;
+  const repository = match[1];
+  const itemNumber = match[2];
+  if (repository === undefined || itemNumber === undefined) return null;
   return {
-    repository: match[1],
-    number: Number(match[2]),
-    url: `https://github.com/${match[1]}/issues/${match[2]}`,
+    repository,
+    number: Number(itemNumber),
+    url: `https://github.com/${repository}/issues/${itemNumber}`,
   };
 }
 
@@ -1351,9 +1453,12 @@ export function parseDurableLifecycleAuditCursor(value: unknown) {
   if (typeof value !== "string") return null;
   const match = /^([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\.(0|[1-9]\d*)$/i.exec(value);
   if (!match) return null;
-  const offset = Number(match[2]);
+  const snapshotId = match[1];
+  const offsetText = match[2];
+  if (snapshotId === undefined || offsetText === undefined) return null;
+  const offset = Number(offsetText);
   if (!Number.isSafeInteger(offset)) return null;
-  return { snapshotId: match[1].toLowerCase(), offset };
+  return { snapshotId: snapshotId.toLowerCase(), offset };
 }
 
 function encodeAuditCursor(snapshotId: string, offset: number) {
@@ -1516,6 +1621,8 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
     !validText(value.admission.deliveryId, 1, 300) ||
     (value.admission.sourceDeliveryId !== undefined &&
       !validText(value.admission.sourceDeliveryId, 1, 200)) ||
+    (value.admission.bayJourneyDeliveryId !== undefined &&
+      !validText(value.admission.bayJourneyDeliveryId, 1, 200)) ||
     !validText(value.admission.sourceAction, 1, 200) ||
     (value.admission.statusMarker !== null && !validText(value.admission.statusMarker, 1, 300)) ||
     (value.admission.statusCommentId !== null &&

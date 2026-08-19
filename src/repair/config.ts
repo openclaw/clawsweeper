@@ -40,6 +40,7 @@ export type CommentRouterConfig = {
   lookupConcurrency: number;
   lookbackMinutes: number;
   since: string;
+  sinceCommentIds: Set<number>;
   itemNumbers: Set<number>;
   commentIds: Set<number>;
   statusCommentId: number | null;
@@ -167,6 +168,7 @@ export function readCommentRouterConfig(args: LooseRecord): CommentRouterConfig 
       args.since,
       new Date(Date.now() - lookbackMinutes * 60 * 1000).toISOString(),
     ),
+    sinceCommentIds: numberSet(args["since-comment-ids"], "since-comment-ids"),
     itemNumbers: numberSet(
       [args["item-number"], args["item-numbers"], process.env.CLAWSWEEPER_COMMENT_ITEM_NUMBERS]
         .filter((value) => value !== undefined && value !== null)

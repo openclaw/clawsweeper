@@ -1,0 +1,258 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+
+import { hydratePrLists } from "../../../dist/pr-hydration-snapshot.js";
+import { createReviewPlanningInventory } from "../../../dist/clawsweeper-review-planning-inventory.js";
+import { fetchPrCommentActivityRevision } from "../../../dist/pr-comment-activity-revision.js";
+
+const repo = "openclaw/clawsweeper";
+const number = 97;
+const editedCommentId = 3255775240;
+
+function runGh(args) {
+  return JSON.parse(
+    execFileSync("gh", args, {
+      encoding: "utf8",
+      env: { ...process.env, GH_PAGER: "cat", NO_COLOR: "1" },
+      maxBuffer: 32 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+  );
+}
+
+const pull = runGh(["api", `repos/${repo}/pulls/${number}`]);
+assert.match(pull.updated_at ?? "", /^\d{4}-\d{2}-\d{2}T/);
+assert.match(pull.head?.sha ?? "", /^[0-9a-f]{40}$/);
+assert.ok(Number.isSafeInteger(pull.commits) && pull.commits > 0);
+assert.ok(Number.isSafeInteger(pull.review_comments) && pull.review_comments > 0);
+
+const editedProbe = runGh([
+  "api",
+  `repos/${repo}/pulls/${number}/comments?since=2026-05-18T00%3A38%3A30Z&per_page=100`,
+]);
+assert.ok(editedProbe.some((comment) => comment.id === editedCommentId));
+
+const transport = [];
+const planningInventory = createReviewPlanningInventory({
+  targetRepo: () => repo,
+  ghJson: (args) => {
+    transport.push({ kind: "graphql_activity_revision", path: "graphql" });
+    return runGh(args);
+  },
+});
+const record = (value) =>
+  value && typeof value === "object" && !Array.isArray(value) ? value : {};
+const commitInputs = (items) =>
+  items.map((value) => {
+    const source = record(value);
+    const commit = record(source.commit);
+    return {
+      sha: source.sha ?? null,
+      author: record(source.author).login ?? null,
+      message: commit.message ?? null,
+      commitAuthor: record(commit.author).name ?? null,
+    };
+  });
+const commentInputs = (items) =>
+  items.map((value) => {
+    const source = record(value);
+    return {
+      id: source.id ?? null,
+      user: record(source.user).login ?? null,
+      body: source.body ?? null,
+      updated_at: source.updated_at ?? null,
+      path: source.path ?? null,
+      line: source.line ?? null,
+      commit_id: source.commit_id ?? null,
+    };
+  });
+const fetchList = (kind, path) => {
+  transport.push({ kind, path });
+  const items = runGh(["api", `${path}${path.includes("?") ? "&" : "?"}per_page=100`]);
+  return { items, total: items.length, hydrated: items.length, truncated: false };
+};
+const fetchAll = (kind, path) => {
+  transport.push({ kind, path });
+  return runGh(["api", `${path}${path.includes("?") ? "&" : "?"}per_page=100`]);
+};
+const fetchHydrationActivityRevision = () => {
+  transport.push({ kind: "graphql_hydration_revision", path: "graphql" });
+  return fetchPrCommentActivityRevision({ repo, number, ghJson: runGh });
+};
+
+const setupActivity = planningInventory.fetchPlannedPrActivityRevisions([
+  { kind: "pull_request", number },
+]);
+const setupActivityRevision = setupActivity.revisions[String(number)];
+assert.match(setupActivityRevision ?? "", /^sha256:[0-9a-f]{64}$/);
+
+const cold = hydratePrLists({
+  repo,
+  number,
+  pullUpdatedAt: pull.updated_at,
+  headSha: pull.head.sha,
+  commitCount: pull.commits,
+  reviewCommentCount: pull.review_comments,
+  commentActivityRevision: setupActivityRevision,
+  prior: null,
+  revalidateCommentActivityRevision: () => {
+    throw new Error("cold hydration must not revalidate");
+  },
+  fetchCommits: () => fetchList("commit_list", `repos/${repo}/pulls/${number}/commits`),
+  fetchReviewComments: () =>
+    fetchList("review_comment_list", `repos/${repo}/pulls/${number}/comments`),
+  fetchCompleteReviewComments: () =>
+    fetchAll("review_comment_list", `repos/${repo}/pulls/${number}/comments`),
+  fetchReviewCommentsSince: () => {
+    throw new Error("cold hydration must not use since");
+  },
+  now: () => "2026-08-13T04:00:00Z",
+});
+assert.ok(cold.snapshot);
+assert.equal(transport.filter((entry) => entry.kind !== "graphql_activity_revision").length, 2);
+
+transport.length = 0;
+const cycleActivity = planningInventory.fetchPlannedPrActivityRevisions([
+  { kind: "pull_request", number },
+]);
+assert.equal(cycleActivity.requestCount, 1);
+assert.equal(cycleActivity.revisions[String(number)], setupActivityRevision);
+for (let unchanged = 0; unchanged < 3; unchanged += 1) {
+  const reused = hydratePrLists({
+    repo,
+    number,
+    pullUpdatedAt: pull.updated_at,
+    headSha: pull.head.sha,
+    commitCount: pull.commits,
+    reviewCommentCount: pull.review_comments,
+    commentActivityRevision: cycleActivity.revisions[String(number)],
+    prior: cold.snapshot,
+    revalidateCommentActivityRevision: fetchHydrationActivityRevision,
+    fetchCommits: () => {
+      throw new Error("unchanged commit list must be reused");
+    },
+    fetchReviewComments: () => {
+      throw new Error("unchanged review comments must be reused");
+    },
+    fetchCompleteReviewComments: () => {
+      throw new Error("unchanged complete comments must be reused");
+    },
+    fetchReviewCommentsSince: () => {
+      throw new Error("unchanged review comments must not use since");
+    },
+  });
+  assert.equal(reused.commitsReused, true);
+  assert.equal(reused.reviewCommentsReused, true);
+}
+assert.equal(
+  transport.filter((entry) => !entry.kind.startsWith("graphql_")).length,
+  0,
+  "unchanged PRs make zero REST list reads",
+);
+
+const activityChanged = hydratePrLists({
+  repo,
+  number,
+  pullUpdatedAt: pull.updated_at,
+  headSha: pull.head.sha,
+  commitCount: pull.commits,
+  reviewCommentCount: pull.review_comments,
+  commentActivityRevision: `sha256:${"f".repeat(64)}`,
+  prior: cold.snapshot,
+  revalidateCommentActivityRevision: () => {
+    throw new Error("planning already rejected this cache hit");
+  },
+  fetchCommits: () => {
+    throw new Error("unchanged commit identity must be reused");
+  },
+  fetchReviewComments: () => {
+    throw new Error("safe delta should not require a full read");
+  },
+  fetchCompleteReviewComments: () => {
+    throw new Error("safe delta should retain the complete snapshot");
+  },
+  fetchReviewCommentsSince: (since) =>
+    fetchAll(
+      "review_comment_list_since",
+      `repos/${repo}/pulls/${number}/comments?since=${encodeURIComponent(since)}`,
+    ),
+});
+assert.equal(activityChanged.reviewCommentsIncremental, true);
+
+const forced = hydratePrLists({
+  repo,
+  number,
+  pullUpdatedAt: "2026-08-13T04:00:02Z",
+  headSha: "f".repeat(40),
+  commitCount: pull.commits,
+  reviewCommentCount: pull.review_comments,
+  commentActivityRevision: cycleActivity.revisions[String(number)],
+  prior: cold.snapshot,
+  revalidateCommentActivityRevision: () => {
+    throw new Error("changed heads are not cache-hit candidates");
+  },
+  fetchCommits: () => fetchList("commit_list", `repos/${repo}/pulls/${number}/commits`),
+  fetchReviewComments: () =>
+    fetchList("review_comment_list", `repos/${repo}/pulls/${number}/comments`),
+  fetchCompleteReviewComments: () =>
+    fetchAll("review_comment_list", `repos/${repo}/pulls/${number}/comments`),
+  fetchReviewCommentsSince: () => {
+    throw new Error("changed head must not use since");
+  },
+});
+assert.equal(forced.commitsReused, false);
+assert.equal(forced.reviewCommentsIncremental, false);
+
+assert.deepEqual(
+  transport.map((entry) => entry.kind),
+  [
+    "graphql_activity_revision",
+    "graphql_hydration_revision",
+    "graphql_hydration_revision",
+    "graphql_hydration_revision",
+    "review_comment_list_since",
+    "commit_list",
+    "review_comment_list",
+  ],
+);
+
+console.log(
+  JSON.stringify(
+    {
+      repository: repo,
+      public_fixture: {
+        pull: number,
+        head_sha: pull.head.sha,
+        commits: pull.commits,
+        review_comments: pull.review_comments,
+        edited_comment_probe: editedCommentId,
+      },
+      unchanged_prs: 3,
+      changed_prs: 2,
+      before: { list_reads: 10 },
+      after: {
+        graphql_requests: 4,
+        planning_graphql_requests: 1,
+        hydration_graphql_requests: 3,
+        list_reads: 3,
+        total_requests: 7,
+        unchanged_list_reads: 0,
+      },
+      changed_input_equality: {
+        activity_change_comments:
+          JSON.stringify(commentInputs(activityChanged.completeReviewComments)) ===
+          JSON.stringify(commentInputs(cold.completeReviewComments)),
+        force_push_commits:
+          JSON.stringify(commitInputs(forced.commits.items)) ===
+          JSON.stringify(commitInputs(cold.commits.items)),
+        force_push_comments:
+          JSON.stringify(commentInputs(forced.completeReviewComments)) ===
+          JSON.stringify(commentInputs(cold.completeReviewComments)),
+      },
+      transport,
+      result: "PASS",
+    },
+    null,
+    2,
+  ),
+);

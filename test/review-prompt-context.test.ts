@@ -106,6 +106,35 @@ test("review prompt excludes full semantic-cache patches", () => {
   assert.doesNotMatch(prompt, /FULL_SEMANTIC_CACHE_PATCH_MUST_STAY_PRIVATE/);
 });
 
+test("review prompt excludes persistence-only PR hydration snapshots", () => {
+  const context = {
+    issue: { number: 123, title: "Sample PR" },
+    comments: [],
+    timeline: [],
+    pullReviewComments: [{ id: 1, body: "COMPACT_REVIEW_COMMENT_REMAINS_VISIBLE" }],
+    prHydrationSnapshot: {
+      version: 1 as const,
+      repo: "openclaw/clawsweeper",
+      number: 123,
+      pullUpdatedAt: "2026-08-13T00:00:00Z",
+      headSha: "a".repeat(40),
+      commitCount: 1,
+      reviewCommentCount: 1,
+      hydratedAt: "2026-08-13T00:00:00Z",
+      commits: { items: [], total: 0, hydrated: 0, truncated: false },
+      reviewComments: { items: [], total: 0, hydrated: 0, truncated: false },
+      completeReviewComments: [{ id: 1, body: "PERSISTED_FULL_COMMENT_MUST_STAY_PRIVATE" }],
+    },
+    counts: { comments: 0, timeline: 0, pullReviewComments: 1 },
+  };
+
+  const prompt = reviewPromptForTest(item({ kind: "pull_request", number: 123 }), context, git);
+
+  assert.match(prompt, /COMPACT_REVIEW_COMMENT_REMAINS_VISIBLE/);
+  assert.doesNotMatch(prompt, /prHydrationSnapshot/);
+  assert.doesNotMatch(prompt, /PERSISTED_FULL_COMMENT_MUST_STAY_PRIVATE/);
+});
+
 test("review prompt includes merge state and guards clean behind-branch drift", () => {
   const compactPullRequest = compactPullRequestForTest({
     number: 123,

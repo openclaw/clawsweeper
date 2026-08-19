@@ -1,0 +1,75 @@
+{
+  "schema": "clawsweeper-crabbox-proof-provenance/v1",
+  "generated_at": "2026-08-11T18:41:43Z",
+  "claim": "docs/proof/queue-policy-readmodel-extraction/run-proof.sh preserves moved queue policy bodies and real local Worker responses on the reviewed PR head inside a Docker-backed Crabbox local-container.",
+  "crabbox": {
+    "cli_version": "0.38.3-5-g2a79805d",
+    "provider": "local-container",
+    "lease_id": "cbx_f28414ea4f87",
+    "slug": "coral-lobster-07c4",
+    "run_id": null,
+    "machine_type": "node_24-bookworm",
+    "image": "node:24-bookworm",
+    "container_engine": "Docker 29.4.0 (OrbStack)",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1124 (clean remote checkout, --no-hydrate)",
+    "workdir": "/work/crabbox/cbx_f28414ea4f87/fresh-pr-openclaw-clawsweeper-1124",
+    "sync_ms": 8999,
+    "sync_phases": [
+      {
+        "name": "ssh",
+        "ms": 94
+      },
+      {
+        "name": "git_seed",
+        "ms": 8905
+      }
+    ],
+    "command_ms": 299523,
+    "command_phases": [
+      {
+        "name": "user-command",
+        "ms": 299523
+      }
+    ],
+    "total_ms": 308523,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0",
+    "jq": "jq-1.8.1"
+  },
+  "tool_verification": {
+    "corepack_install_directory": "$HOME/.local/bin",
+    "jq_binary_sha256": "passed against the upstream jq 1.8.1 sha256sum.txt entry for jq-linux-amd64"
+  },
+  "reviewed_head": "50a3749343b28b045e02722010aa91893c63a9f1",
+  "result": {
+    "container_result": "PROOF_RC=0",
+    "pnpm_run_check": "passed",
+    "compared_functions": 64,
+    "all_moved_bodies_byte_identical": true,
+    "all_normalized_responses_byte_identical": true,
+    "responses": [
+      {
+        "route": "/api/exact-review-queue",
+        "normalized_bytes": 10746,
+        "normalized_sha256": "502ef4b842487f726531cb97d78168e715f65ce2844ea679408f1de505d1016d"
+      },
+      {
+        "route": "/api/status",
+        "normalized_bytes": 24197,
+        "normalized_sha256": "4a782cd47c24c917e97576ba871b61bad2d3c055eb6844eee3f39a9e61d2e997"
+      }
+    ],
+    "production_mutations": 0,
+    "openclaw_bay_affected": false
+  },
+  "limits": [
+    "The runtime scenario covers synthetic pending issue reviews only.",
+    "The proof does not contact GitHub, acquire review leases, publish records, or mutate production.",
+    "The container receipt establishes clean-checkout and environment provenance; it does not broaden the behavior exercised by run-proof.sh."
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-14T05:31:00Z",
+  "provider": "local-container",
+  "leaseId": "cbx_27fd45c696a1",
+  "slug": "jade-prawn-d716",
+  "image": "node:24-bookworm",
+  "leaseStopped": true,
+  "git": {
+    "head": "0e9ca08dea526b536e6818176228a09409a3c6a9",
+    "tree": "d06aa801c6ee434707f15d9724e237bb8cec8181",
+    "catFileCrossCheck": true
+  },
+  "artifact": ".artifacts/r2-bundle-cache/proof.json",
+  "command": "../crabbox/bin/crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --timing-json --script scripts/e2e/r2-bundle-cache-crabbox.sh -- <verified-head> <verified-tree>",
+  "r2": {
+    "bucket": "clawsweeper-state-snapshots",
+    "semantics": "wrangler-dev-local"
+  },
+  "bundle": {
+    "sha256": "3133665a6449f68c78754dfdca7548fa3b450474dd97cd54f4bb79b2a86d8eb3",
+    "bytes": 378,
+    "objectKey": "artifacts/exact-review/v1/3133665a6449f68c78754dfdca7548fa3b450474dd97cd54f4bb79b2a86d8eb3"
+  },
+  "counted": {
+    "firstGithubArtifactRequests": 1,
+    "repeatGithubArtifactRequestsBefore": 1,
+    "repeatGithubArtifactRequestsAfter": 0,
+    "missingObjectFallbackGithubArtifactRequests": 1,
+    "leaseMismatchGithubArtifactRequests": 1,
+    "repeatReductionPercent": 100
+  },
+  "limits": {
+    "proofArchiveBytes": 4194304,
+    "productionArtifactBytes": 67108864,
+    "productionArchiveBytes": 69206016,
+    "receiptRetentionDays": 30,
+    "pruneBatchSize": 128
+  },
+  "gates": {
+    "command": "pnpm run check",
+    "result": "passed",
+    "lineCoveragePercent": 81.58,
+    "branchCoveragePercent": 74.0,
+    "functionCoveragePercent": 87.41,
+    "dashboardStrict": "passed"
+  },
+  "timingMs": {
+    "install": 7038,
+    "build": 1977,
+    "behavior": 7357,
+    "check": 87976,
+    "command": 104698,
+    "total": 105846
+  },
+  "limitsOfProof": [
+    "Uses Wrangler dev local R2 and Durable Object semantics rather than the deployed Cloudflare network.",
+    "Uses a counted loopback artifact server rather than GitHub's hosted artifact service."
+  ],
+  "openClawBay": {
+    "affected": false,
+    "reason": "The cache is internal publication data-plane state and adds no observer or control contract."
+  }
+}

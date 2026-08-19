@@ -1,0 +1,37 @@
+{
+  "contract": "CSW-127 Phase 0.5 quota recovery",
+  "provider": "local-container",
+  "lease_id": "cbx_1df4ca79b0b1",
+  "slug": "blue-krill-5534",
+  "image": "mcr.microsoft.com/playwright:v1.60.0-noble",
+  "source_head": "3a95d75996e654d9a97294d55a3235998fc3cd43",
+  "base_head": "ae36d608d01701af7e06c313be96689068b5c890",
+  "sync_mode": "read-only host bind mount copied into an isolated container workdir",
+  "run_status": "succeeded",
+  "exit_code": 0,
+  "timing_ms": {
+    "total": 57153,
+    "command": 56936,
+    "build": 4508,
+    "focused_tests": 6343,
+    "worker_do_proof": 29818,
+    "bay_render_proof": 5875,
+    "scoped_lint": 1490
+  },
+  "focused_tests": {
+    "passed": 324,
+    "failed": 0
+  },
+  "observed": {
+    "signed_ingest_deduped": true,
+    "conflicting_receipt_fenced": true,
+    "attributable_circuit_count": 1,
+    "raw_reset_claimed": false,
+    "jitter_recovery_claimed": true,
+    "bay_recovery_reason": "workflow_cancelled",
+    "bay_recovery_count": 1,
+    "bay_rendered": true,
+    "privacy_clean": true
+  },
+  "production_mutation": false
+}

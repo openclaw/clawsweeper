@@ -52,6 +52,28 @@ runs:
         fi
         codex --version
 
+    - name: Enable Linux user namespaces for bubblewrap
+      if: ${{ runner.os == 'Linux' && runner.environment == 'github-hosted' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Codex read-only reviews use bubblewrap. Newer Ubuntu images otherwise
+        # reject its loopback setup before the first repository command runs.
+        current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+        if [[ -n "$current_userns" && "$current_userns" != "1" ]]; then
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+        fi
+
+        current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+        if [[ -n "$current_apparmor" && "$current_apparmor" != "0" ]]; then
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        fi
+
+        # Exercise the same read-only, network-isolated backend used by reviews.
+        # A sandbox regression must stop the job before it can publish a verdict.
+        codex sandbox --permission-profile :read-only -C "$GITHUB_WORKSPACE" -- /bin/true
+
     - name: Resolve Codex home
       shell: bash
       run: |

@@ -2931,7 +2931,7 @@ function normalizeIntent(command: LooseRecord) {
 }
 
 export function commandStatusMarker(command: LooseRecord) {
-  return `<!-- clawsweeper-command-status:${command.issue_number ?? "unknown"}:${command.intent}:${command.target?.head_sha ?? "na"} -->`;
+  return `<!-- clawsweeper-command-status:${command.issue_number ?? "unknown"}:${command.intent}:${command.command_status_revision ?? command.target?.head_sha ?? "na"} -->`;
 }
 
 export function commandStatusMarkerPrefix(command: LooseRecord) {

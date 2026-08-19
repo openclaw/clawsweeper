@@ -1,5 +1,13 @@
 # OpenClaw Event Hooks
 
+- Status: active integration and operator reference
+- Owner: ClawSweeper notification and activity-stream maintainers
+- Source of truth: `.github/workflows/github-activity.yml`,
+  `.github/workflows/repair-publish-results.yml`, and `src/repair/*notify*`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
+- Update when: hook payloads, delivery policy, activity filtering, runtime setup,
+  notification ledgers, or workflow ownership changes
+
 ClawSweeper can forward important automation events to OpenClaw through the
 Gateway hook API. The pattern is generic: a deterministic ClawSweeper workflow
 detects an event, posts a small authenticated payload to OpenClaw, and OpenClaw
@@ -200,13 +208,11 @@ is intentionally lossy because it is not a source of truth. Exact review,
 repair, automerge, apply, and command-router workflows have separate
 concurrency groups and are not cancelled by this observer lane.
 
-The workflow intentionally uses the runner-provided Node runtime plus a lean
-uncached pnpm install instead of `actions/setup-node` or the shared cached pnpm
-action. This event stream can burst dozens of runs at once, and downloading
-extra setup/cache actions has proven slower and less reliable than a direct
-install/build path for the small notifier. The activity notifier is kept
-compatible with the runner's Node 20+ runtime even though the broader project
-gate still uses Node 24.
+The workflow pins Node 24 with `actions/setup-node`, enables the repository's
+pinned pnpm version, and caches the pnpm store before installing and building
+the repair notifier. The activity stream can burst dozens of runs at once, so
+its concurrency group remains lossy even though each admitted run uses the
+normal supported runtime and dependency cache.
 
 The activity prompt always treats GitHub titles, comments, review bodies, and
 issue text as untrusted data. It must not follow instructions embedded in those

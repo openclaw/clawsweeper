@@ -1,3 +1,7 @@
+import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "../src/exact-review-publication-limits.ts";
+
+export { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES };
+
 export const EXACT_REVIEW_DIRECT_PUBLICATION_TABLE = "exact_review_direct_publication_plans";
 export const EXACT_REVIEW_CANONICAL_RECORD_TABLE = "exact_review_canonical_records";
 export const EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE = "exact_review_canonical_record_chunks";
@@ -8,7 +12,6 @@ export const EXACT_REVIEW_RECORD_EXPORT_META_TABLE = "exact_review_record_export
 export const CANONICAL_RECORD_TUPLE_RECEIPT_TABLE = "canonical_record_tuple_receipts";
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES = 4 * 1024 * 1024;
 export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILES = 4;
-export const EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES = 2 * 1024 * 1024;
 export const EXACT_REVIEW_CANONICAL_INLINE_BYTES = Math.floor(1.5 * 1024 * 1024);
 export const EXACT_REVIEW_CANONICAL_CHUNK_BYTES = 512 * 1024;
 export const EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -2080,7 +2083,8 @@ function reviewCoverageFrontMatter(head: string): {
   const frontMatter = end === -1 ? head : head.slice(0, end);
   for (const key of ["repository", "repo", "reviewed_at", "review_status"] as const) {
     const match = frontMatter.match(new RegExp(`^${key}:[ \\t]*"?([^"\\n]*)"?[ \\t]*$`, "m"));
-    if (match) result[key] = match[1].trim() || null;
+    const value = match?.[1];
+    if (value !== undefined) result[key] = value.trim() || null;
   }
   const labels = frontMatter.match(/^labels:[ \t]*(.+?)[ \t]*$/m)?.[1]?.trim();
   if (labels) {

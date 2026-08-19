@@ -3324,6 +3324,7 @@ test("retryable batch completion releases ownership and preserves queue retry po
               claim_generation: member.claim_generation,
               terminal_outcome: "retryable_failure",
               reason_code: "state_contention",
+              pool_class: "repository_actions",
               error_fingerprint: "state-contention-proof",
             },
           ],
@@ -3349,6 +3350,20 @@ test("retryable batch completion releases ownership and preserves queue retry po
     assert.equal(stats.lanes.publication.completed_total, 0);
     assert.equal(stats.lanes.publication.retried_total, 1);
     assert.equal(stats.lanes.publication.batches.leased, 0);
+    assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
+      {
+        transition: "retried",
+        stage: "state_commit",
+        completion_kind: "retryable_failure",
+        reason_code: "state_contention",
+        revision_relation: "same_revision",
+        pool_class: "repository_actions",
+        recovery_cause: "state_retry",
+        backoff_reason: "publication_retry",
+        attempt_bucket: "1",
+        count: 1,
+      },
+    ]);
 
     now += 10 * 60_000;
     const replacement = await (
@@ -3391,6 +3406,32 @@ test("retryable batch completion releases ownership and preserves queue retry po
       )
     ).json();
     assert.equal(fetchedReplacement.items.length, 1);
+
+    const published = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/complete", {
+          batch_id: replacement.batch.batch_id,
+          lease_owner: "worker-2",
+          items: [
+            {
+              item_key: replacement.batch.items[0].item_key,
+              revision: replacement.batch.items[0].revision,
+              claim_generation: replacement.batch.items[0].claim_generation,
+              terminal_outcome: "published",
+            },
+          ],
+        }),
+      )
+    ).json();
+    assert.equal(published.accepted, 1, JSON.stringify(published));
+
+    const completedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(completedStats.lanes.publication.pending, 0);
+    assert.equal(completedStats.lanes.publication.published_total, 1);
+    const publishedCause = completedStats.lanes.publication.flow.last_15_minutes.causes.rows.find(
+      (row: { transition: string }) => row.transition === "published",
+    );
+    assert.equal(publishedCause?.attempt_bucket, "1");
   } finally {
     Date.now = originalNow;
   }
@@ -3482,6 +3523,7 @@ test("credential circuits persist, preserve healthy owners, and defer unattempte
               claim_generation: member.claim_generation,
               terminal_outcome: "retryable_failure",
               reason_code: "github_rate_limit",
+              pool_class: "target_app",
               retry_at: new Date(longerReset).toISOString(),
               attempted: false,
             },
@@ -3494,7 +3536,9 @@ test("credential circuits persist, preserve healthy owners, and defer unattempte
     let stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
     assert.equal(stats.lanes.publication.retried_total, 0);
     assert.equal(stats.lanes.publication.credential_circuits.length, 1);
-    assert.deepEqual(stats.lanes.publication.credential_circuits[0], {
+    const { recovery_until: recoveryUntil, ...credentialCircuit } =
+      stats.lanes.publication.credential_circuits[0];
+    assert.deepEqual(credentialCircuit, {
       pool: "target_app:aaa",
       scope: "target_app",
       target_owner: "aaa",
@@ -3505,6 +3549,8 @@ test("credential circuits persist, preserve healthy owners, and defer unattempte
       active: true,
       affected_pending: 52,
     });
+    assert.ok(Date.parse(recoveryUntil) > longerReset);
+    assert.ok(Date.parse(recoveryUntil) <= longerReset + 30_000);
     assert.equal(
       stats.lanes.publication.github_request_metrics.counters[
         "target_app:item_metadata:read:throttle:first"
@@ -3512,6 +3558,20 @@ test("credential circuits persist, preserve healthy owners, and defer unattempte
       1,
     );
     assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, "github_rate_limit");
+    assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
+      {
+        transition: "backoff",
+        stage: "publication_apply",
+        completion_kind: "retryable_failure",
+        reason_code: "github_rate_limit",
+        revision_relation: "same_revision",
+        pool_class: "target_app",
+        recovery_cause: "credential_circuit",
+        backoff_reason: "publication_retry",
+        attempt_bucket: "0",
+        count: 1,
+      },
+    ]);
 
     const lateReset = now + 180_000;
     const lateTelemetry = {
@@ -3796,6 +3856,19 @@ test("repository Actions circuit blocks every publication batch until reset", as
       "actions:openclaw/clawsweeper",
     );
     assert.equal(stats.lanes.publication.credential_circuits[0].affected_pending, 2);
+    assert.ok(Date.parse(stats.lanes.publication.credential_circuits[0].recovery_until) > resetAt);
+
+    now = resetAt;
+    const resetBoundary = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-actions-reset-boundary",
+          lease_owner: "worker-boundary",
+          max_items: 2,
+        }),
+      )
+    ).json();
+    assert.equal(resetBoundary.claimed, false, JSON.stringify(resetBoundary));
 
     now = resetAt + 31_000;
     const recovered = await (
@@ -3922,6 +3995,32 @@ test("batch published completion preserves a newer revision owned by the same le
     assert.equal(stats.lanes.publication.pending, 1);
     assert.equal(stats.lanes.publication.published_total, 1);
     assert.equal(stats.lanes.publication.batches.leased, 0);
+    assert.equal(
+      stats.lanes.publication.flow.last_15_minutes.causes.reconciliation.published.complete,
+      true,
+    );
+    assert.deepEqual(
+      stats.lanes.publication.flow.last_15_minutes.causes.rows.map((row) => ({
+        transition: row.transition,
+        reason_code: row.reason_code,
+        revision_relation: row.revision_relation,
+        recovery_cause: row.recovery_cause,
+      })),
+      [
+        {
+          transition: "backoff",
+          reason_code: "publication_applied",
+          revision_relation: "newer_local_revision",
+          recovery_cause: "newer_revision",
+        },
+        {
+          transition: "published",
+          reason_code: "publication_applied",
+          revision_relation: "newer_local_revision",
+          recovery_cause: "newer_revision",
+        },
+      ],
+    );
 
     now += 1;
     const replacement = await (

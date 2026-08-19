@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-12T17:57:28.290Z",
+  "base_sha": "bd869542a3a820c4d3d5fb44bcf2fc553f8f3468",
+  "candidate_sha": "ee949363f5c4cf755a431020b738f1bf06ae49b5",
+  "provider_environment": "Crabbox-selected provider; see receipt.md",
+  "comparison_pass": true,
+  "baseline": {
+    "response": { "status": 500 },
+    "github": {
+      "acknowledgements": 1,
+      "dispatchAttempts": 1,
+      "sourceCommentReads": 0,
+      "reactions": 1
+    },
+    "sqlite": {
+      "commandSchemaPresent": false,
+      "commandIntakes": 0,
+      "receiptOutcomes": []
+    },
+    "process_tree_kill": { "signal": "SIGTERM", "confirmed": true }
+  },
+  "candidate": {
+    "response": {
+      "status": 202,
+      "accepted": true,
+      "deduped": false,
+      "command_version_id": "command-9001-msqaw0kw-1e1d2457837dc1f6ead419e59d2cbfc1e3d0c416368765252799cd62e216cccc"
+    },
+    "github": {
+      "acknowledgements": 0,
+      "dispatchAttempts": 0,
+      "sourceCommentReads": 1,
+      "reactions": 0
+    },
+    "sqlite": {
+      "requiredTables": [
+        "exact_review_command_intakes",
+        "exact_review_command_receipts",
+        "exact_review_command_watermarks",
+        "exact_review_item_revisions"
+      ],
+      "commandIntakes": 1,
+      "receiptOutcomes": ["pending"]
+    },
+    "durable_object_instantiated": true,
+    "process_tree_kill": { "signal": "SIGTERM", "confirmed": true }
+  },
+  "limits": {
+    "github": "loopback synthetic API; no live credentials or production mutations",
+    "worker": "wrangler dev --local; executor completion and public publication not exercised"
+  }
+}

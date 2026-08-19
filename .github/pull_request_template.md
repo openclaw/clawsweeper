@@ -60,14 +60,18 @@ data-contract changes, name the affected Bay surface and its proof. Otherwise,
 state why Bay is unaffected. See AGENTS.md.
 -->
 
-## Documentation Lifecycle
+## Documentation Impact
 
 <!--
-For new or changed documentation, classify it as active, proposed,
+For every code, configuration, workflow, API, UI, package, policy, or integration
+change, name the canonical documentation reviewed and summarize any required
+updates. If no documentation changes are needed, explain why the existing
+contract remains accurate.
+
+For new or changed documentation, also classify it as active, proposed,
 compatibility-only, or historical. Active runbooks and volatile references must
 name their role owner, source of truth, verified scope/revision, and update
-triggers. Otherwise state that no documentation lifecycle changes. See
-CONTRIBUTING.md.
+triggers. See CONTRIBUTING.md.
 -->
 
 ## Evidence

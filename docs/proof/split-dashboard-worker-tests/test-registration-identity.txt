@@ -1,0 +1,6 @@
+source: origin/main:test/dashboard-worker.test.ts
+registration_blocks: 336
+runtime_tests: 337
+before_sha256: d982e480856dbdff0243e87eca667e3787088fb63f87fa53202017b09840ecbb
+after_sha256: d982e480856dbdff0243e87eca667e3787088fb63f87fa53202017b09840ecbb
+byte_identity: true

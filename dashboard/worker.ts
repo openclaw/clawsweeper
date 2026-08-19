@@ -1,8 +1,15 @@
 import {
   commandTextForClawSweeperFastAck,
+  directReReviewAdditionalPrompt,
   isClawSweeperReReviewCommandText,
+  reReviewContextFromClawSweeperComment,
 } from "../src/repair/comment-command-text.ts";
+import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
+import {
+  githubEtagCacheKey,
+  githubEtagCacheRequestBody,
+} from "../src/github-etag-cache-contract.ts";
 import { bayHtml } from "./bay-page.ts";
 import {
   dashboardHtml,
@@ -14,6 +21,7 @@ import {
 import { liveActivityBaySnapshot } from "./live-activity.ts";
 import { summarizeDashboardHealth } from "./dashboard-health.ts";
 import {
+  createGithubAppTokenFor,
   githubApiUrl,
   githubAppCredentials,
   githubAppInstallationIdAsPlainError as githubAppInstallationId,
@@ -22,6 +30,9 @@ import {
 } from "./github-api.ts";
 import {
   HEALTH_HISTORY_RETENTION_DAYS,
+  HEALTH_HISTORY_SAMPLE_MS,
+  OPERATIONAL_QUEUE_DEGRADED_MS,
+  OPERATIONAL_QUEUE_ZOMBIE_MS,
   exactReviewHistorySample,
   mergeHealthHistorySample,
   normalizeHealthHistorySample,
@@ -32,7 +43,6 @@ import { TRIAGE_ROUTING_GROUPS, triageRoutingGroupsForLabels } from "./triage-ro
 import {
   EXACT_REVIEW_QUEUE_NAME,
   EXACT_REVIEW_RECONCILE_CONCURRENCY,
-  createGithubAppTokenFor,
   exactReviewActionsReadToken,
   exactReviewClaimedRuns,
   exactReviewRequestedRuns,
@@ -68,10 +78,23 @@ import {
   summarizeApplyObservability,
 } from "./apply-observability.ts";
 import {
+  publicApplyObservabilityProjection,
+  publicAutomergeMetricsProjection,
+  publicGithubEgressObservabilityProjection,
+  publicRecentDurablePublicationEventsProjection,
+  publicReviewCoverageProjection,
+  publicReviewObservabilityProjection,
+} from "./public-observability.ts";
+import {
   STATE_BLOB_OPERATIONS,
   handleStateBlobRequest,
   type StateBlobOperation,
 } from "./state-blobs.ts";
+import {
+  GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS,
+  githubWebhookReadModelDeliveryFromWebhook,
+  type GithubWebhookReadModelDelivery,
+} from "./github-webhook-read-model.ts";
 
 export {
   ExactReviewQueue,
@@ -86,9 +109,193 @@ export {
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
 const QUEUED_RUN_STATUSES = new Set(["queued", "waiting", "requested", "pending"]);
+const OPERATIONAL_QUEUED_RUN_STATUSES = new Set(["queued", "requested", "pending"]);
 type DashboardContext = { waitUntil?: (promise: Promise<unknown>) => void };
 type GithubJsonReader = (path: string) => ReturnType<typeof githubJson>;
 type StoredValue = { value: string; expires_at?: number };
+type GithubWebhookDeliveryHeaders = {
+  readonly event: string;
+  readonly deliveryId: string | null;
+  readonly signature: string;
+};
+type GithubWebhookRepositoryPayload = {
+  readonly full_name?: unknown;
+  readonly default_branch?: unknown;
+  readonly private?: unknown;
+  readonly archived?: unknown;
+  readonly fork?: unknown;
+  readonly has_issues?: unknown;
+};
+type GithubWebhookInstallationPayload = { readonly id?: unknown };
+type GithubWebhookLabelPayload = { readonly name?: unknown };
+type GithubWebhookUserPayload = { readonly login?: unknown };
+type GithubWebhookIssuePayload = {
+  readonly number?: unknown;
+  readonly user?: GithubWebhookUserPayload | null;
+  readonly state?: unknown;
+  readonly pull_request?: unknown;
+  readonly updated_at?: unknown;
+};
+type GithubWebhookCommentPayload = {
+  readonly id?: unknown;
+  readonly body?: unknown;
+  readonly author_association?: unknown;
+  readonly user?: GithubWebhookUserPayload | null;
+  readonly created_at?: unknown;
+  readonly updated_at?: unknown;
+  readonly html_url?: unknown;
+};
+type GithubWebhookPullRequestPayload = {
+  readonly number?: unknown;
+  readonly head?: { readonly sha?: unknown } | null;
+  readonly base?: { readonly sha?: unknown } | null;
+  readonly draft?: unknown;
+  readonly title?: unknown;
+  readonly body?: unknown;
+  readonly updated_at?: unknown;
+};
+type GithubWebhookReviewPayload = {
+  readonly id?: unknown;
+  readonly submitted_at?: unknown;
+  readonly updated_at?: unknown;
+};
+type GithubWebhookWorkflowObjectPayload = {
+  readonly id?: unknown;
+  readonly run_id?: unknown;
+  readonly run_attempt?: unknown;
+  readonly created_at?: unknown;
+  readonly started_at?: unknown;
+  readonly completed_at?: unknown;
+  readonly updated_at?: unknown;
+};
+type GithubWebhookBasePayload = {
+  readonly action?: unknown;
+  readonly repository?: GithubWebhookRepositoryPayload | null;
+  readonly installation?: GithubWebhookInstallationPayload | null;
+  readonly label?: GithubWebhookLabelPayload | null;
+};
+type GithubIssueCommentWebhookPayload = GithubWebhookBasePayload & {
+  readonly comment?: GithubWebhookCommentPayload | null;
+  readonly issue?: GithubWebhookIssuePayload | null;
+};
+type GithubIssueWebhookPayload = GithubWebhookBasePayload & {
+  readonly issue?: GithubWebhookIssuePayload | null;
+};
+type GithubPullRequestWebhookPayload = GithubWebhookBasePayload & {
+  readonly pull_request?: GithubWebhookPullRequestPayload | null;
+};
+type GithubPullRequestReviewWebhookPayload = GithubPullRequestWebhookPayload & {
+  readonly review?: GithubWebhookReviewPayload | null;
+};
+type GithubPullRequestReviewCommentWebhookPayload = GithubPullRequestWebhookPayload & {
+  readonly comment?: GithubWebhookCommentPayload | null;
+};
+type GithubWorkflowRunWebhookPayload = GithubWebhookBasePayload & {
+  readonly workflow_run?: GithubWebhookWorkflowObjectPayload | null;
+};
+type GithubWorkflowJobWebhookPayload = GithubWebhookBasePayload & {
+  readonly workflow_job?: GithubWebhookWorkflowObjectPayload | null;
+  readonly workflow_run?: GithubWebhookWorkflowObjectPayload | null;
+};
+type GithubCheckRunWebhookPayload = GithubWebhookBasePayload & {
+  readonly check_run?: GithubWebhookWorkflowObjectPayload | null;
+};
+type GithubCheckSuiteWebhookPayload = GithubWebhookBasePayload & {
+  readonly check_suite?: GithubWebhookWorkflowObjectPayload | null;
+};
+type GithubWebhookPayload = GithubIssueCommentWebhookPayload &
+  GithubIssueWebhookPayload &
+  GithubPullRequestReviewWebhookPayload &
+  GithubPullRequestReviewCommentWebhookPayload &
+  GithubWorkflowRunWebhookPayload &
+  GithubWorkflowJobWebhookPayload &
+  GithubCheckRunWebhookPayload &
+  GithubCheckSuiteWebhookPayload;
+type GithubWebhookClassifierRuntimeInput = {
+  readonly event: string;
+  readonly payload: GithubWebhookPayload;
+};
+
+export type GithubWebhookClassifierInput<Event extends string = string> =
+  Event extends "issue_comment"
+    ? { readonly event: Event; readonly payload: GithubIssueCommentWebhookPayload }
+    : Event extends "issues"
+      ? { readonly event: Event; readonly payload: GithubIssueWebhookPayload }
+      : Event extends "pull_request"
+        ? { readonly event: Event; readonly payload: GithubPullRequestWebhookPayload }
+        : Event extends "pull_request_review"
+          ? { readonly event: Event; readonly payload: GithubPullRequestReviewWebhookPayload }
+          : Event extends "pull_request_review_comment"
+            ? {
+                readonly event: Event;
+                readonly payload: GithubPullRequestReviewCommentWebhookPayload;
+              }
+            : Event extends "workflow_run"
+              ? { readonly event: Event; readonly payload: GithubWorkflowRunWebhookPayload }
+              : Event extends "workflow_job"
+                ? { readonly event: Event; readonly payload: GithubWorkflowJobWebhookPayload }
+                : Event extends "check_run"
+                  ? { readonly event: Event; readonly payload: GithubCheckRunWebhookPayload }
+                  : Event extends "check_suite"
+                    ? { readonly event: Event; readonly payload: GithubCheckSuiteWebhookPayload }
+                    : { readonly event: Event; readonly payload: GithubWebhookBasePayload };
+
+type GithubWebhookRejectedClassification = {
+  readonly accepted: false;
+  readonly reason: string;
+};
+export type GithubWebhookIssueCommentClassification = {
+  readonly accepted: true;
+  readonly type: "issue_comment";
+  readonly targetRepo: string;
+  readonly targetBranch: string;
+  readonly itemNumber: number;
+  readonly itemKind: "issue" | "pull_request";
+  readonly itemState: string;
+  readonly commentId: number;
+  readonly installationId: number;
+  readonly sourceAction: string;
+  readonly commentUpdatedAt?: string;
+  readonly commentBody?: string;
+  readonly commentAuthor: string;
+  readonly commentUrl: string;
+  readonly maintainerAuthorized: boolean;
+};
+type GithubWebhookIssueClassification = ExactReviewDecision & {
+  readonly accepted: true;
+  readonly type: "item";
+  readonly installationId: number;
+  readonly itemKind: "issue";
+  readonly sourceEvent: "issues";
+};
+type GithubWebhookPullRequestClassification = ExactReviewDecision & {
+  readonly accepted: true;
+  readonly type: "item";
+  readonly installationId: number;
+  readonly itemKind: "pull_request";
+  readonly sourceEvent: "pull_request";
+};
+type GithubWebhookActivityClassification = {
+  readonly accepted: true;
+  readonly type: "activity";
+  readonly sourceEvent:
+    | "issue_comment"
+    | "issues"
+    | "pull_request"
+    | "pull_request_review"
+    | "pull_request_review_comment"
+    | "workflow_run"
+    | "workflow_job"
+    | "check_run"
+    | "check_suite";
+  readonly sourceAction: string;
+};
+export type GithubWebhookClassification =
+  | GithubWebhookRejectedClassification
+  | GithubWebhookIssueCommentClassification
+  | GithubWebhookIssueClassification
+  | GithubWebhookPullRequestClassification
+  | GithubWebhookActivityClassification;
 type WorkflowRunSummary = {
   id: number | string;
   name?: string;
@@ -97,7 +304,9 @@ type WorkflowRunSummary = {
   conclusion?: string | null;
   html_url?: string;
   created_at?: string;
+  run_started_at?: string;
   updated_at?: string;
+  run_attempt?: number;
 };
 
 declare global {
@@ -143,6 +352,26 @@ const CLAWSWEEPER_ISSUE_ITEM_ACTIONS = new Set([
   "unlocked",
   "unlabeled",
 ]);
+const GITHUB_ISSUE_LIFECYCLE_ACTIONS = new Set([
+  "opened",
+  "edited",
+  "deleted",
+  "transferred",
+  "pinned",
+  "unpinned",
+  "closed",
+  "reopened",
+  "assigned",
+  "unassigned",
+  "labeled",
+  "unlabeled",
+  "locked",
+  "unlocked",
+  "milestoned",
+  "demilestoned",
+  "typed",
+  "untyped",
+]);
 const CLAWSWEEPER_PULL_ITEM_ACTIONS = new Set([
   "opened",
   "reopened",
@@ -153,19 +382,81 @@ const CLAWSWEEPER_PULL_ITEM_ACTIONS = new Set([
   "unlocked",
   "unlabeled",
 ]);
+const GITHUB_PULL_REQUEST_LIFECYCLE_ACTIONS = new Set([
+  ...CLAWSWEEPER_PULL_ITEM_ACTIONS,
+  "closed",
+  "assigned",
+  "unassigned",
+  "labeled",
+  "locked",
+  "milestoned",
+  "demilestoned",
+  "review_requested",
+  "review_request_removed",
+  "auto_merge_enabled",
+  "auto_merge_disabled",
+]);
 const DEFAULT_FAST_ACK_SETTLE_DELAYS_MS = [250, 1500, 10_000];
 const inFlightFastAcks = new Map();
+let githubReadModelDashboardFallbackReported = false;
 const CLAWSWEEPER_WEBHOOK_DENY_REPOS = new Set(["openclaw/clawsweeper-state", "openclaw/.github"]);
 const OPTIONAL_SECTION_TIMEOUT_MS = 6000;
+// Ten exact reads are two five-way waves: below the 20-second status refresh
+// cadence even at the 4.5-second GitHub timeout, while healing up to 30 rows/minute.
+const STALE_WORKFLOW_HEALTH_RECHECK_BATCH_SIZE = 10;
 const STALE_CACHE_TTL_SECONDS = 900;
 const CI_STATUS_TTL_SECONDS = 7200;
 const WORKER_JOB_CACHE_TTL_SECONDS = 60;
 const WORKER_JOB_IDLE_CACHE_TTL_SECONDS = 10;
 const WORKER_JOB_PAGE_LIMIT = 3;
 const DEFAULT_WORKER_JOB_FETCH_CONCURRENCY = 12;
-const RECENT_WORKER_HEALTH_RUN_LIMIT = 20;
+// The tide needs 20 distinct terminal items. Sampling exactly 20 runs leaves no
+// room for support/fallback jobs, repeated targets, or still-active items and can
+// strand the tide indefinitely just below its threshold.
+const RECENT_WORKER_HEALTH_RUN_LIMIT = BAY_TIDE_THRESHOLD * 2;
 const WORKER_HEALTH_CACHE_TTL_SECONDS = 120;
-const DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY = 10;
+// Forty terminal runs still complete in the same two default waves as the
+// former 20-run sample, so the larger tide sample does not outgrow the bounded
+// worker-health section budget on ordinary uncached reads.
+const MAX_WORKER_HEALTH_FETCH_CONCURRENCY = 20;
+const DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY = MAX_WORKER_HEALTH_FETCH_CONCURRENCY;
+const MAX_WORKER_HEALTH_SECTION_TIMEOUT_MS = OPTIONAL_SECTION_TIMEOUT_MS * 2;
+const MIN_WORKER_HEALTH_SECTION_TIMEOUT_MS = 25;
+
+function workerHealthFetchConcurrency(env) {
+  return Math.min(
+    MAX_WORKER_HEALTH_FETCH_CONCURRENCY,
+    Math.max(
+      1,
+      Math.floor(
+        numberFrom(env.WORKER_HEALTH_FETCH_CONCURRENCY, DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY),
+      ),
+    ),
+  );
+}
+
+export function workerHealthSectionTimeoutMs(
+  fetchConcurrency = DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY,
+  requestedMaximumMs = MAX_WORKER_HEALTH_SECTION_TIMEOUT_MS,
+) {
+  const concurrency = Math.max(1, Math.floor(Number(fetchConcurrency) || 1));
+  const waves = Math.ceil(RECENT_WORKER_HEALTH_RUN_LIMIT / concurrency);
+  const requested = Math.floor(Number(requestedMaximumMs));
+  const maximum = Math.max(
+    MIN_WORKER_HEALTH_SECTION_TIMEOUT_MS,
+    Math.min(
+      MAX_WORKER_HEALTH_SECTION_TIMEOUT_MS,
+      Number.isFinite(requested) ? requested : MAX_WORKER_HEALTH_SECTION_TIMEOUT_MS,
+    ),
+  );
+  // Worker health is optional status telemetry. Keep its complete 40-run tide
+  // sample, but never let paginated GitHub reads consume the whole cache-miss
+  // response budget. Per-request aborts continue independently underneath.
+  return Math.min(
+    maximum,
+    waves * WORKER_JOB_PAGE_LIMIT * GITHUB_TIMEOUT_MS + OPTIONAL_SECTION_TIMEOUT_MS,
+  );
+}
 const WORKER_TARGET_CACHE_TTL_SECONDS = 900;
 const WORKER_TARGET_BATCH_SIZE = 50;
 const AUTOMERGE_CACHE_TTL_SECONDS = 300;
@@ -192,6 +483,9 @@ const TRIAGE_FOCUSED_FALLBACK_ITEMS_PER_VIEW = 100;
 const TRIAGE_LINKED_PR_ITEM_LIMIT = 240;
 const TRIAGE_LINKED_PR_BATCH_SIZE = 25;
 const TRIAGE_LABEL_PREFIX = "clawsweeper:";
+const PUBLIC_TRIAGE_SCHEMA_VERSION = 2;
+const PUBLIC_TRIAGE_COUNT_LIMIT = 1_000_000;
+const PUBLIC_TRIAGE_ERROR_LIMIT = 20;
 const GITHUB_APP_TOKEN_REFRESH_SKEW_MS = 120_000;
 const GITHUB_APP_TOKEN_DEFAULT_TTL_MS = 50 * 60_000;
 const PR_PROOF_LABEL_NAMES = [
@@ -633,6 +927,8 @@ export default {
       return json({ ok: true, service: "clawsweeper-github-webhook" });
     if (url.pathname === "/github/webhook" && request.method === "POST")
       return githubWebhook(request, env, ctx);
+    if (url.pathname === "/internal/exact-review/command-intake" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/command-intake");
     if (url.pathname === "/internal/exact-review/enqueue" && request.method === "POST")
       return authenticatedExactReviewEnqueue(request, env);
     if (url.pathname === "/internal/exact-review/branch-authority" && request.method === "POST")
@@ -653,7 +949,7 @@ export default {
       );
     const canonicalRecordPath =
       request.method === "GET"
-        ? /^\/internal\/state\/records\/[^/]+\/(?:items|closed|plans|decision-packets)\/[1-9]\d*$/.exec(
+        ? /^\/internal\/state\/records\/[^/]+\/(items|closed|plans|decision-packets)\/[1-9]\d*$/.exec(
             url.pathname,
           )
         : null;
@@ -662,6 +958,7 @@ export default {
         request,
         env,
         url.pathname.slice("/internal/state".length),
+        canonicalRecordPath[1] === "items",
       );
     if (url.pathname === "/internal/state/records/slugs" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/records/slugs");
@@ -699,6 +996,11 @@ export default {
     // the review job that runs Codex over untrusted content.
     if (url.pathname === "/internal/exact-review/heartbeat" && request.method === "POST")
       return exactReviewQueueRequest(env, "/heartbeat", request);
+    if (
+      url.pathname === "/internal/exact-review/github-read-model/item" &&
+      request.method === "POST"
+    )
+      return exactReviewQueueRequest(env, "/github-read-model/lease-item", request);
     if (
       url.pathname === "/internal/exact-review/state-writer-progress" &&
       request.method === "POST"
@@ -770,6 +1072,49 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewQueueRequest(request, env, "/publication-batch-results");
+    // This is an automated cache data-plane operation, so it uses the scoped
+    // publisher/webhook secret already present in the batch job. The operator
+    // secret remains confined to human recovery and administrative reads.
+    if (
+      url.pathname === "/internal/exact-review/artifact-cache/receipt/lookup" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/artifact-cache/receipt/lookup");
+    if (
+      url.pathname === "/internal/exact-review/artifact-cache/receipt/store" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/artifact-cache/receipt/store");
+    // Like the artifact cache, this automated data plane uses the publisher-scoped
+    // webhook secret already present in publication jobs. The operator credential
+    // remains reserved for human recovery and administrative access.
+    if (
+      url.pathname === "/internal/exact-review/github-etag-cache/lookup" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/github-etag-cache/lookup");
+    if (
+      url.pathname === "/internal/exact-review/github-etag-cache/store" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/github-etag-cache/store");
+    if (
+      url.pathname === "/internal/exact-review/github-etag-cache/confirm" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/github-etag-cache/confirm");
+    const githubReadModelRoute =
+      request.method === "POST"
+        ? /^\/internal\/state\/github-read-model\/(item|comments|activity|workflows|placeholders|repair)$/.exec(
+            url.pathname,
+          )
+        : null;
+    if (githubReadModelRoute)
+      return authenticatedExactReviewQueueRequest(
+        request,
+        env,
+        `/github-read-model/${githubReadModelRoute[1]}`,
+      );
     if (
       url.pathname === "/internal/exact-review/lifecycle/router-receipt" &&
       request.method === "POST"
@@ -822,12 +1167,17 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewQueueRequest(request, env, "/publication-batches/complete");
+    if (
+      url.pathname === "/internal/exact-review/github-egress-telemetry" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/github-egress-telemetry");
     if (url.pathname === "/internal/apply-observability" && request.method === "POST")
       return authenticatedApplyObservability(request, env);
     if (url.pathname === "/internal/exact-review/reconcile" && request.method === "POST")
       return authenticatedExactReviewReconcile(request, env);
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
-      return exactReviewQueueRequest(env, "/stats");
+      return publicExactReviewQueueJson(env);
     if (url.pathname === "/api/durable-lifecycle-bay" && request.method === "GET")
       return json({ durable_lifecycle_bay: await durableLifecycleBaySnapshot(env) });
     if (url.pathname === "/api/live-activity-bay" && request.method === "GET")
@@ -835,18 +1185,23 @@ export default {
         live_activity_bay: await liveActivityBaySnapshotForRequest(request, env, ctx),
       });
     if (url.pathname === "/api/recent-durable-publication-events" && request.method === "GET")
-      return exactReviewQueueRequest(
-        env,
-        `/recent-durable-publication-events?${url.searchParams.toString()}`,
-      );
+      return publicRecentDurablePublicationEventsJson(env, url.searchParams);
     if (url.pathname === "/api/exact-review-queue/item" && request.method === "GET")
-      return exactReviewQueueRequest(env, `/item-status?${url.searchParams.toString()}`);
+      return json(
+        {
+          error: "item_status_not_public",
+          collection: { state: "unavailable", reason: "aggregate_only" },
+        },
+        410,
+      );
     if (url.pathname === "/api/exact-review-queue/reviews" && request.method === "GET")
-      return emptyPerItemReviewsJson(url.searchParams);
+      return emptyPerItemReviewsJson();
     if (url.pathname === "/api/review-observability" && request.method === "GET")
-      return exactReviewQueueRequest(env, `/review-observability?${url.searchParams.toString()}`);
+      return publicReviewObservabilityJson(env, url.searchParams);
+    if (url.pathname === "/api/github-egress-observability" && request.method === "GET")
+      return publicGithubEgressObservabilityJson(env, url.searchParams);
     if (url.pathname === "/api/review-coverage" && request.method === "GET")
-      return exactReviewQueueRequest(env, "/review-coverage");
+      return publicReviewCoverageJson(env);
     if (url.pathname === "/api/apply-observability" && request.method === "GET")
       return applyObservabilityJson(request, env);
     if (url.pathname === "/api/health-history" && request.method === "GET")
@@ -858,10 +1213,8 @@ export default {
     if (url.pathname === "/api/pr-proof-triage") return prProofTriageJson(request, env, ctx);
     if (url.pathname === "/" || url.pathname === "/index.html") return html(dashboardHtml(env));
     if (url.pathname === "/bay") return demoHtml(bayHtml());
-    if (url.pathname === "/bay-demo") {
-      url.pathname = "/bay";
-      return Response.redirect(url.toString(), 308);
-    }
+    if (url.pathname === "/bay-demo")
+      return Response.redirect(new URL("/bay", url.origin).toString(), 308);
     if (url.pathname === "/triage" || url.pathname === "/triage.html")
       return html(triageHtml(issueTriagePageConfig()));
     if (url.pathname === "/pr-proof-triage" || url.pathname === "/pr-proof-triage.html")
@@ -878,17 +1231,17 @@ export default {
 async function statusJson(request, env, ctx) {
   const cache = caches.default;
   const cached = await cache.match(statusCacheRequest(request, "fresh"));
-  if (cached) return cachedStatusResponse(cached, "fresh");
+  if (cached) return cachedStatusResponse(cached, "fresh", env);
 
   const stale = await cache.match(statusCacheRequest(request, "stale"));
   if (stale && ctx?.waitUntil) {
     ctx.waitUntil(refreshStatus(request, env).catch(() => undefined));
-    return cachedStatusResponse(stale, "stale");
+    return cachedStatusResponse(stale, "stale", env);
   }
 
   const refreshed = await refreshStatus(request, env);
-  if (refreshed.looksEmpty && stale) return cachedStatusResponse(stale, "stale");
-  return statusSnapshotResponse(refreshed.snapshot, "miss");
+  if (refreshed.looksEmpty && stale) return cachedStatusResponse(stale, "stale", env);
+  return statusSnapshotResponse(refreshed.snapshot, "miss", env);
 }
 
 async function healthHistoryJson(request: Request, env: DashboardEnv) {
@@ -917,11 +1270,23 @@ async function healthHistoryJson(request: Request, env: DashboardEnv) {
       }
     }),
   );
-  const samples = groups
-    .flat()
-    .map((sample) => normalizeHealthHistorySample(sample))
-    .filter((sample) => sample && Date.parse(sample.at) >= now - rangeMs)
-    .sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
+  const samplesBySlot = new Map<
+    number,
+    NonNullable<ReturnType<typeof normalizeHealthHistorySample>>
+  >();
+  for (const value of groups.flat()) {
+    const sample = normalizeHealthHistorySample(value);
+    if (!sample) continue;
+    const at = Date.parse(sample.at);
+    if (at < now - rangeMs || at > now) continue;
+    const slot = Math.floor(at / HEALTH_HISTORY_SAMPLE_MS);
+    const current = samplesBySlot.get(slot);
+    if (!current || Date.parse(current.at) < at) samplesBySlot.set(slot, sample);
+  }
+  const sampleLimit = Math.ceil(rangeMs / HEALTH_HISTORY_SAMPLE_MS) + 1;
+  const samples = [...samplesBySlot.values()]
+    .sort((left, right) => Date.parse(left.at) - Date.parse(right.at))
+    .slice(-sampleLimit);
   return cors(
     json({
       schema_version: 1,
@@ -1070,21 +1435,1361 @@ async function appendHealthHistorySample(env, sample) {
   );
 }
 
-function cachedStatusResponse(cached, cacheState) {
-  const headers = new Headers(cached.headers);
-  headers.set("content-type", "application/json; charset=utf-8");
-  headers.set("cache-control", "no-store");
-  headers.set("x-clawsweeper-cache", cacheState);
-  return cors(new Response(cached.body, { status: cached.status, headers }));
+const PUBLIC_STATUS_TEXT_VALUES = new Set([
+  "active",
+  "apply",
+  "applying",
+  "arriving",
+  "all_clear",
+  "amber",
+  "assist",
+  "automerge",
+  "background-review",
+  "cancelled",
+  "closing",
+  "complete",
+  "congested",
+  "commit-review",
+  "completed",
+  "completed_review_journeys",
+  "degraded",
+  "exact-review",
+  "6h",
+  "24h",
+  "7d",
+  "accepted",
+  "deduped",
+  "superseded",
+  "fallback",
+  "retryable",
+  "permanent",
+  "failure",
+  "github-checks",
+  "green",
+  "healthy",
+  "hot-review",
+  "in_progress",
+  "idle",
+  "issue_to_pr",
+  "job",
+  "live",
+  "neutral",
+  "needs_attention",
+  "other",
+  "pending",
+  "processed",
+  "publishing",
+  "pr_repair",
+  "queued",
+  "recovered",
+  "repair",
+  "repair_cluster",
+  "repairing",
+  "red",
+  "requested",
+  "reviewing",
+  "running",
+  "setting-up",
+  "skipped",
+  "skipped_changed_since_review",
+  "stale",
+  "stalled",
+  "saturated",
+  "success",
+  "telemetry_unavailable",
+  "timed_out",
+  "unavailable",
+  "unresolved",
+  "unknown",
+  "waiting",
+  "workflow",
+  "workflow-fallback",
+  "malformed",
+  "mixed",
+  "observed",
+  "queue_empty",
+  "claim_stalled",
+  "dispatcher_blocked",
+  "dispatcher_paused",
+  "claim_delayed",
+  "handoff_current",
+  "handoff_unknown",
+  "capacity_unavailable",
+  "capacity_available",
+  "no_ready_backlog",
+  "no_admissible_backlog",
+  "dispatcher_inactive",
+  "capacity_full_with_backlog",
+]);
+
+const PUBLIC_STATUS_TEXT_FIELDS = new Set([
+  "conclusion",
+  "mode",
+  "outcome",
+  "reason",
+  "sample_kind",
+  "severity",
+  "source",
+  "stage",
+  "state",
+  "status",
+  "terminal_outcome",
+  "work_kind",
+]);
+
+const PUBLIC_STATUS_TIME_FIELDS = new Set([
+  "at",
+  "completed_at",
+  "generated_at",
+  "observed_at",
+  "oldest_at",
+  "oldest_pending_at",
+  "oldest_ready_at",
+  "oldest_backoff_at",
+  "oldest_dispatching_at",
+  "oldest_leased_at",
+  "next_attempt_at",
+  "next_wake_at",
+  "last_tide_at",
+  "received_at",
+  "since",
+  "started_at",
+  "updated_at",
+  "washed_at",
+]);
+
+const PUBLIC_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+const PUBLIC_TIMESTAMP_MIN_MS = Date.UTC(2020, 0, 1);
+const PUBLIC_TIMESTAMP_MAX_MS = Date.UTC(2100, 0, 1);
+
+function publicTimestamp(value) {
+  if (typeof value !== "string" || value.length > 35 || !PUBLIC_TIMESTAMP_PATTERN.test(value)) {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) &&
+    timestamp >= PUBLIC_TIMESTAMP_MIN_MS &&
+    timestamp < PUBLIC_TIMESTAMP_MAX_MS
+    ? new Date(timestamp).toISOString()
+    : null;
 }
 
-function statusSnapshotResponse(snapshot, cacheState, status = 200, headers?) {
-  const responseHeaders = new Headers(headers);
+const PUBLIC_STATUS_COUNT_FIELDS = new Set([
+  "schema_version",
+  "applying",
+  "arriving",
+  "active_codex_jobs",
+  "active",
+  "active_intake_runs",
+  "active_worker_runs",
+  "active_workflow_runs",
+  "action_records",
+  "attempts",
+  "available_slots",
+  "automerge_samples",
+  "bot_owned_proof_decisions_requested",
+  "bot_owned_proof_dispatches",
+  "budget_used_percent",
+  "capacity",
+  "cancelled_attempts",
+  "closed",
+  "comment_synced",
+  "completed",
+  "confirmed_proposal",
+  "count",
+  "dispatching",
+  "error_rate_percent",
+  "examined",
+  "failed_review_retries",
+  "failed_review_retry_exhaustions",
+  "failed_attempts",
+  "failed_recent_runs",
+  "failing",
+  "fallbacks",
+  "guarded_retry",
+  "inherited_label_cleanups",
+  "inconsistent_or_stale",
+  "issues",
+  "leased",
+  "measured_attempts",
+  "oldest_queued_minutes",
+  "oldest_running_minutes",
+  "oldest_wedged_rerun_minutes",
+  "oldest_zombie_queued_minutes",
+  "pending",
+  "pending_depth",
+  "processed",
+  "publishing",
+  "promotion_cooldown_eligible",
+  "promotion_eligible",
+  "promotion_total",
+  "cooldown_eligible_total",
+  "proof_required",
+  "prs",
+  "queued_over_threshold",
+  "queued_runs",
+  "queued_workflow_runs",
+  "recovered_failures",
+  "recovery_rate_percent",
+  "review_refresh",
+  "repairing",
+  "reviewing",
+  "running_over_threshold",
+  "running",
+  "sample_limit",
+  "sampled_runs",
+  "setting_up",
+  "samples",
+  "self_heal_conflict_repairs",
+  "support_queued_workflow_runs",
+  "support_workflow_runs",
+  "stalled_after_seconds",
+  "successful_attempts",
+  "skipped",
+  "skipped_changed_since_review",
+  "tide_generation",
+  "tide_threshold",
+  "target_repository_count",
+  "total",
+  "unresolved_failures",
+  "worker_budget",
+  "worker_detail_fallbacks",
+  "worker_detail_runs",
+  "waiting",
+  "window_minutes",
+  "window_hours",
+  "wedged_rerun_runs",
+  "zombie_queued_runs",
+  "apply_ready_count",
+  "attention_count",
+  "automerge_command_to_merge_ms",
+  "average_duration_ms",
+  "average_ms",
+  "candidate_count",
+  "completed_attempts",
+  "duration_ms",
+  "elapsed_ms",
+  "error_count",
+  "estimated_full_cycle_minutes",
+  "failure_rate_percent",
+  "generated_count",
+  "longest_duration_ms",
+  "maximum_age_ms",
+  "median_ms",
+  "oldest_age_seconds",
+  "oldest_dispatching_age_seconds",
+  "oldest_leased_age_seconds",
+  "oldest_pending_age_seconds",
+  "omitted_count",
+  "ready_pending",
+  "admissible_pending",
+  "scheduled_interval_minutes",
+  "terminal_count",
+  "total_count",
+  "total_duration_ms",
+  "ttl_seconds",
+  "setting-up",
+  "ready",
+  "backoff",
+  "parked",
+  "oldest_ready_age_seconds",
+  "oldest_backoff_age_seconds",
+  "oldest_lease_age_seconds",
+  "enqueued_total",
+  "completed_total",
+  "published_total",
+  "superseded_total",
+  "semantic_deduped_total",
+  "retried_total",
+  "dead_lettered_total",
+  "refreshed_total",
+  "shed_since_reset",
+  "warning_after_seconds",
+  "oldest_age_seconds",
+  "scan_limit",
+  "bucket_seconds",
+  "bucket_count",
+  "rows",
+  "retention_seconds",
+  "index",
+  "dispatch_debounce",
+  "dispatcher_backoff",
+  "admission_retry",
+  "coordination_retry",
+  "throttle_retry",
+  "review_retry",
+  "publication_retry",
+  "dead_letter_capacity",
+  "dispatch_rejected",
+  "review_retry_exhausted",
+  "direct_publication",
+  "claim_timeout",
+  "execution_timeout",
+  "workflow_cancelled",
+  "workflow_failed",
+]);
+
+// Every public status field is admitted by name and type. These container names are
+// deliberately fixed: a legacy or malformed body cannot mint a new nested namespace
+// merely by avoiding a denylisted word.
+const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
+  "root",
+  "source",
+  "fleet",
+  "control_plane",
+  "publishers",
+  "reconcilers",
+  "health",
+  "operational_health",
+  "averages",
+  "workers",
+  "automatic_work",
+  "pipeline",
+  "bay",
+  "recent",
+  "diagnostics",
+  "dashboard_health",
+  "progress",
+  "steps",
+  "timeline",
+  "ci",
+  "timings",
+  "overall",
+  "terminal_buffer",
+  "recently_washed",
+  "cluster_repair",
+  "markers",
+  "latest_runs",
+  "active_intake_runs",
+  "active_worker_runs",
+  "apply_health",
+  "items",
+  "failures",
+  "skip_reasons",
+  "closure",
+  "automerge",
+  "automerge_reliability",
+  "closed_items",
+  "events",
+  "closed_stats",
+  "operation_counts",
+  "comment_routers",
+  "comment_sync",
+  "reasons",
+  "backoff_reasons",
+  "parked_reasons",
+  "recovery_reasons",
+  "next_action_buckets",
+  "next_actions",
+  "cycle",
+  "candidate_counts",
+  "cursor",
+  "exact_review_queue",
+  "recent_durable_publication_events",
+  "collection",
+  "lanes",
+  "review",
+  "publication",
+  "handoff_health",
+  "phases",
+  // Queue phase names are both scalar counters at the queue root and closed
+  // aggregate objects under handoff_health.phases. Admit the object form so a
+  // second public projection (fresh/cache/durable reuse) remains idempotent.
+  "pending",
+  "dispatching",
+  "leased",
+  "pressure",
+  "bay_projection",
+  "activity",
+  "queue_stages",
+  "live_stages",
+  "stages",
+  "active_stages",
+  "window",
+  "direct",
+  "batch",
+  "counts",
+  "buckets",
+  "provenance",
+]);
+
+const PUBLIC_STATUS_BOOLEAN_FIELDS = new Set([
+  "active_census_complete",
+  "complete",
+  "cursor_required",
+  "is_codex_worker",
+  "public_aggregate_only",
+  "public_projection_complete",
+  "recovered",
+  "telemetry_complete",
+  "workflow_run_census_complete",
+  "durable_server_observed",
+]);
+const PUBLIC_BAY_STAGES = [
+  "arriving",
+  "setting-up",
+  "reviewing",
+  "publishing",
+  "applying",
+  "repairing",
+] as const;
+const PUBLIC_BAY_STAGE_SET = new Set<string>(PUBLIC_BAY_STAGES);
+
+function publicBayStageCounts(value, strict = false) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = objectValue(value);
+  const present = PUBLIC_BAY_STAGES.filter((stage) =>
+    Object.prototype.hasOwnProperty.call(source, stage),
+  );
+  if (
+    (strict && present.length !== PUBLIC_BAY_STAGES.length) ||
+    (!strict && present.length === 0)
+  ) {
+    return null;
+  }
+  const counts = {} as Record<(typeof PUBLIC_BAY_STAGES)[number], number>;
+  for (const stage of PUBLIC_BAY_STAGES) {
+    const count = typeof source[stage] === "number" ? source[stage] : Number.NaN;
+    if (strict && (!Number.isSafeInteger(count) || count < 0 || count > 10_000)) return null;
+    counts[stage] = Number.isSafeInteger(count) && count >= 0 ? Math.min(count, 10_000) : 0;
+  }
+  return counts;
+}
+
+function emptyPublicBayStageCounts() {
+  return Object.fromEntries(PUBLIC_BAY_STAGES.map((stage) => [stage, 0])) as Record<
+    (typeof PUBLIC_BAY_STAGES)[number],
+    number
+  >;
+}
+
+const PUBLIC_BAY_QUEUE_REFERENCE_LIMIT = 24;
+const PUBLIC_BAY_ACTIVITY_REFERENCE_LIMIT = 124;
+const PUBLIC_BAY_ITEM_NUMBER_LIMIT = 1_000_000_000;
+const PUBLIC_BAY_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const PUBLIC_BAY_REFERENCE_SOURCES = new Set(["queue", "live"]);
+const PUBLIC_BAY_OUTCOMES = new Set(["success", "failure", "cancelled"]);
+const PUBLIC_BAY_ACTION_CONCLUSIONS = new Set([
+  "success",
+  "failure",
+  "cancelled",
+  "skipped",
+  "neutral",
+  "timed_out",
+  "action_required",
+  "startup_failure",
+  "stale",
+]);
+const PUBLIC_BAY_STEP_KINDS = new Set([
+  "setup",
+  "checkout",
+  "dependencies",
+  "lease",
+  "review",
+  "proof",
+  "test",
+  "publish",
+  "apply",
+  "finalize",
+  "cleanup",
+  "workflow",
+]);
+const PUBLIC_BAY_ACTION_ID_LIMIT = 1_000_000_000_000_000;
+const PUBLIC_BAY_ACTION_STEP_LIMIT = 100;
+type PublicBayActionStep = {
+  sequence: number;
+  kind: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: string | null;
+};
+type PublicBayAction = {
+  repository: string;
+  run_id: number;
+  status: "queued" | "in_progress" | "completed";
+  started_at: string | null;
+  steps_complete: boolean;
+  steps: PublicBayActionStep[];
+  job_id?: number;
+};
+type PublicBayReference = {
+  repository: string;
+  item_number: number;
+  stage: (typeof PUBLIC_BAY_STAGES)[number];
+  source: "queue" | "live";
+  action?: PublicBayAction;
+};
+
+function publicBayActionId(value) {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value > 0 &&
+    value <= PUBLIC_BAY_ACTION_ID_LIMIT
+    ? value
+    : null;
+}
+
+function publicBayActionStatus(value) {
+  const status = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (["queued", "pending", "waiting", "requested"].includes(status)) return "queued" as const;
+  if (["in_progress", "running"].includes(status)) return "in_progress" as const;
+  if (status === "completed") return "completed" as const;
+  return null;
+}
+
+function publicBayActionConclusion(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const conclusion = String(value).trim().toLowerCase();
+  return PUBLIC_BAY_ACTION_CONCLUSIONS.has(conclusion) ? conclusion : undefined;
+}
+
+function publicBayStepKind(value) {
+  const name = String(value || "")
+    .slice(0, 256)
+    .trim()
+    .toLowerCase();
+  if (/post .*checkout|cleanup|clean up|tear down|stop (?:containers?|services?)/.test(name)) {
+    return "cleanup";
+  }
+  if (/checkout|check out/.test(name)) return "checkout";
+  if (/pnpm|npm|node|dependency|dependencies|install|hydrate|cache/.test(name)) {
+    return "dependencies";
+  }
+  if (/claim|lease|admission|reserve/.test(name)) return "lease";
+  if (/apply|merge|close|route|release/.test(name)) return "apply";
+  if (/publish|upload|artifact|comment|report/.test(name)) return "publish";
+  if (/final|complete|conclude|summary/.test(name)) return "finalize";
+  if (/proof|verify|verification|attest/.test(name)) return "proof";
+  if (/test|lint|format|build|check|validate/.test(name)) return "test";
+  if (/review|codex|analyse|analyze|inspect/.test(name)) return "review";
+  if (/setup|set up|prepare|initialize|initialise/.test(name)) return "setup";
+  return "workflow";
+}
+
+function publicBayActionSteps(value) {
+  if (value === undefined) return { complete: false, steps: [] as PublicBayActionStep[] };
+  if (!Array.isArray(value) || value.length > PUBLIC_BAY_ACTION_STEP_LIMIT) {
+    return { complete: false, steps: [] as PublicBayActionStep[] };
+  }
+  const steps: PublicBayActionStep[] = [];
+  const seen = new Set<number>();
+  for (const entry of value) {
+    const step = objectValue(entry);
+    const sequence = publicBayActionId(step.sequence ?? step.number);
+    const status = publicBayActionStatus(step.status);
+    const conclusion = publicBayActionConclusion(step.conclusion);
+    const projectedKind = typeof step.kind === "string" ? step.kind : publicBayStepKind(step.name);
+    if (
+      sequence === null ||
+      sequence > 1_000 ||
+      seen.has(sequence) ||
+      !status ||
+      conclusion === undefined ||
+      !PUBLIC_BAY_STEP_KINDS.has(projectedKind)
+    ) {
+      return { complete: false, steps: [] as PublicBayActionStep[] };
+    }
+    seen.add(sequence);
+    steps.push({ sequence, kind: projectedKind, status, conclusion });
+  }
+  steps.sort((left, right) => left.sequence - right.sequence);
+  return { complete: true, steps };
+}
+
+function publicBayProjectedAction(value, allowedRepositories: ReadonlySet<string>) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = objectValue(value);
+  const repository = String(source.repository || "")
+    .trim()
+    .toLowerCase();
+  const runId = publicBayActionId(source.run_id);
+  const jobId = source.job_id === undefined ? undefined : publicBayActionId(source.job_id);
+  const status = publicBayActionStatus(source.status);
+  const startedAt = source.started_at === null ? null : publicTimestamp(source.started_at);
+  const steps = publicBayActionSteps(source.steps);
+  if (
+    !PUBLIC_BAY_REPOSITORY_PATTERN.test(repository) ||
+    !allowedRepositories.has(repository) ||
+    runId === null ||
+    jobId === null ||
+    !status ||
+    (source.started_at !== null && startedAt === null) ||
+    typeof source.steps_complete !== "boolean" ||
+    (source.steps_complete && !steps.complete) ||
+    (!source.steps_complete && Array.isArray(source.steps) && source.steps.length > 0)
+  ) {
+    return null;
+  }
+  return {
+    repository,
+    run_id: runId,
+    ...(jobId === undefined ? {} : { job_id: jobId }),
+    status,
+    started_at: startedAt,
+    steps_complete: source.steps_complete && steps.complete,
+    steps: source.steps_complete && steps.complete ? steps.steps : [],
+  } satisfies PublicBayAction;
+}
+
+function githubActionUrl(value, kind: "run" | "job") {
+  if (typeof value !== "string" || value.length > 300) return null;
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "github.com" ||
+      url.username ||
+      url.password ||
+      url.hash
+    ) {
+      return null;
+    }
+    if (kind === "run" && url.search) return null;
+    if (kind === "job" && url.search && url.search !== "?check_suite_focus=true") return null;
+    if (kind === "run") {
+      const match = url.pathname.match(
+        /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/actions\/runs\/(\d+)\/?$/,
+      );
+      const id = match ? publicBayActionId(Number(match[3])) : null;
+      return !match || id === null
+        ? null
+        : { repository: `${match[1]}/${match[2]}`.toLowerCase(), id };
+    }
+    const actionJob = url.pathname.match(
+      /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/actions\/runs\/(\d+)\/job\/(\d+)\/?$/,
+    );
+    if (actionJob) {
+      const runId = publicBayActionId(Number(actionJob[3]));
+      const id = publicBayActionId(Number(actionJob[4]));
+      return runId === null || id === null
+        ? null
+        : {
+            repository: `${actionJob[1]}/${actionJob[2]}`.toLowerCase(),
+            run_id: runId,
+            id,
+          };
+    }
+    const legacyJob = url.pathname.match(
+      /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/runs\/(\d+)\/?$/,
+    );
+    const id = legacyJob ? publicBayActionId(Number(legacyJob[3])) : null;
+    return !legacyJob || id === null
+      ? null
+      : { repository: `${legacyJob[1]}/${legacyJob[2]}`.toLowerCase(), id };
+  } catch {
+    return null;
+  }
+}
+
+function publicBayActionFromWorker(value, allowedRepositories: ReadonlySet<string>) {
+  const source = objectValue(value);
+  if (source.action !== undefined)
+    return publicBayProjectedAction(source.action, allowedRepositories);
+  const run = githubActionUrl(source.run_url, "run");
+  const job = githubActionUrl(source.job_url, "job");
+  const runId = publicBayActionId(source.run_id);
+  const jobId = publicBayActionId(source.job_id ?? source.id);
+  const repository = run?.repository || job?.repository || "";
+  const status = publicBayActionStatus(source.status);
+  const startedAt = publicTimestamp(source.started_at);
+  if (
+    !repository ||
+    !allowedRepositories.has(repository) ||
+    runId === null ||
+    !status ||
+    (source.started_at !== null && source.started_at !== undefined && startedAt === null) ||
+    (run && (run.repository !== repository || run.id !== runId)) ||
+    (job && job.repository !== repository) ||
+    (job && "run_id" in job && job.run_id !== runId) ||
+    (job && jobId !== null && job.id !== jobId) ||
+    (!run && !job)
+  ) {
+    return null;
+  }
+  const steps = publicBayActionSteps(source.steps);
+  return {
+    repository,
+    run_id: runId,
+    ...(job ? { job_id: job.id } : {}),
+    status,
+    started_at: startedAt,
+    steps_complete: steps.complete,
+    steps: steps.complete ? steps.steps : [],
+  } satisfies PublicBayAction;
+}
+
+function publicBayReference(
+  value,
+  allowedRepositories: ReadonlySet<string>,
+  fallbackSource?: "queue" | "live",
+) {
+  const source = objectValue(value);
+  const repository = typeof source.repository === "string" ? source.repository.trim() : "";
+  const itemNumber = source.item_number;
+  const stage = typeof source.stage === "string" ? source.stage : "";
+  const referenceSource =
+    typeof source.source === "string" && PUBLIC_BAY_REFERENCE_SOURCES.has(source.source)
+      ? source.source
+      : fallbackSource;
+  if (
+    !PUBLIC_BAY_REPOSITORY_PATTERN.test(repository) ||
+    typeof itemNumber !== "number" ||
+    !Number.isSafeInteger(itemNumber) ||
+    itemNumber <= 0 ||
+    itemNumber > PUBLIC_BAY_ITEM_NUMBER_LIMIT ||
+    !PUBLIC_BAY_STAGE_SET.has(stage) ||
+    !referenceSource
+  ) {
+    return null;
+  }
+  const canonicalRepository = repository.toLowerCase();
+  if (!allowedRepositories.has(canonicalRepository)) return undefined;
+  const action = publicBayProjectedAction(source.action, allowedRepositories);
+  return {
+    repository: canonicalRepository,
+    item_number: itemNumber,
+    stage: stage as (typeof PUBLIC_BAY_STAGES)[number],
+    source: referenceSource,
+    ...(action ? { action } : {}),
+  };
+}
+
+function publicBayReferences(
+  value,
+  limit,
+  allowedRepositories: ReadonlySet<string>,
+  fallbackSource?: "queue" | "live",
+) {
+  if (!Array.isArray(value) || value.length > limit) return [];
+  const references: PublicBayReference[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const reference = publicBayReference(entry, allowedRepositories, fallbackSource);
+    if (reference === null) return [];
+    if (reference === undefined) continue;
+    const key = `${reference.repository}#${reference.item_number}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    references.push(reference);
+  }
+  return references;
+}
+
+function publicBayTerminalOutcome(value, allowedRepositories: ReadonlySet<string>) {
+  const source = objectValue(value);
+  const outcome = typeof source.outcome === "string" ? source.outcome : "";
+  if (!PUBLIC_BAY_OUTCOMES.has(outcome)) return null;
+  const explicitRepository = typeof source.repository === "string" ? source.repository.trim() : "";
+  const explicitNumber = source.item_number ?? source.number;
+  const itemKey = typeof source.item_key === "string" ? source.item_key.trim() : "";
+  const keyMatch = itemKey.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
+  const repository = explicitRepository || keyMatch?.[1] || "";
+  const itemNumber = explicitNumber ?? (keyMatch ? Number(keyMatch[2]) : Number.NaN);
+  const explicitMatchesKey =
+    !keyMatch ||
+    (repository.toLowerCase() === keyMatch[1].toLowerCase() && itemNumber === Number(keyMatch[2]));
+  if (
+    explicitMatchesKey &&
+    PUBLIC_BAY_REPOSITORY_PATTERN.test(repository) &&
+    typeof itemNumber === "number" &&
+    Number.isSafeInteger(itemNumber) &&
+    itemNumber > 0 &&
+    itemNumber <= PUBLIC_BAY_ITEM_NUMBER_LIMIT
+  ) {
+    const canonicalRepository = repository.toLowerCase();
+    if (allowedRepositories.has(canonicalRepository)) {
+      const action = publicBayActionFromWorker(
+        { ...source, status: "completed", run_url: source.run_url ?? source.job_url },
+        allowedRepositories,
+      );
+      return {
+        repository: canonicalRepository,
+        item_number: itemNumber,
+        outcome,
+        ...(action ? { action } : {}),
+      };
+    }
+  }
+  return { outcome };
+}
+
+function publicBayTerminalOutcomes(value, limit, allowedRepositories: ReadonlySet<string>) {
+  if (!Array.isArray(value) || value.length > limit) return [];
+  return value.map((entry) => publicBayTerminalOutcome(entry, allowedRepositories)).filter(Boolean);
+}
+
+function publicBayActivity(value, allowedRepositories: ReadonlySet<string>) {
+  const source = objectValue(value);
+  if (source.complete !== true) {
+    return { complete: false, queue_stages: null, live_stages: null, total: null };
+  }
+  const queueStages = publicBayStageCounts(source.queue_stages, true);
+  const liveStages = publicBayStageCounts(source.live_stages, true);
+  const total = typeof source.total === "number" ? source.total : Number.NaN;
+  const expected =
+    queueStages && liveStages
+      ? PUBLIC_BAY_STAGES.reduce((sum, stage) => sum + queueStages[stage] + liveStages[stage], 0)
+      : -1;
+  if (!queueStages || !liveStages || !Number.isSafeInteger(total) || total !== expected) {
+    return { complete: false, queue_stages: null, live_stages: null, total: null };
+  }
+  const result = { complete: true, queue_stages: queueStages, live_stages: liveStages, total };
+  const items = publicBayReferences(
+    source.items,
+    PUBLIC_BAY_ACTIVITY_REFERENCE_LIMIT,
+    allowedRepositories,
+  );
+  return items.length ? { ...result, items } : result;
+}
+
+function publicBayProjectionValue(value, allowedRepositories: ReadonlySet<string> = new Set()) {
+  const source = objectValue(value);
+  const stages = publicBayStageCounts(source.stages, true);
+  const sampleLimit = typeof source.sample_limit === "number" ? source.sample_limit : Number.NaN;
+  const total = typeof source.total === "number" ? source.total : Number.NaN;
+  const expectedTotal = stages
+    ? PUBLIC_BAY_STAGES.reduce((sum, stage) => sum + stages[stage], 0)
+    : -1;
+  const complete =
+    source.complete === true &&
+    sampleLimit === 24 &&
+    stages !== null &&
+    Number.isSafeInteger(total) &&
+    total >= 0 &&
+    total <= 10_000 &&
+    total === expectedTotal;
+  const hasActivity = Object.prototype.hasOwnProperty.call(source, "activity");
+  if (!complete) {
+    return {
+      complete: false,
+      activity: { complete: false, queue_stages: null, live_stages: null, total: null },
+    };
+  }
+  const result = {
+    complete: true,
+    sample_limit: sampleLimit,
+    total,
+    stages,
+    activity: hasActivity
+      ? publicBayActivity(source.activity, allowedRepositories)
+      : { complete: false, queue_stages: null, live_stages: null, total: null },
+  };
+  const items = publicBayReferences(
+    source.items,
+    PUBLIC_BAY_QUEUE_REFERENCE_LIMIT,
+    allowedRepositories,
+    "queue",
+  );
+  return items.length ? { ...result, items } : result;
+}
+
+function composePublicBayActivity(
+  projection,
+  activeTargets,
+  allowedRepositories: ReadonlySet<string>,
+) {
+  if (objectValue(projection).complete !== true || !activeTargets.complete) {
+    return { complete: false, queue_stages: null, live_stages: null, total: null };
+  }
+  const stages = publicBayStageCounts(objectValue(projection).stages, true);
+  const overlaps = publicBayStageCounts(objectValue(projection).active_overlaps, true);
+  const liveStages = publicBayStageCounts(activeTargets.stages, true);
+  if (!stages || !overlaps || !liveStages) {
+    return { complete: false, queue_stages: null, live_stages: null, total: null };
+  }
+  const queueStages = {} as Record<(typeof PUBLIC_BAY_STAGES)[number], number>;
+  for (const stage of PUBLIC_BAY_STAGES) {
+    if (overlaps[stage] > stages[stage]) {
+      return { complete: false, queue_stages: null, live_stages: null, total: null };
+    }
+    queueStages[stage] = stages[stage] - overlaps[stage];
+  }
+  const total = PUBLIC_BAY_STAGES.reduce(
+    (sum, stage) => sum + queueStages[stage] + liveStages[stage],
+    0,
+  );
+  const activeKeys = new Set(activeTargets.keys);
+  const queueItems = publicBayReferences(
+    objectValue(projection).items,
+    PUBLIC_BAY_QUEUE_REFERENCE_LIMIT,
+    allowedRepositories,
+    "queue",
+  ).filter((item) => !activeKeys.has(`${item.repository}#${item.item_number}`));
+  const liveItems = publicBayReferences(activeTargets.items, 100, allowedRepositories, "live");
+  const items = [...liveItems, ...queueItems].slice(0, PUBLIC_BAY_ACTIVITY_REFERENCE_LIMIT);
+  return {
+    complete: true,
+    queue_stages: queueStages,
+    live_stages: liveStages,
+    total,
+    ...(items.length ? { items } : {}),
+  };
+}
+
+function publicWorkerBayStage(value): (typeof PUBLIC_BAY_STAGES)[number] | undefined {
+  const worker = objectValue(value);
+  const boundedText = (input) =>
+    String(input || "")
+      .slice(0, 256)
+      .trim()
+      .toLowerCase();
+  const status = boundedText(worker.status);
+  const step = boundedText(worker.current_step);
+  const existingStage = boundedText(worker.stage);
+  const mode = boundedText(worker.mode);
+  const name = boundedText(worker.name);
+  const workflowTitle = boundedText(worker.workflow_title);
+  const stepHistory = (Array.isArray(worker.steps) ? worker.steps : [])
+    .slice(0, 100)
+    .map((item) => boundedText(objectValue(item).name))
+    .filter(Boolean)
+    .join(" ");
+  const hasClassifierText = Boolean(name || workflowTitle || step || stepHistory);
+  if (!hasClassifierText && PUBLIC_BAY_STAGE_SET.has(existingStage)) {
+    return existingStage as (typeof PUBLIC_BAY_STAGES)[number];
+  }
+
+  const publishingRun =
+    /publish (?:exact )?review (?:artifacts?|batch)|claim durable exact review publication|claim one durable publication batch|finalize healthy members under a fenced heartbeat|apply review artifacts|publish review artifact action ledger|commit review records|publish event result and apply safe close|complete durable exact review publication/.test(
+      [name, workflowTitle, stepHistory].join(" "),
+    );
+  if (publishingRun) {
+    if (
+      /finalize healthy members under a fenced heartbeat|sync selected review comments|dispatch selected safe close proposals to isolated apply|continue sweep|publish event result and apply safe close|queue deferred exact verdict router|queue fresh review after source drift|release terminal review leases|confirm terminal item remains closed|mark re-review complete|react to target item completion|release superseded or unsuccessful publisher-owned review lease|complete durable exact review publication|mark active lease retry waiting|fail unsuccessful exact review publication/.test(
+        step,
+      )
+    ) {
+      return "applying";
+    }
+    return "publishing";
+  }
+  if (["queued", "waiting", "requested", "pending"].includes(status)) return "arriving";
+  if (
+    /setup-state|state token|publish|route|queue deferred|release|confirm terminal|mark .* complete|commit .* ledger|retry waiting|react .* completion|fail unsuccessful|complete .* lease/.test(
+      step,
+    )
+  ) {
+    return "applying";
+  }
+  if (
+    /set up job|setup-pnpm|setup-codex|checkout|check out|cache|claim .* lease|resolve .* payload|create target .* token|check live target|mark .* in progress|react .* review start/.test(
+      step,
+    )
+  ) {
+    return "setting-up";
+  }
+  if (/review|codex|inspect|analyse|analyze|assist/.test(step)) return "reviewing";
+  if (/repair|fix|rebase|validat|test/.test(step)) return "repairing";
+  if (/apply|publish|merge|close|comment|route|release|complete/.test(step)) return "applying";
+  if (PUBLIC_BAY_STAGE_SET.has(existingStage)) {
+    return existingStage as (typeof PUBLIC_BAY_STAGES)[number];
+  }
+  const fallback = `${existingStage} ${mode} ${name}`;
+  if (/repair|fix|rebase/.test(fallback)) return "repairing";
+  if (/apply|publish|merge|close|automerge/.test(fallback)) return "applying";
+  if (/review|codex|assist/.test(fallback)) return "reviewing";
+  return undefined;
+}
+
+function publicWorkerTargetKeys(value) {
+  const worker = objectValue(value);
+  const hasNumberList = Object.prototype.hasOwnProperty.call(worker, "item_numbers");
+  const hasScalarNumber =
+    Object.prototype.hasOwnProperty.call(worker, "item_number") && worker.item_number !== null;
+  if (!hasNumberList && !hasScalarNumber) return { complete: false, keys: [] as string[] };
+  if (hasNumberList && !Array.isArray(worker.item_numbers)) {
+    return { complete: false, keys: [] as string[] };
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(worker, "target_items") &&
+    !Array.isArray(worker.target_items)
+  ) {
+    return { complete: false, keys: [] as string[] };
+  }
+  const listedNumbers = Array.isArray(worker.item_numbers) ? worker.item_numbers : [];
+  const scalarNumber = hasScalarNumber ? worker.item_number : null;
+  const targetItems = Array.isArray(worker.target_items) ? worker.target_items : [];
+  if (listedNumbers.length > 100 || targetItems.length > 100) {
+    return { complete: false, keys: [] as string[] };
+  }
+  if (
+    listedNumbers.some(
+      (number) => typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0,
+    ) ||
+    (hasScalarNumber &&
+      (typeof scalarNumber !== "number" ||
+        !Number.isSafeInteger(scalarNumber) ||
+        Number(scalarNumber) <= 0))
+  ) {
+    return { complete: false, keys: [] as string[] };
+  }
+  if (
+    hasScalarNumber &&
+    hasNumberList &&
+    (listedNumbers.length === 0 || !listedNumbers.includes(scalarNumber))
+  ) {
+    return { complete: false, keys: [] as string[] };
+  }
+  const numbers = hasNumberList ? listedNumbers : hasScalarNumber ? [scalarNumber as number] : [];
+  if (targetItems.length > 0 && numbers.length === 0) {
+    return { complete: false, keys: [] as string[] };
+  }
+  const workerRepository =
+    worker.repository === null || worker.repository === undefined
+      ? ""
+      : String(worker.repository).trim();
+  if (workerRepository && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(workerRepository)) {
+    return { complete: false, keys: [] as string[] };
+  }
+  const targetByNumber = new Map<number, string>();
+  for (const value of targetItems) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { complete: false, keys: [] as string[] };
+    }
+    const target = objectValue(value);
+    const number = target.number;
+    const repository = String(target.repository || "").trim();
+    if (
+      typeof number !== "number" ||
+      !Number.isSafeInteger(number) ||
+      number <= 0 ||
+      !numbers.includes(number) ||
+      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) ||
+      (workerRepository && repository.toLowerCase() !== workerRepository.toLowerCase())
+    ) {
+      return { complete: false, keys: [] as string[] };
+    }
+    const previous = targetByNumber.get(number);
+    if (previous && previous.toLowerCase() !== repository.toLowerCase()) {
+      return { complete: false, keys: [] as string[] };
+    }
+    targetByNumber.set(number, repository);
+  }
+  const keys = new Set<string>();
+  for (const number of numbers) {
+    const repository = workerRepository || targetByNumber.get(number) || "";
+    if (!repository) return { complete: false, keys: [] as string[] };
+    keys.add(`${repository.toLowerCase()}#${number}`);
+  }
+  return { complete: true, keys: [...keys] };
+}
+
+function publicBayActiveTargets(
+  workers,
+  producerComplete = false,
+  allowedRepositories: ReadonlySet<string> = new Set(),
+) {
+  const workerList = Array.isArray(workers) ? workers : [];
+  let complete = producerComplete === true && Array.isArray(workers) && workerList.length <= 100;
+  const selected = new Map<
+    string,
+    { stage: (typeof PUBLIC_BAY_STAGES)[number]; startedAt: number; action: PublicBayAction | null }
+  >();
+  for (const worker of workerList.slice(0, 100)) {
+    if (!worker || typeof worker !== "object" || Array.isArray(worker)) {
+      complete = false;
+      continue;
+    }
+    const record = objectValue(worker);
+    const targets = publicWorkerTargetKeys(record);
+    if (!targets.complete) complete = false;
+    const stage = publicWorkerBayStage(worker);
+    if (!stage) {
+      complete = false;
+      continue;
+    }
+    const startedAt = Date.parse(String(record.started_at || ""));
+    const action = publicBayActionFromWorker(record, allowedRepositories);
+    if (!Number.isFinite(startedAt)) complete = false;
+    for (const itemKey of targets.keys) {
+      const previous = selected.get(itemKey);
+      if (
+        !previous ||
+        startedAt > previous.startedAt ||
+        (startedAt === previous.startedAt &&
+          PUBLIC_BAY_STAGES.indexOf(stage as (typeof PUBLIC_BAY_STAGES)[number]) >
+            PUBLIC_BAY_STAGES.indexOf(previous.stage as (typeof PUBLIC_BAY_STAGES)[number]))
+      ) {
+        selected.set(itemKey, {
+          stage,
+          startedAt: Number.isFinite(startedAt) ? startedAt : 0,
+          action,
+        });
+      }
+    }
+  }
+  if (selected.size > 100) complete = false;
+  const counts = Object.fromEntries(PUBLIC_BAY_STAGES.map((stage) => [stage, 0])) as Record<
+    (typeof PUBLIC_BAY_STAGES)[number],
+    number
+  >;
+  for (const { stage } of selected.values()) counts[stage] += 1;
+  const keys = [...selected.keys()].slice(0, 100);
+  const items = keys.flatMap((key) => {
+    const match = key.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
+    const selectedItem = selected.get(key);
+    if (!match || !selectedItem) return [];
+    return [
+      {
+        repository: match[1],
+        item_number: Number(match[2]),
+        stage: selectedItem.stage,
+        source: "live" as const,
+        ...(selectedItem.action ? { action: selectedItem.action } : {}),
+      },
+    ];
+  });
+  return { complete, keys, stages: counts, items };
+}
+
+function unavailablePublicStatusProjection() {
+  return {
+    schema_version: 1,
+    generated_at: "2020-01-01T00:00:00.000Z",
+    public_projection_complete: false,
+    source: { target_repository_count: 0 },
+    fleet: {
+      active_codex_jobs: 0,
+      active_workflow_runs: 0,
+      worker_budget: 0,
+      budget_used_percent: 0,
+    },
+    workers: [],
+    automatic_work: [],
+    pipeline: [],
+    bay: {},
+    recent: {},
+    operational_health: { status: "unknown" },
+    diagnostics: { errors: ["telemetry_unavailable"], error_count: 1 },
+    dashboard_health: { conclusion: "needs_attention", severity: "amber" },
+  };
+}
+
+function verifiedPublicBayRepositories(env) {
+  const repositories = String(env?.PUBLIC_BAY_REPOS || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  if (
+    repositories.length > 32 ||
+    repositories.some((repository) => !PUBLIC_BAY_REPOSITORY_PATTERN.test(repository))
+  ) {
+    return new Set<string>();
+  }
+  return new Set<string>(repositories);
+}
+
+export function publicStatusProjection(
+  snapshot,
+  allowedRepositories: ReadonlySet<string> = new Set(),
+) {
+  if (
+    !snapshot ||
+    typeof snapshot !== "object" ||
+    Array.isArray(snapshot) ||
+    snapshot.schema_version !== 1 ||
+    !publicTimestamp(snapshot.generated_at) ||
+    snapshot.public_projection_complete === false ||
+    !snapshot.fleet ||
+    typeof snapshot.fleet !== "object" ||
+    Array.isArray(snapshot.fleet) ||
+    !Array.isArray(snapshot.workers) ||
+    !Array.isArray(snapshot.automatic_work) ||
+    !Array.isArray(snapshot.pipeline) ||
+    !snapshot.bay ||
+    typeof snapshot.bay !== "object" ||
+    Array.isArray(snapshot.bay) ||
+    !snapshot.diagnostics ||
+    typeof snapshot.diagnostics !== "object" ||
+    Array.isArray(snapshot.diagnostics) ||
+    !Array.isArray(snapshot.diagnostics.errors)
+  ) {
+    return unavailablePublicStatusProjection();
+  }
+  const source = objectValue(snapshot);
+  const sourceWorkers = Array.isArray(source.workers) ? source.workers : null;
+  const projectedWorkers = sourceWorkers?.slice(0, 100).map((worker) => {
+    const stage = publicWorkerBayStage(worker);
+    return { ...objectValue(worker), ...(stage ? { stage } : {}) };
+  });
+  const sourceBay = objectValue(source.bay);
+  const derivedActiveTargets = publicBayActiveTargets(
+    sourceWorkers || [],
+    sourceBay.active_census_complete === true,
+    allowedRepositories,
+  );
+  const suppliedActiveStages = publicBayStageCounts(sourceBay.active_stages, true);
+  const currentProjectedCensus =
+    source.public_projection_complete === true &&
+    sourceBay.active_census_complete === true &&
+    sourceWorkers !== null &&
+    sourceWorkers.length <= 100 &&
+    suppliedActiveStages !== null;
+  const effectiveActiveCensusComplete = derivedActiveTargets.complete || currentProjectedCensus;
+  const activeStages =
+    (effectiveActiveCensusComplete ? suppliedActiveStages : null) ||
+    (derivedActiveTargets.complete ? derivedActiveTargets.stages : emptyPublicBayStageCounts());
+  const sourceExactReviewQueue = objectValue(source.exact_review_queue);
+  const sourceBayProjection = objectValue(sourceExactReviewQueue.bay_projection);
+  const hasExactReviewQueueObject =
+    Boolean(source.exact_review_queue) &&
+    typeof source.exact_review_queue === "object" &&
+    !Array.isArray(source.exact_review_queue);
+  const publicBayProjection = publicBayProjectionValue(sourceBayProjection, allowedRepositories);
+  const projectionSource = {
+    ...source,
+    public_projection_complete: true,
+    ...(projectedWorkers ? { workers: projectedWorkers } : {}),
+    ...(sourceWorkers || Object.prototype.hasOwnProperty.call(sourceBay, "active_stages")
+      ? {
+          bay: {
+            ...sourceBay,
+            active_census_complete: effectiveActiveCensusComplete,
+            active_stages: activeStages,
+          },
+        }
+      : {}),
+    ...(hasExactReviewQueueObject
+      ? {
+          exact_review_queue: publicExactReviewQueueProjection(
+            {
+              ...sourceExactReviewQueue,
+              bay_projection: publicBayProjection,
+            },
+            allowedRepositories,
+          ),
+        }
+      : {}),
+  };
+  const sanitized = publicStatusValue(projectionSource, "root", 0);
+  const document = objectValue(sanitized) || { schema_version: 1 };
+  const diagnostics = objectValue(document.diagnostics) || {};
+  const sourceDiagnostics = objectValue(projectionSource.diagnostics);
+  const sourceErrors = Array.isArray(sourceDiagnostics.errors) ? sourceDiagnostics.errors : [];
+  const retainedErrorCount = Number(sourceDiagnostics.error_count);
+  const declaredErrorCount =
+    Number.isSafeInteger(retainedErrorCount) && retainedErrorCount >= 0 && retainedErrorCount <= 20
+      ? retainedErrorCount
+      : 0;
+  const errorCount = Math.max(declaredErrorCount, Math.min(sourceErrors.length, 20));
+  document.diagnostics = {
+    ...diagnostics,
+    // Keep a bounded incomplete-telemetry signal without retaining upstream text.
+    errors: Array.from({ length: Math.min(errorCount, 20) }, () => "telemetry_unavailable"),
+    error_count: errorCount,
+  };
+  const documentBay = objectValue(document.bay);
+  if (Array.isArray(sourceBay.terminal_buffer)) {
+    documentBay.terminal_buffer = publicBayTerminalOutcomes(
+      sourceBay.terminal_buffer,
+      100,
+      allowedRepositories,
+    );
+  }
+  if (Array.isArray(sourceBay.recently_washed)) {
+    documentBay.recently_washed = publicBayTerminalOutcomes(
+      sourceBay.recently_washed,
+      100,
+      allowedRepositories,
+    );
+  }
+  document.bay = documentBay;
+  if (hasExactReviewQueueObject) {
+    const documentQueue = objectValue(document.exact_review_queue);
+    documentQueue.bay_projection = publicBayProjection;
+    document.exact_review_queue = documentQueue;
+  }
+  return document;
+}
+
+function publicStatusValue(value, field, depth) {
+  if (depth > 12) return undefined;
+  if (value === null) {
+    return PUBLIC_STATUS_COUNT_FIELDS.has(field) ||
+      PUBLIC_STATUS_TEXT_FIELDS.has(field) ||
+      PUBLIC_STATUS_TIME_FIELDS.has(field) ||
+      PUBLIC_STATUS_CONTAINER_FIELDS.has(field)
+      ? null
+      : undefined;
+  }
+  if (typeof value === "boolean") {
+    return PUBLIC_STATUS_BOOLEAN_FIELDS.has(field) ? value : undefined;
+  }
+  if (typeof value === "number") return publicStatusNumber(value, field);
+  if (typeof value === "string") return publicStatusText(value, field);
+  if (Array.isArray(value)) {
+    if (!PUBLIC_STATUS_CONTAINER_FIELDS.has(field)) return undefined;
+    return value
+      .slice(0, 100)
+      .map((entry) => publicStatusValue(entry, field, depth + 1))
+      .filter(
+        (entry) =>
+          entry !== undefined &&
+          !(
+            field === "closed_items" &&
+            entry !== null &&
+            typeof entry === "object" &&
+            !Array.isArray(entry) &&
+            Object.keys(entry).length === 0
+          ),
+      );
+  }
+  if (!value || typeof value !== "object") return undefined;
+  if (!PUBLIC_STATUS_CONTAINER_FIELDS.has(field)) return undefined;
+
+  const result = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const next = publicStatusValue(entry, key, depth + 1);
+    if (next !== undefined) result[key] = next;
+  }
+  return result;
+}
+
+function publicStatusNumber(value, field) {
+  if (!PUBLIC_STATUS_COUNT_FIELDS.has(field) || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  if (field === "schema_version") return value === 1 ? 1 : undefined;
+  if (field.endsWith("_percent")) return value <= 100 ? value : undefined;
+  if (!Number.isSafeInteger(value)) return undefined;
+  return value <= 1_000_000_000_000 ? value : undefined;
+}
+
+function publicStatusText(value, field) {
+  const text = value.trim();
+  if (PUBLIC_STATUS_TIME_FIELDS.has(field)) {
+    return publicTimestamp(text) ?? undefined;
+  }
+  if (!PUBLIC_STATUS_TEXT_FIELDS.has(field)) return undefined;
+  const normalized = text.toLowerCase();
+  return PUBLIC_STATUS_TEXT_VALUES.has(normalized) ? normalized : undefined;
+}
+
+async function cachedStatusResponse(cached, cacheState, env) {
+  let snapshot = null;
+  try {
+    snapshot = await cached.clone().json();
+  } catch {
+    snapshot = { schema_version: 1 };
+  }
+  return statusSnapshotResponse(snapshot, cacheState, env);
+}
+
+function statusSnapshotResponse(snapshot, cacheState, env) {
+  const responseHeaders = new Headers();
   responseHeaders.set("content-type", "application/json; charset=utf-8");
   responseHeaders.set("cache-control", "no-store");
   responseHeaders.set("x-clawsweeper-cache", cacheState);
   return cors(
-    new Response(JSON.stringify(snapshot, null, 2), { status, headers: responseHeaders }),
+    new Response(
+      JSON.stringify(publicStatusProjection(snapshot, verifiedPublicBayRepositories(env)), null, 2),
+      {
+        status: 200,
+        headers: responseHeaders,
+      },
+    ),
   );
 }
 
@@ -1093,6 +2798,7 @@ function refreshStatus(request, env) {
     new URL(request.url).origin,
     env.CLAWSWEEPER_REPO || "openclaw/clawsweeper",
     env.TARGET_REPOS || "openclaw/openclaw",
+    env.PUBLIC_BAY_REPOS || "",
     env.CLAWSWEEPER_STATE_REPO || CLAWSWEEPER_STATE_REPO,
     env.WORKER_BUDGET || "",
     env.WORKER_DETAIL_RUN_LIMIT || "",
@@ -1113,17 +2819,26 @@ function refreshStatus(request, env) {
 }
 
 async function refreshStatusCaches(request, env) {
-  const ttl = numberFrom(env.CACHE_TTL_SECONDS, 20);
+  const ttl = numberFrom(env.CACHE_TTL_SECONDS, 60);
   const staleTtl = numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS);
   const baseSnapshot = await statusSnapshot(env);
   // Queue stats and the GitHub-backed global lease are operational observations, not
   // request-specific data. Cache the composed document so a cache hit never waits on
   // those remote probes; the existing stale-while-revalidate path refreshes them safely.
-  const snapshot = await attachExactReviewQueueStatus(baseSnapshot, env);
+  const snapshot = publicStatusProjection(
+    await attachExactReviewQueueStatus(baseSnapshot, env),
+    verifiedPublicBayRepositories(env),
+  );
   const body = JSON.stringify(snapshot, null, 2);
-  const hasErrors = Boolean(snapshot.diagnostics?.errors?.length);
+  const hasErrors = Number(snapshot.diagnostics?.error_count || 0) > 0;
   const looksEmpty =
-    !snapshot.pipeline.length && snapshot.fleet.active_workflow_runs === 0 && hasErrors;
+    snapshot.public_projection_complete !== true ||
+    ((!Array.isArray(snapshot.pipeline) || snapshot.pipeline.length === 0) &&
+      Number(snapshot.fleet?.active_workflow_runs || 0) === 0 &&
+      hasErrors);
+  if (snapshot.public_projection_complete !== true && env.STATUS_STORE) {
+    await writeStatusStoreText(env.STATUS_STORE, "snapshot", body);
+  }
   if (!looksEmpty) {
     const writes = [
       caches.default.put(
@@ -1152,60 +2867,29 @@ async function refreshStatusCaches(request, env) {
 }
 
 function statusCacheRequest(request, bucket) {
-  return new Request(new URL(`/api/status-cache/v3/${bucket}`, request.url).toString(), {
+  return new Request(new URL(`/api/status-cache/v4/${bucket}`, request.url).toString(), {
     method: "GET",
   });
 }
 
 async function triageJson(request, env, ctx) {
-  const ttl = numberFrom(env.TRIAGE_CACHE_TTL_SECONDS, TRIAGE_CACHE_TTL_SECONDS);
-  const staleTtl = numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS);
-  const cache = caches.default;
-  const cached = await cache.match(triageCacheRequest(request, "fresh"));
-  if (cached) return cors(new Response(cached.body, cached));
-
-  const snapshot = await triageSnapshot(env);
-  const body = JSON.stringify(snapshot, null, 2);
-  const looksEmpty = triageSnapshotLooksEmpty(snapshot);
-  if (looksEmpty) {
-    const stale = await cache.match(triageCacheRequest(request, "stale"));
-    if (stale) return cors(new Response(stale.body, stale));
-  }
-  if (!looksEmpty) {
-    const responseHeaders = {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": `public, max-age=${ttl}`,
-    };
-    const staleResponseHeaders = {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": `public, max-age=${staleTtl}`,
-    };
-    ctx?.waitUntil?.(
-      Promise.all([
-        cache.put(
-          triageCacheRequest(request, "fresh"),
-          new Response(body, { headers: responseHeaders }),
-        ),
-        cache.put(
-          triageCacheRequest(request, "stale"),
-          new Response(body, { headers: staleResponseHeaders }),
-        ),
-      ]),
-    );
-  }
-  return cors(
-    new Response(body, {
-      headers: {
-        "content-type": "application/json; charset=utf-8",
-        "cache-control": "no-store",
-      },
-    }),
-  );
+  return publicTriageJson({
+    request,
+    env,
+    ctx,
+    definitions: TRIAGE_VIEWS,
+    snapshot: triageSnapshot,
+    ttl: numberFrom(env.TRIAGE_CACHE_TTL_SECONDS, TRIAGE_CACHE_TTL_SECONDS),
+    currentCacheRequest: triageCacheRequest,
+    legacyCacheRequest: legacyTriageCacheRequest,
+  });
 }
 
 function triageSnapshotLooksEmpty(snapshot) {
-  const hasErrors = Boolean(snapshot.diagnostics?.errors?.length);
-  const loadedItems = (snapshot.views || []).reduce(
+  const errors = snapshot?.diagnostics?.errors;
+  const views = Array.isArray(snapshot?.views) ? snapshot.views : [];
+  const hasErrors = Array.isArray(errors) && errors.length > 0;
+  const loadedItems = views.reduce(
     (total, view) => total + (Array.isArray(view.items) ? view.items.length : 0),
     0,
   );
@@ -1213,61 +2897,283 @@ function triageSnapshotLooksEmpty(snapshot) {
 }
 
 function triageCacheRequest(request, bucket) {
+  return new Request(new URL(`/api/triage-cache/v3/${bucket}`, request.url).toString(), {
+    method: "GET",
+  });
+}
+
+function legacyTriageCacheRequest(request, bucket) {
   return new Request(new URL(`/api/triage-cache/v2/${bucket}`, request.url).toString(), {
     method: "GET",
   });
 }
 
 async function prProofTriageJson(request, env, ctx) {
-  const ttl = numberFrom(env.PR_PROOF_TRIAGE_CACHE_TTL_SECONDS, TRIAGE_CACHE_TTL_SECONDS);
+  return publicTriageJson({
+    request,
+    env,
+    ctx,
+    definitions: PR_PROOF_VIEWS,
+    snapshot: prProofTriageSnapshot,
+    ttl: numberFrom(env.PR_PROOF_TRIAGE_CACHE_TTL_SECONDS, TRIAGE_CACHE_TTL_SECONDS),
+    currentCacheRequest: prProofTriageCacheRequest,
+    legacyCacheRequest: legacyPrProofTriageCacheRequest,
+  });
+}
+
+function prProofTriageCacheRequest(request, bucket) {
+  return new Request(new URL(`/api/pr-proof-triage-cache/v2/${bucket}`, request.url).toString(), {
+    method: "GET",
+  });
+}
+
+function legacyPrProofTriageCacheRequest(request, bucket) {
+  return new Request(new URL(`/api/pr-proof-triage-cache/v1/${bucket}`, request.url).toString(), {
+    method: "GET",
+  });
+}
+
+async function publicTriageJson({
+  request,
+  env,
+  ctx,
+  definitions,
+  snapshot: collectSnapshot,
+  ttl,
+  currentCacheRequest,
+  legacyCacheRequest,
+}) {
   const staleTtl = numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS);
   const cache = caches.default;
-  const cached = await cache.match(prProofTriageCacheRequest(request, "fresh"));
-  if (cached) return cors(new Response(cached.body, cached));
+  const fresh = await publicTriageCacheProjection(
+    cache,
+    request,
+    "fresh",
+    definitions,
+    currentCacheRequest,
+    legacyCacheRequest,
+  );
+  if (fresh) return publicTriageResponse(fresh, `public, max-age=${ttl}`);
 
-  const snapshot = await prProofTriageSnapshot(env);
-  const body = JSON.stringify(snapshot, null, 2);
-  const looksEmpty = triageSnapshotLooksEmpty(snapshot);
-  if (looksEmpty) {
-    const stale = await cache.match(prProofTriageCacheRequest(request, "stale"));
-    if (stale) return cors(new Response(stale.body, stale));
+  let source = null;
+  try {
+    source = await collectSnapshot(env);
+  } catch {
+    // Collection errors can contain source identity. The public fallback is fixed.
   }
-  if (!looksEmpty) {
-    const responseHeaders = {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": `public, max-age=${ttl}`,
-    };
-    const staleResponseHeaders = {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": `public, max-age=${staleTtl}`,
-    };
+  const projection = publicTriageProjection(source, definitions);
+  const looksEmpty = !source || !projection.valid || triageSnapshotLooksEmpty(source);
+  if (looksEmpty) {
+    const stale = await publicTriageCacheProjection(
+      cache,
+      request,
+      "stale",
+      definitions,
+      currentCacheRequest,
+      legacyCacheRequest,
+    );
+    if (stale) return publicTriageResponse(stale, `public, max-age=${staleTtl}`);
+  }
+  if (!looksEmpty && projection.valid) {
+    const body = JSON.stringify(projection.value, null, 2);
     ctx?.waitUntil?.(
       Promise.all([
         cache.put(
-          prProofTriageCacheRequest(request, "fresh"),
-          new Response(body, { headers: responseHeaders }),
+          currentCacheRequest(request, "fresh"),
+          new Response(body, { headers: publicTriageHeaders(`public, max-age=${ttl}`) }),
         ),
         cache.put(
-          prProofTriageCacheRequest(request, "stale"),
-          new Response(body, { headers: staleResponseHeaders }),
+          currentCacheRequest(request, "stale"),
+          new Response(body, { headers: publicTriageHeaders(`public, max-age=${staleTtl}`) }),
         ),
       ]),
     );
   }
-  return cors(
-    new Response(body, {
-      headers: {
-        "content-type": "application/json; charset=utf-8",
-        "cache-control": "no-store",
-      },
-    }),
-  );
+  return publicTriageResponse(projection.value, "no-store");
 }
 
-function prProofTriageCacheRequest(request, bucket) {
-  return new Request(new URL(`/api/pr-proof-triage-cache/v1/${bucket}`, request.url).toString(), {
-    method: "GET",
-  });
+async function publicTriageCacheProjection(
+  cache,
+  request,
+  bucket,
+  definitions,
+  currentCacheRequest,
+  legacyCacheRequest,
+) {
+  for (const cacheRequest of [currentCacheRequest, legacyCacheRequest]) {
+    let cached = null;
+    try {
+      cached = await cache.match(cacheRequest(request, bucket));
+    } catch {
+      continue;
+    }
+    if (!cached) continue;
+    const cachedValue = await cached.json().catch(() => null);
+    const projection = publicTriageProjection(cachedValue, definitions);
+    if (projection.valid) return projection.value;
+  }
+  return null;
+}
+
+function publicTriageProjection(value, definitions) {
+  const unavailable = unavailablePublicTriageProjection(definitions);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return unavailable;
+  if (value.schema_version === PUBLIC_TRIAGE_SCHEMA_VERSION) {
+    return publicProjectedTriageProjection(value, definitions, unavailable);
+  }
+  if (value.schema_version !== 1) return unavailable;
+
+  const generatedAt = publicTriageTimestamp(value.generated_at);
+  const diagnostics = value.diagnostics;
+  const errors = diagnostics?.errors;
+  const views = value.views;
+  const counts = value.counts;
+  if (
+    !generatedAt ||
+    !diagnostics ||
+    typeof diagnostics !== "object" ||
+    Array.isArray(diagnostics) ||
+    !Array.isArray(errors) ||
+    errors.length > PUBLIC_TRIAGE_ERROR_LIMIT ||
+    !errors.every((error) => typeof error === "string") ||
+    !Array.isArray(views) ||
+    views.length !== definitions.length ||
+    !counts ||
+    typeof counts !== "object" ||
+    Array.isArray(counts)
+  ) {
+    return unavailable;
+  }
+
+  const projectedViews = publicTriageViews(views, counts, definitions, false);
+  if (!projectedViews) return unavailable;
+  return {
+    valid: true,
+    value: publicTriageProjectionValue(generatedAt, errors.length, definitions, projectedViews),
+  };
+}
+
+function publicProjectedTriageProjection(value, definitions, unavailable) {
+  const generatedAt = publicTriageTimestamp(value.generated_at);
+  const errorCount = publicTriageCount(value.error_count, PUBLIC_TRIAGE_ERROR_LIMIT);
+  if (
+    !generatedAt ||
+    typeof value.complete !== "boolean" ||
+    errorCount === null ||
+    value.complete !== (errorCount === 0) ||
+    !Array.isArray(value.views) ||
+    value.views.length !== definitions.length ||
+    !value.counts ||
+    typeof value.counts !== "object" ||
+    Array.isArray(value.counts)
+  ) {
+    return unavailable;
+  }
+  const projectedViews = publicTriageViews(value.views, value.counts, definitions, true);
+  if (!projectedViews) return unavailable;
+  return {
+    valid: true,
+    value: publicTriageProjectionValue(generatedAt, errorCount, definitions, projectedViews),
+  };
+}
+
+function publicTriageViews(views, counts, definitions, projected) {
+  const byId = new Map();
+  for (const view of views) {
+    if (!view || typeof view !== "object" || Array.isArray(view) || typeof view.id !== "string") {
+      return null;
+    }
+    if (byId.has(view.id)) return null;
+    byId.set(view.id, view);
+  }
+  const result = [];
+  for (const definition of definitions) {
+    const view = byId.get(definition.id);
+    const totalCount = publicTriageCount(view?.total_count, PUBLIC_TRIAGE_COUNT_LIMIT);
+    const itemLimit = publicTriageCount(view?.item_limit, MAX_TRIAGE_ITEMS_PER_VIEW);
+    const countValue = publicTriageCount(counts[definition.id], PUBLIC_TRIAGE_COUNT_LIMIT);
+    if (
+      !view ||
+      totalCount === null ||
+      itemLimit === null ||
+      itemLimit < 1 ||
+      countValue !== totalCount ||
+      !Array.isArray(view.items) ||
+      view.items.length > itemLimit ||
+      totalCount < view.items.length ||
+      (projected && view.items.length !== 0)
+    ) {
+      return null;
+    }
+    result.push({ total_count: totalCount, item_limit: itemLimit });
+  }
+  return byId.size === definitions.length ? result : null;
+}
+
+function publicTriageProjectionValue(generatedAt, errorCount, definitions, projectedViews) {
+  const views = definitions.map((definition, index) => ({
+    id: definition.id,
+    title: definition.title,
+    description: definition.description,
+    total_count: projectedViews[index].total_count,
+    item_limit: projectedViews[index].item_limit,
+    items: [],
+  }));
+  return {
+    schema_version: PUBLIC_TRIAGE_SCHEMA_VERSION,
+    generated_at: generatedAt,
+    complete: errorCount === 0,
+    error_count: errorCount,
+    counts: Object.fromEntries(views.map((view) => [view.id, view.total_count])),
+    views,
+  };
+}
+
+function unavailablePublicTriageProjection(definitions) {
+  const views = definitions.map((definition) => ({
+    id: definition.id,
+    title: definition.title,
+    description: definition.description,
+    total_count: null,
+    item_limit: null,
+    items: [],
+  }));
+  return {
+    valid: false,
+    value: {
+      schema_version: PUBLIC_TRIAGE_SCHEMA_VERSION,
+      generated_at: null,
+      complete: false,
+      error_count: 1,
+      counts: Object.fromEntries(views.map((view) => [view.id, null])),
+      views,
+    },
+  };
+}
+
+function publicTriageCount(value, maximum) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum
+    ? value
+    : null;
+}
+
+function publicTriageTimestamp(value) {
+  return publicTimestamp(value);
+}
+
+function publicTriageHeaders(cacheControl) {
+  return {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": cacheControl,
+  };
+}
+
+function publicTriageResponse(value, cacheControl) {
+  return cors(
+    new Response(JSON.stringify(value, null, 2), {
+      headers: publicTriageHeaders(cacheControl),
+    }),
+  );
 }
 
 async function ingestEvent(request, env) {
@@ -1301,20 +3207,15 @@ async function automergeMetricsJson(request, env) {
     return json({ error: "automerge_metrics_store_unavailable" }, 503);
   }
   const storeUrl = new URL(statusStoreRequest(AUTOMERGE_METRICS_STORE_KEY).url);
-  for (const name of [
-    "range",
-    "repo",
-    "policy_version",
-    "session_id",
-    "active_only",
-    "session_limit",
-  ]) {
-    const value = url.searchParams.get(name);
-    if (value !== null) storeUrl.searchParams.set(name, value);
+  storeUrl.searchParams.set("range", publicReviewRange(url.searchParams));
+  try {
+    const response = await durableStatusStoreStub(env.STATUS_STORE).fetch(new Request(storeUrl));
+    if (!response.ok) return json({ error: "automerge_metrics_unavailable" }, 503);
+    const projection = publicAutomergeMetricsProjection(await response.json().catch(() => null));
+    return projection ? json(projection) : json({ error: "automerge_metrics_unavailable" }, 503);
+  } catch {
+    return json({ error: "automerge_metrics_unavailable" }, 503);
   }
-  const response = await durableStatusStoreStub(env.STATUS_STORE).fetch(new Request(storeUrl));
-  if (!response.ok) return json({ error: "automerge_metrics_unavailable" }, 503);
-  return json(await response.json());
 }
 
 async function storeAutomergeMetricEvent(env, event) {
@@ -1332,11 +3233,19 @@ async function githubWebhook(request, env, ctx) {
   if (!secret) return json({ error: "webhook_not_configured" }, 503);
 
   const bodyText = await request.text();
-  const signature = request.headers.get("x-hub-signature-256") || "";
-  const signatureOk = await verifyGithubWebhookSignature({ secret, signature, bodyText });
+  const deliveryHeaders: GithubWebhookDeliveryHeaders = {
+    event: request.headers.get("x-github-event") || "",
+    deliveryId: request.headers.get("x-github-delivery"),
+    signature: request.headers.get("x-hub-signature-256") || "",
+  };
+  const signatureOk = await verifyGithubWebhookSignature({
+    secret,
+    signature: deliveryHeaders.signature,
+    bodyText,
+  });
   if (!signatureOk) return json({ error: "invalid_signature" }, 401);
 
-  const event = request.headers.get("x-github-event") || "";
+  const event = deliveryHeaders.event;
   const payload = parseJsonObject(bodyText);
   if (!payload) return json({ error: "invalid_json" }, 400);
   if (event === "ping") {
@@ -1344,10 +3253,34 @@ async function githubWebhook(request, env, ctx) {
       {
         ok: true,
         event: "ping",
-        delivery: request.headers.get("x-github-delivery") || null,
+        delivery: deliveryHeaders.deliveryId || null,
       },
       202,
     );
+  }
+
+  const decision = classifyGithubWebhook({ event, payload });
+  let readModelMaterialized = false;
+  if (decision.accepted === true && deliveryHeaders.deliveryId) {
+    const delivery = githubWebhookReadModelDeliveryFromWebhook({
+      event,
+      deliveryId: deliveryHeaders.deliveryId,
+      receivedAt: new Date().toISOString(),
+      payload,
+    });
+    if (delivery) {
+      try {
+        await materializeGithubWebhookReadModel(env, delivery);
+        readModelMaterialized = true;
+      } catch {
+        console.warn(
+          JSON.stringify({
+            event: "github_read_model_ingest_failed",
+            failure: "queue_unavailable",
+          }),
+        );
+      }
+    }
   }
 
   const completion = bayJourneyCompletionFromGithubWebhook({ event, payload, env });
@@ -1364,8 +3297,12 @@ async function githubWebhook(request, env, ctx) {
       ctx,
       [],
       [
-        acknowledgement.sourceDeliveryId
-          ? { ...completion, source_delivery_id: acknowledgement.sourceDeliveryId }
+        acknowledgement.bayJourneyDeliveryId || acknowledgement.sourceDeliveryId
+          ? {
+              ...completion,
+              source_delivery_id:
+                acknowledgement.bayJourneyDeliveryId ?? acknowledgement.sourceDeliveryId,
+            }
           : completion,
       ],
     );
@@ -1382,17 +3319,29 @@ async function githubWebhook(request, env, ctx) {
     return json({ ok: true, accepted: false, reason: "recorded lifecycle acknowledgement" }, 202);
   }
 
-  const decision = classifyGithubWebhook({ event, payload });
-  if (!decision.accepted) {
+  if (decision.accepted === false) {
     return json({ ok: true, accepted: false, reason: decision.reason }, 202);
   }
 
+  if (decision.type === "activity") {
+    return json(
+      {
+        ok: true,
+        accepted: true,
+        materialized: readModelMaterialized,
+        event: decision.sourceEvent,
+        action: decision.sourceAction,
+      },
+      202,
+    );
+  }
+
   if ("type" in decision && decision.type === "item") {
-    const deliveryId = request.headers.get("x-github-delivery") || "";
-    let itemDecision = decision as ExactReviewDecision & { installationId?: number };
+    const deliveryId = deliveryHeaders.deliveryId || "";
+    let itemDecision: ExactReviewDecision & { installationId: number } = decision;
     if (itemDecision.itemKind === "pull_request") {
-      await acknowledgePullRequestReceipt({ env, ctx, decision: itemDecision }).catch((error) => {
-        console.error(`ClawSweeper pull request fast ack failed: ${error?.message || error}`);
+      await acknowledgePullRequestReceipt({ env, ctx, decision: itemDecision }).catch(() => {
+        console.error("ClawSweeper pull request fast ack failed");
         return undefined;
       });
     }
@@ -1476,8 +3425,61 @@ async function githubWebhook(request, env, ctx) {
   const trigger = bayJourneyTriggerFromGithubWebhook({
     decision,
     payload,
-    deliveryId: request.headers.get("x-github-delivery"),
+    deliveryId: deliveryHeaders.deliveryId,
   });
+
+  const commentDecision = decision;
+  if (
+    commentDecision.itemState === "open" &&
+    typeof commentDecision.commentBody === "string" &&
+    commentDecision.commentUpdatedAt &&
+    reReviewContextFromClawSweeperComment(commentDecision.commentBody) !== null
+  ) {
+    const intake = directReReviewIntake({
+      targetRepo: commentDecision.targetRepo,
+      targetBranch: commentDecision.targetBranch,
+      itemNumber: commentDecision.itemNumber,
+      itemKind: commentDecision.itemKind,
+      installationId: commentDecision.installationId,
+      sourceCommentId: commentDecision.commentId,
+      sourceCommentUpdatedAt: commentDecision.commentUpdatedAt,
+      commandBodyDigest: await sha256Text(commentDecision.commentBody),
+      commandOrigin: "hosted_webhook",
+      ...(trigger?.source_delivery_id ? { bayJourneyDeliveryId: trigger.source_delivery_id } : {}),
+      additionalPrompt: directReReviewAdditionalPrompt({
+        body: commentDecision.commentBody,
+        maintainerAuthorized: commentDecision.maintainerAuthorized,
+        author: commentDecision.commentAuthor,
+        commentUrl: commentDecision.commentUrl,
+      }),
+    });
+    const queue = exactReviewQueueStub(env);
+    if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
+    const intakeResponse = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/command-intake", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(intake),
+      }),
+    );
+    const intakeResult = objectValue(
+      await intakeResponse
+        .clone()
+        .json()
+        .catch(() => null),
+    );
+    const bayJourneyDeliveryId = nullableString(intakeResult.bay_journey_delivery_id);
+    if (trigger && intakeResult.accepted === true && bayJourneyDeliveryId) {
+      await recordBayJourneyTelemetry(
+        env,
+        ctx,
+        [{ ...trigger, source_delivery_id: bayJourneyDeliveryId }],
+        [],
+      );
+    }
+    return intakeResponse;
+  }
+
   if (trigger) await recordBayJourneyTelemetry(env, ctx, [trigger], []);
 
   const credentials = githubAppCredentials(env);
@@ -1492,7 +3494,6 @@ async function githubWebhook(request, env, ctx) {
     permissions: { contents: "write" },
   });
 
-  const commentDecision = decision as any;
   const targetToken = await createGithubAppTokenFor({
     env,
     appJwt,
@@ -1549,7 +3550,264 @@ async function recordBayJourneyTelemetry(env, ctx, triggers, completions) {
   await write;
 }
 
-function bayJourneyTriggerFromGithubWebhook({ decision, payload, deliveryId }) {
+async function materializeGithubWebhookReadModel(
+  env: DashboardEnv,
+  delivery: GithubWebhookReadModelDelivery,
+): Promise<void> {
+  const response = await exactReviewQueueRequest(
+    env,
+    "/github-read-model/ingest",
+    new Request("https://clawsweeper-exact-review-queue/github-read-model/ingest", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(delivery),
+    }),
+  );
+  if (!response.ok) {
+    throw new Error(`github read-model ingest returned ${response.status}`);
+  }
+}
+
+async function githubWebhookReadModelQueuePost(
+  env: DashboardEnv,
+  operation: "workflows" | "repair",
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
+  const response = await exactReviewQueueRequest(
+    env,
+    `/github-read-model/${operation}`,
+    new Request(`https://clawsweeper-exact-review-queue/github-read-model/${operation}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+  if (!response.ok) return null;
+  return objectValue(await response.json().catch(() => null));
+}
+
+function githubWebhookReadModelWorkflowObject(
+  repository: string,
+  kind: "workflow_run" | "workflow_job",
+  value: unknown,
+): Record<string, unknown> | null {
+  const source = objectValue(value);
+  const id = Number(source.id);
+  const sourceUpdatedAt = exactWebhookTimestamp(
+    source.updated_at || source.completed_at || source.started_at || source.created_at,
+  );
+  if (!Number.isSafeInteger(id) || id <= 0 || !sourceUpdatedAt) return null;
+  const runId = kind === "workflow_run" ? id : Number(source.run_id);
+  return {
+    kind,
+    repository: repository.toLowerCase(),
+    id,
+    runId: Number.isSafeInteger(runId) && runId > 0 ? runId : null,
+    sourceUpdatedAt,
+    snapshot: source,
+  };
+}
+
+function reportGithubReadModelDashboardFallback(snapshot: Record<string, unknown> | null): void {
+  if (githubReadModelDashboardFallbackReported) return;
+  githubReadModelDashboardFallbackReported = true;
+  const classState = objectValue(snapshot?.class_state);
+  const sourceReason = String(classState.reason || "");
+  const reason = ["observed", "never_observed"].includes(sourceReason)
+    ? sourceReason
+    : snapshot
+      ? "snapshot_stale_or_gap"
+      : "unavailable";
+  console.warn(
+    JSON.stringify({
+      event: "github_read_model_degraded",
+      consumer: "dashboard_workflow_health",
+      event_class: "workflow_runs",
+      reason,
+      probe_window_elapsed: classState.probe_window_elapsed === true,
+      fallback: "live_poll",
+    }),
+  );
+}
+
+async function revalidateStaleWorkflowHealthRuns({
+  env,
+  repo,
+  runs,
+  observations,
+  checkedAt,
+  github,
+}: {
+  env: DashboardEnv;
+  repo: string;
+  runs: unknown[];
+  observations: unknown[];
+  checkedAt: string;
+  github: GithubJsonReader;
+}): Promise<{ runs: unknown[]; errors: string[] }> {
+  const checkedAtMs = Date.parse(checkedAt);
+  const now = Number.isFinite(checkedAtMs) ? checkedAtMs : Date.now();
+  const confirmedAtByRun = new Map(
+    observations.flatMap((value) => {
+      const observation = objectValue(value);
+      const runId = Number(observation.run_id);
+      const confirmedAt = Date.parse(String(observation.confirmed_at || ""));
+      return Number.isSafeInteger(runId) && runId > 0 && Number.isFinite(confirmedAt)
+        ? ([[runId, confirmedAt]] as const)
+        : [];
+    }),
+  );
+  const candidates = runs
+    .filter((value) => {
+      const run = objectValue(value);
+      if (!OPERATIONAL_QUEUED_RUN_STATUSES.has(String(run.status || ""))) return false;
+      const createdAt = Date.parse(String(run.created_at || ""));
+      if (!Number.isFinite(createdAt) || now - createdAt < OPERATIONAL_QUEUE_DEGRADED_MS) {
+        return false;
+      }
+      if (now - createdAt > OPERATIONAL_QUEUE_ZOMBIE_MS) return false;
+      const confirmedAt = confirmedAtByRun.get(Number(run.id));
+      return (
+        confirmedAt === undefined || now - confirmedAt > GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS
+      );
+    })
+    .sort((left, right) => {
+      const leftRun = objectValue(left);
+      const rightRun = objectValue(right);
+      return (
+        Date.parse(String(leftRun.created_at || "")) -
+          Date.parse(String(rightRun.created_at || "")) || Number(leftRun.id) - Number(rightRun.id)
+      );
+    });
+  if (candidates.length === 0) return { runs, errors: [] };
+  const recheckBatch = candidates.slice(0, STALE_WORKFLOW_HEALTH_RECHECK_BATCH_SIZE);
+  const omittedCandidates = new Set(candidates.slice(STALE_WORKFLOW_HEALTH_RECHECK_BATCH_SIZE));
+  console.warn(
+    JSON.stringify({
+      event: "github_read_model_workflow_run_revalidation_batch",
+      consumer: "dashboard_workflow_health",
+      candidate_count: candidates.length,
+      batch_limit: STALE_WORKFLOW_HEALTH_RECHECK_BATCH_SIZE,
+      batch_size: recheckBatch.length,
+      omitted_count: omittedCandidates.size,
+    }),
+  );
+
+  const outcomes = await mapWithConcurrency(recheckBatch, 5, async (value) => {
+    const snapshotRun = objectValue(value);
+    const runId = Number(snapshotRun.id);
+    if (!Number.isSafeInteger(runId) || runId <= 0) {
+      return { runId, error: "snapshot run has no valid id" };
+    }
+    const verificationStartedAt = new Date().toISOString();
+    try {
+      const liveRun = objectValue(await github(`/repos/${repo}/actions/runs/${runId}`));
+      if (Number(liveRun.id) !== runId) {
+        return { runId, error: "live workflow response id mismatch" };
+      }
+      if (isActiveWorkflowRun(liveRun)) {
+        const object = githubWebhookReadModelWorkflowObject(repo, "workflow_run", liveRun);
+        if (object) {
+          await githubWebhookReadModelQueuePost(env, "repair", {
+            repository: repo,
+            repair_kind: "workflows",
+            objects: [object],
+          }).catch(() => null);
+        }
+        return { runId, liveRun };
+      }
+      const repair = await githubWebhookReadModelQueuePost(env, "repair", {
+        repository: repo,
+        repair_kind: "workflows",
+        workflow_run_verification_started_at: verificationStartedAt,
+        evict_workflow_run_ids: [runId],
+        objects: [],
+      }).catch(() => null);
+      const verdict = String(liveRun.status || "completed");
+      reportGithubReadModelWorkflowRunEvicted({
+        snapshotRun,
+        verdict,
+        evicted: Number(repair?.evicted_workflow_runs || 0) > 0,
+      });
+      return { runId, evicted: true };
+    } catch (error) {
+      if (/GitHub 404 for /.test(String(error instanceof Error ? error.message : error))) {
+        const repair = await githubWebhookReadModelQueuePost(env, "repair", {
+          repository: repo,
+          repair_kind: "workflows",
+          workflow_run_verification_started_at: verificationStartedAt,
+          evict_workflow_run_ids: [runId],
+          objects: [],
+        }).catch(() => null);
+        reportGithubReadModelWorkflowRunEvicted({
+          snapshotRun,
+          verdict: "absent",
+          evicted: Number(repair?.evicted_workflow_runs || 0) > 0,
+        });
+        return { runId, evicted: true };
+      }
+      return { runId, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  const byRunId = new Map(outcomes.map((outcome) => [outcome.runId, outcome]));
+  return {
+    runs: runs.flatMap((value) => {
+      if (omittedCandidates.has(value)) return [];
+      const outcome = byRunId.get(Number(objectValue(value).id));
+      if (!outcome) return [value];
+      if (outcome.error || outcome.evicted) return [];
+      return outcome.liveRun ? [outcome.liveRun] : [];
+    }),
+    errors: [
+      ...(omittedCandidates.size > 0
+        ? [
+            `workflow run reverify omitted ${omittedCandidates.size} stale candidates after batch ${recheckBatch.length}`,
+          ]
+        : []),
+      ...outcomes.flatMap((outcome) =>
+        outcome.error ? [`workflow run ${outcome.runId} reverify: ${outcome.error}`] : [],
+      ),
+    ],
+  };
+}
+
+function reportGithubReadModelWorkflowRunEvicted({ snapshotRun, verdict, evicted }) {
+  const snapshotStatus = String(snapshotRun.status || "");
+  const publicSnapshotStatus = ["queued", "in_progress", "pending", "waiting"].includes(
+    snapshotStatus,
+  )
+    ? snapshotStatus
+    : "unknown";
+  const publicVerdict = [
+    "queued",
+    "in_progress",
+    "pending",
+    "waiting",
+    "completed",
+    "absent",
+  ].includes(String(verdict || ""))
+    ? String(verdict)
+    : "unknown";
+  console.warn(
+    JSON.stringify({
+      event: "github_read_model_workflow_run_evicted",
+      consumer: "dashboard_workflow_health",
+      snapshot_status: publicSnapshotStatus,
+      verdict: publicVerdict,
+      read_model_evicted: evicted,
+    }),
+  );
+}
+
+function bayJourneyTriggerFromGithubWebhook({
+  decision,
+  payload,
+  deliveryId,
+}: {
+  readonly decision: GithubWebhookClassification;
+  readonly payload: GithubIssueCommentWebhookPayload;
+  readonly deliveryId: string | null;
+}) {
   if (!decision?.accepted || decision?.type !== "issue_comment") return null;
   const comment = objectValue(payload?.comment);
   const commandText = commandTextForClawSweeperFastAck(String(comment.body || ""));
@@ -1643,46 +3901,90 @@ function lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env 
   };
 }
 
-function classifyGithubWebhook({ event, payload }) {
+function classifyGithubWebhook<const Event extends string>(
+  input: GithubWebhookClassifierInput<Event>,
+): GithubWebhookClassification;
+function classifyGithubWebhook({
+  event,
+  payload,
+}: GithubWebhookClassifierRuntimeInput): GithubWebhookClassification {
   const comment = classifyGithubIssueCommentWebhook({ event, payload });
-  if (comment.accepted || comment.reason !== "not issue_comment") return comment;
-  return classifyGithubItemWebhook({ event, payload });
+  if (comment.accepted === true) return comment;
+  if (comment.reason !== "not issue_comment") return comment;
+  const item = classifyGithubItemWebhook({ event, payload });
+  if (item.accepted === true || item.reason !== "unsupported event") return item;
+  if (
+    new Set([
+      "pull_request_review",
+      "pull_request_review_comment",
+      "workflow_run",
+      "workflow_job",
+      "check_run",
+      "check_suite",
+    ]).has(event) &&
+    isEligibleGithubWebhookRepository(objectValue(payload.repository)) &&
+    String(payload.action || "")
+  ) {
+    return {
+      accepted: true,
+      type: "activity",
+      sourceEvent: event as GithubWebhookActivityClassification["sourceEvent"],
+      sourceAction: String(payload.action),
+    };
+  }
+  return item;
 }
+export type GithubWebhookClassifier = typeof classifyGithubWebhook;
 
-function classifyGithubIssueCommentWebhook({ event, payload }) {
+function classifyGithubIssueCommentWebhook({
+  event,
+  payload,
+}: GithubWebhookClassifierRuntimeInput):
+  | GithubWebhookRejectedClassification
+  | GithubWebhookIssueCommentClassification
+  | GithubWebhookActivityClassification {
   if (event !== "issue_comment") return { accepted: false, reason: "not issue_comment" };
   const action = String(payload.action || "");
-  if (!["created", "edited"].includes(action))
+  if (!["created", "edited", "deleted"].includes(action))
     return { accepted: false, reason: "unsupported action" };
   const comment = objectValue(payload.comment);
   const issue = objectValue(payload.issue);
   const repo = objectValue(payload.repository);
-  const association = String(comment.author_association || "").toUpperCase();
-  const commandText = commandTextForClawSweeperFastAck(String(comment.body || ""));
-  if (!commandText) return { accepted: false, reason: "no routable ClawSweeper command" };
-  if (
-    !CLAWSWEEPER_ALLOWED_ASSOCIATIONS.has(association) &&
-    !isAuthorReadOnlyGithubWebhookCommand({ comment, issue, commandText })
-  ) {
-    return {
-      accepted: false,
-      reason: `author association ${association || "unknown"} is not allowed`,
-    };
-  }
-  const targetRepo = String(repo.full_name || "");
-  const targetBranch = targetDefaultBranch(repo);
   if (!isEligibleGithubWebhookRepository(repo)) {
     return { accepted: false, reason: "repository not eligible" };
   }
   const itemNumber = Number(issue.number);
   const commentId = Number(comment.id);
-  const installationId = Number(objectValue(payload.installation).id);
   if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
     return { accepted: false, reason: "missing issue number" };
   }
   if (!Number.isInteger(commentId) || commentId <= 0) {
     return { accepted: false, reason: "missing comment id" };
   }
+  const association = String(comment.author_association || "").toUpperCase();
+  const commandText = commandTextForClawSweeperFastAck(String(comment.body || ""));
+  if (action === "deleted" || !commandText) {
+    return {
+      accepted: true,
+      type: "activity",
+      sourceEvent: "issue_comment",
+      sourceAction: action,
+    };
+  }
+  if (
+    !CLAWSWEEPER_ALLOWED_ASSOCIATIONS.has(association) &&
+    !isAuthorReadOnlyGithubWebhookCommand({ comment, issue, commandText })
+  ) {
+    return {
+      accepted: true,
+      type: "activity",
+      sourceEvent: "issue_comment",
+      sourceAction: action,
+    };
+  }
+  const targetRepo = String(repo.full_name || "");
+  const targetBranch = targetDefaultBranch(repo);
+  const installationId = Number(objectValue(payload.installation).id);
   if (!Number.isInteger(installationId) || installationId <= 0) {
     return { accepted: false, reason: "missing installation id" };
   }
@@ -1693,9 +3995,14 @@ function classifyGithubIssueCommentWebhook({ event, payload }) {
     targetRepo,
     targetBranch,
     itemNumber,
+    itemKind: issue.pull_request ? "pull_request" : "issue",
+    itemState: String(issue.state || "").toLowerCase(),
     commentId,
     installationId,
     sourceAction: action,
+    commentAuthor: String(objectValue(comment.user).login || ""),
+    commentUrl: String(comment.html_url || ""),
+    maintainerAuthorized: CLAWSWEEPER_ALLOWED_ASSOCIATIONS.has(association),
     ...(commentUpdatedAt
       ? {
           commentUpdatedAt,
@@ -1705,12 +4012,20 @@ function classifyGithubIssueCommentWebhook({ event, payload }) {
   };
 }
 
-function exactWebhookTimestamp(value) {
+function exactWebhookTimestamp(value: unknown): string | null {
   const text = String(value || "").trim();
   return text && Number.isFinite(Date.parse(text)) ? text : null;
 }
 
-async function withPullRequestEditContentRevision({ event, payload, decision }) {
+async function withPullRequestEditContentRevision({
+  event,
+  payload,
+  decision,
+}: {
+  readonly event: string;
+  readonly payload: GithubPullRequestWebhookPayload;
+  readonly decision: ExactReviewDecision & { readonly installationId: number };
+}): Promise<ExactReviewDecision & { installationId: number }> {
   if (
     event !== "pull_request" ||
     decision.itemKind !== "pull_request" ||
@@ -1733,7 +4048,14 @@ async function withPullRequestEditContentRevision({ event, payload, decision }) 
   };
 }
 
-function classifyGithubItemWebhook({ event, payload }) {
+function classifyGithubItemWebhook({
+  event,
+  payload,
+}: GithubWebhookClassifierRuntimeInput):
+  | GithubWebhookRejectedClassification
+  | GithubWebhookIssueClassification
+  | GithubWebhookPullRequestClassification
+  | GithubWebhookActivityClassification {
   const action = String(payload.action || "");
   const repo = objectValue(payload.repository);
   if (!isEligibleGithubWebhookRepository(repo)) {
@@ -1742,20 +4064,23 @@ function classifyGithubItemWebhook({ event, payload }) {
   const targetRepo = String(repo.full_name || "");
   const targetBranch = targetDefaultBranch(repo);
   const installationId = Number(objectValue(payload.installation).id);
-  if (!Number.isInteger(installationId) || installationId <= 0) {
-    return { accepted: false, reason: "missing installation id" };
-  }
 
   if (event === "issues") {
-    if (!CLAWSWEEPER_ISSUE_ITEM_ACTIONS.has(action)) {
-      return { accepted: false, reason: "unsupported action" };
-    }
-    if (action === "unlabeled" && !isCloseGuardLabel(payload.label)) {
+    if (!GITHUB_ISSUE_LIFECYCLE_ACTIONS.has(action)) {
       return { accepted: false, reason: "unsupported action" };
     }
     const itemNumber = Number(objectValue(payload.issue).number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing issue number" };
+    }
+    if (
+      !CLAWSWEEPER_ISSUE_ITEM_ACTIONS.has(action) ||
+      (action === "unlabeled" && !isCloseGuardLabel(payload.label))
+    ) {
+      return { accepted: true, type: "activity", sourceEvent: "issues", sourceAction: action };
+    }
+    if (!Number.isInteger(installationId) || installationId <= 0) {
+      return { accepted: false, reason: "missing installation id" };
     }
     return {
       accepted: true,
@@ -1772,16 +4097,27 @@ function classifyGithubItemWebhook({ event, payload }) {
   }
 
   if (event === "pull_request") {
-    if (!CLAWSWEEPER_PULL_ITEM_ACTIONS.has(action)) {
-      return { accepted: false, reason: "unsupported action" };
-    }
-    if (action === "unlabeled" && !isCloseGuardLabel(payload.label)) {
+    if (!GITHUB_PULL_REQUEST_LIFECYCLE_ACTIONS.has(action)) {
       return { accepted: false, reason: "unsupported action" };
     }
     const pullRequest = objectValue(payload.pull_request);
     const itemNumber = Number(pullRequest.number);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing pull request number" };
+    }
+    if (
+      !CLAWSWEEPER_PULL_ITEM_ACTIONS.has(action) ||
+      (action === "unlabeled" && !isCloseGuardLabel(payload.label))
+    ) {
+      return {
+        accepted: true,
+        type: "activity",
+        sourceEvent: "pull_request",
+        sourceAction: action,
+      };
+    }
+    if (!Number.isInteger(installationId) || installationId <= 0) {
+      return { accepted: false, reason: "missing installation id" };
     }
     const sourceHeadSha = String(objectValue(pullRequest.head).sha || "")
       .trim()
@@ -1869,7 +4205,15 @@ async function bindLivePullRequestHeadAuthority({
     : null;
 }
 
-async function exactReviewPullRequestIngress({ event, payload, decision }) {
+async function exactReviewPullRequestIngress({
+  event,
+  payload,
+  decision,
+}: {
+  readonly event: string;
+  readonly payload: GithubPullRequestWebhookPayload;
+  readonly decision: ExactReviewDecision;
+}): Promise<ExactReviewIngress | undefined> {
   if (event !== "pull_request" || decision.itemKind !== "pull_request") return undefined;
   const pullRequest = objectValue(payload.pull_request);
   const headSha = String(objectValue(pullRequest.head).sha || "")
@@ -1947,7 +4291,7 @@ function exactReviewQueueStub(env): DurableObjectStub | null {
 
 async function recordLifecycleCommandAcknowledgement(env, completion) {
   const queue = exactReviewQueueStub(env);
-  if (!queue) return { accepted: true, sourceDeliveryId: null };
+  if (!queue) return { accepted: true, sourceDeliveryId: null, bayJourneyDeliveryId: null };
   const observedAt = Date.parse(String(completion.completed_at || ""));
   const response = await queue.fetch(
     new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
@@ -1969,6 +4313,7 @@ async function recordLifecycleCommandAcknowledgement(env, completion) {
   return {
     accepted: result.accepted !== false,
     sourceDeliveryId: nullableString(result.source_delivery_id),
+    bayJourneyDeliveryId: nullableString(result.bay_journey_delivery_id),
   };
 }
 
@@ -2048,11 +4393,381 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
   );
 }
 
+const PUBLIC_QUEUE_COUNT_LIMIT = 1_000_000;
+const PUBLIC_QUEUE_TOTAL_LIMIT = 1_000_000_000_000;
+const PUBLIC_QUEUE_BACKOFF_REASONS = [
+  "dispatch_debounce",
+  "dispatcher_backoff",
+  "admission_retry",
+  "coordination_retry",
+  "throttle_retry",
+  "review_retry",
+  "publication_retry",
+] as const;
+const PUBLIC_QUEUE_PARKED_REASONS = [
+  "dead_letter_capacity",
+  "dispatch_rejected",
+  "review_retry_exhausted",
+  "direct_publication",
+  "unknown",
+] as const;
+const PUBLIC_QUEUE_RECOVERY_REASONS = [
+  "claim_timeout",
+  "execution_timeout",
+  "workflow_cancelled",
+  "workflow_failed",
+] as const;
+
+function publicQueueCount(value, maximum = PUBLIC_QUEUE_COUNT_LIMIT) {
+  return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= maximum
+    ? Number(value)
+    : null;
+}
+
+function publicQueueTimestamp(value) {
+  if (value === null || value === undefined) return null;
+  return publicTimestamp(value);
+}
+
+function publicQueueCounts(value, keys: readonly string[]) {
+  const source = objectValue(value);
+  return Object.fromEntries(keys.map((key) => [key, publicQueueCount(source[key]) ?? 0]));
+}
+
+function publicQueueReasonCounts(
+  value,
+  keys: readonly string[],
+  aliases: Record<string, string> = {},
+  foldUnknown = false,
+) {
+  const source = objectValue(value);
+  const counts = Object.fromEntries(keys.map((key) => [key, 0]));
+  let complete = true;
+  for (const [rawReason, rawCount] of Object.entries(source)) {
+    const count = publicQueueCount(rawCount);
+    const reason = aliases[rawReason] || rawReason;
+    const target = keys.includes(reason)
+      ? reason
+      : foldUnknown && keys.includes("unknown")
+        ? "unknown"
+        : null;
+    if (count === null || target === null) {
+      complete = false;
+      continue;
+    }
+    const combined = counts[target] + count;
+    if (combined > PUBLIC_QUEUE_COUNT_LIMIT) {
+      complete = false;
+      continue;
+    }
+    counts[target] = combined;
+  }
+  return { counts, complete };
+}
+
+function publicExactReviewQueueLane(value) {
+  const source = objectValue(value);
+  const counts = [
+    "pending",
+    "pending_depth",
+    "shed_since_reset",
+    "ready",
+    "backoff",
+    "dispatching",
+    "leased",
+    "parked",
+    "capacity",
+    "active",
+    "available_slots",
+    "oldest_pending_age_seconds",
+    "oldest_ready_age_seconds",
+    "oldest_backoff_age_seconds",
+    "enqueued_total",
+    "completed_total",
+    "published_total",
+    "superseded_total",
+    "semantic_deduped_total",
+    "retried_total",
+    "dead_lettered_total",
+    "refreshed_total",
+  ];
+  const result: Record<string, unknown> = {};
+  for (const key of counts) {
+    const count = publicQueueCount(
+      source[key],
+      key.endsWith("_total") ? PUBLIC_QUEUE_TOTAL_LIMIT : PUBLIC_QUEUE_COUNT_LIMIT,
+    );
+    if (count !== null) result[key] = count;
+  }
+  for (const key of [
+    "oldest_pending_at",
+    "oldest_ready_at",
+    "oldest_backoff_at",
+    "next_attempt_at",
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(source, key))
+      result[key] = publicQueueTimestamp(source[key]);
+  }
+  const backoffReasons = publicQueueReasonCounts(
+    source.backoff_reasons,
+    PUBLIC_QUEUE_BACKOFF_REASONS,
+    { retry_backoff: "review_retry" },
+  );
+  const parkedReasons = publicQueueReasonCounts(
+    source.parked_reasons,
+    PUBLIC_QUEUE_PARKED_REASONS,
+    {},
+    true,
+  );
+  result.backoff_reasons = backoffReasons.counts;
+  result.parked_reasons = parkedReasons.counts;
+  return { value: result, reasonsComplete: backoffReasons.complete && parkedReasons.complete };
+}
+
+function publicExactReviewQueueLaneComplete(source, projected, reasonsComplete) {
+  const required = [
+    "pending",
+    "pending_depth",
+    "shed_since_reset",
+    "ready",
+    "backoff",
+    "dispatching",
+    "leased",
+    "parked",
+    "capacity",
+    "active",
+    "available_slots",
+  ];
+  const counts = Object.fromEntries(required.map((key) => [key, publicQueueCount(source[key])]));
+  if (required.some((key) => counts[key] === null) || !reasonsComplete) return false;
+  const reasonTotal = (key) =>
+    Object.values(objectValue(projected[key])).reduce<number>(
+      (total, count) => total + Number(count),
+      0,
+    );
+  return (
+    counts.pending_depth === counts.pending &&
+    counts.pending === counts.ready + counts.backoff &&
+    counts.active === counts.dispatching + counts.leased &&
+    counts.available_slots === Math.max(0, counts.capacity - counts.active) &&
+    reasonTotal("backoff_reasons") === counts.backoff &&
+    reasonTotal("parked_reasons") === counts.parked
+  );
+}
+
+function publicExactReviewHandoff(value) {
+  const source = objectValue(value);
+  const status = String(source.status || "");
+  const reason = String(source.reason || "");
+  const phases = objectValue(source.phases);
+  const result = {
+    status: ["idle", "healthy", "degraded", "stalled"].includes(status) ? status : "unknown",
+    reason: [
+      "queue_empty",
+      "claim_stalled",
+      "dispatcher_blocked",
+      "dispatcher_paused",
+      "claim_delayed",
+      "handoff_current",
+    ].includes(reason)
+      ? reason
+      : "handoff_unknown",
+    observed_at: publicQueueTimestamp(source.observed_at),
+    recovery_reasons: publicQueueCounts(source.recovery_reasons, PUBLIC_QUEUE_RECOVERY_REASONS),
+    phases: {},
+  };
+  for (const key of [
+    "warning_after_seconds",
+    "stalled_after_seconds",
+    "capacity",
+    "active",
+    "available_slots",
+    "pending_depth",
+    "shed_since_reset",
+  ]) {
+    const count = publicQueueCount(source[key]);
+    if (count !== null) result[key] = count;
+  }
+  for (const phase of ["pending", "dispatching", "leased"]) {
+    const sourcePhase = objectValue(phases[phase]);
+    result.phases[phase] = {
+      count: publicQueueCount(sourcePhase.count) ?? 0,
+      oldest_at: publicQueueTimestamp(sourcePhase.oldest_at),
+      oldest_age_seconds: publicQueueCount(sourcePhase.oldest_age_seconds),
+    };
+  }
+  return result;
+}
+
+function publicExactReviewPressure(value) {
+  const source = objectValue(value);
+  const status = String(source.status || "");
+  const reason = String(source.reason || "");
+  return {
+    status: ["idle", "congested", "saturated", "unknown"].includes(status) ? status : "unknown",
+    reason: [
+      "capacity_unavailable",
+      "capacity_available",
+      "no_ready_backlog",
+      "no_admissible_backlog",
+      "dispatcher_inactive",
+      "handoff_unknown",
+      "capacity_full_with_backlog",
+    ].includes(reason)
+      ? reason
+      : "handoff_unknown",
+    capacity: publicQueueCount(source.capacity) ?? 0,
+    active: publicQueueCount(source.active) ?? 0,
+    pending: publicQueueCount(source.pending) ?? 0,
+    ready_pending: publicQueueCount(source.ready_pending) ?? 0,
+    admissible_pending: publicQueueCount(source.admissible_pending) ?? 0,
+  };
+}
+
+export function publicExactReviewQueueProjection(
+  value,
+  allowedRepositories: ReadonlySet<string> = new Set(),
+) {
+  const source = objectValue(value);
+  const sourceLanes = objectValue(source.lanes);
+  const reviewLane = objectValue(sourceLanes.review);
+  const publicationLane = objectValue(sourceLanes.publication);
+  const projectedReviewLane = publicExactReviewQueueLane(reviewLane);
+  const projectedPublicationLane = publicExactReviewQueueLane(publicationLane);
+  const sourceHandoff = objectValue(source.handoff_health);
+  const sourceHandoffPhases = objectValue(sourceHandoff.phases);
+  const projectedHandoff = publicExactReviewHandoff(sourceHandoff);
+  const sourcePressure = objectValue(source.pressure);
+  const projectedPressure = publicExactReviewPressure(sourcePressure);
+  const requiredCounts = [
+    source.pending,
+    source.ready_pending,
+    source.admissible_pending,
+    source.dispatching,
+    source.leased,
+    reviewLane.pending,
+    reviewLane.capacity,
+    reviewLane.active,
+    publicationLane.pending,
+    publicationLane.capacity,
+    publicationLane.active,
+  ];
+  const topPending = publicQueueCount(source.pending);
+  const topReady = publicQueueCount(source.ready_pending);
+  const topAdmissible = publicQueueCount(source.admissible_pending);
+  const topShed = publicQueueCount(source.shed_since_reset);
+  const topDispatching = publicQueueCount(source.dispatching);
+  const topLeased = publicQueueCount(source.leased);
+  const reviewPending = publicQueueCount(reviewLane.pending);
+  const reviewReady = publicQueueCount(reviewLane.ready);
+  const reviewShed = publicQueueCount(reviewLane.shed_since_reset);
+  const reviewDispatching = publicQueueCount(reviewLane.dispatching);
+  const reviewLeased = publicQueueCount(reviewLane.leased);
+  const reviewCapacity = publicQueueCount(reviewLane.capacity);
+  const reviewActive = publicQueueCount(reviewLane.active);
+  const reviewAvailable = publicQueueCount(reviewLane.available_slots);
+  const handoffPending = publicQueueCount(objectValue(sourceHandoffPhases.pending).count);
+  const handoffDispatching = publicQueueCount(objectValue(sourceHandoffPhases.dispatching).count);
+  const handoffLeased = publicQueueCount(objectValue(sourceHandoffPhases.leased).count);
+  const handoffCapacity = publicQueueCount(sourceHandoff.capacity);
+  const handoffActive = publicQueueCount(sourceHandoff.active);
+  const handoffAvailable = publicQueueCount(sourceHandoff.available_slots);
+  const handoffPendingDepth = publicQueueCount(sourceHandoff.pending_depth);
+  const handoffShed = publicQueueCount(sourceHandoff.shed_since_reset);
+  const generatedAt = publicQueueTimestamp(source.generated_at);
+  const handoffObservedAt = publicQueueTimestamp(sourceHandoff.observed_at);
+  const pressureCapacity = publicQueueCount(sourcePressure.capacity);
+  const pressureActive = publicQueueCount(sourcePressure.active);
+  const pressurePending = publicQueueCount(sourcePressure.pending);
+  const pressureReady = publicQueueCount(sourcePressure.ready_pending);
+  const pressureAdmissible = publicQueueCount(sourcePressure.admissible_pending);
+  const complete =
+    generatedAt !== null &&
+    handoffObservedAt === generatedAt &&
+    requiredCounts.every((count) => publicQueueCount(count) !== null) &&
+    publicExactReviewQueueLaneComplete(
+      reviewLane,
+      projectedReviewLane.value,
+      projectedReviewLane.reasonsComplete,
+    ) &&
+    publicExactReviewQueueLaneComplete(
+      publicationLane,
+      projectedPublicationLane.value,
+      projectedPublicationLane.reasonsComplete,
+    ) &&
+    topPending === reviewPending &&
+    topReady === reviewReady &&
+    topAdmissible !== null &&
+    topReady !== null &&
+    topAdmissible <= topReady &&
+    topShed !== null &&
+    topShed === reviewShed &&
+    topShed === handoffShed &&
+    topDispatching === reviewDispatching &&
+    topLeased === reviewLeased &&
+    handoffPending === topPending &&
+    handoffPendingDepth === topPending &&
+    handoffDispatching === topDispatching &&
+    handoffLeased === topLeased &&
+    handoffCapacity === reviewCapacity &&
+    handoffActive === reviewActive &&
+    handoffAvailable === reviewAvailable &&
+    pressureCapacity === reviewCapacity &&
+    pressureActive === reviewActive &&
+    pressurePending === topPending &&
+    pressureReady === topReady &&
+    pressureAdmissible === topAdmissible &&
+    ["idle", "healthy", "degraded", "stalled"].includes(String(sourceHandoff.status || ""));
+  const result = {
+    collection: complete ? { state: "complete" } : { state: "unknown", reason: "malformed" },
+    generated_at: publicQueueTimestamp(source.generated_at),
+    pending: publicQueueCount(source.pending),
+    ready_pending: publicQueueCount(source.ready_pending),
+    admissible_pending: publicQueueCount(source.admissible_pending),
+    shed_since_reset: publicQueueCount(source.shed_since_reset),
+    dispatching: publicQueueCount(source.dispatching),
+    leased: publicQueueCount(source.leased),
+    oldest_pending_at: publicQueueTimestamp(source.oldest_pending_at),
+    oldest_pending_age_seconds: publicQueueCount(source.oldest_pending_age_seconds),
+    oldest_dispatching_at: publicQueueTimestamp(source.oldest_dispatching_at),
+    oldest_dispatching_age_seconds: publicQueueCount(source.oldest_dispatching_age_seconds),
+    oldest_leased_at: publicQueueTimestamp(source.oldest_leased_at),
+    oldest_leased_age_seconds: publicQueueCount(source.oldest_leased_age_seconds),
+    next_wake_at: publicQueueTimestamp(source.next_wake_at),
+    handoff_health: projectedHandoff,
+    pressure: projectedPressure,
+    lanes: {
+      review: projectedReviewLane.value,
+      publication: projectedPublicationLane.value,
+    },
+    bay_projection: publicBayProjectionValue(source.bay_projection, allowedRepositories),
+  };
+  return result;
+}
+
+async function publicExactReviewQueueJson(env) {
+  try {
+    const response = await exactReviewQueueRequest(env, "/stats");
+    if (!response.ok) return json({ error: "exact_review_queue_unavailable" }, 503);
+    const body = await response.json().catch(() => null);
+    const projected = publicExactReviewQueueProjection(body, verifiedPublicBayRepositories(env));
+    return json(projected, projected.collection.state === "complete" ? 200 : 503);
+  } catch {
+    return json({ error: "exact_review_queue_unavailable" }, 503);
+  }
+}
+
 export async function durableLifecycleBaySnapshot(env, now = Date.now()) {
   let response: Response;
   let body: Record<string, unknown>;
+  const allowedRepositories = verifiedPublicBayRepositories(env);
+  const lifecycleQuery = new URLSearchParams();
+  for (const repository of [...allowedRepositories].sort()) {
+    lifecycleQuery.append("public_repo", repository);
+  }
+  if (allowedRepositories.size === 0) lifecycleQuery.append("public_repo", "");
   try {
-    response = await exactReviewQueueRequest(env, "/lifecycle-bay");
+    response = await exactReviewQueueRequest(env, `/lifecycle-bay?${lifecycleQuery.toString()}`);
     body = objectValue(await response.json().catch(() => null));
   } catch {
     return unknownDurableLifecycleBay("unavailable", now);
@@ -2063,10 +4778,15 @@ export async function durableLifecycleBaySnapshot(env, now = Date.now()) {
   if (!validDurableLifecycleBaySnapshot(snapshot, checkedAt)) {
     return unknownDurableLifecycleBay("malformed", checkedAt);
   }
-  if (checkedAt - Date.parse(String(snapshot.generated_at)) > 60_000) {
+  const collection = objectValue(snapshot.collection);
+  if (collection.state === "unknown") {
+    return unknownDurableLifecycleBay(String(collection.reason || "malformed"), checkedAt);
+  }
+  const generatedAt = publicQueueTimestamp(snapshot.generated_at);
+  if (!generatedAt || checkedAt - Date.parse(generatedAt) > 60_000) {
     return unknownDurableLifecycleBay("stale", checkedAt);
   }
-  return snapshot;
+  return publicDurableLifecycleBaySnapshot(snapshot, allowedRepositories);
 }
 
 export async function liveActivityBaySnapshotForRequest(
@@ -2099,11 +4819,12 @@ function unknownDurableLifecycleBay(reason, now = Date.now()) {
 
 function validDurableLifecycleBaySnapshot(value, now = Date.now()) {
   const snapshot = objectValue(value);
+  const generatedAt = publicQueueTimestamp(snapshot.generated_at);
   if (
     snapshot.version !== 1 ||
     snapshot.source !== "exact-review-lifecycle-projection-v1" ||
-    !Number.isFinite(Date.parse(String(snapshot.generated_at || ""))) ||
-    Date.parse(String(snapshot.generated_at)) > now + 60_000 ||
+    !generatedAt ||
+    Date.parse(generatedAt) > now + 60_000 ||
     !objectValue(snapshot.freshness) ||
     Number(snapshot.freshness.maximum_age_ms) !== 60_000
   ) {
@@ -2124,29 +4845,128 @@ function validDurableLifecycleBaySnapshot(value, now = Date.now()) {
   const inventory = objectValue(snapshot.inventory);
   const lanes = objectValue(snapshot.lanes);
   const sample = objectValue(snapshot.sample);
+  const inventoryKeys = ["lifecycle_records", "target_revisions", "unique_targets"];
+  const laneKeys = [
+    "pending",
+    "acknowledgement_pending",
+    "completed",
+    "superseded",
+    "requeued",
+    "terminal_attention",
+  ];
+  const lifecycleRecords = publicQueueCount(inventory.lifecycle_records, 10_000);
+  const targetRevisions = publicQueueCount(inventory.target_revisions, 10_000);
+  const uniqueTargets = publicQueueCount(inventory.unique_targets, 10_000);
   if (
-    !["lifecycle_records", "target_revisions", "unique_targets"].every(
-      (key) => Number.isSafeInteger(inventory[key]) && Number(inventory[key]) >= 0,
-    ) ||
-    ![
-      "pending",
-      "acknowledgement_pending",
-      "completed",
-      "superseded",
-      "requeued",
-      "terminal_attention",
-    ].every((key) => Number.isSafeInteger(lanes[key]) && Number(lanes[key]) >= 0) ||
+    !inventoryKeys.every((key) => publicQueueCount(inventory[key], 10_000) !== null) ||
+    lifecycleRecords === null ||
+    targetRevisions === null ||
+    uniqueTargets === null ||
+    uniqueTargets > targetRevisions ||
+    targetRevisions > lifecycleRecords ||
+    !laneKeys.every((key) => publicQueueCount(lanes[key]) !== null) ||
+    laneKeys.reduce((sum, key) => sum + Number(lanes[key]), 0) !== lifecycleRecords ||
     Number(sample.limit) !== 24 ||
     !Number.isSafeInteger(sample.returned) ||
     !Number.isSafeInteger(sample.omitted) ||
     !Array.isArray(sample.cards) ||
     sample.returned !== sample.cards.length ||
     sample.cards.length > 24 ||
-    sample.omitted !== Math.max(0, Number(inventory.lifecycle_records) - sample.cards.length)
+    sample.omitted !== Math.max(0, lifecycleRecords - sample.cards.length)
   ) {
     return false;
   }
   return sample.cards.every(validDurableLifecycleBayCard);
+}
+
+function publicDurableLifecycleBaySnapshot(
+  value,
+  allowedRepositories: ReadonlySet<string> = new Set(),
+) {
+  const snapshot = objectValue(value);
+  const inventory = objectValue(snapshot.inventory);
+  const lanes = objectValue(snapshot.lanes);
+  const lifecycleRecords = publicQueueCount(inventory.lifecycle_records) ?? 0;
+  const cards = Array.isArray(objectValue(snapshot.sample).cards)
+    ? objectValue(snapshot.sample).cards.flatMap((value) => {
+        const card = objectValue(value);
+        const target = objectValue(card.target);
+        const repository = String(target.repository || "")
+          .trim()
+          .toLowerCase();
+        const itemNumber = publicQueueCount(target.number, PUBLIC_BAY_ITEM_NUMBER_LIMIT);
+        const lane = String(card.lane || "");
+        const state = String(card.state || "");
+        const updatedAt = publicQueueTimestamp(card.updated_at);
+        if (
+          !allowedRepositories.has(repository) ||
+          itemNumber === null ||
+          itemNumber <= 0 ||
+          ![
+            "pending",
+            "acknowledgement_pending",
+            "completed",
+            "superseded",
+            "requeued",
+            "terminal_attention",
+          ].includes(lane) ||
+          ![
+            "pending",
+            "completed",
+            "acknowledgement_pending",
+            "acknowledgement_skipped",
+            "superseded",
+            "requeue",
+            "dead_letter",
+            "target_closed",
+            "target_missing",
+            "policy_noop",
+            "guarded_open",
+            "failed",
+          ].includes(state) ||
+          typeof card.current_revision !== "boolean" ||
+          !updatedAt
+        ) {
+          return [];
+        }
+        return [
+          {
+            repository,
+            item_number: itemNumber,
+            lane,
+            state,
+            current_revision: card.current_revision,
+            updated_at: updatedAt,
+          },
+        ];
+      })
+    : [];
+  return {
+    version: 1,
+    source: "exact-review-lifecycle-projection-v1",
+    generated_at: publicQueueTimestamp(snapshot.generated_at),
+    freshness: { maximum_age_ms: 60_000 },
+    collection: { state: "complete" },
+    inventory: {
+      lifecycle_records: lifecycleRecords,
+      target_revisions: publicQueueCount(inventory.target_revisions) ?? 0,
+      unique_targets: publicQueueCount(inventory.unique_targets) ?? 0,
+    },
+    lanes: publicQueueCounts(lanes, [
+      "pending",
+      "acknowledgement_pending",
+      "completed",
+      "superseded",
+      "requeued",
+      "terminal_attention",
+    ]),
+    sample: {
+      limit: 24,
+      returned: cards.length,
+      omitted: Math.max(0, lifecycleRecords - cards.length),
+      cards,
+    },
+  };
 }
 
 function validDurableLifecycleBayCard(value) {
@@ -2228,10 +5048,81 @@ function validDurableLifecycleBayCard(value) {
       "skipped_missing_comment",
       "unavailable",
     ].includes(facts.acknowledgement) &&
-    Number.isFinite(Date.parse(String(card.updated_at || ""))) &&
+    publicQueueTimestamp(card.updated_at) !== null &&
     Number.isSafeInteger(card.age_ms) &&
     Number(card.age_ms) >= 0 &&
     card.provenance === "exact-review-lifecycle-projection-v1"
+  );
+}
+
+async function publicRecentDurablePublicationEventsJson(env, params: URLSearchParams) {
+  const requestedWindow = params.get("window");
+  const window = requestedWindow === "6h" || requestedWindow === "7d" ? requestedWindow : "24h";
+  try {
+    const response = await exactReviewQueueRequest(
+      env,
+      `/recent-durable-publication-events?window=${window}`,
+    );
+    if (!response.ok) return json({ recent_durable_publication_events: null });
+    const body = objectValue(await response.json().catch(() => null));
+    return json({
+      recent_durable_publication_events: publicRecentDurablePublicationEventsProjection(
+        body.recent_durable_publication_events,
+      ),
+    });
+  } catch {
+    return json({ recent_durable_publication_events: null });
+  }
+}
+
+function publicReviewRange(params: URLSearchParams) {
+  const value = params.get("range");
+  return value === "6h" || value === "7d" ? value : "24h";
+}
+
+async function publicExactReviewProjectionJson(
+  env,
+  path: string,
+  projector: (value: unknown) => unknown,
+  unavailableError: string,
+) {
+  try {
+    const response = await exactReviewQueueRequest(env, path);
+    if (!response.ok) return json({ error: unavailableError }, 503);
+    const projection = projector(await response.json().catch(() => null));
+    return projection ? json(projection) : json({ error: unavailableError }, 503);
+  } catch {
+    return json({ error: unavailableError }, 503);
+  }
+}
+
+async function publicReviewObservabilityJson(env, params: URLSearchParams) {
+  const range = publicReviewRange(params);
+  return publicExactReviewProjectionJson(
+    env,
+    `/review-observability?range=${range}&repo=all`,
+    publicReviewObservabilityProjection,
+    "review_observability_unavailable",
+  );
+}
+
+async function publicReviewCoverageJson(env) {
+  return publicExactReviewProjectionJson(
+    env,
+    "/review-coverage",
+    publicReviewCoverageProjection,
+    "review_coverage_unavailable",
+  );
+}
+
+async function publicGithubEgressObservabilityJson(env, params: URLSearchParams) {
+  const requested = Number(params.get("hours") || 6);
+  const hours = [0.25, 1, 6, 24, 168].includes(requested) ? requested : 6;
+  return publicExactReviewProjectionJson(
+    env,
+    `/github-egress-observability?hours=${hours}`,
+    publicGithubEgressObservabilityProjection,
+    "github_egress_observability_unavailable",
   );
 }
 
@@ -2248,14 +5139,18 @@ async function recentDurablePublicationEventsSnapshot(env, window = "24h") {
 
 export async function exactReviewQueueStatusSnapshot(
   env,
-  options: { bayPriorityKeys?: string[] } = {},
+  options: { bayPriorityKeys?: string[]; bayActiveKeys?: string[] } = {},
 ) {
   if (!exactReviewQueueStub(env)) return null;
   const priorityKeys = [...new Set(options.bayPriorityKeys || [])]
     .filter((itemKey) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/.test(itemKey))
     .slice(0, 40);
+  const activeKeys = [...new Set(options.bayActiveKeys || [])]
+    .filter((itemKey) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/.test(itemKey))
+    .slice(0, 100);
   const search = new URLSearchParams();
   for (const itemKey of priorityKeys) search.append("bay_priority_key", itemKey);
+  for (const itemKey of activeKeys) search.append("bay_active_key", itemKey);
   const response = await exactReviewQueueRequest(
     env,
     `/stats${search.size ? `?${search.toString()}` : ""}`,
@@ -2349,8 +5244,13 @@ async function authenticatedLifecycleCommandAcknowledgement(request, env, ctx) {
               repository: target[1],
               number: Number(target[2]),
               source_comment_id: Number(receipt.command_comment_id),
-              ...(nullableString(result.source_delivery_id)
-                ? { source_delivery_id: nullableString(result.source_delivery_id) }
+              ...(nullableString(result.bay_journey_delivery_id) ||
+              nullableString(result.source_delivery_id)
+                ? {
+                    source_delivery_id:
+                      nullableString(result.bay_journey_delivery_id) ??
+                      nullableString(result.source_delivery_id),
+                  }
                 : {}),
               completed_at: completedAt,
               completion_kind: "final_command_status",
@@ -2363,12 +5263,29 @@ async function authenticatedLifecycleCommandAcknowledgement(request, env, ctx) {
   );
 }
 
-async function authenticatedExactReviewQueueRead(request, env, path: string) {
-  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
-  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+async function authenticatedExactReviewQueueRead(
+  request,
+  env,
+  path: string,
+  allowOperatorSecret: boolean,
+) {
+  const webhookSecret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  const operatorSecret = allowOperatorSecret ? stringEnv(env.EXACT_REVIEW_OPERATOR_SECRET) : "";
+  if (!webhookSecret && !operatorSecret) return json({ error: "webhook_not_configured" }, 503);
   const body = await request.text();
   const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
-  if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {
+  let authenticated = webhookSecret
+    ? await verifyGithubWebhookSignature({ secret: webhookSecret, signature, bodyText: body })
+    : false;
+  // Reconciliation reads active items only; closed records, plans, and decision packets stay webhook-only.
+  if (!authenticated && operatorSecret) {
+    authenticated = await verifyGithubWebhookSignature({
+      secret: operatorSecret,
+      signature,
+      bodyText: body,
+    });
+  }
+  if (!authenticated) {
     return json({ error: "invalid_signature" }, 401);
   }
   return exactReviewQueueRequest(
@@ -2451,10 +5368,7 @@ async function authenticatedApplyObservability(request, env) {
 
 async function applyObservabilityJson(request: Request, env: DashboardEnv) {
   const params = new URL(request.url).searchParams;
-  const rangeValue = params.get("range");
-  const range = rangeValue === "6h" || rangeValue === "7d" ? rangeValue : "24h";
-  const repoValue = params.get("repo");
-  const repo = repoValue && repoValue !== "all" ? repoValue : null;
+  const range = publicReviewRange(params);
   if (!isDurableStatusStore(env.STATUS_STORE)) {
     return json({ error: "apply_observability_not_configured" }, 503);
   }
@@ -2468,12 +5382,16 @@ async function applyObservabilityJson(request: Request, env: DashboardEnv) {
     .filter(Boolean);
   const storeUrl = new URL(statusStoreRequest("apply-observability").url);
   storeUrl.searchParams.set("range", range);
-  if (repo) storeUrl.searchParams.set("repo", repo);
   requiredRepositories.forEach((value) => storeUrl.searchParams.append("required_repo", value));
   optionalRepositories.forEach((value) => storeUrl.searchParams.append("optional_repo", value));
-  const response = await durableStatusStoreStub(env.STATUS_STORE).fetch(new Request(storeUrl));
-  if (!response.ok) return json({ error: "apply_observability_unavailable" }, 503);
-  return json(await response.json());
+  try {
+    const response = await durableStatusStoreStub(env.STATUS_STORE).fetch(new Request(storeUrl));
+    if (!response.ok) return json({ error: "apply_observability_unavailable" }, 503);
+    const projection = publicApplyObservabilityProjection(await response.json().catch(() => null));
+    return projection ? json(projection) : json({ error: "apply_observability_unavailable" }, 503);
+  } catch {
+    return json({ error: "apply_observability_unavailable" }, 503);
+  }
 }
 
 async function authenticatedExactReviewReconcile(request, env) {
@@ -2738,8 +5656,8 @@ function settleFastAckComments({
       await pruneFastAckComments({ env, token, repo, itemNumber, ackMarker, ackMatch });
     }
   };
-  const promise = cleanup().catch((error) => {
-    console.error(`ClawSweeper fast ack cleanup failed: ${error?.message || error}`);
+  const promise = cleanup().catch(() => {
+    console.error("ClawSweeper fast ack cleanup failed");
   });
   if (waitUntil) waitUntil(promise);
 }
@@ -2946,7 +5864,7 @@ async function addIssueCommentReaction({ env, token, repo, commentId, content })
     errorLabel: "ClawSweeper comment reaction",
   }).catch((error) => {
     if (!String(error.message || "").includes("422")) {
-      console.error(`ClawSweeper comment reaction failed: ${error?.message || error}`);
+      console.error("ClawSweeper comment reaction failed");
     }
     return null;
   });
@@ -2958,6 +5876,12 @@ async function dispatchClawsweeperComment({
   decision,
   statusCommentId,
   sourceDeliveryId,
+}: {
+  readonly env: DashboardEnv;
+  readonly token: string;
+  readonly decision: GithubWebhookIssueCommentClassification;
+  readonly statusCommentId: number | null;
+  readonly sourceDeliveryId?: string;
 }) {
   const exactVersion =
     decision.commentUpdatedAt && typeof decision.commentBody === "string"
@@ -2996,11 +5920,9 @@ async function sha256Text(value) {
 }
 
 async function githubTokenJson({ env = {}, token, path, method = "GET", body, errorLabel }) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
   const init: RequestInit = {
     method,
-    signal: controller.signal,
+    signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     headers: {
       Accept: "application/vnd.github+json",
       "Content-Type": "application/json",
@@ -3009,7 +5931,7 @@ async function githubTokenJson({ env = {}, token, path, method = "GET", body, er
     },
   };
   if (body !== undefined) init.body = JSON.stringify(body);
-  const response = await fetch(githubApiUrl(env, path), init).finally(() => clearTimeout(timeout));
+  const response = await fetch(githubApiUrl(env, path), init);
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new Error(
@@ -3082,7 +6004,7 @@ async function statusSnapshot(env) {
   const ttl = numberFrom(env.CACHE_TTL_SECONDS, 20);
   const cached = await readCachedSnapshot(env, ttl);
   if (cached?.bay?.timings?.sample_kind === "completed_review_journeys") {
-    return cached;
+    return publicStatusProjection(cached, verifiedPublicBayRepositories(env));
   }
 
   const github = createGithubJsonCache(env);
@@ -3095,17 +6017,51 @@ async function statusSnapshot(env) {
     .filter(Boolean);
   const budget = numberFrom(env.WORKER_BUDGET, 128);
   const activeRunErrors = [];
-  const [runs, completedRuns, activeRunCandidates] = await Promise.all([
-    github(`/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
-      errors.push(`workflow runs: ${error.message}`);
-      return null;
-    }),
-    github(`/repos/${repo}/actions/runs?status=completed&per_page=100`).catch((error) => {
-      errors.push(`workflow runs completed: ${error.message}`);
-      return null;
-    }),
-    activeWorkflowRunCandidates(env, repo, activeRunErrors, github),
-  ]);
+  const workflowReadModel = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
+    ? await githubWebhookReadModelQueuePost(env, "workflows", {
+        repository: repo,
+      }).catch(() => null)
+    : null;
+  const workflowReadModelUsable = workflowReadModel?.usable === true;
+  if (!workflowReadModelUsable) reportGithubReadModelDashboardFallback(workflowReadModel);
+  let runs;
+  let completedRuns;
+  let activeRunCandidates;
+  let operationalRunCandidates;
+  if (workflowReadModelUsable) {
+    const reconciled = await revalidateStaleWorkflowHealthRuns({
+      env,
+      repo,
+      runs: Array.isArray(workflowReadModel.runs) ? workflowReadModel.runs : [],
+      observations: Array.isArray(workflowReadModel.run_observations)
+        ? workflowReadModel.run_observations
+        : [],
+      checkedAt: generatedAt,
+      github,
+    });
+    activeRunErrors.push(...reconciled.errors);
+    runs = { workflow_runs: reconciled.runs };
+    completedRuns = {
+      workflow_runs: reconciled.runs.filter((run) => objectValue(run).status === "completed"),
+    };
+    activeRunCandidates = reconciled.runs.filter((run) => isActiveWorkflowRun(run));
+    operationalRunCandidates = reconciled.runs.filter((run) =>
+      ACTIVE_RUN_STATUSES.has(String(objectValue(run).status || "")),
+    );
+  } else {
+    [runs, completedRuns, activeRunCandidates] = await Promise.all([
+      github(`/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
+        errors.push(`workflow runs: ${error.message}`);
+        return null;
+      }),
+      github(`/repos/${repo}/actions/runs?status=completed&per_page=100`).catch((error) => {
+        errors.push(`workflow runs completed: ${error.message}`);
+        return null;
+      }),
+      activeWorkflowRunCandidates(env, repo, activeRunErrors, github),
+    ]);
+    operationalRunCandidates = activeRunCandidates;
+  }
   errors.push(...activeRunErrors);
   const workflowRuns = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
   const completedWorkflowRuns = uniqueWorkflowRuns([
@@ -3116,11 +6072,34 @@ async function statusSnapshot(env) {
     ...activeRunCandidates.filter((run) => isActiveWorkflowRun(run)),
     ...workflowRuns.filter((run) => isActiveWorkflowRun(run)),
   ]).sort(newestWorkflowRunFirst);
+  if (!workflowReadModelUsable && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)) {
+    const objects = uniqueWorkflowRuns([
+      ...workflowRuns,
+      ...completedWorkflowRuns,
+      ...activeRuns,
+    ]).flatMap((run) => {
+      const object = githubWebhookReadModelWorkflowObject(repo, "workflow_run", run);
+      return object ? [object] : [];
+    });
+    if (objects.length > 0) {
+      await githubWebhookReadModelQueuePost(env, "repair", {
+        repository: repo,
+        repair_kind: "workflows",
+        ...(runs && completedRuns && activeRunErrors.length === 0
+          ? {
+              workflow_run_census_complete: true,
+              workflow_run_census_started_at: generatedAt,
+            }
+          : {}),
+        objects,
+      }).catch(() => null);
+    }
+  }
   const workerRuns = activeRuns.filter((run) => !isSupportWorkflowRun(run));
   const supportRuns = activeRuns.filter((run) => isSupportWorkflowRun(run));
   const controlPlane = controlPlaneSnapshot(activeRuns);
   const operationalHealth = summarizeOperationalHealth(
-    activeRunCandidates.filter((run) => !isSupportWorkflowRun(run)),
+    operationalRunCandidates.filter((run) => !isSupportWorkflowRun(run)),
     generatedAt,
     activeRunErrors.length === 0,
   );
@@ -3131,7 +6110,28 @@ async function statusSnapshot(env) {
       isCodexWorkflowFallback(run) &&
       TERMINAL_BAD_CONCLUSIONS.has(String(run.conclusion)),
   );
-  const activeJobs = await activeWorkerSnapshot(env, repo, workerRuns, github);
+  const readModelJobs =
+    workflowReadModel?.jobs_usable === true && Array.isArray(workflowReadModel?.jobs)
+      ? {
+          jobs: workflowReadModel.jobs as unknown[],
+          coveredRunIds: new Set<number>(
+            (Array.isArray(workflowReadModel.job_coverage_run_ids)
+              ? workflowReadModel.job_coverage_run_ids
+              : []
+            )
+              .map((value) => Number(value))
+              .filter((value) => Number.isSafeInteger(value) && value > 0),
+          ),
+        }
+      : undefined;
+  const activeJobs = await activeWorkerSnapshot(
+    env,
+    repo,
+    workerRuns,
+    github,
+    readModelJobs,
+    activeRunErrors.length === 0,
+  );
   const [
     workerHealth,
     pipeline,
@@ -3143,8 +6143,11 @@ async function statusSnapshot(env) {
     storedEvents,
   ] = await Promise.all([
     withTimeout(
-      recentWorkerHealth(env, repo, completedWorkflowRuns, github),
-      OPTIONAL_SECTION_TIMEOUT_MS * 2,
+      recentWorkerHealth(env, repo, completedWorkflowRuns, github, readModelJobs),
+      workerHealthSectionTimeoutMs(
+        workerHealthFetchConcurrency(env),
+        env.WORKER_HEALTH_SECTION_TIMEOUT_MS,
+      ),
       "worker health",
     ).catch((error) => {
       errors.push(error.message);
@@ -3221,6 +6224,7 @@ async function statusSnapshot(env) {
   });
   const bay = {
     ...terminalBay,
+    active_census_complete: activeJobs.complete,
     timings: summarizeBayJourneyTimings(journeyBay.journeys, generatedAt),
   };
   const { recent_attempts: _recentAttempts, ...publicWorkerHealth } = workerHealth;
@@ -3229,8 +6233,7 @@ async function statusSnapshot(env) {
     schema_version: 1,
     generated_at: generatedAt,
     source: {
-      clawsweeper_repo: repo,
-      target_repositories: targetRepos,
+      target_repository_count: targetRepos.length,
     },
     fleet: {
       worker_budget: budget,
@@ -3279,6 +6282,12 @@ async function statusSnapshot(env) {
 async function attachExactReviewQueueStatus(snapshot, env) {
   const diagnostics = objectValue(snapshot.diagnostics);
   const bay = objectValue(snapshot.bay);
+  const activeTargets = publicBayActiveTargets(
+    snapshot.workers,
+    bay.active_census_complete === true,
+    verifiedPublicBayRepositories(env),
+  );
+  const activeKeys = activeTargets.keys;
   const bayPriorityKeys = [
     ...(Array.isArray(bay.terminal_buffer) ? bay.terminal_buffer : []),
     ...(Array.isArray(bay.recently_washed) ? bay.recently_washed : []),
@@ -3286,11 +6295,9 @@ async function attachExactReviewQueueStatus(snapshot, env) {
     .map((item) => String(objectValue(item).item_key || ""))
     .filter(Boolean);
   let exactReviewQueue = null;
-  let exactReviewQueueError = null;
   let recentDurablePublicationEvents = null;
-  let recentDurablePublicationEventsError = null;
   const exactReviewQueueRequest = withTimeout(
-    exactReviewQueueStatusSnapshot(env, { bayPriorityKeys }),
+    exactReviewQueueStatusSnapshot(env, { bayPriorityKeys, bayActiveKeys: activeKeys }),
     OPTIONAL_SECTION_TIMEOUT_MS,
     "exact-review queue",
   );
@@ -3304,23 +6311,72 @@ async function attachExactReviewQueueStatus(snapshot, env) {
     recentDurablePublicationEventsRequest,
   ]);
   if (queueResult.status === "fulfilled") exactReviewQueue = queueResult.value;
-  else
-    exactReviewQueueError =
-      queueResult.reason instanceof Error ? queueResult.reason.message : String(queueResult.reason);
   if (eventsResult.status === "fulfilled") recentDurablePublicationEvents = eventsResult.value;
-  else
-    recentDurablePublicationEventsError =
-      eventsResult.reason instanceof Error
-        ? eventsResult.reason.message
-        : String(eventsResult.reason);
+  const staleStatusSnapshot =
+    queueResult.status === "rejected"
+      ? await readCachedSnapshot(
+          env,
+          numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS),
+        )
+      : null;
+  const priorExactReviewQueue = objectValue(
+    snapshot.exact_review_queue || staleStatusSnapshot?.exact_review_queue,
+  );
+  const allowedRepositories = verifiedPublicBayRepositories(env);
+  const projectedPriorExactReviewQueue = publicExactReviewQueueProjection(
+    priorExactReviewQueue,
+    allowedRepositories,
+  );
+  const priorQueueGeneratedAt = Date.parse(
+    String(projectedPriorExactReviewQueue.generated_at || ""),
+  );
+  const priorQueueAgeMs = Date.now() - priorQueueGeneratedAt;
+  const priorQueueIsFresh =
+    Number.isFinite(priorQueueAgeMs) &&
+    priorQueueAgeMs >= 0 &&
+    priorQueueAgeMs <= numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS) * 1000;
+  const priorProjection = objectValue(priorExactReviewQueue.bay_projection);
+  const priorActivity = publicBayActivity(priorProjection.activity, allowedRepositories);
+  const retainedPriorExactReviewQueue =
+    queueResult.status === "rejected" &&
+    priorQueueIsFresh &&
+    projectedPriorExactReviewQueue.collection.state === "complete" &&
+    projectedPriorExactReviewQueue.bay_projection.complete === true;
+  if (retainedPriorExactReviewQueue) {
+    // The optional queue probe can fail while its direct endpoint and the review
+    // pipeline remain healthy. Retain the last internally consistent, public-only
+    // queue document rather than caching a null projection that empties the Bay.
+    // Live activity is generation-coupled to the failed probe, so never preserve
+    // a prior complete activity aggregate as current evidence.
+    exactReviewQueue = {
+      ...projectedPriorExactReviewQueue,
+      bay_projection: {
+        ...projectedPriorExactReviewQueue.bay_projection,
+        activity: publicBayActivity(null, allowedRepositories),
+      },
+    };
+  } else if (
+    queueResult.status === "fulfilled" &&
+    !activeTargets.complete &&
+    priorActivity.complete
+  ) {
+    // A projected cache no longer has correlation keys. Keep its same-generation
+    // queue/live aggregate intact instead of combining it with a newer queue census.
+    exactReviewQueue = priorExactReviewQueue;
+  } else if (exactReviewQueue) {
+    const projection = objectValue(exactReviewQueue.bay_projection);
+    projection.activity = composePublicBayActivity(projection, activeTargets, allowedRepositories);
+  }
   const attached = {
     ...snapshot,
     exact_review_queue: exactReviewQueue,
     recent_durable_publication_events: recentDurablePublicationEvents,
     diagnostics: {
       ...diagnostics,
-      exact_review_queue_error: exactReviewQueueError,
-      recent_durable_publication_events_error: recentDurablePublicationEventsError,
+      // Optional section failures remain useful to the bounded health summary, but
+      // rejection text is untrusted and can contain source-specific identifiers.
+      exact_review_queue_error: queueResult.status === "rejected",
+      recent_durable_publication_events_error: eventsResult.status === "rejected",
     },
   };
   return { ...attached, dashboard_health: summarizeDashboardHealth(attached) };
@@ -4194,6 +7250,8 @@ async function activeWorkerSnapshot(
   repo,
   runs,
   github: GithubJsonReader = (path) => githubJson(env, path),
+  readModelJobs?: { jobs: unknown[]; coveredRunIds: Set<number> },
+  runCensusComplete = false,
 ) {
   const detailRunLimit = Math.max(
     1,
@@ -4206,7 +7264,15 @@ async function activeWorkerSnapshot(
   const detailRuns: WorkflowRunSummary[] = runs.slice(0, detailRunLimit);
   const results = await mapWithConcurrency(detailRuns, fetchConcurrency, async (run) => {
     try {
-      const jobs = await workflowJobsForRun(env, repo, run.id, github, run);
+      const jobSnapshot = await workflowJobsForRunSnapshot(
+        env,
+        repo,
+        run.id,
+        github,
+        run,
+        readModelJobs,
+      );
+      const jobs = jobSnapshot.jobs;
       const activeJobs = jobs.filter((job) => isActiveWorkflowJob(job));
       return {
         run,
@@ -4215,6 +7281,7 @@ async function activeWorkerSnapshot(
           .map((job) => normalizeWorkerJob(run, job)),
         codexWorkers: activeJobs.filter((job) => isCodexWorkerJob(job)).length,
         hasWorkerJobs: jobs.some((job) => isDashboardWorkerJob(job, run)),
+        complete: jobSnapshot.complete,
         error: null,
       };
     } catch (error) {
@@ -4223,6 +7290,7 @@ async function activeWorkerSnapshot(
         workers: [],
         codexWorkers: 0,
         hasWorkerJobs: false,
+        complete: false,
         error: error instanceof Error ? error.message : String(error),
       };
     }
@@ -4277,8 +7345,22 @@ async function activeWorkerSnapshot(
       started_at: worker.started_at,
     })),
     rate: null,
+    complete:
+      runCensusComplete === true &&
+      detailRuns.length === runs.length &&
+      results.every((result) => result.complete === true),
     errors,
   };
+}
+
+export function recentWorkerHealthRunSample(runs: WorkflowRunSummary[]) {
+  return runs
+    .filter(
+      (run) =>
+        run.status === "completed" && !isSupportWorkflowRun(run) && isCodexWorkflowFallback(run),
+    )
+    .sort(newestWorkflowRunFirst)
+    .slice(0, RECENT_WORKER_HEALTH_RUN_LIMIT);
 }
 
 async function recentWorkerHealth(
@@ -4286,28 +7368,18 @@ async function recentWorkerHealth(
   repo,
   runs: WorkflowRunSummary[],
   github: GithubJsonReader = (path) => githubJson(env, path),
+  readModelJobs?: { jobs: unknown[]; coveredRunIds: Set<number> },
 ) {
   const cacheKey = `worker-health:v3:${String(repo || "").toLowerCase()}`;
   const cached = await readStoredJson(env, cacheKey);
-  if (cached) return cached;
+  if (cached) return workerHealthStorageProjection(cached);
 
-  const completedRuns = runs
-    .filter(
-      (run) =>
-        run.status === "completed" && !isSupportWorkflowRun(run) && isCodexWorkflowFallback(run),
-    )
-    .sort(newestWorkflowRunFirst)
-    .slice(0, RECENT_WORKER_HEALTH_RUN_LIMIT);
-  const fetchConcurrency = Math.max(
-    1,
-    Math.floor(
-      numberFrom(env.WORKER_HEALTH_FETCH_CONCURRENCY, DEFAULT_WORKER_HEALTH_FETCH_CONCURRENCY),
-    ),
-  );
+  const completedRuns = recentWorkerHealthRunSample(runs);
+  const fetchConcurrency = workerHealthFetchConcurrency(env);
   const results = await mapWithConcurrency(completedRuns, fetchConcurrency, async (run) => {
     try {
       return {
-        attempts: (await workflowJobsForRun(env, repo, run.id, github, run))
+        attempts: (await workflowJobsForRun(env, repo, run.id, github, run, readModelJobs))
           .filter((job) => isCodexWorkerJob(job))
           .map((job) => workerHealthAttempt(run, job))
           .filter(Boolean),
@@ -4363,7 +7435,7 @@ async function recentWorkerHealth(
           Date.parse(right.completed_at || right.started_at || "") -
           Date.parse(left.completed_at || left.started_at || ""),
       )
-      .slice(0, 50),
+      .slice(0, RECENT_WORKER_HEALTH_RUN_LIMIT * 2),
     failures: failures.slice(0, 10),
     errors: results.flatMap((result) => (result.error ? [result.error] : [])).slice(0, 10),
     updated_at: new Date().toISOString(),
@@ -4371,10 +7443,31 @@ async function recentWorkerHealth(
   await writeStoredJson(
     env,
     cacheKey,
-    health,
+    workerHealthStorageProjection(health),
     numberFrom(env.WORKER_HEALTH_CACHE_TTL_SECONDS, WORKER_HEALTH_CACHE_TTL_SECONDS),
   );
   return health;
+}
+
+function workerHealthStorageProjection(health) {
+  return {
+    sampled_runs: health.sampled_runs,
+    attempts: health.attempts,
+    successful_attempts: health.successful_attempts,
+    failed_attempts: health.failed_attempts,
+    cancelled_attempts: health.cancelled_attempts,
+    recovered_failures: health.recovered_failures,
+    unresolved_failures: health.unresolved_failures,
+    error_rate_percent: health.error_rate_percent,
+    recovery_rate_percent: health.recovery_rate_percent,
+    // The per-attempt source records contain unbounded workflow metadata. Aggregate
+    // it before durable caching; live callers retain it only long enough to update
+    // the in-memory status projection for the current request.
+    recent_attempts: [],
+    failures: publicStatusValue(health.failures, "failures", 0),
+    errors: [],
+    updated_at: health.updated_at,
+  };
 }
 
 function emptyWorkerHealth(updatedAt) {
@@ -4893,6 +7986,15 @@ function workerHealthAttempt(run, job) {
           .trim()}`;
   const startedAt = job?.started_at || run.created_at || null;
   const completedAt = job?.completed_at || run.updated_at || startedAt;
+  const actionSteps =
+    steps.length <= PUBLIC_BAY_ACTION_STEP_LIMIT
+      ? steps.map((step, index) => ({
+          number: step?.number ?? index + 1,
+          name: String(step?.name || ""),
+          status: String(step?.status || ""),
+          conclusion: step?.conclusion ?? null,
+        }))
+      : undefined;
   return {
     key: targetKey,
     outcome,
@@ -4908,31 +8010,48 @@ function workerHealthAttempt(run, job) {
     job_id: job?.id || null,
     started_at: startedAt,
     completed_at: completedAt,
+    steps: actionSteps,
     total_duration_ms: boundedBayTimingDuration(run.created_at || startedAt, completedAt),
   };
 }
 
-function activeBayItemKeys(workers) {
-  const keys = new Set();
-  for (const worker of Array.isArray(workers) ? workers : []) {
+export function activeBayItemKeys(workers, limits: { workers?: number; items?: number } = {}) {
+  const keys = new Set<string>();
+  const workerList = Array.isArray(workers) ? workers : [];
+  const boundedWorkers = Number.isSafeInteger(limits.workers)
+    ? workerList.slice(0, Math.max(0, Number(limits.workers)))
+    : workerList;
+  for (const worker of boundedWorkers) {
+    const targetItems = Array.isArray(worker?.target_items) ? worker.target_items : [];
+    const boundedTargetItems = Number.isSafeInteger(limits.items)
+      ? targetItems.slice(0, Math.max(0, Number(limits.items)))
+      : targetItems;
     const targets = new Map<number, Record<string, unknown>>(
-      (Array.isArray(worker?.target_items) ? worker.target_items : []).map(
-        (item): [number, Record<string, unknown>] => {
-          const target = objectValue(item);
-          return [Number(target.number), target];
-        },
-      ),
+      boundedTargetItems.map((item): [number, Record<string, unknown>] => {
+        const target = objectValue(item);
+        return [Number(target.number), target];
+      }),
     );
-    const numbers = Array.isArray(worker?.item_numbers)
+    const sourceNumbers = Array.isArray(worker?.item_numbers)
       ? worker.item_numbers
       : worker?.item_number
         ? [worker.item_number]
         : [];
+    const numbers = Number.isSafeInteger(limits.items)
+      ? sourceNumbers.slice(0, Math.max(0, Number(limits.items)))
+      : sourceNumbers;
     for (const value of numbers) {
       const number = Number(value);
       const target = targets.get(number);
       const repository = nullableString(worker?.repository || target?.repository);
-      if (repository && Number.isInteger(number) && number > 0) keys.add(`${repository}#${number}`);
+      const itemKey = repository ? `${repository}#${number}` : "";
+      if (
+        Number.isInteger(number) &&
+        number > 0 &&
+        /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/.test(itemKey)
+      ) {
+        keys.add(itemKey.toLowerCase());
+      }
     }
   }
   return [...keys];
@@ -5149,6 +8268,9 @@ function bayTerminalCandidates(attempts, closedItems) {
         item_url: `https://github.com/${repository}/issues/${number}`,
         job_url: nullableString(attempt?.url),
         run_id: attempt?.run_id || null,
+        job_id: attempt?.job_id || null,
+        started_at: nullableString(attempt?.started_at),
+        steps: Array.isArray(attempt?.steps) ? attempt.steps : undefined,
         completed_at: completedAt,
         current_step: nullableString(attempt?.failed_step || attempt?.conclusion),
         source: "worker_attempt",
@@ -5361,37 +8483,133 @@ async function workflowJobsForRun(
   runId,
   github: GithubJsonReader = (path) => githubJson(env, path),
   run?: WorkflowRunSummary,
+  readModelJobs?: { jobs: unknown[]; coveredRunIds: Set<number> },
 ) {
+  return (await workflowJobsForRunSnapshot(env, repo, runId, github, run, readModelJobs)).jobs;
+}
+
+function boundedWorkflowJobCensus(value: unknown, runId, claimedComplete: boolean) {
+  const source = Array.isArray(value) ? value : [];
+  const limit = WORKER_JOB_PAGE_LIMIT * 100;
+  const bounded = source.slice(0, limit);
+  const seenJobIds = new Set<number>();
+  const jobs = bounded.filter((job) => {
+    if (job === null || typeof job !== "object" || Array.isArray(job)) return false;
+    const record = objectValue(job);
+    if (
+      !Number.isSafeInteger(record.id) ||
+      Number(record.id) <= 0 ||
+      !Number.isSafeInteger(record.run_id) ||
+      Number(record.run_id) !== Number(runId) ||
+      seenJobIds.has(Number(record.id))
+    ) {
+      return false;
+    }
+    seenJobIds.add(Number(record.id));
+    return true;
+  });
+  const bindingComplete = source.length <= limit && jobs.length === source.length;
+  return { jobs, complete: claimedComplete === true && bindingComplete };
+}
+
+export async function workflowJobsForRunSnapshot(
+  env,
+  repo,
+  runId,
+  github: GithubJsonReader = (path) => githubJson(env, path),
+  run?: WorkflowRunSummary,
+  readModelJobs?: { jobs: unknown[]; coveredRunIds: Set<number> },
+) {
+  if (readModelJobs?.coveredRunIds.has(Number(runId))) {
+    return boundedWorkflowJobCensus(
+      readModelJobs.jobs.filter((job) => Number(objectValue(job).run_id) === Number(runId)),
+      runId,
+      true,
+    );
+  }
   const key = `workflow-jobs:${repo}:${runId}`;
   const cached = await readStoredJson(env, key);
-  if (Array.isArray(cached)) return cached;
+  if (Array.isArray(cached)) return boundedWorkflowJobCensus(cached, runId, false);
+  const cachedRecord = objectValue(cached);
+  if (cachedRecord.schema_version === 1 && Array.isArray(cachedRecord.jobs)) {
+    return boundedWorkflowJobCensus(cachedRecord.jobs, runId, false);
+  }
+  if (
+    cachedRecord.schema_version === 2 &&
+    Array.isArray(cachedRecord.jobs) &&
+    typeof cachedRecord.complete === "boolean"
+  ) {
+    const totalCount =
+      Number.isSafeInteger(cachedRecord.total_count) && Number(cachedRecord.total_count) >= 0
+        ? Number(cachedRecord.total_count)
+        : null;
+    return boundedWorkflowJobCensus(
+      cachedRecord.jobs,
+      runId,
+      cachedRecord.complete === true &&
+        totalCount !== null &&
+        cachedRecord.jobs.length === totalCount,
+    );
+  }
   const jobs = [];
+  let complete = false;
+  let expectedTotalCount: number | null = null;
+  const jobCensusStartedAt = new Date().toISOString();
   for (let page = 1; page <= WORKER_JOB_PAGE_LIMIT; page += 1) {
     const payload = await github(
       `/repos/${repo}/actions/runs/${runId}/jobs?filter=latest&per_page=100&page=${page}`,
     );
-    const pageJobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
-    jobs.push(...pageJobs);
-    const totalCount = Number(payload?.total_count);
+    if (!Array.isArray(payload?.jobs)) break;
+    const pageJobs = payload.jobs;
+    const totalCount = payload?.total_count;
     if (
-      pageJobs.length < 100 ||
-      (Number.isFinite(totalCount) && totalCount >= 0 && jobs.length >= totalCount)
+      pageJobs.length > 100 ||
+      !Number.isSafeInteger(totalCount) ||
+      Number(totalCount) < 0 ||
+      (expectedTotalCount !== null && Number(totalCount) !== expectedTotalCount)
     ) {
       break;
     }
+    expectedTotalCount = Number(totalCount);
+    jobs.push(...pageJobs);
+    if (jobs.length === expectedTotalCount) {
+      complete = true;
+      break;
+    }
+    if (jobs.length > expectedTotalCount || pageJobs.length < 100) break;
   }
-  const hasActiveWorker = jobs.some(
+  const census = boundedWorkflowJobCensus(jobs, runId, complete);
+  const hasActiveWorker = census.jobs.some(
     (job) => isActiveWorkflowJob(job) && isDashboardWorkerJob(job, run),
   );
   await writeStoredJson(
     env,
     key,
-    jobs,
+    {
+      schema_version: 2,
+      complete: census.complete,
+      total_count: expectedTotalCount,
+      jobs: census.jobs,
+    },
     hasActiveWorker
       ? numberFrom(env.WORKER_JOB_CACHE_TTL_SECONDS, WORKER_JOB_CACHE_TTL_SECONDS)
       : WORKER_JOB_IDLE_CACHE_TTL_SECONDS,
   );
-  return jobs;
+  const repairObjects = census.jobs.flatMap((job) => {
+    const object = githubWebhookReadModelWorkflowObject(repo, "workflow_job", job);
+    return object ? [object] : [];
+  });
+  if ((repairObjects.length > 0 || census.complete) && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)) {
+    await githubWebhookReadModelQueuePost(env, "repair", {
+      repository: repo,
+      repair_kind: "workflows",
+      ...(census.complete ? { complete_workflow_job_runs: [Number(runId)] } : {}),
+      ...(census.complete ? { workflow_job_census_started_at: jobCensusStartedAt } : {}),
+      ...(census.complete ? { workflow_job_census_version: 2 } : {}),
+      objects: repairObjects,
+    }).catch(() => null);
+  }
+  return census;
 }
 
 function isActiveWorkflowJob(job) {
@@ -6840,13 +10058,36 @@ function automergeCommentTime(comment) {
   return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
 }
 
-async function readCachedSnapshot(env, ttlSeconds) {
+export async function readCachedSnapshot(env, ttlSeconds) {
   if (!env.STATUS_STORE) return null;
   const text = await readStatusStoreText(env.STATUS_STORE, "snapshot");
   if (!text) return null;
-  const snapshot = JSON.parse(text);
-  if (!snapshot?.bay) return null;
-  if (Date.now() - Date.parse(snapshot.generated_at || "") > ttlSeconds * 1000) return null;
+  let snapshot;
+  try {
+    snapshot = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (
+    !snapshot ||
+    typeof snapshot !== "object" ||
+    Array.isArray(snapshot) ||
+    snapshot.schema_version !== 1 ||
+    !snapshot.bay ||
+    typeof snapshot.bay !== "object" ||
+    Array.isArray(snapshot.bay)
+  ) {
+    return null;
+  }
+  const generatedAt = Date.parse(String(snapshot.generated_at || ""));
+  const now = Date.now();
+  if (
+    !Number.isFinite(generatedAt) ||
+    generatedAt > now + 60_000 ||
+    now - generatedAt > Math.max(0, Number(ttlSeconds) || 0) * 1_000
+  ) {
+    return null;
+  }
   return snapshot;
 }
 
@@ -6882,12 +10123,9 @@ function ciStatusKey(repository, itemNumber) {
 }
 
 async function readStoredJson(env, key) {
-  if (env.STATUS_STORE) {
-    const text = await readStatusStoreText(env.STATUS_STORE, key);
-    return text ? JSON.parse(text) : null;
-  }
-  const cached = await caches.default.match(storeCacheRequest(key));
-  return cached ? cached.json() : null;
+  if (!env.STATUS_STORE) return null;
+  const text = await readStatusStoreText(env.STATUS_STORE, key);
+  return text ? JSON.parse(text) : null;
 }
 
 async function writeStoredJson(
@@ -6896,20 +10134,9 @@ async function writeStoredJson(
   value,
   ttlSeconds = numberFrom(env.STORE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS),
 ) {
+  if (!env.STATUS_STORE) return;
   const body = JSON.stringify(value);
-  if (env.STATUS_STORE) {
-    await writeStatusStoreText(env.STATUS_STORE, key, body, ttlSeconds);
-    return;
-  }
-  await caches.default.put(
-    storeCacheRequest(key),
-    new Response(body, {
-      headers: {
-        "content-type": "application/json; charset=utf-8",
-        "cache-control": `public, max-age=${ttlSeconds}`,
-      },
-    }),
-  );
+  await writeStatusStoreText(env.STATUS_STORE, key, body, ttlSeconds);
 }
 
 async function prependStoredEvent(env, event) {
@@ -6974,12 +10201,6 @@ function statusStoreRequest(key, method = "GET") {
   return new Request(`https://clawsweeper-status-store/${encodeURIComponent(key)}`, { method });
 }
 
-function storeCacheRequest(key) {
-  return new Request(`https://clawsweeper.internal/store/${encodeURIComponent(key)}`, {
-    method: "GET",
-  });
-}
-
 function createGithubJsonCache(env): GithubJsonReader {
   const cache = new Map<string, ReturnType<typeof githubJson>>();
   return (path: string) => {
@@ -6995,28 +10216,105 @@ function createGithubJsonCache(env): GithubJsonReader {
 
 async function githubJson(env, path) {
   const token = await githubAuthToken(env);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort("timeout"), GITHUB_TIMEOUT_MS);
-  const response = await fetch(githubApiUrl(env, path), {
-    signal: controller.signal,
+  const key = githubEtagCacheKey({
+    credentialPool: env.GITHUB_TOKEN ? "repository_actions" : "target_app",
+    route: path,
+    surface: "dashboard",
+  });
+  const requestBody = key ? githubEtagCacheRequestBody(key, "dashboard") : null;
+  const etagBrokerEnabled = Boolean(
+    requestBody && exactReviewQueueStub(env) && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET),
+  );
+  let cachedEntry: Record<string, unknown> | null = null;
+  if (etagBrokerEnabled && requestBody) {
+    try {
+      const lookup = await githubEtagQueuePost(env, "lookup", requestBody);
+      cachedEntry = lookup.hit === true ? objectValue(lookup.entry) : null;
+    } catch {
+      cachedEntry = null;
+    }
+  }
+  let response = await githubJsonResponse(env, path, token, String(cachedEntry?.etag || ""));
+  if (response.status === 304 && etagBrokerEnabled && requestBody && cachedEntry) {
+    try {
+      const confirmed = await githubEtagQueuePost(env, "confirm", {
+        ...requestBody,
+        etag: String(cachedEntry.etag || ""),
+        body_digest: String(cachedEntry.bodyDigest || ""),
+      });
+      const body = typeof confirmed.body === "string" ? confirmed.body : "";
+      const entry = objectValue(confirmed.entry);
+      if (
+        confirmed.confirmed === true &&
+        body &&
+        entry.etag === cachedEntry.etag &&
+        entry.bodyDigest === cachedEntry.bodyDigest &&
+        (await sha256Utf8(body)) === cachedEntry.bodyDigest
+      ) {
+        return parseGithubJsonBody(body, path);
+      }
+    } catch {
+      // The final guard may use a 304, but it never consumes an unconfirmed body.
+    }
+    response = await githubJsonResponse(env, path, token, "");
+  }
+  if (!response.ok) throw new Error(`GitHub ${response.status} for ${path}`);
+  const body = await response.text();
+  if (etagBrokerEnabled && requestBody) {
+    const etag = response.headers.get("etag") || "";
+    await githubEtagQueuePost(env, "store", { ...requestBody, etag, body }).catch(() => undefined);
+  }
+  return parseGithubJsonBody(body, path);
+}
+
+export const githubJsonForTest = githubJson;
+
+function githubJsonResponse(env, path, token: string, ifNoneMatch: string) {
+  return fetch(githubApiUrl(env, path), {
+    signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     headers: {
       Accept: "application/vnd.github+json",
       "User-Agent": "openclaw-clawsweeper-status",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(ifNoneMatch ? { "If-None-Match": ifNoneMatch } : {}),
     },
-  }).finally(() => clearTimeout(timeout));
-  if (!response.ok) throw new Error(`GitHub ${response.status} for ${path}`);
-  return response.json();
+  });
+}
+
+async function githubEtagQueuePost(env, operation: "lookup" | "store" | "confirm", body) {
+  const response = await exactReviewQueueRequest(
+    env,
+    `/github-etag-cache/${operation}`,
+    new Request("https://clawsweeper-etag-cache", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+  const result = objectValue(await response.json().catch(() => null));
+  if (!response.ok) throw new Error(String(result.error || "GitHub ETag cache unavailable"));
+  return result;
+}
+
+function parseGithubJsonBody(body: string, path: string) {
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error(`GitHub returned invalid JSON for ${path}`);
+  }
+}
+
+async function sha256Utf8(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function githubGraphql(env, query, variables) {
   const token = await githubAuthToken(env);
   if (!token) throw new Error("GitHub auth is required for GraphQL");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort("timeout"), OPTIONAL_SECTION_TIMEOUT_MS);
   const response = await fetch(githubApiUrl(env, "/graphql"), {
     method: "POST",
-    signal: controller.signal,
+    signal: AbortSignal.timeout(OPTIONAL_SECTION_TIMEOUT_MS),
     headers: {
       Accept: "application/vnd.github+json",
       "Content-Type": "application/json",
@@ -7024,7 +10322,7 @@ async function githubGraphql(env, query, variables) {
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ query, variables }),
-  }).finally(() => clearTimeout(timeout));
+  });
   if (!response.ok) throw new Error(`GitHub GraphQL ${response.status}`);
   const payload = await response.json();
   if (Array.isArray(payload.errors) && payload.errors.length) {
@@ -7315,21 +10613,12 @@ function json(value, status = 200) {
   );
 }
 
-function emptyPerItemReviewsJson(search: URLSearchParams) {
-  const repo = String(search.get("repo") || "").trim();
-  const itemNumber = Number(search.get("item_number"));
-  const limit = search.has("limit") ? Number(search.get("limit")) : 20;
-  if (
-    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) ||
-    !Number.isInteger(itemNumber) ||
-    itemNumber < 1 ||
-    !Number.isInteger(limit) ||
-    limit < 1 ||
-    limit > 100
-  ) {
-    return json({ error: "invalid_review_telemetry_query" }, 400);
-  }
-  return json({ ok: true, repo, item_number: itemNumber, reviews: [] });
+function emptyPerItemReviewsJson() {
+  return json({
+    ok: true,
+    collection: { state: "complete", scope: "aggregate_only" },
+    reviews: [],
+  });
 }
 
 function html(value) {

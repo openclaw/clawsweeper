@@ -32,9 +32,15 @@ import type {
   ReviewStartStatusCommentResult,
 } from "./clawsweeper-types.js";
 import { UserFacingCommandError } from "./command.js";
+import { GitHubRateLimitError } from "./github-retry.js";
 import { syncDecisionPacketRecord } from "./decision-packets.js";
 import { captureCanonicalRecordBaseline } from "./repair/canonical-record-baseline.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
+import {
+  generationReadKey,
+  type LiveReadGeneration,
+  type LiveReadOptions,
+} from "./live-read-generation.js";
 
 interface CreateCommandOperationsDependencies {
   actionLedgerFailureDisposition: (error: unknown) => {
@@ -411,9 +417,26 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     return sha.trim() || null;
   }
 
-  function liveIssueSourceRevision(number: number): string {
-    const issue = ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${number}`]);
-    const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`);
+  function liveIssueSourceRevision(
+    number: number,
+    options: LiveReadOptions & { liveReadGeneration?: LiveReadGeneration } = {},
+  ): string {
+    const issueArgs = ["api", `repos/${targetRepo()}/issues/${number}`];
+    const commentsPath = `repos/${targetRepo()}/issues/${number}/comments`;
+    const issue = options.liveReadGeneration
+      ? options.liveReadGeneration.read(
+          generationReadKey("json", issueArgs),
+          () => ghJson<unknown>(issueArgs),
+          options,
+        )
+      : ghJson<unknown>(issueArgs);
+    const comments = options.liveReadGeneration
+      ? options.liveReadGeneration.read(
+          generationReadKey("paged", [commentsPath]),
+          () => ghPaged<unknown>(commentsPath),
+          options,
+        )
+      : ghPaged<unknown>(commentsPath);
     return itemSourceRevisionSha256(issue, comments);
   }
 
@@ -567,6 +590,17 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError && runtimeBudget.onYield) {
           runtimeBudget.onYield(error.reason);
+          return;
+        }
+        if (error instanceof GitHubRateLimitError && runtimeBudget.onYield) {
+          // Quota exhaustion is the same "out of resource, resume next cycle"
+          // situation as a runtime-budget stop: closes are per-item verified
+          // and checkpointed, comment sync is idempotent, and the cursor trace
+          // returns the interrupted item to the next scheduled window. Failing
+          // loudly here only discarded the rest of the scan window.
+          runtimeBudget.onYield(
+            `GitHub rate limited until ${error.retryAt}; credential scope ${error.scope}; reset source ${error.provenance}; apply resumes next cycle`,
+          );
           return;
         }
         runtimeBudget.onFailure?.(error);
