@@ -59,10 +59,12 @@ if [ -z "$BASE_REF" ] && git rev-parse HEAD >/dev/null 2>&1; then
 fi
 
 # Container images carry no .git, so the pre-fix source has to travel with the
-# synced workspace. It is therefore committed under before/ as a verbatim copy of
-# the base-commit blob. Where git *is* available the copy is re-derived and
-# rewritten, so a stale fixture cannot silently weaken the contrast; the
-# tracked-state guard below then fails the run if that rewrite changed anything.
+# synced workspace. stage-before.sh writes it under before/ as an *untracked* file
+# and rsync carries it in. It is not committed: a committed fixture would be
+# rewritten by that helper on the host, and a lease with no .git could not tell that
+# the synced tree had stopped matching the submitted one. Where git *is* available
+# the copy is re-derived here; the tracked-state guard below ignores untracked paths
+# and fails the run if any tracked file moved.
 if git rev-parse HEAD >/dev/null 2>&1 && [ -n "$BASE_REF" ] \
    && git cat-file -e "$BASE_REF:src/review-comment-markers.ts" 2>/dev/null; then
   mkdir -p "$PROOF_DIR/before"
@@ -79,8 +81,8 @@ else
   exit 1
 fi
 # The git branch above rewrites before/ from the base blob. Checking here - after
-# that rewrite but before anything is built - is what makes a stale committed
-# fixture a hard failure instead of a silently weaker contrast.
+# that rewrite but before anything is built - is what turns any tracked-file drift
+# into a hard failure instead of a silently weaker contrast.
 assert_tracked_state_clean "after pre-fix fixture check"
 
 echo "== environment =="
