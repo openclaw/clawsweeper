@@ -126,8 +126,8 @@ interface ApplyCloseExecutionOptions {
   recordApplySkipped: (action: ActionTaken, reason: string) => boolean;
   recordMutation: (parentEventId?: string | null) => void;
   rememberSelfMutationUpdatedAt: (options?: {
-    allowsPostReviewAutomationActivity?: boolean;
     postReviewActivityStartedAtMs?: number;
+    requiresReviewedPrActivityCursor?: boolean;
   }) => boolean;
   recordReviewLeaseSkip: (reason: string, preserveLease?: boolean) => boolean;
   recordRuntimeBudgetYield: (reason: string) => void;
@@ -400,17 +400,14 @@ export function executeApplyClose(
     }
     throw error;
   }
-  if (
-    implementationBasedPrClose &&
-    /^(?:posted|updated) close-applied comment$/.test(closeAppliedCommentReason ?? "")
-  ) {
+  if (/^(?:posted|updated) close-applied comment$/.test(closeAppliedCommentReason ?? "")) {
     // The comment updates the PR's activity timestamp. Admit only this verified
     // self-mutation before the final freshness guard; it still rejects any
     // intervening contributor activity or source/head drift.
     if (
       !rememberSelfMutationUpdatedAt({
-        allowsPostReviewAutomationActivity: true,
         postReviewActivityStartedAtMs: closeoutEvidenceStartedAtMs,
+        requiresReviewedPrActivityCursor: implementationBasedPrClose,
       })
     ) {
       return markChangedSinceReview({
@@ -420,13 +417,13 @@ export function executeApplyClose(
         : "next";
     }
   }
+  const finalFreshnessBlock = postProofFreshnessBlock();
+  if (finalFreshnessBlock) return markChangedSinceReview(finalFreshnessBlock) ? "stop" : "next";
+  const finalCoveringPrFreshnessBlock = postProofCoveringPrFreshnessBlock();
+  if (finalCoveringPrFreshnessBlock) {
+    return skip(finalCoveringPrFreshnessBlock.actionTaken, finalCoveringPrFreshnessBlock.reason);
+  }
   if (implementationBasedPrClose) {
-    const finalFreshnessBlock = postProofFreshnessBlock();
-    if (finalFreshnessBlock) return markChangedSinceReview(finalFreshnessBlock) ? "stop" : "next";
-    const finalCoveringPrFreshnessBlock = postProofCoveringPrFreshnessBlock();
-    if (finalCoveringPrFreshnessBlock) {
-      return skip(finalCoveringPrFreshnessBlock.actionTaken, finalCoveringPrFreshnessBlock.reason);
-    }
     // Preserve the archive label after an uncertain close; the revival watcher reconciles it.
     // The earlier check avoids unnecessary apply work; this one closes the race with the mutation.
     const finalImplementationProvenanceBlock = implementedOnMainPullRequestProvenanceApplyBlock(

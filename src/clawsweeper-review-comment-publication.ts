@@ -245,12 +245,25 @@ export function createReviewCommentPublication(
     itemUrl: string;
   }): string {
     const coverageProofLine = closeAppliedCoverageProofLine(options.markdown);
+    const implementationBasedPrClose = [
+      "implemented_on_main",
+      "mostly_implemented_on_main",
+    ].includes(options.closeReason);
+    const reviewCommentUrl = frontMatterValue(options.markdown, "review_comment_url");
+    const closeEvidence = implementationBasedPrClose
+      ? closeAppliedEvidenceLink(options.markdown, options.itemUrl)
+      : markdownLink(
+          "durable ClawSweeper review",
+          reviewCommentUrl && reviewCommentUrl !== "unknown" ? reviewCommentUrl : options.itemUrl,
+        );
     return [
-      "ClawSweeper recorded implementation evidence for this proposed close.",
+      implementationBasedPrClose
+        ? "ClawSweeper recorded implementation evidence for this proposed close."
+        : "ClawSweeper recorded closeout evidence for this proposed close.",
       "",
       "- Action: close remains subject to final live verification.",
       `- Close reason: ${closeReasonText(options.closeReason)}.`,
-      `- Implementation evidence: ${closeAppliedEvidenceLink(options.markdown, options.itemUrl)}.`,
+      `${implementationBasedPrClose ? "Implementation" : "Review"} evidence: ${closeEvidence}.`,
       coverageProofLine,
       "",
       closeAppliedCommentMarker(options.number),

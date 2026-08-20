@@ -587,6 +587,9 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
     assert.doesNotMatch(promoted, /## Summary\n\nKeep open:/);
     const closeAppliedBody = readFileSync(closeAppliedBodyLogPath, "utf8");
     assert.match(closeAppliedBody, /Close reason: low-signal unmergeable PR\./);
+    assert.match(closeAppliedBody, /recorded closeout evidence/);
+    assert.match(closeAppliedBody, /Review evidence: \[durable ClawSweeper review\]/);
+    assert.doesNotMatch(closeAppliedBody, /Implementation evidence:/);
     assert.doesNotMatch(closeAppliedBody, /Keep open:/);
   } finally {
     rmSync(root, { recursive: true, force: true });

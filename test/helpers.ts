@@ -791,6 +791,7 @@ export function promotionGhMock(options: {
     html_url: "https://github.com/openclaw/openclaw/pull/" + number,
     state: "open",
     created_at: itemCreatedAt,
+    updated_at: liveUpdatedAt,
     mergeable,
     mergeable_state: mergeableState,
     changed_files: changedFiles,

@@ -18,6 +18,8 @@ export interface ApplySelfMutationItemReceipt {
   sourceRevision: string;
   activityReceipt: string;
   allowsPostReviewAutomationActivity?: boolean;
+  requiresReviewedPrActivityCursor?: boolean;
+  prHeadSha: string | null;
   prHeadMatches: boolean;
   reviewActivityCursor: string | null;
 }
@@ -146,9 +148,25 @@ export function createApplyProofFreshnessGuards({
         return false;
       }
       if (itemKind !== "pull_request") return true;
-      if (!freshPullRequestReviewHead(reviewMarkdown, refreshedContext)) return false;
-      if (!isReviewedPrActivityCursor(expectedReviewActivityCursor)) return false;
       if (receipt.allowsPostReviewAutomationActivity) {
+        if (
+          receipt.requiresReviewedPrActivityCursor
+            ? !freshPullRequestReviewHead(reviewMarkdown, refreshedContext)
+            : receipt.prHeadSha === null ||
+              contextPullHeadSha(refreshedContext) !== receipt.prHeadSha
+        )
+          return false;
+        if (!receipt.requiresReviewedPrActivityCursor) return true;
+        if (
+          !isReviewedPrActivityCursor(receipt.reviewActivityCursor) ||
+          !isReviewedPrActivityCursor(refreshedReviewActivityCursor) ||
+          !isReviewedPrActivityCursor(expectedReviewActivityCursor) ||
+          compareReviewedPrActivityCursors(
+            receipt.reviewActivityCursor,
+            expectedReviewActivityCursor,
+          ) !== "equal"
+        )
+          return false;
         return (
           compareReviewedPrActivityCursors(
             receipt.reviewActivityCursor,
@@ -156,6 +174,8 @@ export function createApplyProofFreshnessGuards({
           ) === "equal"
         );
       }
+      if (!freshPullRequestReviewHead(reviewMarkdown, refreshedContext)) return false;
+      if (!isReviewedPrActivityCursor(expectedReviewActivityCursor)) return false;
       return (
         compareReviewedPrActivityCursors(
           receipt.reviewActivityCursor,
@@ -205,7 +225,9 @@ export function createApplyProofFreshnessGuards({
       });
       const activitySecondStartMs = Math.floor(activityStartMs / 1000) * 1000;
       return contextHasNonAutomationActivityAfter(refreshedContext, activitySecondStartMs - 1, {
-        truncationCountsAsActivity: false,
+        truncationCountsAsActivity: candidateItemReceipts.some(
+          (receipt) => receipt.allowsPostReviewAutomationActivity,
+        ),
       });
     };
     if (storedUpdatedAt && refreshed.item.updatedAt !== storedUpdatedAt) {
@@ -287,4 +309,13 @@ export function createApplyProofFreshnessGuards({
   };
 
   return { postProofCoveringPrFreshnessBlock, postProofFreshnessBlock };
+}
+
+function contextPullHeadSha(context: ItemContext): string | null {
+  const pullRequest = context.pullRequest;
+  if (!pullRequest || typeof pullRequest !== "object") return null;
+  const head = (pullRequest as { head?: unknown }).head;
+  if (!head || typeof head !== "object") return null;
+  const sha = (head as { sha?: unknown }).sha;
+  return typeof sha === "string" && sha ? sha : null;
 }

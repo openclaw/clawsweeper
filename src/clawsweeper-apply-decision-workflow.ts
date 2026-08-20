@@ -533,8 +533,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let publishedIssueLabelMutation = false;
       let rememberSelfMutationUpdatedAt = (
         _options: {
-          allowsPostReviewAutomationActivity?: boolean;
           postReviewActivityStartedAtMs?: number;
+          requiresReviewedPrActivityCursor?: boolean;
         } = {},
       ): boolean => false;
       let reconcileSkippedIssueLabelAdditions = (_labels: readonly string[]): void => {};
@@ -1124,8 +1124,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       if (initialCanonicalCommentSyncGuard.skipCurrentItem) continue;
       rememberSelfMutationUpdatedAt = (
         options?: {
-          allowsPostReviewAutomationActivity?: boolean;
           postReviewActivityStartedAtMs?: number;
+          requiresReviewedPrActivityCursor?: boolean;
         },
       ): boolean => {
         if (dryRun) return false;
@@ -1141,7 +1141,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         // matches the reviewed source, PR head, and review-activity cursor. The
         // final close gate repeats those checks and verifies that no target-side
         // activity landed after proof.
-        if (!reviewedSourceRevision || reviewedSourceRevision === "unknown") return false;
         const receiptContext = collectApplyItemContext(automationItem, {
           fullTimelineForRelations: true,
           reviewCacheDigest: true,
@@ -1151,7 +1150,14 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           requireFullyValidatedPrHydrationSnapshot: true,
         });
         const allowsPostReviewAutomationActivity =
-          options?.allowsPostReviewAutomationActivity === true;
+          options?.postReviewActivityStartedAtMs !== undefined;
+        const requiresReviewedPrActivityCursor =
+          options?.requiresReviewedPrActivityCursor === true;
+        if (
+          requiresReviewedPrActivityCursor &&
+          (!reviewedSourceRevision || reviewedSourceRevision === "unknown")
+        )
+          return false;
         if (
           !allowsPostReviewAutomationActivity &&
           !completeReviewActivityReceiptMatches(receiptContext)
@@ -1159,18 +1165,22 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           return false;
         if (
           allowsPostReviewAutomationActivity &&
-          (receiptContext.sourceRevision !== reviewedSourceRevision ||
+          ((requiresReviewedPrActivityCursor &&
+            receiptContext.sourceRevision !== reviewedSourceRevision) ||
             (item.kind === "pull_request" &&
-              (!freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext) ||
-                !isReviewedPrActivityCursor(expectedReviewActivityCursor) ||
-                compareReviewedPrActivityCursors(
-                  receiptContext.pullReviewActivityCursor,
-                  expectedReviewActivityCursor,
-                ) !== "equal")) ||
-            options?.postReviewActivityStartedAtMs === undefined ||
+              ((requiresReviewedPrActivityCursor &&
+                !freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext)) ||
+                (!requiresReviewedPrActivityCursor &&
+                  !contextPullHeadSha(receiptContext)) ||
+                (requiresReviewedPrActivityCursor &&
+                  (!isReviewedPrActivityCursor(expectedReviewActivityCursor) ||
+                    compareReviewedPrActivityCursors(
+                      receiptContext.pullReviewActivityCursor,
+                      expectedReviewActivityCursor,
+                    ) !== "equal")))) ||
             contextHasNonAutomationActivityAfter(
               receiptContext,
-              options.postReviewActivityStartedAtMs - 1,
+              options!.postReviewActivityStartedAtMs! - 1,
               { truncationCountsAsActivity: true, useCompleteActivityContext: true },
             ))
         )
@@ -1179,12 +1189,16 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (!completeActivityContext) return false;
         selfMutationItemReceipts.push({
           updatedAt: automationItemUpdatedAt,
-          sourceRevision: reviewedSourceRevision,
+          sourceRevision: receiptContext.sourceRevision ?? "",
           activityReceipt: stableJson(completeActivityContext),
           allowsPostReviewAutomationActivity,
+          requiresReviewedPrActivityCursor,
+          prHeadSha: contextPullHeadSha(receiptContext),
           prHeadMatches:
             item.kind !== "pull_request" ||
-            freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext),
+            (requiresReviewedPrActivityCursor
+              ? freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext)
+              : contextPullHeadSha(receiptContext) !== null),
           reviewActivityCursor:
             item.kind === "pull_request" ? fetchReviewedPrActivityCursor(number) : null,
         });
@@ -2454,4 +2468,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
   }
 
   return { applyDecisionsCommandInner };
+}
+
+function contextPullHeadSha(context: ItemContext): string | null {
+  const pullRequest = context.pullRequest;
+  if (!pullRequest || typeof pullRequest !== "object") return null;
+  const head = (pullRequest as { head?: unknown }).head;
+  if (!head || typeof head !== "object") return null;
+  const sha = (head as { sha?: unknown }).sha;
+  return typeof sha === "string" && sha ? sha : null;
 }
