@@ -239,6 +239,9 @@ export function executeApplyClose(
   if (!closeReasonEnabled(closeReason, applyCloseReasons)) {
     return recordSkip("kept_open", `close reason ${closeReason} is not enabled for this apply run`);
   }
+  const implementationBasedPrClose =
+    item.kind === "pull_request" &&
+    ["implemented_on_main", "mostly_implemented_on_main"].includes(closeReason);
   const implementationProvenanceBlock = implementedOnMainCloseProvenanceBlock(
     getMarkdown(),
     item.kind,
@@ -397,7 +400,10 @@ export function executeApplyClose(
     }
     throw error;
   }
-  if (/^(?:posted|updated) close-applied comment$/.test(closeAppliedCommentReason ?? "")) {
+  if (
+    implementationBasedPrClose &&
+    /^(?:posted|updated) close-applied comment$/.test(closeAppliedCommentReason ?? "")
+  ) {
     // The comment updates the PR's activity timestamp. Admit only this verified
     // self-mutation before the final freshness guard; it still rejects any
     // intervening contributor activity or source/head drift.
@@ -414,21 +420,23 @@ export function executeApplyClose(
         : "next";
     }
   }
-  const finalFreshnessBlock = postProofFreshnessBlock();
-  if (finalFreshnessBlock) return markChangedSinceReview(finalFreshnessBlock) ? "stop" : "next";
-  const finalCoveringPrFreshnessBlock = postProofCoveringPrFreshnessBlock();
-  if (finalCoveringPrFreshnessBlock) {
-    return skip(finalCoveringPrFreshnessBlock.actionTaken, finalCoveringPrFreshnessBlock.reason);
-  }
-  // Preserve the archive label after an uncertain close; the revival watcher reconciles it.
-  // The earlier check avoids unnecessary apply work; this one closes the race with the mutation.
-  const finalImplementationProvenanceBlock = implementedOnMainPullRequestProvenanceApplyBlock(
-    getMarkdown(),
-    item,
-    closeReason,
-  );
-  if (finalImplementationProvenanceBlock) {
-    return skip("kept_open", finalImplementationProvenanceBlock);
+  if (implementationBasedPrClose) {
+    const finalFreshnessBlock = postProofFreshnessBlock();
+    if (finalFreshnessBlock) return markChangedSinceReview(finalFreshnessBlock) ? "stop" : "next";
+    const finalCoveringPrFreshnessBlock = postProofCoveringPrFreshnessBlock();
+    if (finalCoveringPrFreshnessBlock) {
+      return skip(finalCoveringPrFreshnessBlock.actionTaken, finalCoveringPrFreshnessBlock.reason);
+    }
+    // Preserve the archive label after an uncertain close; the revival watcher reconciles it.
+    // The earlier check avoids unnecessary apply work; this one closes the race with the mutation.
+    const finalImplementationProvenanceBlock = implementedOnMainPullRequestProvenanceApplyBlock(
+      getMarkdown(),
+      item,
+      closeReason,
+    );
+    if (finalImplementationProvenanceBlock) {
+      return skip("kept_open", finalImplementationProvenanceBlock);
+    }
   }
   if (closeReason === "unsponsored_feature_request") {
     const needsIdeaArchiveLabel = !item.labels.map(normalizeLabelName).includes(IDEA_ARCHIVE_LABEL);
