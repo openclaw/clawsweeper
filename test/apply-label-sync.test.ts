@@ -3763,11 +3763,14 @@ test("apply-decisions verifies provenance after a closeout note and before closi
     "normal",
     "lifecycle_drift",
     "locked_closeout_comment",
+    "between_freshness_and_closeout_human_activity",
     "post_closeout_human_activity",
     "post_closeout_pr_review_activity",
   ] as const) {
     const lifecycleDrift = scenario === "lifecycle_drift";
     const lockedCloseoutComment = scenario === "locked_closeout_comment";
+    const betweenFreshnessAndCloseoutHumanActivity =
+      scenario === "between_freshness_and_closeout_human_activity";
     const postCloseoutHumanActivity = scenario === "post_closeout_human_activity";
     const postCloseoutPrReviewActivity = scenario === "post_closeout_pr_review_activity";
     const root = mkdtempSync(tmpPrefix);
@@ -3816,6 +3819,9 @@ const logPath = ${JSON.stringify(logPath)};
 const postedBodiesPath = ${JSON.stringify(postedBodiesPath)};
 const graphqlStatePath = ${JSON.stringify(join(root, "graphql-reads"))};
 const closeoutPostedPath = ${JSON.stringify(join(root, "closeout-posted"))};
+const betweenFreshnessAndCloseoutHumanActivityPath = ${JSON.stringify(
+        join(root, "between-freshness-and-closeout-human-activity"),
+      )};
 const issueReadsAfterCloseoutPath = ${JSON.stringify(join(root, "issue-reads-after-closeout"))};
 const comment = ${JSON.stringify(synced.comment)};
 const rawArgs = process.argv.slice(2);
@@ -3824,10 +3830,19 @@ appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args[1] || "";
 const lifecycleDrift = ${lifecycleDrift};
 const lockedCloseoutComment = ${lockedCloseoutComment};
+const betweenFreshnessAndCloseoutHumanActivity = ${betweenFreshnessAndCloseoutHumanActivity};
 const postCloseoutHumanActivity = ${postCloseoutHumanActivity};
 const postCloseoutPrReviewActivity = ${postCloseoutPrReviewActivity};
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
-  console.log("HTTP/2 200\\n\\n[]");
+  const timeline = existsSync(betweenFreshnessAndCloseoutHumanActivityPath)
+    ? [{
+        id: 9323,
+        event: "commented",
+        created_at: readFileSync(betweenFreshnessAndCloseoutHumanActivityPath, "utf8"),
+        actor: { login: "contributor" }
+      }]
+    : [];
+  console.log("HTTP/2 200\\n\\n" + JSON.stringify(timeline));
 } else if (args[0] === "api" && args[1] === "graphql") {
   const graphqlReads = existsSync(graphqlStatePath) ? Number(readFileSync(graphqlStatePath, "utf8")) : 0;
   writeFileSync(graphqlStatePath, String(graphqlReads + 1), "utf8");
@@ -3843,16 +3858,33 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     const payload = JSON.parse(readFileSync(input, "utf8"));
     appendFileSync(postedBodiesPath, JSON.stringify(payload.body) + "\\n");
     writeFileSync(closeoutPostedPath, "true");
+    if (betweenFreshnessAndCloseoutHumanActivity) {
+      writeFileSync(
+        betweenFreshnessAndCloseoutHumanActivityPath,
+        new Date(Date.now() + 60_000).toISOString(),
+      );
+    }
     console.log(JSON.stringify({ id: 9322, html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9322" }));
   } else {
-    console.log(JSON.stringify([[{
+    const comments = [{
       id: 9321,
       html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9321",
       created_at: "2026-05-01T01:00:00Z",
       updated_at: "2026-05-01T01:00:00Z",
       user: { login: "clawsweeper[bot]" },
       body: comment
-    }]]));
+    }];
+    if (existsSync(betweenFreshnessAndCloseoutHumanActivityPath)) {
+      comments.push({
+        id: 9323,
+        html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9323",
+        created_at: readFileSync(betweenFreshnessAndCloseoutHumanActivityPath, "utf8"),
+        updated_at: readFileSync(betweenFreshnessAndCloseoutHumanActivityPath, "utf8"),
+        user: { login: "contributor" },
+        body: "Please keep this PR open."
+      });
+    }
+    console.log(JSON.stringify([comments]));
   }
 } else if (args[0] === "api" && /\\/issues\\/comments\\/9321$/.test(path)) {
   console.log(JSON.stringify({ id: 9321, html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9321" }));
@@ -3867,7 +3899,9 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   if (existsSync(closeoutPostedPath)) {
     writeFileSync(issueReadsAfterCloseoutPath, String(issueReadsAfterCloseout));
   }
-  const humanActivityLanded = postCloseoutHumanActivity && issueReadsAfterCloseout >= 2;
+  const humanActivityLanded =
+    (postCloseoutHumanActivity && issueReadsAfterCloseout >= 2) ||
+    existsSync(betweenFreshnessAndCloseoutHumanActivityPath);
   console.log(JSON.stringify({
     number: 321,
     title: "Render work plans",
@@ -4016,6 +4050,24 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
             (entry) =>
               entry.action === "skipped_changed_since_review" &&
               entry.reason === "updated_at changed",
+          ),
+          true,
+        );
+        continue;
+      }
+      if (betweenFreshnessAndCloseoutHumanActivity) {
+        assert.equal(closeIndex, -1);
+        assert.ok(postIndex >= 0);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "skipped_changed_since_review" &&
+              entry.reason === "closeout evidence freshness receipt could not be recorded",
           ),
           true,
         );

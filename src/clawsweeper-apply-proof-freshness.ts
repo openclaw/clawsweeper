@@ -18,6 +18,7 @@ export interface ApplySelfMutationItemReceipt {
   sourceRevision: string;
   activityReceipt: string;
   allowsPostReviewAutomationActivity?: boolean;
+  postReviewActivityStartedAtMs?: number;
   requiresReviewedPrActivityCursor?: boolean;
   prHeadSha: string | null;
   prHeadMatches: boolean;
@@ -213,7 +214,7 @@ export function createApplyProofFreshnessGuards({
     const selfMutationMaskedNonAutomationActivity = (): boolean => {
       const postReviewSelfMutationAtMs = candidateItemReceipts
         .filter((receipt) => receipt.allowsPostReviewAutomationActivity)
-        .map((receipt) => Date.parse(receipt.updatedAt))
+        .map((receipt) => receipt.postReviewActivityStartedAtMs ?? Date.parse(receipt.updatedAt))
         .filter((value) => Number.isFinite(value))
         .sort((left, right) => right - left)[0];
       const activityStartMs = prCloseCoverageProofStartedAtMs ?? postReviewSelfMutationAtMs;

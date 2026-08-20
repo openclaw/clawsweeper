@@ -301,6 +301,10 @@ export function executeApplyClose(
   if (coveringFreshnessBlock) {
     return skip(coveringFreshnessBlock.actionTaken, coveringFreshnessBlock.reason);
   }
+  // Keep this baseline from before the final live freshness read. A closeout
+  // comment changes the item's timestamp, so a later receipt must still reject
+  // contributor activity that lands between this read and comment publication.
+  const closeoutActivityBaselineMs = Date.now();
   const freshnessBlock = postProofFreshnessBlock();
   if (freshnessBlock) return markChangedSinceReview(freshnessBlock) ? "stop" : "next";
   if (closeReason === "duplicate_or_superseded") {
@@ -372,7 +376,6 @@ export function executeApplyClose(
   const preCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
   if (preCloseMutationLeaseBlockReason) return skipLease(preCloseMutationLeaseBlockReason);
   ensureRuntimeDelayFits(closeDelayMs, "before close");
-  const closeoutEvidenceStartedAtMs = Date.now();
   try {
     closeAppliedCommentReason =
       item.kind === "pull_request"
@@ -406,7 +409,7 @@ export function executeApplyClose(
     // intervening contributor activity or source/head drift.
     if (
       !rememberSelfMutationUpdatedAt({
-        postReviewActivityStartedAtMs: closeoutEvidenceStartedAtMs,
+        postReviewActivityStartedAtMs: closeoutActivityBaselineMs,
         requiresReviewedPrActivityCursor: implementationBasedPrClose,
       })
     ) {

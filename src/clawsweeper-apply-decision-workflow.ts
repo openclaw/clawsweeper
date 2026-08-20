@@ -1189,6 +1189,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           sourceRevision: receiptContext.sourceRevision ?? "",
           activityReceipt: stableJson(completeActivityContext),
           allowsPostReviewAutomationActivity,
+          ...(options?.postReviewActivityStartedAtMs === undefined
+            ? {}
+            : { postReviewActivityStartedAtMs: options.postReviewActivityStartedAtMs }),
           requiresReviewedPrActivityCursor,
           prHeadSha: contextPullHeadSha(receiptContext),
           prHeadMatches:
