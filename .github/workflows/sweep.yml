@@ -3557,6 +3557,7 @@ jobs:
           COMMAND_COMMENT_ID: ${{ steps.update-final-command-status.outputs.command_comment_id }}
           COMPLETION_COMMENT_ID: ${{ steps.update-final-command-status.outputs.completion_comment_id }}
           COMPLETION_COMPLETED_AT: ${{ steps.update-final-command-status.outputs.completion_completed_at }}
+          STATUS_STATE: ${{ steps.finalization-context.outputs.status_state }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
@@ -3569,6 +3570,7 @@ jobs:
             const commandCommentId = Number(process.env.COMMAND_COMMENT_ID);
             const completionCommentId = Number(process.env.COMPLETION_COMMENT_ID);
             const completedAt = process.env.COMPLETION_COMPLETED_AT || "";
+            const completionOutcome = process.env.STATUS_STATE === "Failed" ? "failure" : "success";
             if (
               !fenceKey || !Number.isSafeInteger(revision) || revision < 1 ||
               (!statusMarker && statusCommentId === null) ||
@@ -3586,6 +3588,7 @@ jobs:
               command_comment_id: commandCommentId,
               completion_comment_id: completionCommentId,
               completed_at: completedAt,
+              completion_outcome: completionOutcome,
               observed_at: Date.now(),
             }));
           ')"

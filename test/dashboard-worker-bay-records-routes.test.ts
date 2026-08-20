@@ -9,6 +9,7 @@ import {
   gunzipSync,
   worker,
   ExactReviewQueue,
+  completedBayReviews,
   exactReviewQueueAdmittedItems,
   exactReviewQueueNextWakeAt,
   exactReviewQueueStatusSnapshot,
@@ -4870,6 +4871,654 @@ test("OpenClaw Bay shares a bounded 20-outcome tide buffer", () => {
   );
 });
 
+test("OpenClaw Bay counts completed review revisions without replaying washed fallback success", () => {
+  const attempts = Array.from({ length: 20 }, (_, index) => ({
+    run_id: 100 + index,
+    job_id: 200 + index,
+    repository: "openclaw/openclaw",
+    item_numbers: [600 + index],
+    terminal_outcome: "success",
+    completed_at: `2026-07-11T12:00:${String(index).padStart(2, "0")}.000Z`,
+  }));
+  const fallbackTide = mergeBayTerminalState(null, attempts, [], "2026-07-11T12:00:20.000Z");
+  const reviews = attempts.map((attempt, index) => ({
+    event_id: `review:openclaw/openclaw#${600 + index}:revision-${index + 1}`,
+    target: {
+      repository: "openclaw/openclaw",
+      number: 600 + index,
+      url: `https://github.com/openclaw/openclaw/issues/${600 + index}`,
+    },
+    triggered_at: "2026-07-11T11:59:00.000Z",
+    completed_at: attempt.completed_at,
+  }));
+
+  const promoted = mergeBayTerminalState(
+    fallbackTide,
+    attempts,
+    [],
+    "2026-07-11T12:00:21.000Z",
+    [],
+    reviews,
+    true,
+  );
+
+  assert.equal(promoted.tide_generation, 1);
+  assert.equal(promoted.terminal_count, 0);
+  assert.deepEqual(promoted.recently_washed, []);
+
+  const newRevision = {
+    ...reviews[0],
+    event_id: "review:openclaw/openclaw#600:revision-21",
+    triggered_at: "2026-07-11T12:00:20.000Z",
+    completed_at: "2026-07-11T12:00:21.000Z",
+  };
+  const next = mergeBayTerminalState(
+    promoted,
+    [],
+    [],
+    "2026-07-11T12:00:22.000Z",
+    [],
+    [newRevision],
+    true,
+  );
+  assert.equal(next.terminal_count, 1);
+  assert.equal(next.terminal_buffer[0]?.event_id, newRevision.event_id);
+});
+
+test("OpenClaw Bay retains an unrelated displayed tide when lifecycle telemetry first appears", () => {
+  const attempts = Array.from({ length: 20 }, (_, index) => ({
+    run_id: 300 + index,
+    job_id: 400 + index,
+    repository: "openclaw/openclaw",
+    item_numbers: [900 + index],
+    terminal_outcome: "success",
+    completed_at: `2026-07-11T12:20:${String(index).padStart(2, "0")}.000Z`,
+  }));
+  const tide = mergeBayTerminalState(null, attempts, [], "2026-07-11T12:20:20.000Z");
+  const next = mergeBayTerminalState(
+    tide,
+    [],
+    [],
+    "2026-07-11T12:20:21.000Z",
+    [],
+    [
+      {
+        event_id: "review:openclaw/openclaw:999:completion:99:2026-07-11T12:20:21.000Z",
+        target: { repository: "openclaw/openclaw", number: 999 },
+        triggered_at: "2026-07-11T12:19:00.000Z",
+        completed_at: "2026-07-11T12:20:21.000Z",
+        outcome: "success",
+      },
+    ],
+    true,
+  );
+
+  assert.equal(next.recently_washed.length, 20);
+  assert.equal(next.terminal_count, 1);
+});
+
+test("OpenClaw Bay keeps failure and cancelled outcomes during lifecycle promotion", () => {
+  const failure = {
+    run_id: 1,
+    job_id: 1,
+    repository: "openclaw/openclaw",
+    item_numbers: [701],
+    terminal_outcome: "failure",
+    completed_at: "2026-07-11T12:00:00.000Z",
+  };
+  const cancelled = {
+    ...failure,
+    run_id: 2,
+    job_id: 2,
+    item_numbers: [702],
+    terminal_outcome: "cancelled",
+    completed_at: "2026-07-11T12:01:00.000Z",
+  };
+  const fallback = mergeBayTerminalState(
+    null,
+    [failure, cancelled],
+    [],
+    "2026-07-11T12:01:01.000Z",
+  );
+  const completedReview = {
+    event_id: "review:openclaw/openclaw#703:revision-1",
+    target: {
+      repository: "openclaw/openclaw",
+      number: 703,
+      url: "https://github.com/openclaw/openclaw/issues/703",
+    },
+    completed_at: "2026-07-11T12:02:00.000Z",
+  };
+  const promoted = mergeBayTerminalState(
+    fallback,
+    [],
+    [],
+    "2026-07-11T12:02:01.000Z",
+    [],
+    [completedReview],
+    true,
+  );
+
+  assert.deepEqual(
+    promoted.terminal_buffer.map((item: { outcome: string }) => item.outcome).sort(),
+    ["cancelled", "failure", "success"],
+  );
+});
+
+test("OpenClaw Bay keeps worker successes until a completed lifecycle review is available", () => {
+  const success = {
+    run_id: 10,
+    job_id: 20,
+    repository: "openclaw/openclaw",
+    item_numbers: [704],
+    terminal_outcome: "success",
+    completed_at: "2026-07-11T12:03:00.000Z",
+  };
+  const state = mergeBayTerminalState(
+    null,
+    [success],
+    [],
+    "2026-07-11T12:03:01.000Z",
+    [],
+    [],
+    false,
+  );
+
+  assert.equal(state.completed_reviews_authoritative, false);
+  assert.equal(state.terminal_count, 1);
+  assert.equal(state.terminal_buffer[0]?.outcome, "success");
+});
+
+test("OpenClaw Bay does not reopen a cleared tide boundary during lifecycle reconciliation", () => {
+  const prior = {
+    schema_version: 1,
+    source_kind: "worker_attempts_v1",
+    tide_threshold: 20,
+    tide_generation: 1,
+    last_tide_at: "2026-07-11T12:00:00.000Z",
+    terminal_window_started_at: "2026-07-11T12:00:00.000Z",
+    terminal_window_event_ids: [],
+    terminal_count: 0,
+    terminal_buffer: [],
+    washed_at: "2026-07-11T12:00:01.000Z",
+    recently_washed: [],
+    seen_events: [],
+    updated_at: "2026-07-11T12:00:01.000Z",
+  };
+  const completedReview = {
+    event_id: "review:openclaw/openclaw#705:revision-1",
+    target: {
+      repository: "openclaw/openclaw",
+      number: 705,
+      url: "https://github.com/openclaw/openclaw/issues/705",
+    },
+    completed_at: "2026-07-11T11:00:00.000Z",
+  };
+  const reconciled = mergeBayTerminalState(
+    prior,
+    [],
+    [],
+    "2026-07-11T12:01:00.000Z",
+    [],
+    [completedReview],
+    true,
+  );
+  const staleFailure = {
+    run_id: 11,
+    job_id: 21,
+    repository: "openclaw/openclaw",
+    item_numbers: [706],
+    terminal_outcome: "failure",
+    completed_at: "2026-07-11T11:30:00.000Z",
+  };
+  const next = mergeBayTerminalState(reconciled, [staleFailure], [], "2026-07-11T12:01:01.000Z");
+
+  assert.equal(reconciled.terminal_window_started_at, "2026-07-11T12:00:00.000Z");
+  assert.equal(next.terminal_count, 0);
+});
+
+test("OpenClaw Bay does not wash retained lifecycle completions from before the tide boundary", () => {
+  const prior = {
+    schema_version: 1,
+    tide_generation: 1,
+    last_tide_at: "2026-07-11T12:00:00.000Z",
+    terminal_window_started_at: "2026-07-11T12:00:00.000Z",
+    terminal_window_event_ids: [],
+    terminal_count: 0,
+    terminal_buffer: [],
+    recently_washed: [],
+    seen_events: [],
+  };
+  const completedReviews = Array.from({ length: 20 }, (_, index) => ({
+    event_id: `review:openclaw/openclaw#${760 + index}:revision-1`,
+    target: { repository: "openclaw/openclaw", number: 760 + index },
+    triggered_at: "2026-07-11T10:00:00.000Z",
+    completed_at: `2026-07-11T11:${String(index).padStart(2, "0")}:00.000Z`,
+  }));
+  const reconciled = mergeBayTerminalState(
+    prior,
+    [],
+    [],
+    "2026-07-11T12:01:00.000Z",
+    [],
+    completedReviews,
+    true,
+  );
+
+  assert.equal(reconciled.tide_generation, 1);
+  assert.equal(reconciled.terminal_count, 0);
+  assert.deepEqual(reconciled.recently_washed, []);
+});
+
+test("OpenClaw Bay keeps completion IDs stable when an orphaned receipt gains its trigger", () => {
+  const completion = {
+    repository: "openclaw/openclaw",
+    number: 707,
+    source_comment_id: 77,
+    completed_at: "2026-07-11T12:05:00.000Z",
+    completion_kind: "final_command_status",
+    completion_outcome: "failure",
+    completion_comment_id: 88,
+  };
+  const orphaned = mergeBayJourneyState(null, [], [completion], "2026-07-11T12:05:01.000Z");
+  const correlated = mergeBayJourneyState(
+    orphaned,
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 707,
+        source_comment_id: 77,
+        source_delivery_id: "delivery-707",
+        triggered_at: "2026-07-11T12:00:00.000Z",
+      },
+    ],
+    [],
+    "2026-07-11T12:05:02.000Z",
+  );
+
+  assert.equal(completedBayReviews(orphaned.journeys).length, 0);
+  assert.equal(completedBayReviews(correlated.journeys)[0]?.outcome, "failure");
+});
+
+test("OpenClaw Bay preserves failed review completions", () => {
+  const journeys = mergeBayJourneyState(
+    null,
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 708,
+        source_comment_id: 78,
+        triggered_at: "2026-07-11T12:05:00.000Z",
+      },
+    ],
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 708,
+        source_comment_id: 78,
+        completed_at: "2026-07-11T12:06:00.000Z",
+        completion_kind: "final_command_status",
+        completion_outcome: "failure",
+        completion_comment_id: 89,
+      },
+    ],
+    "2026-07-11T12:06:01.000Z",
+  );
+  const state = mergeBayTerminalState(
+    null,
+    [],
+    [],
+    "2026-07-11T12:06:02.000Z",
+    [],
+    completedBayReviews(journeys.journeys),
+  );
+
+  assert.equal(state.terminal_buffer[0]?.outcome, "failure");
+});
+
+test("OpenClaw Bay excludes legacy completions with an unknown outcome", () => {
+  const journeys = mergeBayJourneyState(
+    null,
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 708,
+        source_comment_id: 78,
+        triggered_at: "2026-07-11T12:05:00.000Z",
+      },
+    ],
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 708,
+        source_comment_id: 78,
+        completed_at: "2026-07-11T12:06:00.000Z",
+        completion_kind: "final_command_status",
+        completion_comment_id: 89,
+      },
+    ],
+    "2026-07-11T12:06:01.000Z",
+  );
+
+  assert.deepEqual(completedBayReviews(journeys.journeys), []);
+});
+
+test("OpenClaw Bay keeps same-second delivery-fenced revisions distinct", () => {
+  const completedAt = "2026-07-11T12:07:00.000Z";
+  const journeys = mergeBayJourneyState(
+    null,
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 709,
+        source_comment_id: 79,
+        source_delivery_id: "delivery-709-a",
+        triggered_at: "2026-07-11T12:06:00.000Z",
+      },
+      {
+        repository: "openclaw/openclaw",
+        number: 709,
+        source_comment_id: 79,
+        source_delivery_id: "delivery-709-b",
+        triggered_at: "2026-07-11T12:06:00.000Z",
+      },
+    ],
+    [
+      {
+        repository: "openclaw/openclaw",
+        number: 709,
+        source_comment_id: 79,
+        source_delivery_id: "delivery-709-a",
+        completed_at: completedAt,
+        completion_kind: "final_command_status",
+        completion_outcome: "success",
+        completion_comment_id: 90,
+      },
+      {
+        repository: "openclaw/openclaw",
+        number: 709,
+        source_comment_id: 79,
+        source_delivery_id: "delivery-709-b",
+        completed_at: completedAt,
+        completion_kind: "final_command_status",
+        completion_outcome: "success",
+        completion_comment_id: 90,
+      },
+    ],
+    "2026-07-11T12:07:01.000Z",
+  );
+  const reviews = completedBayReviews(journeys.journeys);
+
+  assert.equal(reviews.length, 2);
+  assert.notEqual(reviews[0]?.event_id, reviews[1]?.event_id);
+});
+
+test("OpenClaw Bay replaces a matching worker fallback with its lifecycle completion", () => {
+  const previous = mergeBayTerminalState(
+    null,
+    [],
+    [],
+    "2026-07-11T12:08:00.000Z",
+    [],
+    [
+      {
+        event_id: "review:openclaw/openclaw:709:completion:90:2026-07-11T12:08:00.000Z",
+        target: { repository: "openclaw/openclaw", number: 709 },
+        triggered_at: "2026-07-11T12:07:00.000Z",
+        completed_at: "2026-07-11T12:08:00.000Z",
+      },
+    ],
+    true,
+  );
+  const workerSuccess = {
+    run_id: 12,
+    job_id: 22,
+    repository: "openclaw/openclaw",
+    item_numbers: [710],
+    terminal_outcome: "success",
+    started_at: "2026-07-11T12:09:00.000Z",
+    completed_at: "2026-07-11T12:10:00.000Z",
+  };
+  const review = {
+    event_id: "review:openclaw/openclaw:710:completion:91:2026-07-11T12:11:00.000Z",
+    target: { repository: "openclaw/openclaw", number: 710 },
+    triggered_at: "2026-07-11T12:08:30.000Z",
+    completed_at: "2026-07-11T12:11:00.000Z",
+  };
+  const next = mergeBayTerminalState(
+    previous,
+    [workerSuccess],
+    [],
+    "2026-07-11T12:11:01.000Z",
+    [],
+    [review],
+    true,
+  );
+
+  assert.equal(next.terminal_count, 2);
+  assert.equal(next.terminal_buffer.at(-1)?.event_id, review.event_id);
+  assert.equal(
+    next.terminal_buffer.filter((item) => item.item_key === "openclaw/openclaw#710").length,
+    1,
+  );
+});
+
+test("OpenClaw Bay replaces a matching failed worker attempt with its lifecycle completion", () => {
+  const workerFailure = {
+    run_id: 13,
+    job_id: 23,
+    repository: "openclaw/openclaw",
+    item_numbers: [711],
+    terminal_outcome: "failure",
+    started_at: "2026-07-11T12:09:00.000Z",
+    completed_at: "2026-07-11T12:10:00.000Z",
+  };
+  const review = {
+    event_id: "review:openclaw/openclaw:711:completion:92:2026-07-11T12:11:00.000Z",
+    target: { repository: "openclaw/openclaw", number: 711 },
+    triggered_at: "2026-07-11T12:08:30.000Z",
+    completed_at: "2026-07-11T12:11:00.000Z",
+    outcome: "failure",
+  };
+  const completed = mergeBayTerminalState(
+    null,
+    [workerFailure],
+    [],
+    "2026-07-11T12:11:01.000Z",
+    [],
+    [review],
+    true,
+  );
+
+  assert.equal(completed.terminal_count, 1);
+  assert.equal(completed.terminal_buffer[0]?.event_id, review.event_id);
+  assert.equal(completed.terminal_buffer[0]?.outcome, "failure");
+});
+
+test("OpenClaw Bay does not duplicate a worker that finishes after its lifecycle completion", () => {
+  const workerSuccess = {
+    run_id: 131,
+    job_id: 231,
+    repository: "openclaw/openclaw",
+    item_numbers: [7111],
+    terminal_outcome: "success",
+    started_at: "2026-07-11T12:09:00.000Z",
+    completed_at: "2026-07-11T12:12:00.000Z",
+  };
+  const review = {
+    event_id: "review:openclaw/openclaw:7111:completion:921:2026-07-11T12:10:00.000Z",
+    target: { repository: "openclaw/openclaw", number: 7111 },
+    triggered_at: "2026-07-11T12:08:30.000Z",
+    completed_at: "2026-07-11T12:10:00.000Z",
+  };
+
+  const completed = mergeBayTerminalState(
+    null,
+    [workerSuccess],
+    [],
+    "2026-07-11T12:12:01.000Z",
+    [],
+    [review],
+    true,
+  );
+
+  assert.equal(completed.terminal_count, 1);
+  assert.equal(completed.terminal_buffer[0]?.event_id, review.event_id);
+});
+
+test("OpenClaw Bay suppresses a failed worker attempt while its retry is active", () => {
+  const workerFailure = {
+    run_id: 132,
+    job_id: 232,
+    repository: "openclaw/openclaw",
+    item_numbers: [7112],
+    terminal_outcome: "failure",
+    completed_at: "2026-07-11T12:12:00.000Z",
+  };
+
+  const active = mergeBayTerminalState(null, [workerFailure], [], "2026-07-11T12:12:01.000Z", [
+    "openclaw/openclaw#7112",
+  ]);
+
+  assert.equal(active.terminal_count, 0);
+});
+
+test("OpenClaw Bay retains observed active keys during a partial census", () => {
+  const workerFailure = {
+    run_id: 133,
+    job_id: 233,
+    repository: "openclaw/openclaw",
+    item_numbers: [7113],
+    terminal_outcome: "failure",
+    completed_at: "2026-07-11T12:13:00.000Z",
+  };
+
+  const partial = mergeBayTerminalState(
+    { schema_version: 1, active_item_keys: ["openclaw/openclaw#7110"] },
+    [workerFailure],
+    [],
+    "2026-07-11T12:13:01.000Z",
+    ["openclaw/openclaw#7113"],
+    [],
+    false,
+    false,
+  );
+
+  assert.equal(partial.terminal_count, 0);
+  assert.deepEqual(partial.active_item_keys.sort(), [
+    "openclaw/openclaw#7110",
+    "openclaw/openclaw#7113",
+  ]);
+});
+
+test("OpenClaw Bay keeps unmatched worker successes during lifecycle promotion", () => {
+  const workerSuccess = {
+    run_id: 14,
+    job_id: 24,
+    repository: "openclaw/openclaw",
+    item_numbers: [712],
+    terminal_outcome: "success",
+    completed_at: "2026-07-11T12:12:00.000Z",
+  };
+  const fallback = mergeBayTerminalState(null, [workerSuccess], [], "2026-07-11T12:12:01.000Z");
+  const promoted = mergeBayTerminalState(
+    fallback,
+    [],
+    [],
+    "2026-07-11T12:13:01.000Z",
+    [],
+    [
+      {
+        event_id: "review:openclaw/openclaw:713:completion:93:2026-07-11T12:13:00.000Z",
+        target: { repository: "openclaw/openclaw", number: 713 },
+        triggered_at: "2026-07-11T12:12:30.000Z",
+        completed_at: "2026-07-11T12:13:00.000Z",
+      },
+    ],
+    true,
+  );
+
+  assert.deepEqual(promoted.terminal_buffer.map((item) => item.item_key).sort(), [
+    "openclaw/openclaw#712",
+    "openclaw/openclaw#713",
+  ]);
+});
+
+test("OpenClaw Bay replaces an active pending fallback when its completion arrives", () => {
+  const workerSuccess = {
+    run_id: 15,
+    job_id: 25,
+    repository: "openclaw/openclaw",
+    item_numbers: [714],
+    terminal_outcome: "success",
+    completed_at: "2026-07-11T12:14:00.000Z",
+  };
+  const pending = mergeBayTerminalState(null, [workerSuccess], [], "2026-07-11T12:14:01.000Z", [
+    "openclaw/openclaw#714",
+  ]);
+  const review = {
+    event_id: "review:openclaw/openclaw:714:completion:94:2026-07-11T12:15:00.000Z",
+    target: { repository: "openclaw/openclaw", number: 714 },
+    triggered_at: "2026-07-11T12:13:00.000Z",
+    completed_at: "2026-07-11T12:15:00.000Z",
+  };
+  const completed = mergeBayTerminalState(
+    pending,
+    [],
+    [],
+    "2026-07-11T12:15:01.000Z",
+    ["openclaw/openclaw#714"],
+    [review],
+    true,
+  );
+  const inactive = mergeBayTerminalState(
+    completed,
+    [],
+    [],
+    "2026-07-11T12:15:02.000Z",
+    [],
+    [],
+    true,
+  );
+
+  assert.equal(completed.pending_fallback_successes.length, 0);
+  assert.equal(inactive.terminal_count, 1);
+  assert.equal(inactive.terminal_buffer[0]?.event_id, review.event_id);
+});
+
+test("OpenClaw Bay does not match a prior revision's fallback to a later review", () => {
+  const prior = {
+    schema_version: 1,
+    terminal_window_started_at: "2026-07-11T11:00:00.000Z",
+    terminal_window_event_ids: [],
+    terminal_buffer: [],
+    seen_events: [
+      {
+        event_id: "worker:13:23:openclaw/openclaw#711:success:2026-07-11T11:30:00.000Z",
+        seen_at: "2026-07-11T11:30:00.000Z",
+      },
+    ],
+  };
+  const review = {
+    event_id: "review:openclaw/openclaw:711:completion:92:2026-07-11T12:31:00.000Z",
+    target: { repository: "openclaw/openclaw", number: 711 },
+    triggered_at: "2026-07-11T12:00:00.000Z",
+    completed_at: "2026-07-11T12:31:00.000Z",
+  };
+  const state = mergeBayTerminalState(
+    prior,
+    [],
+    [],
+    "2026-07-11T12:31:01.000Z",
+    [],
+    [review],
+    true,
+  );
+
+  assert.equal(state.terminal_count, 1);
+  assert.equal(state.terminal_buffer[0]?.event_id, review.event_id);
+});
+
 test("OpenClaw Bay averages completed trigger-to-summary journeys from the last hour", () => {
   const generatedAt = "2026-07-11T12:00:00.000Z";
   const journeys = mergeBayJourneyState(
@@ -5310,6 +5959,7 @@ test("hosted webhook records an edited review command through its final command 
       triggered_at: at(),
       completed_at: at(4_820_000),
       completion_kind: "final_command_status",
+      completion_outcome: "failure",
       completion_comment_id: 790,
     },
   ]);

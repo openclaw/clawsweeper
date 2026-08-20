@@ -691,6 +691,9 @@ export class StatusStore {
         body?.closed_items,
         generatedAt,
         body?.active_item_keys,
+        body?.completed_reviews,
+        body?.completed_reviews_authoritative,
+        body?.active_item_keys_authoritative,
       );
       if (
         currentValue &&
@@ -3895,6 +3898,7 @@ function lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env 
     source_comment_id: sourceCommentId,
     completed_at: completedAt,
     completion_kind: "final_command_status",
+    completion_outcome: /^- State:\s*Failed\s*$/im.test(progress || "") ? "failure" : "success",
     completion_comment_id: Number(comment.id),
     status_marker: status?.[0] ?? null,
     ...(legacyCommand ? { require_exact_status_comment: true } : {}),
@@ -5254,6 +5258,7 @@ async function authenticatedLifecycleCommandAcknowledgement(request, env, ctx) {
                 : {}),
               completed_at: completedAt,
               completion_kind: "final_command_status",
+              completion_outcome: receipt.completion_outcome === "failure" ? "failure" : "success",
               completion_comment_id: completionCommentId,
             },
           ],
@@ -6208,19 +6213,23 @@ async function statusSnapshot(env) {
   ]);
   errors.push(...activeJobs.errors);
   errors.push(...workerHealth.errors);
+  const journeyBay = await readBayJourneyState(env).catch((error) => {
+    errors.push(`OpenClaw Bay journey state: ${error instanceof Error ? error.message : error}`);
+    return { journeys: [] };
+  });
+  const completedReviews = completedBayReviews(journeyBay.journeys);
   const terminalBay = await updateBayTerminalState(
     env,
     workerHealth.recent_attempts,
     closed.items,
     generatedAt,
     activeBayItemKeys(activeJobs.workers),
+    completedReviews,
+    completedReviews.length > 0,
+    activeJobs.complete,
   ).catch((error) => {
     errors.push(`OpenClaw Bay terminal state: ${error instanceof Error ? error.message : error}`);
     return emptyBayTerminalState(generatedAt);
-  });
-  const journeyBay = await readBayJourneyState(env).catch((error) => {
-    errors.push(`OpenClaw Bay journey state: ${error instanceof Error ? error.message : error}`);
-    return { journeys: [] };
   });
   const bay = {
     ...terminalBay,
@@ -7605,6 +7614,7 @@ function normalizeBayJourneyCompletion(value) {
   const completedAt = bayJourneyTimestamp(completion.completed_at);
   const completionKind = nullableString(completion.completion_kind);
   const completionCommentId = Number(completion.completion_comment_id);
+  const completionOutcome = nullableString(completion.completion_outcome);
   if (
     !repository ||
     !Number.isInteger(number) ||
@@ -7631,6 +7641,12 @@ function normalizeBayJourneyCompletion(value) {
     ...(sourceDeliveryId ? { source_delivery_id: sourceDeliveryId } : {}),
     completed_at: completedAt,
     completion_kind: completionKind || "final_command_status",
+    completion_outcome:
+      completionOutcome === "success" ||
+      completionOutcome === "failure" ||
+      completionOutcome === "cancelled"
+        ? completionOutcome
+        : null,
     completion_comment_id:
       Number.isSafeInteger(completionCommentId) && completionCommentId > 0
         ? completionCommentId
@@ -7657,6 +7673,7 @@ function normalizeBayJourneyRecord(value) {
     triggered_at: trigger?.triggered_at || null,
     completed_at: completion?.completed_at || null,
     completion_kind: completion?.completion_kind || null,
+    completion_outcome: completion?.completion_outcome || null,
     completion_comment_id: completion?.completion_comment_id || null,
     ...(completion?.source_delivery_id
       ? { completion_source_delivery_id: completion.source_delivery_id }
@@ -7876,6 +7893,7 @@ export function mergeBayJourneyState(previous, triggers, completions, generatedA
       ...record,
       completed_at: completedOrphan.completed_at,
       completion_kind: completedOrphan.completion_kind,
+      completion_outcome: completedOrphan.completion_outcome,
       completion_comment_id: completedOrphan.completion_comment_id,
       ...(completedOrphan.completion_source_delivery_id
         ? { completion_source_delivery_id: completedOrphan.completion_source_delivery_id }
@@ -8057,7 +8075,53 @@ export function activeBayItemKeys(workers, limits: { workers?: number; items?: n
   return [...keys];
 }
 
-async function updateBayTerminalState(env, attempts, closedItems, generatedAt, activeItemKeys) {
+export function completedBayReviews(journeys) {
+  return (Array.isArray(journeys) ? journeys : []).flatMap((journey) => {
+    const record = normalizeBayJourneyRecord(journey);
+    if (
+      !record?.triggered_at ||
+      !record.completed_at ||
+      !record.repository ||
+      !Number.isInteger(record.number) ||
+      !new Set(["success", "failure", "cancelled"]).has(String(record.completion_outcome || ""))
+    )
+      return [];
+    return [
+      {
+        event_id: [
+          "review",
+          record.repository,
+          record.number,
+          "completion",
+          record.completion_source_delivery_id || "legacy",
+          record.completion_comment_id || "status",
+          record.completed_at,
+        ].join(":"),
+        target: {
+          repository: record.repository,
+          number: record.number,
+          url: `https://github.com/${record.repository}/issues/${record.number}`,
+        },
+        revision: record.source_delivery_id || record.id,
+        outcome: record.completion_outcome,
+        trigger_kind: "review_journey",
+        triggered_at: record.triggered_at,
+        completed_at: record.completed_at,
+      },
+    ];
+  });
+}
+
+async function updateBayTerminalState(
+  env,
+  attempts,
+  closedItems,
+  generatedAt,
+  activeItemKeys,
+  completedReviews = [],
+  completedReviewsAuthoritative = false,
+  activeItemKeysAuthoritative = true,
+) {
   if (isDurableStatusStore(env.STATUS_STORE)) {
     const response = await durableStatusStoreStub(env.STATUS_STORE).fetch(
       statusStoreRequest(BAY_TERMINAL_STATE_KEY, "POST"),
@@ -8069,6 +8133,9 @@ async function updateBayTerminalState(env, attempts, closedItems, generatedAt, a
           generated_at: generatedAt,
           ttl_seconds: EVENT_STORE_TTL_SECONDS,
           active_item_keys: activeItemKeys,
+          completed_reviews: completedReviews,
+          completed_reviews_authoritative: completedReviewsAuthoritative,
+          active_item_keys_authoritative: activeItemKeysAuthoritative,
         }),
       },
     );
@@ -8076,7 +8143,16 @@ async function updateBayTerminalState(env, attempts, closedItems, generatedAt, a
     return publicBayTerminalState(await response.json());
   }
   const stored = await readStoredJson(env, BAY_TERMINAL_STATE_KEY);
-  const next = mergeBayTerminalState(stored, attempts, closedItems, generatedAt, activeItemKeys);
+  const next = mergeBayTerminalState(
+    stored,
+    attempts,
+    closedItems,
+    generatedAt,
+    activeItemKeys,
+    completedReviews,
+    completedReviewsAuthoritative,
+    activeItemKeysAuthoritative,
+  );
   if (!stored || bayTerminalStateSignature(stored) !== bayTerminalStateSignature(next)) {
     await writeStoredJson(env, BAY_TERMINAL_STATE_KEY, next, EVENT_STORE_TTL_SECONDS);
     return publicBayTerminalState(next);
@@ -8090,25 +8166,61 @@ export function mergeBayTerminalState(
   closedItems,
   generatedAt,
   activeItemKeys = [],
+  completedReviews = [],
+  completedReviewsAuthoritative = false,
+  activeItemKeysAuthoritative = true,
 ) {
   const now = Date.parse(generatedAt);
   const source = previous && previous.schema_version === 1 ? previous : {};
+  const lifecycleAvailable = completedReviewsAuthoritative === true;
+  // Journey telemetry is bounded and its writes are best-effort, so it can
+  // reconcile known fallback outcomes but cannot globally replace them.
+  const lifecycleAuthoritative = false;
   const storedWindowStartedAt = nullableString(source.terminal_window_started_at);
   const bootstrapWindowStartedAt = Number.isFinite(Date.parse(storedWindowStartedAt || ""))
     ? storedWindowStartedAt
     : bayTerminalBootstrapWindowStartedAt(now);
   const activeKeys = new Set(
-    (Array.isArray(activeItemKeys) ? activeItemKeys : []).map((value) => String(value)),
+    (activeItemKeysAuthoritative
+      ? activeItemKeys
+      : [...(source.active_item_keys || []), ...activeItemKeys]
+    )
+      .filter((value) => typeof value === "string")
+      .map((value) => String(value).toLowerCase()),
   );
-  const bootstrapBuffer = Array.isArray(source.terminal_buffer)
-    ? source.terminal_buffer.filter(
-        (item) =>
-          item?.event_id &&
-          item?.item_key &&
-          isBayTerminalAtOrAfterWindowStart(item, bootstrapWindowStartedAt) &&
-          !activeKeys.has(String(item.item_key)),
+  let pendingFallbackSuccesses = Array.isArray(source.pending_fallback_successes)
+    ? source.pending_fallback_successes.filter(
+        (item) => item?.event_id && item?.item_key && item?.source === "worker_attempt",
       )
     : [];
+  const sourceTerminalBuffer = Array.isArray(source.terminal_buffer) ? source.terminal_buffer : [];
+  for (const item of sourceTerminalBuffer) {
+    if (
+      item?.source === "worker_attempt" &&
+      item?.outcome === "success" &&
+      activeKeys.has(String(item.item_key).toLowerCase()) &&
+      !pendingFallbackSuccesses.some((pending) => pending.event_id === item.event_id)
+    ) {
+      pendingFallbackSuccesses.push(item);
+    }
+  }
+  const restoredFallbackSuccesses = pendingFallbackSuccesses.filter(
+    (item) => !activeKeys.has(String(item.item_key).toLowerCase()),
+  );
+  pendingFallbackSuccesses = pendingFallbackSuccesses.filter((item) =>
+    activeKeys.has(String(item.item_key).toLowerCase()),
+  );
+  const bufferInputs = [...sourceTerminalBuffer, ...restoredFallbackSuccesses].filter(
+    (item, index, items) =>
+      items.findIndex((candidate) => candidate.event_id === item.event_id) === index,
+  );
+  const bootstrapBuffer = bufferInputs.filter(
+    (item) =>
+      item?.event_id &&
+      item?.item_key &&
+      isBayTerminalAtOrAfterWindowStart(item, bootstrapWindowStartedAt) &&
+      (item.source === "completed_review" || !activeKeys.has(String(item.item_key).toLowerCase())),
+  );
   let terminalWindowStartedAt = bayTerminalWindowStartedAt(source, now, bootstrapBuffer);
   const buffer = bootstrapBuffer.filter((item) =>
     isBayTerminalAtOrAfterWindowStart(item, terminalWindowStartedAt),
@@ -8117,6 +8229,11 @@ export function mergeBayTerminalState(
     ? source.seen_events.filter((item) => item?.event_id)
     : [];
   const seenIds = new Set(seenEvents.map((item) => item.event_id));
+  const fallbackAttempts = bayFallbackTerminalAttempts([
+    ...sourceTerminalBuffer,
+    ...pendingFallbackSuccesses,
+    ...seenEvents,
+  ]);
   let terminalWindowEventIds = Array.isArray(source.terminal_window_event_ids)
     ? source.terminal_window_event_ids.map((eventId) => String(eventId)).filter(Boolean)
     : [];
@@ -8130,17 +8247,77 @@ export function mergeBayTerminalState(
   let washedAt = recentlyWashed.length ? source.washed_at || null : null;
   let tideGeneration = Math.max(0, Number(source.tide_generation) || 0);
   let lastTideAt = nullableString(source.last_tide_at);
+  let replacedWashedFallback = false;
 
-  for (const candidate of bayTerminalCandidates(attempts, closedItems)) {
-    if (activeKeys.has(candidate.item_key)) continue;
+  for (const candidate of bayTerminalCandidates(attempts, closedItems, completedReviews)) {
+    const itemKey = String(candidate.item_key).toLowerCase();
     if (
-      !isBayTerminalAfterWindowStart(candidate, terminalWindowStartedAt, terminalWindowEventIdSet)
+      lifecycleAuthoritative &&
+      candidate.source === "worker_attempt" &&
+      candidate.outcome === "success"
     )
       continue;
+    if (activeKeys.has(itemKey) && candidate.source === "worker_attempt") {
+      if (
+        !lifecycleAuthoritative &&
+        candidate.outcome === "success" &&
+        !pendingFallbackSuccesses.some((pending) => pending.event_id === candidate.event_id)
+      ) {
+        pendingFallbackSuccesses.push(candidate);
+      }
+      continue;
+    }
+    const withinTerminalWindow = isBayTerminalAfterWindowStart(
+      candidate,
+      terminalWindowStartedAt,
+      terminalWindowEventIdSet,
+    );
+    if (!withinTerminalWindow && candidate.source !== "completed_review") continue;
     if (seenIds.has(candidate.event_id)) continue;
+    if (candidate.source === "completed_review") {
+      const fallbackAttempt = takeMatchingBayFallbackAttempt(fallbackAttempts, candidate);
+      // A bounded lifecycle snapshot cannot introduce a completion from before
+      // the current tide window. It may still replace a known worker fallback,
+      // including one already washed, without counting it a second time.
+      if (!withinTerminalWindow && !fallbackAttempt) continue;
+      seenIds.add(candidate.event_id);
+      seenEvents.push({ event_id: candidate.event_id, seen_at: candidate.completed_at });
+      if (fallbackAttempt) {
+        const existingIndex = buffer.findIndex(
+          (item) => item.event_id === fallbackAttempt.event_id,
+        );
+        if (existingIndex !== -1) buffer[existingIndex] = candidate;
+        else if (
+          pendingFallbackSuccesses.some((pending) => pending.event_id === fallbackAttempt.event_id)
+        )
+          buffer.push(candidate);
+        else replacedWashedFallback = true;
+        pendingFallbackSuccesses = pendingFallbackSuccesses.filter(
+          (pending) => pending.event_id !== fallbackAttempt.event_id,
+        );
+        continue;
+      }
+      buffer.push(candidate);
+      continue;
+    }
     seenIds.add(candidate.event_id);
     seenEvents.push({ event_id: candidate.event_id, seen_at: candidate.completed_at });
-    const existingIndex = buffer.findIndex((item) => item.item_key === candidate.item_key);
+    if (candidate.source === "worker_attempt") {
+      const lifecycleIndex = buffer.findIndex(
+        (item) =>
+          item.source === "completed_review" &&
+          isLateBayWorkerFallbackForLifecycle(candidate, item),
+      );
+      if (lifecycleIndex !== -1) {
+        seenIds.add(candidate.event_id);
+        seenEvents.push({ event_id: candidate.event_id, seen_at: candidate.completed_at });
+        continue;
+      }
+      fallbackAttempts.push(candidate);
+    }
+    const existingIndex = buffer.findIndex(
+      (item) => item.item_key === candidate.item_key && item.source !== "completed_review",
+    );
     if (existingIndex === -1) {
       buffer.push(candidate);
       continue;
@@ -8157,21 +8334,34 @@ export function mergeBayTerminalState(
   );
 
   let washed = recentlyWashed;
+  let newTides = 0;
   while (buffer.length >= BAY_TIDE_THRESHOLD) {
     washed = buffer.splice(0, BAY_TIDE_THRESHOLD);
     const tideCompletedAt = nullableString(washed.at(-1)?.completed_at) || generatedAt;
     washedAt = generatedAt;
-    lastTideAt = tideCompletedAt;
+    if (!lastTideAt || Date.parse(tideCompletedAt) >= Date.parse(String(lastTideAt || ""))) {
+      lastTideAt = tideCompletedAt;
+    }
     terminalWindowStartedAt = tideCompletedAt;
     terminalWindowEventIds = washed
       .filter((item) => item.completed_at === terminalWindowStartedAt)
       .map((item) => String(item.event_id));
     terminalWindowEventIdSet = new Set(terminalWindowEventIds);
     tideGeneration += 1;
+    newTides += 1;
+  }
+  if (replacedWashedFallback && newTides === 0) {
+    washed = [];
+    washedAt = null;
   }
 
   return {
     schema_version: 1,
+    source_kind: "completed_reviews_v1",
+    completed_reviews_authoritative: lifecycleAuthoritative,
+    completed_reviews_available: lifecycleAvailable,
+    active_item_keys: [...activeKeys],
+    pending_fallback_successes: pendingFallbackSuccesses.slice(-BAY_SEEN_EVENT_LIMIT),
     tide_threshold: BAY_TIDE_THRESHOLD,
     tide_generation: tideGeneration,
     last_tide_at: lastTideAt,
@@ -8189,6 +8379,11 @@ export function mergeBayTerminalState(
 function bayTerminalStateSignature(state) {
   return JSON.stringify({
     schema_version: state?.schema_version,
+    source_kind: state?.source_kind,
+    completed_reviews_authoritative: state?.completed_reviews_authoritative,
+    completed_reviews_available: state?.completed_reviews_available,
+    active_item_keys: state?.active_item_keys,
+    pending_fallback_successes: state?.pending_fallback_successes,
     tide_threshold: state?.tide_threshold,
     tide_generation: state?.tide_generation,
     last_tide_at: state?.last_tide_at,
@@ -8238,7 +8433,81 @@ function isBayTerminalAtOrAfterWindowStart(candidate, terminalWindowStartedAt) {
   return Number.isFinite(completedAt) && Number.isFinite(windowStart) && completedAt >= windowStart;
 }
 
-function bayTerminalCandidates(attempts, closedItems) {
+function bayFallbackTerminalAttempts(values) {
+  const attempts = [];
+  const seen = new Set<string>();
+  for (const value of Array.isArray(values) ? values : []) {
+    const eventId = String(value?.event_id || "");
+    if (!eventId || seen.has(eventId)) continue;
+    if (
+      value?.source === "worker_attempt" &&
+      new Set(["success", "failure", "cancelled"]).has(String(value?.outcome || ""))
+    ) {
+      attempts.push(value);
+      seen.add(eventId);
+      continue;
+    }
+    const match = /^worker:[^:]+:[^:]+:([^:]+#[0-9]+):(success|failure|cancelled):(.+)$/.exec(
+      eventId,
+    );
+    if (!match?.[1] || !match[2] || !match[3]) continue;
+    attempts.push({
+      event_id: eventId,
+      item_key: match[1],
+      completed_at: match[3],
+      source: "worker_attempt",
+      outcome: match[2],
+    });
+    seen.add(eventId);
+  }
+  return attempts;
+}
+
+function takeMatchingBayFallbackAttempt(fallbackAttempts, review) {
+  const reviewCompletedAt = Date.parse(String(review?.completed_at || ""));
+  const reviewTriggeredAt = Date.parse(String(review?.triggered_at || ""));
+  const itemKey = String(review?.item_key || "").toLowerCase();
+  if (!Number.isFinite(reviewCompletedAt) || !itemKey) return null;
+  let matchIndex = -1;
+  let latestCompletedAt = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < fallbackAttempts.length; index += 1) {
+    const fallback = fallbackAttempts[index];
+    const fallbackCompletedAt = Date.parse(String(fallback?.completed_at || ""));
+    if (
+      String(fallback?.item_key || "").toLowerCase() !== itemKey ||
+      !Number.isFinite(fallbackCompletedAt) ||
+      fallbackCompletedAt > reviewCompletedAt ||
+      (Number.isFinite(reviewTriggeredAt)
+        ? fallbackCompletedAt < reviewTriggeredAt
+        : fallbackCompletedAt !== reviewCompletedAt) ||
+      fallbackCompletedAt < latestCompletedAt
+    )
+      continue;
+    matchIndex = index;
+    latestCompletedAt = fallbackCompletedAt;
+  }
+  return matchIndex === -1 ? null : fallbackAttempts.splice(matchIndex, 1)[0];
+}
+
+function isLateBayWorkerFallbackForLifecycle(fallback, review) {
+  const itemKey = String(review?.item_key || "").toLowerCase();
+  const fallbackStartedAt = Date.parse(
+    String(fallback?.started_at || fallback?.completed_at || ""),
+  );
+  const reviewTriggeredAt = Date.parse(String(review?.triggered_at || ""));
+  const reviewCompletedAt = Date.parse(String(review?.completed_at || ""));
+  return (
+    !!itemKey &&
+    String(fallback?.item_key || "").toLowerCase() === itemKey &&
+    Number.isFinite(fallbackStartedAt) &&
+    Number.isFinite(reviewTriggeredAt) &&
+    Number.isFinite(reviewCompletedAt) &&
+    fallbackStartedAt >= reviewTriggeredAt &&
+    fallbackStartedAt <= reviewCompletedAt
+  );
+}
+
+function bayTerminalCandidates(attempts, closedItems, completedReviews = []) {
   const candidates = [];
   for (const attempt of Array.isArray(attempts) ? attempts : []) {
     const outcome = String(attempt?.terminal_outcome || "");
@@ -8296,6 +8565,33 @@ function bayTerminalCandidates(attempts, closedItems) {
       completed_at: completedAt,
       current_step: "Closed by ClawSweeper",
       source: "closed_item",
+    });
+  }
+  for (const review of Array.isArray(completedReviews) ? completedReviews : []) {
+    const target = objectValue(review?.target);
+    const repository = nullableString(target.repository || review?.repository)?.toLowerCase();
+    const number = Number(target.number || review?.number);
+    const completedAt = nullableString(review?.completed_at);
+    const eventId = nullableString(review?.event_id);
+    if (!repository || !Number.isInteger(number) || number <= 0 || !completedAt || !eventId)
+      continue;
+    const outcome = String(review?.outcome || "success");
+    if (!new Set(["success", "failure", "cancelled"]).has(outcome)) continue;
+    const itemKey = `${repository}#${number}`;
+    candidates.push({
+      event_id: eventId,
+      item_key: itemKey,
+      repository,
+      number,
+      outcome,
+      title: `Completed review ${itemKey}`,
+      item_url: nullableString(target.url) || `https://github.com/${repository}/issues/${number}`,
+      job_url: null,
+      run_id: null,
+      triggered_at: nullableString(review?.triggered_at),
+      completed_at: completedAt,
+      current_step: outcome === "success" ? "Review completed" : `Review ${outcome}`,
+      source: "completed_review",
     });
   }
   return candidates.sort(

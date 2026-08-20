@@ -12,6 +12,7 @@ import { gunzipSync } from "node:zlib";
 import worker, {
   automaticIssueWork,
   ExactReviewQueue,
+  completedBayReviews,
   exactReviewEffectiveLeaseExpiresAt,
   exactReviewJitteredDelayMs,
   exactReviewPublicationCapacity,
@@ -1022,6 +1023,7 @@ export {
   worker,
   automaticIssueWork,
   ExactReviewQueue,
+  completedBayReviews,
   exactReviewEffectiveLeaseExpiresAt,
   exactReviewJitteredDelayMs,
   exactReviewPublicationCapacity,
