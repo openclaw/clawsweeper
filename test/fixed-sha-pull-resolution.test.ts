@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createStatusContext } from "../dist/clawsweeper-status-context.js";
+import {
+  createStatusContext,
+  linkedIssueNumbersForPullRequestBody,
+} from "../dist/clawsweeper-status-context.js";
 import { GitHubRateLimitError } from "../dist/github-retry.js";
 import { closeDecision, item, reportFrontMatter } from "./helpers.ts";
 
@@ -150,6 +153,31 @@ function persistedReview(issueNumber: number, fixedSha: string, pullNumber: numb
     fixed_pr_source: JSON.stringify("GitHub commit PR lookup"),
   });
 }
+
+test("implementation provenance ignores HTML-commented issue references", () => {
+  assert.equal(
+    linkedIssueNumbersForPullRequestBody("<!--\nFixes #456\n-->", "openclaw/openclaw"),
+    null,
+  );
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody(
+      "<!-- template example -->\nFixes #456",
+      "openclaw/openclaw",
+    ),
+    [456],
+  );
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody("Fixes #456 <!-- template note -->", "openclaw/openclaw"),
+    [456],
+  );
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody(
+      "```html\n<!-- intentionally unmatched example\n```\nFixes #456",
+      "openclaw/openclaw",
+    ),
+    [456],
+  );
+});
 
 test("fixed-SHA issue enrichment reuses repeats and batches cold resolutions", () => {
   const { calls, context } = statusContextWithCalls();

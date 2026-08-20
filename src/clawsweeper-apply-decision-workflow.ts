@@ -1168,10 +1168,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           ((requiresReviewedPrActivityCursor &&
             receiptContext.sourceRevision !== reviewedSourceRevision) ||
             (item.kind === "pull_request" &&
-              ((requiresReviewedPrActivityCursor &&
-                !freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext)) ||
-                (!requiresReviewedPrActivityCursor &&
-                  !contextPullHeadSha(receiptContext)) ||
+              (!freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext) ||
                 (requiresReviewedPrActivityCursor &&
                   (!isReviewedPrActivityCursor(expectedReviewActivityCursor) ||
                     compareReviewedPrActivityCursors(
@@ -1196,9 +1193,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           prHeadSha: contextPullHeadSha(receiptContext),
           prHeadMatches:
             item.kind !== "pull_request" ||
-            (requiresReviewedPrActivityCursor
-              ? freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext)
-              : contextPullHeadSha(receiptContext) !== null),
+            freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext),
           reviewActivityCursor:
             item.kind === "pull_request" ? fetchReviewedPrActivityCursor(number) : null,
         });

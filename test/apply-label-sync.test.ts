@@ -3830,6 +3830,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   }));
 } else if (args[0] === "api" && path === "repos/openclaw/clawsweeper") {
   console.log(JSON.stringify({ default_branch: "main" }));
+} else if (args[0] === "api" && /\\/compare\\/fixed-sha\\.\\.\\.main$/.test(path)) {
+  console.log(JSON.stringify({ status: "ahead" }));
 } else if (args[0] === "api" && /\\/pulls\\/900$/.test(path)) {
   console.log(JSON.stringify({
     number: 900,

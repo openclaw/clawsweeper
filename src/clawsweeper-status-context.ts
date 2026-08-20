@@ -25,22 +25,46 @@ export function linkedIssueNumbersForPullRequestBody(
   targetRepo: string,
 ): readonly number[] | null {
   let fence: { delimiter: "`" | "~"; length: number } | null = null;
+  let htmlComment = false;
   const semanticBody = body
     .split(/\r?\n/)
-    .filter((line) => {
-      const fenceMatch = line.match(/^[\t ]*(`{3,}|~{3,})/);
-      if (fenceMatch) {
-        const marker = fenceMatch[1] ?? "";
-        const delimiter = marker[0] as "`" | "~" | undefined;
-        if (!delimiter) return false;
-        if (!fence) {
-          fence = { delimiter, length: marker.length };
-        } else if (fence.delimiter === delimiter && marker.length >= fence.length) {
-          fence = null;
+    .map((line) => {
+      // Do not let HTML-comment examples inside code affect the surrounding
+      // Markdown's comment state. A fenced or inline-code line cannot be a
+      // semantic closing directive, so discard it before looking for comments.
+      if (!htmlComment) {
+        const fenceMatch = line.match(/^[\t ]*(`{3,}|~{3,})/);
+        if (fenceMatch) {
+          const marker = fenceMatch[1] ?? "";
+          const delimiter = marker[0] as "`" | "~" | undefined;
+          if (delimiter) {
+            if (!fence) {
+              fence = { delimiter, length: marker.length };
+            } else if (fence.delimiter === delimiter && marker.length >= fence.length) {
+              fence = null;
+            }
+          }
+          return "";
         }
-        return false;
+        if (fence || /^[\t ]*>/.test(line) || line.includes("`")) return "";
       }
-      return !fence && !/^[\t ]*>/.test(line) && !line.includes("`");
+      let visible = "";
+      let remaining = line;
+      while (remaining) {
+        if (htmlComment) {
+          const end = remaining.indexOf("-->");
+          if (end < 0) return visible;
+          remaining = remaining.slice(end + 3);
+          htmlComment = false;
+          continue;
+        }
+        const start = remaining.indexOf("<!--");
+        if (start < 0) return visible + remaining;
+        visible += remaining.slice(0, start);
+        remaining = remaining.slice(start + 4);
+        htmlComment = true;
+      }
+      return visible;
     })
     .join("\n");
   const escapedRepo = escapeRegExp(targetRepo);
