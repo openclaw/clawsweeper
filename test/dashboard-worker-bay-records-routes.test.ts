@@ -6007,9 +6007,11 @@ test("hosted webhook records an edited review command through its final command 
   });
 
   const originalCaches = globalThis.caches;
+  const originalFetch = globalThis.fetch;
   Object.assign(globalThis, {
     caches: { default: { match: async () => undefined, put: async () => undefined } },
   });
+  globalThis.fetch = async () => new Response("isolated status trace", { status: 503 });
   try {
     const status = await worker.fetch(
       new Request("https://clawsweeper.openclaw.ai/api/status"),
@@ -6021,5 +6023,6 @@ test("hosted webhook records an edited review command through its final command 
     assert.deepEqual(snapshot.bay.terminal_buffer, [{ outcome: "failure" }]);
   } finally {
     Object.assign(globalThis, { caches: originalCaches });
+    globalThis.fetch = originalFetch;
   }
 });
