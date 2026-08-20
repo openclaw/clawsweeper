@@ -2756,6 +2756,88 @@ test("dependency setup rejects install destinations for dependencies named fundi
   }
 });
 
+test("dependency setup permits deprecated package metadata in pnpm lockfiles", () => {
+  const cwd = gitBunPackageFixture({ check: "bun x tsc --noEmit" });
+  fs.writeFileSync(
+    path.join(cwd, "pnpm-lock.yaml"),
+    [
+      "lockfileVersion: '9.0'",
+      "",
+      "packages:",
+      "",
+      "  '@aws-sdk/core@3.977.1':",
+      "    resolution: {integrity: sha512-KVtQRtc00ES/y+Sc3vYXeP6pCIcNlBJCZOwvqSy8ZpVGmbM5+IG+AfhuTKQ2oXmIVqZJewaGMMpzPkywC6xg0w==}",
+      "    engines: {node: '>=20.0.0'}",
+      "    deprecated: |-",
+      "      Deprecated due to Document number parsing bug in JSON, see",
+      "        https://github.com/aws/aws-sdk-js-v3/issues/8246. Newer version available.",
+      "",
+    ].join("\n"),
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const { binDir } = fakeBunFixture(cwd);
+  withPathPrefix(binDir, () => {
+    assert.doesNotThrow(() =>
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("openclaw/clawhub", clawhubToolchain()),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      }),
+    );
+  });
+});
+
+test("dependency setup rejects install destinations for dependencies named deprecated", () => {
+  for (const dependencies of [
+    {
+      deprecated: {
+        version: "1.0.0",
+        resolved: "https://github.com/example/deprecated.tgz",
+      },
+    },
+    {
+      packages: {
+        version: "1.0.0",
+        dependencies: {
+          deprecated: {
+            version: "1.0.0",
+            resolved: "https://github.com/example/nested-deprecated.tgz",
+          },
+        },
+      },
+    },
+  ]) {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    fs.writeFileSync(
+      path.join(cwd, "package-lock.json"),
+      `${JSON.stringify({ lockfileVersion: 2, dependencies })}\n`,
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    assert.throws(
+      () =>
+        prepareTargetToolchain(cwd, {
+          ...validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "npm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      /destination is not approved: https:\/\/github\.com/,
+    );
+  }
+});
+
 test("dependency setup rejects target-controlled network destinations", () => {
   const cases = [
     {

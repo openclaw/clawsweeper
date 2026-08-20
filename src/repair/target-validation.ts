@@ -1130,9 +1130,11 @@ function assertStructuredInstallMetadataDestinations(
       assertLocalPackageDependency(value.resolved.trim(), ".", localPolicy);
     }
     for (const [name, entry] of Object.entries(value)) {
-      // Funding is package display metadata, but a dependency map may also contain a package
-      // named "funding". Exempt only package records so those dependency records stay inspectable.
-      if (context === "package-record" && name === "funding") continue;
+      // Funding and deprecated are package display metadata copied verbatim from the
+      // registry, never install destinations, but a dependency map may also contain a
+      // package named "funding" or "deprecated". Exempt only package records so those
+      // dependency records stay inspectable.
+      if (context === "package-record" && (name === "funding" || name === "deprecated")) continue;
       if (workspaceLink && (name === "link" || name === "resolved")) continue;
       // Only the document root owns the lockfile packages map; a dependency may also be named
       // "packages", so recursive name matching would incorrectly grant package-record semantics.
