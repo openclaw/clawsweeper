@@ -564,7 +564,8 @@ ${profileStatusEnd(profile)}`;
         "--jq",
         "{number,title,state,html_url,merged,merged_at,merge_commit_sha,head:{sha:.head.sha},base:{ref:.base.ref}}",
       ]);
-      return pullTargetsBranch(pull, defaultBranch)
+      return pullTargetsBranch(pull, defaultBranch) &&
+        pullMergeCommitIsOnDefaultBranch(pull, defaultBranch)
         ? fixedPullRequestFromUnknown(pull, "GitHub linked-issue current closing PR")
         : null;
     } catch (error) {
@@ -741,6 +742,22 @@ ${profileStatusEnd(profile)}`;
 
   function pullTargetsBranch(value: unknown, branch: string): boolean {
     return asRecord(asRecord(value).base).ref === branch;
+  }
+
+  function pullMergeCommitIsOnDefaultBranch(value: unknown, defaultBranch: string): boolean {
+    const mergeCommitSha = asRecord(value).merge_commit_sha;
+    if (typeof mergeCommitSha !== "string" || !mergeCommitSha.trim()) return false;
+    const comparison = asRecord(
+      ghJson<unknown>([
+        "api",
+        `repos/${targetRepo()}/compare/${encodeURIComponent(mergeCommitSha)}...${encodeURIComponent(defaultBranch)}`,
+        "--jq",
+        "{status}",
+      ]),
+    );
+    // In GitHub's compare direction, the default branch is ahead of (or identical to)
+    // the merge commit exactly when that commit is still reachable from the branch.
+    return comparison.status === "ahead" || comparison.status === "identical";
   }
 
   function pullExplicitlyClosesIssue(value: unknown, issueNumber: number): boolean {

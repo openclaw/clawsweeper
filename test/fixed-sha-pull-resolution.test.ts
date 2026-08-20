@@ -10,7 +10,9 @@ function statusContextWithCalls(
   options: {
     rateLimitOnApplyRead?: boolean;
     rateLimitOnIssueRead?: boolean;
+    rateLimitOnContainmentRead?: boolean;
     freshApplyBody?: boolean;
+    mergeCommitReachable?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -75,6 +77,11 @@ function statusContextWithCalls(
     }
     if (path === "repos/openclaw/openclaw/pulls/900") {
       return { ...pull(900, "current", 456), base: { ref: defaultBranch } } as T;
+    }
+    if (path.startsWith("repos/openclaw/openclaw/compare/current...")) {
+      if (options.rateLimitOnContainmentRead)
+        throw new GitHubRateLimitError("API rate limit exceeded");
+      return { status: options.mergeCommitReachable === false ? "diverged" : "ahead" } as T;
     }
     const fallback = path.match(/^repos\/openclaw\/openclaw\/commits\/([^/]+)\/pulls$/);
     if (fallback?.[1]) return (fallbackPulls.get(fallback[1]) ?? []) as T;
@@ -256,6 +263,25 @@ test("PR implementation closeout revalidates current issue linkage on the reposi
     "graphql",
     "repos/openclaw/openclaw",
     "repos/openclaw/openclaw/pulls/900",
+    "repos/openclaw/openclaw/compare/current...master",
+  ]);
+});
+
+test("PR implementation closeout rejects a fixing merge commit no longer on the default branch", () => {
+  const { calls, context } = statusContextWithCalls("main", { mergeCommitReachable: false });
+  const resolved = context.attachFixedPullRequest(
+    closeDecision({ fixedSha: "same-sha" }),
+    item({ number: 123, kind: "pull_request" }),
+    { pullRequest: { body: "Fixes #456" } },
+    persistedReview(123, "same-sha", 999),
+  );
+
+  assert.equal(resolved.fixedPullRequest, null);
+  assert.deepEqual(calls, [
+    "graphql",
+    "repos/openclaw/openclaw",
+    "repos/openclaw/openclaw/pulls/900",
+    "repos/openclaw/openclaw/compare/current...main",
   ]);
 });
 
@@ -291,6 +317,37 @@ test("apply-time PR closeout propagates linked-issue GitHub rate limits", () => 
   const { context } = statusContextWithCalls("main", {
     freshApplyBody: true,
     rateLimitOnIssueRead: true,
+  });
+  assert.throws(
+    () =>
+      context.implementedOnMainPullRequestProvenanceApplyBlock(
+        reportFrontMatter({ fixed_pr_number: "900" }),
+        item({ number: 123, kind: "pull_request" }),
+        "implemented_on_main",
+      ),
+    GitHubRateLimitError,
+  );
+});
+
+test("apply-time PR closeout fails closed when the fixing merge commit left the default branch", () => {
+  const { context } = statusContextWithCalls("main", {
+    freshApplyBody: true,
+    mergeCommitReachable: false,
+  });
+  assert.equal(
+    context.implementedOnMainPullRequestProvenanceApplyBlock(
+      reportFrontMatter({ fixed_pr_number: "900" }),
+      item({ number: 123, kind: "pull_request" }),
+      "implemented_on_main",
+    ),
+    "implemented-on-main close no longer has current GitHub-verified fixing pull request provenance",
+  );
+});
+
+test("apply-time PR closeout propagates fixing-commit containment rate limits", () => {
+  const { context } = statusContextWithCalls("main", {
+    freshApplyBody: true,
+    rateLimitOnContainmentRead: true,
   });
   assert.throws(
     () =>
