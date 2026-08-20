@@ -1130,9 +1130,15 @@ function assertStructuredInstallMetadataDestinations(
       assertLocalPackageDependency(value.resolved.trim(), ".", localPolicy);
     }
     for (const [name, entry] of Object.entries(value)) {
-      // Funding is package display metadata, but a dependency map may also contain a package
-      // named "funding". Exempt only package records so those dependency records stay inspectable.
+      // Funding is package display metadata copied verbatim from the registry and can be
+      // a string, object, or array, but a dependency map may also contain a package named
+      // "funding". Exempt only package records so those dependency records stay inspectable.
       if (context === "package-record" && name === "funding") continue;
+      // Deprecated is likewise verbatim registry text, but unlike funding it is only ever
+      // a plain string; require that shape so an object- or array-valued "deprecated" (not
+      // a real registry shape) still gets scanned rather than exempted on name alone.
+      if (context === "package-record" && name === "deprecated" && typeof entry === "string")
+        continue;
       if (workspaceLink && (name === "link" || name === "resolved")) continue;
       // Only the document root owns the lockfile packages map; a dependency may also be named
       // "packages", so recursive name matching would incorrectly grant package-record semantics.
