@@ -5969,4 +5969,21 @@ test("hosted webhook records an edited review command through its final command 
     median_ms: 4_820_000,
     samples: 1,
   });
+
+  const originalCaches = globalThis.caches;
+  Object.assign(globalThis, {
+    caches: { default: { match: async () => undefined, put: async () => undefined } },
+  });
+  try {
+    const status = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      env,
+    );
+    assert.equal(status.status, 200);
+    const snapshot = await status.json();
+    assert.equal(snapshot.bay.terminal_count, 1);
+    assert.deepEqual(snapshot.bay.terminal_buffer, [{ outcome: "failure" }]);
+  } finally {
+    Object.assign(globalThis, { caches: originalCaches });
+  }
 });
