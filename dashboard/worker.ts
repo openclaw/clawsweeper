@@ -8281,7 +8281,11 @@ export function mergeBayTerminalState(
       // including one already washed, without counting it a second time.
       if (!withinTerminalWindow && !fallbackAttempt) continue;
       seenIds.add(candidate.event_id);
-      seenEvents.push({ event_id: candidate.event_id, seen_at: candidate.completed_at });
+      seenEvents.push({
+        event_id: candidate.event_id,
+        seen_at: candidate.completed_at,
+        started_at: candidate.started_at,
+      });
       if (fallbackAttempt) {
         const existingIndex = buffer.findIndex(
           (item) => item.event_id === fallbackAttempt.event_id,
@@ -8301,7 +8305,11 @@ export function mergeBayTerminalState(
       continue;
     }
     seenIds.add(candidate.event_id);
-    seenEvents.push({ event_id: candidate.event_id, seen_at: candidate.completed_at });
+    seenEvents.push({
+      event_id: candidate.event_id,
+      seen_at: candidate.completed_at,
+      started_at: candidate.started_at,
+    });
     if (candidate.source === "worker_attempt") {
       const lifecycleIndex = buffer.findIndex(
         (item) =>
@@ -8310,7 +8318,11 @@ export function mergeBayTerminalState(
       );
       if (lifecycleIndex !== -1) {
         seenIds.add(candidate.event_id);
-        seenEvents.push({ event_id: candidate.event_id, seen_at: candidate.completed_at });
+        seenEvents.push({
+          event_id: candidate.event_id,
+          seen_at: candidate.completed_at,
+          started_at: candidate.started_at,
+        });
         continue;
       }
       fallbackAttempts.push(candidate);
@@ -8454,6 +8466,7 @@ function bayFallbackTerminalAttempts(values) {
     attempts.push({
       event_id: eventId,
       item_key: match[1],
+      started_at: nullableString(value?.started_at),
       completed_at: match[3],
       source: "worker_attempt",
       outcome: match[2],
@@ -8473,13 +8486,15 @@ function takeMatchingBayFallbackAttempt(fallbackAttempts, review) {
   for (let index = 0; index < fallbackAttempts.length; index += 1) {
     const fallback = fallbackAttempts[index];
     const fallbackCompletedAt = Date.parse(String(fallback?.completed_at || ""));
+    const fallbackStartedAt = Date.parse(String(fallback?.started_at || ""));
     if (
       String(fallback?.item_key || "").toLowerCase() !== itemKey ||
       !Number.isFinite(fallbackCompletedAt) ||
+      !Number.isFinite(fallbackStartedAt) ||
+      !Number.isFinite(reviewTriggeredAt) ||
       fallbackCompletedAt > reviewCompletedAt ||
-      (Number.isFinite(reviewTriggeredAt)
-        ? fallbackCompletedAt < reviewTriggeredAt
-        : fallbackCompletedAt !== reviewCompletedAt) ||
+      fallbackStartedAt < reviewTriggeredAt ||
+      fallbackStartedAt > reviewCompletedAt ||
       fallbackCompletedAt < latestCompletedAt
     )
       continue;

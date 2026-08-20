@@ -4878,6 +4878,7 @@ test("OpenClaw Bay counts completed review revisions without replaying washed fa
     repository: "openclaw/openclaw",
     item_numbers: [600 + index],
     terminal_outcome: "success",
+    started_at: "2026-07-11T11:59:00.000Z",
     completed_at: `2026-07-11T12:00:${String(index).padStart(2, "0")}.000Z`,
   }));
   const fallbackTide = mergeBayTerminalState(null, attempts, [], "2026-07-11T12:00:20.000Z");
@@ -5335,6 +5336,40 @@ test("OpenClaw Bay replaces a matching failed worker attempt with its lifecycle 
   assert.equal(completed.terminal_buffer[0]?.outcome, "failure");
 });
 
+test("OpenClaw Bay keeps an earlier re-review worker completion beside the next lifecycle", () => {
+  const earlierWorkerFailure = {
+    run_id: 130,
+    job_id: 230,
+    repository: "openclaw/openclaw",
+    item_numbers: [7110],
+    terminal_outcome: "failure",
+    started_at: "2026-07-11T12:00:00.000Z",
+    completed_at: "2026-07-11T12:10:00.000Z",
+  };
+  const nextReview = {
+    event_id: "review:openclaw/openclaw:7110:completion:920:2026-07-11T12:11:00.000Z",
+    target: { repository: "openclaw/openclaw", number: 7110 },
+    triggered_at: "2026-07-11T12:08:00.000Z",
+    completed_at: "2026-07-11T12:11:00.000Z",
+  };
+
+  const completed = mergeBayTerminalState(
+    null,
+    [earlierWorkerFailure],
+    [],
+    "2026-07-11T12:11:01.000Z",
+    [],
+    [nextReview],
+    true,
+  );
+
+  assert.equal(completed.terminal_count, 2);
+  assert.deepEqual(
+    completed.terminal_buffer.map((item) => item.event_id),
+    ["worker:130:230:openclaw/openclaw#7110:failure:2026-07-11T12:10:00.000Z", nextReview.event_id],
+  );
+});
+
 test("OpenClaw Bay does not duplicate a worker that finishes after its lifecycle completion", () => {
   const workerSuccess = {
     run_id: 131,
@@ -5451,6 +5486,7 @@ test("OpenClaw Bay replaces an active pending fallback when its completion arriv
     repository: "openclaw/openclaw",
     item_numbers: [714],
     terminal_outcome: "success",
+    started_at: "2026-07-11T12:13:30.000Z",
     completed_at: "2026-07-11T12:14:00.000Z",
   };
   const pending = mergeBayTerminalState(null, [workerSuccess], [], "2026-07-11T12:14:01.000Z", [
