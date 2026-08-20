@@ -102,6 +102,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     commentId,
     commentUpdatedAt,
     completeStaleCanonicalCommentSyncReport,
+    contextHasNonAutomationActivityAfter,
     decisionPacketsDirFromArgs,
     defaultClosedDir,
     defaultItemsDir,
@@ -531,8 +532,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let deferredSelfMutationReceipt = false;
       let publishedIssueLabelMutation = false;
       let rememberSelfMutationUpdatedAt = (
-        _options: { allowsPostReviewAutomationActivity?: boolean } = {},
-      ): void => {};
+        _options: {
+          allowsPostReviewAutomationActivity?: boolean;
+          postReviewActivityStartedAtMs?: number;
+        } = {},
+      ): boolean => false;
       let reconcileSkippedIssueLabelAdditions = (_labels: readonly string[]): void => {};
       let refreshRenderedReviewComment = (): void => {};
       let restoreDiscardedIssueLabelState = (): void => {};
@@ -1119,9 +1123,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       if (initialCanonicalCommentSyncGuard.stopApply) break;
       if (initialCanonicalCommentSyncGuard.skipCurrentItem) continue;
       rememberSelfMutationUpdatedAt = (
-        options?: { allowsPostReviewAutomationActivity?: boolean },
-      ): void => {
-        if (dryRun) return;
+        options?: {
+          allowsPostReviewAutomationActivity?: boolean;
+          postReviewActivityStartedAtMs?: number;
+        },
+      ): boolean => {
+        if (dryRun) return false;
         const automationItem = fetchApplyItem(number).item;
         const automationItemUpdatedAt = automationItem.updatedAt;
         markdown = replaceFrontMatterValue(
@@ -1134,7 +1141,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         // matches the reviewed source, PR head, and review-activity cursor. The
         // final close gate repeats those checks and verifies that no target-side
         // activity landed after proof.
-        if (!reviewedSourceRevision || reviewedSourceRevision === "unknown") return;
+        if (!reviewedSourceRevision || reviewedSourceRevision === "unknown") return false;
         const receiptContext = collectApplyItemContext(automationItem, {
           fullTimelineForRelations: true,
           reviewCacheDigest: true,
@@ -1149,16 +1156,27 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           !allowsPostReviewAutomationActivity &&
           !completeReviewActivityReceiptMatches(receiptContext)
         )
-          return;
+          return false;
         if (
           allowsPostReviewAutomationActivity &&
           (receiptContext.sourceRevision !== reviewedSourceRevision ||
             (item.kind === "pull_request" &&
-              !freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext)))
+              (!freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext) ||
+                !isReviewedPrActivityCursor(expectedReviewActivityCursor) ||
+                compareReviewedPrActivityCursors(
+                  receiptContext.pullReviewActivityCursor,
+                  expectedReviewActivityCursor,
+                ) !== "equal")) ||
+            options?.postReviewActivityStartedAtMs === undefined ||
+            contextHasNonAutomationActivityAfter(
+              receiptContext,
+              options.postReviewActivityStartedAtMs - 1,
+              { truncationCountsAsActivity: true, useCompleteActivityContext: true },
+            ))
         )
-          return;
+          return false;
         const completeActivityContext = receiptContext[completeActivityContextSymbol];
-        if (!completeActivityContext) return;
+        if (!completeActivityContext) return false;
         selfMutationItemReceipts.push({
           updatedAt: automationItemUpdatedAt,
           sourceRevision: reviewedSourceRevision,
@@ -1170,6 +1188,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           reviewActivityCursor:
             item.kind === "pull_request" ? fetchReviewedPrActivityCursor(number) : null,
         });
+        return true;
       };
       const candidateGuards = createApplyCandidateGuards(dependencies, {
         authorPrBudgetClosesThisRun,

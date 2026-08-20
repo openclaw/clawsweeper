@@ -127,7 +127,8 @@ interface ApplyCloseExecutionOptions {
   recordMutation: (parentEventId?: string | null) => void;
   rememberSelfMutationUpdatedAt: (options?: {
     allowsPostReviewAutomationActivity?: boolean;
-  }) => void;
+    postReviewActivityStartedAtMs?: number;
+  }) => boolean;
   recordReviewLeaseSkip: (reason: string, preserveLease?: boolean) => boolean;
   recordRuntimeBudgetYield: (reason: string) => void;
   repo: string;
@@ -368,6 +369,7 @@ export function executeApplyClose(
   const preCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
   if (preCloseMutationLeaseBlockReason) return skipLease(preCloseMutationLeaseBlockReason);
   ensureRuntimeDelayFits(closeDelayMs, "before close");
+  const closeoutEvidenceStartedAtMs = Date.now();
   try {
     closeAppliedCommentReason =
       item.kind === "pull_request"
@@ -399,7 +401,18 @@ export function executeApplyClose(
     // The comment updates the PR's activity timestamp. Admit only this verified
     // self-mutation before the final freshness guard; it still rejects any
     // intervening contributor activity or source/head drift.
-    rememberSelfMutationUpdatedAt({ allowsPostReviewAutomationActivity: true });
+    if (
+      !rememberSelfMutationUpdatedAt({
+        allowsPostReviewAutomationActivity: true,
+        postReviewActivityStartedAtMs: closeoutEvidenceStartedAtMs,
+      })
+    ) {
+      return markChangedSinceReview({
+        reason: "closeout evidence freshness receipt could not be recorded",
+      })
+        ? "stop"
+        : "next";
+    }
   }
   const finalFreshnessBlock = postProofFreshnessBlock();
   if (finalFreshnessBlock) return markChangedSinceReview(finalFreshnessBlock) ? "stop" : "next";

@@ -85,9 +85,13 @@ export function createApplyProofFreshnessGuards({
       storedHash,
       storedUpdatedAt,
     } = currentProofState();
+    const hasPostReviewSelfMutationReceipt = selfMutationItemReceipts.some(
+      (receipt) => receipt.allowsPostReviewAutomationActivity,
+    );
     if (
-      !prCloseCoverageProofGateChecked ||
-      cachedPrCloseCoverageProofGateResult?.status !== "allowed"
+      (!prCloseCoverageProofGateChecked ||
+        cachedPrCloseCoverageProofGateResult?.status !== "allowed") &&
+      !hasPostReviewSelfMutationReceipt
     ) {
       return null;
     }
@@ -187,14 +191,20 @@ export function createApplyProofFreshnessGuards({
       persistedAutomationReceiptMatches ||
       refreshedCommandStatusOnlyUpdate;
     const selfMutationMaskedNonAutomationActivity = (): boolean => {
-      if (prCloseCoverageProofStartedAtMs === null) return true;
+      const postReviewSelfMutationAtMs = candidateItemReceipts
+        .filter((receipt) => receipt.allowsPostReviewAutomationActivity)
+        .map((receipt) => Date.parse(receipt.updatedAt))
+        .filter((value) => Number.isFinite(value))
+        .sort((left, right) => right - left)[0];
+      const activityStartMs = prCloseCoverageProofStartedAtMs ?? postReviewSelfMutationAtMs;
+      if (activityStartMs === undefined) return true;
       refreshedContext ??= collectItemContext(refreshed.item, {
         fullTimelineForRelations: true,
         reviewCacheDigest: true,
         bypassGenerationCache: true,
       });
-      const proofSecondStartMs = Math.floor(prCloseCoverageProofStartedAtMs / 1000) * 1000;
-      return contextHasNonAutomationActivityAfter(refreshedContext, proofSecondStartMs - 1, {
+      const activitySecondStartMs = Math.floor(activityStartMs / 1000) * 1000;
+      return contextHasNonAutomationActivityAfter(refreshedContext, activitySecondStartMs - 1, {
         truncationCountsAsActivity: false,
       });
     };
