@@ -213,14 +213,26 @@ export function createReviewCommentPublication(
   function issueCommentWithMarker(
     number: number,
     marker: string,
+    expectedBody?: string,
   ): Record<string, unknown> | undefined {
     const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`).map(
       asRecord,
     );
-    return comments.find((candidate) => {
+    const marked = comments.filter((candidate) => {
       const body = candidate.body;
       return typeof body === "string" && body.includes(marker);
     });
+    // A marker and body are both predictable and therefore not ownership proof.
+    // Prefer an exact ClawSweeper receipt, then another owned marker as an
+    // update target. This avoids selecting a spoofed marker forever and posting
+    // a duplicate on every retry.
+    if (expectedBody) {
+      const matching = marked.find(
+        (candidate) => candidate.body === expectedBody && canPatchReviewComment(candidate),
+      );
+      if (matching) return matching;
+    }
+    return marked.find(canPatchReviewComment);
   }
 
   function closeAppliedEvidenceLink(markdown: string, itemUrl: string): string {
@@ -292,7 +304,7 @@ export function createReviewCommentPublication(
   }): string {
     const marker = closeAppliedCommentMarker(options.number);
     const body = renderCloseAppliedComment(options);
-    const existing = issueCommentWithMarker(options.number, marker);
+    const existing = issueCommentWithMarker(options.number, marker, body);
     if (existing?.body === body) {
       return "matching ClawSweeper close-applied comment already exists";
     }

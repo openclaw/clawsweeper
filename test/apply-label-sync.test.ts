@@ -82,6 +82,66 @@ test("same-item comment payloads never overwrite an earlier pending mutation", (
   }
 });
 
+test("closeout receipts ignore spoofed markers after posting the owned receipt", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const comments: Record<string, unknown>[] = [
+      {
+        id: 1,
+        user: { login: "contributor" },
+        body: "<!-- clawsweeper-close-applied item=321 -->",
+      },
+    ];
+    let mutationCount = 0;
+    const publication = createReviewCommentPublication({
+      root,
+      targetRepo: () => "openclaw/clawsweeper",
+      ghPaged: () => comments,
+      asRecord: (value: unknown) => value as Record<string, unknown>,
+      ensureDir: (directory: string) => mkdirSync(directory, { recursive: true }),
+      sha256: () => "body-digest",
+      ghObservedMutationCommand: ({ args }) => {
+        mutationCount += 1;
+        const input = args[args.indexOf("--input") + 1];
+        const body = JSON.parse(readFileSync(input!, "utf8")).body as string;
+        comments.push({ id: 2, user: { login: "clawsweeper[bot]" }, body });
+        return JSON.stringify({ id: 2 });
+      },
+      frontMatterValue: () => undefined,
+      replaceFrontMatterValue: (markdown: string) => markdown,
+      sectionValue: () => "",
+      timestampMs: () => null,
+      sentence: (value: string) => value,
+      normalizedLabelSet: () => new Set<string>(),
+      sectionLineValue: () => undefined,
+      markdownLink: (label: string, url: string) => `[${label}](${url})`,
+      closeAppliedCommentMarker: (number: number) =>
+        `<!-- clawsweeper-close-applied item=${number} -->`,
+      commentId: (comment: Record<string, unknown> | undefined) =>
+        typeof comment?.id === "number" ? comment.id : null,
+      canPatchReviewComment: (comment: Record<string, unknown> | undefined) =>
+        (comment?.user as { login?: unknown } | undefined)?.login === "clawsweeper[bot]",
+    } as Parameters<typeof createReviewCommentPublication>[0]);
+    const options = {
+      number: 321,
+      closeReason: "implemented_on_main" as const,
+      markdown: "",
+      itemUrl: "https://github.com/openclaw/clawsweeper/pull/321",
+      dryRun: false,
+    };
+    comments[0]!.body = publication.renderCloseAppliedComment(options);
+
+    assert.equal(publication.ensureCloseAppliedComment(options), "posted close-applied comment");
+    assert.equal(
+      publication.ensureCloseAppliedComment(options),
+      "matching ClawSweeper close-applied comment already exists",
+    );
+    assert.equal(mutationCount, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("partial label-sync authentication failures preserve labels already applied", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
