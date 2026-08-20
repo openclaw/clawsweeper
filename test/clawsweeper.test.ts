@@ -740,6 +740,8 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
   const body = JSON.parse(readFileSync(inputPath, "utf8")).body;
   appendFileSync(logPath, JSON.stringify(["comment-patch", body]) + "\\n");
   console.log(JSON.stringify({ id: 9000 + 321, html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9321", updated_at: "2026-05-01T01:02:00Z", body }));
+} else if (args[0] === "api" && /\\/issues\\/\\d+\\/timeline(?:\\?|$)/.test(path)) {
+  console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "api" && commentMatch) {
   const number = Number(commentMatch[1]);
   const body = comments[number];
@@ -837,7 +839,7 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
           (args[1] ?? "").includes("/issues/321/comments") &&
           args.includes("--paginate"),
       );
-    assert.equal(postMutationReviewCommentFetches.length, 0);
+    assert.equal(postMutationReviewCommentFetches.length, 1);
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number: 321,
