@@ -51,6 +51,10 @@ if (args[0] === "api" && path === "repos/openclaw/clawsweeper") {
   console.log(JSON.stringify({ default_branch: "main" }));
   process.exit(0);
 }
+if (args[0] === "api" && /\\/compare\\/[^/]+\\.\\.\\.main$/.test(path)) {
+  console.log(JSON.stringify({ status: "ahead" }));
+  process.exit(0);
+}
 if (args[0] === "api" && /\\/pulls\\/900$/.test(path)) {
   console.log(JSON.stringify({ number: 900, html_url: "https://github.com/openclaw/clawsweeper/pull/900", title: "Current implementation", merged: true, merged_at: "2026-05-01T02:00:00Z", merge_commit_sha: "fix-sha", head: { sha: "fix-sha" }, base: { ref: "main" } }));
   process.exit(0);
@@ -172,6 +176,10 @@ if (args[0] === "api" && args[1] === "graphql") {
 }
 if (args[0] === "api" && path === "repos/openclaw/clawsweeper") {
   console.log(JSON.stringify({ default_branch: "main" }));
+  process.exit(0);
+}
+if (args[0] === "api" && /\\/compare\\/[^/]+\\.\\.\\.main$/.test(path)) {
+  console.log(JSON.stringify({ status: "ahead" }));
   process.exit(0);
 }
 if (args[0] === "api" && /\\/pulls\\/900$/.test(path)) {
@@ -312,6 +320,10 @@ if (args[0] === "api" && args[1] === "graphql") {
 }
 if (args[0] === "api" && path === "repos/openclaw/openclaw") {
   console.log(JSON.stringify({ default_branch: "main" }));
+  process.exit(0);
+}
+if (args[0] === "api" && /\\/compare\\/[^/]+\\.\\.\\.main$/.test(path)) {
+  console.log(JSON.stringify({ status: "ahead" }));
   process.exit(0);
 }
 if (args[0] === "api" && /\\/pulls\\/900$/.test(path)) {
