@@ -2791,6 +2791,43 @@ test("dependency setup permits deprecated package metadata in pnpm lockfiles", (
   });
 });
 
+test("dependency setup rejects a non-string deprecated field", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  fs.writeFileSync(
+    path.join(cwd, "package-lock.json"),
+    `${JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "": { name: "fixture", version: "1.0.0" },
+        "node_modules/example": {
+          version: "1.0.0",
+          resolved: "https://registry.npmjs.org/example/-/example-1.0.0.tgz",
+          deprecated: { resolved: "https://github.com/example/payload.tgz" },
+        },
+      },
+    })}\n`,
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+
+  assert.throws(
+    () =>
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "npm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      }),
+    /destination is not approved: https:\/\/github\.com/,
+  );
+});
+
 test("dependency setup rejects install destinations for dependencies named deprecated", () => {
   for (const dependencies of [
     {
