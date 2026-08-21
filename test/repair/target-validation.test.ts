@@ -45,6 +45,20 @@ import {
 import { mockCommandBinEnv } from "../helpers.ts";
 
 const FAKE_TOOLCHAIN_TIMEOUT_MS = 15_000;
+const WRITE_NODE_MODULES_MARKER_AFTER_DELAY_SCRIPT = [
+  'const fs = require("node:fs");',
+  'const path = require("node:path");',
+  'const marker = path.join(process.cwd(), "node_modules", process.argv[1]);',
+  "setTimeout(() => {",
+  "  fs.mkdirSync(path.dirname(marker), { recursive: true });",
+  '  fs.writeFileSync(marker, "ran");',
+  "}, 750);",
+].join(" ");
+const SPAWN_DETACHED_NODE_MODULES_MARKER_SCRIPT = [
+  'const { spawn } = require("node:child_process");',
+  `const child = spawn(process.execPath, ["-e", ${JSON.stringify(WRITE_NODE_MODULES_MARKER_AFTER_DELAY_SCRIPT)}, process.argv[1]], { detached: true, stdio: "ignore" });`,
+  "child.unref();",
+].join(" ");
 
 test("OpenClaw repairs require changed-surface validation even when omitted", () => {
   const cwd = packageFixture({ "check:changed": "node check.js" });
@@ -3425,7 +3439,8 @@ test(
       return;
     }
     const cwd = gitBunPackageFixture({ check: 'node -e ""' });
-    const marker = path.join(cwd, "node_modules", "detached-bun-ran");
+    const markerName = "detached-bun-ran";
+    const marker = path.join(cwd, "node_modules", markerName);
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
@@ -3439,8 +3454,8 @@ if (process.argv[2] === "--version") {
 } else if (process.argv[2] === "install") {
   const { spawn } = require("node:child_process");
   const child = spawn(process.execPath, ["-e", ${JSON.stringify(
-    `setTimeout(() => { require("node:fs").mkdirSync(${JSON.stringify(path.dirname(marker))}, { recursive: true }); require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran"); }, 750);`,
-  )}], { detached: true, stdio: "ignore" });
+    WRITE_NODE_MODULES_MARKER_AFTER_DELAY_SCRIPT,
+  )}, ${JSON.stringify(markerName)}], { detached: true, stdio: "ignore" });
   child.unref();
 }
 `,
@@ -3478,7 +3493,8 @@ test(
       return;
     }
     const cwd = gitPackageFixture({ check: 'node -e ""' });
-    const marker = path.join(cwd, "node_modules", "detached-npm-ran");
+    const markerName = "detached-npm-ran";
+    const marker = path.join(cwd, "node_modules", markerName);
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
@@ -3489,8 +3505,8 @@ test(
       `#!/usr/bin/env node
 const { spawn } = require("node:child_process");
 const child = spawn(process.execPath, ["-e", ${JSON.stringify(
-        `setTimeout(() => { require("node:fs").mkdirSync(${JSON.stringify(path.dirname(marker))}, { recursive: true }); require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran"); }, 750);`,
-      )}], { detached: true, stdio: "ignore" });
+        WRITE_NODE_MODULES_MARKER_AFTER_DELAY_SCRIPT,
+      )}, ${JSON.stringify(markerName)}], { detached: true, stdio: "ignore" });
 child.unref();
 `,
     );
@@ -8189,24 +8205,20 @@ test(
       context.skip("runner does not provide delegated user namespaces and Landlock ABI 3+");
       return;
     }
-    const marker = path.join(
-      os.tmpdir(),
-      `clawsweeper-detached-validation-${process.pid}-${Date.now()}`,
-    );
     const cwd = gitPackageFixture({ verify: "node verify.js" });
+    const markerName = "detached-validation-ran";
+    const marker = path.join(cwd, "node_modules", markerName);
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
     const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-detached-pnpm-"));
     const pnpmPath = path.join(binDir, "pnpm.js");
-    const grandchild = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "escaped"), 800)`;
-    const intermediate = `const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", ${JSON.stringify(
-      grandchild,
-    )}], { detached: true, stdio: "ignore" }); child.unref();`;
     fs.writeFileSync(
       pnpmPath,
       `const { spawn } = require("node:child_process");
-const child = spawn(process.execPath, ["-e", ${JSON.stringify(intermediate)}], {
+const child = spawn(process.execPath, ["-e", ${JSON.stringify(
+        SPAWN_DETACHED_NODE_MODULES_MARKER_SCRIPT,
+      )}, ${JSON.stringify(markerName)}], {
   detached: true,
   stdio: "ignore"
 });

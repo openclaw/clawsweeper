@@ -17,6 +17,20 @@ import { resolveSpawnCommand } from "../../dist/command.js";
 import { runCommand, runContainedCommand } from "../../dist/repair/command-runner.js";
 import { mockCommandBinEnv } from "../helpers.ts";
 
+const WRITE_MARKER_AFTER_DELAY_SCRIPT = [
+  'const fs = require("node:fs");',
+  "const [marker, delay] = process.argv.slice(1);",
+  'setTimeout(() => fs.writeFileSync(marker, "escaped"), Number(delay));',
+].join(" ");
+
+const SPAWN_DETACHED_MARKER_SCRIPT = [
+  'const { spawn } = require("node:child_process");',
+  `const child = spawn(process.execPath, ["-e", ${JSON.stringify(WRITE_MARKER_AFTER_DELAY_SCRIPT)}, process.argv[1], "1000"], { detached: true, stdio: "ignore" });`,
+  "child.unref();",
+  'process.kill(process.ppid, "SIGKILL");',
+  "setInterval(() => {}, 1000);",
+].join(" ");
+
 test("runCommand handles validation output larger than Node's sync spawn default", () => {
   const output = runCommand(process.execPath, [
     "-e",
@@ -67,9 +81,11 @@ test(
                 'const fs = require("node:fs");',
                 'process.on("SIGTERM", () => {});',
                 'process.stdout.write("x".repeat(128 * 1024));',
-                `setTimeout(() => fs.writeFileSync(${JSON.stringify(marker)}, "escaped"), 750);`,
+                "const marker = process.argv[1];",
+                'setTimeout(() => fs.writeFileSync(marker, "escaped"), 750);',
                 "setInterval(() => {}, 1000);",
               ].join(" "),
+              marker,
             ],
             { maxBuffer: 1024, timeoutMs: 3_000 },
           ),
@@ -198,28 +214,15 @@ test(
     try {
       assert.throws(
         () =>
-          runContainedCommand(
-            process.execPath,
-            [
-              "-e",
-              [
-                'const { spawn } = require("node:child_process");',
-                `const child = spawn(process.execPath, ["-e", ${JSON.stringify(`setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "escaped"), 1000);`)}], { detached: true, stdio: "ignore" });`,
-                "child.unref();",
-                'process.kill(process.ppid, "SIGKILL");',
-                "setInterval(() => {}, 1000);",
-              ].join(" "),
-            ],
-            {
-              cwd: root,
-              env: {
-                ...process.env,
-                CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT: "1",
-              },
-              timeoutMs: 250,
-              writableRoots: [root],
+          runContainedCommand(process.execPath, ["-e", SPAWN_DETACHED_MARKER_SCRIPT, marker], {
+            cwd: root,
+            env: {
+              ...process.env,
+              CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT: "1",
             },
-          ),
+            timeoutMs: 250,
+            writableRoots: [root],
+          }),
         /command timed out after 250ms/,
       );
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_250);
