@@ -6457,19 +6457,139 @@ test("review finalizers recover start-only ledger attempts after hard timeout", 
 });
 
 test("every action-ledger publication authenticates the expected producer job", () => {
-  const workflow = readText(".github/workflows/sweep.yml");
-  const commands = workflow.match(
-    /pnpm run --silent publish-action-events -- \\\n(?:\s+.*\\\n)*\s+--expected-producer-job [^\n]+/g,
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps?: Array<{ run?: string }> }>;
+  };
+  const invocation = "publish-action-events";
+  const commandStart = `pnpm run --silent ${invocation} -- \\`;
+  const isCanonicalValue = (value: string): boolean => {
+    const quote = value[0] === "'" || value[0] === '"' ? value[0] : null;
+    if (quote && (value.length < 3 || value.at(-1) !== quote)) return false;
+    const word = quote ? value.slice(1, -1) : value;
+    return (
+      word.length > 0 &&
+      word
+        .split("")
+        .every(
+          (character) =>
+            (character >= "a" && character <= "z") ||
+            (character >= "A" && character <= "Z") ||
+            (character >= "0" && character <= "9") ||
+            character === "." ||
+            character === "/" ||
+            character === "_" ||
+            character === "-" ||
+            (quote !== null && (character === "$" || character === "{" || character === "}")),
+        )
+    );
+  };
+  const countOccurrences = (line: string): number => {
+    let count = 0;
+    let offset = 0;
+    while (true) {
+      const index = line.indexOf(invocation, offset);
+      if (index === -1) return count;
+      count += 1;
+      offset = index + invocation.length;
+    }
+  };
+  const commandsFromScript = (script: string): Array<Map<string, string>> => {
+    const lines = script.split("\n");
+    const commands: Array<Map<string, string>> = [];
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]!;
+      const occurrences = countOccurrences(line);
+      if (occurrences === 0) continue;
+      assert.equal(occurrences, 1, "publisher lines must contain one invocation");
+      assert.equal(
+        line.trimStart(),
+        commandStart,
+        "publisher invocations must use the standalone canonical command form",
+      );
+
+      const args = new Map<string, string>();
+      let continued = true;
+      while (continued) {
+        index += 1;
+        assert.ok(index < lines.length, "publisher command must terminate");
+        const argumentLine = lines[index]!.trimStart();
+        assert.equal(
+          countOccurrences(argumentLine),
+          0,
+          "publisher commands must not be nested in argument values",
+        );
+        const terminator = argumentLine.at(-1);
+        assert.ok(
+          terminator === "\\" || terminator === "|",
+          "publisher arguments must end in a continuation or pipeline",
+        );
+        const argument = argumentLine.slice(0, -1).trimEnd();
+        const separator = argument.indexOf(" ");
+        assert.ok(separator > 2, "publisher arguments must use --name value");
+        const name = argument.slice(0, separator);
+        const value = argument.slice(separator + 1).trim();
+        assert.ok(
+          name.startsWith("--") &&
+            name
+              .slice(2)
+              .split("")
+              .every(
+                (character) =>
+                  (character >= "a" && character <= "z") ||
+                  (character >= "0" && character <= "9") ||
+                  character === "-",
+              ),
+          "publisher argument names must be canonical",
+        );
+        assert.ok(value && isCanonicalValue(value), `${name} must have one shell-safe line value`);
+        assert.equal(args.has(name), false, `${name} must not be repeated`);
+        args.set(name, value);
+        continued = terminator === "\\";
+      }
+      commands.push(args);
+    }
+    return commands;
+  };
+  const commands = Object.values(workflow.jobs).flatMap((job) =>
+    (job.steps ?? []).flatMap((step) => commandsFromScript(step.run ?? "")),
   );
-  assert.ok(commands);
+
+  const validCommand = `${commandStart}\n  --state-root . \\\n  --expected-producer-job review |`;
+  assert.equal(commandsFromScript(validCommand)[0]!.get("--expected-producer-job"), "review");
+  for (const malformed of [
+    `# ${validCommand}`,
+    `echo ${validCommand}`,
+    `timeout 20s ${validCommand}`,
+    `${commandStart} \n  --expected-producer-job review |`,
+    `${commandStart}\n  --state-root first \\\\\n  --expected-producer-job fake |`,
+    `${commandStart}\n  --state-root . # \\\n  --expected-producer-job fake |`,
+    `${commandStart}\n  --source-root "$SOURCE_ROOT\\\n  --expected-producer-job fake" \\\n  --state-root . |`,
+    `${commandStart}\n  --expected-producer-job review \\\n  --expected-producer-job fake |`,
+    `${commandStart}\n  --expected-producer-job "$GITHUB_JOB" --expected-producer-job fake |`,
+    `${commandStart}\n  --expected-producer-job # missing |`,
+    `${commandStart}\n  --state-root first && \\\n  --expected-producer-job fake |`,
+    `${commandStart}\n  --state-root . > \\\n  --expected-producer-job fake |`,
+    `${commandStart}\n  --expected-producer-job review \\\n  --state-root .\${IFS}--expected-producer-job\${IFS}fake |`,
+    `${commandStart}\n  --source-root "$(pnpm run --silent publish-action-events --)" \\\n  --expected-producer-job review |`,
+    `pnpm run --silent publish-action-events \\\n  -- \\\n  --state-root . |`,
+  ]) {
+    assert.throws(() => commandsFromScript(malformed));
+  }
   assert.equal(commands.length, 7);
-  assert.ok(commands.every((command) => command.includes("--expected-producer-job")));
-  assert.match(workflow, /--expected-producer-job review/);
-  assert.match(
-    workflow,
-    /--expected-producer-job review \\\n\s+--expected-producer-max-run-attempt "\$GITHUB_RUN_ATTEMPT"/,
+  const expectedProducerJobs = new Set(['"$GITHUB_JOB"', "apply-proof", "review"]);
+  assert.ok(
+    commands.every((command) =>
+      expectedProducerJobs.has(command.get("--expected-producer-job") ?? ""),
+    ),
   );
-  assert.match(workflow, /--expected-producer-job apply-proof/);
+  assert.ok(
+    commands.some(
+      (command) =>
+        command.get("--expected-producer-job") === "review" &&
+        command.get("--expected-producer-max-run-attempt") === '"$GITHUB_RUN_ATTEMPT"',
+    ),
+  );
+  assert.ok(commands.some((command) => command.get("--expected-producer-job") === "apply-proof"));
 });
 
 test("sweep exact event reviews cap the configured fallback within the lease and job budgets", () => {
