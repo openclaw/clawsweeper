@@ -1,5 +1,6 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
+import { linkedIssueNumbersForImplementationProvenance } from "./clawsweeper-status-context.js";
 import {
   EVENT_GUARDED_OPEN_ACTIONS,
   REVIEW_SECTIONS,
@@ -35,7 +36,9 @@ type ApplyCloseExecutionDependencies = Pick<
   | "ensureCloseAppliedComment"
   | "ensureIdeaArchiveLabel"
   | "ensureRuntimeDelayFits"
+  | "fetchItem"
   | "GitHubRuntimeBudgetError"
+  | "ghJson"
   | "implementedOnMainPullRequestProvenanceApplyBlock"
   | "issueRecentHumanCommentBlockReasonSafe"
   | "lowSignalUnmergeablePrApplyBlockReasonSafe"
@@ -98,8 +101,15 @@ interface ApplyCloseExecutionOptions {
   applyCloseReasons: ReadonlySet<CloseReason> | null;
   applyKind: ApplyKind;
   archiveClosed: (markdown: string) => void;
+  archivePairedIssue: (number: number) => void;
+  canStartPairedIssueClose: (number: number, kind: Item["kind"]) => boolean;
+  pairedIssueMarkdown: (number: number) => string | null;
+  pairedIssueReviewUpdatedAt: (number: number) => string | null;
+  pairedIssueOwnedReviewCommentUpdatedAt: (number: number) => string | null;
+  pairedIssueCanonicalProvenanceBlock: (number: number) => string | null;
   closeDelayMs: number;
   closeLimitReached: boolean;
+  pairedIssueCloseCapacityAvailable: boolean;
   closeReason: CloseReason;
   closedDir: string;
   currentApplyMutationLeaseBlockReason: () => string | null;
@@ -120,6 +130,7 @@ interface ApplyCloseExecutionOptions {
   minAgeMs: number;
   number: number;
   onClosed: (result: ApplyResult, dryRun: boolean) => boolean;
+  onPairedIssueClosed: (result: ApplyResult, dryRun: boolean) => boolean;
   postProofCoveringPrFreshnessBlock: () => PrCloseCoverageProofGateBlock | null;
   postProofFreshnessBlock: () => ReviewFreshnessBlock | null;
   proofResult: () => PrCloseCoverageProofGateResult | undefined;
@@ -137,6 +148,7 @@ interface ApplyCloseExecutionOptions {
   runtimeBudget: GitHubRuntimeBudget;
   setMarkdown: (markdown: string) => void;
   staleMinAgeDays: number;
+  withPairedIssueMutationLedger: <T>(number: number, operation: () => T) => T;
   emitEventApplyProof: boolean;
 }
 
@@ -155,7 +167,9 @@ export function executeApplyClose(
     ensureCloseAppliedComment,
     ensureIdeaArchiveLabel,
     ensureRuntimeDelayFits,
+    fetchItem,
     GitHubRuntimeBudgetError,
+    ghJson,
     implementedOnMainPullRequestProvenanceApplyBlock,
     issueRecentHumanCommentBlockReasonSafe,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
@@ -174,6 +188,12 @@ export function executeApplyClose(
     applyCloseReasons,
     applyKind,
     archiveClosed,
+    archivePairedIssue,
+    canStartPairedIssueClose,
+    pairedIssueMarkdown,
+    pairedIssueReviewUpdatedAt,
+    pairedIssueOwnedReviewCommentUpdatedAt,
+    pairedIssueCanonicalProvenanceBlock,
     closeDelayMs,
     closeLimitReached,
     closeReason,
@@ -197,6 +217,8 @@ export function executeApplyClose(
     minAgeMs,
     number,
     onClosed,
+    onPairedIssueClosed,
+    pairedIssueCloseCapacityAvailable,
     postProofCoveringPrFreshnessBlock,
     postProofFreshnessBlock,
     proofResult,
@@ -211,6 +233,7 @@ export function executeApplyClose(
     runtimeBudget,
     setMarkdown,
     staleMinAgeDays,
+    withPairedIssueMutationLedger,
   } = options;
   const skip = (action: ActionTaken, reason: string, liveGuardVerified = false): ApplyCloseFlow =>
     markApplySkipped(action, reason, liveGuardVerified) ? "stop" : "next";
@@ -218,6 +241,38 @@ export function executeApplyClose(
     recordApplySkipped(action, reason) ? "stop" : "next";
   const skipLease = (reason: string): ApplyCloseFlow =>
     recordReviewLeaseSkip(reason, false) ? "stop" : "next";
+  const pairedIssueSourceSnapshot = (issueNumber: number): string | null => {
+    const issue = ghJson<{
+      title?: unknown;
+      body?: unknown;
+      labels?: unknown;
+      locked?: unknown;
+      active_lock_reason?: unknown;
+    }>(["api", `repos/${repo}/issues/${issueNumber}`]);
+    if (typeof issue.title !== "string" || !Array.isArray(issue.labels)) return null;
+    const labels = issue.labels
+      .map((label) => {
+        if (typeof label === "string") return label;
+        if (!label || typeof label !== "object" || Array.isArray(label)) return null;
+        const name = (label as { name?: unknown }).name;
+        return typeof name === "string" ? name : null;
+      })
+      .filter((label): label is string => label !== null)
+      .sort();
+    if (labels.length !== issue.labels.length) return null;
+    return sha256(
+      JSON.stringify({
+        title: issue.title,
+        body: typeof issue.body === "string" || issue.body === null ? issue.body : null,
+        labels,
+        locked: issue.locked === true,
+        activeLockReason:
+          typeof issue.active_lock_reason === "string" || issue.active_lock_reason === null
+            ? issue.active_lock_reason
+            : null,
+      }),
+    );
+  };
 
   if (
     requiredMaintainerDecision?.required &&
@@ -242,6 +297,23 @@ export function executeApplyClose(
   const implementationBasedPrClose =
     item.kind === "pull_request" &&
     ["implemented_on_main", "mostly_implemented_on_main"].includes(closeReason);
+  const parsedLinkedIssueNumbers = implementationBasedPrClose
+    ? (() => {
+        const livePull = ghJson<{ body?: unknown }>([
+          "api",
+          `repos/${repo}/pulls/${number}`,
+          "--jq",
+          "{body}",
+        ]);
+        return typeof livePull.body === "string"
+          ? linkedIssueNumbersForImplementationProvenance(livePull.body, repo)
+          : null;
+      })()
+    : null;
+  const linkedIssueNumbers = parsedLinkedIssueNumbers ?? [];
+  // A PR may be only mostly redundant while the single bug it explicitly
+  // claims to fix is fully resolved by the canonical implementation.
+  const linkedIssueCloseReason: CloseReason = "implemented_on_main";
   const implementationProvenanceBlock = implementedOnMainCloseProvenanceBlock(
     getMarkdown(),
     item.kind,
@@ -249,6 +321,18 @@ export function executeApplyClose(
     closeReason,
   );
   if (implementationProvenanceBlock) return skip("kept_open", implementationProvenanceBlock);
+  if (implementationBasedPrClose && !parsedLinkedIssueNumbers) {
+    return skip(
+      "kept_open",
+      "implemented-on-main close requires explicit same-repository linked issues for paired closeout",
+    );
+  }
+  if (implementationBasedPrClose && linkedIssueNumbers.length !== 1) {
+    return skip(
+      "kept_open",
+      "implemented-on-main close requires exactly one explicit same-repository linked issue for paired closeout",
+    );
+  }
   const currentImplementationProvenanceBlock = implementedOnMainPullRequestProvenanceApplyBlock(
     getMarkdown(),
     item,
@@ -336,6 +420,73 @@ export function executeApplyClose(
 
   const closeMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
   if (closeMutationLeaseBlockReason) return skipLease(closeMutationLeaseBlockReason);
+  const linkedItems = implementationBasedPrClose
+    ? linkedIssueNumbers.map((issueNumber) => fetchItem(issueNumber))
+    : [];
+  for (const linkedItem of linkedItems) {
+    if (linkedItem.item.kind !== "issue") {
+      return skip(
+        "kept_open",
+        "implemented-on-main close found a linked item that is not an issue",
+      );
+    }
+  }
+  const linkedIssuesToClose = linkedItems.filter((liveIssue) => liveIssue.state === "open");
+  if (linkedIssuesToClose.length > 0 && !pairedIssueCloseCapacityAvailable) {
+    return skip(
+      "kept_open",
+      "implemented-on-main paired closeout exceeds the remaining close or processed-item limit",
+    );
+  }
+  if (
+    linkedIssuesToClose.length > 0 &&
+    (applyKind !== "all" || !canStartPairedIssueClose(linkedIssuesToClose[0]!.item.number, "issue"))
+  ) {
+    return skip(
+      "kept_open",
+      "implemented-on-main paired closeout requires an eligible, independently reviewed linked issue in an all-items apply run",
+    );
+  }
+  for (const liveIssue of linkedIssuesToClose) {
+    const pairedIssueProvenanceBlock = pairedIssueCanonicalProvenanceBlock(liveIssue.item.number);
+    if (pairedIssueProvenanceBlock) return skip("kept_open", pairedIssueProvenanceBlock);
+    const pairedMarkdown = pairedIssueMarkdown(liveIssue.item.number);
+    if (!pairedMarkdown) {
+      return skip(
+        "kept_open",
+        "implemented-on-main paired closeout requires an independently reviewed linked issue report",
+      );
+    }
+    if (
+      pairedIssueReviewUpdatedAt(liveIssue.item.number) !== liveIssue.item.updatedAt &&
+      pairedIssueOwnedReviewCommentUpdatedAt(liveIssue.item.number) !== liveIssue.item.updatedAt
+    ) {
+      return skip(
+        "kept_open",
+        "implemented-on-main paired closeout requires the linked issue to remain unchanged since its independent review",
+      );
+    }
+    const issueValidation = validateCloseDecision(
+      {
+        repo,
+        kind: liveIssue.item.kind,
+        labels: liveIssue.item.labels,
+        authorAssociation: liveIssue.item.authorAssociation,
+      },
+      {
+        ...reportDecision(pairedMarkdown, linkedIssueCloseReason),
+        closeReason: linkedIssueCloseReason,
+      },
+      { requireCloseComment: true },
+    );
+    if (!issueValidation.ok) return skip("kept_open", issueValidation.reason);
+    if (liveIssue.item.locked) {
+      return skip(
+        "kept_open",
+        "implemented-on-main paired closeout requires the linked issue to remain unlocked and unchanged since review",
+      );
+    }
+  }
   logProgress(`closing #${number}`);
   let closeAppliedCommentReason: string | null = null;
   if (dryRun) {
@@ -357,6 +508,17 @@ export function executeApplyClose(
             dryRun,
           })
         : null;
+    for (const liveIssue of linkedIssuesToClose) {
+      archivePairedIssue(liveIssue.item.number);
+      onPairedIssueClosed(
+        {
+          number: liveIssue.item.number,
+          action: "closed",
+          reason: `dry-run: would close as ${closeReasonText(linkedIssueCloseReason)}`,
+        },
+        true,
+      );
+    }
     const stop = onClosed(
       {
         number,
@@ -449,16 +611,138 @@ export function executeApplyClose(
   }
   const finalCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
   if (finalCloseMutationLeaseBlockReason) return skipLease(finalCloseMutationLeaseBlockReason);
-  closeItem({ number, kind: item.kind, reason: closeReason });
-  let postCloseRuntimeYieldReason: string | null = null;
-  try {
-    ensureRuntimeDelayFits(closeDelayMs, "before close delay");
-    sleepMs(closeDelayMs);
-  } catch (error) {
-    if (!(error instanceof GitHubRuntimeBudgetError)) throw error;
-    postCloseRuntimeYieldReason = error.reason;
+  const reviewedAt = Date.parse(getMarkdown().match(/^reviewed_at: (.+)$/m)?.[1] ?? "");
+  const daysSinceReview = Number.isFinite(reviewedAt)
+    ? Math.max(1, Math.ceil((Date.now() - reviewedAt) / (24 * 60 * 60 * 1000)))
+    : 1;
+  const pairedIssuesReadyToClose: Array<{ number: number; reason: string; updatedAt: string }> = [];
+  for (const liveIssue of linkedIssuesToClose) {
+    // Take the source snapshot before the live timestamp check. An edit before
+    // the timestamp check changes updated_at; one after it changes this
+    // snapshot, so neither can be hidden by the later bot comment.
+    const preCommentIssueSource = pairedIssueSourceSnapshot(liveIssue.item.number);
+    if (!preCommentIssueSource) {
+      return skip(
+        "kept_open",
+        "implemented-on-main paired closeout could not preserve the linked issue source snapshot before final verification",
+      );
+    }
+    const currentLinkedIssue = fetchItem(liveIssue.item.number, { bypassGenerationCache: true });
+    if (
+      currentLinkedIssue.state !== "open" ||
+      currentLinkedIssue.item.kind !== "issue" ||
+      currentLinkedIssue.item.updatedAt !== liveIssue.item.updatedAt ||
+      currentLinkedIssue.item.locked
+    ) {
+      return skip(
+        "kept_open",
+        "implemented-on-main paired closeout requires the linked issue to remain unlocked and unchanged through final verification",
+      );
+    }
+    let issueCommentReason: string;
+    try {
+      issueCommentReason = withPairedIssueMutationLedger(currentLinkedIssue.item.number, () =>
+        ensureCloseAppliedComment({
+          number: currentLinkedIssue.item.number,
+          closeReason: linkedIssueCloseReason,
+          markdown: getMarkdown(),
+          itemUrl: currentLinkedIssue.item.url,
+          dryRun,
+        }),
+      );
+    } catch (error) {
+      if (isGitHubRequiresAuthenticationError(error)) {
+        return skip(
+          "skipped_comment_auth",
+          "GitHub rejected linked-issue closeout evidence comment write with Requires authentication",
+        );
+      }
+      if (isLockedConversationCommentError(error)) {
+        return skip(
+          "skipped_locked_conversation",
+          "linked issue conversation was locked while recording closeout evidence",
+          true,
+        );
+      }
+      throw error;
+    }
+    const postCommentLinkedIssue = fetchItem(currentLinkedIssue.item.number, {
+      bypassGenerationCache: true,
+    });
+    const postCommentIssueSource = pairedIssueSourceSnapshot(currentLinkedIssue.item.number);
+    const postCommentHumanActivity = issueRecentHumanCommentBlockReasonSafe(
+      currentLinkedIssue.item.number,
+      daysSinceReview,
+    );
+    const pairedMarkdown = pairedIssueMarkdown(currentLinkedIssue.item.number);
+    if (!pairedMarkdown) {
+      return skip(
+        "kept_open",
+        "implemented-on-main paired closeout requires an independently reviewed linked issue report",
+      );
+    }
+    const postCommentIssueValidation = validateCloseDecision(
+      {
+        repo,
+        kind: postCommentLinkedIssue.item.kind,
+        labels: postCommentLinkedIssue.item.labels,
+        authorAssociation: postCommentLinkedIssue.item.authorAssociation,
+      },
+      {
+        ...reportDecision(pairedMarkdown, linkedIssueCloseReason),
+        closeReason: linkedIssueCloseReason,
+      },
+      { requireCloseComment: true },
+    );
+    if (
+      postCommentLinkedIssue.state !== "open" ||
+      postCommentLinkedIssue.item.kind !== "issue" ||
+      postCommentLinkedIssue.item.locked ||
+      postCommentIssueSource !== preCommentIssueSource ||
+      postCommentHumanActivity ||
+      !postCommentIssueValidation.ok
+    ) {
+      return skip(
+        "kept_open",
+        "implemented-on-main paired closeout requires the linked issue source to remain unchanged, unlocked, and free of new human activity through final verification",
+      );
+    }
+    const finalLinkedIssue = fetchItem(currentLinkedIssue.item.number, {
+      bypassGenerationCache: true,
+    });
+    if (
+      finalLinkedIssue.state !== "open" ||
+      finalLinkedIssue.item.kind !== "issue" ||
+      finalLinkedIssue.item.updatedAt !== postCommentLinkedIssue.item.updatedAt ||
+      finalLinkedIssue.item.locked
+    ) {
+      return skip(
+        "kept_open",
+        "implemented-on-main paired closeout requires the linked issue to remain unchanged after recording closeout evidence",
+      );
+    }
+    pairedIssuesReadyToClose.push({
+      number: finalLinkedIssue.item.number,
+      reason: [closeReasonText(linkedIssueCloseReason), issueCommentReason]
+        .filter(Boolean)
+        .join("; "),
+      updatedAt: finalLinkedIssue.item.updatedAt,
+    });
   }
-
+  const postPairedCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
+  if (postPairedCloseMutationLeaseBlockReason)
+    return skipLease(postPairedCloseMutationLeaseBlockReason);
+  const postPairedCoveringFreshnessBlock = postProofCoveringPrFreshnessBlock();
+  if (postPairedCoveringFreshnessBlock) {
+    return skip(
+      postPairedCoveringFreshnessBlock.actionTaken,
+      postPairedCoveringFreshnessBlock.reason,
+    );
+  }
+  const postPairedFreshnessBlock = postProofFreshnessBlock();
+  if (postPairedFreshnessBlock)
+    return markChangedSinceReview(postPairedFreshnessBlock) ? "stop" : "next";
+  closeItem({ number, kind: item.kind, reason: closeReason });
   let markdown = replaceSectionValue(getMarkdown(), REVIEW_SECTIONS.closeComment, reviewComment);
   markdown = replaceFrontMatterValue(markdown, "close_comment_sha256", sha256(reviewComment));
   markdown = replaceFrontMatterValue(markdown, "action_taken", "closed");
@@ -475,6 +759,52 @@ export function executeApplyClose(
     },
     false,
   );
+  for (const pairedIssue of pairedIssuesReadyToClose) {
+    const preClosePairedIssue = fetchItem(pairedIssue.number, { bypassGenerationCache: true });
+    const preClosePairedIssueHumanActivity = issueRecentHumanCommentBlockReasonSafe(
+      pairedIssue.number,
+      daysSinceReview,
+    );
+    const finalPairedIssue = fetchItem(pairedIssue.number, { bypassGenerationCache: true });
+    if (
+      preClosePairedIssue.state !== "open" ||
+      preClosePairedIssue.item.kind !== "issue" ||
+      preClosePairedIssue.item.updatedAt !== pairedIssue.updatedAt ||
+      preClosePairedIssue.item.locked ||
+      preClosePairedIssueHumanActivity ||
+      finalPairedIssue.state !== "open" ||
+      finalPairedIssue.item.kind !== "issue" ||
+      finalPairedIssue.item.updatedAt !== preClosePairedIssue.item.updatedAt ||
+      finalPairedIssue.item.locked
+    ) {
+      logProgress(
+        `linked issue #${pairedIssue.number}: kept open because it changed after the parent PR close was finalized`,
+      );
+      continue;
+    }
+    withPairedIssueMutationLedger(pairedIssue.number, () =>
+      closeItem({ number: pairedIssue.number, kind: "issue", reason: linkedIssueCloseReason }),
+    );
+    archivePairedIssue(pairedIssue.number);
+    if (
+      onPairedIssueClosed(
+        { number: pairedIssue.number, action: "closed", reason: pairedIssue.reason },
+        false,
+      )
+    ) {
+      return "stop";
+    }
+    logProgress(`linked issue #${pairedIssue.number}: ${pairedIssue.reason}`);
+  }
+  let postCloseRuntimeYieldReason: string | null = null;
+  try {
+    ensureRuntimeDelayFits(closeDelayMs, "before close delay");
+    sleepMs(closeDelayMs);
+  } catch (error) {
+    if (!(error instanceof GitHubRuntimeBudgetError)) throw error;
+    postCloseRuntimeYieldReason = error.reason;
+  }
+
   if (postCloseRuntimeYieldReason) {
     runtimeBudget.onYield?.(postCloseRuntimeYieldReason, false);
     return "yield";

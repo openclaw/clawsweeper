@@ -573,6 +573,21 @@ test("PR implementation provenance accepts only explicit same-repository closing
     ),
     null,
   );
+  assert.equal(
+    linkedIssueNumbersForPullRequestBody("    Fixes #118669\n\tFixes #118670", "openclaw/openclaw"),
+    null,
+  );
+  assert.equal(
+    linkedIssueNumbersForPullRequestBody("\n    - Fixes #118669", "openclaw/openclaw"),
+    null,
+  );
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody(
+      "<!-- example\n    -->\nFixes #118669",
+      "openclaw/openclaw",
+    ),
+    [118669],
+  );
 });
 
 test("PR implementation provenance caps linked issue references", () => {

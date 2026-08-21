@@ -26,47 +26,59 @@ export function linkedIssueNumbersForPullRequestBody(
 ): readonly number[] | null {
   let fence: { delimiter: "`" | "~"; length: number } | null = null;
   let htmlComment = false;
-  const semanticBody = body
-    .split(/\r?\n/)
-    .map((line) => {
-      // Do not let HTML-comment examples inside code affect the surrounding
-      // Markdown's comment state. A fenced or inline-code line cannot be a
-      // semantic closing directive, so discard it before looking for comments.
-      if (!htmlComment) {
-        const fenceMatch = line.match(/^[\t ]*(`{3,}|~{3,})/);
-        if (fenceMatch) {
-          const marker = fenceMatch[1] ?? "";
-          const delimiter = marker[0] as "`" | "~" | undefined;
-          if (delimiter) {
-            if (!fence) {
-              fence = { delimiter, length: marker.length };
-            } else if (fence.delimiter === delimiter && marker.length >= fence.length) {
-              fence = null;
-            }
+  const semanticLines: string[] = [];
+  for (const line of body.split(/\r?\n/)) {
+    // Indented Markdown is ambiguous without a full block parser. Ignore it
+    // rather than allowing a code example to produce closeout provenance.
+    if (!htmlComment && /^(?:\t| {4})/.test(line)) {
+      semanticLines.push("");
+      continue;
+    }
+    // Do not let HTML-comment examples inside code affect the surrounding
+    // Markdown's comment state. A fenced or inline-code line cannot be a
+    // semantic closing directive, so discard it before looking for comments.
+    if (!htmlComment) {
+      const fenceMatch = line.match(/^[\t ]*(`{3,}|~{3,})/);
+      if (fenceMatch) {
+        const marker = fenceMatch[1] ?? "";
+        const delimiter = marker[0] as "`" | "~" | undefined;
+        if (delimiter) {
+          if (!fence) {
+            fence = { delimiter, length: marker.length };
+          } else if (fence.delimiter === delimiter && marker.length >= fence.length) {
+            fence = null;
           }
-          return "";
         }
-        if (fence || /^[\t ]*>/.test(line) || line.includes("`")) return "";
+        semanticLines.push("");
+        continue;
       }
-      let visible = "";
-      let remaining = line;
-      while (remaining) {
-        if (htmlComment) {
-          const end = remaining.indexOf("-->");
-          if (end < 0) return visible;
-          remaining = remaining.slice(end + 3);
-          htmlComment = false;
-          continue;
-        }
-        const start = remaining.indexOf("<!--");
-        if (start < 0) return visible + remaining;
-        visible += remaining.slice(0, start);
-        remaining = remaining.slice(start + 4);
-        htmlComment = true;
+      if (fence || /^[\t ]*>/.test(line) || line.includes("`")) {
+        semanticLines.push("");
+        continue;
       }
-      return visible;
-    })
-    .join("\n");
+    }
+    let visible = "";
+    let remaining = line;
+    while (remaining) {
+      if (htmlComment) {
+        const end = remaining.indexOf("-->");
+        if (end < 0) break;
+        remaining = remaining.slice(end + 3);
+        htmlComment = false;
+        continue;
+      }
+      const start = remaining.indexOf("<!--");
+      if (start < 0) {
+        visible += remaining;
+        break;
+      }
+      visible += remaining.slice(0, start);
+      remaining = remaining.slice(start + 4);
+      htmlComment = true;
+    }
+    semanticLines.push(visible);
+  }
+  const semanticBody = semanticLines.join("\n");
   const escapedRepo = escapeRegExp(targetRepo);
   const closingVerb = "(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)";
   const issueReference =
@@ -603,6 +615,112 @@ ${profileStatusEnd(profile)}`;
     }
   }
 
+  function verifiedFixedPullRequestForNumber(
+    number: number,
+    source: string,
+  ): FixedPullRequest | null {
+    try {
+      const defaultBranch = defaultBranchForFixedSha();
+      if (!defaultBranch) return null;
+      const pull = ghJson<unknown>([
+        "api",
+        `repos/${targetRepo()}/pulls/${number}`,
+        "--jq",
+        "{number,title,state,html_url,merged,merged_at,merge_commit_sha,head:{sha:.head.sha},base:{ref:.base.ref}}",
+      ]);
+      return pullTargetsBranch(pull, defaultBranch) &&
+        pullMergeCommitIsOnDefaultBranch(pull, defaultBranch)
+        ? fixedPullRequestFromUnknown(pull, source)
+        : null;
+    } catch (error) {
+      if (error instanceof GitHubRateLimitError || error instanceof GitHubRuntimeBudgetError) {
+        throw error;
+      }
+      return null;
+    }
+  }
+
+  function fixedPullRequestFromReviewedImplementation(
+    item: Item,
+    decision: Decision,
+  ): FixedPullRequest | null {
+    const candidate = decision.fixedPullRequest;
+    if (
+      item.kind !== "pull_request" ||
+      decision.decision !== "close" ||
+      decision.confidence !== "high" ||
+      !candidate ||
+      candidate.confidence !== "high" ||
+      candidate.repo !== targetRepo() ||
+      candidate.number === item.number
+    ) {
+      return null;
+    }
+    // The review establishes semantic equivalence. GitHub supplies the separate,
+    // live check that the cited implementation is a merged PR still reachable
+    // from the repository's default branch. GitHub need not have auto-closed
+    // the linked issue for either fact to be true.
+    return verifiedFixedPullRequestForNumber(
+      candidate.number,
+      "GitHub reviewed implementation landing",
+    );
+  }
+
+  function fixedPullRequestFromReviewedFixedSha(
+    item: Item,
+    decision: Decision,
+  ): FixedPullRequest | null {
+    if (
+      item.kind !== "pull_request" ||
+      decision.decision !== "close" ||
+      decision.confidence !== "high"
+    ) {
+      return null;
+    }
+    const fixedSha = decision.fixedSha?.trim();
+    if (!fixedSha || fixedSha === "unknown") return null;
+    try {
+      const defaultBranch = defaultBranchForFixedSha();
+      if (!defaultBranch) return null;
+      const recentMatches = recentPullsForFixedSha()
+        .filter(
+          (pull) =>
+            pullFixedShaMatch(pull, fixedSha) !== null && pullTargetsBranch(pull, defaultBranch),
+        )
+        .map((pull) => asRecord(pull).number)
+        .filter((number): number is number => typeof number === "number" && number !== item.number);
+      const commitMatches =
+        recentMatches.length > 0
+          ? recentMatches
+          : ghJson<unknown[]>([
+              "api",
+              `repos/${targetRepo()}/commits/${fixedSha}/pulls`,
+              "-H",
+              "Accept: application/vnd.github+json",
+            ])
+              .filter((pull) => pullTargetsBranch(pull, defaultBranch))
+              .map((pull) => asRecord(pull).number)
+              .filter(
+                (number): number is number => typeof number === "number" && number !== item.number,
+              );
+      const uniqueNumbers = [...new Set(commitMatches)];
+      // A review may establish that a landed commit resolves the PR's linked
+      // issue even when the original merged PR omitted GitHub's closing syntax.
+      // Do not choose between multiple PRs that happen to contain that SHA.
+      return uniqueNumbers.length === 1
+        ? verifiedFixedPullRequestForNumber(
+            uniqueNumbers[0]!,
+            "GitHub reviewed implementation landing",
+          )
+        : null;
+    } catch (error) {
+      if (error instanceof GitHubRateLimitError || error instanceof GitHubRuntimeBudgetError) {
+        throw error;
+      }
+      return null;
+    }
+  }
+
   function fixedPullRequestFromLinkedPullRequest(
     item: Item,
     context: ItemContext,
@@ -653,13 +771,12 @@ ${profileStatusEnd(profile)}`;
       if (!issueNumbers) {
         return "implemented-on-main close no longer has a current explicit same-repository issue link";
       }
-      for (const issueNumber of issueNumbers) {
-        const fixedPullRequest = fixedPullRequestForLinkedIssue(issueNumber);
-        if (!fixedPullRequest || fixedPullRequest.number !== expectedNumber) {
-          return "implemented-on-main close no longer has current GitHub-verified fixing pull request provenance";
-        }
-      }
-      return null;
+      return verifiedFixedPullRequestForNumber(
+        expectedNumber,
+        "GitHub reviewed implementation landing",
+      )
+        ? null
+        : "implemented-on-main close no longer has current GitHub-verified fixing pull request provenance";
     } catch (error) {
       if (error instanceof GitHubRateLimitError || error instanceof GitHubRuntimeBudgetError) {
         throw error;
@@ -877,7 +994,10 @@ ${profileStatusEnd(profile)}`;
       item.kind === "pull_request" &&
       ["implemented_on_main", "mostly_implemented_on_main"].includes(decision.closeReason)
     ) {
-      const fixedPullRequest = fixedPullRequestFromLinkedPullRequest(item, context, decision);
+      const fixedPullRequest =
+        fixedPullRequestFromReviewedImplementation(item, decision) ??
+        fixedPullRequestFromReviewedFixedSha(item, decision) ??
+        fixedPullRequestFromLinkedPullRequest(item, context, decision);
       return { ...decision, fixedPullRequest };
     }
     if (decision.fixedPullRequest) return decision;

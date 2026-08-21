@@ -308,8 +308,10 @@ test("PR implementation closeout revalidates current issue linkage on the reposi
   assert.equal(resolved.fixedPullRequest?.number, 900);
   assert.equal(resolved.fixedPullRequest?.source, "GitHub linked-issue current closing PR");
   assert.deepEqual(calls, [
-    "graphql",
     "repos/openclaw/openclaw",
+    "repos/openclaw/openclaw/pulls?state=all&sort=updated&direction=desc&per_page=100",
+    "repos/openclaw/openclaw/commits/same-sha/pulls",
+    "graphql",
     "repos/openclaw/openclaw/pulls/900",
     "repos/openclaw/openclaw/compare/current...master",
   ]);
@@ -326,8 +328,10 @@ test("PR implementation closeout rejects a fixing merge commit no longer on the 
 
   assert.equal(resolved.fixedPullRequest, null);
   assert.deepEqual(calls, [
-    "graphql",
     "repos/openclaw/openclaw",
+    "repos/openclaw/openclaw/pulls?state=all&sort=updated&direction=desc&per_page=100",
+    "repos/openclaw/openclaw/commits/same-sha/pulls",
+    "graphql",
     "repos/openclaw/openclaw/pulls/900",
     "repos/openclaw/openclaw/compare/current...main",
   ]);
@@ -361,6 +365,34 @@ test("apply-time PR closeout propagates GitHub rate limits", () => {
   );
 });
 
+test("PR implementation closeout accepts a reviewed canonical PR even while the linked issue remains open", () => {
+  const { calls, context } = statusContextWithCalls();
+  const resolved = context.attachFixedPullRequest(
+    closeDecision({
+      fixedPullRequest: {
+        repo: "openclaw/openclaw",
+        number: 900,
+        url: "https://github.com/openclaw/openclaw/pull/900",
+        title: "fix: canonical implementation",
+        mergedAt: "2026-08-19T12:00:00Z",
+        sha: "current",
+        confidence: "high",
+        source: "review evidence",
+      },
+    }),
+    item({ number: 123, kind: "pull_request" }),
+    { pullRequest: { body: "Fixes #456" } },
+  );
+
+  assert.equal(resolved.fixedPullRequest?.number, 900);
+  assert.equal(resolved.fixedPullRequest?.source, "GitHub reviewed implementation landing");
+  assert.deepEqual(calls, [
+    "repos/openclaw/openclaw",
+    "repos/openclaw/openclaw/pulls/900",
+    "repos/openclaw/openclaw/compare/current...main",
+  ]);
+});
+
 test("apply-time PR closeout propagates GitHub runtime budget exhaustion", () => {
   const applyRead = statusContextWithCalls("main", { runtimeBudgetOnApplyRead: true });
   assert.throws(
@@ -373,13 +405,13 @@ test("apply-time PR closeout propagates GitHub runtime budget exhaustion", () =>
     TestGitHubRuntimeBudgetError,
   );
 
-  const linkedIssue = statusContextWithCalls("main", {
+  const canonicalPull = statusContextWithCalls("main", {
     freshApplyBody: true,
-    runtimeBudgetOnIssueRead: true,
+    runtimeBudgetOnContainmentRead: true,
   });
   assert.throws(
     () =>
-      linkedIssue.context.implementedOnMainPullRequestProvenanceApplyBlock(
+      canonicalPull.context.implementedOnMainPullRequestProvenanceApplyBlock(
         reportFrontMatter({ fixed_pr_number: "900" }),
         item({ number: 123, kind: "pull_request" }),
         "implemented_on_main",
@@ -388,19 +420,17 @@ test("apply-time PR closeout propagates GitHub runtime budget exhaustion", () =>
   );
 });
 
-test("apply-time PR closeout propagates linked-issue GitHub rate limits", () => {
+test("apply-time PR closeout accepts a current linked issue and reviewed canonical PR", () => {
   const { context } = statusContextWithCalls("main", {
     freshApplyBody: true,
-    rateLimitOnIssueRead: true,
   });
-  assert.throws(
-    () =>
-      context.implementedOnMainPullRequestProvenanceApplyBlock(
-        reportFrontMatter({ fixed_pr_number: "900" }),
-        item({ number: 123, kind: "pull_request" }),
-        "implemented_on_main",
-      ),
-    GitHubRateLimitError,
+  assert.equal(
+    context.implementedOnMainPullRequestProvenanceApplyBlock(
+      reportFrontMatter({ fixed_pr_number: "900" }),
+      item({ number: 123, kind: "pull_request" }),
+      "implemented_on_main",
+    ),
+    null,
   );
 });
 

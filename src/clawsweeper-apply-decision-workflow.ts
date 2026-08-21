@@ -87,6 +87,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     applyBlockingProtectedLabels,
     applyKindArg,
     ApplyMutationReviewGuardError,
+    CLAWSWEEPER_BOT_AUTHORS,
     applyPrCloseCoverageProofBlockedReport,
     applyProtectedLabelReason,
     applyRuntimeBudgetYieldResults,
@@ -133,6 +134,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     issueReviewComment,
     isVerifiedFixedCloseReason,
     liveIssueSourceRevision,
+    login,
     lockedConversationApplyReason,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
     markedReviewCommentBody,
@@ -335,6 +337,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       ? fileEntries
       : applyReportEntriesForDir(itemsDir, "items", false);
     const openFileEntryByNumber = new Map(allOpenFileEntries.map((entry) => [entry.number, entry]));
+    const pairedIssueCloseoutReportKeys = new Set<string>();
     const closedThisRun = new Set<string>();
     const authorPrBudgetClosesThisRun = new Map<string, number>();
     // Counts every same-author PR closed this run regardless of reason: the budget
@@ -490,6 +493,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     );
     // oxfmt-ignore
     for (const entry of fileEntries) {
+      if (pairedIssueCloseoutReportKeys.has(pairCloseKey(entry.repo, entry.number))) continue;
       releaseActiveApplyMutationLease();
       resetGuardReadCache();
       const file = entry.name;
@@ -503,6 +507,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let markdown = entry.markdown;
       const repo = entry.repo;
       const number = entry.number;
+      let mutationLedgerEntry = entry;
       const liveReadGeneration = new LiveReadGeneration();
       setGuardReadGeneration(liveReadGeneration);
       const fetchApplyItem = (
@@ -610,17 +615,30 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         writeReportMarkdown(reportPath, markdown);
       };
       try {
-      const markMutationObserved = (): void => {
+      const markMutationObserved = (mutationEntry = mutationLedgerEntry): void => {
         if (dryRun) return;
         liveReadGeneration.invalidate();
         resetGenerationBoundReads();
         if (!preserveGuardReadCacheAfterMutation) resetMutationGuardBoundary();
-        activeApplyItem = { repo, number, mutationOccurred: true };
-        mutationByItem.set(`${repo}#${number}`, true);
+        if (mutationEntry === entry) {
+          activeApplyItem = { repo, number, mutationOccurred: true };
+          mutationByItem.set(`${repo}#${number}`, true);
+        } else {
+          activeApplyItem = {
+            repo: mutationEntry.repo,
+            number: mutationEntry.number,
+            mutationOccurred: true,
+          };
+          mutationByItem.set(`${mutationEntry.repo}#${mutationEntry.number}`, true);
+        }
       };
       const recordMutation = (parentEventId?: string | null): void => {
         markMutationObserved();
-        recordApplyMutationBoundary(applyLedger, entry, parentEventId);
+        if (mutationLedgerEntry === entry) {
+          recordApplyMutationBoundary(applyLedger, entry, parentEventId);
+        } else {
+          recordApplyMutationBoundary(applyLedger, mutationLedgerEntry, parentEventId);
+        }
       };
       dependencies.activeApplyMutationRunner = <T>(options: {
         identity: string;
@@ -632,7 +650,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (dryRun) return options.operation();
         const attempt = startApplyMutationAttempt(
           applyLedger,
-          entry,
+          mutationLedgerEntry,
           options.identity,
           options.idempotencyIdentity,
         );
@@ -648,7 +666,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           const mutated = options.didMutate?.(result) ?? true;
           const outcomeEventId = finishApplyMutationAttempt({
             ledger: applyLedger,
-            entry,
+            entry: mutationLedgerEntry,
             attempt,
             outcome: mutated ? "accepted" : "rejected",
           });
@@ -671,7 +689,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             options.knownNoMutation?.(error) === true;
           finishApplyMutationAttempt({
             ledger: applyLedger,
-            entry,
+            entry: mutationLedgerEntry,
             attempt,
             outcome: rejected ? "rejected" : "unknown",
           });
@@ -720,6 +738,85 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           plansDir,
         });
         renameSync(path, closedPath);
+      };
+      const archivePairedIssue = (issueNumber: number): void => {
+        const pairedEntry = openFileEntryByNumber.get(issueNumber);
+        if (!pairedEntry) {
+          throw new Error(`missing independently reviewed linked issue report #${issueNumber}`);
+        }
+        if (dryRun) {
+          pairedIssueCloseoutReportKeys.add(pairCloseKey(pairedEntry.repo, issueNumber));
+          return;
+        }
+        captureApplyCanonicalBaseline(pairedEntry.path);
+        ensureDir(closedDir);
+        let pairedMarkdown = readFileSync(pairedEntry.path, "utf8");
+        pairedMarkdown = replaceFrontMatterValue(pairedMarkdown, "action_taken", "closed");
+        pairedMarkdown = replaceFrontMatterValue(
+          pairedMarkdown,
+          "applied_at",
+          new Date().toISOString(),
+        );
+        pairedMarkdown = replaceFrontMatterValue(
+          pairedMarkdown,
+          "apply_checked_at",
+          new Date().toISOString(),
+        );
+        const pairedClosedPath = join(closedDir, pairedEntry.name);
+        const syncedMarkdown = syncDecisionPacketMarkdown(pairedClosedPath, pairedMarkdown, "closed");
+        writeFileSync(pairedEntry.path, syncedMarkdown, "utf8");
+        syncWorkPlanFromReport({
+          markdown: syncedMarkdown,
+          reportPath: pairedEntry.path,
+          plansDir,
+        });
+        renameSync(pairedEntry.path, pairedClosedPath);
+        pairedIssueCloseoutReportKeys.add(pairCloseKey(pairedEntry.repo, issueNumber));
+      };
+      const pairedIssueCanonicalProvenanceBlock = (issueNumber: number): string | null => {
+        const pairedEntry = openFileEntryByNumber.get(issueNumber);
+        if (!pairedEntry) return "implemented-on-main paired closeout requires an independently reviewed linked issue report";
+        const parentFixedPrNumber = frontMatterValue(markdown, "fixed_pr_number");
+        const parentFixedPrUrl = frontMatterValue(markdown, "fixed_pr_url");
+        const pairedFixedPrNumber = frontMatterValue(pairedEntry.markdown, "fixed_pr_number");
+        const pairedFixedPrUrl = frontMatterValue(pairedEntry.markdown, "fixed_pr_url");
+        const pairedFixedPrConfidence = frontMatterValue(pairedEntry.markdown, "fixed_pr_confidence");
+        const pairedFixedPrSource = frontMatterValue(pairedEntry.markdown, "fixed_pr_source");
+        const pairedFixedPrMergedAt = frontMatterValue(pairedEntry.markdown, "fixed_pr_merged_at");
+        if (
+          !parentFixedPrNumber ||
+          parentFixedPrNumber !== pairedFixedPrNumber ||
+          !parentFixedPrUrl ||
+          parentFixedPrUrl !== pairedFixedPrUrl ||
+          pairedFixedPrConfidence !== "high" ||
+          !pairedFixedPrSource?.includes("GitHub ") ||
+          !pairedFixedPrMergedAt ||
+          pairedFixedPrMergedAt === "unknown"
+        ) {
+          return "implemented-on-main paired closeout requires the linked issue's independent review to cite the same GitHub-verified fixing pull request";
+        }
+        return null;
+      };
+      const withPairedIssueMutationLedger = <T>(issueNumber: number, operation: () => T): T => {
+        const pairedEntry = openFileEntryByNumber.get(issueNumber);
+        if (!pairedEntry) throw new Error(`missing independently reviewed linked issue report #${issueNumber}`);
+        const previousMutationLedgerEntry = mutationLedgerEntry;
+        const previousActiveApplyItem = activeApplyItem;
+        mutationLedgerEntry = pairedEntry;
+        activeApplyItem = { repo: pairedEntry.repo, number: pairedEntry.number, mutationOccurred: false };
+        startApplyActionLedgerItem(applyLedger, pairedEntry);
+        let completed = false;
+        try {
+          const result = operation();
+          completed = true;
+          return result;
+        } catch (error) {
+          if (error instanceof ApplyMutationReviewGuardError) activeApplyItem = previousActiveApplyItem;
+          throw error;
+        } finally {
+          mutationLedgerEntry = previousMutationLedgerEntry;
+          if (completed) activeApplyItem = previousActiveApplyItem;
+        }
       };
       const markApplyChecked = (subjectState: DecisionPacketSubjectState = "open"): void => {
         discardIssueLabelBatch();
@@ -2356,6 +2453,31 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         applyCloseReasons,
         applyKind,
         archiveClosed,
+        archivePairedIssue,
+        canStartPairedIssueClose: (pairedNumber, pairedKind) =>
+          applyLedger.items.has(pairCloseKey(repo, pairedNumber)) &&
+          canStartSameAuthorPairCloseInThisRun(pairedNumber, pairedKind),
+        pairedIssueMarkdown: (pairedNumber) => openFileEntryByNumber.get(pairedNumber)?.markdown ?? null,
+        pairedIssueReviewUpdatedAt: (pairedNumber) => {
+          const pairedMarkdown = openFileEntryByNumber.get(pairedNumber)?.markdown;
+          return pairedMarkdown ? frontMatterValue(pairedMarkdown, "item_updated_at") ?? null : null;
+        },
+        pairedIssueOwnedReviewCommentUpdatedAt: (pairedNumber) => {
+          const pairedMarkdown = openFileEntryByNumber.get(pairedNumber)?.markdown;
+          if (!pairedMarkdown) return null;
+          const pairedCloseReason = reportDecision(
+            pairedMarkdown,
+            "implemented_on_main",
+          ).closeReason;
+          const pairedReviewComment = issueReviewComment(pairedNumber, [
+            renderReviewCommentFromReport(pairedMarkdown, pairedCloseReason),
+            reviewSectionValue(pairedMarkdown, "closeComment"),
+          ]);
+          const author = login(pairedReviewComment?.user)?.trim().toLowerCase();
+          return author && CLAWSWEEPER_BOT_AUTHORS.has(author)
+            ? commentUpdatedAt(pairedReviewComment) ?? null
+            : null;
+        },
         closeDelayMs,
         closeLimitReached: closedCount >= limit,
         closeReason: appliedCloseReason,
@@ -2387,6 +2509,35 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           if (item.kind === "pull_request") recordAuthorPrClose(item.author, appliedCloseReason);
           return processedCount >= processedLimit;
         },
+        onPairedIssueClosed: (result, simulated) => {
+          closedCount += 1;
+          processedCount += 1;
+          results.push(result);
+          logProgress(`${simulated ? "would close" : "closed"} linked issue #${result.number}`);
+          closedThisRun.add(pairCloseKey(repo, result.number));
+          const pairedEntry = openFileEntryByNumber.get(result.number);
+          const pairedState = pairedEntry
+            ? startApplyActionLedgerItem(applyLedger, pairedEntry)
+            : null;
+          if (pairedEntry && pairedState) {
+            const pairedClosedPath = join(closedDir, pairedEntry.name);
+            const pairedLedgerEntry = existsSync(pairedClosedPath)
+              ? { ...pairedEntry, path: pairedClosedPath, markdown: readFileSync(pairedClosedPath, "utf8") }
+              : pairedEntry;
+            recordApplyActionLedgerItemResults({
+              ledger: applyLedger,
+              state: pairedState,
+              results: [result],
+              entry: pairedLedgerEntry,
+              mutationOccurred: mutationByItem.get(`${pairedEntry.repo}#${pairedEntry.number}`) === true,
+              dryRun,
+            });
+          }
+          return processedCount >= processedLimit;
+        },
+        pairedIssueCanonicalProvenanceBlock,
+        pairedIssueCloseCapacityAvailable:
+          closedCount + 2 <= limit && processedCount + 2 <= processedLimit,
         postProofCoveringPrFreshnessBlock,
         postProofFreshnessBlock,
         proofResult: () => coverageProofState.cachedPrCloseCoverageProofGateResult,
@@ -2401,6 +2552,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         runtimeBudget,
         setMarkdown: (value) => { markdown = value; },
         staleMinAgeDays,
+        withPairedIssueMutationLedger,
         },
       );
       if (closeFlow === "yield") return;
