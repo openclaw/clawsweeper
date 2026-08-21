@@ -284,12 +284,12 @@ export function executeApplyClose(
       const closeAppliedMarker = `<!-- clawsweeper-close-applied item=${issueNumber} -->`;
       for (const comment of fetchIssueReviewComments(issueNumber)) {
         const record = asRecord(comment);
-        const createdAt = typeof record.created_at === "string" ? record.created_at : "";
-        const createdAtMs = Date.parse(createdAt);
-        if (!Number.isFinite(createdAtMs)) {
+        const createdAtMs = Date.parse(typeof record.created_at === "string" ? record.created_at : "");
+        const updatedAtMs = Date.parse(typeof record.updated_at === "string" ? record.updated_at : "");
+        if (!Number.isFinite(createdAtMs) || !Number.isFinite(updatedAtMs)) {
           return "linked issue comment activity check returned an invalid timestamp";
         }
-        if (createdAtMs <= cutoffMs) continue;
+        if (createdAtMs <= cutoffMs && updatedAtMs <= cutoffMs) continue;
         const user = asRecord(record.user);
         const login = typeof user.login === "string" ? user.login.trim().toLowerCase() : "";
         const body = typeof record.body === "string" ? record.body : "";
