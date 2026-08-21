@@ -1696,6 +1696,80 @@ export async function validateDirectPublicationPlan(
   };
 }
 
+export function directPublicationRejectionDetail(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  switch (message) {
+    case "invalid direct publication canonical target key":
+      return "invalid direct publication canonical target key";
+    case "invalid direct publication fence key":
+      return "invalid direct publication fence key";
+    case "invalid direct publication source SHA":
+      return "invalid direct publication source SHA";
+    case "invalid direct publication revision":
+      return "invalid direct publication revision";
+    case "invalid direct publication lifecycle plan":
+      return "invalid direct publication lifecycle plan";
+    case "invalid direct publication identity":
+      return "invalid direct publication identity";
+    case "a direct publication plan must change a path":
+      return "a direct publication plan must change a path";
+    case "a direct publication plan exceeds the exact-review tuple file limit":
+      return "a direct publication plan exceeds the exact-review tuple file limit";
+    case "direct publication total does not match its operations":
+      return "direct publication total does not match its operations";
+    case "direct publication plan exceeds the per-POST byte limit":
+      return "direct publication plan exceeds the per-POST byte limit";
+    case "conflicting direct publication retry":
+      return "conflicting direct publication retry";
+    case "direct publication source run identity is unavailable":
+      return "direct publication source run identity is unavailable";
+    case "direct publication source SHA is unavailable":
+      return "direct publication source SHA is unavailable";
+  }
+  if (message.startsWith("invalid bounded state mutation path:")) {
+    return "invalid bounded state mutation path";
+  }
+  if (message.startsWith("invalid or repeated direct publication path:")) {
+    return "invalid or repeated direct publication path";
+  }
+  if (message.startsWith("direct publication path is outside ")) {
+    return "direct publication path is outside its target tuple";
+  }
+  if (message.startsWith("invalid mutation mode for ")) return "invalid mutation mode";
+  if (message.startsWith("invalid mutation byte count for ")) return "invalid mutation byte count";
+  if (message.startsWith("deleted mutation paths must not carry content:")) {
+    return "deleted mutation paths must not carry content";
+  }
+  if (message.startsWith("missing or invalid mutation content for ")) {
+    return "missing or invalid mutation content";
+  }
+  if (message.startsWith("mutation byte count does not match content for ")) {
+    return "mutation byte count does not match content";
+  }
+  if (message.startsWith("canonical record content is not UTF-8:")) {
+    return "canonical record content is not UTF-8";
+  }
+  if (message.startsWith("canonical tuple has invalid primary/sidecar structure:")) {
+    return "canonical tuple has invalid primary/sidecar structure";
+  }
+  if (message.startsWith("canonical closed tuple retains a work plan:")) {
+    return "canonical closed tuple retains a work plan";
+  }
+  if (message.startsWith("canonical tuple references a missing decision packet:")) {
+    return "canonical tuple references a missing decision packet";
+  }
+  if (message.startsWith("canonical tuple decision packet reference is inconsistent:")) {
+    return "canonical tuple decision packet reference is inconsistent";
+  }
+  if (message.startsWith("direct publication tuple writes both primary sections:")) {
+    return "direct publication tuple writes both primary sections";
+  }
+  if (message.startsWith("canonical record tuple exceeds its file limit:")) {
+    return "canonical record tuple exceeds its file limit";
+  }
+  return "direct publication request failed";
+}
+
 function storedOperationsFrom(
   operations: readonly CanonicalDirectPublicationOperation[],
 ): DirectPublicationStoredOperation[] {

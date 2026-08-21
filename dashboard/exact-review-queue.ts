@@ -27,6 +27,7 @@ import {
   EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
   REVIEW_COVERAGE_INVENTORY_KEY,
   ExactReviewDirectPublicationStore,
+  directPublicationRejectionDetail,
   normalizeReviewCoverageInventory,
   sha256Hex,
   validateCanonicalRecordTupleMutation,
@@ -3044,7 +3045,7 @@ export class ExactReviewQueue {
           202,
         );
       } catch (error) {
-        const detail = sanitizedServerError(error);
+        const detail = directPublicationRejectionDetail(error);
         console.warn("direct_publication_plan_rejected");
         return json(
           {
@@ -3185,8 +3186,8 @@ export class ExactReviewQueue {
           this.githubWebhookReadModelStore.ingest(await request.json().catch(() => null)),
           202,
         );
-      } catch (error) {
-        return json({ error: sanitizedServerError(error) }, 400);
+      } catch {
+        return json({ error: "invalid_github_webhook_read_model_delivery" }, 400);
       }
     }
 
@@ -3256,8 +3257,8 @@ export class ExactReviewQueue {
           this.githubWebhookReadModelStore.repair(await request.json().catch(() => null)),
           202,
         );
-      } catch (error) {
-        return json({ error: sanitizedServerError(error) }, 400);
+      } catch {
+        return json({ error: "invalid_github_webhook_read_model_repair" }, 400);
       }
     }
 
@@ -3266,8 +3267,8 @@ export class ExactReviewQueue {
         return json(
           await this.githubWebhookReadModelStore.readItem(await request.json().catch(() => null)),
         );
-      } catch (error) {
-        return json({ error: sanitizedServerError(error) }, 400);
+      } catch {
+        return json({ error: "invalid_github_webhook_read_model_item_request" }, 400);
       }
     }
 
@@ -3278,8 +3279,8 @@ export class ExactReviewQueue {
             await request.json().catch(() => null),
           ),
         );
-      } catch (error) {
-        return json({ error: sanitizedServerError(error) }, 400);
+      } catch {
+        return json({ error: "invalid_github_webhook_read_model_comments_request" }, 400);
       }
     }
 
@@ -3290,8 +3291,8 @@ export class ExactReviewQueue {
             await request.json().catch(() => null),
           ),
         );
-      } catch (error) {
-        return json({ error: sanitizedServerError(error) }, 400);
+      } catch {
+        return json({ error: "invalid_github_webhook_read_model_activity_request" }, 400);
       }
     }
 
@@ -3302,8 +3303,8 @@ export class ExactReviewQueue {
             await request.json().catch(() => null),
           ),
         );
-      } catch (error) {
-        return json({ error: sanitizedServerError(error) }, 400);
+      } catch {
+        return json({ error: "invalid_github_webhook_read_model_workflows_request" }, 400);
       }
     }
 
@@ -3314,8 +3315,8 @@ export class ExactReviewQueue {
             await request.json().catch(() => null),
           ),
         );
-      } catch (error) {
-        return json({ error: sanitizedServerError(error) }, 400);
+      } catch {
+        return json({ error: "invalid_github_webhook_read_model_placeholders_request" }, 400);
       }
     }
 

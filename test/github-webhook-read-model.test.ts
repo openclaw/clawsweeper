@@ -314,6 +314,30 @@ test("signed webhook loopback covers lifecycle, comments, reviews, checks, runs,
   assert.equal(afterDuplicate.watermark, workflows.watermark);
 });
 
+test("read-model failures expose only endpoint-owned error codes", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const cases = [
+    ["ingest", "invalid_github_webhook_read_model_delivery"],
+    ["repair", "invalid_github_webhook_read_model_repair"],
+    ["item", "invalid_github_webhook_read_model_item_request"],
+    ["comments", "invalid_github_webhook_read_model_comments_request"],
+    ["activity", "invalid_github_webhook_read_model_activity_request"],
+    ["workflows", "invalid_github_webhook_read_model_workflows_request"],
+    ["placeholders", "invalid_github_webhook_read_model_placeholders_request"],
+  ] as const;
+
+  for (const [operation, error] of cases) {
+    const response = await queue.fetch(
+      new Request(`https://queue/github-read-model/${operation}`, {
+        method: "POST",
+        body: JSON.stringify({ invalid: "private-path-marker" }),
+      }),
+    );
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error });
+  }
+});
+
 test("dashboard workflow snapshot preserves health decisions while removing run and job polls", async () => {
   const storage = new MemoryDurableStorage();
   const store = new GithubWebhookReadModelStore(storage);

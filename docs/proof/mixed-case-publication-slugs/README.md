@@ -11,8 +11,8 @@ The behavior contract is:
   `records/steipete-CodexBar/...` path returns HTTP 202 with an accepted or deduped receipt;
 - the real Worker export surface serves that record only from `steipete-codexbar`, and the
   persisted Durable Object SQLite contains no `steipete-CodexBar` canonical or export row;
-- a signed plan whose operation names `steipete-other` returns the detailed HTTP 400
-  `invalid_direct_publication_plan` response;
+- a signed plan whose operation names `steipete-other` returns the HTTP 400
+  `invalid_direct_publication_plan` response with a bounded tuple-invariant detail;
 - a signed all-lowercase `openclaw/openclaw` plan still returns HTTP 202 with an accepted or
   deduped receipt.
 

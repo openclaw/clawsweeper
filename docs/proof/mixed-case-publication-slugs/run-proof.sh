@@ -245,10 +245,7 @@ MIXED_STATUS="$mixed_status" DIFFERENT_STATUS="$different_status" LOWERCASE_STAT
     assert.deepEqual(uppercaseExport.records, []);
     assert.equal(different.error, "invalid_direct_publication_plan");
     assert.equal(different.fallback_required, true);
-    assert.match(
-      different.detail,
-      /direct publication path is outside steipete-CodexBar#2517: records\/steipete-other\/items\/2517\.md/,
-    );
+    assert.equal(different.detail, "direct publication path is outside its target tuple");
     const lines = [
       "Durable Object initialized: exact_review_direct_publication_plans table present",
       "mixed-case repository with uppercase path: HTTP " + process.env.MIXED_STATUS + "; accepted=" + mixed.accepted + "; deduped=" + mixed.deduped + "; canonical_target_key=" + mixed.canonical_target_key,

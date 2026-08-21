@@ -181,11 +181,37 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     fallback_required: boolean;
     detail: string;
   };
-  assert.equal(invalidPlanResponse.error, "invalid_direct_publication_plan");
-  assert.equal(invalidPlanResponse.fallback_required, true);
-  assert.match(invalidPlanResponse.detail, /^invalid bounded state mutation path: /);
-  assert.match(invalidPlanResponse.detail, /\[REDACTED\]/);
-  assert.doesNotMatch(invalidPlanResponse.detail, /alice|hunter2|ghp_[A-Za-z0-9_]+/);
+  assert.deepEqual(invalidPlanResponse, {
+    error: "invalid_direct_publication_plan",
+    fallback_required: true,
+    detail: "invalid bounded state mutation path",
+  });
+  const dualPrimaryBody = JSON.stringify({
+    ...payload,
+    totalBytes: 2,
+    operations: [
+      payload.operations[0],
+      {
+        ...payload.operations[0],
+        path: "records/openclaw-openclaw/closed/701.md",
+      },
+    ],
+  });
+  const dualPrimarySignature = `sha256=${createHmac("sha256", "test-secret").update(dualPrimaryBody).digest("hex")}`;
+  const dualPrimary = await worker.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": dualPrimarySignature },
+      body: dualPrimaryBody,
+    }),
+    env,
+  );
+  assert.equal(dualPrimary.status, 400);
+  assert.deepEqual(await dualPrimary.json(), {
+    error: "invalid_direct_publication_plan",
+    fallback_required: true,
+    detail: "direct publication tuple writes both primary sections",
+  });
   for (const expected of [
     { accepted: true, deduped: false },
     { accepted: false, deduped: true },

@@ -58,6 +58,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Replaced public Worker exception text with endpoint-owned error codes and bounded direct-publication rejection categories, preserving distinct operational fingerprints without exposing submitted values or stack traces.
 - Replaced terminal live proof's authenticated `xvfb-run` wrapper with a TCP-disabled local Xvfb display so readiness probes and recording can connect without X authorization failures.
 - Made terminal live-proof recording wait for Xvfb and ffmpeg readiness and clean finalization, with tmux pane diagnostics on failure.
 - Routed every durable review-record publication lane through one shared, host-authenticated live-proof dispatcher, including queued exact-review batches grouped per target repository.
