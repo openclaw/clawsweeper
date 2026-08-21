@@ -3774,6 +3774,7 @@ test("apply-decisions verifies provenance after a closeout note and before closi
     "paired_source_change_during_closeout",
     "paired_metadata_change_during_closeout",
     "paired_bot_activity_during_closeout",
+    "paired_fresh_owned_review_comment",
   ] as const) {
     const lifecycleDrift = scenario === "lifecycle_drift";
     const multipleLinkedIssues = scenario === "multiple_linked_issues";
@@ -3786,6 +3787,7 @@ test("apply-decisions verifies provenance after a closeout note and before closi
     const pairedMetadataChangeDuringCloseout =
       scenario === "paired_metadata_change_during_closeout";
     const pairedBotActivityDuringCloseout = scenario === "paired_bot_activity_during_closeout";
+    const pairedFreshOwnedReviewComment = scenario === "paired_fresh_owned_review_comment";
     const lockedCloseoutComment = scenario === "locked_closeout_comment";
     const betweenFreshnessAndCloseoutHumanActivity =
       scenario === "between_freshness_and_closeout_human_activity";
@@ -3887,6 +3889,7 @@ const postCloseoutPrReviewActivity = ${postCloseoutPrReviewActivity};
 const pairedSourceChangeDuringCloseout = ${pairedSourceChangeDuringCloseout};
 const pairedMetadataChangeDuringCloseout = ${pairedMetadataChangeDuringCloseout};
 const pairedBotActivityDuringCloseout = ${pairedBotActivityDuringCloseout};
+const pairedFreshOwnedReviewComment = ${pairedFreshOwnedReviewComment};
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   const timeline = existsSync(betweenFreshnessAndCloseoutHumanActivityPath)
     ? [{
@@ -3920,11 +3923,21 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     const comments = [{
       id: 9456,
       html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9456",
-      created_at: "2026-05-01T01:00:00Z",
-      updated_at: "2026-05-01T01:00:00Z",
+      created_at: pairedFreshOwnedReviewComment ? new Date().toISOString() : "2026-05-01T01:00:00Z",
+      updated_at: pairedFreshOwnedReviewComment ? new Date().toISOString() : "2026-05-01T01:00:00Z",
       user: { login: "clawsweeper[bot]" },
       body: readFileSync(linkedIssueCommentPath, "utf8")
     }];
+    if (pairedFreshOwnedReviewComment) {
+      comments.push({
+        id: 9455,
+        html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9455",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        user: { login: "clawsweeper[bot]" },
+        body: linkedIssueComment
+      });
+    }
     if (existsSync(pairedIssueBotActivityPath)) {
       comments.push({
         id: 9457,

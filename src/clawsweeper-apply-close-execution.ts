@@ -27,6 +27,7 @@ import { stableJson } from "./stable-json.js";
 
 type ApplyCloseExecutionDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
+  | "CLAWSWEEPER_BOT_AUTHORS"
   | "asRecord"
   | "abandonedPrApplyBlockReasonSafe"
   | "addIssueLabel"
@@ -160,6 +161,7 @@ export function executeApplyClose(
   options: ApplyCloseExecutionOptions,
 ): ApplyCloseFlow {
   const {
+    CLAWSWEEPER_BOT_AUTHORS,
     asRecord,
     abandonedPrApplyBlockReasonSafe,
     addIssueLabel,
@@ -284,7 +286,13 @@ export function executeApplyClose(
         const user = asRecord(record.user);
         const login = typeof user.login === "string" ? user.login.trim().toLowerCase() : "";
         const body = typeof record.body === "string" ? record.body : "";
-        if (login === "clawsweeper[bot]" && body.includes(closeAppliedMarker)) continue;
+        if (
+          CLAWSWEEPER_BOT_AUTHORS.has(login) &&
+          (body.includes(closeAppliedMarker) ||
+            body.includes(`<!-- clawsweeper-review item=${issueNumber}`))
+        ) {
+          continue;
+        }
         return `linked issue has a non-ClawSweeper comment within the last ${days} days`;
       }
       return null;
