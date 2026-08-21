@@ -8,12 +8,25 @@ import {
 import { GitHubRateLimitError } from "../dist/github-retry.js";
 import { closeDecision, item, reportFrontMatter } from "./helpers.ts";
 
+class TestGitHubRuntimeBudgetError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(reason);
+    this.name = "GitHubRuntimeBudgetError";
+    this.reason = reason;
+  }
+}
+
 function statusContextWithCalls(
   defaultBranch = "main",
   options: {
     rateLimitOnApplyRead?: boolean;
     rateLimitOnIssueRead?: boolean;
     rateLimitOnContainmentRead?: boolean;
+    runtimeBudgetOnApplyRead?: boolean;
+    runtimeBudgetOnIssueRead?: boolean;
+    runtimeBudgetOnContainmentRead?: boolean;
     freshApplyBody?: boolean;
     mergeCommitReachable?: boolean;
   } = {},
@@ -48,6 +61,8 @@ function statusContextWithCalls(
     const path = args[1] ?? "";
     calls.push(path);
     if (path === "graphql") {
+      if (options.runtimeBudgetOnIssueRead)
+        throw new TestGitHubRuntimeBudgetError("runtime budget exhausted");
       if (options.rateLimitOnIssueRead) throw new GitHubRateLimitError("API rate limit exceeded");
       return {
         data: {
@@ -75,6 +90,8 @@ function statusContextWithCalls(
     if (path === "repos/openclaw/openclaw") return { default_branch: defaultBranch } as T;
     if (path.startsWith("repos/openclaw/openclaw/pulls?")) return recentPulls as T;
     if (path === "repos/openclaw/openclaw/pulls/123") {
+      if (options.runtimeBudgetOnApplyRead)
+        throw new TestGitHubRuntimeBudgetError("runtime budget exhausted");
       if (options.rateLimitOnApplyRead) throw new GitHubRateLimitError("API rate limit exceeded");
       return { body: options.freshApplyBody ? "Fixes #456" : "No longer linked" } as T;
     }
@@ -82,6 +99,8 @@ function statusContextWithCalls(
       return { ...pull(900, "current", 456), base: { ref: defaultBranch } } as T;
     }
     if (path.startsWith("repos/openclaw/openclaw/compare/current...")) {
+      if (options.runtimeBudgetOnContainmentRead)
+        throw new TestGitHubRuntimeBudgetError("runtime budget exhausted");
       if (options.rateLimitOnContainmentRead)
         throw new GitHubRateLimitError("API rate limit exceeded");
       return { status: options.mergeCommitReachable === false ? "diverged" : "ahead" } as T;
@@ -104,6 +123,7 @@ function statusContextWithCalls(
     sweepStatusPath: () => "",
     markdownRepository: () => "openclaw/openclaw",
     ghJson,
+    GitHubRuntimeBudgetError: TestGitHubRuntimeBudgetError,
     asRecord: (value) =>
       value && typeof value === "object" && !Array.isArray(value)
         ? (value as Record<string, unknown>)
@@ -338,6 +358,33 @@ test("apply-time PR closeout propagates GitHub rate limits", () => {
         "implemented_on_main",
       ),
     GitHubRateLimitError,
+  );
+});
+
+test("apply-time PR closeout propagates GitHub runtime budget exhaustion", () => {
+  const applyRead = statusContextWithCalls("main", { runtimeBudgetOnApplyRead: true });
+  assert.throws(
+    () =>
+      applyRead.context.implementedOnMainPullRequestProvenanceApplyBlock(
+        reportFrontMatter({ fixed_pr_number: "900" }),
+        item({ number: 123, kind: "pull_request" }),
+        "implemented_on_main",
+      ),
+    TestGitHubRuntimeBudgetError,
+  );
+
+  const linkedIssue = statusContextWithCalls("main", {
+    freshApplyBody: true,
+    runtimeBudgetOnIssueRead: true,
+  });
+  assert.throws(
+    () =>
+      linkedIssue.context.implementedOnMainPullRequestProvenanceApplyBlock(
+        reportFrontMatter({ fixed_pr_number: "900" }),
+        item({ number: 123, kind: "pull_request" }),
+        "implemented_on_main",
+      ),
+    TestGitHubRuntimeBudgetError,
   );
 });
 

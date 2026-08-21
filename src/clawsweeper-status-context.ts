@@ -182,6 +182,7 @@ interface StatusContextDependencies {
   sweepStatusPath: (profile?: RepositoryProfile) => string;
   markdownRepository: (markdown: string, file?: string) => string;
   ghJson: <T>(args: string[]) => T;
+  GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
   asRecord: (value: unknown) => Record<string, unknown>;
   frontMatterValue: (markdown: string, key: string) => string | undefined;
   stringOrUndefined: (value: unknown) => string | undefined;
@@ -201,6 +202,7 @@ export function createStatusContext({
   sweepStatusPath,
   markdownRepository,
   ghJson,
+  GitHubRuntimeBudgetError,
   asRecord,
   frontMatterValue,
   stringOrUndefined,
@@ -593,7 +595,9 @@ ${profileStatusEnd(profile)}`;
         ? fixedPullRequestFromUnknown(pull, "GitHub linked-issue current closing PR")
         : null;
     } catch (error) {
-      if (error instanceof GitHubRateLimitError) throw error;
+      if (error instanceof GitHubRateLimitError || error instanceof GitHubRuntimeBudgetError) {
+        throw error;
+      }
       // Missing or unreadable linkage must not turn into an inferred close.
       return null;
     }
@@ -657,7 +661,9 @@ ${profileStatusEnd(profile)}`;
       }
       return null;
     } catch (error) {
-      if (error instanceof GitHubRateLimitError) throw error;
+      if (error instanceof GitHubRateLimitError || error instanceof GitHubRuntimeBudgetError) {
+        throw error;
+      }
       return "implemented-on-main close could not revalidate current GitHub provenance";
     }
   }

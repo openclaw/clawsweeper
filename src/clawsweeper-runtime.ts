@@ -802,6 +802,7 @@ const statusContext = createStatusContext({
   ...sweepStatus,
   markdownRepository,
   ghJson,
+  GitHubRuntimeBudgetError,
   asRecord,
   frontMatterValue,
   stringOrUndefined,
