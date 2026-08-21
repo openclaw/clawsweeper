@@ -1688,6 +1688,7 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "ready_pending",
   "admissible_pending",
   "scheduled_interval_minutes",
+  "target_rate_per_hour",
   "terminal_count",
   "total_count",
   "total_duration_ms",
@@ -1803,6 +1804,7 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "dispatching",
   "leased",
   "pressure",
+  "scheduled_feed",
   "bay_projection",
   "activity",
   "queue_stages",
@@ -4398,6 +4400,7 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
 }
 
 const PUBLIC_QUEUE_COUNT_LIMIT = 1_000_000;
+const PUBLIC_SCHEDULED_FEED_RATE_LIMIT = 2_000;
 const PUBLIC_QUEUE_TOTAL_LIMIT = 1_000_000_000_000;
 const PUBLIC_QUEUE_BACKOFF_REASONS = [
   "dispatch_debounce",
@@ -4643,6 +4646,10 @@ export function publicExactReviewQueueProjection(
   const projectedHandoff = publicExactReviewHandoff(sourceHandoff);
   const sourcePressure = objectValue(source.pressure);
   const projectedPressure = publicExactReviewPressure(sourcePressure);
+  const scheduledTargetRate = publicQueueCount(
+    objectValue(source.scheduled_feed).target_rate_per_hour,
+    PUBLIC_SCHEDULED_FEED_RATE_LIMIT,
+  );
   const requiredCounts = [
     source.pending,
     source.ready_pending,
@@ -4740,6 +4747,10 @@ export function publicExactReviewQueueProjection(
     next_wake_at: publicQueueTimestamp(source.next_wake_at),
     handoff_health: projectedHandoff,
     pressure: projectedPressure,
+    scheduled_feed:
+      scheduledTargetRate !== null && scheduledTargetRate > 0
+        ? { target_rate_per_hour: scheduledTargetRate }
+        : null,
     lanes: {
       review: projectedReviewLane.value,
       publication: projectedPublicationLane.value,

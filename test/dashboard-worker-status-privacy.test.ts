@@ -1066,6 +1066,14 @@ test("public queue projection retains only closed operational aggregates", () =>
       dispatch_failure_fingerprint: sentinel,
       dispatch_failure_detail: { workflow_title: sentinel },
     },
+    scheduled_feed: {
+      target_rate_per_hour: 300,
+      burst: 50,
+      token_balance: 42,
+      throttle_source: sentinel,
+      lanes: { normal_backfill: { target_rate_per_hour: 200 } },
+      sentinel,
+    },
     lanes: {
       review: {
         pending: 7,
@@ -1165,6 +1173,7 @@ test("public queue projection retains only closed operational aggregates", () =>
   assert.equal(projected.lanes.review.parked_reasons.unknown, 1);
   assert.equal(projected.handoff_health.status, "healthy");
   assert.equal(projected.pressure.status, "congested");
+  assert.deepEqual(projected.scheduled_feed, { target_rate_per_hour: 300 });
   assert.deepEqual(projected.bay_projection.activity, {
     complete: false,
     queue_stages: null,
@@ -1198,11 +1207,18 @@ test("public queue projection retains only closed operational aggregates", () =>
   assert.equal(JSON.stringify(statusProjected).includes(sentinel), false);
   assert.deepEqual(statusProjected.recent.closed_items, []);
   assert.deepEqual(statusProjected.exact_review_queue.collection, { state: "complete" });
+  assert.deepEqual(statusProjected.exact_review_queue.scheduled_feed, {
+    target_rate_per_hour: 300,
+  });
   assert.deepEqual(statusProjected.exact_review_queue.handoff_health.phases, {
     pending: { count: 7, oldest_at: null, oldest_age_seconds: null },
     dispatching: { count: 2, oldest_at: null, oldest_age_seconds: null },
     leased: { count: 1, oldest_at: null, oldest_age_seconds: null },
   });
+  assert.deepEqual(
+    strictPublicStatusProjection(statusProjected).exact_review_queue.scheduled_feed,
+    statusProjected.exact_review_queue.scheduled_feed,
+  );
 
   const highTotals = publicExactReviewQueueProjection({
     ...projected,
@@ -1217,6 +1233,21 @@ test("public queue projection retains only closed operational aggregates", () =>
   });
   assert.equal(highTotals.lanes.review.enqueued_total, 1_120_211);
   assert.equal(highTotals.lanes.review.completed_total, 1_120_299);
+
+  for (const scheduled_feed of [
+    undefined,
+    null,
+    {},
+    { target_rate_per_hour: 0 },
+    { target_rate_per_hour: 1.5 },
+    { target_rate_per_hour: 2_001 },
+    { target_rate_per_hour: "300" },
+  ]) {
+    assert.equal(
+      publicExactReviewQueueProjection({ ...source, scheduled_feed }).scheduled_feed,
+      null,
+    );
+  }
 
   const mismatches = [
     (value) => {

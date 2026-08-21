@@ -802,12 +802,18 @@ test("dashboard sanitizes stored status immediately and never renders transport 
     bay: {},
     recent: {},
     diagnostics: { errors: [marker], error_count: 0 },
+    exact_review_queue: {
+      scheduled_feed: { target_rate_per_hour: 300, token_balance: marker },
+    },
   });
   const withCache = await run(cached);
   assert.equal(withCache.removed, false);
   assert.ok(withCache.writes.length >= 1);
   assert.equal(withCache.writes[0].includes(marker), false);
   assert.match(withCache.writes[0], /telemetry_unavailable/);
+  assert.deepEqual(JSON.parse(withCache.writes[0]).exact_review_queue.scheduled_feed, {
+    target_rate_per_hour: 300,
+  });
   assert.doesNotMatch(JSON.stringify([...withCache.elements.values()]), new RegExp(marker, "i"));
 
   const withoutCache = await run(null);

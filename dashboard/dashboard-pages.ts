@@ -1945,7 +1945,7 @@ const STATUS_CONTAINER_FIELDS = new Set([
   "comment_sync", "automerge", "automerge_reliability", "closed_items", "closed_stats",
   "operation_counts", "events", "reasons", "cursor", "exact_review_queue",
   "recent_durable_publication_events", "collection", "review", "publication", "handoff_health",
-  "phases", "pending", "dispatching", "leased", "pressure", "bay_projection", "activity", "queue_stages", "live_stages", "stages",
+  "phases", "pending", "dispatching", "leased", "pressure", "scheduled_feed", "bay_projection", "activity", "queue_stages", "live_stages", "stages",
   "active_stages", "window", "direct", "batch", "counts", "buckets", "provenance",
   "backoff_reasons", "parked_reasons", "recovery_reasons", "errors"
 ]);
@@ -2005,7 +2005,7 @@ const STATUS_NUMBER_FIELDS = new Set([
   "failure_rate_percent", "generated_count", "longest_duration_ms", "maximum_age_ms", "median_ms",
   "oldest_age_seconds", "oldest_dispatching_age_seconds", "oldest_leased_age_seconds",
   "oldest_pending_age_seconds", "omitted_count", "ready_pending", "admissible_pending",
-  "scheduled_interval_minutes", "terminal_count", "total_count", "total_duration_ms", "ttl_seconds",
+  "scheduled_interval_minutes", "target_rate_per_hour", "terminal_count", "total_count", "total_duration_ms", "ttl_seconds",
   "setting-up", "ready", "backoff", "parked", "oldest_ready_age_seconds",
   "oldest_backoff_age_seconds", "oldest_lease_age_seconds", "enqueued_total", "completed_total",
   "published_total", "superseded_total", "semantic_deduped_total", "retried_total",
