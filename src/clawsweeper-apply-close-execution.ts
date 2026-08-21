@@ -41,6 +41,7 @@ type ApplyCloseExecutionDependencies = Pick<
   | "ensureRuntimeDelayFits"
   | "fetchIssueReviewComments"
   | "fetchItem"
+  | "frontMatterValue"
   | "GitHubRuntimeBudgetError"
   | "ghJson"
   | "implementedOnMainPullRequestProvenanceApplyBlock"
@@ -175,6 +176,7 @@ export function executeApplyClose(
     ensureRuntimeDelayFits,
     fetchIssueReviewComments,
     fetchItem,
+    frontMatterValue,
     GitHubRuntimeBudgetError,
     ghJson,
     implementedOnMainPullRequestProvenanceApplyBlock,
@@ -270,10 +272,13 @@ export function executeApplyClose(
   };
   const pairedIssueRecentNonSelfCommentBlockReasonSafe = (
     issueNumber: number,
-    days: number,
+    reviewedAtMs: number,
   ): string | null => {
     try {
-      const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+      if (!Number.isFinite(reviewedAtMs)) {
+        return "linked issue review timestamp is unavailable for final activity verification";
+      }
+      const cutoffMs = reviewedAtMs;
       const closeAppliedMarker = `<!-- clawsweeper-close-applied item=${issueNumber} -->`;
       for (const comment of fetchIssueReviewComments(issueNumber)) {
         const record = asRecord(comment);
@@ -293,7 +298,7 @@ export function executeApplyClose(
         ) {
           continue;
         }
-        return `linked issue has a non-ClawSweeper comment within the last ${days} days`;
+        return "linked issue has a non-ClawSweeper comment after its independent review";
       }
       return null;
     } catch (error) {
@@ -640,11 +645,12 @@ export function executeApplyClose(
   }
   const finalCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
   if (finalCloseMutationLeaseBlockReason) return skipLease(finalCloseMutationLeaseBlockReason);
-  const reviewedAt = Date.parse(getMarkdown().match(/^reviewed_at: (.+)$/m)?.[1] ?? "");
-  const daysSinceReview = Number.isFinite(reviewedAt)
-    ? Math.max(1, Math.ceil((Date.now() - reviewedAt) / (24 * 60 * 60 * 1000)))
-    : 1;
-  const pairedIssuesReadyToClose: Array<{ number: number; reason: string; updatedAt: string }> = [];
+  const pairedIssuesReadyToClose: Array<{
+    number: number;
+    reason: string;
+    reviewedAtMs: number;
+    updatedAt: string;
+  }> = [];
   for (const liveIssue of linkedIssuesToClose) {
     // Take the source snapshot before the live timestamp check. An edit before
     // the timestamp check changes updated_at; one after it changes this
@@ -666,6 +672,20 @@ export function executeApplyClose(
       return skip(
         "kept_open",
         "implemented-on-main paired closeout requires the linked issue to remain unlocked and unchanged through final verification",
+      );
+    }
+    const pairedMarkdown = pairedIssueMarkdown(currentLinkedIssue.item.number);
+    if (!pairedMarkdown) {
+      return skip(
+        "kept_open",
+        "implemented-on-main paired closeout requires an independently reviewed linked issue report",
+      );
+    }
+    const pairedReviewedAtMs = Date.parse(frontMatterValue(pairedMarkdown, "reviewed_at") ?? "");
+    if (!Number.isFinite(pairedReviewedAtMs) || pairedReviewedAtMs > Date.now()) {
+      return skip(
+        "kept_open",
+        "implemented-on-main paired closeout requires a current independently reviewed linked issue timestamp",
       );
     }
     let issueCommentReason: string;
@@ -701,15 +721,8 @@ export function executeApplyClose(
     const postCommentIssueSource = pairedIssueSourceSnapshot(currentLinkedIssue.item.number);
     const postCommentIssueActivity = pairedIssueRecentNonSelfCommentBlockReasonSafe(
       currentLinkedIssue.item.number,
-      daysSinceReview,
+      pairedReviewedAtMs,
     );
-    const pairedMarkdown = pairedIssueMarkdown(currentLinkedIssue.item.number);
-    if (!pairedMarkdown) {
-      return skip(
-        "kept_open",
-        "implemented-on-main paired closeout requires an independently reviewed linked issue report",
-      );
-    }
     const postCommentIssueValidation = validateCloseDecision(
       {
         repo,
@@ -755,6 +768,7 @@ export function executeApplyClose(
       reason: [closeReasonText(linkedIssueCloseReason), issueCommentReason]
         .filter(Boolean)
         .join("; "),
+      reviewedAtMs: pairedReviewedAtMs,
       updatedAt: finalLinkedIssue.item.updatedAt,
     });
   }
@@ -787,7 +801,7 @@ export function executeApplyClose(
     const preClosePairedIssue = fetchItem(pairedIssue.number, { bypassGenerationCache: true });
     const preClosePairedIssueActivity = pairedIssueRecentNonSelfCommentBlockReasonSafe(
       pairedIssue.number,
-      daysSinceReview,
+      pairedIssue.reviewedAtMs,
     );
     const finalPairedIssue = fetchItem(pairedIssue.number, { bypassGenerationCache: true });
     if (
@@ -801,10 +815,10 @@ export function executeApplyClose(
       finalPairedIssue.item.updatedAt !== preClosePairedIssue.item.updatedAt ||
       finalPairedIssue.item.locked
     ) {
-      logProgress(
-        `linked issue #${pairedIssue.number}: kept open because it changed after the parent PR close was finalized`,
+      return skip(
+        "kept_open",
+        `implemented-on-main paired closeout requires linked issue #${pairedIssue.number} to remain unchanged, unlocked, and free of new activity before closing the parent PR`,
       );
-      continue;
     }
     withPairedIssueMutationLedger(pairedIssue.number, () =>
       closeItem({ number: pairedIssue.number, kind: "issue", reason: linkedIssueCloseReason }),
