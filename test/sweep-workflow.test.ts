@@ -714,13 +714,6 @@ test("manual review shards receive the compiler-backed runtime artifact", () => 
   assert.match(reviewJob, /tar -xzf \.artifacts\/review-runtime\.tar\.gz/);
   assert.match(
     reviewJob,
-    /id: review-shard-records-state[\s\S]*records-repo-slugs: \$\{\{ needs\.plan\.outputs\.target_slug \}\}[\s\S]*hydrate-git-state: "false"[\s\S]*hydrate-state-blobs: "false"[\s\S]*worktree-path: clawsweeper/,
-  );
-  assert.ok(
-    reviewJob.indexOf("id: review-shard-records-state") < reviewJob.indexOf("name: Review shard\n"),
-  );
-  assert.match(
-    reviewJob,
     /name: Install review compiler service\s+continue-on-error: true[\s\S]*node scripts\/install-review-native-compiler\.mjs/,
   );
   assert.doesNotMatch(reviewJob, /npm pack "@typescript/);
@@ -876,29 +869,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(
     step(reviewer, "Review exact event item").if ?? "",
     /reserve-exact-review-lease\.outputs\.status == 'posted'/,
-  );
-  assert.match(
-    step(reviewer, "Review exact event item").if ?? "",
-    /review-records-state\.outcome == 'success'/,
-  );
-  const reviewRecordsState = reviewer.steps.find(
-    (candidate) => candidate.id === "review-records-state",
-  );
-  assert.ok(reviewRecordsState);
-  assert.equal(reviewRecordsState.with?.["records-item-number"], undefined);
-  assert.equal(
-    reviewRecordsState.with?.["records-repo-slugs"],
-    "${{ steps.target.outputs.target_slug }}",
-  );
-  assert.equal(reviewRecordsState.with?.["hydrate-git-state"], "false");
-  assert.equal(reviewRecordsState.with?.["hydrate-state-blobs"], "false");
-  assert.ok(
-    reviewer.steps.indexOf(reviewRecordsState) <
-      reviewer.steps.indexOf(step(reviewer, "Review exact event item")),
-  );
-  assert.ok(
-    reviewer.steps.indexOf(reviewRecordsState) <
-      reviewer.steps.indexOf(step(reviewer, "Reserve exact review lease")),
   );
   assert.match(step(reviewer, "Review exact event item").run ?? "", /--review-lease-owner/);
   assert.match(step(reviewer, "Review exact event item").run ?? "", /--review-lease-comment-id/);

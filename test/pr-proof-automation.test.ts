@@ -215,6 +215,7 @@ test("maintainer and bot proof exemptions keep readiness, ratings, and security 
     status?: "missing" | "mock_only" | "insufficient" | "sufficient";
     securityAttention?: boolean;
     authorityChainProofRequired?: boolean;
+    labels?: string[];
   }) => {
     const status = options.status ?? "missing";
     const sufficient = status === "sufficient";
@@ -228,7 +229,7 @@ test("maintainer and bot proof exemptions keep readiness, ratings, and security 
       confidence: "high",
       author: options.author,
       author_association: options.association,
-      labels: JSON.stringify(["clawsweeper:automerge"]),
+      labels: JSON.stringify(options.labels ?? ["clawsweeper:automerge"]),
       work_candidate: "none",
       pull_head_sha: "abc123def456",
     })}
@@ -249,10 +250,12 @@ ${realBehaviorProofReportSection({
   status,
   evidenceKind: sufficient ? "terminal" : "none",
   needsContributorAction: !sufficient,
-  summary: sufficient
-    ? "The maintainer supplied terminal output from the changed production path."
-    : options.authorityChainProofRequired
-      ? "Authority-chain proof required: the nearest forbidden principal was not exercised before provider I/O."
+  summary: options.authorityChainProofRequired
+    ? sufficient
+      ? "Authority-chain proof required: a terminal trace shows the nearest forbidden principal rejected before provider I/O."
+      : "Authority-chain proof required: the nearest forbidden principal was not exercised before provider I/O."
+    : sufficient
+      ? "The maintainer supplied terminal output from the changed production path."
       : "The reviewer did not find contributor-supplied live proof.",
 })}
 
@@ -403,25 +406,59 @@ Full review comments:
   assert.match(suppliedComment, /maintainer supplied terminal output/);
   assert.match(suppliedComment, /\| \*\*Proof confidence\*\* \| 🦞 diamond lobster/);
 
-  const authoritySensitiveMaintainerReport = reportFor({
+  for (const scenario of [
+    { author: "maintainer", association: "MEMBER" },
+    { author: "owner", association: "OWNER" },
+    { author: "collaborator", association: "COLLABORATOR" },
+    { author: "dependabot[bot]", association: "NONE" },
+    { author: "app/clawsweeper", association: "NONE" },
+  ]) {
+    const report = reportFor({
+      ...scenario,
+      status: "missing",
+      authorityChainProofRequired: true,
+    });
+    const comment = renderReviewCommentFromReport(report, "none");
+    const markers = reviewAutomationMarkersFromReport(report);
+    assert.match(comment, /blocked until real behavior proof is added/i, scenario.author);
+    assert.match(comment, /Authority-chain proof required:/, scenario.author);
+    assert.match(markers, /clawsweeper-verdict:needs-human/, scenario.author);
+    assert.doesNotMatch(markers, /clawsweeper-verdict:pass/, scenario.author);
+  }
+
+  const authorityProofOnlyReport = reportFor({
+    author: "maintainer",
+    association: "MEMBER",
+    status: "sufficient",
+    authorityChainProofRequired: true,
+  });
+  assert.match(
+    authorityProofOnlyReport,
+    /Authority-chain proof required: a terminal trace shows the nearest forbidden principal/,
+  );
+  assert.match(
+    reviewAutomationMarkersFromReport(authorityProofOnlyReport),
+    /clawsweeper-verdict:pass/,
+  );
+  assert.doesNotMatch(
+    reviewAutomationMarkersFromReport(authorityProofOnlyReport),
+    /clawsweeper-verdict:needs-human/,
+  );
+
+  const authorityProofOverrideReport = reportFor({
     author: "maintainer",
     association: "MEMBER",
     status: "missing",
     authorityChainProofRequired: true,
+    labels: ["clawsweeper:automerge", "proof: override"],
   });
-  const authoritySensitiveMaintainerComment = renderReviewCommentFromReport(
-    authoritySensitiveMaintainerReport,
-    "none",
-  );
-  assert.match(authoritySensitiveMaintainerComment, /blocked until real behavior proof is added/i);
-  assert.match(authoritySensitiveMaintainerComment, /Authority-chain proof required:/);
   assert.match(
-    reviewAutomationMarkersFromReport(authoritySensitiveMaintainerReport),
-    /clawsweeper-verdict:needs-human/,
+    reviewAutomationMarkersFromReport(authorityProofOverrideReport),
+    /clawsweeper-verdict:pass/,
   );
   assert.doesNotMatch(
-    reviewAutomationMarkersFromReport(authoritySensitiveMaintainerReport),
-    /clawsweeper-verdict:pass/,
+    reviewAutomationMarkersFromReport(authorityProofOverrideReport),
+    /clawsweeper-verdict:needs-human/,
   );
 
   const normalizedAuthoritySensitiveReport = reportFor({

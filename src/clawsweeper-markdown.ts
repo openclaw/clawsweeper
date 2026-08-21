@@ -158,15 +158,13 @@ function firstDecisionNeededQuestion(body: string): string {
   return firstNonEmptyLine(section);
 }
 
-export function beforeMergeActions(body: string): string[] {
+export function firstBeforeMergeAction(body: string): string {
   const section = markdownTopLevelSection(body, "Before merge");
   // "None." is the no-action sentinel; a checked task is finished work, not a
   // remaining action.
   if (!section || /^none[.!]?$/i.test(section.trim())) {
-    const decision = firstDecisionNeededQuestion(body);
-    return decision ? [decision] : [];
+    return firstDecisionNeededQuestion(body);
   }
-  const actions: string[] = [];
   let sawTask = false;
   for (const line of section.split(/\r?\n/)) {
     if (/^- \[[xX]\]/.test(line)) {
@@ -174,10 +172,7 @@ export function beforeMergeActions(body: string): string[] {
       continue;
     }
     const task = line.match(/^- \[ \][ \t]+(?:\*\*(?:\\.|[^*\\\n])+\*\*[ \t]+-[ \t]+)?(\S.*)$/);
-    if (task?.[1]) {
-      actions.push(task[1].trim());
-      continue;
-    }
+    if (task?.[1]) return task[1].trim();
     if (line.startsWith("- [")) sawTask = true;
     const cells = markdownTableCells(line);
     if (cells.length < 2) continue;
@@ -189,17 +184,11 @@ export function beforeMergeActions(body: string): string[] {
         .toLowerCase(),
     );
     if (labels[0] === "needed" && labels[1] === "why") continue;
-    if (cells[1]) actions.push(cells[1]);
+    if (cells[1]) return cells[1];
   }
-  if (actions.length) return [...new Set(actions)];
   // A checklist whose tasks are all checked has no remaining checklist action, but
   // an outstanding maintainer decision still is one.
-  const fallback = sawTask ? firstDecisionNeededQuestion(body) : firstNonEmptyLine(section);
-  return fallback ? [fallback] : [];
-}
-
-export function firstBeforeMergeAction(body: string): string {
-  return beforeMergeActions(body)[0] ?? "";
+  return sawTask ? firstDecisionNeededQuestion(body) : firstNonEmptyLine(section);
 }
 
 export function previousReviewStatus(body: string): string {

@@ -114,8 +114,12 @@ test("review prompt inverts authority-sensitive success claims", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
   assert.match(prompt, /authority-chain and invariant-inversion pass/);
-  assert.match(prompt, /creates or persists an\s+identifier, route, binding, capability/);
-  assert.match(prompt, /broadens discovery, enumeration, fallback, dispatch, retry, replay/);
+  assert.match(prompt, /only when the diff materially changes\s+authority/);
+  assert.match(prompt, /creates, persists, transfers, or consumes an authority-bearing\s+value/);
+  assert.match(prompt, /at least one of these is true/);
+  assert.match(prompt, /principal,\s+account, tenant, session, or comparable trust boundary/);
+  assert.match(prompt, /does not trigger this pass merely because it exists/);
+  assert.match(prompt, /counts only\s+when the diff materially changes authority/);
   assert.match(prompt, /Stored provenance and an internal origin are context, not proof/);
   assert.match(prompt, /nearest forbidden principal/);
   assert.match(prompt, /stale,\s+revoked, or reassigned authority/);
@@ -123,23 +127,22 @@ test("review prompt inverts authority-sensitive success claims", () => {
   assert.match(prompt, /cap\s+`patchTier` at `C`/);
   assert.match(prompt, /Add final-effect proof for the nearest unauthorized principal/);
   assert.match(prompt, /authorship is not evidence about the\s+changed surface/);
-  assert.match(prompt, /maintainer\/bot exception applies only when the authority-chain pass/);
-  assert.match(prompt, /`Authority-chain proof required:`/);
-  assert.match(prompt, /do not create a\s+separate review section/);
-});
-
-test("review prompt re-evaluates linked predecessor assessments", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
-
-  assert.match(prompt, /explicitly linked related item includes\s+`latestClawSweeperAssessment`/);
-  assert.match(prompt, /implementation predecessor/);
   assert.match(
     prompt,
-    /carry its latest stated\s+invariants, risks, findings, and proof expectations/,
+    /Do not require this proof or emit its marker merely\s+because the pass ran/,
   );
-  assert.match(prompt, /Do not blindly inherit\s+its verdict/);
-  assert.match(prompt, /do not carry assessments from title similarity, search,\s+gitcrawl/);
-  assert.match(prompt, /predecessor assessment is\s+review input, not proof/);
+  assert.match(prompt, /`Authority-chain proof required:`/);
+  assert.match(prompt, /OWNER, MEMBER, COLLABORATOR, and bot-authored PRs/);
+  assert.match(prompt, /exemption from proof unrelated to authority remains intact/);
+  assert.match(prompt, /Sufficient authority evidence can therefore satisfy this scoped gate/);
+  assert.match(
+    prompt,
+    /External contributors must satisfy both the ordinary\s+contributor proof requirement and any applicable authority-chain proof/,
+  );
+  assert.match(prompt, /use `status: "sufficient"` only when the evidence satisfies both/);
+  assert.match(prompt, /must not turn every proof category into a\s+requirement/);
+  assert.match(prompt, /Continue\s+to honor `proof: override`/);
+  assert.match(prompt, /do not create a\s+separate review section/);
 });
 
 test("review prompt treats duplicated behavior as a P1 PR finding", () => {

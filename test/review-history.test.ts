@@ -330,10 +330,6 @@ test("latest review extraction reads the first action from the before-merge tabl
 
   assert.equal(review?.summary, "Updates the review comment layout.");
   assert.equal(review?.nextStep, "Add proof for the `a | b` path.");
-  assert.deepEqual(review?.risks, [
-    "Add proof for the `a | b` path.",
-    "Ask for maintainer review.",
-  ]);
 });
 
 test("latest review extraction reads the first action from the before-merge checklist", () => {
