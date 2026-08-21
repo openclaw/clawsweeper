@@ -4,7 +4,6 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
-  implementedCloseReport,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
   tmpPrefix,
