@@ -23,6 +23,7 @@ import {
   isGitHubRequiresAuthenticationError,
   isLockedConversationCommentError,
 } from "./github-retry.js";
+import { stableJson } from "./stable-json.js";
 
 type ApplyCloseExecutionDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
@@ -242,13 +243,7 @@ export function executeApplyClose(
   const skipLease = (reason: string): ApplyCloseFlow =>
     recordReviewLeaseSkip(reason, false) ? "stop" : "next";
   const pairedIssueSourceSnapshot = (issueNumber: number): string | null => {
-    const issue = ghJson<{
-      title?: unknown;
-      body?: unknown;
-      labels?: unknown;
-      locked?: unknown;
-      active_lock_reason?: unknown;
-    }>(["api", `repos/${repo}/issues/${issueNumber}`]);
+    const issue = ghJson<Record<string, unknown>>(["api", `repos/${repo}/issues/${issueNumber}`]);
     if (typeof issue.title !== "string" || !Array.isArray(issue.labels)) return null;
     const labels = issue.labels
       .map((label) => {
@@ -260,18 +255,12 @@ export function executeApplyClose(
       .filter((label): label is string => label !== null)
       .sort();
     if (labels.length !== issue.labels.length) return null;
-    return sha256(
-      JSON.stringify({
-        title: issue.title,
-        body: typeof issue.body === "string" || issue.body === null ? issue.body : null,
-        labels,
-        locked: issue.locked === true,
-        activeLockReason:
-          typeof issue.active_lock_reason === "string" || issue.active_lock_reason === null
-            ? issue.active_lock_reason
-            : null,
-      }),
-    );
+    // A comment changes `comments` and may advance `updated_at`; exclude only
+    // those self-mutation fields. Keep the rest of the issue representation so
+    // changes such as assignees, milestone, state reason, or issue type block
+    // the paired close instead of being mistaken for the bot's comment update.
+    const { comments: _comments, updated_at: _updatedAt, labels: _rawLabels, ...source } = issue;
+    return sha256(stableJson({ ...source, labels }));
   };
 
   if (

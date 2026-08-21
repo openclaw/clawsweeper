@@ -3772,6 +3772,7 @@ test("apply-decisions verifies provenance after a closeout note and before closi
     "paired_keep_open",
     "paired_review_stale",
     "paired_source_change_during_closeout",
+    "paired_metadata_change_during_closeout",
   ] as const) {
     const lifecycleDrift = scenario === "lifecycle_drift";
     const multipleLinkedIssues = scenario === "multiple_linked_issues";
@@ -3781,6 +3782,8 @@ test("apply-decisions verifies provenance after a closeout note and before closi
     const pairedKeepOpen = scenario === "paired_keep_open";
     const pairedReviewStale = scenario === "paired_review_stale";
     const pairedSourceChangeDuringCloseout = scenario === "paired_source_change_during_closeout";
+    const pairedMetadataChangeDuringCloseout =
+      scenario === "paired_metadata_change_during_closeout";
     const lockedCloseoutComment = scenario === "locked_closeout_comment";
     const betweenFreshnessAndCloseoutHumanActivity =
       scenario === "between_freshness_and_closeout_human_activity";
@@ -3879,6 +3882,7 @@ const betweenFreshnessAndCloseoutHumanActivity = ${betweenFreshnessAndCloseoutHu
 const postCloseoutHumanActivity = ${postCloseoutHumanActivity};
 const postCloseoutPrReviewActivity = ${postCloseoutPrReviewActivity};
 const pairedSourceChangeDuringCloseout = ${pairedSourceChangeDuringCloseout};
+const pairedMetadataChangeDuringCloseout = ${pairedMetadataChangeDuringCloseout};
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   const timeline = existsSync(betweenFreshnessAndCloseoutHumanActivityPath)
     ? [{
@@ -3905,7 +3909,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     const payload = JSON.parse(readFileSync(input, "utf8"));
     appendFileSync(postedBodiesPath, JSON.stringify(payload.body) + "\\n");
     writeFileSync(linkedIssueCommentPath, payload.body, "utf8");
-    if (pairedSourceChangeDuringCloseout) writeFileSync(pairedIssueCloseoutPostedPath, "true");
+    if (pairedSourceChangeDuringCloseout || pairedMetadataChangeDuringCloseout) writeFileSync(pairedIssueCloseoutPostedPath, "true");
     console.log(JSON.stringify({ id: 9456, html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9456" }));
   } else {
     console.log(JSON.stringify([[{
@@ -4018,6 +4022,9 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     author_association: "CONTRIBUTOR",
     user: { login: "issue-reporter" },
     labels: [],
+    milestone: pairedMetadataChangeDuringCloseout && existsSync(pairedIssueCloseoutPostedPath)
+      ? { number: 1, title: "maintainer follow-up" }
+      : null,
     body: "The tracked implementation gap.",
     comments: 0,
     pull_request: null
@@ -4146,7 +4153,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         missingCanonicalMerge ||
         pairedKeepOpen ||
         pairedReviewStale ||
-        pairedSourceChangeDuringCloseout
+        pairedSourceChangeDuringCloseout ||
+        pairedMetadataChangeDuringCloseout
       ) {
         assert.equal(closeIndex, -1);
         assert.equal(existsSync(join(closedDir, "321.md")), false);
