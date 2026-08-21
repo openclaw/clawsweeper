@@ -2441,6 +2441,124 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       preserveGuardReadCacheAfterMutation = false;
       resetMutationGuardBoundary();
       const appliedCloseReason = closeReason;
+      const withPairedIssueMutationLease = <T>(
+        pairedNumber: number,
+        operation: () => T,
+      ): T =>
+        withPairedIssueMutationLedger(pairedNumber, () => {
+        const pairedEntry = openFileEntryByNumber.get(pairedNumber);
+        if (!pairedEntry) {
+          throw new ApplyMutationReviewGuardError(
+            `missing independently reviewed linked issue report #${pairedNumber}`,
+          );
+        }
+        const pairedItem = fetchApplyItem(pairedNumber, { bypassGenerationCache: true }).item;
+        if (pairedItem.kind !== "issue") {
+          throw new ApplyMutationReviewGuardError(
+            `linked item #${pairedNumber} is no longer an issue`,
+          );
+        }
+        const pairedInitialRevision = liveIssueSourceRevision(pairedNumber, {
+          liveReadGeneration,
+          bypassGenerationCache: true,
+        });
+        if (!pairedInitialRevision) {
+          throw new ApplyMutationReviewGuardError(
+            `linked issue #${pairedNumber} source revision could not be read`,
+          );
+        }
+        const pairedMarkdown = pairedEntry.markdown;
+        let pairedActiveMutationLease: {
+          itemNumber: number;
+          lease: AcquiredReviewStartLease;
+        } | null = null;
+        const createPairedLeaseGuards = (initialRevision: string, leaseMarkdown: string) =>
+          createApplyLeaseGuards({
+            ...applyReadDependencies,
+            // The paired-close path separately revalidates the linked report,
+            // immutable source snapshot, and all post-review activity. Do not
+            // reinterpret a newer trusted linked-issue review as stale here:
+            // that review is explicitly permitted by the paired activity guard.
+            canonicalBoundStaleReviewReason: () => null,
+            closeDelayMs,
+            currentReviewActivityBlock: () => null,
+            dryRun,
+            getActiveApplyMutationLease: () => pairedActiveMutationLease,
+            initialReviewHeadSha: initialRevision,
+            item: pairedItem,
+            liveReadGeneration,
+            markdownBeforeApplyDecisionMutations: leaseMarkdown,
+            number: pairedNumber,
+            reportReviewRevision: reviewLeaseRevisionFromReport(leaseMarkdown),
+            // A paired closeout is an independent mutation target. Even a legacy
+            // report must obtain its own live lease rather than borrow the parent
+            // pull request's lease.
+            requiresApplyMutationLease: true,
+            setActiveApplyMutationLease: (lease) => {
+              pairedActiveMutationLease = lease;
+            },
+          });
+        let pairedLeaseGuards = createPairedLeaseGuards(pairedInitialRevision, pairedMarkdown);
+        const previousApplyMutationGuard = currentApplyMutationGuard;
+        try {
+          let leaseBlock = pairedLeaseGuards.acquireApplyMutationLease(
+            pairedLeaseGuards.refreshReviewStartLeaseState(),
+          );
+          // Posting a dedicated lease is an owned issue-comment mutation. Rebase
+          // that new owned lease on its post-comment revision before the guarded
+          // operation. Existing report leases and any other source drift still
+          // fail closed.
+          const acquiredLease = pairedActiveMutationLease as {
+            itemNumber: number;
+            lease: AcquiredReviewStartLease;
+          } | null;
+          if (
+            leaseBlock?.includes("changed while holding the apply mutation lease") &&
+            acquiredLease
+          ) {
+            const postLeaseRevision = liveIssueSourceRevision(pairedNumber, {
+              liveReadGeneration,
+              bypassGenerationCache: true,
+            });
+            if (postLeaseRevision) {
+              const rebasedLeaseMarkdown = replaceFrontMatterValue(
+                replaceFrontMatterValue(
+                  replaceFrontMatterValue(
+                    pairedMarkdown,
+                    "review_lease_owner",
+                    acquiredLease.lease.owner,
+                  ),
+                  "review_lease_comment_id",
+                  String(acquiredLease.lease.commentId),
+                ),
+                "item_source_revision",
+                postLeaseRevision,
+              );
+              pairedLeaseGuards = createPairedLeaseGuards(postLeaseRevision, rebasedLeaseMarkdown);
+              leaseBlock = pairedLeaseGuards.acquireApplyMutationLease(
+                pairedLeaseGuards.refreshReviewStartLeaseState(),
+              );
+            }
+          }
+          if (leaseBlock) throw new ApplyMutationReviewGuardError(leaseBlock);
+          currentApplyMutationGuard = pairedLeaseGuards.currentApplyMutationLeaseBlockReason;
+          return operation();
+        } finally {
+          currentApplyMutationGuard = previousApplyMutationGuard;
+          // The lease setter runs through a closure, so avoid stale control-flow
+          // narrowing when reading the nested lease for deterministic cleanup.
+          const pairedLease = pairedActiveMutationLease as {
+            itemNumber: number;
+            lease: AcquiredReviewStartLease;
+          } | null;
+          pairedActiveMutationLease = null;
+          if (pairedLease) {
+            deleteOwnedDedicatedReviewStartLease(pairedLease.itemNumber, pairedLease.lease, {
+              throwOnError: true,
+            });
+          }
+        }
+        });
       const closeFlow = executeApplyClose(
         {
           ...applyReadDependencies,
@@ -2553,6 +2671,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         setMarkdown: (value) => { markdown = value; },
         staleMinAgeDays,
         withPairedIssueMutationLedger,
+        withPairedIssueMutationLease,
         },
       );
       if (closeFlow === "yield") return;

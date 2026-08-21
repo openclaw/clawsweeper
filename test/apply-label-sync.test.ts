@@ -3861,7 +3861,7 @@ test("apply-decisions verifies provenance after a closeout note and before closi
       writeFileSync(prCommentPath, synced.comment, "utf8");
 
       const ghMock = `
-const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("fs");
+const { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } = require("fs");
 const logPath = ${JSON.stringify(logPath)};
 const postedBodiesPath = ${JSON.stringify(postedBodiesPath)};
 const graphqlStatePath = ${JSON.stringify(join(root, "graphql-reads"))};
@@ -3870,8 +3870,9 @@ const betweenFreshnessAndCloseoutHumanActivityPath = ${JSON.stringify(
         join(root, "between-freshness-and-closeout-human-activity"),
       )};
 const issueReadsAfterCloseoutPath = ${JSON.stringify(join(root, "issue-reads-after-closeout"))};
-      const pairedIssueCloseoutPostedPath = ${JSON.stringify(join(root, "paired-issue-closeout-posted"))};
+const pairedIssueCloseoutPostedPath = ${JSON.stringify(join(root, "paired-issue-closeout-posted"))};
 const pairedIssueBotActivityPath = ${JSON.stringify(join(root, "paired-issue-bot-activity"))};
+const pairedIssueLeasePath = ${JSON.stringify(join(root, "paired-issue-lease"))};
 const prCommentPath = ${JSON.stringify(prCommentPath)};
 const linkedIssueCommentPath = ${JSON.stringify(linkedIssueCommentPath)};
 const comment = ${JSON.stringify(synced.comment)};
@@ -3914,6 +3915,11 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   if (args.includes("--method") && args.includes("POST")) {
     const input = args[args.indexOf("--input") + 1];
     const payload = JSON.parse(readFileSync(input, "utf8"));
+    if (payload.body.includes("clawsweeper-review-lease item=456")) {
+      writeFileSync(pairedIssueLeasePath, payload.body, "utf8");
+      console.log(JSON.stringify({ id: 9460, html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9460" }));
+      process.exit(0);
+    }
     appendFileSync(postedBodiesPath, JSON.stringify(payload.body) + "\\n");
     writeFileSync(linkedIssueCommentPath, payload.body, "utf8");
     if (pairedSourceChangeDuringCloseout || pairedMetadataChangeDuringCloseout || pairedBotActivityDuringCloseout) writeFileSync(pairedIssueCloseoutPostedPath, "true");
@@ -3946,6 +3952,16 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         updated_at: readFileSync(pairedIssueBotActivityPath, "utf8"),
         user: { login: "third-party[bot]", type: "Bot" },
         body: "Automated follow-up."
+      });
+    }
+    if (existsSync(pairedIssueLeasePath)) {
+      comments.push({
+        id: 9460,
+        html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9460",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        user: { login: "clawsweeper[bot]" },
+        body: readFileSync(pairedIssueLeasePath, "utf8")
       });
     }
     console.log(JSON.stringify([comments]));
@@ -3995,6 +4011,9 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   appendFileSync(postedBodiesPath, JSON.stringify(payload.body) + "\\n");
   writeFileSync(linkedIssueCommentPath, payload.body, "utf8");
   console.log(JSON.stringify({ id: 9456, html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9456" }));
+} else if (args[0] === "api" && /\\/issues\\/comments\\/9460$/.test(path) && args.includes("DELETE")) {
+  if (existsSync(pairedIssueLeasePath)) unlinkSync(pairedIssueLeasePath);
+  console.log("");
 } else if (args[0] === "api" && /\\/issues\\/comments\\/9321$/.test(path)) {
   const input = args[args.indexOf("--input") + 1];
   const payload = JSON.parse(readFileSync(input, "utf8"));
@@ -4118,7 +4137,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
           reportPath,
           extraArgs: ["--apply-kind", "all", "--processed-limit", "3"],
         });
-        if (scenario === "normal") {
+        if (scenario === "normal" || pairedFreshOwnedReviewComment) {
           runApplyDecisionsForTest({
             itemsDir,
             closedDir,

@@ -154,6 +154,7 @@ interface ApplyCloseExecutionOptions {
   setMarkdown: (markdown: string) => void;
   staleMinAgeDays: number;
   withPairedIssueMutationLedger: <T>(number: number, operation: () => T) => T;
+  withPairedIssueMutationLease: <T>(number: number, operation: () => T) => T;
   emitEventApplyProof: boolean;
 }
 
@@ -243,6 +244,7 @@ export function executeApplyClose(
     setMarkdown,
     staleMinAgeDays,
     withPairedIssueMutationLedger,
+    withPairedIssueMutationLease,
   } = options;
   const skip = (action: ActionTaken, reason: string, liveGuardVerified = false): ApplyCloseFlow =>
     markApplySkipped(action, reason, liveGuardVerified) ? "stop" : "next";
@@ -690,7 +692,7 @@ export function executeApplyClose(
     }
     let issueCommentReason: string;
     try {
-      issueCommentReason = withPairedIssueMutationLedger(currentLinkedIssue.item.number, () =>
+      issueCommentReason = withPairedIssueMutationLease(currentLinkedIssue.item.number, () =>
         ensureCloseAppliedComment({
           number: currentLinkedIssue.item.number,
           closeReason: linkedIssueCloseReason,
@@ -820,7 +822,7 @@ export function executeApplyClose(
         `implemented-on-main paired closeout requires linked issue #${pairedIssue.number} to remain unchanged, unlocked, and free of new activity before closing the parent PR`,
       );
     }
-    withPairedIssueMutationLedger(pairedIssue.number, () =>
+    withPairedIssueMutationLease(pairedIssue.number, () =>
       closeItem({ number: pairedIssue.number, kind: "issue", reason: linkedIssueCloseReason }),
     );
     closedPairedIssues.push(pairedIssue);
