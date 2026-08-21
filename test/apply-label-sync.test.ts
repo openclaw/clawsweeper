@@ -4097,6 +4097,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "pr" && args[1] === "close" && args[2] === "321") {
   console.log("");
+} else if (args[0] === "api" && path === "repos/openclaw/clawsweeper/issues/456" && args.includes("PATCH")) {
+  console.log("");
 } else if (args[0] === "issue" && args[1] === "close" && args[2] === "456") {
   console.log("");
 } else if (args[0] === "issue" && args[1] === "edit") {
@@ -4139,6 +4141,12 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       );
       const closeIndex = calls.findIndex(
         (args) => args[0] === "pr" && args[1] === "close" && args[2] === "321",
+      );
+      const pairedIssueCloseIndex = calls.findIndex(
+        (args) =>
+          args[0] === "api" &&
+          args[1] === "repos/openclaw/clawsweeper/issues/456" &&
+          args.includes("PATCH"),
       );
       const graphqlIndices = calls
         .map((args, index) => (args[0] === "api" && args[1] === "graphql" ? index : -1))
@@ -4270,6 +4278,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       }
       assert.ok(graphqlIndices.length >= 2);
       assert.ok(closeIndex >= 0);
+      assert.ok(pairedIssueCloseIndex >= 0);
+      assert.ok(pairedIssueCloseIndex < closeIndex);
       const postedBodies = readFileSync(postedBodiesPath, "utf8")
         .trim()
         .split("\n")
