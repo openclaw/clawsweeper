@@ -26,7 +26,7 @@ test("apply-decisions starts same-author pair closes from the PR side", () => {
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
     const issueSynced = reportWithSyncedReviewComment(
-      implementedCloseReport({
+      verifiedImplementationPullRequestReport({
         repository: "openclaw/openclaw",
         number: 320,
         type: "issue",
@@ -79,6 +79,10 @@ if (args[0] === "api" && /\\/pulls\\/900$/.test(path)) {
 }
 if (args[0] === "api" && /\\/pulls\\/321$/.test(path) && args.includes("--jq")) {
   console.log(JSON.stringify({ body: "Fixes #320." }));
+  process.exit(0);
+}
+if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
   process.exit(0);
 }
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?:\\?|$)/.test(args[2] || "")) {
@@ -168,8 +172,6 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?
           "--dry-run",
           "--apply-kind",
           "all",
-          "--item-numbers",
-          "321",
           "--processed-limit",
           "4",
         ],

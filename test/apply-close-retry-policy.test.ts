@@ -60,7 +60,7 @@ if (args[0] === "api" && /\\/pulls\\/900$/.test(path)) {
   process.exit(0);
 }
 if (args[0] === "api" && /\\/pulls\\/321$/.test(path) && args.includes("--jq")) {
-  console.log(JSON.stringify({ body: "Fixes #320." }));
+  console.log(JSON.stringify({ body: "No linked issue." }));
   process.exit(0);
 }
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
@@ -138,9 +138,9 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         },
         {
           number: 321,
-          action: "closed",
+          action: "kept_open",
           reason:
-            "dry-run: would close as already implemented on main; dry-run: would post close-applied comment",
+            "implemented-on-main close requires explicit same-repository linked issues for paired closeout",
         },
       ]);
     } finally {
@@ -187,7 +187,7 @@ if (args[0] === "api" && /\\/pulls\\/900$/.test(path)) {
   process.exit(0);
 }
 if (args[0] === "api" && /\\/pulls\\/321$/.test(path) && args.includes("--jq")) {
-  console.log(JSON.stringify({ body: "Fixes #320." }));
+  console.log(JSON.stringify({ body: "No linked issue." }));
   process.exit(0);
 }
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
@@ -261,9 +261,9 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       },
       {
         number: 321,
-        action: "closed",
+        action: "kept_open",
         reason:
-          "dry-run: would close as already implemented on main; dry-run: would post close-applied comment",
+          "implemented-on-main close requires explicit same-repository linked issues for paired closeout",
       },
     ]);
   } finally {
@@ -281,7 +281,7 @@ test("apply-decisions pair-closes issues blocked by closeable linked PRs", () =>
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
     const issueSynced = reportWithSyncedReviewComment(
-      implementedCloseReport({
+      verifiedImplementationPullRequestReport({
         repository: "openclaw/openclaw",
         number: 320,
         type: "issue",
@@ -332,6 +332,10 @@ if (args[0] === "api" && /\\/pulls\\/900$/.test(path)) {
 }
 if (args[0] === "api" && /\\/pulls\\/321$/.test(path) && args.includes("--jq")) {
   console.log(JSON.stringify({ body: "Fixes #320." }));
+  process.exit(0);
+}
+if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
   process.exit(0);
 }
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?:\\?|$)/.test(args[2] || "")) {

@@ -508,17 +508,6 @@ export function executeApplyClose(
             dryRun,
           })
         : null;
-    for (const liveIssue of linkedIssuesToClose) {
-      archivePairedIssue(liveIssue.item.number);
-      onPairedIssueClosed(
-        {
-          number: liveIssue.item.number,
-          action: "closed",
-          reason: `dry-run: would close as ${closeReasonText(linkedIssueCloseReason)}`,
-        },
-        true,
-      );
-    }
     const stop = onClosed(
       {
         number,
@@ -532,6 +521,17 @@ export function executeApplyClose(
       },
       true,
     );
+    for (const liveIssue of linkedIssuesToClose) {
+      archivePairedIssue(liveIssue.item.number);
+      onPairedIssueClosed(
+        {
+          number: liveIssue.item.number,
+          action: "closed",
+          reason: `dry-run: would close as ${closeReasonText(linkedIssueCloseReason)}`,
+        },
+        true,
+      );
+    }
     return stop ? "stop" : "next";
   }
 
