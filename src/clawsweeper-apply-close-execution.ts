@@ -153,7 +153,6 @@ interface ApplyCloseExecutionOptions {
   runtimeBudget: GitHubRuntimeBudget;
   setMarkdown: (markdown: string) => void;
   staleMinAgeDays: number;
-  withPairedIssueMutationLedger: <T>(number: number, operation: () => T) => T;
   withPairedIssueMutationLease: <T>(number: number, operation: () => T) => T;
   emitEventApplyProof: boolean;
 }
@@ -243,7 +242,6 @@ export function executeApplyClose(
     runtimeBudget,
     setMarkdown,
     staleMinAgeDays,
-    withPairedIssueMutationLedger,
     withPairedIssueMutationLease,
   } = options;
   const skip = (action: ActionTaken, reason: string, liveGuardVerified = false): ApplyCloseFlow =>

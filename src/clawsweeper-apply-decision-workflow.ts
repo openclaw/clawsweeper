@@ -2670,7 +2670,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         runtimeBudget,
         setMarkdown: (value) => { markdown = value; },
         staleMinAgeDays,
-        withPairedIssueMutationLedger,
         withPairedIssueMutationLease,
         },
       );
