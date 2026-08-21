@@ -1153,6 +1153,7 @@ export interface PreviousClawSweeperReview {
   proofStatus: string;
   rating: string;
   nextStep: string;
+  risks: string[];
   findings: Array<{ priority: string; title: string }>;
   earlierReviewCycles: ReviewHistoryCycle[];
   completedReviewCycles: number;

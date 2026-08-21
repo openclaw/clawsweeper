@@ -89,6 +89,7 @@ export const MERGE_READY_LABEL = "clawsweeper:merge-ready";
 export const PR_AUTO_CLOSE_EXEMPT_LABELS = new Set<string>(PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES);
 export const WAITING_ON_AUTHOR_LABEL = "status: ⏳ waiting on author";
 export const PROOF_OVERRIDE_LABEL = "proof: override";
+export const AUTHORITY_CHAIN_PROOF_MARKER = "Authority-chain proof required:";
 export const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
 export const PROOF_NUDGE_MARKER_PREFIX = "<!-- clawsweeper-proof-nudge";
 export const LIVE_VERIFICATION_MARKER = "<!-- clawsweeper-live-verification -->";

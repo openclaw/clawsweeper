@@ -172,6 +172,34 @@ test("content digest busts when related item context changes", () => {
   assert.notEqual(a, b);
 });
 
+test("content digest busts when a linked predecessor assessment changes", () => {
+  const pull = item({ kind: "pull_request", number: 200 });
+  const relatedItem = {
+    issue: { number: 199, state: "open" },
+    latestClawSweeperAssessment: {
+      reviewedAt: "2026-07-01T00:00:00Z",
+      summary: "Keep persisted references owner-scoped.",
+    },
+  };
+  const a = itemContentDigestForTest(pull, pullContext({ relatedItems: [relatedItem] }));
+  const b = itemContentDigestForTest(
+    pull,
+    pullContext({
+      relatedItems: [
+        {
+          ...relatedItem,
+          latestClawSweeperAssessment: {
+            reviewedAt: "2026-07-02T00:00:00Z",
+            summary: "Reject non-owner dispatch before provider I/O.",
+          },
+        },
+      ],
+    }),
+  );
+
+  assert.notEqual(a, b);
+});
+
 test("content digest busts when the latest release changes", () => {
   const issue = item({ kind: "issue", number: 300 });
   const context = issueContext();

@@ -9,6 +9,9 @@ import type {
   ItemContext,
   ItemKind,
   LocalRelatedTitleEntry,
+  PrRating,
+  RealBehaviorProof,
+  ReviewFinding,
 } from "./clawsweeper-types.js";
 
 interface RelatedContextDependencies {
@@ -28,8 +31,11 @@ interface RelatedContextDependencies {
   envFlagEnabled: (value: string | undefined) => boolean;
   envFlagDisabled: (value: string | undefined) => boolean;
   frontMatterValue: (markdown: string, key: string) => string | undefined;
-  reviewSectionValue: (markdown: string, section: "summary") => string;
+  reviewSectionValue: (markdown: string, section: "summary" | "bestSolution" | "risks") => string;
   effectiveReviewStatus: (markdown: string) => string;
+  reportPrRating: (markdown: string) => PrRating;
+  reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
+  reportReviewFindings: (markdown: string) => ReviewFinding[];
   displayTitle: (title: string) => string;
   markdownFiles: (dir: string) => string[];
   numberForMarkdownFile: (file: string) => number;
@@ -55,11 +61,78 @@ export function createRelatedContext({
   frontMatterValue,
   reviewSectionValue,
   effectiveReviewStatus,
+  reportPrRating,
+  reportRealBehaviorProof,
+  reportReviewFindings,
   displayTitle,
   markdownFiles,
   numberForMarkdownFile,
   repoRelativePath,
 }: RelatedContextDependencies) {
+  const linkedAssessmentCache = new Map<string, Record<string, unknown> | null>();
+
+  function compactReportRisks(markdown: string): string[] {
+    const section = reviewSectionValue(markdown, "risks").trim();
+    if (!section) return [];
+    const bullets = section
+      .split("\n")
+      .map((line) =>
+        line
+          .trim()
+          .match(/^[-*]\s+(.+)$/)?.[1]
+          ?.trim(),
+      )
+      .filter((line): line is string => Boolean(line));
+    return (bullets.length > 0 ? bullets : [section])
+      .slice(0, 8)
+      .map((line) => truncateText(line, 600));
+  }
+
+  function knownReportValue(markdown: string, ...keys: string[]): string | null {
+    for (const key of keys) {
+      const value = frontMatterValue(markdown, key)?.trim();
+      if (value && !/^(?:none|unknown)$/i.test(value)) return value;
+    }
+    return null;
+  }
+
+  function linkedClawSweeperAssessment(number: number): Record<string, unknown> | null {
+    const key = `${targetRepo()}#${number}`;
+    const cached = linkedAssessmentCache.get(key);
+    if (cached !== undefined || linkedAssessmentCache.has(key)) return cached ?? null;
+
+    let assessment: Record<string, unknown> | null = null;
+    for (const dir of [defaultItemsDir(), defaultClosedDir()]) {
+      const path = join(dir, `${number}.md`);
+      if (!existsSync(path)) continue;
+      const markdown = readFileSync(path, "utf8");
+      if (!isMarkdownForActiveRepo(markdown, `${number}.md`)) continue;
+      const proof = reportRealBehaviorProof(markdown);
+      const rating = reportPrRating(markdown);
+      assessment = {
+        status: effectiveReviewStatus(markdown),
+        reviewedAt: knownReportValue(markdown, "reviewed_at"),
+        reviewedSha: knownReportValue(markdown, "pull_head_sha", "main_sha"),
+        summary: reviewSectionValue(markdown, "summary"),
+        proofStatus: proof.status,
+        rating: rating.overallTier,
+        nextStep: rating.nextSteps[0] ?? reviewSectionValue(markdown, "bestSolution") ?? "",
+        risks: compactReportRisks(markdown),
+        findings: reportReviewFindings(markdown)
+          .slice(0, 8)
+          .map((finding) => ({ priority: `P${finding.priority}`, title: finding.title })),
+        commentUrl: knownReportValue(markdown, "review_comment_url"),
+      };
+      break;
+    }
+    if (linkedAssessmentCache.size >= 256) {
+      const oldest = linkedAssessmentCache.keys().next().value;
+      if (oldest !== undefined) linkedAssessmentCache.delete(oldest);
+    }
+    linkedAssessmentCache.set(key, assessment);
+    return assessment;
+  }
+
   function collectRelatedMentions(options: {
     item: Item;
     issue: unknown;
@@ -117,6 +190,7 @@ export function createRelatedContext({
   function compactRelatedItem(
     number: number,
     mentionedIn: string[],
+    carryClawSweeperAssessment: boolean,
   ): Record<string, unknown> | null {
     try {
       const issue = ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${number}`]);
@@ -126,6 +200,19 @@ export function createRelatedContext({
         issue: compactIssue(issue),
         commentCount: issueRecord.comments,
       };
+
+      if (carryClawSweeperAssessment) {
+        try {
+          const assessment = linkedClawSweeperAssessment(number);
+          if (assessment) {
+            related.latestClawSweeperAssessment = assessment;
+          }
+        } catch (error) {
+          if (error instanceof GitHubRuntimeBudgetError) throw error;
+          related.clawSweeperAssessmentError =
+            error instanceof Error ? error.message : String(error);
+        }
+      }
 
       if (issueRecord.pull_request) {
         try {
@@ -139,6 +226,7 @@ export function createRelatedContext({
 
       return related;
     } catch (error) {
+      if (error instanceof GitHubRuntimeBudgetError) throw error;
       return {
         number,
         mentionedIn: mentionedIn.slice(0, 6),
@@ -746,7 +834,9 @@ export function createRelatedContext({
     const explicitRelated = [...mentions.entries()]
       .sort(([left], [right]) => left - right)
       .slice(0, 10)
-      .map(([number, mentionedIn]) => compactRelatedItem(number, mentionedIn))
+      .map(([number, mentionedIn]) =>
+        compactRelatedItem(number, mentionedIn, options.item.kind === "pull_request"),
+      )
       .filter((entry) => entry !== null);
     const seen = new Set<number>([options.item.number]);
     const related: unknown[] = [];
@@ -781,7 +871,7 @@ export function createRelatedContext({
         const mentionedIn = Array.isArray(record.mentionedIn)
           ? record.mentionedIn.filter((entry): entry is string => typeof entry === "string")
           : [];
-        return compactRelatedItem(number, mentionedIn);
+        return compactRelatedItem(number, mentionedIn, item.kind === "pull_request");
       })
       .filter((entry) => entry !== null);
     appendUniqueRelatedItems(related, seen, refreshedExplicit);

@@ -214,6 +214,7 @@ test("maintainer and bot proof exemptions keep readiness, ratings, and security 
     association: string;
     status?: "missing" | "mock_only" | "insufficient" | "sufficient";
     securityAttention?: boolean;
+    authorityChainProofRequired?: boolean;
   }) => {
     const status = options.status ?? "missing";
     const sufficient = status === "sufficient";
@@ -250,7 +251,9 @@ ${realBehaviorProofReportSection({
   needsContributorAction: !sufficient,
   summary: sufficient
     ? "The maintainer supplied terminal output from the changed production path."
-    : "The reviewer did not find contributor-supplied live proof.",
+    : options.authorityChainProofRequired
+      ? "Authority-chain proof required: the nearest forbidden principal was not exercised before provider I/O."
+      : "The reviewer did not find contributor-supplied live proof.",
 })}
 
 ${prRatingReportSection({
@@ -399,6 +402,54 @@ Full review comments:
   );
   assert.match(suppliedComment, /maintainer supplied terminal output/);
   assert.match(suppliedComment, /\| \*\*Proof confidence\*\* \| 🦞 diamond lobster/);
+
+  const authoritySensitiveMaintainerReport = reportFor({
+    author: "maintainer",
+    association: "MEMBER",
+    status: "missing",
+    authorityChainProofRequired: true,
+  });
+  const authoritySensitiveMaintainerComment = renderReviewCommentFromReport(
+    authoritySensitiveMaintainerReport,
+    "none",
+  );
+  assert.match(authoritySensitiveMaintainerComment, /blocked until real behavior proof is added/i);
+  assert.match(authoritySensitiveMaintainerComment, /Authority-chain proof required:/);
+  assert.match(
+    reviewAutomationMarkersFromReport(authoritySensitiveMaintainerReport),
+    /clawsweeper-verdict:needs-human/,
+  );
+  assert.doesNotMatch(
+    reviewAutomationMarkersFromReport(authoritySensitiveMaintainerReport),
+    /clawsweeper-verdict:pass/,
+  );
+
+  const normalizedAuthoritySensitiveReport = reportFor({
+    author: "maintainer",
+    association: "MEMBER",
+    status: "sufficient",
+  })
+    .replace("Evidence kind: terminal", "Evidence kind: screenshot")
+    .replace(
+      "Summary: The maintainer supplied terminal output from the changed production path.",
+      "Summary: Authority-chain proof required: a screenshot claims no visible console errors.",
+    );
+  const normalizedAuthoritySensitiveComment = renderReviewCommentFromReport(
+    normalizedAuthoritySensitiveReport,
+    "none",
+  );
+  assert.match(
+    normalizedAuthoritySensitiveComment,
+    /blocked until stronger real behavior proof is added/i,
+  );
+  assert.match(
+    reviewAutomationMarkersFromReport(normalizedAuthoritySensitiveReport),
+    /clawsweeper-verdict:needs-human/,
+  );
+  assert.doesNotMatch(
+    reviewAutomationMarkersFromReport(normalizedAuthoritySensitiveReport),
+    /clawsweeper-verdict:pass/,
+  );
 
   const contributorReport = reportFor({ author: "contributor", association: "CONTRIBUTOR" });
   const contributorComment = renderReviewCommentFromReport(contributorReport, "none");

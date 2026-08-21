@@ -1,6 +1,6 @@
 import { hasDataModelUpgradeProof } from "./clawsweeper-change-detection.js";
 import { createLabelSynchronization } from "./clawsweeper-label-sync.js";
-import { PROOF_OVERRIDE_LABEL } from "./clawsweeper-policy.js";
+import { AUTHORITY_CHAIN_PROOF_MARKER, PROOF_OVERRIDE_LABEL } from "./clawsweeper-policy.js";
 import type {
   CloseReason,
   Evidence,
@@ -432,10 +432,15 @@ export function createReportOrchestrationFoundation(
 
   function realBehaviorProofBlocksMerge(markdown: string): boolean {
     if (frontMatterValue(markdown, "review_status") === "failed") return false;
-    if (!isExternalPullRequestReport(markdown)) return false;
     if (frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL)) return false;
     if (isDocsOnlyPullRequestReport(markdown)) return false;
     const proof = reportRealBehaviorProof(markdown);
+    const authorityChainProofRequired = reviewSectionValue(markdown, "realBehaviorProof")
+      .split("\n")
+      .some((line) => line.trimStart().startsWith(`Summary: ${AUTHORITY_CHAIN_PROOF_MARKER}`));
+    if (!isExternalPullRequestReport(markdown) && !authorityChainProofRequired) {
+      return false;
+    }
     return (
       proof.needsContributorAction ||
       proof.status === "missing" ||

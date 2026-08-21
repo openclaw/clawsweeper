@@ -6,6 +6,7 @@ import {
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import {
   AGENTS_POLICY_STATUSES,
+  AUTHORITY_CHAIN_PROOF_MARKER,
   AUTO_IMPLEMENTATION_CANDIDATES,
   FEATURE_SHOWCASE_STATUSES,
   IMPLEMENTATION_COMPLEXITIES,
@@ -603,9 +604,11 @@ export function createReportParser({
       evidenceKind,
       needsContributorAction: /^true$/i.test(needsContributorActionValue ?? ""),
     });
+    const authorityChainProofRequired = summary.startsWith(AUTHORITY_CHAIN_PROOF_MARKER);
     if (
       frontMatterValue(markdown, "type") !== "pull_request" ||
       isExternalPullRequestReport(markdown) ||
+      authorityChainProofRequired ||
       (!proof.needsContributorAction &&
         proof.status !== "missing" &&
         proof.status !== "mock_only" &&

@@ -88,6 +88,32 @@ test("review prompt includes compact previous review state without raw durable r
   assert.doesNotMatch(prompt, /How this review workflow works/);
 });
 
+test("review prompt includes a compact linked predecessor assessment", () => {
+  const context = {
+    issue: { number: 123, title: "Implement routed conversations" },
+    comments: [],
+    timeline: [],
+    relatedItems: [
+      {
+        mentionedIn: ["pull request body"],
+        issue: { number: 122, title: "Design routed conversations" },
+        latestClawSweeperAssessment: {
+          summary: "PERSISTED_REFERENCES_MUST_REMAIN_OWNER_SCOPED",
+          findings: [{ priority: "P1", title: "Reject non-owner references" }],
+          nextStep: "Prove denial before provider I/O.",
+        },
+      },
+    ],
+    counts: { comments: 0, timeline: 0, relatedItems: 1 },
+  };
+
+  const prompt = reviewPromptForTest(item({ kind: "pull_request", number: 123 }), context, git);
+
+  assert.match(prompt, /PERSISTED_REFERENCES_MUST_REMAIN_OWNER_SCOPED/);
+  assert.match(prompt, /Reject non-owner references/);
+  assert.match(prompt, /Prove denial before provider I\/O/);
+});
+
 test("review prompt excludes full semantic-cache patches", () => {
   const context = {
     issue: { number: 123, title: "Sample PR" },

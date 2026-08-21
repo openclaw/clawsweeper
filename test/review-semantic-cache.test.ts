@@ -1000,11 +1000,24 @@ test("incomplete file hydration and mutable check context disable semantic reuse
       ],
     },
   });
+  const incompletePredecessorAssessment = record({
+    context: {
+      relatedItems: [
+        {
+          number: 456,
+          mentionedIn: ["item body"],
+          issue: { number: 456, state: "open" },
+          clawSweeperAssessmentError: "GitHub request failed",
+        },
+      ],
+    },
+  });
 
   assert.equal(truncated.eligibilityReason, "incomplete_file_list");
   assert.equal(missingChecks.eligibilityReason, "incomplete_checks");
   assert.equal(truncatedCommits.eligibilityReason, "incomplete_review_context");
   assert.equal(incompleteRelation.eligibilityReason, "incomplete_review_context");
+  assert.equal(incompletePredecessorAssessment.eligibilityReason, "incomplete_review_context");
   assert.equal(
     decision({ priorRecord: record(), currentRecord: missingChecks }).reason,
     "semantic_ineligible",

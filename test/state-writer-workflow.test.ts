@@ -31,7 +31,7 @@ test("every state hydration uses the canonical Worker with an explicit git-state
     }
   }
 
-  assert.equal(setups.length, 21, "setup-state site count is an audited invariant");
+  assert.equal(setups.length, 23, "setup-state site count is an audited invariant");
   for (const { site, step } of setups) {
     assert.equal(step.with?.["records-url"], workerUrl, site);
     assert.equal(step.with?.["records-secret"], workerSecret, site);
@@ -47,8 +47,10 @@ test("every state hydration uses the canonical Worker with an explicit git-state
       ".github/workflows/exact-review-batch-publish.yml:publish",
       ".github/workflows/live-proof-maintenance.yml:retract",
       ".github/workflows/sweep.yml:event-review-apply",
+      ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-publish",
       ".github/workflows/sweep.yml:target-fanout",
+      ".github/workflows/sweep.yml:review",
     ],
   );
 });
@@ -79,8 +81,10 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       ".github/workflows/repair-issue-implementation-intake.yml:intake",
       ".github/workflows/spam-scanner.yml:scan",
       ".github/workflows/sweep.yml:event-review-apply",
+      ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-publish",
       ".github/workflows/sweep.yml:plan",
+      ".github/workflows/sweep.yml:review",
       ".github/workflows/sweep.yml:publish",
       ".github/workflows/sweep.yml:retry-failed-reviews",
       ".github/workflows/sweep.yml:apply-proof",

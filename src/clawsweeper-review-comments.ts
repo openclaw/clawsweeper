@@ -1,4 +1,5 @@
 import {
+  beforeMergeActions,
   firstBeforeMergeAction,
   firstNonEmptyLine,
   htmlMarkerWithPrefix,
@@ -100,6 +101,22 @@ function reviewHistoryFindings(
   });
 }
 
+function previousReviewRisks(body: string): string[] {
+  const risks = beforeMergeActions(body);
+  const technicalReview = markdownSection(body, "Technical review");
+  const lines = technicalReview.split(/\r?\n/);
+  const riskLabelIndex = lines.findIndex(
+    (line) => line.trim().toLowerCase() === "remaining risk / open question:",
+  );
+  if (riskLabelIndex >= 0) {
+    for (const line of lines.slice(riskLabelIndex + 1)) {
+      const risk = line.trim().match(/^- (?:\[P[0-3]\]\s+)?(\S.*)$/)?.[1];
+      if (risk) risks.push(risk);
+    }
+  }
+  return [...new Set(risks)].slice(0, 8);
+}
+
 export function latestClawSweeperReview(
   comments: readonly unknown[],
   number: number,
@@ -144,6 +161,7 @@ export function previousClawSweeperReviewFromComment(
       ? firstBeforeMergeAction(body)
       : firstNonEmptyLine(markdownSection(body, "Next step before merge")) ||
         firstNonEmptyLine(markdownSection(body, "Next step")),
+    risks: previousReviewRisks(body),
     findings: reviewHistoryFindings(latestCompletedCycle),
     earlierReviewCycles,
     completedReviewCycles: history.totalCompletedCycles + (currentCycle ? 1 : 0),

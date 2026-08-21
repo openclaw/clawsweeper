@@ -68,6 +68,9 @@ interface CreateContextHydrationDependencies {
   numberForMarkdownFile: (file: string) => number;
   replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
   repoRelativePath: (path: string) => string;
+  reportPrRating: (markdown: string) => import("./clawsweeper-types.js").PrRating;
+  reportRealBehaviorProof: (markdown: string) => import("./clawsweeper-types.js").RealBehaviorProof;
+  reportReviewFindings: (markdown: string) => import("./clawsweeper-types.js").ReviewFinding[];
   reportUrl: (path?: string) => string;
   reviewCommentBodyDigest: (body: string) => string;
   reviewSectionValue: (
@@ -129,6 +132,9 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     numberForMarkdownFile,
     replaceFrontMatterValue,
     repoRelativePath,
+    reportPrRating,
+    reportRealBehaviorProof,
+    reportReviewFindings,
     reportUrl,
     reviewCommentBodyDigest,
     reviewSectionValue,
@@ -579,6 +585,9 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     frontMatterValue,
     reviewSectionValue,
     effectiveReviewStatus,
+    reportPrRating,
+    reportRealBehaviorProof,
+    reportReviewFindings,
     displayTitle: (title) => displayTitle(title),
     markdownFiles,
     numberForMarkdownFile,

@@ -1010,6 +1010,17 @@ jobs:
       - uses: ./.github/actions/setup-openclaw
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
 
+      - uses: ./.github/actions/setup-state
+        id: review-records-state
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
+        with:
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ steps.target.outputs.target_slug }}
+          hydrate-git-state: "false"
+          hydrate-state-blobs: "false"
+
       - name: Reserve exact review lease
         id: reserve-exact-review-lease
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
@@ -1120,7 +1131,7 @@ jobs:
 
       - name: Review exact event item
         id: review-exact-event-item
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && steps.review-records-state.outcome == 'success' }}
         continue-on-error: true
         env:
           # Review hydration is the largest read stream (~30 calls/review); it
@@ -4364,6 +4375,17 @@ jobs:
         working-directory: clawsweeper
         run: |
           tar -xzf .artifacts/review-runtime.tar.gz
+
+      - uses: ./clawsweeper/.github/actions/setup-state
+        id: review-shard-records-state
+        with:
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ needs.plan.outputs.target_slug }}
+          hydrate-git-state: "false"
+          hydrate-state-blobs: "false"
+          worktree-path: clawsweeper
 
       - name: Install review compiler service
         continue-on-error: true

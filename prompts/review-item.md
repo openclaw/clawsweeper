@@ -410,7 +410,47 @@ likely owner.
 
 For PRs, include a dedicated security review pass in addition to the functional review. Inspect whether the diff could introduce a security or supply-chain regression, especially when it touches CI workflows, GitHub Action refs, dependency sources, lockfiles, install/build/release scripts, package publishing metadata, secrets handling, permissions, downloaded artifacts, generated/vendor/minified files, or other code execution paths. Check whether those changes are consistent with the PR title, body, discussion, and stated purpose before deciding. Be cautious when a small or unrelated functional change also introduces new third-party code execution, broadens secret or permission access, changes package resolution, adds lifecycle hooks, downloads and executes artifacts, or mixes infrastructure changes into otherwise cosmetic work. Do not infer malicious intent without concrete evidence. Always summarize this pass in `securityReview`; set `status: "cleared"` when the diff has no concrete security or supply-chain concern, `status: "needs_attention"` when there is a concrete concern, and `status: "not_applicable"` for non-PR items without a security-sensitive report. Put concrete security concerns in `securityReview.concerns` with file/line when possible, and also include blocking concerns in `risks` and `evidence` when they affect the merge/close decision.
 
+For PRs, also run an authority-chain and invariant-inversion pass inside the
+existing functional, security, proof, risk, and rating outputs; do not create a
+separate review section. Trigger this pass when the PR creates or persists an
+identifier, route, binding, capability, default, or authorization decision;
+broadens discovery, enumeration, fallback, dispatch, retry, replay, or recovery;
+or treats data as trusted, internal, host-derived, or server-derived so it can
+bypass normal validation. Follow each triggered value from every producer to
+the final network, provider, filesystem, process, queue, or other side effect.
+Stored provenance and an internal origin are context, not proof of current
+authorization at the point of use.
+
+Invert the PR's success claim and evaluate the nearest forbidden principal as
+well as the allowed one. When authority can persist, also evaluate stale,
+revoked, or reassigned authority and any queued, retried, replayed, recovered,
+or fallback decision that can outlive the check that created it. Require proof
+that rejection happens before the final side effect, not merely that an earlier
+layer validates or that the happy path succeeds. An authorized
+production-path harness may inject principals and revocation state while using
+the real routing, persistence, dispatch, and final-I/O owners.
+
+If this pass establishes a concrete reachable violation introduced by the PR,
+report a blocking `reviewFindings` entry and a `securityReview` concern when it
+crosses a security boundary. If the authority boundary is material but the
+nearest forbidden or stale-authority case is plausible and unproven, put the
+specific uncertainty in `risks`, select the matching `merge-risk` label, cap
+`patchTier` at `C`, and add this tailored rank-up move or a more specific
+equivalent: "Add final-effect proof for the nearest unauthorized principal and,
+when authority persists, prove revocation or reassignment invalidates it before
+I/O." For low-impact uncertainty, use a specific rank-up move and cap
+`patchTier` at `B` without inventing a finding. Do not clear this requirement
+because the author is a maintainer or bot; authorship is not evidence about the
+changed surface.
+
 For PRs, include a dedicated `realBehaviorProof` assessment before any pass, automerge, or repair verdict. External PRs must show that the contributor ran the changed behavior after the fix in a real setup, except when the PR changes only files under `docs/`; docs-only PRs should use `status: "not_applicable"` with `needsContributorAction: false`. Unit tests, mocks, snapshots, lint, typechecks, and CI are supplemental only; they are not real behavior proof by themselves. Treat screenshots, recordings, terminal screenshots, console output, copied live output, linked artifacts, and redacted runtime logs as valid proof, including for non-visual CLI, console, text, or error-message changes. Prefer asking for screenshots or videos when they can show the behavior, including terminal screenshots for text or console changes, while keeping logs and live output acceptable. Remind contributors to redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence. A plain app screenshot is sufficient only for behavior it directly shows. Do not mark screenshot-only proof sufficient for browser runtime, CSP, CORS, `connect-src`, auth callback, network, or security changes when the proof only says no console error, warning, or violation is visible; require console output, a network trace, terminal/live output, logs, a recording with diagnostics, or a linked artifact that actually shows the runtime path. Use your tools and best judgement: inspect the PR body, comments, links, screenshots, videos, logs, terminal output, and changed behavior context; you may download/open GitHub attachment links, generate stills or contact sheets from videos, inspect terminal screenshots and logs, and compare the proof against the PR diff. Use the provided scratch directory for downloaded artifacts and keep the target checkout read-only. Use `status: "sufficient"` only when the evidence convincingly shows after-fix real behavior and an observed improved result. Use `status: "missing"` when proof is absent, `status: "mock_only"` when proof is only tests/mocks/CI, `status: "insufficient"` when the evidence is unrelated, unviewable, too weak, or does not show the changed real behavior after the fix, `status: "override"` when the PR has `proof: override`, and `status: "not_applicable"` for non-PR items, maintainer/bot PRs where the gate does not apply, or PRs that change only files under `docs/`. When proof is missing, mock-only, or insufficient, set `needsContributorAction: true`, make the PR a human-only merge blocker, and do not request ClawSweeper repair markers because automation cannot prove the contributor's setup for them.
+
+The maintainer/bot exception applies only when the authority-chain pass does not
+trigger. For a triggered PR, require the same allowed and nearest-forbidden
+final-effect proof based on the changed surface, regardless of author role. For
+every triggered PR, begin `realBehaviorProof.summary` with the exact marker
+`Authority-chain proof required:` so existing proof parsing and merge gates can
+preserve the surface-based requirement.
 
 A reviewer-side environment limitation is not missing contributor proof. If a
 required dependency checkout, network path, credential, or inspection tool is
@@ -532,6 +572,16 @@ targeted blame or log inspection). Do not infer unchanged code from a similar
 title or line location. If the earlier SHA is unavailable or the comparison is
 inconclusive, leave `lateFinding` false or omitted. Repeatedly surfacing one
 new previously-visible concern per cycle is a review defect, not author churn.
+
+When an explicitly linked related item includes
+`latestClawSweeperAssessment`, first decide whether that item is an
+implementation predecessor, such as the design/feature issue this PR implements
+or a canonical predecessor named by the PR. If it is, carry its latest stated
+invariants, risks, findings, and proof expectations into the current review and
+re-evaluate them against this diff and current behavior. Do not blindly inherit
+its verdict, and do not carry assessments from title similarity, search,
+gitcrawl, duplicates, or merely adjacent items. A predecessor assessment is
+review input, not proof that the new implementation preserves the invariant.
 
 Use target `AGENTS.md` policy as review input, not as a standalone source of
 findings. For PRs, if the diff concretely violates an applicable `AGENTS.md`
@@ -993,7 +1043,9 @@ Include `nextSteps` as 0-3 concrete
 rank-up moves only when they are merge-relevant and likely to improve reviewer
 confidence. Use an empty array for `S`, `A`, and `NA`, and usually for `B`
 unless one specific action materially reduces risk. Do not invent optional
-polish work or create churn for already-good PRs.
+polish work or create churn for already-good PRs. For an authority-sensitive
+PR, tailor a rank-up move to the nearest forbidden principal and the final side
+effect; generic requests for more tests or more security review are not enough.
 
 Always fill `telegramVisibleProof` using the changed-behavior classification
 above. It only controls the `mantis: telegram-visible-proof` label.

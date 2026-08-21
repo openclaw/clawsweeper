@@ -828,7 +828,7 @@ function semanticContext(input: ReviewSemanticInput): {
   if (
     (input.context.relatedItems ?? []).some((entry) => {
       const record = asRecord(entry);
-      return [record.error, record.pullRequestError].some(
+      return [record.error, record.pullRequestError, record.clawSweeperAssessmentError].some(
         (value) => typeof value === "string" && value.trim().length > 0,
       );
     })
