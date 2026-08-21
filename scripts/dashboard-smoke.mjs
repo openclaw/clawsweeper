@@ -45,8 +45,11 @@ async function main() {
   if (!Array.isArray(status.bay.terminal_buffer) || !Array.isArray(status.bay.recently_washed)) {
     throw new Error("status response is missing Bay terminal outcome arrays");
   }
-  if (status.bay.timings?.sample_kind !== "completed_review_journeys") {
-    throw new Error("status response is missing the evidenced Bay timing sample");
+  if (
+    status.bay.timings?.sample_kind !== "completed_review_journeys" ||
+    status.bay.timings?.source !== "durable_exact_review_lifecycles"
+  ) {
+    throw new Error("status response is missing the durable Bay timing provenance");
   }
 
   const exactReviewQueue = await fetchJson(`${baseUrl}/api/exact-review-queue`);

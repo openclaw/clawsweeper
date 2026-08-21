@@ -131,6 +131,8 @@ function statusFixture() {
       },
     },
     bay: {
+      metrics_state: "complete",
+      timing_coverage_complete: true,
       tide_generation: 0,
       tide_threshold: 20,
       terminal_count: 1,
@@ -148,6 +150,7 @@ function statusFixture() {
       active_census_complete: true,
       timings: {
         sample_kind: "completed_review_journeys",
+        source: "durable_exact_review_lifecycles",
         window_minutes: 60,
         overall: { samples: 0, average_ms: null, median_ms: null },
       },

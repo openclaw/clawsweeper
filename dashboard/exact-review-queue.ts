@@ -66,7 +66,10 @@ import {
   type ExactReviewLifecycleProjection,
   type LifecycleTerminalDisposition,
 } from "./exact-review-lifecycle.ts";
-import { ExactReviewLifecycleTelemetryStore } from "./exact-review-lifecycle-telemetry.ts";
+import {
+  ExactReviewLifecycleTelemetryStore,
+  unknownBaySnapshot,
+} from "./exact-review-lifecycle-telemetry.ts";
 import { GithubEgressTelemetryStore } from "./github-egress-telemetry.ts";
 import {
   ExactReviewCommandIntakeStore,
@@ -710,6 +713,20 @@ export function exactReviewQueueCapacity(env) {
   return exactReviewQueueCapacityFromReadModel(env, DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET);
 }
 
+function exactReviewPublicBayRepositories(env): Set<string> {
+  const repositories = String(env?.PUBLIC_BAY_REPOS || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  if (
+    repositories.length > 32 ||
+    repositories.some((repository) => !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repository))
+  ) {
+    return new Set();
+  }
+  return new Set(repositories);
+}
+
 export class ExactReviewQueue {
   private state;
   private storage;
@@ -761,14 +778,18 @@ export class ExactReviewQueue {
     );
     this.githubEtagResponseStore = new GithubEtagResponseStore(this.storage);
     this.githubWebhookReadModelStore = new GithubWebhookReadModelStore(this.storage);
-    // The public lifecycle reader remains side-effect free, but its table and
-    // repository-leading index must exist before the first read. Provision
-    // only that bounded read schema in the constructor barrier; full queue
-    // initialization and migration stay deferred until an ordinary request.
+    // The public lifecycle reader remains side-effect free. Its bounded read
+    // schema and configured public-repository coverage scope are established
+    // in this constructor barrier; full queue initialization and migration
+    // stay deferred until an ordinary request.
     if (typeof state.blockConcurrencyWhile === "function") {
       this.lifecycleProjectionReady = Promise.resolve(
         state.blockConcurrencyWhile(async () => {
           this.lifecycleProjectionStore.ensureSchemaSync();
+          this.lifecycleTelemetryStore.ensureSchemaSync();
+          this.lifecycleTelemetryStore.syncBayRepositoryScope(
+            exactReviewPublicBayRepositories(this.env),
+          );
         }),
       );
     } else {
@@ -797,6 +818,25 @@ export class ExactReviewQueue {
           : validPublicRepositories
             ? this.lifecycleProjectionStore.readBaySnapshot(Date.now(), new Set(publicRepositories))
             : this.lifecycleProjectionStore.readBaySnapshot(Date.now(), new Set()),
+      });
+    }
+    if (request.method === "GET" && url.pathname === "/bay-lifecycle-metrics") {
+      await this.lifecycleProjectionReady.catch(() => undefined);
+      const publicRepositories = url.searchParams
+        .getAll("public_repo")
+        .map((value) => value.trim().toLowerCase());
+      const validPublicRepositories =
+        publicRepositories.length <= 32 &&
+        publicRepositories.every((value) => /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(value));
+      const recoveryPending = this.bayTelemetryRecoveryPendingSync();
+      return json({
+        bay_lifecycle_metrics: recoveryPending
+          ? unknownBaySnapshot("unavailable")
+          : !url.searchParams.has("public_repo")
+            ? this.lifecycleTelemetryStore.baySnapshot()
+            : validPublicRepositories
+              ? this.lifecycleTelemetryStore.baySnapshot(Date.now(), new Set(publicRepositories))
+              : this.lifecycleTelemetryStore.baySnapshot(Date.now(), new Set()),
       });
     }
     if (request.method === "POST" && url.pathname === "/lifecycle-audit/inventory") {
@@ -1648,7 +1688,7 @@ export class ExactReviewQueue {
               ? { sourceAuthorityWatermark: exactReviewSourceAuthorityWatermark(decision)! }
               : {}),
           };
-          this.recordCommandAdmission(state.items[key], decision, now);
+          this.recordLifecycleAdmission(state.items[key], decision, now);
           ingressAdmitted = true;
         }
         if (
@@ -1665,6 +1705,9 @@ export class ExactReviewQueue {
             // that older event is not a safe promotion of this revision.
             delete state.items[key].ingressFingerprint;
           }
+        }
+        if (ingressAdmitted && state.items[key]) {
+          this.recordLifecycleAdmission(state.items[key], state.items[key].decision, now);
         }
         if (semanticEdited) this.recordEditedSemanticInputSync(semanticEdited, now);
         this.writeStateSync(state);
@@ -3784,6 +3827,7 @@ export class ExactReviewQueue {
     this.cleanupLegacyCompatibilitySync();
     const startedAt = Date.now();
     await this.storage.deleteAlarm();
+    this.reconcileBayTelemetryInternalSync();
     await this.processBranchAuthorityReservations(startedAt);
     await this.processSourceAuthorityReservations(startedAt);
     await this.processCommandIntakes(startedAt);
@@ -6763,15 +6807,30 @@ export class ExactReviewQueue {
     });
   }
 
-  private recordCommandAdmission(
+  private recordLifecycleAdmission(
     item: ExactReviewQueueItem,
     decision: ExactReviewDecision,
     now: number,
     revision = item.revision,
   ) {
-    const commandDecision = decision.publication?.producerDecision ?? decision;
-    if (!exactReviewDecisionHasCommandContext(commandDecision)) return null;
-    const canonicalTargetKey = `${commandDecision.targetRepo}#${commandDecision.itemNumber}`;
+    const sourceDecision = decision.publication?.producerDecision ?? decision;
+    const canonicalTargetKey = `${sourceDecision.targetRepo}#${sourceDecision.itemNumber}`;
+    // A command is itself the lifecycle trigger. Command verification can add
+    // the current PR timestamp for authority checks, but that must not turn an
+    // older or unrelated PR edit into the timing origin for @review/@re-review.
+    // Scheduled review candidates preserve their source update time for review
+    // policy, but their lifecycle begins only when this queue admits them.
+    // Otherwise an old backfill candidate can produce a valid completion whose
+    // duration is outside the bounded Bay metric domain.
+    const sourceTriggeredAt = Date.parse(
+      String(
+        exactReviewScheduledLane(sourceDecision)
+          ? new Date(now).toISOString()
+          : exactReviewDecisionHasCommandContext(sourceDecision)
+            ? sourceDecision.sourceCommentUpdatedAt || sourceDecision.sourceUpdatedAt || ""
+            : sourceDecision.sourceUpdatedAt || sourceDecision.sourceCommentUpdatedAt || "",
+      ),
+    );
     const existing = this.lifecycleProjectionStore.read(canonicalTargetKey, item.key, revision);
     if (existing) return existing;
     return this.lifecycleProjectionStore.recordAdmissionSync({
@@ -6779,18 +6838,21 @@ export class ExactReviewQueue {
       fenceKey: item.key,
       revision,
       deliveryId:
-        commandDecision.sourceDeliveryId ||
+        sourceDecision.sourceDeliveryId ||
         item.admissionDeliveryId ||
-        `command:${item.key}:${revision}`,
-      sourceAction: commandDecision.sourceAction,
-      commandOriginated: true,
-      statusMarker: commandDecision.commandStatusMarker ?? null,
-      statusCommentId: commandDecision.statusCommentId ?? null,
-      ...(commandDecision.sourceDeliveryId
-        ? { sourceDeliveryId: commandDecision.sourceDeliveryId }
+        `admission:${item.key}:${revision}`,
+      sourceAction: sourceDecision.sourceAction,
+      commandOriginated: exactReviewDecisionHasCommandContext(sourceDecision),
+      statusMarker: sourceDecision.commandStatusMarker ?? null,
+      statusCommentId: sourceDecision.statusCommentId ?? null,
+      ...(sourceDecision.sourceDeliveryId
+        ? { sourceDeliveryId: sourceDecision.sourceDeliveryId }
         : {}),
-      ...(commandDecision.bayJourneyDeliveryId
-        ? { bayJourneyDeliveryId: commandDecision.bayJourneyDeliveryId }
+      ...(sourceDecision.bayJourneyDeliveryId
+        ? { bayJourneyDeliveryId: sourceDecision.bayJourneyDeliveryId }
+        : {}),
+      ...(Number.isFinite(sourceTriggeredAt) && sourceTriggeredAt <= now
+        ? { triggeredAt: sourceTriggeredAt }
         : {}),
       observedAt: now,
     });
@@ -6810,7 +6872,7 @@ export class ExactReviewQueue {
     } = {},
   ) {
     if (!options.newItem) {
-      const prior = this.recordCommandAdmission(item, item.decision, now);
+      const prior = this.recordLifecycleAdmission(item, item.decision, now);
       if (prior && !options.retainPriorLifecycle) {
         const requestedKind = exactReviewCommandObligationSurvives(item.decision, decision)
           ? "requeue"
@@ -6819,13 +6881,17 @@ export class ExactReviewQueue {
         const terminal =
           committedKind && committedKind !== "requeue"
             ? prior
-            : this.lifecycleProjectionStore.recordTerminalDispositionSync({
-                canonicalTargetKey: prior.canonicalTargetKey,
-                fenceKey: prior.fenceKey,
-                revision: prior.revision,
-                kind: requestedKind,
-                observedAt: now,
-              });
+            : this.lifecycleProjectionStore.recordTerminalDispositionSync(
+                {
+                  canonicalTargetKey: prior.canonicalTargetKey,
+                  fenceKey: prior.fenceKey,
+                  revision: prior.revision,
+                  kind: requestedKind,
+                  observedAt: now,
+                },
+                (projection) => this.syncBayLifecycle(projection),
+              );
+        if (committedKind && committedKind !== "requeue") this.syncBayLifecycle(terminal);
         const terminalKind = terminal.terminalDisposition?.kind;
         if (terminalKind && terminalKind !== "requeue") {
           this.ensureLifecycleTerminalFinalizationDriver({
@@ -6847,7 +6913,7 @@ export class ExactReviewQueue {
     item.decision = decision;
     item.updatedAt = now;
     state.items[item.key] = item;
-    this.recordCommandAdmission(item, decision, now);
+    this.recordLifecycleAdmission(item, decision, now);
     return item;
   }
 
@@ -6863,30 +6929,9 @@ export class ExactReviewQueue {
       fenceKey: item.key,
       revision,
     };
-    const existing = this.lifecycleProjectionStore.read(
-      identity.canonicalTargetKey,
-      identity.fenceKey,
-      identity.revision,
-    );
+    const existing = this.recordLifecycleAdmission(item, sourceDecision, now, revision);
     if (existing && existing.fenceKey !== identity.fenceKey) {
       throw new Error("conflicting lifecycle projection identity");
-    }
-    if (!existing) {
-      const commandOriginated = Boolean(
-        sourceDecision.commandStatusMarker || sourceDecision.statusCommentId,
-      );
-      this.lifecycleProjectionStore.recordAdmission({
-        ...identity,
-        deliveryId: item.admissionDeliveryId ?? `claim:${item.leaseId}:${revision}`,
-        sourceAction: sourceDecision.sourceAction,
-        commandOriginated,
-        statusMarker: sourceDecision.commandStatusMarker ?? null,
-        statusCommentId: sourceDecision.statusCommentId ?? null,
-        ...(sourceDecision.sourceDeliveryId
-          ? { sourceDeliveryId: sourceDecision.sourceDeliveryId }
-          : {}),
-        observedAt: now,
-      });
     }
     this.lifecycleProjectionStore.recordClaim({
       ...identity,
@@ -6918,28 +6963,7 @@ export class ExactReviewQueue {
         fenceKey: item.key,
         revision: membership.revision,
       };
-      const existing = this.lifecycleProjectionStore.read(
-        identity.canonicalTargetKey,
-        identity.fenceKey,
-        identity.revision,
-      );
-      if (!existing) {
-        this.lifecycleProjectionStore.recordAdmission({
-          ...identity,
-          deliveryId:
-            item.admissionDeliveryId ?? `publication:${membership.itemKey}:${membership.revision}`,
-          sourceAction: sourceDecision.sourceAction,
-          commandOriginated: Boolean(
-            sourceDecision.commandStatusMarker || sourceDecision.statusCommentId,
-          ),
-          statusMarker: sourceDecision.commandStatusMarker ?? null,
-          statusCommentId: sourceDecision.statusCommentId ?? null,
-          ...(sourceDecision.sourceDeliveryId
-            ? { sourceDeliveryId: sourceDecision.sourceDeliveryId }
-            : {}),
-          observedAt: now,
-        });
-      }
+      this.recordLifecycleAdmission(item, sourceDecision, now, membership.revision);
       if (!hasRunner) continue;
       this.lifecycleProjectionStore.recordClaim({
         ...identity,
@@ -6979,11 +7003,14 @@ export class ExactReviewQueue {
     ) {
       return;
     }
-    this.lifecycleProjectionStore.recordTerminalDisposition({
-      ...identity,
-      kind: identity.kind,
-      observedAt: now,
-    });
+    this.lifecycleProjectionStore.recordTerminalDisposition(
+      {
+        ...identity,
+        kind: identity.kind,
+        observedAt: now,
+      },
+      (terminal) => this.syncBayLifecycle(terminal),
+    );
   }
 
   private recordLifecycleDirectPublication({ validated, owned, accepted, now }) {
@@ -7056,11 +7083,40 @@ export class ExactReviewQueue {
       observedAt: now,
     });
     if (accepted.outcome === "superseded") {
-      this.lifecycleProjectionStore.recordTerminalDisposition({
-        ...identity,
-        kind: "superseded",
-        observedAt: now,
-      });
+      this.lifecycleProjectionStore.recordTerminalDisposition(
+        {
+          ...identity,
+          kind: "superseded",
+          observedAt: now,
+        },
+        (terminal) => this.syncBayLifecycle(terminal),
+      );
+    }
+  }
+
+  private syncBayLifecycle(projection: ExactReviewLifecycleProjection) {
+    this.lifecycleTelemetryStore.syncBayLifecycle(projection);
+  }
+
+  private bayTelemetryRecoveryPendingSync() {
+    return (
+      this.lifecycleProjectionStore.hasBayTelemetryPending() ||
+      this.lifecycleTelemetryStore.hasBayLifecyclePending()
+    );
+  }
+
+  private reconcileBayTelemetryInternalSync() {
+    try {
+      if (
+        !this.lifecycleProjectionStore.reconcileBayTelemetryPending((projection) =>
+          this.lifecycleTelemetryStore.syncBayLifecycle(projection),
+        )
+      ) {
+        return false;
+      }
+      return this.lifecycleTelemetryStore.reconcileBayLifecyclePending();
+    } catch {
+      return false;
     }
   }
 
@@ -7179,11 +7235,14 @@ export class ExactReviewQueue {
       lifecycleTerminal,
     });
     if (disposition) {
-      this.lifecycleProjectionStore.recordTerminalDisposition({
-        ...identity,
-        kind: disposition,
-        observedAt: now,
-      });
+      this.lifecycleProjectionStore.recordTerminalDisposition(
+        {
+          ...identity,
+          kind: disposition,
+          observedAt: now,
+        },
+        (terminal) => this.syncBayLifecycle(terminal),
+      );
     }
   }
 
@@ -7233,11 +7292,14 @@ export class ExactReviewQueue {
         receiptId,
         observedAt: now,
       });
-      const completed = this.lifecycleProjectionStore.recordTerminalDisposition({
-        ...identity,
-        kind: "review_completed_routed",
-        observedAt: now,
-      });
+      const completed = this.lifecycleProjectionStore.recordTerminalDisposition(
+        {
+          ...identity,
+          kind: "review_completed_routed",
+          observedAt: now,
+        },
+        (terminal) => this.syncBayLifecycle(terminal),
+      );
       const state = this.readStateSync();
       const driverChanged = this.ensureLifecycleTerminalFinalizationDriver({
         state,
@@ -7247,8 +7309,8 @@ export class ExactReviewQueue {
       const receiptRemoved = this.removeTerminalizedLifecycleQueueItem(state, identity);
       if (driverChanged || receiptRemoved) {
         await this.writeState(state);
-        await this.scheduleNext(state, now);
       }
+      await this.scheduleNext(state, now);
       return json({
         ok: true,
         lifecycle_state: lifecycleState(completed),
@@ -7466,7 +7528,7 @@ export class ExactReviewQueue {
     }
   }
 
-  private beginTerminalFinalizationAcknowledgement(value: unknown) {
+  private async beginTerminalFinalizationAcknowledgement(value: unknown) {
     const tuple = exactReviewTerminalFinalizationTuple(value);
     const body = objectValue(value);
     const statusMarker =
@@ -7495,17 +7557,21 @@ export class ExactReviewQueue {
     const finalization = item.terminalFinalization!;
     const identity = exactReviewTerminalFinalizationProjection(item, tuple.leaseRevision);
     try {
-      this.lifecycleProjectionStore.recordTerminalDisposition({
-        ...identity,
-        kind: finalization.disposition,
-        observedAt: now,
-      });
+      this.lifecycleProjectionStore.recordTerminalDisposition(
+        {
+          ...identity,
+          kind: finalization.disposition,
+          observedAt: now,
+        },
+        (terminal) => this.syncBayLifecycle(terminal),
+      );
       const result = this.lifecycleProjectionStore.authorizeCommandAcknowledgement({
         ...identity,
         statusMarker,
         statusCommentId,
         observedAt: now,
       });
+      await this.scheduleNext(state, now);
       return json({
         ok: true,
         allowed: result.allowed,
@@ -7753,11 +7819,14 @@ export class ExactReviewQueue {
     }
     try {
       const now = Date.now();
-      const projection = this.lifecycleProjectionStore.recordTerminalDisposition({
-        ...identity,
-        kind,
-        observedAt: now,
-      });
+      const projection = this.lifecycleProjectionStore.recordTerminalDisposition(
+        {
+          ...identity,
+          kind,
+          observedAt: now,
+        },
+        (terminal) => this.syncBayLifecycle(terminal),
+      );
       const state = this.readStateSync();
       const driverCancelled =
         kind === "requeue" ? this.cancelTerminalFinalizationDrivers(state, identity) : false;
@@ -7773,8 +7842,8 @@ export class ExactReviewQueue {
       const receiptRemoved = this.removeTerminalizedLifecycleQueueItem(state, identity);
       if (driverChanged || driverCancelled || receiptRemoved) {
         await this.writeState(state);
-        await this.scheduleNext(state, now);
       }
+      await this.scheduleNext(state, now);
       return json({
         ok: true,
         lifecycle_state: lifecycleState(projection),
@@ -7935,6 +8004,7 @@ export class ExactReviewQueue {
     this.stateWriterCoordinator.ensureSchemaSync();
     this.lifecycleProjectionStore.ensureSchemaSync();
     this.lifecycleTelemetryStore.ensureSchemaSync();
+    this.lifecycleTelemetryStore.syncBayRepositoryScope(exactReviewPublicBayRepositories(this.env));
     this.githubEgressTelemetryStore.ensureSchemaSync();
     this.artifactReceiptStore.ensureSchemaSync();
     this.githubEtagResponseStore.ensureSchemaSync();
@@ -10869,6 +10939,7 @@ export class ExactReviewQueue {
     const sourceAuthorityNext = await this.nextSourceAuthorityVerificationAt();
     const commandIntakeNext = this.commandIntakeStore.nextAttemptAt();
     const credentialCircuitNext = exactReviewGithubCircuitNextWakeAt(state, now);
+    const bayTelemetryRecoveryNext = this.bayTelemetryRecoveryPendingSync() ? now + 1_000 : null;
     const next = [
       queueNext,
       batchOwnership.nextLeaseExpiresAt,
@@ -10876,6 +10947,7 @@ export class ExactReviewQueue {
       sourceAuthorityNext,
       commandIntakeNext,
       credentialCircuitNext,
+      bayTelemetryRecoveryNext,
     ]
       .filter((candidate): candidate is number => candidate !== null)
       .reduce<number | null>(

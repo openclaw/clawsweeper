@@ -920,7 +920,7 @@ test("public status filters a legacy cached body before it can be served", async
 
   try {
     await globalThis.caches.default.put(
-      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v4/fresh"),
+      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v5/fresh"),
       new Response(
         JSON.stringify({
           schema_version: 1,
@@ -995,9 +995,9 @@ test("public status filters a legacy cached body before it can be served", async
       error_count: 1,
     });
 
-    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v4/fresh");
+    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v5/fresh");
     await globalThis.caches.default.put(
-      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v4/stale"),
+      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v5/stale"),
       new Response(
         JSON.stringify({
           schema_version: 1,
@@ -1031,9 +1031,9 @@ test("public status filters a legacy cached body before it can be served", async
     assert.equal(staleResponse.headers.get("set-cookie"), null);
     assert.equal(staleResponse.headers.get("x-private-marker"), null);
 
-    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v4/stale");
+    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v5/stale");
     await globalThis.caches.default.put(
-      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v4/fresh"),
+      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v5/fresh"),
       new Response('{"schema_version":1,"generated_at":', {
         headers: { "x-private-marker": "synthetic-malformed-header" },
       }),

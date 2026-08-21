@@ -2998,7 +2998,7 @@ test("dashboard paginates worker jobs beyond GitHub's first page", async () => {
   }
 });
 
-test("dashboard reports worker error and recovery rates from completed job steps", async () => {
+test("dashboard reports worker health without treating worker jobs as lifecycle completions", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
   Object.defineProperty(globalThis, "caches", {
@@ -3118,20 +3118,15 @@ test("dashboard reports worker error and recovery rates from completed job steps
     assert.equal(status.health.recovery_rate_percent, 50);
     assert.equal(status.bay.tide_threshold, 20);
     assert.equal(status.bay.tide_generation, 0);
-    assert.equal(status.bay.terminal_count, 3);
+    assert.equal(status.bay.metrics_state, "unavailable");
+    assert.equal(status.bay.terminal_count, 0);
     assert.equal(status.bay.timings.lanes, undefined);
     assert.deepEqual(status.bay.timings.overall, {
       average_ms: null,
       median_ms: null,
       samples: 0,
     });
-    assert.equal(status.bay.terminal_buffer.length, 3);
-    const overLimitTimeline = status.bay.terminal_buffer.find((item) => item.item_number === 300);
-    assert.ok(overLimitTimeline);
-    assert.equal(overLimitTimeline.action.run_id, 4);
-    assert.equal(overLimitTimeline.action.job_id, 40);
-    assert.equal(overLimitTimeline.action.steps_complete, false);
-    assert.deepEqual(overLimitTimeline.action.steps, []);
+    assert.deepEqual(status.bay.terminal_buffer, []);
     assert.equal(status.health.recent_attempts, undefined);
     assert.equal(status.health.failures.length, 2);
     assert.equal(status.health.failures[0].recovered, false);
@@ -3632,7 +3627,7 @@ test("dashboard serves stale status while coalescing one background refresh", as
     value: { default: cache },
   });
   await cache.put(
-    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v4/stale"),
+    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v5/stale"),
     jsonResponse({
       schema_version: 1,
       generated_at: "2026-06-13T18:00:00Z",
@@ -3731,7 +3726,7 @@ test("dashboard serves stale status while coalescing one background refresh", as
     releaseFetch();
     await Promise.all(waitUntilPromises);
     assert.equal(unfilteredRunRequests, 1);
-    assert.equal(queueReads, 2);
+    assert.equal(queueReads, 3);
 
     const refreshed = await worker.fetch(request, env);
     assert.equal(refreshed.headers.get("x-clawsweeper-cache"), "fresh");
@@ -3739,7 +3734,7 @@ test("dashboard serves stale status while coalescing one background refresh", as
     assert.deepEqual(refreshedStatus.pipeline, []);
     assert.equal(refreshedStatus.exact_review_queue.pending, 7);
     assert.equal(refreshedStatus.exact_review_queue.handoff_health.status, "healthy");
-    assert.equal(queueReads, 2);
+    assert.equal(queueReads, 3);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });

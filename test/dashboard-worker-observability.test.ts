@@ -1508,7 +1508,10 @@ test("dashboard reuses a current Bay snapshot from the shared status store", asy
       automatic_work: [],
       diagnostics: { errors: [], error_count: 0 },
       bay: {
-        timings: { sample_kind: "completed_review_journeys" },
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+        },
       },
       pipeline: [{ id: "shared-snapshot", arbitrary_count: 41, arbitrary_boolean: true }],
       fleet: {
@@ -1542,11 +1545,58 @@ test("dashboard reuses a current Bay snapshot from the shared status store", asy
     assert.deepEqual(status.fleet, { active_codex_jobs: 1 });
     assert.equal(status.arbitrary_namespace, undefined);
     assert.equal(status.bay.timings.sample_kind, "completed_review_journeys");
+    assert.equal(status.bay.timings.source, "durable_exact_review_lifecycles");
     assert.equal(networkRequests, 0);
     const persisted = String(await statusStore.get("snapshot"));
     assert.equal(persisted.includes("arbitrary_count"), false);
     assert.equal(persisted.includes("arbitrary_boolean"), false);
     assert.equal(persisted.includes("arbitrary_namespace"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("dashboard refreshes a durable snapshot that predates lifecycle provenance", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  const statusStore = new MemoryKv();
+  await statusStore.put(
+    "snapshot",
+    JSON.stringify({
+      schema_version: 1,
+      generated_at: new Date().toISOString(),
+      health: {},
+      workers: [],
+      automatic_work: [],
+      pipeline: [{ id: "legacy-shared-snapshot" }],
+      diagnostics: { errors: [], error_count: 0 },
+      bay: { timings: { sample_kind: "completed_exact_review_lifecycles" } },
+      fleet: { active_codex_jobs: 1 },
+    }),
+  );
+  let networkRequests = 0;
+  globalThis.fetch = async () => {
+    networkRequests += 1;
+    throw new Error("fresh collection is intentionally unavailable");
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      { CACHE_TTL_SECONDS: "60", STATUS_STORE: statusStore },
+      { waitUntil: () => undefined },
+    );
+    const status = await response.json();
+    assert.equal(response.status, 200);
+    assert.ok(networkRequests > 0);
+    assert.equal(status.bay.timings.sample_kind, "completed_review_journeys");
+    assert.equal(status.bay.timings.source, "durable_exact_review_lifecycles");
+    assert.deepEqual(status.pipeline, []);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -1568,7 +1618,12 @@ test("dashboard rewrites a malformed durable root to a fixed incomplete snapshot
     JSON.stringify({
       schema_version: 1,
       generated_at: new Date().toISOString(),
-      bay: { timings: { sample_kind: "completed_review_journeys" } },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+        },
+      },
       nested: { marker },
     }),
   );
@@ -1591,7 +1646,7 @@ test("dashboard rewrites a malformed durable root to a fixed incomplete snapshot
     assert.equal(persisted.includes(marker), false);
     assert.equal(JSON.parse(persisted).public_projection_complete, false);
     assert.equal(
-      await cache.match(new Request("https://clawsweeper.openclaw.ai/api/status-cache/v4/fresh")),
+      await cache.match(new Request("https://clawsweeper.openclaw.ai/api/status-cache/v5/fresh")),
       undefined,
     );
   } finally {
@@ -1633,7 +1688,12 @@ test("dashboard rejects malformed, undated, stale, and future durable snapshots"
     JSON.stringify({
       schema_version: 1,
       generated_at: new Date(now).toISOString(),
-      bay: { timings: { sample_kind: "completed_review_journeys" } },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+        },
+      },
     }),
   );
   const first = await readCachedSnapshot({ STATUS_STORE: validStore }, 60);
@@ -1874,7 +1934,12 @@ test("optional exact-review telemetry failures do not freeze an idle status snap
       health: {},
       workers: [],
       automatic_work: [],
-      bay: { timings: { sample_kind: "completed_review_journeys" } },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+        },
+      },
       pipeline: [],
       recent: {},
       fleet: { active_workflow_runs: 0 },
@@ -1952,7 +2017,12 @@ test("optional queue status failures remain bounded in public and persisted snap
       health: {},
       workers: [],
       automatic_work: [],
-      bay: { timings: { sample_kind: "completed_review_journeys" } },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+        },
+      },
       pipeline: [],
       recent: {},
       fleet: { active_workflow_runs: 0 },
@@ -2095,7 +2165,10 @@ test("optional queue status failure retains the last complete public Bay queue s
       automatic_work: [],
       bay: {
         active_census_complete: false,
-        timings: { sample_kind: "completed_review_journeys" },
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+        },
       },
       pipeline: [],
       recent: {},
