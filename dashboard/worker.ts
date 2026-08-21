@@ -1233,10 +1233,11 @@ export default {
 
 async function statusJson(request, env, ctx) {
   const cache = caches.default;
-  const cached = await cache.match(statusCacheRequest(request, "fresh"));
+  const publicBayScope = publicBayRepositoryScope(verifiedPublicBayRepositories(env));
+  const cached = await cache.match(statusCacheRequest(request, "fresh", publicBayScope));
   if (cached) return cachedStatusResponse(cached, "fresh", env);
 
-  const stale = await cache.match(statusCacheRequest(request, "stale"));
+  const stale = await cache.match(statusCacheRequest(request, "stale", publicBayScope));
   if (stale && ctx?.waitUntil) {
     ctx.waitUntil(refreshStatus(request, env).catch(() => undefined));
     return cachedStatusResponse(stale, "stale", env);
@@ -2592,6 +2593,10 @@ function verifiedPublicBayRepositories(env) {
   return new Set<string>(repositories);
 }
 
+function publicBayRepositoryScope(allowedRepositories: ReadonlySet<string>) {
+  return Array.from(allowedRepositories).sort().join(",");
+}
+
 export function publicStatusProjection(
   snapshot,
   allowedRepositories: ReadonlySet<string> = new Set(),
@@ -2832,13 +2837,15 @@ function refreshStatus(request, env) {
 async function refreshStatusCaches(request, env) {
   const ttl = numberFrom(env.CACHE_TTL_SECONDS, 60);
   const staleTtl = numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS);
+  const allowedRepositories = verifiedPublicBayRepositories(env);
+  const publicBayScope = publicBayRepositoryScope(allowedRepositories);
   const baseSnapshot = await statusSnapshot(env);
   // Queue stats and the GitHub-backed global lease are operational observations, not
   // request-specific data. Cache the composed document so a cache hit never waits on
   // those remote probes; the existing stale-while-revalidate path refreshes them safely.
   const snapshot = publicStatusProjection(
     await attachExactReviewQueueStatus(baseSnapshot, env),
-    verifiedPublicBayRepositories(env),
+    allowedRepositories,
   );
   const body = JSON.stringify(snapshot, null, 2);
   const hasErrors = Number(snapshot.diagnostics?.error_count || 0) > 0;
@@ -2848,12 +2855,12 @@ async function refreshStatusCaches(request, env) {
       Number(snapshot.fleet?.active_workflow_runs || 0) === 0 &&
       hasErrors);
   if (snapshot.public_projection_complete !== true && env.STATUS_STORE) {
-    await writeStatusStoreText(env.STATUS_STORE, "snapshot", body);
+    await writeCachedStatusSnapshot(env.STATUS_STORE, body, publicBayScope);
   }
   if (!looksEmpty) {
     const writes = [
       caches.default.put(
-        statusCacheRequest(request, "fresh"),
+        statusCacheRequest(request, "fresh", publicBayScope),
         new Response(body, {
           headers: {
             "content-type": "application/json; charset=utf-8",
@@ -2862,7 +2869,7 @@ async function refreshStatusCaches(request, env) {
         }),
       ),
       caches.default.put(
-        statusCacheRequest(request, "stale"),
+        statusCacheRequest(request, "stale", publicBayScope),
         new Response(body, {
           headers: {
             "content-type": "application/json; charset=utf-8",
@@ -2871,14 +2878,17 @@ async function refreshStatusCaches(request, env) {
         }),
       ),
     ];
-    if (env.STATUS_STORE) writes.push(writeStatusStoreText(env.STATUS_STORE, "snapshot", body));
+    if (env.STATUS_STORE) {
+      writes.push(writeCachedStatusSnapshot(env.STATUS_STORE, body, publicBayScope));
+    }
     await Promise.allSettled(writes);
   }
   return { snapshot, body, looksEmpty };
 }
 
-function statusCacheRequest(request, bucket) {
-  return new Request(new URL(`/api/status-cache/v5/${bucket}`, request.url).toString(), {
+function statusCacheRequest(request, bucket, publicBayScope) {
+  const scope = publicBayScope ? encodeURIComponent(publicBayScope) : "_";
+  return new Request(new URL(`/api/status-cache/v6/${scope}/${bucket}`, request.url).toString(), {
     method: "GET",
   });
 }
@@ -6122,18 +6132,23 @@ function constantTimeEqual(left, right) {
 
 async function statusSnapshot(env) {
   const ttl = numberFrom(env.CACHE_TTL_SECONDS, 20);
-  const cached = await readCachedSnapshot(env, ttl);
+  const allowedRepositories = verifiedPublicBayRepositories(env);
+  const publicBayScope = publicBayRepositoryScope(allowedRepositories);
+  const scopedCached = await readCachedSnapshot(env, ttl, publicBayScope);
+  // A legacy cache entry without scope provenance can still describe a
+  // malformed document. Keep that fail-closed path, but never reuse it as a
+  // complete durable lifecycle snapshot.
+  const cached = scopedCached || (await readCachedSnapshot(env, ttl));
   const cachedTimings = objectValue(cached?.bay?.timings);
-  const cachedProjection = cached
-    ? publicStatusProjection(cached, verifiedPublicBayRepositories(env))
-    : null;
+  const cachedProjection = cached ? publicStatusProjection(cached, allowedRepositories) : null;
   // A malformed durable document should fail closed without triggering a
   // costly background collection. A complete legacy document, however, must
   // be rebuilt before it can be copied into the current cache generation.
   if (cachedProjection?.public_projection_complete === false) return cachedProjection;
   if (
     cachedTimings.sample_kind === "completed_review_journeys" &&
-    cachedTimings.source === "durable_exact_review_lifecycles"
+    cachedTimings.source === "durable_exact_review_lifecycles" &&
+    scopedCached === cached
   ) {
     return cachedProjection;
   }
@@ -6448,17 +6463,18 @@ async function attachExactReviewQueueStatus(snapshot, env) {
   ]);
   if (queueResult.status === "fulfilled") exactReviewQueue = queueResult.value;
   if (eventsResult.status === "fulfilled") recentDurablePublicationEvents = eventsResult.value;
+  const allowedRepositories = verifiedPublicBayRepositories(env);
   const staleStatusSnapshot =
     queueResult.status === "rejected"
       ? await readCachedSnapshot(
           env,
           numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS),
+          publicBayRepositoryScope(allowedRepositories),
         )
       : null;
   const priorExactReviewQueue = objectValue(
     snapshot.exact_review_queue || staleStatusSnapshot?.exact_review_queue,
   );
-  const allowedRepositories = verifiedPublicBayRepositories(env);
   const projectedPriorExactReviewQueue = publicExactReviewQueueProjection(
     priorExactReviewQueue,
     allowedRepositories,
@@ -10429,9 +10445,26 @@ function automergeCommentTime(comment) {
   return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
 }
 
-export async function readCachedSnapshot(env, ttlSeconds) {
+const STATUS_SNAPSHOT_KEY = "snapshot";
+const STATUS_SNAPSHOT_BAY_SCOPE_KEY_PREFIX = "snapshot:bay-scope:v1:";
+
+function cachedStatusSnapshotKey(publicBayScope) {
+  return `${STATUS_SNAPSHOT_BAY_SCOPE_KEY_PREFIX}${
+    publicBayScope ? encodeURIComponent(publicBayScope) : "_"
+  }`;
+}
+
+async function writeCachedStatusSnapshot(store, body, publicBayScope) {
+  await writeStatusStoreText(store, cachedStatusSnapshotKey(publicBayScope), body);
+}
+
+export async function readCachedSnapshot(env, ttlSeconds, expectedBayScope?: string) {
   if (!env.STATUS_STORE) return null;
-  const text = await readStatusStoreText(env.STATUS_STORE, "snapshot");
+  const key =
+    expectedBayScope === undefined
+      ? STATUS_SNAPSHOT_KEY
+      : cachedStatusSnapshotKey(expectedBayScope);
+  const text = await readStatusStoreText(env.STATUS_STORE, key);
   if (!text) return null;
   let snapshot;
   try {

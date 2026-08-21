@@ -1490,7 +1490,7 @@ test("dashboard durable status store persists, expires, and prepends events", as
   assert.equal(storage.has("cold-expired"), false);
 });
 
-test("dashboard reuses a current Bay snapshot from the shared status store", async () => {
+test("dashboard reuses a current Bay snapshot from the matching shared status scope", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
   Object.defineProperty(globalThis, "caches", {
@@ -1499,7 +1499,7 @@ test("dashboard reuses a current Bay snapshot from the shared status store", asy
   });
   const statusStore = new MemoryKv();
   await statusStore.put(
-    "snapshot",
+    "snapshot:bay-scope:v1:openclaw%2Fopenclaw",
     JSON.stringify({
       schema_version: 1,
       generated_at: new Date().toISOString(),
@@ -1534,6 +1534,7 @@ test("dashboard reuses a current Bay snapshot from the shared status store", asy
       {
         CACHE_TTL_SECONDS: "60",
         STATUS_STORE: statusStore,
+        PUBLIC_BAY_REPOS: "openclaw/openclaw",
       },
       { waitUntil: () => undefined },
     );
@@ -1547,10 +1548,110 @@ test("dashboard reuses a current Bay snapshot from the shared status store", asy
     assert.equal(status.bay.timings.sample_kind, "completed_review_journeys");
     assert.equal(status.bay.timings.source, "durable_exact_review_lifecycles");
     assert.equal(networkRequests, 0);
-    const persisted = String(await statusStore.get("snapshot"));
+    const persisted = String(await statusStore.get("snapshot:bay-scope:v1:openclaw%2Fopenclaw"));
     assert.equal(persisted.includes("arbitrary_count"), false);
     assert.equal(persisted.includes("arbitrary_boolean"), false);
     assert.equal(persisted.includes("arbitrary_namespace"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("dashboard rejects a current Bay snapshot from a different public scope", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  const statusStore = new MemoryKv();
+  await statusStore.put(
+    "snapshot:bay-scope:v1:openclaw%2Fopenclaw",
+    JSON.stringify({
+      schema_version: 1,
+      generated_at: new Date().toISOString(),
+      health: {},
+      workers: [],
+      automatic_work: [],
+      diagnostics: { errors: [], error_count: 0 },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+        },
+      },
+      pipeline: [],
+      fleet: { active_codex_jobs: 41 },
+    }),
+  );
+  let networkRequests = 0;
+  globalThis.fetch = async () => {
+    networkRequests += 1;
+    throw new Error("scope mismatch must rebuild instead of returning the stored snapshot");
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      {
+        CACHE_TTL_SECONDS: "60",
+        STATUS_STORE: statusStore,
+        PUBLIC_BAY_REPOS: "openclaw/clawsweeper",
+      },
+      { waitUntil: () => undefined },
+    );
+    const status = await response.json();
+    assert.equal(response.status, 200);
+    assert.ok(networkRequests > 0);
+    assert.notEqual(status.fleet.active_codex_jobs, 41);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("dashboard isolates fresh edge caches by public Bay scope", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const cache = new MemoryCache();
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: cache },
+  });
+  await cache.put(
+    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v6/openclaw%2Fopenclaw/fresh"),
+    jsonResponse({
+      schema_version: 1,
+      generated_at: new Date().toISOString(),
+      health: {},
+      workers: [],
+      automatic_work: [],
+      diagnostics: { errors: [], error_count: 0 },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+        },
+      },
+      pipeline: [],
+      fleet: { active_codex_jobs: 41 },
+    }),
+  );
+  let networkRequests = 0;
+  globalThis.fetch = async () => {
+    networkRequests += 1;
+    throw new Error("scope mismatch must bypass the old edge cache");
+  };
+
+  try {
+    const response = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/api/status"), {
+      PUBLIC_BAY_REPOS: "openclaw/clawsweeper",
+    });
+    const status = await response.json();
+    assert.equal(response.status, 200);
+    assert.ok(networkRequests > 0);
+    assert.notEqual(status.fleet.active_codex_jobs, 41);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -1642,11 +1743,11 @@ test("dashboard rewrites a malformed durable root to a fixed incomplete snapshot
     assert.equal(body.public_projection_complete, false);
     assert.equal(body.diagnostics.error_count, 1);
     assert.equal(JSON.stringify(body).includes(marker), false);
-    const persisted = String(await statusStore.get("snapshot"));
+    const persisted = String(await statusStore.get("snapshot:bay-scope:v1:_"));
     assert.equal(persisted.includes(marker), false);
     assert.equal(JSON.parse(persisted).public_projection_complete, false);
     assert.equal(
-      await cache.match(new Request("https://clawsweeper.openclaw.ai/api/status-cache/v5/fresh")),
+      await cache.match(new Request("https://clawsweeper.openclaw.ai/api/status-cache/v6/_/fresh")),
       undefined,
     );
   } finally {
@@ -1927,7 +2028,7 @@ test("optional exact-review telemetry failures do not freeze an idle status snap
   });
   const statusStore = new MemoryKv();
   await statusStore.put(
-    "snapshot",
+    "snapshot:bay-scope:v1:_",
     JSON.stringify({
       schema_version: 1,
       generated_at: new Date().toISOString(),
@@ -2010,7 +2111,7 @@ test("optional queue status failures remain bounded in public and persisted snap
   });
   const statusStore = new MemoryKv();
   await statusStore.put(
-    "snapshot",
+    "snapshot:bay-scope:v1:_",
     JSON.stringify({
       schema_version: 1,
       generated_at: new Date().toISOString(),
@@ -2066,7 +2167,7 @@ test("optional queue status failures remain bounded in public and persisted snap
     assert.equal(status.diagnostics.exact_review_queue_error, undefined);
     assert.equal(JSON.stringify(status).includes(rejectionMarker), false);
 
-    const persisted = await statusStore.get("snapshot");
+    const persisted = await statusStore.get("snapshot:bay-scope:v1:_");
     assert.ok(persisted);
     const persistedSnapshot = JSON.parse(persisted);
     assert.equal(persistedSnapshot.exact_review_queue, null);
@@ -2155,7 +2256,7 @@ test("optional queue status failure retains the last complete public Bay queue s
 
   const statusStore = new MemoryKv();
   await statusStore.put(
-    "snapshot",
+    "snapshot:bay-scope:v1:openclaw%2Fopenclaw",
     JSON.stringify({
       schema_version: 1,
       generated_at: new Date().toISOString(),
@@ -2223,7 +2324,7 @@ test("optional queue status failure retains the last complete public Bay queue s
     assert.equal(status.dashboard_health.severity, "amber");
     assert.equal(JSON.stringify(status).includes(rejectionMarker), false);
 
-    const persisted = await statusStore.get("snapshot");
+    const persisted = await statusStore.get("snapshot:bay-scope:v1:openclaw%2Fopenclaw");
     assert.ok(persisted);
     const persistedSnapshot = JSON.parse(persisted);
     assert.deepEqual(
@@ -2258,7 +2359,7 @@ test("optional queue status failure retains the last complete public Bay queue s
       value: { default: new MemoryCache() },
     });
     await statusStore.put(
-      "snapshot",
+      "snapshot:bay-scope:v1:openclaw%2Fopenclaw",
       JSON.stringify({
         ...JSON.parse(persisted),
         generated_at: new Date(Date.now() - 61_000).toISOString(),
@@ -2290,7 +2391,7 @@ test("optional queue status failure retains the last complete public Bay queue s
     stalePriorExactReviewQueue.generated_at = staleQueueGeneratedAt;
     stalePriorExactReviewQueue.handoff_health.observed_at = staleQueueGeneratedAt;
     await statusStore.put(
-      "snapshot",
+      "snapshot:bay-scope:v1:openclaw%2Fopenclaw",
       JSON.stringify({
         ...JSON.parse(persisted),
         generated_at: new Date().toISOString(),
