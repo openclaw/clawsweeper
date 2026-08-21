@@ -3773,6 +3773,7 @@ test("apply-decisions verifies provenance after a closeout note and before closi
     "paired_review_stale",
     "paired_source_change_during_closeout",
     "paired_metadata_change_during_closeout",
+    "paired_bot_activity_during_closeout",
   ] as const) {
     const lifecycleDrift = scenario === "lifecycle_drift";
     const multipleLinkedIssues = scenario === "multiple_linked_issues";
@@ -3784,6 +3785,7 @@ test("apply-decisions verifies provenance after a closeout note and before closi
     const pairedSourceChangeDuringCloseout = scenario === "paired_source_change_during_closeout";
     const pairedMetadataChangeDuringCloseout =
       scenario === "paired_metadata_change_during_closeout";
+    const pairedBotActivityDuringCloseout = scenario === "paired_bot_activity_during_closeout";
     const lockedCloseoutComment = scenario === "locked_closeout_comment";
     const betweenFreshnessAndCloseoutHumanActivity =
       scenario === "between_freshness_and_closeout_human_activity";
@@ -3866,7 +3868,8 @@ const betweenFreshnessAndCloseoutHumanActivityPath = ${JSON.stringify(
         join(root, "between-freshness-and-closeout-human-activity"),
       )};
 const issueReadsAfterCloseoutPath = ${JSON.stringify(join(root, "issue-reads-after-closeout"))};
-const pairedIssueCloseoutPostedPath = ${JSON.stringify(join(root, "paired-issue-closeout-posted"))};
+      const pairedIssueCloseoutPostedPath = ${JSON.stringify(join(root, "paired-issue-closeout-posted"))};
+const pairedIssueBotActivityPath = ${JSON.stringify(join(root, "paired-issue-bot-activity"))};
 const prCommentPath = ${JSON.stringify(prCommentPath)};
 const linkedIssueCommentPath = ${JSON.stringify(linkedIssueCommentPath)};
 const comment = ${JSON.stringify(synced.comment)};
@@ -3883,6 +3886,7 @@ const postCloseoutHumanActivity = ${postCloseoutHumanActivity};
 const postCloseoutPrReviewActivity = ${postCloseoutPrReviewActivity};
 const pairedSourceChangeDuringCloseout = ${pairedSourceChangeDuringCloseout};
 const pairedMetadataChangeDuringCloseout = ${pairedMetadataChangeDuringCloseout};
+const pairedBotActivityDuringCloseout = ${pairedBotActivityDuringCloseout};
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   const timeline = existsSync(betweenFreshnessAndCloseoutHumanActivityPath)
     ? [{
@@ -3909,17 +3913,29 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     const payload = JSON.parse(readFileSync(input, "utf8"));
     appendFileSync(postedBodiesPath, JSON.stringify(payload.body) + "\\n");
     writeFileSync(linkedIssueCommentPath, payload.body, "utf8");
-    if (pairedSourceChangeDuringCloseout || pairedMetadataChangeDuringCloseout) writeFileSync(pairedIssueCloseoutPostedPath, "true");
+    if (pairedSourceChangeDuringCloseout || pairedMetadataChangeDuringCloseout || pairedBotActivityDuringCloseout) writeFileSync(pairedIssueCloseoutPostedPath, "true");
+    if (pairedBotActivityDuringCloseout) writeFileSync(pairedIssueBotActivityPath, new Date(Date.now() + 60_000).toISOString());
     console.log(JSON.stringify({ id: 9456, html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9456" }));
   } else {
-    console.log(JSON.stringify([[{
+    const comments = [{
       id: 9456,
       html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9456",
       created_at: "2026-05-01T01:00:00Z",
       updated_at: "2026-05-01T01:00:00Z",
       user: { login: "clawsweeper[bot]" },
       body: readFileSync(linkedIssueCommentPath, "utf8")
-    }]]));
+    }];
+    if (existsSync(pairedIssueBotActivityPath)) {
+      comments.push({
+        id: 9457,
+        html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9457",
+        created_at: readFileSync(pairedIssueBotActivityPath, "utf8"),
+        updated_at: readFileSync(pairedIssueBotActivityPath, "utf8"),
+        user: { login: "third-party[bot]", type: "Bot" },
+        body: "Automated follow-up."
+      });
+    }
+    console.log(JSON.stringify([comments]));
   }
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   if (args.includes("--method") && args.includes("POST")) {
@@ -4154,7 +4170,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         pairedKeepOpen ||
         pairedReviewStale ||
         pairedSourceChangeDuringCloseout ||
-        pairedMetadataChangeDuringCloseout
+        pairedMetadataChangeDuringCloseout ||
+        pairedBotActivityDuringCloseout
       ) {
         assert.equal(closeIndex, -1);
         assert.equal(existsSync(join(closedDir, "321.md")), false);

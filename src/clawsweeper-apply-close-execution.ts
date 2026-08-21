@@ -27,6 +27,7 @@ import { stableJson } from "./stable-json.js";
 
 type ApplyCloseExecutionDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
+  | "asRecord"
   | "abandonedPrApplyBlockReasonSafe"
   | "addIssueLabel"
   | "applyPrCloseCoverageProofReportSection"
@@ -37,6 +38,7 @@ type ApplyCloseExecutionDependencies = Pick<
   | "ensureCloseAppliedComment"
   | "ensureIdeaArchiveLabel"
   | "ensureRuntimeDelayFits"
+  | "fetchIssueReviewComments"
   | "fetchItem"
   | "GitHubRuntimeBudgetError"
   | "ghJson"
@@ -158,6 +160,7 @@ export function executeApplyClose(
   options: ApplyCloseExecutionOptions,
 ): ApplyCloseFlow {
   const {
+    asRecord,
     abandonedPrApplyBlockReasonSafe,
     addIssueLabel,
     applyPrCloseCoverageProofReportSection,
@@ -168,6 +171,7 @@ export function executeApplyClose(
     ensureCloseAppliedComment,
     ensureIdeaArchiveLabel,
     ensureRuntimeDelayFits,
+    fetchIssueReviewComments,
     fetchItem,
     GitHubRuntimeBudgetError,
     ghJson,
@@ -261,6 +265,34 @@ export function executeApplyClose(
     // the paired close instead of being mistaken for the bot's comment update.
     const { comments: _comments, updated_at: _updatedAt, labels: _rawLabels, ...source } = issue;
     return sha256(stableJson({ ...source, labels }));
+  };
+  const pairedIssueRecentNonSelfCommentBlockReasonSafe = (
+    issueNumber: number,
+    days: number,
+  ): string | null => {
+    try {
+      const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+      const closeAppliedMarker = `<!-- clawsweeper-close-applied item=${issueNumber} -->`;
+      for (const comment of fetchIssueReviewComments(issueNumber)) {
+        const record = asRecord(comment);
+        const createdAt = typeof record.created_at === "string" ? record.created_at : "";
+        const createdAtMs = Date.parse(createdAt);
+        if (!Number.isFinite(createdAtMs)) {
+          return "linked issue comment activity check returned an invalid timestamp";
+        }
+        if (createdAtMs <= cutoffMs) continue;
+        const user = asRecord(record.user);
+        const login = typeof user.login === "string" ? user.login.trim().toLowerCase() : "";
+        const body = typeof record.body === "string" ? record.body : "";
+        if (login === "clawsweeper[bot]" && body.includes(closeAppliedMarker)) continue;
+        return `linked issue has a non-ClawSweeper comment within the last ${days} days`;
+      }
+      return null;
+    } catch (error) {
+      return `linked issue comment activity check failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
   };
 
   if (
@@ -659,7 +691,7 @@ export function executeApplyClose(
       bypassGenerationCache: true,
     });
     const postCommentIssueSource = pairedIssueSourceSnapshot(currentLinkedIssue.item.number);
-    const postCommentHumanActivity = issueRecentHumanCommentBlockReasonSafe(
+    const postCommentIssueActivity = pairedIssueRecentNonSelfCommentBlockReasonSafe(
       currentLinkedIssue.item.number,
       daysSinceReview,
     );
@@ -688,7 +720,7 @@ export function executeApplyClose(
       postCommentLinkedIssue.item.kind !== "issue" ||
       postCommentLinkedIssue.item.locked ||
       postCommentIssueSource !== preCommentIssueSource ||
-      postCommentHumanActivity ||
+      postCommentIssueActivity ||
       !postCommentIssueValidation.ok
     ) {
       return skip(
@@ -750,7 +782,7 @@ export function executeApplyClose(
   );
   for (const pairedIssue of pairedIssuesReadyToClose) {
     const preClosePairedIssue = fetchItem(pairedIssue.number, { bypassGenerationCache: true });
-    const preClosePairedIssueHumanActivity = issueRecentHumanCommentBlockReasonSafe(
+    const preClosePairedIssueActivity = pairedIssueRecentNonSelfCommentBlockReasonSafe(
       pairedIssue.number,
       daysSinceReview,
     );
@@ -760,7 +792,7 @@ export function executeApplyClose(
       preClosePairedIssue.item.kind !== "issue" ||
       preClosePairedIssue.item.updatedAt !== pairedIssue.updatedAt ||
       preClosePairedIssue.item.locked ||
-      preClosePairedIssueHumanActivity ||
+      preClosePairedIssueActivity ||
       finalPairedIssue.state !== "open" ||
       finalPairedIssue.item.kind !== "issue" ||
       finalPairedIssue.item.updatedAt !== preClosePairedIssue.item.updatedAt ||
