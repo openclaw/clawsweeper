@@ -13,6 +13,8 @@ export const EXACT_REVIEW_LIFECYCLE_TELEMETRY_BATCH_TABLE =
 export const EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE = "exact_review_lifecycle_bay_event_v1";
 export const EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE = "exact_review_lifecycle_bay_meta_v1";
 export const EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE = "exact_review_lifecycle_bay_scope_v1";
+export const EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE =
+  "exact_review_lifecycle_bay_tide_buffer_v1";
 export const EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE = "exact_review_lifecycle_bay_pending_v1";
 export const EXACT_REVIEW_LIFECYCLE_TELEMETRY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -20,6 +22,11 @@ export const EXACT_REVIEW_LIFECYCLE_BAY_TIMING_WINDOW_MS = 60 * 60 * 1000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD = 20;
 export const EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_RECOVERY_BATCH_LIMIT = 256;
+
+// The empty string is the valid durable scope for an explicitly empty public
+// allowlist. Keep the unfiltered aggregate in a distinct tide-buffer partition
+// so changing to or from that empty public scope cannot corrupt either view.
+const BAY_GLOBAL_TIDE_SCOPE = "__all_repositories__";
 
 type SqlStorage = {
   exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
@@ -108,6 +115,19 @@ type BayTerminalRecord = {
   completed_at: string;
 };
 
+type BayTideProgress = {
+  coverageStartedAt: number;
+  baseCount: number;
+  lastTideAt: number | null;
+};
+
+type BayTideSourceProgress = {
+  baseCount: number;
+  lastTideAt: number | null;
+  recentlyWashed: BayLifecycleEvent[];
+  terminalBuffer: BayLifecycleEvent[];
+};
+
 export type ExactReviewBayLifecycleSnapshot = {
   version: 1;
   collection: { state: "complete" } | { state: "unknown"; reason: "unavailable" | "over_cap" };
@@ -153,6 +173,7 @@ export class ExactReviewLifecycleTelemetryStore {
 
   ensureSchemaSync() {
     if (this.schemaReady) return;
+    const tideProgressBackfillTables = new Set<string>();
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE} (
          event_id TEXT PRIMARY KEY,
@@ -211,7 +232,9 @@ export class ExactReviewLifecycleTelemetryStore {
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE} (
          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-         coverage_started_at INTEGER NOT NULL
+         coverage_started_at INTEGER NOT NULL,
+         tide_base_count INTEGER NOT NULL DEFAULT 0 CHECK (tide_base_count >= 0),
+         last_tide_at INTEGER
        ) STRICT`,
     );
     this.storage.sql.exec(
@@ -223,9 +246,48 @@ export class ExactReviewLifecycleTelemetryStore {
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE} (
          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
          repository_scope TEXT NOT NULL,
-         coverage_started_at INTEGER NOT NULL
+         coverage_started_at INTEGER NOT NULL,
+         tide_base_count INTEGER NOT NULL DEFAULT 0 CHECK (tide_base_count >= 0),
+         last_tide_at INTEGER
        ) STRICT`,
     );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE} (
+         repository_scope TEXT NOT NULL,
+         bucket TEXT NOT NULL CHECK (bucket IN ('terminal', 'washed')),
+         event_id TEXT NOT NULL,
+         canonical_target_key TEXT NOT NULL,
+         outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'cancelled')),
+         completed_at INTEGER NOT NULL,
+         PRIMARY KEY (repository_scope, bucket, event_id)
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_bay_tide_buffer_rows
+         ON ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+         (repository_scope, bucket, completed_at, event_id)`,
+    );
+    for (const table of [
+      EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
+      EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
+    ]) {
+      const columns = new Set(
+        Array.from(this.storage.sql.exec(`SELECT name FROM pragma_table_info('${table}')`)).map(
+          (row) => String(row.name || ""),
+        ),
+      );
+      if (!columns.has("tide_base_count")) {
+        tideProgressBackfillTables.add(table);
+        this.storage.sql.exec(
+          `ALTER TABLE ${table}
+             ADD COLUMN tide_base_count INTEGER NOT NULL DEFAULT 0 CHECK (tide_base_count >= 0)`,
+        );
+      }
+      if (!columns.has("last_tide_at")) {
+        tideProgressBackfillTables.add(table);
+        this.storage.sql.exec(`ALTER TABLE ${table} ADD COLUMN last_tide_at INTEGER`);
+      }
+    }
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE} (
          canonical_target_key TEXT NOT NULL,
@@ -240,6 +302,27 @@ export class ExactReviewLifecycleTelemetryStore {
       `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_bay_pending_queued
          ON ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE} (queued_at, canonical_target_key, fence_key, revision)`,
     );
+    // The prior schema retained only bounded timing rows. Recover that visible
+    // progress before serving the upgraded aggregate rather than resetting an
+    // existing tide to zero on first read after deployment.
+    if (tideProgressBackfillTables.has(EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE)) {
+      this.rebuildTideProgressFromTimingEventsSync(
+        BAY_GLOBAL_TIDE_SCOPE,
+        EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
+        this.tideProgressSync(),
+      );
+    }
+    if (tideProgressBackfillTables.has(EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE)) {
+      const scopeRow = this.tideScopeRowSync();
+      if (scopeRow) {
+        this.rebuildTideProgressFromTimingEventsSync(
+          scopeRow.scope,
+          EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
+          scopeRow.progress,
+        );
+      }
+    }
+    if (tideProgressBackfillTables.size) this.backfillLifecycleIdempotencyMarkersSync();
     this.schemaReady = true;
   }
 
@@ -261,16 +344,47 @@ export class ExactReviewLifecycleTelemetryStore {
       ),
     )[0];
     if (current && String(current.repository_scope || "") === repositoryFilter.scope) return true;
+    // Read the next scope before changing its durable row. If source recovery
+    // is temporarily unavailable, preserve the prior scope and let public
+    // metrics fail closed without aborting queue initialization.
+    let sourceProgress: BayTideSourceProgress | null = null;
+    try {
+      sourceProgress = this.lifecycleProjectionTableExistsSync()
+        ? this.lifecycleTideProgressFromSourceSync(repositoryFilter.scope, now)
+        : null;
+    } catch {
+      return false;
+    }
+    if (current) {
+      this.storage.sql.exec(
+        `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+          WHERE repository_scope = ?`,
+        String(current.repository_scope || ""),
+      );
+    }
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE}
-         (singleton, repository_scope, coverage_started_at)
-       VALUES (1, ?, ?)
+         (singleton, repository_scope, coverage_started_at, tide_base_count, last_tide_at)
+       VALUES (1, ?, ?, 0, NULL)
        ON CONFLICT(singleton) DO UPDATE SET
          repository_scope = excluded.repository_scope,
-         coverage_started_at = excluded.coverage_started_at`,
+         coverage_started_at = excluded.coverage_started_at,
+         tide_base_count = excluded.tide_base_count,
+         last_tide_at = excluded.last_tide_at`,
       repositoryFilter.scope,
       now,
     );
+    // A scope is defined by its coverage epoch rather than the order in which
+    // a local Durable Object happens to materialize already-observed facts.
+    // Its source query returns only the bounded tail needed to publish a
+    // compact tide, so a large lifecycle table cannot crash initialization.
+    if (sourceProgress) {
+      this.replaceTideProgressFromSourceProgressSync(
+        repositoryFilter.scope,
+        EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
+        sourceProgress,
+      );
+    }
     return true;
   }
 
@@ -304,6 +418,17 @@ export class ExactReviewLifecycleTelemetryStore {
         Date.now(),
       );
       this.materializeBayLifecycleSync(projection);
+      // Persist the post-materialization marker before removing the outbox
+      // fact. If the delete is interrupted, a later outbox replay must carry
+      // the same idempotency state as the lifecycle source instead of looking
+      // like a new terminal completion after timing retention.
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE}
+            SET projection_json = ?
+          WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+        JSON.stringify(projection),
+        ...identity,
+      );
       this.clearBayLifecyclePendingSync(identity);
       projection.bayTelemetryPending = false;
       return true;
@@ -323,47 +448,111 @@ export class ExactReviewLifecycleTelemetryStore {
       projection.fenceKey,
       projection.revision,
     ] as const;
+    // A requeue/supersession must retract its terminal fact before retention
+    // removes its timing row. A late requeue rebuilds the compact aggregate
+    // from the lifecycle source of truth instead of retaining an unbounded
+    // duplicate event ledger.
+    if (!event) {
+      if (hadBayLifecycleTerminalEvent(projection))
+        this.rebuildTideProgressAfterRetractionSync(projection, identity);
+      delete projection.bayTelemetryEventId;
+      this.pruneBayEventsSync(Math.max(Date.now(), this.coverageStartedAtSync()));
+      return;
+    }
     // Callers may already hold the queue's durable transaction. Durable
     // Objects serialize each invocation, so these synchronous statements stay
     // ordered without opening a nested SQLite transaction.
     // The constructor normally establishes the epoch before any lifecycle
     // completion. Backdate a just-created epoch to its first terminal fact so
     // a same-turn completion cannot fall on the wrong side of the boundary.
-    if (event) {
-      this.storage.sql.exec(
-        `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE}
-            SET coverage_started_at = ?
-          WHERE singleton = 1 AND coverage_started_at > ?`,
-        event.completed_at,
-        event.completed_at,
-      );
-    }
-    const coverageStartedAt = this.coverageStartedAtSync();
-    this.pruneBayEventsSync(Math.max(Date.now(), coverageStartedAt));
-    if (!event) {
-      this.storage.sql.exec(
-        `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-          WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
-        ...identity,
-      );
-      return;
-    }
     this.storage.sql.exec(
-      `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-         (event_id, canonical_target_key, fence_key, revision, outcome, triggered_at, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(event_id) DO UPDATE SET
-         outcome = excluded.outcome,
-         triggered_at = excluded.triggered_at,
-         completed_at = excluded.completed_at`,
-      event.event_id,
-      projection.canonicalTargetKey,
-      projection.fenceKey,
-      projection.revision,
-      event.outcome,
-      event.triggered_at,
+      `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE}
+          SET coverage_started_at = ?
+        WHERE singleton = 1 AND coverage_started_at > ?`,
+      event.completed_at,
       event.completed_at,
     );
+    const coverageStartedAt = this.coverageStartedAtSync();
+    this.pruneBayEventsSync(Math.max(Date.now(), coverageStartedAt));
+    const timingEventExists = this.bayTimingEventExistsSync(event.event_id);
+    if (projection.bayTelemetryEventId === event.event_id || timingEventExists) {
+      // A terminal disposition is immutable, but its final review result can
+      // be enriched from failed to cancelled on a later callback. Keep the
+      // existing completion count while refreshing its retained presentation.
+      this.withBayTideSavepoint(() => {
+        if (timingEventExists) {
+          this.storage.sql.exec(
+            `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+                SET outcome = ?, triggered_at = ?, completed_at = ?
+              WHERE event_id = ?`,
+            event.outcome,
+            event.triggered_at,
+            event.completed_at,
+            event.event_id,
+          );
+        }
+        this.storage.sql.exec(
+          `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+              SET outcome = ?, completed_at = ?
+            WHERE event_id = ?`,
+          event.outcome,
+          event.completed_at,
+          event.event_id,
+        );
+      });
+      projection.bayTelemetryEventId = event.event_id;
+      return;
+    }
+    this.withBayTideSavepoint(() => {
+      this.storage.sql.exec(
+        `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+           (event_id, canonical_target_key, fence_key, revision, outcome, triggered_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(event_id) DO UPDATE SET
+           outcome = excluded.outcome,
+           triggered_at = excluded.triggered_at,
+           completed_at = excluded.completed_at`,
+        event.event_id,
+        projection.canonicalTargetKey,
+        projection.fenceKey,
+        projection.revision,
+        event.outcome,
+        event.triggered_at,
+        event.completed_at,
+      );
+      const globalProgress = this.tideProgressSync();
+      const scopeRow = this.tideScopeRowSync();
+      const scopeIncludesEvent = Boolean(
+        scopeRow &&
+        event.completed_at >= scopeRow.progress.coverageStartedAt &&
+        bayScopeIncludesTarget(scopeRow.scope, event.item_key),
+      );
+      // Delivery can be retried after later reviews finish. The compact buffer
+      // retains the latest ordered boundary, so detect that uncommon case and
+      // replay the bounded lifecycle source rather than using arrival order.
+      if (
+        this.tideCompletionArrivesOutOfOrderSync(BAY_GLOBAL_TIDE_SCOPE, event) ||
+        (scopeIncludesEvent && this.tideCompletionArrivesOutOfOrderSync(scopeRow!.scope, event))
+      ) {
+        this.rebuildTideProgressFromLifecycleSync(projection, identity);
+      } else {
+        this.recordTideCompletionSync(
+          BAY_GLOBAL_TIDE_SCOPE,
+          EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
+          event,
+          globalProgress,
+        );
+        if (scopeIncludesEvent) {
+          this.recordTideCompletionSync(
+            scopeRow!.scope,
+            EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
+            event,
+            scopeRow!.progress,
+          );
+        }
+      }
+      projection.bayTelemetryEventId = event.event_id;
+    });
   }
 
   baySnapshot(
@@ -374,20 +563,15 @@ export class ExactReviewLifecycleTelemetryStore {
     try {
       const repositoryFilter = bayRepositoryFilter(allowedRepositories);
       if (!repositoryFilter) return unknownBaySnapshot("unavailable");
+      if (this.hasBayLifecyclePending()) return unknownBaySnapshot("unavailable");
       // Filtered public snapshots are valid only for the exact configured
       // repository set established in the constructor barrier. This makes a
       // new public repository fail closed until a full timing window elapses.
-      const coverageStartedAt = allowedRepositories
-        ? this.coverageStartedAtForRepositoryScopeSync(repositoryFilter.scope)
-        : this.coverageStartedAtSync();
-      if (coverageStartedAt === null) return unknownBaySnapshot("unavailable");
-      // Physical pruning occurs during lifecycle writes. Apply the same
-      // retention boundary at read time so an otherwise idle Durable Object
-      // cannot keep showing expired completions before the next write.
-      const terminalCoverageStartedAt = Math.max(
-        coverageStartedAt,
-        now - EXACT_REVIEW_LIFECYCLE_BAY_RETENTION_MS,
-      );
+      const tideProgress = allowedRepositories
+        ? this.tideProgressForRepositoryScopeSync(repositoryFilter.scope)
+        : this.tideProgressSync();
+      if (!tideProgress) return unknownBaySnapshot("unavailable");
+      const { coverageStartedAt, baseCount, lastTideAt } = tideProgress;
       const timingCutoff = Math.max(
         now - EXACT_REVIEW_LIFECYCLE_BAY_TIMING_WINDOW_MS,
         coverageStartedAt,
@@ -420,68 +604,16 @@ export class ExactReviewLifecycleTelemetryStore {
         durations.push(completedAt - triggeredAt);
       }
 
-      const totalRows = Array.from(
-        this.storage.sql.exec(
-          `SELECT COUNT(*) AS count FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-            WHERE completed_at >= ? AND completed_at <= ? ${repositoryFilter.where}`,
-          terminalCoverageStartedAt,
-          now,
-          ...repositoryFilter.bindings,
-        ),
-      );
-      const total = Number(totalRows[0]?.count || 0);
-      if (!Number.isSafeInteger(total) || total < 0) return unknownBaySnapshot("unavailable");
+      // `tide_base_count` is the exact all-time completion count for this
+      // scope. The only detailed history retained here is the current
+      // remainder (at most 19 rows) and the most recently washed tide.
+      const total = baseCount;
       const terminalCount = total % EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD;
       const tideGeneration = Math.floor(total / EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD);
-      const lastTideRow =
-        tideGeneration > 0
-          ? Array.from(
-              this.storage.sql.exec(
-                `SELECT completed_at FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-                  WHERE completed_at >= ? AND completed_at <= ?
-                    ${repositoryFilter.where}
-                  ORDER BY completed_at DESC, event_id DESC LIMIT 1 OFFSET ?`,
-                terminalCoverageStartedAt,
-                now,
-                ...repositoryFilter.bindings,
-                terminalCount,
-              ),
-            )[0]
-          : undefined;
-      // Select by the deterministic event ordering rather than timestamp
-      // ranges: several completions may legitimately share a millisecond.
-      const bufferRows = terminalCount
-        ? Array.from(
-            this.storage.sql.exec(
-              `SELECT event_id, canonical_target_key, outcome, completed_at
-                 FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-                WHERE completed_at >= ? AND completed_at <= ?
-                  ${repositoryFilter.where}
-                ORDER BY completed_at DESC, event_id DESC LIMIT ?`,
-              terminalCoverageStartedAt,
-              now,
-              ...repositoryFilter.bindings,
-              terminalCount,
-            ),
-          ).reverse()
-        : [];
-      const washedRows =
-        tideGeneration > 0
-          ? Array.from(
-              this.storage.sql.exec(
-                `SELECT event_id, canonical_target_key, outcome, completed_at
-                   FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-                  WHERE completed_at >= ? AND completed_at <= ?
-                    ${repositoryFilter.where}
-                  ORDER BY completed_at DESC, event_id DESC LIMIT ? OFFSET ?`,
-                terminalCoverageStartedAt,
-                now,
-                ...repositoryFilter.bindings,
-                EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD,
-                terminalCount,
-              ),
-            ).reverse()
-          : [];
+      const tideScope = allowedRepositories ? repositoryFilter.scope : BAY_GLOBAL_TIDE_SCOPE;
+      const bufferRows = this.tideBufferRowsSync(tideScope, "terminal");
+      const washedRows = this.tideBufferRowsSync(tideScope, "washed");
+      if (bufferRows.length !== terminalCount) return unknownBaySnapshot("unavailable");
       const average = durations.length
         ? Math.round(durations.reduce((total, value) => total + value, 0) / durations.length)
         : null;
@@ -509,10 +641,7 @@ export class ExactReviewLifecycleTelemetryStore {
         terminal: {
           tide_threshold: EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD,
           tide_generation: tideGeneration,
-          last_tide_at:
-            lastTideRow && validTimestamp(Number(lastTideRow.completed_at))
-              ? new Date(Number(lastTideRow.completed_at)).toISOString()
-              : null,
+          last_tide_at: lastTideAt === null ? null : new Date(lastTideAt).toISOString(),
           terminal_count: terminalCount,
           terminal_buffer: bayTerminalRows(bufferRows),
           recently_washed: bayTerminalRows(washedRows),
@@ -728,21 +857,26 @@ export class ExactReviewLifecycleTelemetryStore {
     }
   }
 
-  private coverageStartedAtSync() {
+  private tideProgressSync() {
     const row = Array.from(
       this.storage.sql.exec(
-        `SELECT coverage_started_at FROM ${EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE} WHERE singleton = 1`,
+        `SELECT coverage_started_at, tide_base_count, last_tide_at
+           FROM ${EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE} WHERE singleton = 1`,
       ),
     )[0];
     const startedAt = Number(row?.coverage_started_at);
     if (!validTimestamp(startedAt)) throw new Error("invalid Bay lifecycle coverage epoch");
-    return startedAt;
+    return tideProgressFromRow(startedAt, row?.tide_base_count, row?.last_tide_at);
   }
 
-  private coverageStartedAtForRepositoryScopeSync(scope: string) {
+  private coverageStartedAtSync() {
+    return this.tideProgressSync().coverageStartedAt;
+  }
+
+  private tideProgressForRepositoryScopeSync(scope: string) {
     const row = Array.from(
       this.storage.sql.exec(
-        `SELECT repository_scope, coverage_started_at
+        `SELECT repository_scope, coverage_started_at, tide_base_count, last_tide_at
            FROM ${EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE}
           WHERE singleton = 1`,
       ),
@@ -750,7 +884,7 @@ export class ExactReviewLifecycleTelemetryStore {
     if (!row || String(row.repository_scope || "") !== scope) return null;
     const startedAt = Number(row.coverage_started_at);
     if (!validTimestamp(startedAt)) throw new Error("invalid Bay lifecycle scope coverage epoch");
-    return startedAt;
+    return tideProgressFromRow(startedAt, row.tide_base_count, row.last_tide_at);
   }
 
   private clearBayLifecyclePendingSync(
@@ -775,14 +909,23 @@ export class ExactReviewLifecycleTelemetryStore {
     );
     const pendingMore = rows.length > EXACT_REVIEW_LIFECYCLE_BAY_RECOVERY_BATCH_LIMIT;
     for (const row of rows.slice(0, EXACT_REVIEW_LIFECYCLE_BAY_RECOVERY_BATCH_LIMIT)) {
-      const projection = projectionFromRow(String(row.projection_json || ""));
+      const pendingProjection = projectionFromRow(String(row.projection_json || ""));
       const identity = [
         String(row.canonical_target_key || ""),
         String(row.fence_key || ""),
         Number(row.revision),
       ] as const;
+      // The lifecycle projection is authoritative. An outbox row can be
+      // stale if its clear was interrupted after compacting the aggregate;
+      // replaying that older serialized object after timing retention would
+      // otherwise lose its durable marker and count the completion twice.
+      const projection = this.currentLifecycleProjectionSync(identity);
       if (
+        !pendingProjection ||
         !projection ||
+        pendingProjection.canonicalTargetKey !== identity[0] ||
+        pendingProjection.fenceKey !== identity[1] ||
+        pendingProjection.revision !== identity[2] ||
         projection.canonicalTargetKey !== identity[0] ||
         projection.fenceKey !== identity[1] ||
         projection.revision !== identity[2]
@@ -797,6 +940,20 @@ export class ExactReviewLifecycleTelemetryStore {
       }
     }
     return !pendingMore;
+  }
+
+  private currentLifecycleProjectionSync(
+    identity: readonly [canonicalTargetKey: string, fenceKey: string, revision: number],
+  ) {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?
+          LIMIT 1`,
+        ...identity,
+      ),
+    )[0];
+    return row ? projectionFromRow(String(row.projection_json || "")) : null;
   }
 
   hasBayLifecyclePending() {
@@ -823,22 +980,444 @@ export class ExactReviewLifecycleTelemetryStore {
         )`,
       cutoff,
     );
-    // The public coverage declaration advances with retention, so every
-    // completion claimed by the tide is represented by a retained fact.
-    this.storage.sql.exec(
-      `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE}
-          SET coverage_started_at = ?
-        WHERE singleton = 1 AND coverage_started_at < ?`,
-      cutoff,
-      cutoff,
+  }
+
+  private bayTimingEventExistsSync(eventId: string) {
+    return (
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT 1 AS found FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+            WHERE event_id = ? LIMIT 1`,
+          eventId,
+        ),
+      ).length > 0
     );
+  }
+
+  private recordTideCompletionSync(
+    scope: string,
+    table:
+      | typeof EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE
+      | typeof EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
+    event: BayLifecycleEvent,
+    progress: BayTideProgress,
+  ) {
+    const terminalRows = this.tideBufferRowsSync(scope, "terminal");
+    const priorTerminalCount = progress.baseCount % EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD;
+    if (terminalRows.length !== priorTerminalCount)
+      throw new Error("Bay lifecycle tide buffer does not match its aggregate");
+    const total = progress.baseCount + 1;
+    if (!Number.isSafeInteger(total)) throw new Error("Bay lifecycle tide counter overflow");
+    let lastTideAt = progress.lastTideAt;
+    if (total % EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD === 0) {
+      this.storage.sql.exec(
+        `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+          WHERE repository_scope = ? AND bucket = 'washed'`,
+        scope,
+      );
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+            SET bucket = 'washed'
+          WHERE repository_scope = ? AND bucket = 'terminal'`,
+        scope,
+      );
+      this.insertTideBufferRowSync(scope, "washed", event);
+      lastTideAt = event.completed_at;
+    } else {
+      this.insertTideBufferRowSync(scope, "terminal", event);
+    }
     this.storage.sql.exec(
-      `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE}
-          SET coverage_started_at = ?
-        WHERE singleton = 1 AND coverage_started_at < ?`,
-      cutoff,
-      cutoff,
+      `UPDATE ${table}
+          SET tide_base_count = ?, last_tide_at = ?
+        WHERE singleton = 1`,
+      total,
+      lastTideAt,
     );
+  }
+
+  private insertTideBufferRowSync(
+    scope: string,
+    bucket: "terminal" | "washed",
+    event: BayLifecycleEvent,
+  ) {
+    this.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+         (repository_scope, bucket, event_id, canonical_target_key, outcome, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      scope,
+      bucket,
+      event.event_id,
+      event.item_key,
+      event.outcome,
+      event.completed_at,
+    );
+  }
+
+  private tideBufferRowsSync(scope: string, bucket: "terminal" | "washed") {
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `SELECT event_id, canonical_target_key, outcome, completed_at
+           FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+          WHERE repository_scope = ? AND bucket = ?
+          ORDER BY completed_at, event_id LIMIT ?`,
+        scope,
+        bucket,
+        EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD + 1,
+      ),
+    );
+    if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD)
+      throw new Error("Bay lifecycle tide buffer exceeds its bound");
+    return rows;
+  }
+
+  private tideCompletionArrivesOutOfOrderSync(scope: string, event: BayLifecycleEvent) {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT event_id, completed_at
+           FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+          WHERE repository_scope = ?
+          ORDER BY completed_at DESC, event_id DESC LIMIT 1`,
+        scope,
+      ),
+    )[0];
+    if (!row) return false;
+    const completedAt = Number(row.completed_at);
+    const eventId = String(row.event_id || "");
+    if (!validTimestamp(completedAt) || !eventId)
+      throw new Error("invalid Bay lifecycle tide buffer row");
+    return (
+      event.completed_at < completedAt ||
+      (event.completed_at === completedAt && event.event_id.localeCompare(eventId) < 0)
+    );
+  }
+
+  private tideScopeRowSync() {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT repository_scope, coverage_started_at, tide_base_count, last_tide_at
+           FROM ${EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE}
+          WHERE singleton = 1`,
+      ),
+    )[0];
+    if (!row) return null;
+    return {
+      scope: String(row.repository_scope || ""),
+      progress: tideProgressFromRow(
+        Number(row.coverage_started_at),
+        row.tide_base_count,
+        row.last_tide_at,
+      ),
+    };
+  }
+
+  private rebuildTideProgressAfterRetractionSync(
+    projection: ExactReviewLifecycleProjection,
+    identity: readonly [string, string, number],
+  ) {
+    this.withBayTideSavepoint(() => {
+      this.storage.sql.exec(
+        `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+          WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+        ...identity,
+      );
+      this.rebuildTideProgressFromLifecycleSync(projection, identity);
+    });
+  }
+
+  private rebuildTideProgressFromLifecycleSync(
+    projection: ExactReviewLifecycleProjection,
+    identity: readonly [string, string, number],
+  ) {
+    const global = this.tideProgressSync();
+    this.replaceTideProgressFromSourceProgressSync(
+      BAY_GLOBAL_TIDE_SCOPE,
+      EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
+      this.lifecycleTideProgressFromSourceSync(
+        BAY_GLOBAL_TIDE_SCOPE,
+        global.coverageStartedAt,
+        projection,
+        identity,
+      ),
+    );
+    const scopeRow = this.tideScopeRowSync();
+    if (scopeRow) {
+      this.replaceTideProgressFromSourceProgressSync(
+        scopeRow.scope,
+        EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
+        this.lifecycleTideProgressFromSourceSync(
+          scopeRow.scope,
+          scopeRow.progress.coverageStartedAt,
+          projection,
+          identity,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Rebuilds an aggregate from the durable lifecycle source without loading
+   * every projection into JavaScript. SQLite computes the count and ordering,
+   * while this method receives only the previous tide and current remainder.
+   * That keeps recovery convergent after the source table outgrows a sampled
+   * public-read limit.
+   */
+  private lifecycleTideProgressFromSourceSync(
+    scope: string,
+    coverageStartedAt: number,
+    replacement?: ExactReviewLifecycleProjection,
+    identity?: readonly [string, string, number],
+  ) {
+    if (!validTimestamp(coverageStartedAt)) throw new Error("invalid Bay lifecycle coverage epoch");
+    const filter = bayRepositoryFilterForTideScope(scope);
+    const replacementEvent = replacement ? bayLifecycleEvent(replacement) : null;
+    const replacementIdentity = identity ?? ["", "", 0];
+    const replacing = Boolean(replacement && identity);
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `WITH lifecycle_events AS (
+           SELECT
+             'bay:' || fence_key || ':' || revision AS event_id,
+             canonical_target_key,
+             CASE
+               WHEN json_extract(projection_json, '$.terminalDisposition.kind') = 'review_completed_routed'
+                 THEN 'success'
+               WHEN COALESCE(
+                 (
+                   SELECT json_extract(result.value, '$.outcome')
+                     FROM json_each(projection_json, '$.reviewResults') AS result
+                    ORDER BY CAST(json_extract(result.value, '$.observedAt') AS INTEGER) DESC
+                    LIMIT 1
+                 ),
+                 'failed'
+               ) = 'cancelled' THEN 'cancelled'
+               ELSE 'failure'
+             END AS outcome,
+             COALESCE(
+               CAST(json_extract(projection_json, '$.admission.triggeredAt') AS INTEGER),
+               CAST(json_extract(projection_json, '$.admission.admittedAt') AS INTEGER)
+             ) AS triggered_at,
+             CAST(json_extract(projection_json, '$.terminalDisposition.observedAt') AS INTEGER)
+               AS completed_at
+           FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+           WHERE json_valid(projection_json)
+             AND json_extract(projection_json, '$.terminalDisposition.kind')
+                   IN ('review_completed_routed', 'failure')
+             AND (
+               ? = 0 OR canonical_target_key != ? OR fence_key != ? OR revision != ?
+             )
+           UNION ALL
+           SELECT ?, ?, ?, ?, ? WHERE ? = 1
+         ), filtered AS (
+           SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at
+             FROM lifecycle_events
+            WHERE completed_at >= ? AND completed_at >= triggered_at
+              ${filter.where}
+         ), ranked AS (
+           SELECT
+             event_id,
+             canonical_target_key,
+             outcome,
+             triggered_at,
+             completed_at,
+             ROW_NUMBER() OVER (ORDER BY completed_at, event_id) AS ordinal,
+             COUNT(*) OVER () AS total
+             FROM filtered
+         )
+         SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at, ordinal, total
+           FROM ranked
+          WHERE ordinal > MAX(0, total - (total % ?) - ?)
+          ORDER BY ordinal`,
+        Number(replacing),
+        replacementIdentity[0],
+        replacementIdentity[1],
+        replacementIdentity[2],
+        replacementEvent?.event_id ?? null,
+        replacementEvent?.item_key ?? null,
+        replacementEvent?.outcome ?? null,
+        replacementEvent?.triggered_at ?? null,
+        replacementEvent?.completed_at ?? null,
+        Number(replacementEvent !== null),
+        coverageStartedAt,
+        ...filter.bindings,
+        EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD,
+        EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD,
+      ),
+    );
+    if (!rows.length) {
+      return { baseCount: 0, lastTideAt: null, recentlyWashed: [], terminalBuffer: [] };
+    }
+    const total = Number(rows[0]!.total);
+    if (!Number.isSafeInteger(total) || total < 1)
+      throw new Error("invalid Bay lifecycle source count");
+    const tideBoundary =
+      Math.floor(total / EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD) *
+      EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD;
+    const expectedRows =
+      Math.min(EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD, tideBoundary) + (total - tideBoundary);
+    if (rows.length !== expectedRows) throw new Error("incomplete Bay lifecycle source tail");
+    const recentlyWashed: BayLifecycleEvent[] = [];
+    const terminalBuffer: BayLifecycleEvent[] = [];
+    let lastTideAt: number | null = null;
+    let previousOrdinal = total - expectedRows;
+    for (const row of rows) {
+      const ordinal = Number(row.ordinal);
+      if (
+        !Number.isSafeInteger(ordinal) ||
+        ordinal !== previousOrdinal + 1 ||
+        Number(row.total) !== total
+      ) {
+        throw new Error("invalid Bay lifecycle source ordering");
+      }
+      previousOrdinal = ordinal;
+      const event = bayLifecycleEventFromTimingRow(row);
+      if (ordinal <= tideBoundary) {
+        recentlyWashed.push(event);
+        if (ordinal === tideBoundary) lastTideAt = event.completed_at;
+      } else {
+        terminalBuffer.push(event);
+      }
+    }
+    if ((tideBoundary === 0) !== (lastTideAt === null))
+      throw new Error("invalid Bay lifecycle tide boundary");
+    return { baseCount: total, lastTideAt, recentlyWashed, terminalBuffer };
+  }
+
+  private lifecycleProjectionTableExistsSync() {
+    return (
+      Array.from(
+        this.storage.sql.exec(
+          "SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+          EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE,
+        ),
+      ).length > 0
+    );
+  }
+
+  private backfillLifecycleIdempotencyMarkersSync() {
+    if (!this.lifecycleProjectionTableExistsSync()) return;
+    // Before compact tide metadata existed, a bounded timing row was the only
+    // duplicate guard. Preserve a marker for every existing terminal source,
+    // including terminals whose old timing row has already expired, without
+    // retaining a second unbounded ledger.
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          SET projection_json = json_set(
+            projection_json,
+            '$.bayTelemetryEventId',
+            'bay:' || fence_key || ':' || revision
+          )
+        WHERE json_valid(projection_json)
+          AND bay_telemetry_pending = 0
+          AND json_extract(projection_json, '$.bayTelemetryEventId') IS NULL
+          AND json_extract(projection_json, '$.terminalDisposition.kind')
+                IN ('review_completed_routed', 'failure')`,
+    );
+  }
+
+  private replaceTideProgressFromSourceProgressSync(
+    scope: string,
+    table:
+      | typeof EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE
+      | typeof EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
+    progress: BayTideSourceProgress,
+  ) {
+    if (!Number.isSafeInteger(progress.baseCount) || progress.baseCount < 0)
+      throw new Error("invalid Bay lifecycle source aggregate");
+    if (
+      progress.recentlyWashed.length > EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD ||
+      progress.terminalBuffer.length >= EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD
+    ) {
+      throw new Error("invalid Bay lifecycle source tail");
+    }
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+        WHERE repository_scope = ?`,
+      scope,
+    );
+    for (const event of progress.recentlyWashed)
+      this.insertTideBufferRowSync(scope, "washed", event);
+    for (const event of progress.terminalBuffer)
+      this.insertTideBufferRowSync(scope, "terminal", event);
+    this.storage.sql.exec(
+      `UPDATE ${table} SET tide_base_count = ?, last_tide_at = ? WHERE singleton = 1`,
+      progress.baseCount,
+      progress.lastTideAt,
+    );
+  }
+
+  private replaceTideProgressFromEventsSync(
+    scope: string,
+    table:
+      | typeof EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE
+      | typeof EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
+    coverageStartedAt: number,
+    events: ReadonlyArray<BayLifecycleEvent>,
+  ) {
+    const retained = events.filter((event) => event.completed_at >= coverageStartedAt);
+    const total = retained.length;
+    if (!Number.isSafeInteger(total)) throw new Error("Bay lifecycle tide counter overflow");
+    const tideBoundary =
+      Math.floor(total / EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD) *
+      EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD;
+    const lastTideAt = tideBoundary ? retained[tideBoundary - 1]!.completed_at : null;
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+        WHERE repository_scope = ?`,
+      scope,
+    );
+    for (const event of retained.slice(Math.max(0, tideBoundary - 20), tideBoundary))
+      this.insertTideBufferRowSync(scope, "washed", event);
+    for (const event of retained.slice(tideBoundary))
+      this.insertTideBufferRowSync(scope, "terminal", event);
+    this.storage.sql.exec(
+      `UPDATE ${table} SET tide_base_count = ?, last_tide_at = ? WHERE singleton = 1`,
+      total,
+      lastTideAt,
+    );
+  }
+
+  private rebuildTideProgressFromTimingEventsSync(
+    scope: string,
+    table:
+      | typeof EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE
+      | typeof EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
+    progress: BayTideProgress,
+  ) {
+    const repositoryFilter = bayRepositoryFilterForTideScope(scope);
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at
+           FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+          WHERE completed_at >= ? ${repositoryFilter.where}
+          ORDER BY completed_at, event_id`,
+        progress.coverageStartedAt,
+        ...repositoryFilter.bindings,
+      ),
+    );
+    this.replaceTideProgressFromEventsSync(
+      scope,
+      table,
+      progress.coverageStartedAt,
+      rows.map(bayLifecycleEventFromTimingRow),
+    );
+  }
+
+  private withBayTideSavepoint<T>(operation: () => T): T {
+    const savepoint = "exact_review_lifecycle_bay_tide";
+    this.storage.sql.exec(`SAVEPOINT ${savepoint}`);
+    try {
+      const result = operation();
+      this.storage.sql.exec(`RELEASE SAVEPOINT ${savepoint}`);
+      return result;
+    } catch (error) {
+      try {
+        this.storage.sql.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+        this.storage.sql.exec(`RELEASE SAVEPOINT ${savepoint}`);
+      } catch {
+        // Preserve the original lifecycle materialization error.
+      }
+      throw error;
+    }
   }
 }
 
@@ -861,12 +1440,22 @@ function bayLifecycleEvent(projection: ExactReviewLifecycleProjection): BayLifec
   if (!validTimestamp(triggeredAt) || !validTimestamp(completedAt) || completedAt < triggeredAt)
     return null;
   return {
-    event_id: `bay:${projection.fenceKey}:${projection.revision}`,
+    event_id: bayLifecycleEventId(projection),
     item_key: projection.canonicalTargetKey,
     outcome,
     triggered_at: triggeredAt,
     completed_at: completedAt,
   };
+}
+
+function hadBayLifecycleTerminalEvent(projection: ExactReviewLifecycleProjection) {
+  return projection.terminalDispositions.some(
+    (terminal) => terminal.kind === "review_completed_routed" || terminal.kind === "failure",
+  );
+}
+
+function bayLifecycleEventId(projection: ExactReviewLifecycleProjection) {
+  return `bay:${projection.fenceKey}:${projection.revision}`;
 }
 
 function bayRepositoryFilter(allowedRepositories?: ReadonlySet<string>) {
@@ -886,6 +1475,60 @@ function bayRepositoryFilter(allowedRepositories?: ReadonlySet<string>) {
     bindings: repositories,
     scope: repositories.join(","),
   };
+}
+
+function bayRepositoryFilterForTideScope(scope: string) {
+  if (scope === BAY_GLOBAL_TIDE_SCOPE) return { where: "", bindings: [] as string[] };
+  const filter = bayRepositoryFilter(new Set(scope ? scope.split(",") : []));
+  if (!filter || filter.scope !== scope) throw new Error("invalid Bay lifecycle tide scope");
+  return filter;
+}
+
+function bayLifecycleEventFromTimingRow(row: Record<string, unknown>): BayLifecycleEvent {
+  const eventId = String(row.event_id || "");
+  const itemKey = String(row.canonical_target_key || "");
+  const outcome = String(row.outcome || "") as BayLifecycleOutcome;
+  const triggeredAt = Number(row.triggered_at);
+  const completedAt = Number(row.completed_at);
+  if (
+    !eventId ||
+    !validCanonicalTargetKey(itemKey) ||
+    !["success", "failure", "cancelled"].includes(outcome) ||
+    !validTimestamp(triggeredAt) ||
+    !validTimestamp(completedAt) ||
+    completedAt < triggeredAt
+  ) {
+    throw new Error("invalid retained Bay lifecycle timing event");
+  }
+  return {
+    event_id: eventId,
+    item_key: itemKey,
+    outcome,
+    triggered_at: triggeredAt,
+    completed_at: completedAt,
+  };
+}
+
+function bayScopeIncludesTarget(scope: string, canonicalTargetKey: string) {
+  if (!validCanonicalTargetKey(canonicalTargetKey) || !scope) return false;
+  const separator = canonicalTargetKey.indexOf("#");
+  return scope.split(",").includes(canonicalTargetKey.slice(0, separator).toLowerCase());
+}
+
+function tideProgressFromRow(
+  coverageStartedAt: number,
+  tideBaseCount: unknown,
+  lastTideAt: unknown,
+): BayTideProgress {
+  if (!validTimestamp(coverageStartedAt)) throw new Error("invalid Bay lifecycle coverage epoch");
+  const baseCount = Number(tideBaseCount ?? 0);
+  if (!Number.isSafeInteger(baseCount) || baseCount < 0)
+    throw new Error("invalid Bay lifecycle tide base");
+  if (lastTideAt === null || lastTideAt === undefined)
+    return { coverageStartedAt, baseCount, lastTideAt: null };
+  const parsedLastTideAt = Number(lastTideAt);
+  if (!validTimestamp(parsedLastTideAt)) throw new Error("invalid Bay lifecycle tide boundary");
+  return { coverageStartedAt, baseCount, lastTideAt: parsedLastTideAt };
 }
 
 function bayTerminalRows(rows: Array<Record<string, unknown>>): BayTerminalRecord[] {

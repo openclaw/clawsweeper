@@ -39,7 +39,13 @@ import {
   leasedExactReviewQueueItem,
   leasedExactReviewPublicationItem,
 } from "./dashboard-worker-harness.ts";
-import { EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE } from "../dashboard/exact-review-lifecycle-telemetry.ts";
+import {
+  EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE,
+  EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
+  EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE,
+  EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
+  EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE,
+} from "../dashboard/exact-review-lifecycle-telemetry.ts";
 
 test("unfenced acknowledgements prefer a unique exact status comment over a shared marker", () => {
   const storage = new MemoryDurableStorage();
@@ -325,6 +331,861 @@ test("Bay lifecycle tides are derived from all durable terminal revisions", () =
   );
 });
 
+test("Bay lifecycle keeps only bounded tide detail after many completions", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  const publicScope = new Set(["openclaw/openclaw"]);
+  telemetry.syncBayRepositoryScope(publicScope, now);
+  for (let index = 0; index < 119; index += 1) {
+    const identity = {
+      canonicalTargetKey: `openclaw/openclaw#${9_240 + index}`,
+      fenceKey: `openclaw/openclaw#${9_240 + index}@exact:${index + 1}`,
+      revision: index + 1,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `bounded-tide:${index}`,
+      sourceAction: "opened",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: now + index * 1_000,
+      observedAt: now + index * 1_000,
+    });
+    telemetry.syncBayLifecycle(
+      lifecycle.recordTerminalDisposition({
+        ...identity,
+        kind: "review_completed_routed",
+        observedAt: now + index * 1_000 + 500,
+      }),
+    );
+  }
+  const snapshot = telemetry.baySnapshot(now + 120_000, publicScope);
+  assert.equal(snapshot.terminal?.tide_generation, 5);
+  assert.equal(snapshot.terminal?.terminal_count, 19);
+  assert.equal(snapshot.terminal?.terminal_buffer.length, 19);
+  assert.equal(snapshot.terminal?.recently_washed.length, 20);
+  const bufferRows = Number(
+    Array.from(
+      storage.sql.exec(
+        `SELECT COUNT(*) AS count FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}`,
+      ),
+    )[0]?.count || 0,
+  );
+  // Global and the one configured public scope each retain at most the
+  // current 19-item tide plus one 20-item washed tide.
+  assert.equal(bufferRows, 78);
+});
+
+test("Bay lifecycle keeps an empty public scope separate from the global tide", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9355",
+    fenceKey: "openclaw/openclaw#9355@exact:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "empty-scope",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now,
+    observedAt: now,
+  });
+  telemetry.syncBayLifecycle(
+    lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "review_completed_routed",
+      observedAt: now + 500,
+    }),
+  );
+
+  telemetry.syncBayRepositoryScope(new Set(), now + 1_000);
+  const emptyScope = telemetry.baySnapshot(now + 2_000, new Set());
+  assert.equal(emptyScope.collection.state, "complete");
+  assert.equal(emptyScope.terminal?.terminal_count, 0);
+  assert.equal(emptyScope.terminal?.terminal_buffer.length, 0);
+  assert.equal(telemetry.baySnapshot(now + 2_000).terminal?.terminal_count, 1);
+});
+
+test("Bay lifecycle orders delayed terminal delivery by completion time", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  for (let index = 0; index < 19; index += 1) {
+    const identity = {
+      canonicalTargetKey: `openclaw/openclaw#${9_360 + index}`,
+      fenceKey: `openclaw/openclaw#${9_360 + index}@exact:1`,
+      revision: 1,
+    };
+    const triggeredAt = now + index * 1_000;
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `ordered:${index}`,
+      sourceAction: "opened",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt,
+      observedAt: triggeredAt,
+    });
+    telemetry.syncBayLifecycle(
+      lifecycle.recordTerminalDisposition({
+        ...identity,
+        kind: "review_completed_routed",
+        observedAt: triggeredAt + 100,
+      }),
+    );
+  }
+  const laterIdentity = {
+    canonicalTargetKey: "openclaw/openclaw#9380",
+    fenceKey: "openclaw/openclaw#9380@exact:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...laterIdentity,
+    deliveryId: "ordered:later",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now + 29_000,
+    observedAt: now + 29_000,
+  });
+  telemetry.syncBayLifecycle(
+    lifecycle.recordTerminalDisposition({
+      ...laterIdentity,
+      kind: "review_completed_routed",
+      observedAt: now + 30_000,
+    }),
+  );
+  const delayedIdentity = {
+    canonicalTargetKey: "openclaw/openclaw#9379",
+    fenceKey: "openclaw/openclaw#9379@exact:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...delayedIdentity,
+    deliveryId: "ordered:delayed",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now + 18_500,
+    observedAt: now + 18_500,
+  });
+  telemetry.syncBayLifecycle(
+    lifecycle.recordTerminalDisposition({
+      ...delayedIdentity,
+      kind: "review_completed_routed",
+      observedAt: now + 19_000,
+    }),
+  );
+
+  const snapshot = telemetry.baySnapshot(now + 60_000);
+  assert.equal(snapshot.terminal?.tide_generation, 1);
+  assert.equal(snapshot.terminal?.terminal_count, 1);
+  assert.equal(snapshot.terminal?.last_tide_at, new Date(now + 19_000).toISOString());
+  assert.deepEqual(
+    snapshot.terminal?.terminal_buffer.map((entry) => entry.item_key),
+    ["openclaw/openclaw#9380"],
+  );
+});
+
+test("Bay lifecycle refreshes a retained terminal outcome without advancing its tide", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9390",
+    fenceKey: "openclaw/openclaw#9390@exact:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "outcome-refresh",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now,
+    observedAt: now,
+  });
+  lifecycle.recordReviewResult({
+    ...identity,
+    claimGeneration: 1,
+    runId: "9390",
+    runAttempt: 1,
+    outcome: "failed",
+    observedAt: now + 100,
+  });
+  telemetry.syncBayLifecycle(
+    lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "failure",
+      observedAt: now + 200,
+    }),
+  );
+  lifecycle.recordReviewResult({
+    ...identity,
+    claimGeneration: 2,
+    runId: "9391",
+    runAttempt: 1,
+    outcome: "cancelled",
+    observedAt: now + 300,
+  });
+  telemetry.syncBayLifecycle(
+    lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "failure",
+      observedAt: now + 400,
+    }),
+  );
+
+  const snapshot = telemetry.baySnapshot(now + 1_000);
+  assert.equal(snapshot.terminal?.terminal_count, 1);
+  assert.equal(snapshot.terminal?.terminal_buffer[0]?.outcome, "cancelled");
+});
+
+test("Bay lifecycle telemetry migrates durable tide metadata", () => {
+  const storage = new MemoryDurableStorage();
+  const now = Date.now();
+  storage.sql.exec(
+    `CREATE TABLE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} (
+       event_id TEXT PRIMARY KEY,
+       canonical_target_key TEXT NOT NULL,
+       fence_key TEXT NOT NULL,
+       revision INTEGER NOT NULL CHECK (revision >= 1),
+       outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'cancelled')),
+       triggered_at INTEGER NOT NULL,
+       completed_at INTEGER NOT NULL
+     ) STRICT`,
+  );
+  for (const [table, definition] of [
+    [
+      EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
+      "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), coverage_started_at INTEGER NOT NULL",
+    ],
+    [
+      EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
+      "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), repository_scope TEXT NOT NULL, coverage_started_at INTEGER NOT NULL",
+    ],
+  ]) {
+    storage.sql.exec(`CREATE TABLE ${table} (${definition}) STRICT`);
+  }
+  storage.sql.exec(
+    `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE} (singleton, coverage_started_at)
+      VALUES (1, ?)`,
+    now,
+  );
+  storage.sql.exec(
+    `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE}
+       (singleton, repository_scope, coverage_started_at)
+     VALUES (1, 'openclaw/openclaw', ?)`,
+    now,
+  );
+  for (let index = 0; index < 21; index += 1) {
+    storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+         (event_id, canonical_target_key, fence_key, revision, outcome, triggered_at, completed_at)
+       VALUES (?, ?, ?, 1, 'success', ?, ?)`,
+      `migration:${index}`,
+      `openclaw/openclaw#${9_400 + index}`,
+      `openclaw/openclaw#${9_400 + index}@exact:1`,
+      now + index * 1_000,
+      now + index * 1_000 + 500,
+    );
+  }
+
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  telemetry.ensureSchemaSync();
+  for (const table of [
+    EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
+    EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
+  ]) {
+    const columns = new Set(
+      Array.from(storage.sql.exec(`SELECT name FROM pragma_table_info('${table}')`)).map((row) =>
+        String(row.name || ""),
+      ),
+    );
+    assert.equal(columns.has("tide_base_count"), true);
+    assert.equal(columns.has("last_tide_at"), true);
+  }
+  for (const snapshot of [
+    telemetry.baySnapshot(now + 60_000),
+    telemetry.baySnapshot(now + 60_000, new Set(["openclaw/openclaw"])),
+  ]) {
+    assert.equal(snapshot.terminal?.tide_generation, 1);
+    assert.equal(snapshot.terminal?.terminal_count, 1);
+    assert.equal(snapshot.terminal?.recently_washed.length, 20);
+  }
+});
+
+test("Bay lifecycle migration preserves retained terminal idempotency markers", () => {
+  const originalNow = Date.now;
+  const startedAt = 2_000_000_000_000;
+  let now = startedAt;
+  Date.now = () => now;
+  try {
+    const storage = new MemoryDurableStorage();
+    const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+    const identity = {
+      canonicalTargetKey: "openclaw/openclaw#9450",
+      fenceKey: "openclaw/openclaw#9450@exact:1",
+      revision: 1,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: "legacy-idempotency",
+      sourceAction: "opened",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: now,
+      observedAt: now,
+    });
+    lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "review_completed_routed",
+      observedAt: now + 500,
+    });
+    // Model the legacy source after its prior timing write had completed.
+    storage.sql.exec(
+      `UPDATE exact_review_lifecycle_projection_v1
+          SET bay_telemetry_pending = 0,
+              projection_json = json_set(projection_json, '$.bayTelemetryPending', json('false'))
+        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+      identity.canonicalTargetKey,
+      identity.fenceKey,
+      identity.revision,
+    );
+    storage.sql.exec(
+      `CREATE TABLE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} (
+         event_id TEXT PRIMARY KEY,
+         canonical_target_key TEXT NOT NULL,
+         fence_key TEXT NOT NULL,
+         revision INTEGER NOT NULL CHECK (revision >= 1),
+         outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'cancelled')),
+         triggered_at INTEGER NOT NULL,
+         completed_at INTEGER NOT NULL
+       ) STRICT`,
+    );
+    storage.sql.exec(
+      `CREATE TABLE ${EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE} (
+         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+         coverage_started_at INTEGER NOT NULL
+       ) STRICT`,
+    );
+    storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE} (singleton, coverage_started_at)
+        VALUES (1, ?)`,
+      now,
+    );
+    storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+         (event_id, canonical_target_key, fence_key, revision, outcome, triggered_at, completed_at)
+       VALUES ('bay:openclaw/openclaw#9450@exact:1:1', ?, ?, 1, 'success', ?, ?)`,
+      identity.canonicalTargetKey,
+      identity.fenceKey,
+      now,
+      now + 500,
+    );
+
+    const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+    telemetry.ensureSchemaSync();
+    const marked = lifecycle.read(
+      identity.canonicalTargetKey,
+      identity.fenceKey,
+      identity.revision,
+    )!;
+    assert.equal(marked.bayTelemetryEventId, "bay:openclaw/openclaw#9450@exact:1:1");
+
+    now += 31 * 24 * 60 * 60_000;
+    assert.equal(telemetry.syncBayLifecycle(marked), true);
+    assert.equal(telemetry.baySnapshot(now).terminal?.terminal_count, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("Bay lifecycle migration marks terminal sources whose old timing rows already expired", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const now = Date.now();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9451",
+    fenceKey: "openclaw/openclaw#9451@exact:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "legacy-expired-idempotency",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now,
+    observedAt: now,
+  });
+  lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: now + 500,
+  });
+  // Model the legacy source after its prior timing write had completed.
+  storage.sql.exec(
+    `UPDATE exact_review_lifecycle_projection_v1
+        SET bay_telemetry_pending = 0,
+            projection_json = json_set(projection_json, '$.bayTelemetryPending', json('false'))
+      WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+    identity.canonicalTargetKey,
+    identity.fenceKey,
+    identity.revision,
+  );
+  storage.sql.exec(
+    `CREATE TABLE ${EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE} (
+       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+       coverage_started_at INTEGER NOT NULL
+     ) STRICT`,
+  );
+  storage.sql.exec(
+    `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE} (singleton, coverage_started_at)
+      VALUES (1, ?)`,
+    now,
+  );
+
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  telemetry.ensureSchemaSync();
+  const marked = lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)!;
+  assert.equal(marked.bayTelemetryEventId, "bay:openclaw/openclaw#9451@exact:1:1");
+  assert.equal(telemetry.syncBayLifecycle(marked), true);
+  assert.equal(telemetry.baySnapshot(now + 1_000).terminal?.terminal_count, 0);
+});
+
+test("Bay lifecycle migration leaves a pending terminal source available for recovery", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const now = Date.now();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9452",
+    fenceKey: "openclaw/openclaw#9452@exact:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "migration-pending-terminal",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now,
+    observedAt: now,
+  });
+  lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: now + 500,
+  });
+
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  telemetry.ensureSchemaSync();
+  assert.equal(
+    lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
+      ?.bayTelemetryEventId,
+    undefined,
+  );
+  assert.equal(
+    lifecycle.reconcileBayTelemetryPending((projection) => telemetry.syncBayLifecycle(projection)),
+    true,
+  );
+  assert.equal(telemetry.baySnapshot(now + 1_000).terminal?.terminal_count, 1);
+});
+
+test("Bay lifecycle refreshes scope despite a lifecycle source beyond the public sample cap", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  const priorScope = new Set(["openclaw/openclaw"]);
+  telemetry.syncBayRepositoryScope(priorScope, now);
+  lifecycle.recordAdmission({
+    canonicalTargetKey: "openclaw/openclaw#9500",
+    fenceKey: "openclaw/openclaw#9500@exact:1",
+    revision: 1,
+    deliveryId: "over-cap:base",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now,
+    observedAt: now,
+  });
+  for (let index = 0; index < 10_000; index += 1) {
+    storage.sql.exec(
+      `INSERT INTO exact_review_lifecycle_projection_v1
+         (canonical_target_key, revision, fence_key, projection_json, updated_at, bay_telemetry_pending)
+       VALUES (?, 1, ?, '{}', ?, 0)`,
+      `openclaw/openclaw#${9_600 + index}`,
+      `openclaw/openclaw#${9_600 + index}@exact:1`,
+      now + index + 1,
+    );
+  }
+
+  assert.equal(telemetry.syncBayRepositoryScope(new Set(["openclaw/clawsweeper"]), now + 1), true);
+  assert.equal(
+    telemetry.baySnapshot(now + 1, new Set(["openclaw/clawsweeper"])).collection.state,
+    "complete",
+  );
+  assert.equal(telemetry.baySnapshot(now + 1, priorScope).collection.state, "unknown");
+});
+
+test("Bay lifecycle rebuilds compact tide state from more than ten thousand completions", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  lifecycle.recordAdmission({
+    canonicalTargetKey: "openclaw/openclaw#9599",
+    fenceKey: "openclaw/openclaw#9599@exact:1",
+    revision: 1,
+    deliveryId: "source-rebuild-schema",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now,
+    observedAt: now,
+  });
+  for (let index = 0; index < 10_001; index += 1) {
+    const canonicalTargetKey = `openclaw/openclaw#${20_000 + index}`;
+    const fenceKey = `${canonicalTargetKey}@exact:1`;
+    storage.sql.exec(
+      `INSERT INTO exact_review_lifecycle_projection_v1
+         (canonical_target_key, revision, fence_key, projection_json, updated_at, bay_telemetry_pending)
+       VALUES (?, 1, ?, ?, ?, 0)`,
+      canonicalTargetKey,
+      fenceKey,
+      JSON.stringify({
+        version: 1,
+        canonicalTargetKey,
+        fenceKey,
+        revision: 1,
+        admission: { triggeredAt: now, admittedAt: now },
+        reviewResults: [],
+        terminalDisposition: { kind: "review_completed_routed", observedAt: now + index + 1 },
+      }),
+      now + index + 1,
+    );
+  }
+
+  const publicScope = new Set(["openclaw/openclaw"]);
+  assert.equal(telemetry.syncBayRepositoryScope(publicScope, now), true);
+  const snapshot = telemetry.baySnapshot(now + 20_000, publicScope);
+  assert.equal(snapshot.collection.state, "complete");
+  assert.equal(snapshot.terminal?.tide_generation, 500);
+  assert.equal(snapshot.terminal?.terminal_count, 1);
+  assert.equal(snapshot.terminal?.recently_washed.length, 20);
+  assert.equal(snapshot.terminal?.terminal_buffer.length, 1);
+  assert.equal(snapshot.terminal?.last_tide_at, new Date(now + 10_000).toISOString());
+});
+
+test("Bay lifecycle tide progress survives terminal-fact retention", () => {
+  const originalNow = Date.now;
+  const coverageStartedAt = 1_800_000_000_000;
+  let now = coverageStartedAt;
+  Date.now = () => now;
+  try {
+    const storage = new MemoryDurableStorage();
+    const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+    const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+    const publicScope = new Set(["openclaw/openclaw"]);
+    telemetry.syncBayRepositoryScope(publicScope, now);
+    for (let index = 0; index < 21; index += 1) {
+      const identity = {
+        canonicalTargetKey: `openclaw/openclaw#${9_300 + index}`,
+        fenceKey: `openclaw/openclaw#${9_300 + index}@exact:${index + 1}`,
+        revision: index + 1,
+      };
+      const triggeredAt = coverageStartedAt + index * 1_000;
+      lifecycle.recordAdmission({
+        ...identity,
+        deliveryId: `retention:${index}`,
+        sourceAction: "opened",
+        commandOriginated: false,
+        statusMarker: null,
+        statusCommentId: null,
+        triggeredAt,
+        observedAt: triggeredAt,
+      });
+      telemetry.syncBayLifecycle(
+        lifecycle.recordTerminalDisposition({
+          ...identity,
+          kind: "review_completed_routed",
+          observedAt: triggeredAt + 500,
+        }),
+      );
+    }
+
+    now = coverageStartedAt + 31 * 24 * 60 * 60_000;
+    const currentIdentity = {
+      canonicalTargetKey: "openclaw/openclaw#9400",
+      fenceKey: "openclaw/openclaw#9400@exact:22",
+      revision: 22,
+    };
+    lifecycle.recordAdmission({
+      ...currentIdentity,
+      deliveryId: "retention:current",
+      sourceAction: "re_review",
+      commandOriginated: true,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: now,
+      observedAt: now,
+    });
+    telemetry.syncBayLifecycle(
+      lifecycle.recordTerminalDisposition({
+        ...currentIdentity,
+        kind: "review_completed_routed",
+        observedAt: now + 500,
+      }),
+    );
+    // This revision has already been compacted by the unrelated current
+    // completion above. A late requeue must still retract it from the tide.
+    const requeuedIdentity = {
+      canonicalTargetKey: "openclaw/openclaw#9320",
+      fenceKey: "openclaw/openclaw#9320@exact:21",
+      revision: 21,
+    };
+    telemetry.syncBayLifecycle(
+      lifecycle.recordTerminalDisposition({
+        ...requeuedIdentity,
+        kind: "requeue",
+        observedAt: now + 750,
+      }),
+    );
+
+    const snapshot = telemetry.baySnapshot(now + 1_000, publicScope);
+    assert.equal(snapshot.terminal?.tide_generation, 1);
+    assert.equal(snapshot.terminal?.terminal_count, 1);
+    assert.equal(
+      snapshot.terminal?.last_tide_at,
+      new Date(coverageStartedAt + 19_500).toISOString(),
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("Bay lifecycle tide compaction is retry-safe after terminal deletion fails", () => {
+  const originalNow = Date.now;
+  const coverageStartedAt = 1_900_000_000_000;
+  let now = coverageStartedAt;
+  Date.now = () => now;
+  try {
+    const storage = new MemoryDurableStorage();
+    const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+    const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+    for (let index = 0; index < 20; index += 1) {
+      const identity = {
+        canonicalTargetKey: `openclaw/openclaw#${9_500 + index}`,
+        fenceKey: `openclaw/openclaw#${9_500 + index}@exact:${index + 1}`,
+        revision: index + 1,
+      };
+      const triggeredAt = coverageStartedAt + index * 1_000;
+      lifecycle.recordAdmission({
+        ...identity,
+        deliveryId: `retry-safe:${index}`,
+        sourceAction: "opened",
+        commandOriginated: false,
+        statusMarker: null,
+        statusCommentId: null,
+        triggeredAt,
+        observedAt: triggeredAt,
+      });
+      telemetry.syncBayLifecycle(
+        lifecycle.recordTerminalDisposition({
+          ...identity,
+          kind: "review_completed_routed",
+          observedAt: triggeredAt + 500,
+        }),
+      );
+    }
+
+    now = coverageStartedAt + 31 * 24 * 60 * 60_000;
+    const currentIdentity = {
+      canonicalTargetKey: "openclaw/openclaw#9520",
+      fenceKey: "openclaw/openclaw#9520@exact:21",
+      revision: 21,
+    };
+    lifecycle.recordAdmission({
+      ...currentIdentity,
+      deliveryId: "retry-safe:current",
+      sourceAction: "opened",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: now,
+      observedAt: now,
+    });
+    storage.sql.failNext(new RegExp(`DELETE FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}`));
+    const current = lifecycle.recordTerminalDisposition({
+      ...currentIdentity,
+      kind: "review_completed_routed",
+      observedAt: now + 500,
+    });
+    assert.equal(telemetry.syncBayLifecycle(current), false);
+    assert.equal(telemetry.reconcileBayLifecyclePending(), true);
+
+    const snapshot = telemetry.baySnapshot(now + 1_000);
+    assert.equal(snapshot.terminal?.tide_generation, 1);
+    assert.equal(snapshot.terminal?.terminal_count, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("Bay lifecycle source marker keeps expired terminal delivery idempotent", () => {
+  const originalNow = Date.now;
+  const startedAt = 1_950_000_000_000;
+  let now = startedAt;
+  Date.now = () => now;
+  try {
+    const storage = new MemoryDurableStorage();
+    const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+    const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+    const identity = {
+      canonicalTargetKey: "openclaw/openclaw#9350",
+      fenceKey: "openclaw/openclaw#9350@exact:1",
+      revision: 1,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: "expired-idempotence",
+      sourceAction: "opened",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: now,
+      observedAt: now,
+    });
+    lifecycle.recordTerminalDisposition(
+      { ...identity, kind: "review_completed_routed", observedAt: now + 500 },
+      (projection) => telemetry.syncBayLifecycle(projection),
+    );
+    assert.equal(
+      lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
+        ?.bayTelemetryEventId,
+      "bay:openclaw/openclaw#9350@exact:1:1",
+    );
+    now += 31 * 24 * 60 * 60 * 1_000;
+    lifecycle.recordTerminalDisposition(
+      { ...identity, kind: "review_completed_routed", observedAt: startedAt + 500 },
+      (projection) => telemetry.syncBayLifecycle(projection),
+    );
+    const snapshot = telemetry.baySnapshot(now);
+    assert.equal(snapshot.terminal?.tide_generation, 0);
+    assert.equal(snapshot.terminal?.terminal_count, 1);
+    assert.equal(snapshot.terminal?.terminal_buffer.length, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("Bay lifecycle replays a stale telemetry outbox from its marked source", () => {
+  const originalNow = Date.now;
+  const startedAt = 1_955_000_000_000;
+  let now = startedAt;
+  Date.now = () => now;
+  try {
+    const storage = new MemoryDurableStorage();
+    const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+    const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+    const identity = {
+      canonicalTargetKey: "openclaw/openclaw#9351",
+      fenceKey: "openclaw/openclaw#9351@exact:1",
+      revision: 1,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: "stale-outbox-source",
+      sourceAction: "opened",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: now,
+      observedAt: now,
+    });
+    lifecycle.recordTerminalDisposition(
+      { ...identity, kind: "review_completed_routed", observedAt: now + 500 },
+      (projection) => telemetry.syncBayLifecycle(projection),
+    );
+    const marked = lifecycle.read(
+      identity.canonicalTargetKey,
+      identity.fenceKey,
+      identity.revision,
+    )!;
+    const staleOutboxProjection = structuredClone(marked);
+    delete staleOutboxProjection.bayTelemetryEventId;
+    storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE}
+         (canonical_target_key, fence_key, revision, projection_json, queued_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      identity.canonicalTargetKey,
+      identity.fenceKey,
+      identity.revision,
+      JSON.stringify(staleOutboxProjection),
+      now,
+    );
+
+    now += 31 * 24 * 60 * 60 * 1_000;
+    assert.equal(telemetry.reconcileBayLifecyclePending(), true);
+    const snapshot = telemetry.baySnapshot(now);
+    assert.equal(snapshot.terminal?.terminal_count, 1);
+    assert.equal(snapshot.terminal?.tide_generation, 0);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("Bay lifecycle accepts a marker generated from a maximum-length fence key", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const revision = Number.MAX_SAFE_INTEGER;
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9352",
+    fenceKey: "f".repeat(512),
+    revision,
+  };
+  const now = Date.now();
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "maximum-length-fence",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now,
+    observedAt: now,
+  });
+  lifecycle.recordTerminalDisposition(
+    { ...identity, kind: "review_completed_routed", observedAt: now + 500 },
+    (projection) => telemetry.syncBayLifecycle(projection),
+  );
+  const marked = lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)!;
+  assert.equal(marked.bayTelemetryEventId?.length, 533);
+  assert.equal(telemetry.baySnapshot(now + 1_000).terminal?.terminal_count, 1);
+});
+
 test("Bay lifecycle terminal facts queue a durable retry when metrics cannot materialize", () => {
   const storage = new MemoryDurableStorage();
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
@@ -458,7 +1319,7 @@ test("Bay lifecycle recovery drains source markers in bounded batches", () => {
   assert.equal(recovered.terminal?.terminal_count, 17);
 });
 
-test("Bay lifecycle metrics expire idle terminal events from the public snapshot", () => {
+test("Bay lifecycle metrics retain idle terminal progress and the bounded remainder card", () => {
   const storage = new MemoryDurableStorage();
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
   const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
@@ -487,8 +1348,15 @@ test("Bay lifecycle metrics expire idle terminal events from the public snapshot
   );
   const idleSnapshot = telemetry.baySnapshot(now + 30 * 24 * 60 * 60 * 1_000 + 1);
   assert.equal(idleSnapshot.terminal?.tide_generation, 0);
-  assert.equal(idleSnapshot.terminal?.terminal_count, 0);
-  assert.deepEqual(idleSnapshot.terminal?.terminal_buffer, []);
+  assert.equal(idleSnapshot.terminal?.terminal_count, 1);
+  assert.deepEqual(idleSnapshot.terminal?.terminal_buffer, [
+    {
+      event_id: "bay:openclaw/openclaw#9250@exact:1:1",
+      item_key: "openclaw/openclaw#9250",
+      outcome: "success",
+      completed_at: new Date(now).toISOString(),
+    },
+  ]);
 });
 
 test("exact-review queue preserves source timestamps for pull-request and command lifecycle admission", async () => {

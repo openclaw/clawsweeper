@@ -233,6 +233,12 @@ export type ExactReviewLifecycleProjection = {
    * outage cannot make the completion undiscoverable.
    */
   bayTelemetryPending: boolean;
+  /**
+   * The current terminal fact already reflected in Bay's compact aggregate.
+   * It keeps repeated finalizer delivery idempotent after the short timing
+   * window has expired and its row has been pruned from Bay telemetry.
+   */
+  bayTelemetryEventId?: string;
   updatedAt: number;
 };
 
@@ -1717,6 +1723,9 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
     !positiveInteger(value.revision) ||
     !finiteTimestamp(value.updatedAt) ||
     typeof value.bayTelemetryPending !== "boolean" ||
+    // `bay:` + a valid 512-character fence key + `:` + a safe-integer
+    // revision (up to 16 decimal digits).
+    (value.bayTelemetryEventId !== undefined && !validText(value.bayTelemetryEventId, 1, 533)) ||
     !validText(value.admission.deliveryId, 1, 300) ||
     (value.admission.sourceDeliveryId !== undefined &&
       !validText(value.admission.sourceDeliveryId, 1, 200)) ||
