@@ -2444,6 +2444,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const withPairedIssueMutationLease = <T>(
         pairedNumber: number,
         operation: () => T,
+        options: { onOperationCompleted?: () => void } = {},
       ): T =>
         withPairedIssueMutationLedger(pairedNumber, () => {
         const pairedEntry = openFileEntryByNumber.get(pairedNumber);
@@ -2500,6 +2501,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           });
         let pairedLeaseGuards = createPairedLeaseGuards(pairedInitialRevision, pairedMarkdown);
         const previousApplyMutationGuard = currentApplyMutationGuard;
+        let pairedOperationCompleted = false;
         try {
           let leaseBlock = pairedLeaseGuards.acquireApplyMutationLease(
             pairedLeaseGuards.refreshReviewStartLeaseState(),
@@ -2542,7 +2544,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           }
           if (leaseBlock) throw new ApplyMutationReviewGuardError(leaseBlock);
           currentApplyMutationGuard = pairedLeaseGuards.currentApplyMutationLeaseBlockReason;
-          return operation();
+          const result = operation();
+          options.onOperationCompleted?.();
+          pairedOperationCompleted = true;
+          return result;
         } finally {
           currentApplyMutationGuard = previousApplyMutationGuard;
           // The lease setter runs through a closure, so avoid stale control-flow
@@ -2553,9 +2558,21 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           } | null;
           pairedActiveMutationLease = null;
           if (pairedLease) {
-            deleteOwnedDedicatedReviewStartLease(pairedLease.itemNumber, pairedLease.lease, {
-              throwOnError: true,
-            });
+            if (pairedOperationCompleted && options.onOperationCompleted) {
+              try {
+                deleteOwnedDedicatedReviewStartLease(pairedLease.itemNumber, pairedLease.lease, {
+                  throwOnError: true,
+                });
+              } catch (error) {
+                console.error(
+                  `[apply] linked issue #${pairedNumber} closed and archived but could not delete owned review lease ${pairedLease.lease.commentId}: ${mutationErrorMessage(error)}`,
+                );
+              }
+            } else {
+              deleteOwnedDedicatedReviewStartLease(pairedLease.itemNumber, pairedLease.lease, {
+                throwOnError: true,
+              });
+            }
           }
         }
         });

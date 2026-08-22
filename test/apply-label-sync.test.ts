@@ -4328,12 +4328,12 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       assert.ok(existsSync(join(closedDir, "321.md")));
       assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
         {
-          number: 321,
+          number: 456,
           action: "closed",
           reason: "already implemented on main; posted close-applied comment",
         },
         {
-          number: 456,
+          number: 321,
           action: "closed",
           reason: "already implemented on main; posted close-applied comment",
         },

@@ -153,7 +153,11 @@ interface ApplyCloseExecutionOptions {
   runtimeBudget: GitHubRuntimeBudget;
   setMarkdown: (markdown: string) => void;
   staleMinAgeDays: number;
-  withPairedIssueMutationLease: <T>(number: number, operation: () => T) => T;
+  withPairedIssueMutationLease: <T>(
+    number: number,
+    operation: () => T,
+    options?: { onOperationCompleted?: () => void },
+  ) => T;
   emitEventApplyProof: boolean;
 }
 
@@ -790,17 +794,6 @@ export function executeApplyClose(
   if (postPairedFreshnessBlock)
     return markChangedSinceReview(postPairedFreshnessBlock) ? "stop" : "next";
   let pairedStop = false;
-  const closedPairedIssues: Array<{ number: number; reason: string }> = [];
-  const finalizeClosedPairedIssues = (): void => {
-    for (const pairedIssue of closedPairedIssues) {
-      archivePairedIssue(pairedIssue.number);
-      pairedStop ||= onPairedIssueClosed(
-        { number: pairedIssue.number, action: "closed", reason: pairedIssue.reason },
-        false,
-      );
-      logProgress(`linked issue #${pairedIssue.number}: ${pairedIssue.reason}`);
-    }
-  };
   for (const pairedIssue of pairedIssuesReadyToClose) {
     const preClosePairedIssue = fetchItem(pairedIssue.number, { bypassGenerationCache: true });
     const preClosePairedIssueActivity = pairedIssueRecentNonSelfCommentBlockReasonSafe(
@@ -824,69 +817,66 @@ export function executeApplyClose(
         `implemented-on-main paired closeout requires linked issue #${pairedIssue.number} to remain unchanged, unlocked, and free of new activity before closing the parent PR`,
       );
     }
-    withPairedIssueMutationLease(pairedIssue.number, () =>
-      closeItem({ number: pairedIssue.number, kind: "issue", reason: linkedIssueCloseReason }),
+    withPairedIssueMutationLease(
+      pairedIssue.number,
+      () =>
+        closeItem({ number: pairedIssue.number, kind: "issue", reason: linkedIssueCloseReason }),
+      {
+        onOperationCompleted: () => {
+          archivePairedIssue(pairedIssue.number);
+          pairedStop ||= onPairedIssueClosed(
+            { number: pairedIssue.number, action: "closed", reason: pairedIssue.reason },
+            false,
+          );
+          logProgress(`linked issue #${pairedIssue.number}: ${pairedIssue.reason}`);
+        },
+      },
     );
-    closedPairedIssues.push(pairedIssue);
   }
   let stop = false;
   let finalParentGuardFlow: ApplyCloseFlow | null = null;
-  try {
-    const finalAfterPairedCloseFreshnessBlock = postProofFreshnessBlock();
-    if (finalAfterPairedCloseFreshnessBlock) {
-      finalParentGuardFlow = markChangedSinceReview(finalAfterPairedCloseFreshnessBlock)
-        ? "stop"
-        : "next";
+  const finalAfterPairedCloseFreshnessBlock = postProofFreshnessBlock();
+  if (finalAfterPairedCloseFreshnessBlock) {
+    finalParentGuardFlow = markChangedSinceReview(finalAfterPairedCloseFreshnessBlock)
+      ? "stop"
+      : "next";
+  } else {
+    const finalAfterPairedCloseCoveringFreshnessBlock = postProofCoveringPrFreshnessBlock();
+    if (finalAfterPairedCloseCoveringFreshnessBlock) {
+      finalParentGuardFlow = skip(
+        finalAfterPairedCloseCoveringFreshnessBlock.actionTaken,
+        finalAfterPairedCloseCoveringFreshnessBlock.reason,
+      );
     } else {
-      const finalAfterPairedCloseCoveringFreshnessBlock = postProofCoveringPrFreshnessBlock();
-      if (finalAfterPairedCloseCoveringFreshnessBlock) {
-        finalParentGuardFlow = skip(
-          finalAfterPairedCloseCoveringFreshnessBlock.actionTaken,
-          finalAfterPairedCloseCoveringFreshnessBlock.reason,
-        );
+      const finalParentMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
+      if (finalParentMutationLeaseBlockReason) {
+        finalParentGuardFlow = skipLease(finalParentMutationLeaseBlockReason);
       } else {
-        const finalParentMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
-        if (finalParentMutationLeaseBlockReason) {
-          finalParentGuardFlow = skipLease(finalParentMutationLeaseBlockReason);
-        } else {
-          closeItem({ number, kind: item.kind, reason: closeReason });
-          let markdown = replaceSectionValue(
-            getMarkdown(),
-            REVIEW_SECTIONS.closeComment,
-            reviewComment,
-          );
-          markdown = replaceFrontMatterValue(
-            markdown,
-            "close_comment_sha256",
-            sha256(reviewComment),
-          );
-          markdown = replaceFrontMatterValue(markdown, "action_taken", "closed");
-          markdown = replaceFrontMatterValue(markdown, "applied_at", new Date().toISOString());
-          markdown = replaceFrontMatterValue(
-            markdown,
-            "apply_checked_at",
-            new Date().toISOString(),
-          );
-          setMarkdown(markdown);
-          archiveClosed(markdown);
-          stop = onClosed(
-            {
-              number,
-              action: "closed",
-              reason: [closeReasonText(closeReason), closeAppliedCommentReason]
-                .filter(Boolean)
-                .join("; "),
-              ...(emitEventApplyProof ? { terminalStateVerified: true } : {}),
-            },
-            false,
-          );
-        }
+        closeItem({ number, kind: item.kind, reason: closeReason });
+        let markdown = replaceSectionValue(
+          getMarkdown(),
+          REVIEW_SECTIONS.closeComment,
+          reviewComment,
+        );
+        markdown = replaceFrontMatterValue(markdown, "close_comment_sha256", sha256(reviewComment));
+        markdown = replaceFrontMatterValue(markdown, "action_taken", "closed");
+        markdown = replaceFrontMatterValue(markdown, "applied_at", new Date().toISOString());
+        markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
+        setMarkdown(markdown);
+        archiveClosed(markdown);
+        stop = onClosed(
+          {
+            number,
+            action: "closed",
+            reason: [closeReasonText(closeReason), closeAppliedCommentReason]
+              .filter(Boolean)
+              .join("; "),
+            ...(emitEventApplyProof ? { terminalStateVerified: true } : {}),
+          },
+          false,
+        );
       }
     }
-  } finally {
-    // The issue closure is independently safe, so never leave it unrecorded
-    // if closing or archiving the parent PR fails after the issue mutation.
-    finalizeClosedPairedIssues();
   }
   if (finalParentGuardFlow) return pairedStop ? "stop" : finalParentGuardFlow;
   let postCloseRuntimeYieldReason: string | null = null;
