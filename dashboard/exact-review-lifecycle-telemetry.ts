@@ -128,6 +128,18 @@ type BayTideSourceProgress = {
   terminalBuffer: BayLifecycleEvent[];
 };
 
+type BayRepositoryScopeProgress = {
+  scope: string;
+  progress: BayTideProgress;
+  /**
+   * A changed public-repository allowlist must not count work triggered while
+   * that repository was out of scope. `null` represents the initial durable
+   * scope: its in-flight reviews are already public and may have been
+   * triggered just before the queue first materialized the scope row.
+   */
+  triggerCoverageStartedAt: number | null;
+};
+
 export type ExactReviewBayLifecycleSnapshot = {
   version: 1;
   collection: { state: "complete" } | { state: "unknown"; reason: "unavailable" | "over_cap" };
@@ -247,6 +259,7 @@ export class ExactReviewLifecycleTelemetryStore {
          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
          repository_scope TEXT NOT NULL,
          coverage_started_at INTEGER NOT NULL,
+         trigger_coverage_started_at INTEGER,
          tide_base_count INTEGER NOT NULL DEFAULT 0 CHECK (tide_base_count >= 0),
          last_tide_at INTEGER
        ) STRICT`,
@@ -287,6 +300,27 @@ export class ExactReviewLifecycleTelemetryStore {
         tideProgressBackfillTables.add(table);
         this.storage.sql.exec(`ALTER TABLE ${table} ADD COLUMN last_tide_at INTEGER`);
       }
+    }
+    const scopeColumns = new Set(
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE}')`,
+        ),
+      ).map((row) => String(row.name || "")),
+    );
+    if (!scopeColumns.has("trigger_coverage_started_at")) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE}
+           ADD COLUMN trigger_coverage_started_at INTEGER`,
+      );
+      // Existing rows already represented a durable public scope. Preserve
+      // their conservative boundary instead of retrospectively treating them
+      // as a fresh initialisation.
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE}
+            SET trigger_coverage_started_at = coverage_started_at
+          WHERE trigger_coverage_started_at IS NULL`,
+      );
     }
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE} (
@@ -344,13 +378,20 @@ export class ExactReviewLifecycleTelemetryStore {
       ),
     )[0];
     if (current && String(current.repository_scope || "") === repositoryFilter.scope) return true;
+    const initialScope = !current;
     // Read the next scope before changing its durable row. If source recovery
     // is temporarily unavailable, preserve the prior scope and let public
     // metrics fail closed without aborting queue initialization.
     let sourceProgress: BayTideSourceProgress | null = null;
     try {
       sourceProgress = this.lifecycleProjectionTableExistsSync()
-        ? this.lifecycleTideProgressFromSourceSync(repositoryFilter.scope, now)
+        ? this.lifecycleTideProgressFromSourceSync(
+            repositoryFilter.scope,
+            now,
+            undefined,
+            undefined,
+            initialScope ? null : now,
+          )
         : null;
     } catch {
       return false;
@@ -364,15 +405,17 @@ export class ExactReviewLifecycleTelemetryStore {
     }
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE}
-         (singleton, repository_scope, coverage_started_at, tide_base_count, last_tide_at)
-       VALUES (1, ?, ?, 0, NULL)
-       ON CONFLICT(singleton) DO UPDATE SET
-         repository_scope = excluded.repository_scope,
-         coverage_started_at = excluded.coverage_started_at,
-         tide_base_count = excluded.tide_base_count,
-         last_tide_at = excluded.last_tide_at`,
+         (singleton, repository_scope, coverage_started_at, trigger_coverage_started_at, tide_base_count, last_tide_at)
+        VALUES (1, ?, ?, ?, 0, NULL)
+        ON CONFLICT(singleton) DO UPDATE SET
+          repository_scope = excluded.repository_scope,
+          coverage_started_at = excluded.coverage_started_at,
+          trigger_coverage_started_at = excluded.trigger_coverage_started_at,
+          tide_base_count = excluded.tide_base_count,
+          last_tide_at = excluded.last_tide_at`,
       repositoryFilter.scope,
       now,
+      initialScope ? null : now,
     );
     // A scope is defined by its coverage epoch rather than the order in which
     // a local Durable Object happens to materialize already-observed facts.
@@ -525,7 +568,8 @@ export class ExactReviewLifecycleTelemetryStore {
       const scopeIncludesEvent = Boolean(
         scopeRow &&
         event.completed_at >= scopeRow.progress.coverageStartedAt &&
-        event.triggered_at >= scopeRow.progress.coverageStartedAt &&
+        (scopeRow.triggerCoverageStartedAt === null ||
+          event.triggered_at >= scopeRow.triggerCoverageStartedAt) &&
         bayScopeIncludesTarget(scopeRow.scope, event.item_key),
       );
       // Delivery can be retried after later reviews finish. The compact buffer
@@ -568,11 +612,17 @@ export class ExactReviewLifecycleTelemetryStore {
       // Filtered public snapshots are valid only for the exact configured
       // repository set established in the constructor barrier. This makes a
       // new public repository fail closed until a full timing window elapses.
+      const scopeRow = allowedRepositories ? this.tideScopeRowSync() : null;
+      if (allowedRepositories && (!scopeRow || scopeRow.scope !== repositoryFilter.scope))
+        return unknownBaySnapshot("unavailable");
       const tideProgress = allowedRepositories
-        ? this.tideProgressForRepositoryScopeSync(repositoryFilter.scope)
+        ? (scopeRow?.progress ?? null)
         : this.tideProgressSync();
       if (!tideProgress) return unknownBaySnapshot("unavailable");
       const { coverageStartedAt, baseCount, lastTideAt } = tideProgress;
+      const triggerCoverageStartedAt = allowedRepositories
+        ? (scopeRow?.triggerCoverageStartedAt ?? null)
+        : null;
       const timingCutoff = Math.max(
         now - EXACT_REVIEW_LIFECYCLE_BAY_TIMING_WINDOW_MS,
         coverageStartedAt,
@@ -587,8 +637,8 @@ export class ExactReviewLifecycleTelemetryStore {
             ORDER BY completed_at, event_id LIMIT ?`,
           timingCutoff,
           now,
-          Number(Boolean(allowedRepositories)),
-          coverageStartedAt,
+          Number(triggerCoverageStartedAt !== null),
+          triggerCoverageStartedAt ?? 0,
           ...repositoryFilter.bindings,
           EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT + 1,
         ),
@@ -1098,12 +1148,18 @@ export class ExactReviewLifecycleTelemetryStore {
   private tideScopeRowSync() {
     const row = Array.from(
       this.storage.sql.exec(
-        `SELECT repository_scope, coverage_started_at, tide_base_count, last_tide_at
+        `SELECT repository_scope, coverage_started_at, trigger_coverage_started_at, tide_base_count, last_tide_at
            FROM ${EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE}
-          WHERE singleton = 1`,
+           WHERE singleton = 1`,
       ),
     )[0];
     if (!row) return null;
+    const triggerCoverageStartedAt =
+      row.trigger_coverage_started_at === null || row.trigger_coverage_started_at === undefined
+        ? null
+        : Number(row.trigger_coverage_started_at);
+    if (triggerCoverageStartedAt !== null && !validTimestamp(triggerCoverageStartedAt))
+      throw new Error("invalid Bay lifecycle scope trigger coverage epoch");
     return {
       scope: String(row.repository_scope || ""),
       progress: tideProgressFromRow(
@@ -1111,7 +1167,8 @@ export class ExactReviewLifecycleTelemetryStore {
         row.tide_base_count,
         row.last_tide_at,
       ),
-    };
+      triggerCoverageStartedAt,
+    } satisfies BayRepositoryScopeProgress;
   }
 
   private rebuildTideProgressAfterRetractionSync(
@@ -1153,6 +1210,7 @@ export class ExactReviewLifecycleTelemetryStore {
           scopeRow.progress.coverageStartedAt,
           projection,
           identity,
+          scopeRow.triggerCoverageStartedAt,
         ),
       );
     }
@@ -1170,8 +1228,11 @@ export class ExactReviewLifecycleTelemetryStore {
     coverageStartedAt: number,
     replacement?: ExactReviewLifecycleProjection,
     identity?: readonly [string, string, number],
+    triggerCoverageStartedAt: number | null = coverageStartedAt,
   ) {
     if (!validTimestamp(coverageStartedAt)) throw new Error("invalid Bay lifecycle coverage epoch");
+    if (triggerCoverageStartedAt !== null && !validTimestamp(triggerCoverageStartedAt))
+      throw new Error("invalid Bay lifecycle trigger coverage epoch");
     const filter = bayRepositoryFilterForTideScope(scope);
     const replacementEvent = replacement ? bayLifecycleEvent(replacement) : null;
     const replacementIdentity = identity ?? ["", "", 0];
@@ -1243,8 +1304,8 @@ export class ExactReviewLifecycleTelemetryStore {
         replacementEvent?.completed_at ?? null,
         Number(replacementEvent !== null),
         coverageStartedAt,
-        Number(scope !== BAY_GLOBAL_TIDE_SCOPE),
-        coverageStartedAt,
+        Number(scope !== BAY_GLOBAL_TIDE_SCOPE && triggerCoverageStartedAt !== null),
+        triggerCoverageStartedAt ?? 0,
         ...filter.bindings,
         EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD,
         EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD,

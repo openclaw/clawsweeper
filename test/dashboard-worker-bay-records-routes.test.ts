@@ -213,6 +213,47 @@ test("Bay lifecycle metrics include every durable ingress source and only final 
   );
 });
 
+test("Bay lifecycle includes an in-flight public review when it initializes its first scope", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9107",
+    fenceKey: "openclaw/openclaw#9107@exact:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "initial-scope-in-flight",
+    sourceAction: "synchronize",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now - 90_000,
+    observedAt: now - 90_000,
+  });
+
+  telemetry.syncBayRepositoryScope(new Set(["openclaw/openclaw"]), now);
+  telemetry.syncBayLifecycle(
+    lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "review_completed_routed",
+      observedAt: now + 1_000,
+    }),
+  );
+
+  const snapshot = telemetry.baySnapshot(now + 2_000, new Set(["openclaw/openclaw"]));
+  assert.equal(snapshot.collection.state, "complete");
+  assert.equal(snapshot.coverage?.timing_complete, false);
+  assert.deepEqual(snapshot.timings?.overall, {
+    average_ms: 91_000,
+    median_ms: 91_000,
+    samples: 1,
+  });
+  assert.equal(snapshot.terminal?.terminal_count, 1);
+});
+
 test("Bay lifecycle timing coverage is bound to the configured public repository scope", () => {
   const storage = new MemoryDurableStorage();
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
@@ -303,6 +344,9 @@ test("Bay lifecycle timing coverage is bound to the configured public repository
   );
   assert.equal(preScopeCompletion.timings?.overall.samples, 0);
   assert.equal(preScopeCompletion.terminal?.terminal_count, 0);
+  const globalAfterScopeChange = telemetry.baySnapshot(now + 2 * 60 * 60_000 + 30 * 60_000);
+  assert.equal(globalAfterScopeChange.timings?.overall.samples, 2);
+  assert.equal(globalAfterScopeChange.terminal?.terminal_count, 3);
   const reset = telemetry.baySnapshot(now + 2 * 60 * 60_000 + 59 * 60_000, expandedScope);
   assert.equal(reset.collection.state, "complete");
   assert.equal(reset.coverage?.timing_complete, false);
