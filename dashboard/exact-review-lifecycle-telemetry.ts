@@ -442,39 +442,31 @@ export class ExactReviewLifecycleTelemetryStore {
       projection.fenceKey,
       projection.revision,
     ] as const;
-    // Record recovery work before trying to materialize the public aggregate.
-    // This often runs inside the lifecycle terminal transaction, so a queue
-    // completion can safely consume its lease even if the secondary Bay table
-    // is temporarily unavailable: the next metrics read retries this exact
-    // immutable terminal projection instead of losing the completion.
+    // Durably record recovery work before the separate aggregate transaction.
+    // A failed materialization therefore leaves an exact outbox fact for the
+    // next alarm instead of losing the terminal completion.
     try {
       this.ensureSchemaSync();
-      this.storage.sql.exec(
-        `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE}
-           (canonical_target_key, fence_key, revision, projection_json, queued_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(canonical_target_key, fence_key, revision) DO UPDATE SET
-           projection_json = excluded.projection_json,
-           queued_at = excluded.queued_at`,
-        ...identity,
-        JSON.stringify(projection),
-        Date.now(),
-      );
-      this.materializeBayLifecycleSync(projection);
-      // Persist the post-materialization marker before removing the outbox
-      // fact. If the delete is interrupted, a later outbox replay must carry
-      // the same idempotency state as the lifecycle source instead of looking
-      // like a new terminal completion after timing retention.
-      this.storage.sql.exec(
-        `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE}
-            SET projection_json = ?
-          WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
-        JSON.stringify(projection),
-        ...identity,
-      );
-      this.clearBayLifecyclePendingSync(identity);
-      projection.bayTelemetryPending = false;
-      return true;
+      this.storage.transactionSync(() => {
+        this.storage.sql.exec(
+          `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE}
+             (canonical_target_key, fence_key, revision, projection_json, queued_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(canonical_target_key, fence_key, revision) DO UPDATE SET
+             projection_json = excluded.projection_json,
+             queued_at = excluded.queued_at`,
+          ...identity,
+          JSON.stringify(projection),
+          Date.now(),
+        );
+      });
+      return this.storage.transactionSync(() => {
+        this.materializeBayLifecycleSync(projection);
+        this.markBayLifecycleSourceMaterializedSync(projection);
+        this.clearBayLifecyclePendingSync(identity);
+        projection.bayTelemetryPending = false;
+        return true;
+      });
     } catch {
       // The lifecycle projection's own durable pending marker is written by
       // its caller after this callback returns. The queue's internal alarm
@@ -522,82 +514,78 @@ export class ExactReviewLifecycleTelemetryStore {
       // A terminal disposition is immutable, but its final review result can
       // be enriched from failed to cancelled on a later callback. Keep the
       // existing completion count while refreshing its retained presentation.
-      this.withBayTideSavepoint(() => {
-        if (timingEventExists) {
-          this.storage.sql.exec(
-            `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-                SET outcome = ?, triggered_at = ?, completed_at = ?
-              WHERE event_id = ?`,
-            event.outcome,
-            event.triggered_at,
-            event.completed_at,
-            event.event_id,
-          );
-        }
+      if (timingEventExists) {
         this.storage.sql.exec(
-          `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
-              SET outcome = ?, completed_at = ?
+          `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+              SET outcome = ?, triggered_at = ?, completed_at = ?
             WHERE event_id = ?`,
           event.outcome,
+          event.triggered_at,
           event.completed_at,
           event.event_id,
         );
-      });
+      }
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+            SET outcome = ?, completed_at = ?
+          WHERE event_id = ?`,
+        event.outcome,
+        event.completed_at,
+        event.event_id,
+      );
       projection.bayTelemetryEventId = event.event_id;
       return;
     }
-    this.withBayTideSavepoint(() => {
-      this.storage.sql.exec(
-        `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-           (event_id, canonical_target_key, fence_key, revision, outcome, triggered_at, completed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(event_id) DO UPDATE SET
-           outcome = excluded.outcome,
-           triggered_at = excluded.triggered_at,
-           completed_at = excluded.completed_at`,
-        event.event_id,
-        projection.canonicalTargetKey,
-        projection.fenceKey,
-        projection.revision,
-        event.outcome,
-        event.triggered_at,
-        event.completed_at,
+    this.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+         (event_id, canonical_target_key, fence_key, revision, outcome, triggered_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(event_id) DO UPDATE SET
+         outcome = excluded.outcome,
+         triggered_at = excluded.triggered_at,
+         completed_at = excluded.completed_at`,
+      event.event_id,
+      projection.canonicalTargetKey,
+      projection.fenceKey,
+      projection.revision,
+      event.outcome,
+      event.triggered_at,
+      event.completed_at,
+    );
+    const globalProgress = this.tideProgressSync();
+    const scopeRow = this.tideScopeRowSync();
+    const scopeIncludesEvent = Boolean(
+      scopeRow &&
+      event.completed_at >= scopeRow.progress.coverageStartedAt &&
+      (scopeRow.triggerCoverageStartedAt === null ||
+        event.triggered_at >= scopeRow.triggerCoverageStartedAt) &&
+      bayScopeIncludesTarget(scopeRow.scope, event.item_key),
+    );
+    // Delivery can be retried after later reviews finish. The compact buffer
+    // retains the latest ordered boundary, so detect that uncommon case and
+    // replay the bounded lifecycle source rather than using arrival order.
+    if (
+      this.tideCompletionArrivesOutOfOrderSync(BAY_GLOBAL_TIDE_SCOPE, event) ||
+      (scopeIncludesEvent && this.tideCompletionArrivesOutOfOrderSync(scopeRow!.scope, event))
+    ) {
+      this.rebuildTideProgressFromLifecycleSync(projection, identity);
+    } else {
+      this.recordTideCompletionSync(
+        BAY_GLOBAL_TIDE_SCOPE,
+        EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
+        event,
+        globalProgress,
       );
-      const globalProgress = this.tideProgressSync();
-      const scopeRow = this.tideScopeRowSync();
-      const scopeIncludesEvent = Boolean(
-        scopeRow &&
-        event.completed_at >= scopeRow.progress.coverageStartedAt &&
-        (scopeRow.triggerCoverageStartedAt === null ||
-          event.triggered_at >= scopeRow.triggerCoverageStartedAt) &&
-        bayScopeIncludesTarget(scopeRow.scope, event.item_key),
-      );
-      // Delivery can be retried after later reviews finish. The compact buffer
-      // retains the latest ordered boundary, so detect that uncommon case and
-      // replay the bounded lifecycle source rather than using arrival order.
-      if (
-        this.tideCompletionArrivesOutOfOrderSync(BAY_GLOBAL_TIDE_SCOPE, event) ||
-        (scopeIncludesEvent && this.tideCompletionArrivesOutOfOrderSync(scopeRow!.scope, event))
-      ) {
-        this.rebuildTideProgressFromLifecycleSync(projection, identity);
-      } else {
+      if (scopeIncludesEvent) {
         this.recordTideCompletionSync(
-          BAY_GLOBAL_TIDE_SCOPE,
-          EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
+          scopeRow!.scope,
+          EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
           event,
-          globalProgress,
+          scopeRow!.progress,
         );
-        if (scopeIncludesEvent) {
-          this.recordTideCompletionSync(
-            scopeRow!.scope,
-            EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
-            event,
-            scopeRow!.progress,
-          );
-        }
       }
-      projection.bayTelemetryEventId = event.event_id;
-    });
+    }
+    projection.bayTelemetryEventId = event.event_id;
   }
 
   baySnapshot(
@@ -987,8 +975,12 @@ export class ExactReviewLifecycleTelemetryStore {
         return false;
       }
       try {
-        this.materializeBayLifecycleSync(projection);
-        this.clearBayLifecyclePendingSync(identity);
+        this.storage.transactionSync(() => {
+          this.materializeBayLifecycleSync(projection);
+          if (projection.bayTelemetryPending)
+            this.markBayLifecycleSourceMaterializedSync(projection);
+          this.clearBayLifecyclePendingSync(identity);
+        });
       } catch {
         return false;
       }
@@ -1008,6 +1000,36 @@ export class ExactReviewLifecycleTelemetryStore {
       ),
     )[0];
     return row ? projectionFromRow(String(row.projection_json || "")) : null;
+  }
+
+  private markBayLifecycleSourceMaterializedSync(projection: ExactReviewLifecycleProjection) {
+    const identity = [
+      projection.canonicalTargetKey,
+      projection.fenceKey,
+      projection.revision,
+    ] as const;
+    const source = this.currentLifecycleProjectionSync(identity);
+    if (!source) {
+      throw new Error("missing pending lifecycle source for Bay materialization");
+    }
+    if (!source.bayTelemetryPending) {
+      if (source.bayTelemetryEventId !== projection.bayTelemetryEventId) {
+        throw new Error("lifecycle source Bay marker conflicts with materialization");
+      }
+      return;
+    }
+    if (projection.bayTelemetryEventId === undefined) delete source.bayTelemetryEventId;
+    else source.bayTelemetryEventId = projection.bayTelemetryEventId;
+    source.bayTelemetryPending = false;
+    source.updatedAt = Date.now();
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          SET projection_json = ?, updated_at = ?, bay_telemetry_pending = 0
+        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+      JSON.stringify(source),
+      source.updatedAt,
+      ...identity,
+    );
   }
 
   hasBayLifecyclePending() {
@@ -1175,14 +1197,12 @@ export class ExactReviewLifecycleTelemetryStore {
     projection: ExactReviewLifecycleProjection,
     identity: readonly [string, string, number],
   ) {
-    this.withBayTideSavepoint(() => {
-      this.storage.sql.exec(
-        `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-          WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
-        ...identity,
-      );
-      this.rebuildTideProgressFromLifecycleSync(projection, identity);
-    });
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+      ...identity,
+    );
+    this.rebuildTideProgressFromLifecycleSync(projection, identity);
   }
 
   private rebuildTideProgressFromLifecycleSync(
@@ -1476,24 +1496,6 @@ export class ExactReviewLifecycleTelemetryStore {
       progress.coverageStartedAt,
       rows.map(bayLifecycleEventFromTimingRow),
     );
-  }
-
-  private withBayTideSavepoint<T>(operation: () => T): T {
-    const savepoint = "exact_review_lifecycle_bay_tide";
-    this.storage.sql.exec(`SAVEPOINT ${savepoint}`);
-    try {
-      const result = operation();
-      this.storage.sql.exec(`RELEASE SAVEPOINT ${savepoint}`);
-      return result;
-    } catch (error) {
-      try {
-        this.storage.sql.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
-        this.storage.sql.exec(`RELEASE SAVEPOINT ${savepoint}`);
-      } catch {
-        // Preserve the original lifecycle materialization error.
-      }
-      throw error;
-    }
   }
 }
 

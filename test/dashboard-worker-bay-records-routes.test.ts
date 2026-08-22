@@ -1144,20 +1144,26 @@ test("Bay lifecycle source marker keeps expired terminal delivery idempotent", (
       triggeredAt: now,
       observedAt: now,
     });
-    lifecycle.recordTerminalDisposition(
-      { ...identity, kind: "review_completed_routed", observedAt: now + 500 },
-      (projection) => telemetry.syncBayLifecycle(projection),
-    );
+    const completed = lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "review_completed_routed",
+      observedAt: now + 500,
+    });
+    assert.equal(telemetry.syncBayLifecycle(completed), true);
+    lifecycle.markBayTelemetryMaterialized(completed);
     assert.equal(
       lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
         ?.bayTelemetryEventId,
       "bay:openclaw/openclaw#9350@exact:1:1",
     );
     now += 31 * 24 * 60 * 60 * 1_000;
-    lifecycle.recordTerminalDisposition(
-      { ...identity, kind: "review_completed_routed", observedAt: startedAt + 500 },
-      (projection) => telemetry.syncBayLifecycle(projection),
-    );
+    const retried = lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "review_completed_routed",
+      observedAt: startedAt + 500,
+    });
+    assert.equal(telemetry.syncBayLifecycle(retried), true);
+    lifecycle.markBayTelemetryMaterialized(retried);
     const snapshot = telemetry.baySnapshot(now);
     assert.equal(snapshot.terminal?.tide_generation, 0);
     assert.equal(snapshot.terminal?.terminal_count, 1);
@@ -1191,10 +1197,13 @@ test("Bay lifecycle replays a stale telemetry outbox from its marked source", ()
       triggeredAt: now,
       observedAt: now,
     });
-    lifecycle.recordTerminalDisposition(
-      { ...identity, kind: "review_completed_routed", observedAt: now + 500 },
-      (projection) => telemetry.syncBayLifecycle(projection),
-    );
+    const completed = lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "review_completed_routed",
+      observedAt: now + 500,
+    });
+    assert.equal(telemetry.syncBayLifecycle(completed), true);
+    lifecycle.markBayTelemetryMaterialized(completed);
     const marked = lifecycle.read(
       identity.canonicalTargetKey,
       identity.fenceKey,
@@ -1244,10 +1253,13 @@ test("Bay lifecycle accepts a marker generated from a maximum-length fence key",
     triggeredAt: now,
     observedAt: now,
   });
-  lifecycle.recordTerminalDisposition(
-    { ...identity, kind: "review_completed_routed", observedAt: now + 500 },
-    (projection) => telemetry.syncBayLifecycle(projection),
-  );
+  const completed = lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: now + 500,
+  });
+  assert.equal(telemetry.syncBayLifecycle(completed), true);
+  lifecycle.markBayTelemetryMaterialized(completed);
   const marked = lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)!;
   assert.equal(marked.bayTelemetryEventId?.length, 533);
   assert.equal(telemetry.baySnapshot(now + 1_000).terminal?.terminal_count, 1);
@@ -1275,10 +1287,12 @@ test("Bay lifecycle terminal facts queue a durable retry when metrics cannot mat
   });
   telemetry.baySnapshot(now);
   storage.sql.failNext(new RegExp(`INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}`));
-  lifecycle.recordTerminalDisposition(
-    { ...identity, kind: "review_completed_routed", observedAt: now },
-    (projection) => telemetry.syncBayLifecycle(projection),
-  );
+  const completed = lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: now,
+  });
+  assert.equal(telemetry.syncBayLifecycle(completed), false);
   assert.equal(
     lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
       ?.terminalDisposition?.kind,
@@ -1318,10 +1332,12 @@ test("Bay lifecycle terminal facts recover after telemetry outbox persistence fa
   });
   telemetry.baySnapshot(now);
   storage.sql.failNext(/INSERT INTO exact_review_lifecycle_bay_pending_v1/);
-  lifecycle.recordTerminalDisposition(
-    { ...identity, kind: "review_completed_routed", observedAt: now },
-    (projection) => telemetry.syncBayLifecycle(projection),
-  );
+  const completed = lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: now,
+  });
+  assert.equal(telemetry.syncBayLifecycle(completed), false);
   assert.equal(
     lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
       ?.terminalDisposition?.kind,
@@ -1336,6 +1352,50 @@ test("Bay lifecycle terminal facts recover after telemetry outbox persistence fa
     lifecycle.reconcileBayTelemetryPending((projection) => telemetry.syncBayLifecycle(projection)),
     true,
   );
+  assert.equal(
+    lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
+      ?.bayTelemetryPending,
+    false,
+  );
+  assert.equal(telemetry.baySnapshot(now).terminal?.terminal_count, 1);
+});
+
+test("Bay lifecycle retains its outbox until the source marker commits", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9247",
+    fenceKey: "openclaw/openclaw#9247@exact:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "source-marker-recovery",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now - 1_000,
+    observedAt: now - 1_000,
+  });
+  telemetry.baySnapshot(now);
+  storage.sql.failNext(/UPDATE exact_review_lifecycle_projection_v1/);
+  const completed = lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: now,
+  });
+  assert.equal(telemetry.syncBayLifecycle(completed), false);
+  assert.equal(
+    lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
+      ?.bayTelemetryPending,
+    true,
+  );
+  assert.equal(telemetry.hasBayLifecyclePending(), true);
+  assert.equal(telemetry.baySnapshot(now).collection.state, "unknown");
+  assert.equal(telemetry.reconcileBayLifecyclePending(), true);
   assert.equal(
     lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
       ?.bayTelemetryPending,
@@ -1494,6 +1554,62 @@ test("exact-review queue preserves source timestamps for pull-request and comman
     ?.admission.triggeredAt;
   assert.ok(scheduledTriggeredAt && scheduledTriggeredAt >= scheduledAdmissionStartedAt);
   assert.ok(scheduledTriggeredAt && scheduledTriggeredAt <= scheduledAdmissionFinishedAt);
+});
+
+test("exact-review queue materializes a superseded command lifecycle after enqueue commits", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });
+  const targetRepo = "openclaw/openclaw";
+  const itemNumber = 9_303;
+  const first = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "lifecycle-command-first",
+      itemNumber,
+      "re_review",
+      "issue",
+      targetRepo,
+      {
+        commandStatusMarker: "<!-- clawsweeper-command-status:9303:re_review:first -->",
+        statusCommentId: 93_031,
+        sourceCommentId: 93_030,
+        sourceCommentUpdatedAt: new Date(Date.now() - 1_000).toISOString(),
+        sourceUpdatedAt: new Date().toISOString(),
+        commandBodyDigest: "a".repeat(64),
+        commandOrigin: "hosted_webhook",
+        sourceCommentVerified: true,
+      },
+    ),
+  );
+  assert.equal(first.status, 202);
+  const second = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "lifecycle-command-second",
+      itemNumber,
+      "re_review",
+      "issue",
+      targetRepo,
+      {
+        commandStatusMarker: "<!-- clawsweeper-command-status:9303:re_review:second -->",
+        statusCommentId: 93_032,
+        sourceCommentId: 93_031,
+        sourceCommentUpdatedAt: new Date().toISOString(),
+        sourceUpdatedAt: new Date().toISOString(),
+        commandBodyDigest: "b".repeat(64),
+        commandOrigin: "hosted_webhook",
+        sourceCommentVerified: true,
+      },
+    ),
+  );
+  assert.equal(second.status, 202);
+
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const projection = lifecycle.read(
+    `${targetRepo}#${itemNumber}`,
+    `${targetRepo}#${itemNumber}`,
+    1,
+  );
+  assert.equal(projection?.terminalDisposition?.kind, "superseded");
+  assert.equal(projection?.bayTelemetryPending, false);
 });
 
 test("public Bay status uses the authoritative lifecycle metrics route without legacy fallbacks", async () => {

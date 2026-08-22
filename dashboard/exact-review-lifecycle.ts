@@ -549,13 +549,11 @@ export class ExactReviewLifecycleProjectionStore {
       kind: LifecycleTerminalDisposition;
       observedAt: number;
     },
-    persist?: (projection: ExactReviewLifecycleProjection) => void,
   ) {
     this.validateIdentity(input);
     return this.mutate(input, (projection) => {
       const terminal = applyTerminalDisposition(projection, input);
       terminal.bayTelemetryPending = true;
-      persist?.(terminal);
       return terminal;
     });
   }
@@ -565,13 +563,11 @@ export class ExactReviewLifecycleProjectionStore {
       kind: LifecycleTerminalDisposition;
       observedAt: number;
     },
-    persist?: (projection: ExactReviewLifecycleProjection) => void,
   ) {
     this.validateIdentity(input);
     return this.mutateSync(input, (projection) => {
       const terminal = applyTerminalDisposition(projection, input);
       terminal.bayTelemetryPending = true;
-      persist?.(terminal);
       return terminal;
     });
   }
@@ -1263,26 +1259,37 @@ export class ExactReviewLifecycleProjectionStore {
     materialize: (projection: ExactReviewLifecycleProjection) => boolean,
   ) {
     this.ensureSchemaSync();
-    return this.storage.transactionSync(() => {
-      const rows = Array.from(
-        this.storage.sql.exec(
-          `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-            WHERE bay_telemetry_pending = 1
-            ORDER BY updated_at, canonical_target_key, fence_key, revision
-            LIMIT ?`,
-          EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT + 1,
-        ),
-      );
-      const more = rows.length > EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT;
-      for (const row of rows.slice(0, EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT)) {
-        const projection = projectionFromRow(String(row.projection_json || ""));
-        if (!projection || !projection.bayTelemetryPending || !materialize(projection))
-          return false;
-        projection.bayTelemetryPending = false;
-        projection.updatedAt = Date.now();
-        this.writeSync(projection);
-      }
-      return !more;
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          WHERE bay_telemetry_pending = 1
+          ORDER BY updated_at, canonical_target_key, fence_key, revision
+          LIMIT ?`,
+        EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT + 1,
+      ),
+    );
+    const more = rows.length > EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT;
+    for (const row of rows.slice(0, EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT)) {
+      const projection = projectionFromRow(String(row.projection_json || ""));
+      // Materialization has its own Durable Object transaction. Keep this
+      // source transaction separate: a retry after its source-marker clear is
+      // interrupted is idempotent by lifecycle event id.
+      if (!projection || !projection.bayTelemetryPending || !materialize(projection)) return false;
+      this.markBayTelemetryMaterialized(projection);
+    }
+    return !more;
+  }
+
+  markBayTelemetryMaterialized(input: ProjectionIdentity & { bayTelemetryEventId?: string }) {
+    this.validateIdentity(input);
+    if (input.bayTelemetryEventId !== undefined && !validText(input.bayTelemetryEventId, 1, 533)) {
+      throw new Error("invalid lifecycle Bay telemetry event identity");
+    }
+    return this.mutate(input, (projection) => {
+      if (input.bayTelemetryEventId === undefined) delete projection.bayTelemetryEventId;
+      else projection.bayTelemetryEventId = input.bayTelemetryEventId;
+      projection.bayTelemetryPending = false;
+      return projection;
     });
   }
 
