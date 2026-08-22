@@ -5227,6 +5227,9 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
     overall.median_ms === null
       ? null
       : publicQueueCount(overall.median_ms, 31 * 24 * 60 * 60 * 1000);
+  const invalidTimingAggregate =
+    samples === null ||
+    (samples === 0 ? average !== null || median !== null : average === null || median === null);
   const terminalCount = publicQueueCount(terminal.terminal_count, 20);
   const tideThreshold = publicQueueCount(terminal.tide_threshold, 100);
   const tideGeneration = publicQueueCount(terminal.tide_generation, 1_000_000);
@@ -5240,9 +5243,7 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
     sampleKind !== "completed_exact_review_lifecycles" ||
     windowMinutes !== 60 ||
     sampleLimit === null ||
-    samples === null ||
-    average === undefined ||
-    median === undefined ||
+    invalidTimingAggregate ||
     terminalCount === null ||
     tideThreshold !== 20 ||
     tideGeneration === null ||

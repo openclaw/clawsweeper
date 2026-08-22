@@ -1501,6 +1501,63 @@ test("public Bay status uses the authoritative lifecycle metrics route without l
   }
 });
 
+test("public Bay status fails closed when a long lifecycle exceeds the public timing bound", async () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  telemetry.syncBayRepositoryScope(new Set(["openclaw/openclaw"]), now - 60_000);
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9304",
+    fenceKey: "openclaw/openclaw#9304",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "long-lifecycle-status",
+    sourceAction: "synchronize",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now - 32 * 24 * 60 * 60 * 1_000,
+    observedAt: now - 32 * 24 * 60 * 60 * 1_000,
+  });
+  const completed = lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: now,
+  });
+  telemetry.syncBayLifecycle(completed);
+  const queue = new ExactReviewQueue(
+    { storage },
+    { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0", PUBLIC_BAY_REPOS: "openclaw/openclaw" },
+  );
+  await queue.alarm();
+  const originalCaches = globalThis.caches;
+  const originalFetch = globalThis.fetch;
+  Object.assign(globalThis, {
+    caches: { default: { match: async () => undefined, put: async () => undefined } },
+  });
+  globalThis.fetch = async () => jsonResponse({});
+  try {
+    const response = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/api/status"), {
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      STATUS_STORE: new MemoryKv(),
+      PUBLIC_BAY_REPOS: "openclaw/openclaw",
+    });
+    const status = await response.json();
+    assert.equal(status.bay.metrics_state, "unavailable");
+    assert.deepEqual(status.bay.timings.overall, {
+      average_ms: null,
+      median_ms: null,
+      samples: 0,
+    });
+  } finally {
+    Object.assign(globalThis, { caches: originalCaches });
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("public Bay metrics wait for internal lifecycle recovery", async () => {
   const storage = new MemoryDurableStorage();
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
