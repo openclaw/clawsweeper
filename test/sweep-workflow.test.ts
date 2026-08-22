@@ -532,6 +532,26 @@ test("review execution tokens can read check runs and commit statuses", () => {
   );
 });
 
+test("comment router target token can inspect checks without widening dispatch authority", () => {
+  type TokenStep = {
+    id?: string;
+    with?: Record<string, string>;
+  };
+  const workflow = YAML.parse(readText(".github/workflows/repair-comment-router.yml")) as {
+    jobs: Record<string, { steps: TokenStep[] }>;
+  };
+  const steps = workflow.jobs["route-comments"]!.steps;
+  const targetToken = steps.find((step) => step.id === "app_token");
+  const dispatchToken = steps.find((step) => step.id === "dispatch-token");
+
+  assert.ok(targetToken?.with);
+  assert.equal(targetToken.with["permission-checks"], "read");
+  assert.equal(targetToken.with["permission-statuses"], "read");
+  assert.ok(dispatchToken?.with);
+  assert.equal("permission-checks" in dispatchToken.with, false);
+  assert.equal("permission-statuses" in dispatchToken.with, false);
+});
+
 test("exact event branch guard resolves empty and numeric claims to the repository default", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
     jobs: Record<string, { steps: Array<{ name?: string; run?: string }> }>;
