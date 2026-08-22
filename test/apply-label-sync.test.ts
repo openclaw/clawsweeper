@@ -3908,9 +3908,18 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
 } else if (args[0] === "api" && args[1] === "graphql") {
   const graphqlReads = existsSync(graphqlStatePath) ? Number(readFileSync(graphqlStatePath, "utf8")) : 0;
   writeFileSync(graphqlStatePath, String(graphqlReads + 1), "utf8");
-  const currentState = lifecycleDrift ? "OPEN" : "CLOSED";
-  const timelineNodes = lifecycleDrift ? [] : [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, url: "https://github.com/openclaw/clawsweeper/pull/900", mergedAt: "2026-05-01T02:00:00Z", repository: { nameWithOwner: "openclaw/clawsweeper" } } }];
+  const crossReferenceQuery = args.some((argument) => argument.includes("CROSS_REFERENCED_EVENT"));
+  const currentState = crossReferenceQuery || lifecycleDrift ? "OPEN" : "CLOSED";
+  const timelineNodes = crossReferenceQuery
+    ? [{ __typename: "CrossReferencedEvent", source: { __typename: "PullRequest", number: 900, repository: { nameWithOwner: "openclaw/clawsweeper" } } }]
+    : lifecycleDrift
+      ? []
+      : [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, url: "https://github.com/openclaw/clawsweeper/pull/900", mergedAt: "2026-05-01T02:00:00Z", repository: { nameWithOwner: "openclaw/clawsweeper" } } }];
   console.log(JSON.stringify({ data: { repository: { issue: { state: currentState, timelineItems: { nodes: timelineNodes } } } } }));
+} else if (args[0] === "api" && /\\/commits\\/head-sha\\/(?:check-runs|status)(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify({ check_runs: [] }));
+} else if (args[0] === "api" && /^search\\/issues\\?/.test(path)) {
+  console.log(JSON.stringify({ items: [] }));
 } else if (args[0] === "api" && /\\/issues\\/456\\/comments(?:\\?|$)/.test(path)) {
   if (args.includes("--method") && args.includes("POST")) {
     const input = args[args.indexOf("--input") + 1];

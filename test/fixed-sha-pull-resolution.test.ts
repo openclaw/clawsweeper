@@ -31,6 +31,9 @@ function statusContextWithCalls(
     mergeCommitReachable?: boolean;
     linkedIssueCloserNumber?: number;
     linkedIssueOpen?: boolean;
+    linkedIssueCrossReferenceNumber?: number;
+    linkedIssueCrossReferenceMissing?: boolean;
+    linkedIssueCrossReferenceOpen?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -66,6 +69,31 @@ function statusContextWithCalls(
       if (options.runtimeBudgetOnIssueRead)
         throw new TestGitHubRuntimeBudgetError("runtime budget exhausted");
       if (options.rateLimitOnIssueRead) throw new GitHubRateLimitError("API rate limit exceeded");
+      if (args.some((argument) => argument.includes("CROSS_REFERENCED_EVENT"))) {
+        return {
+          data: {
+            repository: {
+              issue: {
+                state: options.linkedIssueCrossReferenceOpen === false ? "CLOSED" : "OPEN",
+                timelineItems: {
+                  nodes: options.linkedIssueCrossReferenceMissing
+                    ? []
+                    : [
+                        {
+                          __typename: "CrossReferencedEvent",
+                          source: {
+                            __typename: "PullRequest",
+                            number: options.linkedIssueCrossReferenceNumber ?? 900,
+                            repository: { nameWithOwner: "openclaw/openclaw" },
+                          },
+                        },
+                      ],
+                },
+              },
+            },
+          },
+        } as T;
+      }
       return {
         data: {
           repository: {
@@ -425,7 +453,7 @@ test("apply-time PR closeout propagates GitHub runtime budget exhaustion", () =>
   );
 });
 
-test("apply-time PR closeout accepts a current linked issue only when GitHub binds it to the reviewed canonical PR", () => {
+test("apply-time PR closeout accepts an open linked issue when GitHub cross-references the reviewed canonical PR", () => {
   const { context } = statusContextWithCalls("main", {
     freshApplyBody: true,
   });
@@ -439,10 +467,10 @@ test("apply-time PR closeout accepts a current linked issue only when GitHub bin
   );
 });
 
-test("apply-time PR closeout fails closed when GitHub binds the linked issue to a different fixing PR", () => {
+test("apply-time PR closeout fails closed when GitHub cross-references a different PR", () => {
   const { context } = statusContextWithCalls("main", {
     freshApplyBody: true,
-    linkedIssueCloserNumber: 901,
+    linkedIssueCrossReferenceNumber: 901,
   });
   assert.equal(
     context.implementedOnMainPullRequestProvenanceApplyBlock(
@@ -454,10 +482,25 @@ test("apply-time PR closeout fails closed when GitHub binds the linked issue to 
   );
 });
 
-test("apply-time PR closeout fails closed when GitHub has not formally closed the linked issue", () => {
+test("apply-time PR closeout fails closed when GitHub has no canonical cross-reference for the open linked issue", () => {
   const { context } = statusContextWithCalls("main", {
     freshApplyBody: true,
-    linkedIssueOpen: true,
+    linkedIssueCrossReferenceMissing: true,
+  });
+  assert.equal(
+    context.implementedOnMainPullRequestProvenanceApplyBlock(
+      reportFrontMatter({ fixed_pr_number: "900" }),
+      item({ number: 123, kind: "pull_request" }),
+      "implemented_on_main",
+    ),
+    "implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance",
+  );
+});
+
+test("apply-time PR closeout fails closed when the linked issue is no longer open", () => {
+  const { context } = statusContextWithCalls("main", {
+    freshApplyBody: true,
+    linkedIssueCrossReferenceOpen: false,
   });
   assert.equal(
     context.implementedOnMainPullRequestProvenanceApplyBlock(
@@ -480,7 +523,7 @@ test("apply-time PR closeout fails closed when the fixing merge commit left the 
       item({ number: 123, kind: "pull_request" }),
       "implemented_on_main",
     ),
-    "implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance",
+    "implemented-on-main close no longer has current GitHub-verified fixing pull request provenance",
   );
 });
 

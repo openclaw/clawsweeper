@@ -14,14 +14,16 @@ only after fresh GitHub reads prove every required relationship.
 For a PR and exactly one same-repository linked issue, both independently
 reviewed reports must cite the same high-confidence, GitHub-verified merged PR
 on the default branch. At apply time, ClawSweeper re-reads the PR body and the
-linked issue. The issue's current GitHub closing-Pull-Request timeline relation
-must name that exact cited PR; a missing, open, reopened, unreadable, or
-mismatched relation keeps both items open.
+linked issue. The issue must still be open, and its current GitHub timeline
+must contain a same-repository `CrossReferencedEvent` from that exact cited
+PR. A missing, closed, unreadable, or mismatched relation keeps both items
+open.
 
-This is intentionally stricter than semantic review evidence. A canonical PR
-that did not formally close the linked issue is useful review context, but it
-does not authorize automatic paired closure. A maintainer can evaluate that
-case through the ordinary review path.
+This is intentionally stricter than semantic review evidence: a canonical PR
+must have a durable GitHub relationship to the still-open linked issue before
+ClawSweeper can close the pair. A canonical PR with no such relationship is
+useful review context, but it does not authorize automatic paired closure. A
+maintainer can evaluate that case through the ordinary review path.
 
 ## Mutation and visibility boundaries
 

@@ -182,6 +182,46 @@ export function currentClosingPullRequestReferenceFromIssueTimeline(
   return closer.__typename === "PullRequest" ? closer : null;
 }
 
+function hasCurrentCrossReferenceFromPullRequest(
+  result: unknown,
+  targetRepo: string,
+  expectedNumber: number,
+): boolean {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) return false;
+  const data = (result as Record<string, unknown>).data;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return false;
+  const repository = (data as Record<string, unknown>).repository;
+  if (typeof repository !== "object" || repository === null || Array.isArray(repository)) {
+    return false;
+  }
+  const issue = (repository as Record<string, unknown>).issue;
+  if (typeof issue !== "object" || issue === null || Array.isArray(issue)) return false;
+  const issueRecord = issue as Record<string, unknown>;
+  if (issueRecord.state !== "OPEN") return false;
+  const timelineItems = issueRecord.timelineItems;
+  if (typeof timelineItems !== "object" || timelineItems === null || Array.isArray(timelineItems)) {
+    return false;
+  }
+  const nodes = (timelineItems as Record<string, unknown>).nodes;
+  if (!Array.isArray(nodes)) return false;
+  return nodes.some((node) => {
+    if (typeof node !== "object" || node === null || Array.isArray(node)) return false;
+    const event = node as Record<string, unknown>;
+    if (event.__typename !== "CrossReferencedEvent") return false;
+    const source = event.source;
+    if (typeof source !== "object" || source === null || Array.isArray(source)) return false;
+    const pull = source as Record<string, unknown>;
+    if (pull.__typename !== "PullRequest" || pull.number !== expectedNumber) return false;
+    const repository = pull.repository;
+    return (
+      typeof repository === "object" &&
+      repository !== null &&
+      !Array.isArray(repository) &&
+      (repository as Record<string, unknown>).nameWithOwner === targetRepo
+    );
+  });
+}
+
 interface StatusContextDependencies {
   targetProfile: () => RepositoryProfile;
   targetRepo: () => string;
@@ -615,6 +655,34 @@ ${profileStatusEnd(profile)}`;
     }
   }
 
+  function openLinkedIssueHasCanonicalPullReference(
+    issueNumber: number,
+    expectedNumber: number,
+  ): boolean {
+    try {
+      const [owner, name] = targetRepo().split("/");
+      if (!owner || !name) return false;
+      const timeline = ghJson<unknown>([
+        "api",
+        "graphql",
+        "-f",
+        "query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { state timelineItems(last: 100, itemTypes: [CROSS_REFERENCED_EVENT]) { nodes { __typename ... on CrossReferencedEvent { source { __typename ... on PullRequest { number repository { nameWithOwner } } } } } } } } }",
+        "-F",
+        `owner=${owner}`,
+        "-F",
+        `name=${name}`,
+        "-F",
+        `number=${issueNumber}`,
+      ]);
+      return hasCurrentCrossReferenceFromPullRequest(timeline, targetRepo(), expectedNumber);
+    } catch (error) {
+      if (error instanceof GitHubRateLimitError || error instanceof GitHubRuntimeBudgetError) {
+        throw error;
+      }
+      return false;
+    }
+  }
+
   function verifiedFixedPullRequestForNumber(
     number: number,
     source: string,
@@ -772,8 +840,7 @@ ${profileStatusEnd(profile)}`;
         return "implemented-on-main close no longer has a current explicit same-repository issue link";
       }
       for (const issueNumber of issueNumbers) {
-        const linkedIssueFixingPull = fixedPullRequestForLinkedIssue(issueNumber);
-        if (linkedIssueFixingPull?.number !== expectedNumber) {
+        if (!openLinkedIssueHasCanonicalPullReference(issueNumber, expectedNumber)) {
           return "implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance";
         }
       }
