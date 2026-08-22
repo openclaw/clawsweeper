@@ -121,6 +121,7 @@ test("Bay lifecycle metrics include every durable ingress source and only final 
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
   const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
   const now = Date.now();
+  telemetry.syncBayRepositoryScope(new Set(["openclaw/openclaw"]), now);
   const sources = ["opened", "synchronize", "edited", "review", "re_review"] as const;
   for (const [index, sourceAction] of sources.entries()) {
     const identity = {
@@ -261,6 +262,21 @@ test("Bay lifecycle timing coverage is bound to the configured public repository
       observedAt: now + 90 * 60_000,
     }),
   );
+  const inFlightScopeChangeIdentity = {
+    canonicalTargetKey: "openclaw/clawsweeper#9112",
+    fenceKey: "openclaw/clawsweeper#9112@exact:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...inFlightScopeChangeIdentity,
+    deliveryId: "delivery:in-flight-scope-change",
+    sourceAction: "synchronize",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now + 119 * 60_000,
+    observedAt: now + 119 * 60_000,
+  });
 
   const initialScope = new Set(["openclaw/openclaw"]);
   telemetry.syncBayRepositoryScope(initialScope, now);
@@ -274,6 +290,13 @@ test("Bay lifecycle timing coverage is bound to the configured public repository
     "unknown",
   );
   telemetry.syncBayRepositoryScope(expandedScope, now + 2 * 60 * 60_000);
+  telemetry.syncBayLifecycle(
+    lifecycle.recordTerminalDisposition({
+      ...inFlightScopeChangeIdentity,
+      kind: "review_completed_routed",
+      observedAt: now + 2 * 60 * 60_000 + 60_000,
+    }),
+  );
   const preScopeCompletion = telemetry.baySnapshot(
     now + 2 * 60 * 60_000 + 30 * 60_000,
     expandedScope,
@@ -1506,7 +1529,7 @@ test("public Bay status fails closed when a long lifecycle exceeds the public ti
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
   const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
   const now = Date.now();
-  telemetry.syncBayRepositoryScope(new Set(["openclaw/openclaw"]), now - 60_000);
+  telemetry.syncBayRepositoryScope(new Set(["openclaw/openclaw"]), now - 33 * 24 * 60 * 60 * 1_000);
   const identity = {
     canonicalTargetKey: "openclaw/openclaw#9304",
     fenceKey: "openclaw/openclaw#9304",

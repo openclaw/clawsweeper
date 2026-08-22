@@ -525,6 +525,7 @@ export class ExactReviewLifecycleTelemetryStore {
       const scopeIncludesEvent = Boolean(
         scopeRow &&
         event.completed_at >= scopeRow.progress.coverageStartedAt &&
+        event.triggered_at >= scopeRow.progress.coverageStartedAt &&
         bayScopeIncludesTarget(scopeRow.scope, event.item_key),
       );
       // Delivery can be retried after later reviews finish. The compact buffer
@@ -581,10 +582,13 @@ export class ExactReviewLifecycleTelemetryStore {
           `SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at
              FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
             WHERE completed_at >= ? AND completed_at <= ?
+              AND (? = 0 OR triggered_at >= ?)
               ${repositoryFilter.where}
             ORDER BY completed_at, event_id LIMIT ?`,
           timingCutoff,
           now,
+          Number(Boolean(allowedRepositories)),
+          coverageStartedAt,
           ...repositoryFilter.bindings,
           EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT + 1,
         ),
@@ -1208,10 +1212,11 @@ export class ExactReviewLifecycleTelemetryStore {
            UNION ALL
            SELECT ?, ?, ?, ?, ? WHERE ? = 1
          ), filtered AS (
-           SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at
-             FROM lifecycle_events
-            WHERE completed_at >= ? AND completed_at >= triggered_at
-              ${filter.where}
+            SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at
+              FROM lifecycle_events
+             WHERE completed_at >= ? AND completed_at >= triggered_at
+               AND (? = 0 OR triggered_at >= ?)
+               ${filter.where}
          ), ranked AS (
            SELECT
              event_id,
@@ -1237,6 +1242,8 @@ export class ExactReviewLifecycleTelemetryStore {
         replacementEvent?.triggered_at ?? null,
         replacementEvent?.completed_at ?? null,
         Number(replacementEvent !== null),
+        coverageStartedAt,
+        Number(scope !== BAY_GLOBAL_TIDE_SCOPE),
         coverageStartedAt,
         ...filter.bindings,
         EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD,
@@ -1353,7 +1360,11 @@ export class ExactReviewLifecycleTelemetryStore {
     coverageStartedAt: number,
     events: ReadonlyArray<BayLifecycleEvent>,
   ) {
-    const retained = events.filter((event) => event.completed_at >= coverageStartedAt);
+    const retained = events.filter(
+      (event) =>
+        event.completed_at >= coverageStartedAt &&
+        (scope === BAY_GLOBAL_TIDE_SCOPE || event.triggered_at >= coverageStartedAt),
+    );
     const total = retained.length;
     if (!Number.isSafeInteger(total)) throw new Error("Bay lifecycle tide counter overflow");
     const tideBoundary =
@@ -1387,9 +1398,13 @@ export class ExactReviewLifecycleTelemetryStore {
     const rows = Array.from(
       this.storage.sql.exec(
         `SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at
-           FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-          WHERE completed_at >= ? ${repositoryFilter.where}
-          ORDER BY completed_at, event_id`,
+             FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+           WHERE completed_at >= ?
+             AND (? = 0 OR triggered_at >= ?)
+             ${repositoryFilter.where}
+           ORDER BY completed_at, event_id`,
+        progress.coverageStartedAt,
+        Number(scope !== BAY_GLOBAL_TIDE_SCOPE),
         progress.coverageStartedAt,
         ...repositoryFilter.bindings,
       ),
