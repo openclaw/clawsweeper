@@ -771,6 +771,12 @@ ${profileStatusEnd(profile)}`;
       if (!issueNumbers) {
         return "implemented-on-main close no longer has a current explicit same-repository issue link";
       }
+      for (const issueNumber of issueNumbers) {
+        const linkedIssueFixingPull = fixedPullRequestForLinkedIssue(issueNumber);
+        if (linkedIssueFixingPull?.number !== expectedNumber) {
+          return "implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance";
+        }
+      }
       return verifiedFixedPullRequestForNumber(
         expectedNumber,
         "GitHub reviewed implementation landing",

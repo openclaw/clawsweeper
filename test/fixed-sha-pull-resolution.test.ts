@@ -29,6 +29,8 @@ function statusContextWithCalls(
     runtimeBudgetOnContainmentRead?: boolean;
     freshApplyBody?: boolean;
     mergeCommitReachable?: boolean;
+    linkedIssueCloserNumber?: number;
+    linkedIssueOpen?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -68,7 +70,7 @@ function statusContextWithCalls(
         data: {
           repository: {
             issue: {
-              state: "CLOSED",
+              state: options.linkedIssueOpen ? "OPEN" : "CLOSED",
               timelineItems: {
                 nodes: [
                   {
@@ -76,7 +78,7 @@ function statusContextWithCalls(
                     createdAt: "2026-08-19T12:00:00Z",
                     closer: {
                       __typename: "PullRequest",
-                      number: 900,
+                      number: options.linkedIssueCloserNumber ?? 900,
                       repository: { nameWithOwner: "openclaw/openclaw" },
                     },
                   },
@@ -97,6 +99,9 @@ function statusContextWithCalls(
     }
     if (path === "repos/openclaw/openclaw/pulls/900") {
       return { ...pull(900, "current", 456), base: { ref: defaultBranch } } as T;
+    }
+    if (path === "repos/openclaw/openclaw/pulls/901") {
+      return { ...pull(901, "other-current", 456), base: { ref: defaultBranch } } as T;
     }
     if (path.startsWith("repos/openclaw/openclaw/compare/current...")) {
       if (options.runtimeBudgetOnContainmentRead)
@@ -420,7 +425,7 @@ test("apply-time PR closeout propagates GitHub runtime budget exhaustion", () =>
   );
 });
 
-test("apply-time PR closeout accepts a current linked issue and reviewed canonical PR", () => {
+test("apply-time PR closeout accepts a current linked issue only when GitHub binds it to the reviewed canonical PR", () => {
   const { context } = statusContextWithCalls("main", {
     freshApplyBody: true,
   });
@@ -431,6 +436,36 @@ test("apply-time PR closeout accepts a current linked issue and reviewed canonic
       "implemented_on_main",
     ),
     null,
+  );
+});
+
+test("apply-time PR closeout fails closed when GitHub binds the linked issue to a different fixing PR", () => {
+  const { context } = statusContextWithCalls("main", {
+    freshApplyBody: true,
+    linkedIssueCloserNumber: 901,
+  });
+  assert.equal(
+    context.implementedOnMainPullRequestProvenanceApplyBlock(
+      reportFrontMatter({ fixed_pr_number: "900" }),
+      item({ number: 123, kind: "pull_request" }),
+      "implemented_on_main",
+    ),
+    "implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance",
+  );
+});
+
+test("apply-time PR closeout fails closed when GitHub has not formally closed the linked issue", () => {
+  const { context } = statusContextWithCalls("main", {
+    freshApplyBody: true,
+    linkedIssueOpen: true,
+  });
+  assert.equal(
+    context.implementedOnMainPullRequestProvenanceApplyBlock(
+      reportFrontMatter({ fixed_pr_number: "900" }),
+      item({ number: 123, kind: "pull_request" }),
+      "implemented_on_main",
+    ),
+    "implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance",
   );
 });
 
@@ -445,7 +480,7 @@ test("apply-time PR closeout fails closed when the fixing merge commit left the 
       item({ number: 123, kind: "pull_request" }),
       "implemented_on_main",
     ),
-    "implemented-on-main close no longer has current GitHub-verified fixing pull request provenance",
+    "implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance",
   );
 });
 

@@ -145,6 +145,8 @@ poster or WebP over accumulated before/after sets.
 
 ## Close policy
 
+- [Implemented-on-main paired close policy](implemented-on-main-close-policy.md)
+  — active policy and formal GitHub-link requirement
 - [Obsolescence policies](obsolescence-close-policies.md) — active policy map
 - [Unsponsored feature policy](unsponsored-feature-close-policy.md) — active
 - [Product direction policy](product-direction-close-policy.md) — active
