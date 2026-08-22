@@ -1402,18 +1402,20 @@ test("exact-review batch preflight follows the publisher owner selection", async
 
     await harness.queue.alarm();
 
-    // Departure policy sees beta's full batch, while the publisher picks the
-    // oldest alpha owner. The preflight must inspect that publisher selection.
-    assert.deepEqual(checked, [["alpha/repo", 9221]]);
-    assert.equal(harness.batchDispatches, 0);
-    const terminal = await (
+    // The shared selector picks beta's full batch before either owner ages.
+    assert.deepEqual(checked, [
+      ["beta/repo", 9222],
+      ["beta/repo", 9223],
+    ]);
+    assert.equal(harness.batchDispatches, 1);
+    const alphaStatus = await (
       await harness.queue.fetch(
         new Request(
           "https://clawsweeper-exact-review-queue/item-status?target_repo=alpha%2Frepo&item_number=9221",
         ),
       )
     ).json();
-    assert.equal(terminal.items.length, 0);
+    assert.equal(alphaStatus.items.length, 1);
   } finally {
     harness.restore();
   }
