@@ -5427,7 +5427,6 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
             ],
           },
         },
-        {},
         true,
       ),
     ),
@@ -5473,6 +5472,23 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.equal(JSON.stringify(terminalRows).includes("synthetic private workflow title"), false);
   assert.equal(JSON.stringify(terminalRows).includes("synthetic private terminal title"), false);
   assert.equal(JSON.stringify(terminalRows).includes("example.invalid"), false);
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(
+        aggregateTerminalRows(
+          {
+            bay: {
+              terminal_buffer: [
+                { outcome: "success", repository: "openclaw/openclaw", item_number: 71 },
+              ],
+            },
+          },
+          false,
+        ).map((row: { stage: string; key: string }) => ({ stage: row.stage, key: row.key })),
+      ),
+    ),
+    [{ stage: "completed", key: "terminal:completed:openclaw/openclaw#71:0" }],
+  );
   assert.equal(
     aggregateTerminalRows(
       {
@@ -5484,7 +5500,6 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
           ],
         },
       },
-      {},
       false,
     ).length,
     0,
@@ -5502,7 +5517,6 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
         ],
       },
     },
-    {},
     false,
   );
   assert.equal(cappedTerminalRows.length, 24);
@@ -5522,7 +5536,6 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
         })),
       },
     },
-    {},
     true,
   );
   assert.equal(tideRows.length, 24);
@@ -5867,6 +5880,22 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   new Script("openDrawerFromHash();").runInContext(drawerContext);
   assert.match(drawerElement("drawer-body").innerHTML, /Completed/);
   assert.match(drawerElement("drawer-body").innerHTML, /Bounded live sample/);
+  drawerContext.state.items = [
+    {
+      id: "terminal:completed:openclaw/openclaw#77:0",
+      key: "terminal:completed:openclaw/openclaw#77:0",
+      repository: "openclaw/openclaw",
+      number: 77,
+      stage: "completed",
+      status: "success",
+      source: "terminal",
+      outcome: "success",
+    },
+  ];
+  drawerLocation.hash = "#item-openclaw%2Fopenclaw%2377";
+  new Script("openDrawerFromHash();").runInContext(drawerContext);
+  assert.match(drawerElement("drawer-body").innerHTML, /Completed/);
+  assert.match(drawerElement("drawer-body").innerHTML, /Proved terminal outcome/);
   drawerLocation.hash = "#item-%";
   assert.doesNotThrow(() => new Script("openDrawerFromHash();").runInContext(drawerContext));
   assert.equal(drawerElement("drawer").open, false);
@@ -5879,7 +5908,9 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   const confirmingSource = script.slice(confirmingStart, confirmingEnd);
   const activeVisual = {
     id: "active:reviewing:0",
-    key: "active:reviewing:0",
+    key: "openclaw/openclaw#77",
+    repository: "openclaw/openclaw",
+    number: 77,
     stage: "reviewing",
     status: "active",
     outcome: null,
@@ -5906,6 +5937,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     {
       ...activeVisual,
       id: "terminal:1",
+      key: "terminal:completed:openclaw/openclaw#77:0",
       stage: "completed",
       status: "success",
       outcome: "success",

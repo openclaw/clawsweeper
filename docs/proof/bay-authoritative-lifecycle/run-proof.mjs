@@ -177,6 +177,25 @@ try {
     (await page.locator("#tide-countdown").innerText()).trim() === "1 / 20",
     { countdown: await page.locator("#tide-countdown").innerText() },
   );
+  const completedLaneHeading = await page
+    .locator('#terminal-stack [data-stage="completed"] h2')
+    .innerText();
+  assertProof(
+    "The rendered completed lane retains its finished revision when active work overlaps it",
+    completedLaneHeading.startsWith("COMPLETED 1"),
+    { completed_lane: completedLaneHeading },
+  );
+  await page
+    .locator('#terminal-stack [data-stage="completed"] [data-reference]')
+    .first()
+    .click({ force: true });
+  const terminalDrawerStage = (await page.locator("#drawer-badges").innerText()).trim();
+  assertProof(
+    "A completed card retains its terminal identity when its review is still active",
+    terminalDrawerStage.toLowerCase() === "completed",
+    { terminal_drawer_stage: terminalDrawerStage },
+  );
+  await page.locator("#drawer-close").click();
   assertProof(
     "The rendered Bay page shows the authoritative last tide",
     (await page.locator("#tide-summary").innerText()).startsWith("Last tide "),
