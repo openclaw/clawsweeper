@@ -3847,6 +3847,7 @@ export class ExactReviewQueue {
       new Set(snapshotBatchOwnership.itemKeys),
       snapshotBatchOwnership.activeBatches,
       this.freshPublicationItemKeysSync(snapshot, startedAt),
+      this.supersededPublicationItemKeysSync(snapshot),
     );
     let snapshotBatchCandidates = snapshotBatchDeparture?.due
       ? this.publicationBatchCandidates(
@@ -3912,6 +3913,7 @@ export class ExactReviewQueue {
         new Set(snapshotBatchOwnership.itemKeys),
         snapshotBatchOwnership.activeBatches,
         this.freshPublicationItemKeysSync(snapshot, recheckedAt),
+        this.supersededPublicationItemKeysSync(snapshot),
       );
       snapshotBatchCandidates = snapshotBatchDeparture?.due
         ? this.publicationBatchCandidates(
@@ -5929,7 +5931,10 @@ export class ExactReviewQueue {
     // shared helper counts candidate rows, so widen only its scan window by
     // requestedSize; passing +1 here would silently collapse every batch to one.
     const activePublishers = exactReviewQueueActivePublicationCount(state);
-    const excludedItemKeys = new Set<string>(batchOwnership.itemKeys);
+    const excludedItemKeys = new Set<string>([
+      ...batchOwnership.itemKeys,
+      ...this.supersededPublicationItemKeysSync(state),
+    ]);
     for (const item of Object.values(state.items)) {
       // Direct receipts and terminal acknowledgement drivers must remain on
       // the normal publisher. Exclude them before admission so they cannot
@@ -5938,13 +5943,6 @@ export class ExactReviewQueue {
         excludedItemKeys.add(item.key);
       }
       if (exactReviewGithubCircuitBlocksItem(state, item, now)) {
-        excludedItemKeys.add(item.key);
-      }
-      const revision = exactReviewPublicationRevision(item.decision);
-      if (
-        revision &&
-        revision.sourceRevision < this.publicationHeadRevisionSync(revision.targetKey)
-      ) {
         excludedItemKeys.add(item.key);
       }
     }
@@ -5968,14 +5966,7 @@ export class ExactReviewQueue {
             // immutable lifecycle plan must return through the fenced legacy
             // publisher, which is the only path that replays that plan.
             .filter(exactReviewQueueIsBatchablePublication)
-            .filter((item) => !item.terminalFinalization)
-            .filter((item) => {
-              const revision = exactReviewPublicationRevision(item.decision);
-              return (
-                !revision ||
-                revision.sourceRevision >= this.publicationHeadRevisionSync(revision.targetKey)
-              );
-            });
+            .filter((item) => !item.terminalFinalization);
     const selection = exactReviewPublicationBatchSelection(
       readyCandidates,
       freshItemKeys,
@@ -7856,6 +7847,20 @@ export class ExactReviewQueue {
       ),
     )[0] as { source_revision?: number } | undefined;
     return Number(row?.source_revision || 0);
+  }
+
+  private supersededPublicationItemKeysSync(state: ExactReviewQueueState) {
+    // Active batch ownership can preserve an older row after a newer head lands.
+    // Departure and claim must exclude that same row when ownership expires.
+    return new Set(
+      Object.values(state.items).flatMap((item) => {
+        const revision = exactReviewPublicationRevision(item.decision);
+        return revision &&
+          revision.sourceRevision < this.publicationHeadRevisionSync(revision.targetKey)
+          ? [item.key]
+          : [];
+      }),
+    );
   }
 
   private nextExactReviewItemRevisionSync(itemKey: string, minimumRevision = 1): number {
@@ -10859,6 +10864,7 @@ export class ExactReviewQueue {
       new Set(batchOwnership.itemKeys),
       batchOwnership.activeBatches,
       this.freshPublicationItemKeysSync(state, now),
+      this.supersededPublicationItemKeysSync(state),
     );
     const sourceAuthorityNext = await this.nextSourceAuthorityVerificationAt();
     const commandIntakeNext = this.commandIntakeStore.nextAttemptAt();
@@ -12964,6 +12970,7 @@ function exactReviewPublicationBatchDeparture(
   ownedItemKeys: ReadonlySet<string>,
   activeBatchCount: number,
   freshItemKeys: ReadonlySet<string> = new Set(),
+  supersededItemKeys: ReadonlySet<string> = new Set(),
 ) {
   if (
     !exactReviewPublicationBatchingEnabled(env) ||
@@ -12979,6 +12986,7 @@ function exactReviewPublicationBatchDeparture(
           item.state === "pending" &&
           !item.terminalFinalization &&
           !ownedItemKeys.has(item.key) &&
+          !supersededItemKeys.has(item.key) &&
           !exactReviewGithubCircuitBlocksItem(state, item, now),
       )
       .sort((left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key)),

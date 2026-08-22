@@ -2829,6 +2829,109 @@ test("batch ask widens owner scanning without exceeding the configured lease siz
   }
 });
 
+test("aged superseded publication does not dispatch a fresh owner before its deadline", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let now = 1_850_000;
+  const agedEnqueuedAt = now;
+  Date.now = () => now;
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const checkedTargets: string[] = [];
+  const dispatches: Array<{ inputs: Record<string, string> }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
+      return new Response(JSON.stringify({ id: 999 }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/repos/fresh/repo/installation") {
+      return new Response(JSON.stringify({ id: 1001 }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      return new Response(JSON.stringify({ token: "dispatch-token" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/app/installations/1001/access_tokens") {
+      return new Response(JSON.stringify({ token: "fresh-token" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/repos/fresh/repo/issues/161") {
+      checkedTargets.push("fresh/repo#161");
+      return new Response(JSON.stringify({ state: "open" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/exact-review-batch-publish.yml/dispatches"
+    ) {
+      dispatches.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  try {
+    const storage = new TestStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+        EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "300000",
+        EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
+        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
+      },
+    );
+    await queue.fetch(publicationRequest("superseded-aged-1", 160, "1060", "stale/repo", 1));
+    const owned = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-superseded-aged",
+          lease_owner: "worker-1",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    assert.equal(owned.claimed, true, JSON.stringify(owned));
+
+    now += 1;
+    await queue.fetch(publicationRequest("superseded-aged-2", 160, "1061", "stale/repo", 2));
+    const removedNewer = await (
+      await queue.fetch(
+        batchRequest("/publications/supersede", {
+          items: [{ item_key: "stale/repo#160@publish:1061:1", revision: 1 }],
+        }),
+      )
+    ).json();
+    assert.equal(removedNewer.superseded, 1);
+
+    now = agedEnqueuedAt + 300_001;
+    const freshEnqueuedAt = now;
+    await queue.fetch(publicationRequest("valid-fresh-owner", 161, "1062", "fresh/repo"));
+    await queue.alarm();
+
+    assert.deepEqual(checkedTargets, []);
+    assert.equal(dispatches.length, 0);
+    assert.equal(storage.scheduledAlarm(), freshEnqueuedAt + 300_000);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+  }
+});
+
 test("oldest publication aging deadline drives the alarm and then its owner claim", async () => {
   const originalFetch = globalThis.fetch;
   const originalNow = Date.now;
