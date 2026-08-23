@@ -86,7 +86,7 @@
     "test": "pnpm run build:all && pnpm run test:no-build",
     "test:no-build": "node scripts/run-node-tests.mjs all",
     "test:unit": "node scripts/run-node-tests.mjs unit",
-    "test:repair": "pnpm run build:repair && pnpm run test:repair:no-build",
+    "test:repair": "pnpm run build:node && pnpm run test:repair:no-build",
     "test:repair:no-build": "node scripts/run-node-tests.mjs repair",
     "test:workflow-sparse-checkout": "node --test test/repair/workflow-sparse-checkout.smoke.ts",
     "test:coverage": "pnpm run build:all && pnpm run test:coverage:no-build",
