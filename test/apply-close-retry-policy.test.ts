@@ -314,11 +314,11 @@ const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 const path = args[1] || "";
 const issueNumber = (path.match(/\\/issues\\/(\\d+)/) || [])[1];
 if (args[0] === "api" && args[1] === "graphql") {
-  const crossReferenceQuery = args.some((argument) => argument.includes("CROSS_REFERENCED_EVENT"));
-  const issue = crossReferenceQuery
-    ? { state: "OPEN", timelineItems: { nodes: [{ __typename: "CrossReferencedEvent", source: { __typename: "PullRequest", number: 900, repository: { nameWithOwner: "openclaw/openclaw" } } }] } }
-    : { state: "CLOSED", timelineItems: { nodes: [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, repository: { nameWithOwner: "openclaw/openclaw" } } }] } };
-  console.log(JSON.stringify({ data: { repository: { issue } } }));
+  const closingReferenceQuery = args.some((argument) => argument.includes("closingIssuesReferences"));
+  const repository = closingReferenceQuery
+    ? { pullRequest: { closingIssuesReferences: { nodes: [{ number: 320, state: "OPEN", repository: { nameWithOwner: "openclaw/openclaw" } }] } } }
+    : { issue: { state: "CLOSED", timelineItems: { nodes: [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, repository: { nameWithOwner: "openclaw/openclaw" } } }] } } };
+  console.log(JSON.stringify({ data: { repository } }));
   process.exit(0);
 }
 if (args[0] === "api" && path === "repos/openclaw/openclaw") {

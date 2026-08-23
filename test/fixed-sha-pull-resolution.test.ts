@@ -31,9 +31,10 @@ function statusContextWithCalls(
     mergeCommitReachable?: boolean;
     linkedIssueCloserNumber?: number;
     linkedIssueOpen?: boolean;
-    linkedIssueCrossReferenceNumber?: number;
-    linkedIssueCrossReferenceMissing?: boolean;
-    linkedIssueCrossReferenceOpen?: boolean;
+    canonicalClosingIssueNumber?: number;
+    canonicalClosingIssueMissing?: boolean;
+    canonicalClosingIssueOpen?: boolean;
+    linkedIssueGenericCrossReferenceOnly?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -69,26 +70,40 @@ function statusContextWithCalls(
       if (options.runtimeBudgetOnIssueRead)
         throw new TestGitHubRuntimeBudgetError("runtime budget exhausted");
       if (options.rateLimitOnIssueRead) throw new GitHubRateLimitError("API rate limit exceeded");
-      if (args.some((argument) => argument.includes("CROSS_REFERENCED_EVENT"))) {
+      if (args.some((argument) => argument.includes("closingIssuesReferences"))) {
         return {
           data: {
             repository: {
-              issue: {
-                state: options.linkedIssueCrossReferenceOpen === false ? "CLOSED" : "OPEN",
-                timelineItems: {
-                  nodes: options.linkedIssueCrossReferenceMissing
-                    ? []
-                    : [
-                        {
-                          __typename: "CrossReferencedEvent",
-                          source: {
-                            __typename: "PullRequest",
-                            number: options.linkedIssueCrossReferenceNumber ?? 900,
+              pullRequest: {
+                closingIssuesReferences: {
+                  nodes:
+                    options.canonicalClosingIssueMissing ||
+                    options.linkedIssueGenericCrossReferenceOnly
+                      ? []
+                      : [
+                          {
+                            number: options.canonicalClosingIssueNumber ?? 456,
+                            state: options.canonicalClosingIssueOpen === false ? "CLOSED" : "OPEN",
                             repository: { nameWithOwner: "openclaw/openclaw" },
                           },
-                        },
-                      ],
+                        ],
                 },
+                ...(options.linkedIssueGenericCrossReferenceOnly
+                  ? {
+                      timelineItems: {
+                        nodes: [
+                          {
+                            __typename: "CrossReferencedEvent",
+                            source: {
+                              __typename: "PullRequest",
+                              number: 900,
+                              repository: { nameWithOwner: "openclaw/openclaw" },
+                            },
+                          },
+                        ],
+                      },
+                    }
+                  : {}),
               },
             },
           },
@@ -453,7 +468,7 @@ test("apply-time PR closeout propagates GitHub runtime budget exhaustion", () =>
   );
 });
 
-test("apply-time PR closeout accepts an open linked issue when GitHub cross-references the reviewed canonical PR", () => {
+test("apply-time PR closeout accepts the merged canonical PR's formal relationship to a still-open issue", () => {
   const { context } = statusContextWithCalls("main", {
     freshApplyBody: true,
   });
@@ -467,10 +482,10 @@ test("apply-time PR closeout accepts an open linked issue when GitHub cross-refe
   );
 });
 
-test("apply-time PR closeout fails closed when GitHub cross-references a different PR", () => {
+test("apply-time PR closeout fails closed when the canonical PR identifies a different closing issue", () => {
   const { context } = statusContextWithCalls("main", {
     freshApplyBody: true,
-    linkedIssueCrossReferenceNumber: 901,
+    canonicalClosingIssueNumber: 457,
   });
   assert.equal(
     context.implementedOnMainPullRequestProvenanceApplyBlock(
@@ -482,10 +497,10 @@ test("apply-time PR closeout fails closed when GitHub cross-references a differe
   );
 });
 
-test("apply-time PR closeout fails closed when GitHub has no canonical cross-reference for the open linked issue", () => {
+test("apply-time PR closeout fails closed when GitHub has no canonical closing reference for the open linked issue", () => {
   const { context } = statusContextWithCalls("main", {
     freshApplyBody: true,
-    linkedIssueCrossReferenceMissing: true,
+    canonicalClosingIssueMissing: true,
   });
   assert.equal(
     context.implementedOnMainPullRequestProvenanceApplyBlock(
@@ -497,10 +512,25 @@ test("apply-time PR closeout fails closed when GitHub has no canonical cross-ref
   );
 });
 
-test("apply-time PR closeout fails closed when the linked issue is no longer open", () => {
+test("apply-time PR closeout fails closed when the canonical PR only generically cross-references the open linked issue", () => {
   const { context } = statusContextWithCalls("main", {
     freshApplyBody: true,
-    linkedIssueCrossReferenceOpen: false,
+    linkedIssueGenericCrossReferenceOnly: true,
+  });
+  assert.equal(
+    context.implementedOnMainPullRequestProvenanceApplyBlock(
+      reportFrontMatter({ fixed_pr_number: "900" }),
+      item({ number: 123, kind: "pull_request" }),
+      "implemented_on_main",
+    ),
+    "implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance",
+  );
+});
+
+test("apply-time PR closeout fails closed when the formally linked issue is already closed", () => {
+  const { context } = statusContextWithCalls("main", {
+    freshApplyBody: true,
+    canonicalClosingIssueOpen: false,
   });
   assert.equal(
     context.implementedOnMainPullRequestProvenanceApplyBlock(

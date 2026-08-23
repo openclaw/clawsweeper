@@ -182,10 +182,10 @@ export function currentClosingPullRequestReferenceFromIssueTimeline(
   return closer.__typename === "PullRequest" ? closer : null;
 }
 
-function hasCurrentCrossReferenceFromPullRequest(
+function hasCurrentClosingIssueReference(
   result: unknown,
   targetRepo: string,
-  expectedNumber: number,
+  expectedIssueNumber: number,
 ): boolean {
   if (typeof result !== "object" || result === null || Array.isArray(result)) return false;
   const data = (result as Record<string, unknown>).data;
@@ -194,25 +194,25 @@ function hasCurrentCrossReferenceFromPullRequest(
   if (typeof repository !== "object" || repository === null || Array.isArray(repository)) {
     return false;
   }
-  const issue = (repository as Record<string, unknown>).issue;
-  if (typeof issue !== "object" || issue === null || Array.isArray(issue)) return false;
-  const issueRecord = issue as Record<string, unknown>;
-  if (issueRecord.state !== "OPEN") return false;
-  const timelineItems = issueRecord.timelineItems;
-  if (typeof timelineItems !== "object" || timelineItems === null || Array.isArray(timelineItems)) {
+  const pullRequest = (repository as Record<string, unknown>).pullRequest;
+  if (typeof pullRequest !== "object" || pullRequest === null || Array.isArray(pullRequest)) {
     return false;
   }
-  const nodes = (timelineItems as Record<string, unknown>).nodes;
+  const closingReferences = (pullRequest as Record<string, unknown>).closingIssuesReferences;
+  if (
+    typeof closingReferences !== "object" ||
+    closingReferences === null ||
+    Array.isArray(closingReferences)
+  ) {
+    return false;
+  }
+  const nodes = (closingReferences as Record<string, unknown>).nodes;
   if (!Array.isArray(nodes)) return false;
   return nodes.some((node) => {
     if (typeof node !== "object" || node === null || Array.isArray(node)) return false;
-    const event = node as Record<string, unknown>;
-    if (event.__typename !== "CrossReferencedEvent") return false;
-    const source = event.source;
-    if (typeof source !== "object" || source === null || Array.isArray(source)) return false;
-    const pull = source as Record<string, unknown>;
-    if (pull.__typename !== "PullRequest" || pull.number !== expectedNumber) return false;
-    const repository = pull.repository;
+    const issue = node as Record<string, unknown>;
+    if (issue.number !== expectedIssueNumber || issue.state !== "OPEN") return false;
+    const repository = issue.repository;
     return (
       typeof repository === "object" &&
       repository !== null &&
@@ -655,26 +655,26 @@ ${profileStatusEnd(profile)}`;
     }
   }
 
-  function openLinkedIssueHasCanonicalPullReference(
+  function openLinkedIssueHasCanonicalClosingReference(
     issueNumber: number,
     expectedNumber: number,
   ): boolean {
     try {
       const [owner, name] = targetRepo().split("/");
       if (!owner || !name) return false;
-      const timeline = ghJson<unknown>([
+      const pullRequest = ghJson<unknown>([
         "api",
         "graphql",
         "-f",
-        "query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { state timelineItems(last: 100, itemTypes: [CROSS_REFERENCED_EVENT]) { nodes { __typename ... on CrossReferencedEvent { source { __typename ... on PullRequest { number repository { nameWithOwner } } } } } } } } }",
+        "query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { closingIssuesReferences(first: 100, excludeUserLinked: true) { nodes { number state repository { nameWithOwner } } } } } }",
         "-F",
         `owner=${owner}`,
         "-F",
         `name=${name}`,
         "-F",
-        `number=${issueNumber}`,
+        `number=${expectedNumber}`,
       ]);
-      return hasCurrentCrossReferenceFromPullRequest(timeline, targetRepo(), expectedNumber);
+      return hasCurrentClosingIssueReference(pullRequest, targetRepo(), issueNumber);
     } catch (error) {
       if (error instanceof GitHubRateLimitError || error instanceof GitHubRuntimeBudgetError) {
         throw error;
@@ -840,7 +840,7 @@ ${profileStatusEnd(profile)}`;
         return "implemented-on-main close no longer has a current explicit same-repository issue link";
       }
       for (const issueNumber of issueNumbers) {
-        if (!openLinkedIssueHasCanonicalPullReference(issueNumber, expectedNumber)) {
+        if (!openLinkedIssueHasCanonicalClosingReference(issueNumber, expectedNumber)) {
           return "implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance";
         }
       }
