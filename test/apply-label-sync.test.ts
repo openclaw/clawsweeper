@@ -3774,6 +3774,7 @@ test("apply-decisions verifies provenance after a closeout note and before closi
     "paired_source_change_during_closeout",
     "paired_metadata_change_during_closeout",
     "paired_bot_activity_during_closeout",
+    "paired_self_timestamp_settles_late",
     "paired_fresh_owned_review_comment",
   ] as const) {
     const lifecycleDrift = scenario === "lifecycle_drift";
@@ -3787,6 +3788,7 @@ test("apply-decisions verifies provenance after a closeout note and before closi
     const pairedMetadataChangeDuringCloseout =
       scenario === "paired_metadata_change_during_closeout";
     const pairedBotActivityDuringCloseout = scenario === "paired_bot_activity_during_closeout";
+    const pairedSelfTimestampSettlesLate = scenario === "paired_self_timestamp_settles_late";
     const pairedFreshOwnedReviewComment = scenario === "paired_fresh_owned_review_comment";
     const lockedCloseoutComment = scenario === "locked_closeout_comment";
     const betweenFreshnessAndCloseoutHumanActivity =
@@ -3872,6 +3874,7 @@ const betweenFreshnessAndCloseoutHumanActivityPath = ${JSON.stringify(
 const issueReadsAfterCloseoutPath = ${JSON.stringify(join(root, "issue-reads-after-closeout"))};
 const pairedIssueCloseoutPostedPath = ${JSON.stringify(join(root, "paired-issue-closeout-posted"))};
 const pairedIssueBotActivityPath = ${JSON.stringify(join(root, "paired-issue-bot-activity"))};
+const pairedIssueReadsAfterCloseoutPath = ${JSON.stringify(join(root, "paired-issue-reads-after-closeout"))};
 const pairedIssueLeasePath = ${JSON.stringify(join(root, "paired-issue-lease"))};
 const prCommentPath = ${JSON.stringify(prCommentPath)};
 const linkedIssueCommentPath = ${JSON.stringify(linkedIssueCommentPath)};
@@ -3890,6 +3893,7 @@ const postCloseoutPrReviewActivity = ${postCloseoutPrReviewActivity};
 const pairedSourceChangeDuringCloseout = ${pairedSourceChangeDuringCloseout};
 const pairedMetadataChangeDuringCloseout = ${pairedMetadataChangeDuringCloseout};
 const pairedBotActivityDuringCloseout = ${pairedBotActivityDuringCloseout};
+const pairedSelfTimestampSettlesLate = ${pairedSelfTimestampSettlesLate};
 const pairedFreshOwnedReviewComment = ${pairedFreshOwnedReviewComment};
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   const timeline = existsSync(betweenFreshnessAndCloseoutHumanActivityPath)
@@ -3935,7 +3939,12 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     }
     appendFileSync(postedBodiesPath, JSON.stringify(payload.body) + "\\n");
     writeFileSync(linkedIssueCommentPath, payload.body, "utf8");
-    if (pairedSourceChangeDuringCloseout || pairedMetadataChangeDuringCloseout || pairedBotActivityDuringCloseout) writeFileSync(pairedIssueCloseoutPostedPath, "true");
+    if (
+      pairedSourceChangeDuringCloseout ||
+      pairedMetadataChangeDuringCloseout ||
+      pairedBotActivityDuringCloseout ||
+      (pairedSelfTimestampSettlesLate && payload.body.includes("clawsweeper-close-applied"))
+    ) writeFileSync(pairedIssueCloseoutPostedPath, "true");
     if (pairedBotActivityDuringCloseout) writeFileSync(pairedIssueBotActivityPath, new Date(Date.now() + 60_000).toISOString());
     console.log(JSON.stringify({ id: 9456, html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9456" }));
   } else {
@@ -4068,6 +4077,14 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     pull_request: { url: "https://api.github.com/repos/openclaw/clawsweeper/pulls/321" }
   }));
 } else if (args[0] === "api" && /\\/issues\\/456$/.test(path)) {
+  const pairedIssueReadsAfterCloseout = existsSync(pairedIssueCloseoutPostedPath)
+    ? (existsSync(pairedIssueReadsAfterCloseoutPath)
+        ? Number(readFileSync(pairedIssueReadsAfterCloseoutPath, "utf8") || "0")
+        : 0) + 1
+    : 0;
+  if (existsSync(pairedIssueCloseoutPostedPath)) {
+    writeFileSync(pairedIssueReadsAfterCloseoutPath, String(pairedIssueReadsAfterCloseout));
+  }
   console.log(JSON.stringify({
     number: 456,
     title: pairedSourceChangeDuringCloseout && existsSync(pairedIssueCloseoutPostedPath)
@@ -4075,7 +4092,9 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       : "Render work plans",
     html_url: "https://github.com/openclaw/clawsweeper/issues/456",
     created_at: "2026-05-01T00:00:00Z",
-    updated_at: "2026-05-02T00:00:00Z",
+    updated_at: pairedSelfTimestampSettlesLate && pairedIssueReadsAfterCloseout >= 4
+      ? "2026-05-02T00:00:01Z"
+      : "2026-05-02T00:00:00Z",
     closed_at: null,
     state: "open",
     locked: false,
@@ -4150,7 +4169,11 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
           reportPath,
           extraArgs: ["--apply-kind", "all", "--processed-limit", "3"],
         });
-        if (scenario === "normal" || pairedFreshOwnedReviewComment) {
+        if (
+          scenario === "normal" ||
+          pairedSelfTimestampSettlesLate ||
+          pairedFreshOwnedReviewComment
+        ) {
           runApplyDecisionsForTest({
             itemsDir,
             closedDir,
@@ -4309,8 +4332,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         continue;
       }
       assert.ok(graphqlIndices.length >= 2);
-      assert.ok(closeIndex >= 0);
-      assert.ok(pairedIssueCloseIndex >= 0);
+      assert.ok(closeIndex >= 0, `${scenario}: ${readFileSync(reportPath, "utf8")}`);
+      assert.ok(pairedIssueCloseIndex >= 0, scenario);
       assert.ok(pairedIssueCloseIndex < closeIndex);
       const postedBodies = readFileSync(postedBodiesPath, "utf8")
         .trim()

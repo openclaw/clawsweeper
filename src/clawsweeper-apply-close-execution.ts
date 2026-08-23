@@ -657,7 +657,7 @@ export function executeApplyClose(
     number: number;
     reason: string;
     reviewedAtMs: number;
-    updatedAt: string;
+    sourceSnapshot: string;
   }> = [];
   for (const liveIssue of linkedIssuesToClose) {
     // Take the source snapshot before the live timestamp check. An edit before
@@ -760,11 +760,17 @@ export function executeApplyClose(
     const finalLinkedIssue = fetchItem(currentLinkedIssue.item.number, {
       bypassGenerationCache: true,
     });
+    const finalLinkedIssueSource = pairedIssueSourceSnapshot(currentLinkedIssue.item.number);
+    const finalLinkedIssueActivity = pairedIssueRecentNonSelfCommentBlockReasonSafe(
+      currentLinkedIssue.item.number,
+      pairedReviewedAtMs,
+    );
     if (
       finalLinkedIssue.state !== "open" ||
       finalLinkedIssue.item.kind !== "issue" ||
-      finalLinkedIssue.item.updatedAt !== postCommentLinkedIssue.item.updatedAt ||
-      finalLinkedIssue.item.locked
+      finalLinkedIssue.item.locked ||
+      finalLinkedIssueSource !== preCommentIssueSource ||
+      finalLinkedIssueActivity
     ) {
       return skip(
         "kept_open",
@@ -777,7 +783,7 @@ export function executeApplyClose(
         .filter(Boolean)
         .join("; "),
       reviewedAtMs: pairedReviewedAtMs,
-      updatedAt: finalLinkedIssue.item.updatedAt,
+      sourceSnapshot: preCommentIssueSource,
     });
   }
   const postPairedCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
@@ -796,21 +802,28 @@ export function executeApplyClose(
   let pairedStop = false;
   for (const pairedIssue of pairedIssuesReadyToClose) {
     const preClosePairedIssue = fetchItem(pairedIssue.number, { bypassGenerationCache: true });
+    const preClosePairedIssueSource = pairedIssueSourceSnapshot(pairedIssue.number);
     const preClosePairedIssueActivity = pairedIssueRecentNonSelfCommentBlockReasonSafe(
       pairedIssue.number,
       pairedIssue.reviewedAtMs,
     );
     const finalPairedIssue = fetchItem(pairedIssue.number, { bypassGenerationCache: true });
+    const finalPairedIssueSource = pairedIssueSourceSnapshot(pairedIssue.number);
+    const finalPairedIssueActivity = pairedIssueRecentNonSelfCommentBlockReasonSafe(
+      pairedIssue.number,
+      pairedIssue.reviewedAtMs,
+    );
     if (
       preClosePairedIssue.state !== "open" ||
       preClosePairedIssue.item.kind !== "issue" ||
-      preClosePairedIssue.item.updatedAt !== pairedIssue.updatedAt ||
       preClosePairedIssue.item.locked ||
+      preClosePairedIssueSource !== pairedIssue.sourceSnapshot ||
       preClosePairedIssueActivity ||
       finalPairedIssue.state !== "open" ||
       finalPairedIssue.item.kind !== "issue" ||
-      finalPairedIssue.item.updatedAt !== preClosePairedIssue.item.updatedAt ||
-      finalPairedIssue.item.locked
+      finalPairedIssue.item.locked ||
+      finalPairedIssueSource !== preClosePairedIssueSource ||
+      finalPairedIssueActivity
     ) {
       return skip(
         "kept_open",
