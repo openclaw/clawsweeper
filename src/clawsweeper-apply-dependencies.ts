@@ -230,6 +230,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
     markdown: string,
     item: Item,
     closeReason: Decision["closeReason"],
+    expectedLinkedIssueNumber?: number,
   ) => string | null;
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
   isExactEventSourceRevisionChange: (itemKind: Item["kind"], reason: string) => boolean;

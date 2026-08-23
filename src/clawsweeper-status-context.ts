@@ -817,6 +817,7 @@ ${profileStatusEnd(profile)}`;
     markdown: string,
     item: Item,
     closeReason: Decision["closeReason"],
+    expectedLinkedIssueNumber?: number,
   ): string | null {
     if (
       item.kind !== "pull_request" ||
@@ -838,6 +839,12 @@ ${profileStatusEnd(profile)}`;
       const issueNumbers = linkedIssueNumbersForImplementationProvenance(pull.body, targetRepo());
       if (!issueNumbers) {
         return "implemented-on-main close no longer has a current explicit same-repository issue link";
+      }
+      if (
+        expectedLinkedIssueNumber !== undefined &&
+        (issueNumbers.length !== 1 || issueNumbers[0] !== expectedLinkedIssueNumber)
+      ) {
+        return "implemented-on-main close current issue link no longer matches the leased paired issue";
       }
       for (const issueNumber of issueNumbers) {
         if (!openLinkedIssueHasCanonicalClosingReference(issueNumber, expectedNumber)) {

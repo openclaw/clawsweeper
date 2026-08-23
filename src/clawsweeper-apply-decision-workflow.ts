@@ -2502,6 +2502,38 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         let pairedLeaseGuards = createPairedLeaseGuards(pairedInitialRevision, pairedMarkdown);
         const previousApplyMutationGuard = currentApplyMutationGuard;
         let pairedOperationCompleted = false;
+        const cleanupPairedLease = (operationError?: unknown): void => {
+          // The lease setter runs through a closure, so avoid stale control-flow
+          // narrowing when reading the nested lease for deterministic cleanup.
+          const pairedLease = pairedActiveMutationLease as {
+            itemNumber: number;
+            lease: AcquiredReviewStartLease;
+          } | null;
+          pairedActiveMutationLease = null;
+          if (!pairedLease) return;
+          if (pairedOperationCompleted && options.onOperationCompleted) {
+            try {
+              deleteOwnedDedicatedReviewStartLease(pairedLease.itemNumber, pairedLease.lease, {
+                throwOnError: true,
+              });
+            } catch (error) {
+              console.error(
+                `[apply] linked issue #${pairedNumber} closed and archived but could not delete owned review lease ${pairedLease.lease.commentId}: ${mutationErrorMessage(error)}`,
+              );
+            }
+            return;
+          }
+          try {
+            deleteOwnedDedicatedReviewStartLease(pairedLease.itemNumber, pairedLease.lease, {
+              throwOnError: true,
+            });
+          } catch (error) {
+            if (!operationError || !isLockedConversationCommentError(error)) throw error;
+            console.error(
+              `[apply] linked issue #${pairedNumber} became locked and owned review lease ${pairedLease.lease.commentId} could not be deleted: ${mutationErrorMessage(error)}`,
+            );
+          }
+        };
         try {
           let leaseBlock = pairedLeaseGuards.acquireApplyMutationLease(
             pairedLeaseGuards.refreshReviewStartLeaseState(),
@@ -2547,38 +2579,53 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           const result = operation();
           options.onOperationCompleted?.();
           pairedOperationCompleted = true;
+          cleanupPairedLease();
           return result;
+        } catch (error) {
+          if (error instanceof ApplyMutationReviewGuardError) {
+            pairedIssueCloseoutReportKeys.add(pairCloseKey(repo, pairedNumber));
+          }
+          cleanupPairedLease(error);
+          throw error;
         } finally {
           currentApplyMutationGuard = previousApplyMutationGuard;
-          // The lease setter runs through a closure, so avoid stale control-flow
-          // narrowing when reading the nested lease for deterministic cleanup.
-          const pairedLease = pairedActiveMutationLease as {
-            itemNumber: number;
-            lease: AcquiredReviewStartLease;
-          } | null;
           pairedActiveMutationLease = null;
-          if (pairedLease) {
-            if (pairedOperationCompleted && options.onOperationCompleted) {
-              try {
-                deleteOwnedDedicatedReviewStartLease(pairedLease.itemNumber, pairedLease.lease, {
-                  throwOnError: true,
-                });
-              } catch (error) {
-                console.error(
-                  `[apply] linked issue #${pairedNumber} closed and archived but could not delete owned review lease ${pairedLease.lease.commentId}: ${mutationErrorMessage(error)}`,
-                );
-              }
-            } else {
-              deleteOwnedDedicatedReviewStartLease(pairedLease.itemNumber, pairedLease.lease, {
-                throwOnError: true,
-              });
-            }
-          }
         }
         });
+      const durableReviewCommentUpdatedAt = (
+        reviewMarkdown: string,
+        reviewNumber: number,
+        reviewCloseReason: CloseReason,
+      ): string | null => {
+        const storedHash = frontMatterValue(reviewMarkdown, "review_comment_sha256");
+        const storedId = Number(frontMatterValue(reviewMarkdown, "review_comment_id"));
+        const storedUrl = frontMatterValue(reviewMarkdown, "review_comment_url");
+        if (!storedHash || !Number.isSafeInteger(storedId) || storedId <= 0 || !storedUrl) {
+          return null;
+        }
+        const reviewComment = issueReviewComment(reviewNumber, [
+          renderReviewCommentFromReport(reviewMarkdown, reviewCloseReason),
+          reviewSectionValue(reviewMarkdown, "closeComment"),
+        ]);
+        if (
+          commentId(reviewComment) !== storedId ||
+          reviewComment?.html_url !== storedUrl ||
+          reviewCommentBodyDigest(rawCommentBody(reviewComment)) !== storedHash
+        ) {
+          return null;
+        }
+        const author = login(reviewComment?.user)?.trim().toLowerCase();
+        return author && CLAWSWEEPER_BOT_AUTHORS.has(author)
+          ? commentUpdatedAt(reviewComment) ?? null
+          : null;
+      };
       const closeFlow = executeApplyClose(
         {
           ...applyReadDependencies,
+          implementedOnMainPullRequestProvenanceApplyBlock: (...args) =>
+            withGuardReadOptions({ bypassGenerationCache: true }, () =>
+              applyReadDependencies.implementedOnMainPullRequestProvenanceApplyBlock(...args),
+            ),
           lowSignalUnmergeablePrApplyBlockReasonSafe: (...args) =>
             withGuardReadOptions({ bypassGenerationCache: true }, () =>
               lowSignalUnmergeablePrApplyBlockReasonSafe(...args),
@@ -2597,21 +2644,18 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           const pairedMarkdown = openFileEntryByNumber.get(pairedNumber)?.markdown;
           return pairedMarkdown ? frontMatterValue(pairedMarkdown, "item_updated_at") ?? null : null;
         },
-        pairedIssueOwnedReviewCommentUpdatedAt: (pairedNumber) => {
+        pairedIssueDurableReviewCommentUpdatedAt: (pairedNumber) => {
           const pairedMarkdown = openFileEntryByNumber.get(pairedNumber)?.markdown;
           if (!pairedMarkdown) return null;
           const pairedCloseReason = reportDecision(
             pairedMarkdown,
             "implemented_on_main",
           ).closeReason;
-          const pairedReviewComment = issueReviewComment(pairedNumber, [
-            renderReviewCommentFromReport(pairedMarkdown, pairedCloseReason),
-            reviewSectionValue(pairedMarkdown, "closeComment"),
-          ]);
-          const author = login(pairedReviewComment?.user)?.trim().toLowerCase();
-          return author && CLAWSWEEPER_BOT_AUTHORS.has(author)
-            ? commentUpdatedAt(pairedReviewComment) ?? null
-            : null;
+          return durableReviewCommentUpdatedAt(
+            pairedMarkdown,
+            pairedNumber,
+            pairedCloseReason,
+          );
         },
         closeDelayMs,
         closeLimitReached: closedCount >= limit,
@@ -2622,6 +2666,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         currentObsoleteFixPrBlockReason,
         currentPrCloseCoverageProofGateBlock,
         currentStaleVersionBugBlockReason,
+        currentDurableReviewCommentUpdatedAt: () =>
+          durableReviewCommentUpdatedAt(markdown, number, appliedCloseReason),
+        deferPairedIssueForThisRun: (pairedNumber) => {
+          pairedIssueCloseoutReportKeys.add(pairCloseKey(repo, pairedNumber));
+        },
         dryRun,
         emitEventApplyProof,
         examinedItemNumbers,

@@ -76,7 +76,9 @@ export function createApplyProofFreshnessGuards({
   retryCloseCoverageCommandStatusOnlyUpdate,
   selfMutationItemReceipts,
 }: ApplyProofFreshnessDependencies) {
-  const postProofFreshnessBlock = (): {
+  const postProofFreshnessBlock = (
+    options: { force?: boolean } = {},
+  ): {
     reason: string;
     currentUpdatedAt?: string;
     currentSnapshotHash?: string;
@@ -92,6 +94,7 @@ export function createApplyProofFreshnessGuards({
       (receipt) => receipt.allowsPostReviewAutomationActivity,
     );
     if (
+      !options.force &&
       (!prCloseCoverageProofGateChecked ||
         cachedPrCloseCoverageProofGateResult?.status !== "allowed") &&
       !hasPostReviewSelfMutationReceipt
