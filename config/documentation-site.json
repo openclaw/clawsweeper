@@ -63,6 +63,11 @@
       "banner": "This is an unapproved proposal, not current operator guidance."
     },
     {
+      "path": "sqlite-change-policy-proposal.md",
+      "lifecycle": "proposed",
+      "banner": "This is an unapproved policy proposal; it grants no review, label, or merge authority."
+    },
+    {
       "path": "repair/containment-validation-todo.md",
       "lifecycle": "historical",
       "banner": "This is historical decision evidence, not current operator guidance."
