@@ -446,6 +446,10 @@ test("terminal driver composes direct Xvfb, xterm, and bounded ffmpeg sessions",
     command: "tmux",
     args: ["new-session", "-d", "-s", "proof-terminal", "-x", "160", "-y", "50"],
   });
+  assert.deepEqual(commands[1], {
+    command: "tmux",
+    args: ["set-option", "-w", "-t", "proof-terminal:0", "remain-on-exit", "on"],
+  });
   const display = commands.find((invocation) => invocation.args.includes("Xvfb"));
   const xterm = commands.find((invocation) => invocation.args.includes("xterm"));
   const recorder = commands.find((invocation) => invocation.args.includes("ffmpeg"));
@@ -513,11 +517,34 @@ test("terminal run waits for pane content beyond the echoed command", () => {
     }),
   );
   assert.equal(result.status, "completed");
-  const enter = calls.findIndex((call) => /tmux send-keys .* Enter$/.test(call));
-  const hold = calls.findIndex((call, index) => index > enter && call === "sleep 6");
-  assert.notEqual(enter, -1);
+  const respawn = calls.findIndex((call) => call.startsWith("tmux respawn-pane"));
+  const hold = calls.findIndex((call, index) => index > respawn && call === "sleep 6");
+  assert.notEqual(respawn, -1);
   assert.notEqual(hold, -1);
-  assert.equal(calls.slice(enter + 1, hold).filter((call) => call === "sleep 1").length, 2);
+  assert.equal(calls.slice(respawn + 1, hold).filter((call) => call === "sleep 1").length, 4);
+});
+
+test("terminal keeps silent commands eligible for the full expectation window", () => {
+  const calls: string[] = [];
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "demo",
+      steps: [{ action: "expect_output", text: "Ready" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    readCommandStatus: () => undefined,
+    runner: terminalLifecycleRunner(calls, {
+      terminalCaptures: [...Array.from({ length: 21 }, () => ""), "Ready\n"],
+    }),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.steps[0]?.satisfied, true);
+  assert.ok(calls.filter((call) => call === "sleep 1").length >= 21);
 });
 
 test("terminal expect_output polls until new command output appears", () => {
@@ -542,6 +569,27 @@ test("terminal expect_output polls until new command output appears", () => {
   assert.ok(calls.includes("sleep 1"));
 });
 
+test("terminal expect_output preserves leading and trailing marker whitespace", () => {
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "demo",
+      steps: [{ action: "expect_output", text: "  indented result\n" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    runner: terminalLifecycleRunner([], {
+      commandExitStatus: 0,
+      terminalCaptures: ["  indented result\n"],
+    }),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.steps[0]?.satisfied, true);
+});
+
 test("terminal expect_output records text already present in the plan-start snapshot", () => {
   const calls: string[] = [];
   const result = driveTerminal({
@@ -561,6 +609,464 @@ test("terminal expect_output records text already present in the plan-start snap
   assert.equal(result.status, "completed");
   assert.equal(result.steps[0]?.presentAtStart, true);
   assert.equal(result.steps[0]?.satisfied, true);
+});
+
+test("terminal command success is not overturned by an unobserved output marker", () => {
+  const calls: string[] = [];
+  let commandStatusProbes = 0;
+  const plan: LiveProofPlan = {
+    ...recommendedPlan("terminal"),
+    entry: "node scripts/run-vitest.mjs src/agents/code-mode.mcp.test.ts",
+    steps: [{ action: "expect_output", text: "Code Mode MCP namespace" }],
+  };
+  const result = driveTerminal({
+    plan,
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    readCommandStatus: () => (++commandStatusProbes >= 30 ? 0 : undefined),
+    runner: terminalLifecycleRunner(calls, {
+      terminalCaptures: [
+        "$ node scripts/run-vitest.mjs src/agents/code-mode.mcp.test.ts\nTests  10 passed (10)\nwrapper passed after 28.37 seconds\n",
+      ],
+    }),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.steps[0]?.status, "completed");
+  assert.equal(result.steps[0]?.satisfied, true);
+  assert.match(result.steps[0]?.detail ?? "", /not observed/);
+  assert.equal(calls.filter((call) => call === "sleep 1").length, 31);
+  assert.match(result.output, /Tests  10 passed \(10\)/);
+  assert.doesNotMatch(result.output, /\.command-\d+-\d+\.|printf '%s'|mv -f|\/tmp\//);
+
+  const verification = buildLiveVerificationResult({
+    repo: "example/repo",
+    item: 42,
+    headSha: HEAD,
+    plan,
+    driveStatus: result.status,
+    stepLog: result.steps,
+    output: result.output,
+    verifiedAt: "2026-08-23T12:00:00.000Z",
+  });
+  assert.equal(verification.overall_pass, true);
+  assert.equal(verification.steps[0]?.satisfied, true);
+  assert.deepEqual(parseLiveVerificationResult(verification), verification);
+  assert.throws(
+    () =>
+      parseLiveVerificationResult({
+        ...verification,
+        steps: [{ ...verification.steps[0], satisfied: false }],
+      }),
+    /overall_pass does not match/,
+  );
+  assert.match(renderLiveVerificationCommentBlock(verification), /\*\*Result:\*\* PASS/);
+  assert.match(
+    renderLiveVerificationCommentBlock(verification),
+    /NOT OBSERVED `expect_output`: Code Mode MCP namespace/,
+  );
+});
+
+test("terminal command timeout remains a failed output expectation", () => {
+  const calls: string[] = [];
+  let commandStatusProbes = 0;
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "timeout 5 demo",
+      steps: [{ action: "expect_output", text: "Ready" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    readCommandStatus: () => (++commandStatusProbes >= 6 ? 124 : undefined),
+    runner: terminalLifecycleRunner(calls, {
+      terminalCaptures: ["$ timeout 5 demo\nwaiting for the command\n"],
+    }),
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.steps[0]?.status, "failed");
+  assert.equal(result.steps[0]?.satisfied, false);
+  assert.match(result.steps[0]?.detail ?? "", /timed out with exit status 124/);
+  assert.equal(calls.filter((call) => call === "sleep 1").length, 3);
+});
+
+test("terminal nonzero and signal exits fail even when the expected marker is present", () => {
+  for (const [exitStatus, reason] of [
+    [7, /failed with exit status 7/],
+    [143, /terminated by a signal with exit status 143/],
+  ] as const) {
+    let commandStatusProbes = 0;
+    const result = driveTerminal({
+      plan: {
+        ...recommendedPlan("terminal"),
+        entry: "demo",
+        steps: [{ action: "expect_output", text: "Ready" }],
+      },
+      checkout: "/tmp/checkout",
+      rawVideoPath: "/tmp/live-proof.raw.webm",
+      maxRecordingSeconds: 90,
+      recordMedia: false,
+      readCommandStatus: () => (++commandStatusProbes >= 5 ? exitStatus : undefined),
+      runner: terminalLifecycleRunner([], {
+        terminalCaptures: ["$ demo\nReady\n"],
+      }),
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.steps[0]?.status, "failed");
+    assert.match(result.steps[0]?.detail ?? "", reason);
+  }
+});
+
+test("terminal pane signals fail even when expected output is present", () => {
+  for (const signal of ["term", "15"]) {
+    const result = driveTerminal({
+      plan: {
+        ...recommendedPlan("terminal"),
+        entry: "kill -TERM $$",
+        steps: [{ action: "expect_output", text: "Ready" }],
+      },
+      checkout: "/tmp/checkout",
+      rawVideoPath: "/tmp/live-proof.raw.webm",
+      maxRecordingSeconds: 90,
+      recordMedia: false,
+      runner: terminalLifecycleRunner([], {
+        terminalPaneSignal: signal,
+        terminalCaptures: ["Ready\n"],
+      }),
+    });
+
+    assert.equal(result.status, "failed");
+    assert.match(result.output, /terminated by a signal with exit status 143/);
+  }
+});
+
+test("terminal waits for tmux to publish a dead pane status", () => {
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "demo",
+      steps: [{ action: "expect_output", text: "Ready" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    runner: terminalLifecycleRunner([], {
+      terminalPaneStates: ["1::", "1:0:"],
+      terminalCaptures: ["Ready\n"],
+    }),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.steps[0]?.satisfied, true);
+});
+
+test("terminal command failure after an observed marker is caught after the recording hold", () => {
+  const calls: string[] = [];
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "demo",
+      steps: [{ action: "expect_output", text: "Ready" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    readCommandStatus: () => (calls.includes("sleep 6") ? 7 : undefined),
+    runner: terminalLifecycleRunner(calls, {
+      terminalCaptures: ["$ demo\nReady\n"],
+    }),
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.steps[0]?.status, "failed");
+  assert.equal(result.steps[0]?.satisfied, false);
+  assert.match(result.steps[0]?.detail ?? "", /failed with exit status 7/);
+});
+
+test("terminal commands with no assertion or only a wait cannot hide a nonzero exit", () => {
+  for (const steps of [[], [{ action: "wait", seconds: 2 }]] as const) {
+    let commandStatusProbes = 0;
+    const result = driveTerminal({
+      plan: { ...recommendedPlan("terminal"), entry: "demo", steps: [...steps] },
+      checkout: "/tmp/checkout",
+      rawVideoPath: "/tmp/live-proof.raw.webm",
+      maxRecordingSeconds: 90,
+      recordMedia: false,
+      readCommandStatus: () => (++commandStatusProbes >= 5 ? 143 : undefined),
+      runner: terminalLifecycleRunner([], {
+        terminalCaptures: ["$ demo\nworking\n"],
+      }),
+    });
+
+    assert.equal(result.status, "failed");
+    assert.match(
+      steps.length ? (result.steps[0]?.detail ?? "") : result.output,
+      /terminated by a signal with exit status 143/,
+    );
+  }
+});
+
+test("terminal post-output grace catches a prompt failure before cleanup", () => {
+  let commandStatusProbes = 0;
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "printf 'Ready\\n'; sleep 1; exit 7",
+      steps: [],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    readCommandStatus: () => (++commandStatusProbes >= 3 ? 7 : undefined),
+    runner: terminalLifecycleRunner([], {
+      terminalCaptures: ["$ printf 'Ready\\n'; sleep 1; exit 7\nReady\n"],
+    }),
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.output, /failed with exit status 7/);
+});
+
+test("terminal detects an active shell that exits before publishing prompt status", () => {
+  const result = driveTerminal({
+    plan: { ...recommendedPlan("terminal"), entry: "exit 7", steps: [] },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    runner: terminalLifecycleRunner([], {
+      terminalPaneExitStatus: 7,
+      terminalCaptures: ["$ exit 7\n"],
+    }),
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.output, /failed with exit status 7/);
+});
+
+test("terminal accepts a successful silent command", () => {
+  const result = driveTerminal({
+    plan: { ...recommendedPlan("terminal"), entry: "true", steps: [] },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    runner: terminalLifecycleRunner([], {
+      commandExitStatus: 0,
+      terminalCaptures: ["$ true\n"],
+    }),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.output, "");
+});
+
+test("terminal artifact errors redact private command paths", () => {
+  let commandPath = "";
+  const fixtureRunner = terminalLifecycleRunner([], {
+    terminalCaptures: ["$ demo\ncommand output\n"],
+  });
+  const runner: MediaProofCommandRunner = (tool, args, options) => {
+    if (tool === "tmux" && args[0] === "respawn-pane") {
+      commandPath = String(args.at(-1) ?? "").match(/'([^']+)'$/)?.[1] ?? commandPath;
+    }
+    return fixtureRunner(tool, args, options);
+  };
+  const result = driveTerminal({
+    plan: { ...recommendedPlan("terminal"), entry: "demo", steps: [] },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    readCommandStatus: () => {
+      throw new Error(`EACCES: cannot read ${commandPath}`);
+    },
+    runner,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.output, /<private command>/);
+  assert.doesNotMatch(result.output, /live-proof\.raw\.webm\.command-/);
+});
+
+test("terminal marker-present long-running commands remain successful without an exit status", () => {
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "demo-server",
+      steps: [{ action: "expect_output", text: "Ready" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    readCommandStatus: () => undefined,
+    runner: terminalLifecycleRunner([], {
+      terminalCaptures: ["$ demo-server\nReady\n"],
+    }),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.steps[0]?.satisfied, true);
+});
+
+test("terminal output aggregates clean evidence across the entry command and run steps", () => {
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "first-command",
+      steps: [
+        { action: "run", command: "second-command" },
+        { action: "expect_output", text: "second result" },
+      ],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    runner: terminalLifecycleRunner([], {
+      commandExitStatus: 0,
+      terminalCapturesByCommand: {
+        "first-command": ["$ first-command\nfirst result\n"],
+        "second-command": ["$ second-command\nsecond result\n"],
+      },
+    }),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.output, "first result\nsecond result");
+  assert.doesNotMatch(result.output, /\.wrapper|\.command|\.status|\/tmp\//);
+});
+
+test("a previous terminal command failure blocks a following run step", () => {
+  const calls: string[] = [];
+  let commandStatusProbes = 0;
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "first-command",
+      steps: [{ action: "run", command: "second-command" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    readCommandStatus: () => (++commandStatusProbes >= 5 ? 7 : undefined),
+    runner: terminalLifecycleRunner(calls, {
+      terminalCaptures: ["$ first-command\nfirst result\n"],
+    }),
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.steps[0]?.status, "failed");
+  assert.match(result.steps[0]?.detail ?? "", /blocked by the previous command/);
+  assert.match(result.steps[0]?.detail ?? "", /failed with exit status 7/);
+  assert.equal(calls.filter((call) => call.startsWith("tmux respawn-pane")).length, 1);
+});
+
+test("terminal commands preserve shell syntax in supervised command files", () => {
+  const cases = [
+    ["printf 'semicolon-ready\\n';", "semicolon-ready"],
+    ["printf 'background-ready\\n' &", "background-ready"],
+    ["printf 'comment-ready\\n' # keep the trailing comment", "comment-ready"],
+    ["cat <<'END_PROOF'\nheredoc-ready\nEND_PROOF", "heredoc-ready"],
+  ] as const;
+
+  for (const [command, expected] of cases) {
+    const supervisedCommands: string[] = [];
+    const fixtureRunner = terminalLifecycleRunner([], {
+      terminalCaptures: [`$ ${command}\n${expected}\n`],
+      commandExitStatus: 0,
+    });
+    const runner: MediaProofCommandRunner = (tool, args, options) => {
+      if (tool === "tmux" && args[0] === "respawn-pane") {
+        const commandPath = String(args.at(-1) ?? "").match(/'([^']+)'$/)?.[1];
+        if (commandPath) supervisedCommands.push(readFileSync(commandPath, "utf8").trimEnd());
+      }
+      return fixtureRunner(tool, args, options);
+    };
+
+    const result = driveTerminal({
+      plan: {
+        ...recommendedPlan("terminal"),
+        entry: command,
+        steps: [{ action: "expect_output", text: expected }],
+      },
+      checkout: "/tmp/checkout",
+      rawVideoPath: "/tmp/live-proof.raw.webm",
+      maxRecordingSeconds: 90,
+      recordMedia: false,
+      runner,
+    });
+
+    assert.equal(result.status, "completed");
+    assert.deepEqual(supervisedCommands, [command]);
+    assert.match(result.output, new RegExp(expected));
+    assert.doesNotMatch(result.output, /\.command-|\/tmp\//);
+  }
+
+  const sequentialCalls: string[] = [];
+  const sequentialPaths: string[] = [];
+  const sequentialFixtureRunner = terminalLifecycleRunner(sequentialCalls, {
+    commandExitStatus: 0,
+    terminalCapturesByCommand: {
+      "printf 'first\\n'": ["first\n"],
+      "printf 'second\\n'": ["second\n"],
+    },
+  });
+  const sequentialRunner: MediaProofCommandRunner = (tool, args, options) => {
+    if (tool === "tmux" && args[0] === "respawn-pane") {
+      const commandPath = String(args.at(-1) ?? "").match(/'([^']+)'$/)?.[1];
+      if (sequentialPaths.length) assert.equal(existsSync(sequentialPaths.at(-1)!), false);
+      if (commandPath) sequentialPaths.push(commandPath);
+    }
+    return sequentialFixtureRunner(tool, args, options);
+  };
+  const sequential = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "printf 'first\\n'",
+      steps: [
+        { action: "run", command: "printf 'second\\n'" },
+        { action: "expect_output", text: "second" },
+      ],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    runner: sequentialRunner,
+  });
+  assert.equal(sequential.status, "completed");
+  assert.equal(sequential.output, "first\nsecond");
+  assert.equal(sequentialCalls.filter((call) => call.startsWith("tmux respawn-pane")).length, 2);
+});
+
+test("terminal published output excludes private command paths", () => {
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "demo",
+      steps: [{ action: "expect_output", text: "command output" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    runner: terminalLifecycleRunner([]),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.match(result.output, /command output/);
+  assert.doesNotMatch(result.output, /\.wrapper|\.command|\.status|printf|mv -f|\/tmp\//);
 });
 
 test("terminal expect_output times out without matching the echoed command", () => {
@@ -583,8 +1089,8 @@ test("terminal expect_output times out without matching the echoed command", () 
   assert.equal(result.steps[0]?.presentAtStart, false);
   assert.equal(result.steps[0]?.satisfied, false);
   assert.match(result.steps[0]?.detail ?? "", /within 30 seconds/);
-  assert.match(result.steps[0]?.detail ?? "", /Captured pane:\n\$ show expected-token/);
-  assert.equal(calls.filter((call) => call === "sleep 1").length, 30);
+  assert.match(result.steps[0]?.detail ?? "", /Captured output:\nworking/);
+  assert.equal(calls.filter((call) => call === "sleep 1").length, 32);
 });
 
 test("terminal recording holds the end state and enforces its minimum before finalizing", () => {
@@ -671,10 +1177,13 @@ test("terminal driver waits for the recorder session to exit after sending q", (
   const sentQ = calls.findIndex((call) => /tmux send-keys .* q$/.test(call));
   assert.notEqual(sentQ, -1);
   const finalizeCalls = calls.slice(sentQ + 1);
-  assert.equal(finalizeCalls.filter((call) => call === "sleep 1").length, 3);
+  assert.equal(finalizeCalls.filter((call) => call === "sleep 1").length, 5);
   assert.equal(
     finalizeCalls.filter(
-      (call) => call.includes("tmux display-message") && call.includes("pane_dead"),
+      (call) =>
+        call.includes("tmux display-message") &&
+        call.includes("-recorder") &&
+        call.includes("pane_dead"),
     ).length,
     4,
   );
@@ -811,6 +1320,72 @@ test("static-text terminal verification runs directly without recording tools", 
     false,
   );
   assert.match(logs.join("\n"), /verification bundle without media/);
+});
+
+test("an unobserved terminal marker cannot make a passing command eligible for recorded media", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-unobserved-media-"));
+  const outputDir = join(directory, "output");
+  const planPath = join(directory, "plan.json");
+  const calls: string[] = [];
+  const logs: string[] = [];
+  const plan: LiveProofPlan = {
+    ...recommendedPlan("terminal"),
+    entry: "demo",
+    steps: [{ action: "expect_output", text: "missing-marker" }],
+  };
+  writeFileSync(planPath, JSON.stringify(plan), "utf8");
+  const terminalRunner = terminalLifecycleRunner(calls, {
+    commandExitStatus: 0,
+    terminalCaptures: ["$ demo\nall tests passed\n"],
+  });
+
+  await executeLiveProof(
+    {
+      repo: "example/repo",
+      item: 42,
+      outputDir,
+      planPath,
+      checkoutPath: directory,
+    },
+    {
+      env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
+      runner: (command, args, options) =>
+        command === "git"
+          ? { status: 0, stdout: `${HEAD}\n` }
+          : terminalRunner(command, args, options),
+      repositoryProfileFor: () => ({
+        ...profile(),
+        liveTest: {
+          enabled: true,
+          surfaceDefault: "terminal",
+          setup: [],
+          allowInstallScripts: false,
+          readyTimeoutSeconds: 5,
+          maxRecordingSeconds: 90,
+        },
+      }),
+      reportLiveProofPlan: () => plan,
+      parseLiveProofPlan: () => plan,
+      fetchPullRequest: async () => {
+        throw new Error("local checkout must not fetch the pull request");
+      },
+      log: (message) => logs.push(message),
+      now: () => new Date("2026-08-17T12:00:00.000Z"),
+    },
+  );
+
+  const verification = parseLiveVerificationResult(
+    JSON.parse(readFileSync(join(outputDir, "live-verification.json"), "utf8")) as unknown,
+  );
+  assert.equal(verification.overall_pass, true);
+  assert.equal(verification.steps[0]?.satisfied, true);
+  assert.match(verification.steps[0]?.detail ?? "", /not observed/);
+  assert.match(logs.join("\n"), /media skipped because no expectation changed/);
+  assert.equal(existsSync(join(outputDir, "live-proof-manifest.json")), false);
+  assert.equal(
+    calls.some((call) => call.startsWith("ffmpeg ")),
+    false,
+  );
 });
 
 test("execution setup failures still produce a failed verification result", async () => {
@@ -1799,11 +2374,17 @@ function terminalLifecycleRunner(
     paneOutput?: Record<"terminal" | "display" | "xterm" | "recorder", string>;
     initialTerminalOutput?: string;
     terminalCaptures?: string[];
+    terminalCapturesByCommand?: Record<string, string[]>;
+    commandExitStatus?: number;
+    terminalPaneExitStatus?: number;
+    terminalPaneSignal?: string;
+    terminalPaneStates?: string[];
   } = {},
 ): MediaProofCommandRunner {
   let displayProbe = 0;
   let recorderSizeProbe = 0;
   let recorderPaneProbe = 0;
+  let terminalPaneProbe = 0;
   let finalizeProbe = 0;
   let finalizing = false;
   let typedCommand = "";
@@ -1829,15 +2410,36 @@ function terminalLifecycleRunner(
       finalizing = true;
       return { status: 0 };
     }
-    if (command === "tmux" && args[0] === "send-keys" && args.includes("-l")) {
-      typedCommand = String(args.at(-1) ?? "");
-      return { status: 0 };
-    }
-    if (command === "tmux" && args[0] === "send-keys" && args.at(-1) === "Enter") {
+    if (command === "tmux" && args[0] === "respawn-pane") {
+      const shellCommand = String(args.at(-1) ?? "");
+      const commandPath = shellCommand.match(/'([^']+)'$/)?.[1];
+      typedCommand = commandPath ? readFileSync(commandPath, "utf8").trimEnd() : shellCommand;
       commandRunning = true;
+      terminalCaptureProbe = 0;
       return { status: 0 };
     }
     if (command === "tmux" && args[0] === "display-message") {
+      const target = String(args[args.indexOf("-t") + 1] ?? "");
+      if (
+        target.includes("-terminal") &&
+        args.at(-1) === "#{pane_dead}:#{pane_dead_status}:#{pane_dead_signal}"
+      ) {
+        if (options.terminalPaneStates?.length) {
+          const state =
+            options.terminalPaneStates[
+              Math.min(terminalPaneProbe, options.terminalPaneStates.length - 1)
+            ] ?? "0::";
+          terminalPaneProbe += 1;
+          return { status: 0, stdout: `${state}\n` };
+        }
+        if (options.terminalPaneSignal) {
+          return { status: 0, stdout: `1::${options.terminalPaneSignal}\n` };
+        }
+        const exitStatus = options.terminalPaneExitStatus ?? options.commandExitStatus;
+        return exitStatus === undefined
+          ? { status: 0, stdout: "0::\n" }
+          : { status: 0, stdout: `1:${exitStatus}:\n` };
+      }
       if (finalizing) {
         const exited = finalizeProbe >= (options.finalizeExitAfter ?? 0);
         finalizeProbe += 1;
@@ -1857,14 +2459,13 @@ function terminalLifecycleRunner(
             ? "recorder"
             : "terminal";
       if (label === "terminal" && !options.paneOutput?.terminal) {
-        if (!typedCommand) {
-          return { status: 0, stdout: options.initialTerminalOutput ?? "$ \n" };
-        }
-        if (!commandRunning) return { status: 0, stdout: `$ ${typedCommand}\n` };
-        const captures = options.terminalCaptures ?? [`$ ${typedCommand}\ncommand output\n`];
+        if (!typedCommand) return { status: 0, stdout: options.initialTerminalOutput ?? "$ \n" };
+        if (!commandRunning) return { status: 0, stdout: "" };
+        const captures = options.terminalCapturesByCommand?.[typedCommand] ??
+          options.terminalCaptures ?? ["command output\n"];
         const output = captures[Math.min(terminalCaptureProbe, captures.length - 1)] ?? "";
         terminalCaptureProbe += 1;
-        return { status: 0, stdout: output };
+        return { status: 0, stdout: output.replace(/^\$ [^\n]*\n/, "") };
       }
       return { status: 0, stdout: `${options.paneOutput?.[label] ?? `${label} pane`}\n` };
     }

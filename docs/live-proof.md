@@ -128,10 +128,18 @@ existing comment-sync path upserts the marker-backed review comment.
 
 Browser comments contain sanitized per-step outcomes and a one-line failing-step
 reason, never page text. Terminal comments retain capped output and list
-assertions only when present. All untrusted fields are bounded and neutralized
-against Markdown fences, HTML, and ClawSweeper marker spoofing. OpenClaw Bay is
-unaffected: the durable report and comment contract is unchanged, and Bay remains
-an observer-only surface.
+assertions only when present. A terminal command with a confirmed successful exit
+still passes when its expected marker is absent from the captured pane; the
+assertion remains a completed, non-gating schema-v1 step, is explicitly labeled
+`NOT OBSERVED`, and cannot qualify a recording. Private command files and runner
+paths never enter published terminal output. Each entry or `run` action executes
+as a separately supervised Bash process in the same checkout, so plans should
+share state through files or one command rather than shell-local mutations.
+Nonzero exits, signals, command timeouts, and missing markers for still-running
+commands remain failures.
+All untrusted fields are bounded and neutralized against Markdown fences, HTML,
+and ClawSweeper marker spoofing. OpenClaw Bay is unaffected: the durable schema-v1
+passing-assertion invariant and observer ownership remain unchanged.
 
 ## Local simulation
 

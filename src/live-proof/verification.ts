@@ -1,6 +1,6 @@
 import type { LiveProofPlan, LiveProofStep } from "../clawsweeper-types.js";
 import type { LiveProofDriveStatus } from "./manifest.js";
-import type { LiveProofStepLogEntry } from "./drivers.js";
+import { TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL, type LiveProofStepLogEntry } from "./drivers.js";
 
 export const LIVE_VERIFICATION_SCHEMA_VERSION = 1;
 export const LIVE_VERIFICATION_OUTPUT_MAX_CHARS = 16_000;
@@ -293,12 +293,31 @@ export function renderLiveVerificationCommentBlock(result: LiveVerificationResul
       "**Assertions:**",
       "",
       ...assertions.map((step) => {
-        const passed = step.status === "completed" && step.satisfied === true;
-        return `- ${passed ? "PASS" : "FAIL"} \`${sanitizeInline(step.action)}\`: ${sanitizeInline(step.assertion ?? "")}`;
+        const outcome =
+          step.status === "completed" && step.satisfied === true
+            ? terminalOutputWasNotObserved(parsed.surface, step)
+              ? "NOT OBSERVED"
+              : "PASS"
+            : "FAIL";
+        const detail = outcome === "NOT OBSERVED" ? ` — ${sanitizeInline(step.detail)}` : "";
+        return `- ${outcome} \`${sanitizeInline(step.action)}\`: ${sanitizeInline(step.assertion ?? "")}${detail}`;
       }),
     );
   }
   return lines.join("\n");
+}
+
+function terminalOutputWasNotObserved(
+  surface: LiveProofPlan["surface"],
+  step: LiveVerificationStepResult,
+): boolean {
+  return (
+    surface === "terminal" &&
+    step.action === "expect_output" &&
+    step.status === "completed" &&
+    step.satisfied === true &&
+    step.detail === TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL
+  );
 }
 
 export function sanitizeUntrustedOutput(value: string): string {

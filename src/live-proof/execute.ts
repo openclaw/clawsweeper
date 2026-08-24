@@ -21,6 +21,7 @@ import type { RepositoryProfile } from "../repository-profiles.js";
 import {
   driveBrowser,
   driveTerminal,
+  TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL,
   type LiveProofStepLogEntry,
   liveProofStepActions,
 } from "./drivers.js";
@@ -447,7 +448,8 @@ function demonstratedChange(steps: readonly LiveProofStepLogEntry[]): boolean {
     (step) =>
       (step.action === "expect_text" || step.action === "expect_output") &&
       !step.presentAtStart &&
-      step.satisfied,
+      step.satisfied &&
+      step.detail !== TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL,
   );
 }
 
