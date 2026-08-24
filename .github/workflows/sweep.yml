@@ -6817,6 +6817,46 @@ jobs:
               -f codex_timeout_ms=1200000
           fi
 
+      - name: Requeue drift-blocked close reviews
+        if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' && steps.target.outputs.target_repo == 'openclaw/openclaw' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${APPLY_NOOP:-false}" = "true" ] ||
+            [ "${APPLY_SYNC_COMMENTS_ONLY:-false}" = "true" ] ||
+            [ "${APPLY_AUTO_SELECTED_BATCH:-false}" != "true" ] ||
+            [ ! -f apply-report.json ]; then
+            echo "Not a default close-mode cursor run with a merged apply report; skipping drift requeue."
+            exit 0
+          fi
+          items="$(pnpm run --silent workflow -- apply-requeue-review-item-numbers --report apply-report.json --limit 5)"
+          if [ -z "$items" ]; then
+            echo "No source-drift or unverified-checkout close blocks to requeue."
+            exit 0
+          fi
+          target_branch="$(gh api "repos/${APPLY_TARGET_REPO}" --jq .default_branch)"
+          IFS=',' read -r -a requeue_items <<< "$items"
+          for item_number in "${requeue_items[@]}"; do
+            jq -n \
+              --arg target_repo "$APPLY_TARGET_REPO" \
+              --arg target_branch "$target_branch" \
+              --arg item_number "$item_number" \
+              '{
+                event_type: "clawsweeper_target_sweep",
+                client_payload: {
+                  target_repo: $target_repo,
+                  target_branch: $target_branch,
+                  item_number: $item_number,
+                  batch_size: "1",
+                  shard_count: "1",
+                  hot_intake: "false",
+                  codex_timeout_ms: "1200000"
+                }
+              }' | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
+            echo "::notice::Requeued exact review for ${APPLY_TARGET_REPO}#${item_number}: its close was blocked by source drift or an unverified-checkout review."
+          done
+
   publish-apply-observability:
     name: Publish apply telemetry
     needs: [apply-proof, publish-apply-proof-action-ledger, apply-existing]

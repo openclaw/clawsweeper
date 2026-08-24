@@ -332,6 +332,11 @@ async function runCli(): Promise<void> {
     case "merge-apply-reports":
       mergeApplyReports(requiredString("dir"), requiredString("output"));
       break;
+    case "apply-requeue-review-item-numbers":
+      process.stdout.write(
+        applyRequeueReviewItemNumbers(requiredString("report"), numberArg("limit", 0)).join(","),
+      );
+      break;
     default:
       throw new Error(`unknown workflow utility command: ${command}`);
   }
@@ -552,6 +557,35 @@ export function artifactItemNumbers(artifactDir: string): number[] {
 export function countActions(reportPath: string, action: string): number {
   if (!action) return readApplyActions(reportPath).length;
   return readApplyActions(reportPath).filter((entry) => entry.action === action).length;
+}
+
+export const APPLY_REQUEUE_UNVERIFIED_CHECKOUT_REASON =
+  "review lacks verified local checkout access";
+
+// Close-mode apply cannot close a record whose source drifted since review or
+// whose stored review never verified local checkout access. Both blocks have
+// the same cure: a fresh exact review. Source-drift skips come first because
+// their close proposals are already confirmed and only need re-verification.
+export function applyRequeueReviewItemNumbers(reportPath: string, limit: number): number[] {
+  if (!Number.isInteger(limit) || limit <= 0) return [];
+  const actions = readApplyActions(reportPath);
+  const selected: number[] = [];
+  const seen = new Set<number>();
+  const push = (entry: ApplyAction): void => {
+    const number = entry.number;
+    if (number === undefined || seen.has(number) || selected.length >= limit) return;
+    seen.add(number);
+    selected.push(number);
+  };
+  for (const entry of actions) {
+    if (entry.action === "skipped_changed_since_review") push(entry);
+  }
+  for (const entry of actions) {
+    if (entry.action === "kept_open" && entry.reason === APPLY_REQUEUE_UNVERIFIED_CHECKOUT_REASON) {
+      push(entry);
+    }
+  }
+  return selected;
 }
 
 export function applyContinuationBlocker(

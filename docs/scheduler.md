@@ -701,6 +701,15 @@ limits, live-state checks, or policy gates. Stalled-unproven and abandoned PR
 proposals are eligible for apply selection, where the executor re-checks their
 PR-only age, activity, proof, status, and human-engagement gates before closing.
 
+After a default close-mode cursor run for `openclaw/openclaw`, the apply job
+requeues up to five exact reviews for records whose close was blocked by
+source drift (`skipped_changed_since_review`) or by a stored review without
+verified local checkout access. Both blocks have the same cure: a fresh exact
+review re-verifies the close proposal at the current snapshot and writes a
+close-capable record, so the next apply pass can execute instead of skipping
+the same stale records every sweep. The per-run cap bounds review spend, and
+the exact-item queue's supersession semantics absorb repeat dispatches.
+
 Apply and comment-sync Actions run titles include the target repository. Before
 dispatching a default cursor-based apply continuation, the workflow checks
 recent active or queued same-target default cursor runs and treats one of those

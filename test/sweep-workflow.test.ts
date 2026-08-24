@@ -6680,3 +6680,79 @@ test("exact review publication enqueue accepts a superseded acknowledgement", ()
   assert.match(run, /jq -e '\.superseded == true'/);
   assert.match(run, /the newer publisher owns final delivery/);
 });
+
+test("apply drift requeue selects source-drift skips before unverified-checkout keeps", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const reportPath = join(root, "apply-report.json");
+    writeFileSync(
+      reportPath,
+      JSON.stringify([
+        { number: 101, action: "skipped_changed_since_review", reason: "updated_at changed" },
+        { number: 102, action: "kept_open", reason: "review lacks verified local checkout access" },
+        { number: 103, action: "kept_open", reason: "no close proposal" },
+        { number: 104, action: "skipped_changed_since_review", reason: "snapshot changed" },
+        { number: 101, action: "skipped_changed_since_review", reason: "updated_at changed" },
+        { number: 105, action: "kept_open", reason: "review lacks verified local checkout access" },
+        { number: 0, action: "skipped_runtime_budget", reason: "budget" },
+        { number: 106, action: "closed", reason: "implemented on main" },
+      ]),
+      "utf8",
+    );
+
+    const selected = execFileSync(
+      process.execPath,
+      [
+        "dist/repair/workflow-utils.js",
+        "apply-requeue-review-item-numbers",
+        "--report",
+        reportPath,
+        "--limit",
+        "3",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(selected, "101,104,102");
+
+    const unlimited = execFileSync(
+      process.execPath,
+      [
+        "dist/repair/workflow-utils.js",
+        "apply-requeue-review-item-numbers",
+        "--report",
+        reportPath,
+        "--limit",
+        "10",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(unlimited, "101,104,102,105");
+
+    const disabled = execFileSync(
+      process.execPath,
+      [
+        "dist/repair/workflow-utils.js",
+        "apply-requeue-review-item-numbers",
+        "--report",
+        reportPath,
+        "--limit",
+        "0",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(disabled, "");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("apply job requeues drift-blocked close reviews only for default cursor runs", () => {
+  const workflow = readText(".github/workflows/sweep.yml");
+  const step = workflow.slice(workflow.indexOf("Requeue drift-blocked close reviews"));
+
+  assert.match(step, /apply-requeue-review-item-numbers --report apply-report\.json --limit 5/);
+  assert.match(step, /APPLY_SYNC_COMMENTS_ONLY:-false.*=.*"true"/s);
+  assert.match(step, /APPLY_AUTO_SELECTED_BATCH:-false.*!=.*"true"/s);
+  assert.match(step, /event_type: "clawsweeper_target_sweep"/);
+  assert.match(step, /shard_count: "1"/);
+});
