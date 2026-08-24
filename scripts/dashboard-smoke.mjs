@@ -47,7 +47,8 @@ async function main() {
   }
   if (
     status.bay.timings?.sample_kind !== "completed_review_journeys" ||
-    status.bay.timings?.source !== "durable_exact_review_lifecycles"
+    status.bay.timings?.source !== "durable_exact_review_lifecycles" ||
+    status.bay.timings?.completion_source !== "verified_final_review_receipts"
   ) {
     throw new Error("status response is missing the durable Bay timing provenance");
   }

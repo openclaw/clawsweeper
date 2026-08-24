@@ -527,6 +527,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
             job_url: "https://github.com/OpenClaw/ClawSweeper/actions/runs/7002/job/8002",
             run_id: 7002,
             job_id: 8002,
+            journey_duration_ms: 1_000,
             started_at: STATUS_NOW,
             steps: [
               {
@@ -586,6 +587,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
       repository: "openclaw/openclaw",
       item_number: 45,
       outcome: "success",
+      journey_duration_ms: 1_000,
       action: {
         repository: "openclaw/clawsweeper",
         run_id: 7002,

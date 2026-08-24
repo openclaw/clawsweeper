@@ -10,15 +10,26 @@ export const EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE =
   "exact_review_lifecycle_telemetry_direct_v1";
 export const EXACT_REVIEW_LIFECYCLE_TELEMETRY_BATCH_TABLE =
   "exact_review_lifecycle_telemetry_batch_v1";
-export const EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE = "exact_review_lifecycle_bay_event_v1";
-export const EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE = "exact_review_lifecycle_bay_meta_v1";
-export const EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE = "exact_review_lifecycle_bay_scope_v1";
+// v2 measures the public end-to-end review result. Keep the former routing
+// aggregate intact rather than interpreting its already-materialized rows as
+// final-review timings after an upgrade.
+export const EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE = "exact_review_lifecycle_bay_event_v2";
+export const EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE = "exact_review_lifecycle_bay_meta_v2";
+export const EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE = "exact_review_lifecycle_bay_scope_v2";
 export const EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE =
-  "exact_review_lifecycle_bay_tide_buffer_v1";
-export const EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE = "exact_review_lifecycle_bay_pending_v1";
+  "exact_review_lifecycle_bay_tide_buffer_v2";
+export const EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE = "exact_review_lifecycle_bay_pending_v2";
 export const EXACT_REVIEW_LIFECYCLE_TELEMETRY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_TIMING_WINDOW_MS = 60 * 60 * 1000;
+// The public contract bounds a journey to one day. A larger interval is
+// ambiguous (a stale receipt, a re-used fence, or a missed transition), so it
+// must not be turned into reassuring elapsed copy or a distorted hourly mean.
+export const EXACT_REVIEW_LIFECYCLE_BAY_MAX_JOURNEY_MS = 24 * 60 * 60 * 1000;
+// Initial schema setup and the first durable receipt can share a single turn.
+// Accept only this narrow ordering skew in global tide membership; it does not
+// backdate coverage enough to make a partial hourly window look complete.
+const EXACT_REVIEW_LIFECYCLE_BAY_COVERAGE_RACE_MS = 60_000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD = 20;
 export const EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_RECOVERY_BATCH_LIMIT = 256;
@@ -113,6 +124,14 @@ type BayTerminalRecord = {
   item_key: string;
   outcome: BayLifecycleOutcome;
   completed_at: string;
+  journey_duration_ms: number;
+};
+
+type BayTimingHistoryPoint = {
+  ended_at: string;
+  average_ms: number;
+  median_ms: number;
+  samples: number;
 };
 
 type BayTideProgress = {
@@ -141,7 +160,7 @@ type BayRepositoryScopeProgress = {
 };
 
 export type ExactReviewBayLifecycleSnapshot = {
-  version: 1;
+  version: 2;
   collection: { state: "complete" } | { state: "unknown"; reason: "unavailable" | "over_cap" };
   coverage: {
     started_at: string;
@@ -149,9 +168,10 @@ export type ExactReviewBayLifecycleSnapshot = {
   } | null;
   timings: {
     window_minutes: number;
-    sample_kind: "completed_exact_review_lifecycles";
+    sample_kind: "completed_final_review_journeys";
     sample_limit: number;
     overall: { average_ms: number | null; median_ms: number | null; samples: number | null };
+    history: { bucket_minutes: number; points: BayTimingHistoryPoint[] };
   } | null;
   terminal: {
     tide_threshold: number;
@@ -229,11 +249,11 @@ export class ExactReviewLifecycleTelemetryStore {
        ) STRICT`,
     );
     this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_bay_event_completed
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_bay_event_v2_completed
          ON ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} (completed_at, event_id)`,
     );
     this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_bay_event_repository_completed
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_bay_event_v2_repository_completed
          ON ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
          (
            LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)),
@@ -271,12 +291,13 @@ export class ExactReviewLifecycleTelemetryStore {
          event_id TEXT NOT NULL,
          canonical_target_key TEXT NOT NULL,
          outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'cancelled')),
+         triggered_at INTEGER NOT NULL,
          completed_at INTEGER NOT NULL,
          PRIMARY KEY (repository_scope, bucket, event_id)
        ) STRICT`,
     );
     this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_bay_tide_buffer_rows
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_bay_tide_buffer_v2_rows
          ON ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
          (repository_scope, bucket, completed_at, event_id)`,
     );
@@ -333,7 +354,7 @@ export class ExactReviewLifecycleTelemetryStore {
        ) STRICT`,
     );
     this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_bay_pending_queued
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_bay_pending_v2_queued
          ON ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE} (queued_at, canonical_target_key, fence_key, revision)`,
     );
     // The prior schema retained only bounded timing rows. Recover that visible
@@ -497,18 +518,18 @@ export class ExactReviewLifecycleTelemetryStore {
     // Callers may already hold the queue's durable transaction. Durable
     // Objects serialize each invocation, so these synchronous statements stay
     // ordered without opening a nested SQLite transaction.
-    // The constructor normally establishes the epoch before any lifecycle
-    // completion. Backdate a just-created epoch to its first terminal fact so
-    // a same-turn completion cannot fall on the wrong side of the boundary.
-    this.storage.sql.exec(
-      `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE}
-          SET coverage_started_at = ?
-        WHERE singleton = 1 AND coverage_started_at > ?`,
-      event.completed_at,
-      event.completed_at,
-    );
+    // Coverage represents when this telemetry collector began observing, not
+    // the receipt's timestamp. A delayed final receipt can legitimately predate
+    // this v2 table and must not turn partial collection into a complete hour.
     const coverageStartedAt = this.coverageStartedAtSync();
     this.pruneBayEventsSync(Math.max(Date.now(), coverageStartedAt));
+    // Keep tide and timing coverage aligned: a pre-coverage receipt must not
+    // be counted here only to disappear when a later source rebuild applies
+    // the coverage predicate.
+    if (event.completed_at < globalTideCoverageStart(coverageStartedAt)) {
+      delete projection.bayTelemetryEventId;
+      return;
+    }
     const timingEventExists = this.bayTimingEventExistsSync(event.event_id);
     if (projection.bayTelemetryEventId === event.event_id || timingEventExists) {
       // A terminal disposition is immutable, but its final review result can
@@ -527,9 +548,10 @@ export class ExactReviewLifecycleTelemetryStore {
       }
       this.storage.sql.exec(
         `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
-            SET outcome = ?, completed_at = ?
+            SET outcome = ?, triggered_at = ?, completed_at = ?
           WHERE event_id = ?`,
         event.outcome,
+        event.triggered_at,
         event.completed_at,
         event.event_id,
       );
@@ -613,7 +635,7 @@ export class ExactReviewLifecycleTelemetryStore {
         : null;
       const timingCutoff = Math.max(
         now - EXACT_REVIEW_LIFECYCLE_BAY_TIMING_WINDOW_MS,
-        coverageStartedAt,
+        allowedRepositories ? coverageStartedAt : globalTideCoverageStart(coverageStartedAt),
       );
       const rows = Array.from(
         this.storage.sql.exec(
@@ -634,16 +656,14 @@ export class ExactReviewLifecycleTelemetryStore {
       if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT)
         return unknownBaySnapshot("over_cap");
       const durations: number[] = [];
+      const timingRows: Array<{ completedAt: number; duration: number }> = [];
       for (const row of rows) {
         const triggeredAt = Number(row.triggered_at);
         const completedAt = Number(row.completed_at);
-        if (
-          !validTimestamp(triggeredAt) ||
-          !validTimestamp(completedAt) ||
-          completedAt < triggeredAt
-        )
-          return unknownBaySnapshot("unavailable");
-        durations.push(completedAt - triggeredAt);
+        if (!validBayJourney(triggeredAt, completedAt)) return unknownBaySnapshot("unavailable");
+        const duration = completedAt - triggeredAt;
+        durations.push(duration);
+        timingRows.push({ completedAt, duration });
       }
 
       // `tide_base_count` is the exact all-time completion count for this
@@ -668,7 +688,7 @@ export class ExactReviewLifecycleTelemetryStore {
           )
         : null;
       return {
-        version: 1,
+        version: 2,
         collection: { state: "complete" },
         coverage: {
           started_at: new Date(coverageStartedAt).toISOString(),
@@ -676,9 +696,13 @@ export class ExactReviewLifecycleTelemetryStore {
         },
         timings: {
           window_minutes: EXACT_REVIEW_LIFECYCLE_BAY_TIMING_WINDOW_MS / 60_000,
-          sample_kind: "completed_exact_review_lifecycles",
+          sample_kind: "completed_final_review_journeys",
           sample_limit: EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT,
           overall: { average_ms: average, median_ms: median, samples: durations.length },
+          history: {
+            bucket_minutes: 5,
+            points: bayTimingHistory(timingRows),
+          },
         },
         terminal: {
           tide_threshold: EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD,
@@ -1013,10 +1037,26 @@ export class ExactReviewLifecycleTelemetryStore {
       throw new Error("missing pending lifecycle source for Bay materialization");
     }
     if (!source.bayTelemetryPending) {
-      if (source.bayTelemetryEventId !== projection.bayTelemetryEventId) {
+      // A routed command terminal is materialized first without a timing
+      // event. Its correlated final status receipt arrives later and is the
+      // one permitted enrichment from no event to this revision's event.
+      // Once an event exists, though, preserve the original conflict fence.
+      const existingEventId = source.bayTelemetryEventId;
+      // The v1 routing aggregate used `bay:<fence>:<revision>`. Its marker is
+      // not evidence that the v2 final-receipt table has this event, so let a
+      // final receipt crossing the rollout upgrade replace that legacy marker.
+      const legacyEventId =
+        typeof existingEventId === "string" &&
+        existingEventId.startsWith("bay:") &&
+        !existingEventId.startsWith("bay:v2:");
+      if (
+        existingEventId !== undefined &&
+        !legacyEventId &&
+        existingEventId !== projection.bayTelemetryEventId
+      ) {
         throw new Error("lifecycle source Bay marker conflicts with materialization");
       }
-      return;
+      if (source.bayTelemetryEventId === projection.bayTelemetryEventId) return;
     }
     if (projection.bayTelemetryEventId === undefined) delete source.bayTelemetryEventId;
     else source.bayTelemetryEventId = projection.bayTelemetryEventId;
@@ -1118,13 +1158,14 @@ export class ExactReviewLifecycleTelemetryStore {
   ) {
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
-         (repository_scope, bucket, event_id, canonical_target_key, outcome, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+         (repository_scope, bucket, event_id, canonical_target_key, outcome, triggered_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       scope,
       bucket,
       event.event_id,
       event.item_key,
       event.outcome,
+      event.triggered_at,
       event.completed_at,
     );
   }
@@ -1132,7 +1173,7 @@ export class ExactReviewLifecycleTelemetryStore {
   private tideBufferRowsSync(scope: string, bucket: "terminal" | "washed") {
     const rows = Array.from(
       this.storage.sql.exec(
-        `SELECT event_id, canonical_target_key, outcome, completed_at
+        `SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at
            FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
           WHERE repository_scope = ? AND bucket = ?
           ORDER BY completed_at, event_id LIMIT ?`,
@@ -1261,7 +1302,7 @@ export class ExactReviewLifecycleTelemetryStore {
       this.storage.sql.exec(
         `WITH lifecycle_events AS (
            SELECT
-             'bay:' || fence_key || ':' || revision AS event_id,
+             'bay:v2:' || fence_key || ':' || revision AS event_id,
              canonical_target_key,
              CASE
                WHEN json_extract(projection_json, '$.terminalDisposition.kind') = 'review_completed_routed'
@@ -1277,12 +1318,13 @@ export class ExactReviewLifecycleTelemetryStore {
                ) = 'cancelled' THEN 'cancelled'
                ELSE 'failure'
              END AS outcome,
-             COALESCE(
-               CAST(json_extract(projection_json, '$.admission.triggeredAt') AS INTEGER),
-               CAST(json_extract(projection_json, '$.admission.admittedAt') AS INTEGER)
-             ) AS triggered_at,
-             CAST(json_extract(projection_json, '$.terminalDisposition.observedAt') AS INTEGER)
-               AS completed_at
+             CAST(json_extract(projection_json, '$.admission.triggeredAt') AS INTEGER)
+               AS triggered_at,
+             CASE
+               WHEN json_extract(projection_json, '$.admission.commandOriginated') = 1
+                 THEN CAST(json_extract(projection_json, '$.acknowledgement.observed.observedAt') AS INTEGER)
+               ELSE CAST(json_extract(projection_json, '$.githubEffect.observedAt') AS INTEGER)
+             END AS completed_at
            FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
            WHERE json_valid(projection_json)
              AND json_extract(projection_json, '$.terminalDisposition.kind')
@@ -1296,6 +1338,7 @@ export class ExactReviewLifecycleTelemetryStore {
             SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at
               FROM lifecycle_events
              WHERE completed_at >= ? AND completed_at >= triggered_at
+               AND completed_at - triggered_at <= ?
                AND (? = 0 OR triggered_at >= ?)
                ${filter.where}
          ), ranked AS (
@@ -1323,7 +1366,8 @@ export class ExactReviewLifecycleTelemetryStore {
         replacementEvent?.triggered_at ?? null,
         replacementEvent?.completed_at ?? null,
         Number(replacementEvent !== null),
-        coverageStartedAt,
+        globalTideCoverageStart(scope, coverageStartedAt),
+        EXACT_REVIEW_LIFECYCLE_BAY_MAX_JOURNEY_MS,
         Number(scope !== BAY_GLOBAL_TIDE_SCOPE && triggerCoverageStartedAt !== null),
         triggerCoverageStartedAt ?? 0,
         ...filter.bindings,
@@ -1443,7 +1487,7 @@ export class ExactReviewLifecycleTelemetryStore {
   ) {
     const retained = events.filter(
       (event) =>
-        event.completed_at >= coverageStartedAt &&
+        event.completed_at >= globalTideCoverageStart(scope, coverageStartedAt) &&
         (scope === BAY_GLOBAL_TIDE_SCOPE || event.triggered_at >= coverageStartedAt),
     );
     const total = retained.length;
@@ -1484,7 +1528,7 @@ export class ExactReviewLifecycleTelemetryStore {
              AND (? = 0 OR triggered_at >= ?)
              ${repositoryFilter.where}
            ORDER BY completed_at, event_id`,
-        progress.coverageStartedAt,
+        globalTideCoverageStart(scope, progress.coverageStartedAt),
         Number(scope !== BAY_GLOBAL_TIDE_SCOPE),
         progress.coverageStartedAt,
         ...repositoryFilter.bindings,
@@ -1513,9 +1557,20 @@ function bayLifecycleEvent(projection: ExactReviewLifecycleProjection): BayLifec
   else if (terminal.kind === "failure")
     outcome = latestReviewResult?.outcome === "cancelled" ? "cancelled" : "failure";
   if (!outcome) return null;
-  const triggeredAt = projection.admission.triggeredAt ?? projection.admission.admittedAt;
-  const completedAt = terminal.observedAt;
-  if (!validTimestamp(triggeredAt) || !validTimestamp(completedAt) || completedAt < triggeredAt)
+  // A routed result is not necessarily visible as the final GitHub review.
+  // Command journeys finish only after their verified final status receipt;
+  // automatic journeys finish only after the durable GitHub effect receipt.
+  // Both boundaries are mandatory: do not substitute queue admission, a job
+  // timestamp, or the routing disposition.
+  const triggeredAt = projection.admission.triggeredAt;
+  const completedAt = projection.acknowledgement.required
+    ? projection.acknowledgement.observed?.observedAt
+    : projection.githubEffect?.observedAt;
+  if (
+    typeof triggeredAt !== "number" ||
+    typeof completedAt !== "number" ||
+    !validBayJourney(triggeredAt, completedAt)
+  )
     return null;
   return {
     event_id: bayLifecycleEventId(projection),
@@ -1526,6 +1581,41 @@ function bayLifecycleEvent(projection: ExactReviewLifecycleProjection): BayLifec
   };
 }
 
+function bayTimingHistory(
+  rows: Array<{ completedAt: number; duration: number }>,
+): BayTimingHistoryPoint[] {
+  const bucketMs = 5 * 60_000;
+  const buckets = new Map<number, number[]>();
+  for (const row of rows) {
+    const bucket = Math.floor(row.completedAt / bucketMs) * bucketMs;
+    const durations = buckets.get(bucket) ?? [];
+    durations.push(row.duration);
+    buckets.set(bucket, durations);
+  }
+  return (
+    [...buckets.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([bucket, durations]) => {
+        const ordered = [...durations].sort((left, right) => left - right);
+        const middle = Math.floor(ordered.length / 2);
+        return {
+          ended_at: new Date(bucket + bucketMs).toISOString(),
+          average_ms: Math.round(
+            durations.reduce((total, value) => total + value, 0) / durations.length,
+          ),
+          median_ms: Math.round(
+            ordered.length % 2 ? ordered[middle]! : (ordered[middle - 1]! + ordered[middle]!) / 2,
+          ),
+          samples: durations.length,
+        };
+      })
+      // A rolling hour can straddle 13 aligned five-minute buckets. Keep the
+      // graph bounded without widening the public payload or making its client
+      // parser accept an unbounded history.
+      .slice(-12)
+  );
+}
+
 function hadBayLifecycleTerminalEvent(projection: ExactReviewLifecycleProjection) {
   return projection.terminalDispositions.some(
     (terminal) => terminal.kind === "review_completed_routed" || terminal.kind === "failure",
@@ -1533,7 +1623,7 @@ function hadBayLifecycleTerminalEvent(projection: ExactReviewLifecycleProjection
 }
 
 function bayLifecycleEventId(projection: ExactReviewLifecycleProjection) {
-  return `bay:${projection.fenceKey}:${projection.revision}`;
+  return `bay:v2:${projection.fenceKey}:${projection.revision}`;
 }
 
 function bayRepositoryFilter(allowedRepositories?: ReadonlySet<string>) {
@@ -1562,6 +1652,14 @@ function bayRepositoryFilterForTideScope(scope: string) {
   return filter;
 }
 
+function globalTideCoverageStart(scopeOrCoverage: string | number, coverageStartedAt?: number) {
+  const scope = typeof scopeOrCoverage === "string" ? scopeOrCoverage : BAY_GLOBAL_TIDE_SCOPE;
+  const coverage = typeof scopeOrCoverage === "number" ? scopeOrCoverage : coverageStartedAt!;
+  return scope === BAY_GLOBAL_TIDE_SCOPE
+    ? Math.max(0, coverage - EXACT_REVIEW_LIFECYCLE_BAY_COVERAGE_RACE_MS)
+    : coverage;
+}
+
 function bayLifecycleEventFromTimingRow(row: Record<string, unknown>): BayLifecycleEvent {
   const eventId = String(row.event_id || "");
   const itemKey = String(row.canonical_target_key || "");
@@ -1572,9 +1670,7 @@ function bayLifecycleEventFromTimingRow(row: Record<string, unknown>): BayLifecy
     !eventId ||
     !validCanonicalTargetKey(itemKey) ||
     !["success", "failure", "cancelled"].includes(outcome) ||
-    !validTimestamp(triggeredAt) ||
-    !validTimestamp(completedAt) ||
-    completedAt < triggeredAt
+    !validBayJourney(triggeredAt, completedAt)
   ) {
     throw new Error("invalid retained Bay lifecycle timing event");
   }
@@ -1615,12 +1711,13 @@ function bayTerminalRows(rows: Array<Record<string, unknown>>): BayTerminalRecor
     const eventId = String(row.event_id || "");
     const itemKey = String(row.canonical_target_key || "");
     const outcome = String(row.outcome || "");
+    const triggeredAt = Number(row.triggered_at);
     const completedAt = Number(row.completed_at);
     if (
       !eventId ||
       !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(itemKey) ||
       !["success", "failure", "cancelled"].includes(outcome) ||
-      !validTimestamp(completedAt)
+      !validBayJourney(triggeredAt, completedAt)
     ) {
       throw new Error("invalid Bay lifecycle terminal row");
     }
@@ -1629,6 +1726,7 @@ function bayTerminalRows(rows: Array<Record<string, unknown>>): BayTerminalRecor
       item_key: itemKey,
       outcome: outcome as BayLifecycleOutcome,
       completed_at: new Date(completedAt).toISOString(),
+      journey_duration_ms: completedAt - triggeredAt,
     });
   }
   return events;
@@ -1638,7 +1736,7 @@ export function unknownBaySnapshot(
   reason: "unavailable" | "over_cap",
 ): ExactReviewBayLifecycleSnapshot {
   return {
-    version: 1,
+    version: 2,
     collection: { state: "unknown", reason },
     coverage: null,
     timings: null,
@@ -1721,6 +1819,15 @@ function positiveInteger(value: number) {
 
 function validTimestamp(value: number) {
   return Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000;
+}
+
+function validBayJourney(triggeredAt: number, completedAt: number) {
+  return (
+    validTimestamp(triggeredAt) &&
+    validTimestamp(completedAt) &&
+    completedAt >= triggeredAt &&
+    completedAt - triggeredAt <= EXACT_REVIEW_LIFECYCLE_BAY_MAX_JOURNEY_MS
+  );
 }
 
 function validText(value: string, min: number, max: number) {

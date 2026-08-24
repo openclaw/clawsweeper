@@ -1458,6 +1458,7 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
   "completed_exact_review_lifecycles",
   "completed_review_journeys",
   "durable_exact_review_lifecycles",
+  "verified_final_review_receipts",
   "degraded",
   "exact-review",
   "6h",
@@ -1531,6 +1532,7 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
 
 const PUBLIC_STATUS_TEXT_FIELDS = new Set([
   "conclusion",
+  "completion_source",
   "mode",
   "outcome",
   "reason",
@@ -1548,6 +1550,7 @@ const PUBLIC_STATUS_TEXT_FIELDS = new Set([
 const PUBLIC_STATUS_TIME_FIELDS = new Set([
   "at",
   "completed_at",
+  "ended_at",
   "generated_at",
   "observed_at",
   "oldest_at",
@@ -1686,6 +1689,8 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "longest_duration_ms",
   "maximum_age_ms",
   "median_ms",
+  "journey_duration_ms",
+  "bucket_minutes",
   "oldest_age_seconds",
   "oldest_dispatching_age_seconds",
   "oldest_leased_age_seconds",
@@ -1765,6 +1770,8 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "timeline",
   "ci",
   "timings",
+  "history",
+  "points",
   "overall",
   "terminal_buffer",
   "recently_washed",
@@ -2195,6 +2202,7 @@ function publicBayTerminalOutcome(value, allowedRepositories: ReadonlySet<string
   if (!PUBLIC_BAY_OUTCOMES.has(outcome)) return null;
   const explicitRepository = typeof source.repository === "string" ? source.repository.trim() : "";
   const explicitNumber = source.item_number ?? source.number;
+  const journeyDuration = source.journey_duration_ms;
   const itemKey = typeof source.item_key === "string" ? source.item_key.trim() : "";
   const keyMatch = itemKey.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
   const repository = explicitRepository || keyMatch?.[1] || "";
@@ -2212,6 +2220,13 @@ function publicBayTerminalOutcome(value, allowedRepositories: ReadonlySet<string
   ) {
     const canonicalRepository = repository.toLowerCase();
     if (allowedRepositories.has(canonicalRepository)) {
+      if (
+        !Number.isSafeInteger(journeyDuration) ||
+        journeyDuration < 0 ||
+        journeyDuration > 24 * 60 * 60 * 1000
+      ) {
+        return { outcome };
+      }
       const action = publicBayActionFromWorker(
         { ...source, status: "completed", run_url: source.run_url ?? source.job_url },
         allowedRepositories,
@@ -2220,6 +2235,7 @@ function publicBayTerminalOutcome(value, allowedRepositories: ReadonlySet<string
         repository: canonicalRepository,
         item_number: itemNumber,
         outcome,
+        journey_duration_ms: journeyDuration,
         ...(action ? { action } : {}),
       };
     }
@@ -5208,7 +5224,7 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
   if (!response.ok) return null;
   const source = objectValue(body.bay_lifecycle_metrics);
   const collection = objectValue(source.collection);
-  if (source.version !== 1 || collection.state !== "complete") return null;
+  if (source.version !== 2 || collection.state !== "complete") return null;
   const coverage = objectValue(source.coverage);
   const timings = objectValue(source.timings);
   const terminal = objectValue(source.terminal);
@@ -5218,15 +5234,12 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
   const windowMinutes = publicQueueCount(timings.window_minutes, 24 * 60);
   const sampleLimit = publicQueueCount(timings.sample_limit, 100_000);
   const overall = objectValue(timings.overall);
+  const history = bayLifecycleTimingHistory(timings.history);
   const samples = publicQueueCount(overall.samples, 100_000);
   const average =
-    overall.average_ms === null
-      ? null
-      : publicQueueCount(overall.average_ms, 31 * 24 * 60 * 60 * 1000);
+    overall.average_ms === null ? null : publicQueueCount(overall.average_ms, 24 * 60 * 60 * 1000);
   const median =
-    overall.median_ms === null
-      ? null
-      : publicQueueCount(overall.median_ms, 31 * 24 * 60 * 60 * 1000);
+    overall.median_ms === null ? null : publicQueueCount(overall.median_ms, 24 * 60 * 60 * 1000);
   const invalidTimingAggregate =
     samples === null ||
     (samples === 0 ? average !== null || median !== null : average === null || median === null);
@@ -5240,10 +5253,11 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
   if (
     !startedAt ||
     typeof timingComplete !== "boolean" ||
-    sampleKind !== "completed_exact_review_lifecycles" ||
+    sampleKind !== "completed_final_review_journeys" ||
     windowMinutes !== 60 ||
     sampleLimit === null ||
     invalidTimingAggregate ||
+    !history ||
     terminalCount === null ||
     tideThreshold !== 20 ||
     tideGeneration === null ||
@@ -5261,11 +5275,13 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
     timings: {
       window_minutes: windowMinutes,
       // `sample_kind` is a v1 public enum. Preserve its established spelling for
-      // strict clients, and expose the durable replacement provenance additively.
+      // strict clients, and expose end-to-end final-review provenance additively.
       sample_kind: "completed_review_journeys",
       source: "durable_exact_review_lifecycles",
+      completion_source: "verified_final_review_receipts",
       sample_limit: sampleLimit,
       overall: { average_ms: average, median_ms: median, samples },
+      history,
     },
     terminal_count: terminalCount,
     tide_threshold: tideThreshold,
@@ -5284,16 +5300,53 @@ function bayLifecycleTerminalRows(value) {
     const itemKey = String(row.item_key || "").toLowerCase();
     const outcome = String(row.outcome || "");
     const completedAt = publicQueueTimestamp(row.completed_at);
+    const journeyDuration = publicQueueCount(row.journey_duration_ms, 24 * 60 * 60 * 1000);
     if (
       !/^[a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9]\d*$/.test(itemKey) ||
       !["success", "failure", "cancelled"].includes(outcome) ||
-      !completedAt
+      !completedAt ||
+      journeyDuration === null
     ) {
       return null;
     }
-    rows.push({ item_key: itemKey, outcome, completed_at: completedAt });
+    rows.push({
+      item_key: itemKey,
+      outcome,
+      completed_at: completedAt,
+      journey_duration_ms: journeyDuration,
+    });
   }
   return rows;
+}
+
+function bayLifecycleTimingHistory(value) {
+  const source = objectValue(value);
+  const points = source && Array.isArray(source.points) ? source.points : null;
+  if (!source || source.bucket_minutes !== 5 || !points || points.length > 12) return null;
+  const result = [];
+  let previousEndedAt = 0;
+  for (const point of points) {
+    const row = objectValue(point);
+    const endedAt = row && publicQueueTimestamp(row.ended_at);
+    const average = row && publicQueueCount(row.average_ms, 24 * 60 * 60 * 1000);
+    const median = row && publicQueueCount(row.median_ms, 24 * 60 * 60 * 1000);
+    const samples = row && publicQueueCount(row.samples, 100_000);
+    const endedAtMs = endedAt ? Date.parse(endedAt) : Number.NaN;
+    if (
+      !endedAt ||
+      !Number.isFinite(endedAtMs) ||
+      endedAtMs <= previousEndedAt ||
+      average === null ||
+      median === null ||
+      samples === null ||
+      samples < 1
+    ) {
+      return null;
+    }
+    previousEndedAt = endedAtMs;
+    result.push({ ended_at: endedAt, average_ms: average, median_ms: median, samples });
+  }
+  return { bucket_minutes: 5, points: result };
 }
 
 async function authenticatedExactReviewEnqueue(request, env) {
@@ -6149,6 +6202,7 @@ async function statusSnapshot(env) {
   if (
     cachedTimings.sample_kind === "completed_review_journeys" &&
     cachedTimings.source === "durable_exact_review_lifecycles" &&
+    cachedTimings.completion_source === "verified_final_review_receipts" &&
     scopedCached === cached
   ) {
     return cachedProjection;
@@ -6375,8 +6429,10 @@ async function statusSnapshot(env) {
           window_minutes: BAY_TIMING_WINDOW_MS / 60_000,
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
           sample_limit: 0,
           overall: { average_ms: null, median_ms: null, samples: 0 },
+          history: { bucket_minutes: 5, points: [] },
         },
       };
   const { recent_attempts: _recentAttempts, ...publicWorkerHealth } = workerHealth;

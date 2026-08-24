@@ -7695,6 +7695,8 @@ export class ExactReviewQueue {
     const includeDeliveryIdentity = body.include_delivery_identity;
     const requireExactStatusComment = body.require_exact_status_comment;
     const observedAt = Number(body.observed_at);
+    const receivedAt = Date.now();
+    const recordedAt = Math.min(observedAt, receivedAt);
     if (
       !canonicalTargetKey ||
       (fenceKey === undefined) !== (revision === undefined) ||
@@ -7725,8 +7727,17 @@ export class ExactReviewQueue {
         completionCommentId,
         ...(statusCommentId === undefined ? {} : { statusCommentId: Number(statusCommentId) }),
         ...(requireExactStatusComment ? { requireExactStatusComment: true } : {}),
-        observedAt,
+        observedAt: recordedAt,
       });
+      // The final command-status receipt is the end-to-end Bay boundary. The
+      // routing terminal was recorded earlier and must not publish a duration
+      // until this correlated receipt has arrived.
+      if (result.accepted && result.projection) {
+        // observeCommandAcknowledgement persists the observed receipt and its
+        // outbox marker atomically. Materialization may then fail and replay
+        // safely, but it cannot lose this timing boundary between writes.
+        this.syncBayLifecycle(result.projection);
+      }
       if (result.accepted && result.projection) {
         const state = this.readStateSync();
         const drivers = Object.values(state.items).filter((item) => {
@@ -7741,7 +7752,7 @@ export class ExactReviewQueue {
         if (drivers.length) {
           for (const driver of drivers) delete state.items[driver.key];
           await this.writeState(state);
-          await this.scheduleNext(state, observedAt);
+          await this.scheduleNext(state, recordedAt);
         }
       }
       return json({

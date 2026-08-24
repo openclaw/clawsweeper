@@ -812,6 +812,11 @@ export class ExactReviewLifecycleProjectionStore {
           throw new Error("conflicting lifecycle acknowledgement receipt");
         }
         projection.acknowledgement.observed ??= observed;
+        // The final receipt is the only timing boundary for command journeys.
+        // Queue its Bay materialization in this same source transaction so a
+        // Durable Object restart cannot persist the receipt without its outbox
+        // marker.
+        projection.bayTelemetryPending = true;
         projection.updatedAt = input.observedAt;
         this.writeSync(projection);
         return {
@@ -1280,9 +1285,17 @@ export class ExactReviewLifecycleProjectionStore {
     return !more;
   }
 
+  markBayTelemetryPending(input: ProjectionIdentity) {
+    this.validateIdentity(input);
+    return this.mutate(input, (projection) => {
+      projection.bayTelemetryPending = true;
+      return projection;
+    });
+  }
+
   markBayTelemetryMaterialized(input: ProjectionIdentity & { bayTelemetryEventId?: string }) {
     this.validateIdentity(input);
-    if (input.bayTelemetryEventId !== undefined && !validText(input.bayTelemetryEventId, 1, 533)) {
+    if (input.bayTelemetryEventId !== undefined && !validText(input.bayTelemetryEventId, 1, 536)) {
       throw new Error("invalid lifecycle Bay telemetry event identity");
     }
     return this.mutate(input, (projection) => {
@@ -1730,9 +1743,9 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
     !positiveInteger(value.revision) ||
     !finiteTimestamp(value.updatedAt) ||
     typeof value.bayTelemetryPending !== "boolean" ||
-    // `bay:` + a valid 512-character fence key + `:` + a safe-integer
+    // `bay:v2:` + a valid 512-character fence key + `:` + a safe-integer
     // revision (up to 16 decimal digits).
-    (value.bayTelemetryEventId !== undefined && !validText(value.bayTelemetryEventId, 1, 533)) ||
+    (value.bayTelemetryEventId !== undefined && !validText(value.bayTelemetryEventId, 1, 536)) ||
     !validText(value.admission.deliveryId, 1, 300) ||
     (value.admission.sourceDeliveryId !== undefined &&
       !validText(value.admission.sourceDeliveryId, 1, 200)) ||

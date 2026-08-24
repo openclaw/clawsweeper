@@ -1511,6 +1511,7 @@ test("dashboard reuses a current Bay snapshot from the matching shared status sc
         timings: {
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
         },
       },
       pipeline: [{ id: "shared-snapshot", arbitrary_count: 41, arbitrary_boolean: true }],
@@ -1579,6 +1580,7 @@ test("dashboard rejects a current Bay snapshot from a different public scope", a
         timings: {
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
         },
       },
       pipeline: [],
@@ -1632,6 +1634,7 @@ test("dashboard isolates fresh edge caches by public Bay scope", async () => {
         timings: {
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
         },
       },
       pipeline: [],
@@ -1723,6 +1726,7 @@ test("dashboard rewrites a malformed durable root to a fixed incomplete snapshot
         timings: {
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
         },
       },
       nested: { marker },
@@ -1793,6 +1797,7 @@ test("dashboard rejects malformed, undated, stale, and future durable snapshots"
         timings: {
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
         },
       },
     }),
@@ -2039,6 +2044,7 @@ test("optional exact-review telemetry failures do not freeze an idle status snap
         timings: {
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
         },
       },
       pipeline: [],
@@ -2122,6 +2128,7 @@ test("optional queue status failures remain bounded in public and persisted snap
         timings: {
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
         },
       },
       pipeline: [],
@@ -2269,6 +2276,7 @@ test("optional queue status failure retains the last complete public Bay queue s
         timings: {
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
         },
       },
       pipeline: [],

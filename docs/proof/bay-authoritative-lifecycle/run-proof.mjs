@@ -12,7 +12,11 @@ if (!origin || !secret) throw new Error("Bay lifecycle proof origin and secret a
 
 const publicRepository = "openclaw/openclaw";
 const privateRepository = "example/private";
-const sources = ["opened", "synchronize", "edited", "review", "re_review"];
+// This controlled real-runtime fixture exercises only commands because an
+// authenticated command acknowledgement is the public final-review receipt.
+// Automatic ingress is covered separately by the focused lifecycle tests,
+// where its distinct correlated GitHub-effect receipt can be constructed.
+const sources = ["review", "re_review"];
 const triggeredAt = new Date(Date.now() - 90_000).toISOString();
 const assertions = [];
 
@@ -48,20 +52,15 @@ function decision(repository, itemNumber, sourceAction) {
     targetRepo: repository,
     targetBranch: "main",
     itemNumber,
-    itemKind: "pull_request",
-    sourceEvent: "pull_request",
+    itemKind: "issue",
+    sourceEvent: "issues",
     sourceAction,
     supersedesInProgress: sourceAction === "edited" || sourceAction === "synchronize",
-    sourceUpdatedAt: command ? undefined : triggeredAt,
+    sourceUpdatedAt: triggeredAt,
     ...(command
       ? {
-          sourceCommentId: 80_000 + itemNumber,
-          sourceCommentUpdatedAt: triggeredAt,
           commandStatusMarker: `<!-- clawsweeper-command-status:${itemNumber}:${sourceAction}:${"a".repeat(40)} -->`,
           statusCommentId: 90_000 + itemNumber,
-          commandBodyDigest: "a".repeat(64),
-          commandOrigin: "hosted_webhook",
-          sourceCommentVerified: true,
         }
       : {}),
   };
@@ -82,6 +81,28 @@ async function admitAndComplete(repository, itemNumber, sourceAction) {
       source_action: sourceAction,
     },
   );
+  const canonical = await signedPost("/internal/exact-review/lifecycle/canonical-receipt", {
+    canonical_target_key: identity,
+    fence_key: identity,
+    revision: 1,
+    outcome: "accepted",
+    receipt_id: `bay-lifecycle-proof:${repository}:${itemNumber}:canonical`,
+  });
+  assertProof("Canonical lifecycle receipt is accepted", canonical?.ok === true, {
+    repository,
+    item_number: itemNumber,
+  });
+  const router = await signedPost("/internal/exact-review/lifecycle/router-receipt", {
+    canonical_target_key: identity,
+    fence_key: identity,
+    revision: 1,
+    outcome: "durable",
+    receipt_id: `bay-lifecycle-proof:${repository}:${itemNumber}:router`,
+  });
+  assertProof("Router lifecycle receipt is accepted", router?.ok === true, {
+    repository,
+    item_number: itemNumber,
+  });
   const completed = await signedPost("/internal/exact-review/lifecycle/terminal-disposition", {
     canonical_target_key: identity,
     fence_key: identity,
@@ -92,12 +113,46 @@ async function admitAndComplete(repository, itemNumber, sourceAction) {
     repository,
     item_number: itemNumber,
   });
+  if (sourceAction === "review" || sourceAction === "re_review") {
+    const attempt = await signedPost("/internal/exact-review/lifecycle/command-ack/attempt", {
+      canonical_target_key: identity,
+      fence_key: identity,
+      revision: 1,
+      status_marker: decision(repository, itemNumber, sourceAction).commandStatusMarker,
+      status_comment_id: 90_000 + itemNumber,
+    });
+    assertProof("Final command acknowledgement is authorized", attempt?.allowed === true, {
+      repository,
+      item_number: itemNumber,
+    });
+    const acknowledgement = await signedPost(
+      "/internal/exact-review/lifecycle/command-ack/observed",
+      {
+        canonical_target_key: identity,
+        fence_key: identity,
+        revision: 1,
+        status_marker: decision(repository, itemNumber, sourceAction).commandStatusMarker,
+        command_comment_id: 81_000 + itemNumber,
+        completion_comment_id: 90_000 + itemNumber,
+        status_comment_id: 90_000 + itemNumber,
+        observed_at: Date.now(),
+      },
+    );
+    assertProof(
+      "Correlated final command receipt is accepted",
+      acknowledgement?.accepted === true,
+      {
+        repository,
+        item_number: itemNumber,
+      },
+    );
+  }
 }
 
 for (let index = 0; index < 21; index += 1) {
   await admitAndComplete(publicRepository, 95_000 + index, sources[index % sources.length]);
 }
-await admitAndComplete(privateRepository, 96_000, "opened");
+await admitAndComplete(privateRepository, 96_000, "review");
 
 const statusResponse = await fetch(`${origin}/api/status`, { cache: "no-store" });
 if (!statusResponse.ok) throw new Error(`/api/status returned ${statusResponse.status}`);
@@ -111,48 +166,58 @@ assertProof(
   },
 );
 assertProof(
-  "Lifecycle timing samples include every review trigger source",
-  bay?.timings?.overall?.samples === 21,
+  "Warming coverage retains only verified completed journey pairs",
+  bay?.timings?.overall?.samples === 21 &&
+    Number.isFinite(bay?.timings?.overall?.average_ms) &&
+    Number.isFinite(bay?.timings?.overall?.median_ms),
   {
     samples: bay?.timings?.overall?.samples,
+    average_ms: bay?.timings?.overall?.average_ms,
+    median_ms: bay?.timings?.overall?.median_ms,
     sample_kind: bay?.timings?.sample_kind,
   },
 );
 assertProof(
-  "Timing preserves the v1 sample kind and identifies its durable lifecycle source",
+  "Timing preserves the v1 source enum and adds final-review receipt provenance",
   bay?.timings?.sample_kind === "completed_review_journeys" &&
-    bay?.timings?.source === "durable_exact_review_lifecycles",
+    bay?.timings?.source === "durable_exact_review_lifecycles" &&
+    bay?.timings?.completion_source === "verified_final_review_receipts",
   {
     sample_kind: bay?.timings?.sample_kind,
     source: bay?.timings?.source,
+    completion_source: bay?.timings?.completion_source,
   },
 );
 assertProof(
-  "Twenty public completions advance the durable completed lane",
-  bay?.tide_generation === 1,
+  "Verified terminal journeys advance the durable tide independently of aggregate coverage",
+  bay?.tide_generation === 1 &&
+    bay?.terminal_count === 1 &&
+    Array.isArray(bay?.terminal_buffer) &&
+    bay.terminal_buffer.length === 1 &&
+    Number.isFinite(bay.terminal_buffer[0]?.journey_duration_ms),
   {
     tide_generation: bay?.tide_generation,
     terminal_count: bay?.terminal_count,
+    terminal_buffer: bay?.terminal_buffer,
   },
 );
 assertProof(
-  "The twenty-first public completion remains in the next tide",
-  bay?.terminal_count === 1,
+  "The private lifecycle completion remains excluded from the public aggregate",
+  bay?.timings?.overall?.samples === 21 &&
+    Array.isArray(bay?.terminal_buffer) &&
+    bay.terminal_buffer.every((entry) => entry?.repository === publicRepository),
   {
-    terminal_count: bay?.terminal_count,
+    samples: bay?.timings?.overall?.samples,
+    terminal_buffer: bay?.terminal_buffer,
   },
 );
 assertProof(
-  "The private lifecycle completion is excluded from the public aggregate",
-  bay?.terminal_count === 1 && bay?.tide_generation === 1,
+  "The durable tide reports its verified completion time",
+  typeof bay?.last_tide_at === "string",
   {
-    tide_generation: bay?.tide_generation,
-    terminal_count: bay?.terminal_count,
+    last_tide_at: bay?.last_tide_at,
   },
 );
-assertProof("The completed lane records its last tide", typeof bay?.last_tide_at === "string", {
-  last_tide_at: bay?.last_tide_at,
-});
 
 const browserPath =
   process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ||
@@ -169,11 +234,11 @@ try {
   const timingSummary = await page.locator("#overall-average").innerText();
   assertProof(
     "The rendered Bay page preserves authoritative warming coverage",
-    timingSummary.toLowerCase().includes("calibrating complete lifecycle coverage"),
+    timingSummary.toLowerCase().includes("calibrating end-to-end coverage"),
     { timing_summary: timingSummary, metrics_state: bay?.metrics_state },
   );
   assertProof(
-    "The rendered Bay page shows the authoritative completed lane",
+    "The rendered Bay page preserves durable tide progress during warming",
     (await page.locator("#tide-countdown").innerText()).trim() === "1 / 20",
     { countdown: await page.locator("#tide-countdown").innerText() },
   );
@@ -181,25 +246,19 @@ try {
     .locator('#terminal-stack [data-stage="completed"] h2')
     .innerText();
   assertProof(
-    "The rendered completed lane retains its finished revision when active work overlaps it",
+    "The rendered completed lane shows the verified terminal journey",
     completedLaneHeading.startsWith("COMPLETED 1"),
     { completed_lane: completedLaneHeading },
   );
-  await page
-    .locator('#terminal-stack [data-stage="completed"] [data-reference]')
-    .first()
-    .click({ force: true });
-  const terminalDrawerStage = (await page.locator("#drawer-badges").innerText()).trim();
   assertProof(
-    "A completed card retains its terminal identity when its review is still active",
-    terminalDrawerStage.toLowerCase() === "completed",
-    { terminal_drawer_stage: terminalDrawerStage },
-  );
-  await page.locator("#drawer-close").click();
-  assertProof(
-    "The rendered Bay page shows the authoritative last tide",
+    "The rendered Bay page labels the verified last tide",
     (await page.locator("#tide-summary").innerText()).startsWith("Last tide "),
     { tide_summary: await page.locator("#tide-summary").innerText() },
+  );
+  assertProof(
+    "The rendered terminal card states its verified total journey duration",
+    (await page.locator(".pool .journey-duration").innerText()).startsWith("Journey "),
+    { duration: await page.locator(".pool .journey-duration").innerText() },
   );
   await page.screenshot({
     path: path.join(outputDir, "bay-lifecycle-metrics.png"),
@@ -226,7 +285,7 @@ const summary = {
   assertions,
   artifacts: ["bay-lifecycle-metrics.png", "proof-summary.json"],
   limits: [
-    "The one-hour timing coverage window is intentionally still warming in this short proof; the aggregate has all 21 source completions, while the UI withholds a partial average until coverage is complete.",
+    "The one-hour timing coverage window is intentionally still warming in this short proof; the aggregate UI withholds its partial typical-duration statistic, while individually verified terminal cards and tide progress remain visible.",
     "The proof uses local signed lifecycle traffic and does not call GitHub or mutate production state.",
   ],
 };

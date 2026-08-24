@@ -133,6 +133,7 @@ function statusFixture() {
     bay: {
       metrics_state: "complete",
       timing_coverage_complete: true,
+      timing_coverage_started_at: "2026-08-16T15:00:00.000Z",
       tide_generation: 0,
       tide_threshold: 20,
       terminal_count: 1,
@@ -141,6 +142,7 @@ function statusFixture() {
           outcome: "success",
           repository: "openclaw/clawhub",
           item_number: 456,
+          journey_duration_ms: 60000,
           title: privateMarker,
           run_url: `https://invalid.example/run/${privateMarker}`,
         },
@@ -151,8 +153,10 @@ function statusFixture() {
       timings: {
         sample_kind: "completed_review_journeys",
         source: "durable_exact_review_lifecycles",
+        completion_source: "verified_final_review_receipts",
         window_minutes: 60,
         overall: { samples: 0, average_ms: null, median_ms: null },
+        history: { bucket_minutes: 5, points: [] },
       },
       last_tide_at: null,
       washed_at: null,
