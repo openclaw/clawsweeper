@@ -804,7 +804,22 @@ function runTerminalCommand(
       const failure = terminalCommandFailure(command, exitStatus, capturedOutput);
       throw new TerminalCommandExecutionError(failure.message, window);
     }
-    if (exitStatus === 0) return window;
+    if (exitStatus === 0) {
+      const settledStatus = observeTerminalCommandStatus(
+        runner,
+        checkout,
+        terminalSession,
+        window,
+        readCommandStatus,
+        TERMINAL_COMMAND_STATUS_GRACE_SECONDS,
+        true,
+      );
+      if (settledStatus !== undefined && settledStatus !== 0) {
+        const failure = terminalCommandFailure(command, settledStatus, window.output);
+        throw new TerminalCommandExecutionError(failure.message, window);
+      }
+      return window;
+    }
     if (capturedOutput.trim()) {
       // Output commonly precedes process exit; wait briefly for tmux to publish the
       // pane's final status before treating it as intentionally long-running.
