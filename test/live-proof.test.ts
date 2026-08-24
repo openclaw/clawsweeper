@@ -767,6 +767,32 @@ test("terminal waits for tmux to publish a dead pane status", () => {
   assert.equal(result.steps[0]?.satisfied, true);
 });
 
+test("terminal status probe errors fail closed", () => {
+  for (const options of [
+    { terminalPaneProbeError: true },
+    { terminalPaneMalformed: "not-a-pane-status" },
+  ]) {
+    const result = driveTerminal({
+      plan: {
+        ...recommendedPlan("terminal"),
+        entry: "demo",
+        steps: [{ action: "expect_output", text: "Ready" }],
+      },
+      checkout: "/tmp/checkout",
+      rawVideoPath: "/tmp/live-proof.raw.webm",
+      maxRecordingSeconds: 90,
+      recordMedia: false,
+      runner: terminalLifecycleRunner([], {
+        ...options,
+        terminalCaptures: ["Ready\n"],
+      }),
+    });
+
+    assert.equal(result.status, "failed");
+    assert.match(result.output, /tmux pane status probe/);
+  }
+});
+
 test("terminal command failure after an observed marker is caught after the recording hold", () => {
   const calls: string[] = [];
   const result = driveTerminal({
@@ -2379,6 +2405,8 @@ function terminalLifecycleRunner(
     terminalPaneExitStatus?: number;
     terminalPaneSignal?: string;
     terminalPaneStates?: string[];
+    terminalPaneProbeError?: boolean;
+    terminalPaneMalformed?: string;
   } = {},
 ): MediaProofCommandRunner {
   let displayProbe = 0;
@@ -2424,6 +2452,12 @@ function terminalLifecycleRunner(
         target.includes("-terminal") &&
         args.at(-1) === "#{pane_dead}:#{pane_dead_status}:#{pane_dead_signal}"
       ) {
+        if (options.terminalPaneProbeError) {
+          return { status: 1, stderr: "status probe failed" };
+        }
+        if (options.terminalPaneMalformed !== undefined) {
+          return { status: 0, stdout: `${options.terminalPaneMalformed}\n` };
+        }
         if (options.terminalPaneStates?.length) {
           const state =
             options.terminalPaneStates[

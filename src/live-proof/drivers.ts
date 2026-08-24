@@ -885,11 +885,20 @@ function readTerminalPaneExitStatus(
     ],
     { cwd: checkout },
   );
-  if (result.status !== 0) return undefined;
-  const match = String(result.stdout ?? "")
-    .trim()
-    .match(/^([01]):(\d{0,3}):([A-Za-z0-9]*)$/);
-  if (!match || match[1] === "0") return undefined;
+  if (result.status !== 0) {
+    throw new Error(`tmux pane status probe failed: ${mediaProofSpawnDetail(result)}`);
+  }
+  const rawStatus = String(result.stdout ?? "").trim();
+  const match = rawStatus.match(/^([01]):(\d{0,3}):([A-Za-z0-9]*)$/);
+  if (!match) {
+    throw new Error(`tmux pane status probe returned invalid output: ${JSON.stringify(rawStatus)}`);
+  }
+  if (match[1] === "0") {
+    if (match[2] || match[3]) {
+      throw new Error(`tmux live pane unexpectedly reported an exit: ${JSON.stringify(rawStatus)}`);
+    }
+    return undefined;
+  }
   if (match[3]) {
     const numericSignal = /^\d+$/.test(match[3]) ? Number.parseInt(match[3], 10) : undefined;
     if (numericSignal !== undefined && numericSignal > 0 && numericSignal < 128) {
