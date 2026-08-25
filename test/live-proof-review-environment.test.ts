@@ -10,18 +10,21 @@ import {
   executeReviewLiveProofs,
   reviewLiveProofGoEnvironment,
 } from "../dist/live-proof/review-artifacts.js";
+import { sanitizedLiveProofEnvironment } from "../dist/live-proof/environment.js";
 import { parseLiveVerificationResult } from "../dist/live-proof/verification.js";
 
 test("review live proof composes inherited Go environment settings", () => {
   const profile = join("scratch", "profile");
-  const environment = reviewLiveProofGoEnvironment(
-    {
-      GOFLAGS: "-trimpath -modcacherw=false",
-      GOMODCACHE: join("shared", "go", "pkg", "mod"),
-    },
-    profile,
-  );
+  const environment = sanitizedLiveProofEnvironment({
+    GOFLAGS: "-trimpath -modcacherw=false",
+    GOMODCACHE: join("shared", "go", "pkg", "mod"),
+    GOTOOLCHAIN: "local",
+    GH_TOKEN: "must-not-cross",
+  });
+  Object.assign(environment, reviewLiveProofGoEnvironment(environment, profile));
 
+  assert.equal(environment.GOTOOLCHAIN, "local");
+  assert.equal(environment.GH_TOKEN, undefined);
   assert.equal(environment.GOFLAGS, "-trimpath -modcacherw=false -modcacherw");
   assert.equal(environment.GOMODCACHE, join(profile, "go-mod-cache"));
 });

@@ -806,6 +806,58 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     assert.match(install, /run_bounded_install sudo apt-get update/);
     assert.match(install, /run_bounded_install sudo apt-get install --yes/);
   }
+  const resolveExactLiveProofGo = step(reviewer, "Resolve exact live-proof Go version");
+  const setupExactLiveProofGo = step(reviewer, "Set up exact live-proof Go toolchain");
+  assert.match(
+    step(reviewer, "Inspect exact review live proof").run ?? "",
+    /echo "candidates=\$\(jq -c '\.candidates'/,
+  );
+  assert.match(
+    resolveExactLiveProofGo.if ?? "",
+    /inspect-exact-live-proof.*candidate_count != '0'/,
+  );
+  assert.match(resolveExactLiveProofGo.if ?? "", /inspect-exact-live-proof\.outcome == 'success'/);
+  assert.match(
+    resolveExactLiveProofGo.run ?? "",
+    /git -C "\$TARGET_CHECKOUT" show "\$head_sha:go\.mod"/,
+  );
+  assert.match(resolveExactLiveProofGo.run ?? "", /\$\{go_version:-1\.16\}/);
+  assert.match(resolveExactLiveProofGo.run ?? "", /replace\(\/-\.\+\$\/, ""\)/);
+  assert.match(resolveExactLiveProofGo.run ?? "", /minor < 21 \? 2 : -1/);
+  assert.match(resolveExactLiveProofGo.run ?? "", /compare\(versions\.at\(-1\), "1\.14\.0"\)/);
+  assert.match(resolveExactLiveProofGo.run ?? "", /printf 'golang %s\\n'/);
+  assert.equal(
+    setupExactLiveProofGo.uses,
+    "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16",
+  );
+  assert.equal(
+    setupExactLiveProofGo.with?.["go-version-file"],
+    "${{ steps.resolve-exact-live-proof-go.outputs.path }}",
+  );
+  assert.equal(setupExactLiveProofGo.with?.cache, "false");
+  assert.match(
+    setupExactLiveProofGo.if ?? "",
+    /claim-exact-review-queue\.outputs\.claimed == 'true'/,
+  );
+  assert.match(
+    setupExactLiveProofGo.if ?? "",
+    /resolve-exact-live-proof-go\.outputs\.available == 'true'/,
+  );
+  assert.match(
+    setupExactLiveProofGo.if ?? "",
+    /hashFiles\(steps\.resolve-exact-live-proof-go\.outputs\.path\) != ''/,
+  );
+  assert.ok(
+    reviewer.steps.indexOf(step(reviewer, "Inspect exact review live proof")) <
+      reviewer.steps.indexOf(resolveExactLiveProofGo),
+  );
+  assert.ok(
+    reviewer.steps.indexOf(resolveExactLiveProofGo) < reviewer.steps.indexOf(setupExactLiveProofGo),
+  );
+  assert.ok(
+    reviewer.steps.indexOf(setupExactLiveProofGo) <
+      reviewer.steps.indexOf(step(reviewer, "Execute exact review live proof")),
+  );
   const reserveLease = step(reviewer, "Reserve exact review lease");
   assert.equal(reserveLease.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
   assert.match(reserveLease.run ?? "", /pnpm run --silent reserve-review-lease/);
@@ -1498,6 +1550,54 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.ok(
     publisherSource.indexOf("eventSnapshotMatchesCurrent(paths)", completeStart) > completeStart,
   );
+});
+
+test("review shards provision Go only for inspected live-proof candidates with a root module", () => {
+  type Step = {
+    name?: string;
+    uses?: string;
+    if?: string;
+    run?: string;
+    with?: Record<string, string | number | boolean>;
+  };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Step[] }>;
+  };
+  const steps = workflow.jobs.review!.steps;
+  const step = (name: string) => {
+    const value = steps.find((candidate) => candidate.name === name);
+    assert.ok(value, `missing step: ${name}`);
+    return value;
+  };
+  const resolveGo = step("Resolve review-shard live-proof Go version");
+  const setupGo = step("Set up review-shard live-proof Go toolchain");
+
+  assert.match(
+    step("Inspect review-shard live proofs").run ?? "",
+    /echo "candidates=\$\(jq -c '\.candidates'/,
+  );
+  assert.match(resolveGo.if ?? "", /inspect-shard-live-proofs.*candidate_count != '0'/);
+  assert.match(resolveGo.if ?? "", /inspect-shard-live-proofs\.outcome == 'success'/);
+  assert.match(resolveGo.run ?? "", /git -C "\$TARGET_CHECKOUT" show "\$head_sha:go\.mod"/);
+  assert.match(resolveGo.run ?? "", /\$\{go_version:-1\.16\}/);
+  assert.match(resolveGo.run ?? "", /replace\(\/-\.\+\$\/, ""\)/);
+  assert.match(resolveGo.run ?? "", /minor < 21 \? 2 : -1/);
+  assert.match(resolveGo.run ?? "", /compare\(versions\.at\(-1\), "1\.14\.0"\)/);
+  assert.match(resolveGo.run ?? "", /printf 'golang %s\\n'/);
+  assert.equal(setupGo.uses, "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16");
+  assert.equal(
+    setupGo.with?.["go-version-file"],
+    "${{ steps.resolve-shard-live-proof-go.outputs.path }}",
+  );
+  assert.equal(setupGo.with?.cache, "false");
+  assert.match(setupGo.if ?? "", /resolve-shard-live-proof-go\.outputs\.available == 'true'/);
+  assert.match(
+    setupGo.if ?? "",
+    /hashFiles\(steps\.resolve-shard-live-proof-go\.outputs\.path\) != ''/,
+  );
+  assert.ok(steps.indexOf(step("Inspect review-shard live proofs")) < steps.indexOf(resolveGo));
+  assert.ok(steps.indexOf(resolveGo) < steps.indexOf(setupGo));
+  assert.ok(steps.indexOf(setupGo) < steps.indexOf(step("Execute review-shard live proofs")));
 });
 test("exact event publication derives lifecycle receipt and final command acknowledgement from the projection", () => {
   type Step = {
