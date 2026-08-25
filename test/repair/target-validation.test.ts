@@ -8057,6 +8057,48 @@ if (fs.readFileSync("pnpm-lock.yaml", "utf8") !== ${JSON.stringify(originalLockf
   assert.equal(fs.readFileSync(countPath, "utf8"), "3");
 });
 
+test("dependency setup removes a lockfile pnpm materializes where none existed", () => {
+  const cwd = gitPackageFixture({ check: "node check.js" });
+  const lockfilePath = path.join(cwd, "pnpm-lock.yaml");
+  fs.rmSync(lockfilePath);
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  assert.ok(!fs.existsSync(lockfilePath), "fixture must start with no lockfile");
+
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-pnpm-absent-lockfile-"));
+  const corepackPath = path.join(binDir, "corepack.js");
+  const pnpmPath = path.join(binDir, "pnpm.js");
+  fs.writeFileSync(corepackPath, "");
+  fs.writeFileSync(
+    pnpmPath,
+    `const fs = require("node:fs");
+fs.writeFileSync("pnpm-lock.yaml", "lockfileVersion: '9.0'\\n");
+`,
+  );
+
+  withMockCommand("corepack", corepackPath, () =>
+    withMockCommand("pnpm", pnpmPath, () =>
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: ["pnpm check"],
+            changedGate: null,
+          },
+        }),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      }),
+    ),
+  );
+
+  assert.ok(
+    !fs.existsSync(lockfilePath),
+    "install-owned lockfile must not survive setup when the checkout started without one",
+  );
+});
+
 test("target setup shares one deadline across probes and installs", () => {
   const cwd = gitPackageFixture({ check: "node check.js" });
   fs.writeFileSync(path.join(cwd, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");

@@ -520,6 +520,12 @@ function preparePnpmToolchain({
     restoreTargetFile(cwd, lockfileSnapshot);
     runPnpmInstall(installArgs, "pnpm frozen reinstall");
   }
+  // A frozen-lockfile install never rewrites an existing lockfile, but pnpm
+  // silently materializes one when the target repo has no lockfile to freeze
+  // against (e.g. a zero-dependency package.json). That install-owned file
+  // didn't exist in the checkout before setup, so drop it again rather than
+  // let it read as a checkout mutation to the post-setup identity guard.
+  if (lockfileSnapshot.kind === "absent") restoreTargetFile(cwd, lockfileSnapshot);
   if (preparePinnedOpenClawHelper) {
     preparePinnedOpenClawValidationHelper({
       cwd,
