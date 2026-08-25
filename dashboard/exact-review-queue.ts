@@ -799,6 +799,14 @@ export class ExactReviewQueue {
   }
 
   async fetch(request: Request) {
+    try {
+      return await this.handleFetchRequest(request);
+    } catch (error) {
+      return json({ error: sanitizedServerError(error) }, 500);
+    }
+  }
+
+  private async handleFetchRequest(request: Request) {
     const url = new URL(request.url);
     // This is deliberately the only route that may observe lifecycle rows
     // before full queue initialization. Its constructor-managed schema barrier
