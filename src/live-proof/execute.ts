@@ -406,7 +406,9 @@ function addPackageManagerToPath(packageManager: string, environment: NodeJS.Pro
     packageManager === "bun"
       ? join(home, ".bun", "bin")
       : packageManager === "pnpm"
-        ? environment.PNPM_HOME?.trim() || join(home, ".local", "share", "pnpm")
+        ? environment.PNPM_HOME?.trim()
+          ? join(environment.PNPM_HOME.trim(), "bin")
+          : join(home, ".local", "share", "pnpm")
         : undefined;
   if (!directory) return;
   const path = environment.PATH ?? "";

@@ -367,6 +367,42 @@ test("live-proof installs a missing Bun toolchain with the official installer", 
   assert.match(logs.join("\n"), /installed target package manager bun/);
 });
 
+test("live-proof resolves pnpm from the configured PNPM_HOME bin directory", () => {
+  const calls: Array<{ command: string; args: readonly string[]; path?: string }> = [];
+  const environment: NodeJS.ProcessEnv = {
+    HOME: "/tmp/live-proof-home",
+    PATH: "/usr/bin",
+    PNPM_HOME: "/tmp/live-proof-home/pnpm",
+  };
+  let probes = 0;
+  ensureLiveProofPackageManager(
+    "pnpm",
+    (command, args, options) => {
+      calls.push({ command, args, path: options?.env?.PATH ?? environment.PATH });
+      if (String(args[1]).startsWith("command -v pnpm")) {
+        probes += 1;
+        return { status: probes === 1 ? 1 : 0 };
+      }
+      return { status: 0 };
+    },
+    "/tmp/checkout",
+    environment,
+  );
+
+  assert.deepEqual(
+    calls.map(({ command, args }) => [command, ...args].join(" ")),
+    [
+      "sh -lc command -v pnpm >/dev/null 2>&1",
+      "sh -lc curl -fsSL https://get.pnpm.io/install.sh | sh -",
+      "sh -lc command -v pnpm >/dev/null 2>&1",
+    ],
+  );
+  assert.equal(
+    calls.every(({ path }) => path?.startsWith("/tmp/live-proof-home/pnpm/bin:")),
+    true,
+  );
+});
+
 test("live-proof reports an unsupported package manager clearly", () => {
   assert.throws(
     () =>
