@@ -766,7 +766,7 @@ test("Bay lifecycle includes an in-flight public review when it initializes its 
   assert.equal(snapshot.terminal?.terminal_count, 1);
 });
 
-test("Bay lifecycle timing coverage is bound to the configured public repository scope", () => {
+test("Bay lifecycle timing coverage is bound to the public Bay repository scope", () => {
   const storage = new MemoryDurableStorage();
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
   const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
@@ -977,7 +977,7 @@ test("Bay lifecycle keeps only bounded tide detail after many completions", () =
       ),
     )[0]?.count || 0,
   );
-  // Global and the one configured public scope each retain at most the
+  // Global and the one public Bay scope each retain at most the
   // current 19-item tide plus one 20-item washed tide.
   assert.equal(bufferRows, 78);
 });
@@ -3387,6 +3387,7 @@ test("migrated modern acknowledgement receipts preserve the webhook completion i
     CLAWSWEEPER_WEBHOOK_SECRET: secret,
     EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
     STATUS_STORE: statusStore,
+    hostedPublicTargetProbe: async () => "public" as const,
   };
   const webhook = await worker.fetch(
     signedGithubWebhookRequest({
@@ -3571,6 +3572,7 @@ test("modern shared status comments acknowledge only the matching command marker
       CLAWSWEEPER_WEBHOOK_SECRET: "shared-status-secret",
       EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
       STATUS_STORE: new MemoryKv(),
+      hostedPublicTargetProbe: async () => "public" as const,
     },
   );
 
@@ -4384,6 +4386,7 @@ test("Worker observes the generic durable terminal failure acknowledgement", asy
     CLAWSWEEPER_WEBHOOK_SECRET: "terminal-failure-secret",
     EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
     STATUS_STORE: new MemoryKv(),
+    hostedPublicTargetProbe: async () => "public" as const,
   };
   const attempted = await worker.fetch(
     new Request(
@@ -9170,6 +9173,7 @@ test("hosted webhook records an edited review command through its final command 
   const env = {
     CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
     STATUS_STORE: statusStore,
+    hostedPublicTargetProbe: async () => "public" as const,
   };
   const trigger = await worker.fetch(
     signedGithubWebhookRequest({

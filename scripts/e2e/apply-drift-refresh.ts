@@ -163,8 +163,12 @@ process.stdout.write(args.includes('--jq') ? (pr ? 'pull_request' : 'issue') : J
     return Function(
       "github",
       "vars",
-      `return (${expression.replace(/^\$\{\{\s*|\s*\}\}$/g, "")});`,
-    )(github, {});
+      "needs",
+      "always",
+      `return (${expression
+        .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+        .replaceAll("needs.hosted-target-admission", 'needs["hosted-target-admission"]')});`,
+    )(github, {}, { "hosted-target-admission": { outputs: { outcome: "public" } } }, () => true);
   }
   for (const event of events) {
     assert.equal(event.event_type, "clawsweeper_item");

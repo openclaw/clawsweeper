@@ -1,9 +1,79 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+
+test("batch claim emits arbitrary target metadata after Worker admission", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-batch-cli-target-"));
+  try {
+    const member = batchMember("openclaw/private-tool#800@publish:8000:1", 800);
+    member.decision.targetRepo = "openclaw/private-tool";
+    const wireMember = {
+      item_key: member.itemKey,
+      revision: member.revision,
+      claim_generation: member.claimGeneration,
+      decision: member.decision,
+    };
+    const manifestPath = join(root, "manifest.json");
+    const outputPath = join(root, "github-output");
+    const preloadPath = join(root, "fetch-preload.cjs");
+    writeFileSync(
+      preloadPath,
+      `const member = ${JSON.stringify(wireMember)};
+const response = (value) => new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+globalThis.fetch = async (url) => {
+  if (String(url).endsWith("/publication-batches/claim")) {
+    return response({ claimed: true, batch: { batch_id: "batch-target-proof", lease_owner: "proof-worker", lease_expires_at: "2026-08-25T16:00:00.000Z", items: [member] }, configured_batch_size: 1, batch_wait_ms: 0 });
+  }
+  if (String(url).endsWith("/publication-batches/fetch")) {
+    return response({ batch: { batch_id: "batch-target-proof", lease_owner: "proof-worker", lease_expires_at: "2026-08-25T16:00:00.000Z", items: [member] }, items: [member], superseded: 0 });
+  }
+  throw new Error("unexpected mock fetch target: " + url);
+};
+`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", "claim"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+          EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+          EXACT_REVIEW_BATCH_ID: "batch-target-proof",
+          EXACT_REVIEW_BATCH_LEASE_OWNER: "proof-worker",
+          EXACT_REVIEW_BATCH_MAX_ITEMS: "1",
+          EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+          GITHUB_OUTPUT: outputPath,
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(manifestPath), true);
+    assert.equal(JSON.parse(readFileSync(manifestPath, "utf8")).items.length, 1);
+    const outputs = readFileSync(outputPath, "utf8");
+    assert.match(outputs, /^claimed=true$/m);
+    assert.match(outputs, /^batch_id=batch-target-proof$/m);
+    assert.match(outputs, /^item_count=1$/m);
+    assert.match(outputs, /^manifest=.*manifest\.json$/m);
+    assert.match(outputs, /^target_owner=openclaw$/m);
+    assert.match(outputs, /^target_repositories=private-tool$/m);
+    assert.match(outputs, /^records_repo_slugs=openclaw-private-tool$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("batch commit records an invalid member permanently while publishing its healthy peer", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-batch-cli-"));

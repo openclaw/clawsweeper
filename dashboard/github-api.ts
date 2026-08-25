@@ -1,8 +1,18 @@
+import {
+  githubResponseRateLimitHint,
+  githubResponseRateLimited,
+  type GitHubRateLimitHint,
+} from "../src/hosted-target-admission.ts";
+
+export {
+  githubResponseRateLimitHint,
+  githubResponseRateLimited,
+  type GitHubRateLimitHint,
+} from "../src/hosted-target-admission.ts";
+
 export const DEFAULT_GITHUB_API_URL = "https://api.github.com";
 
 const GITHUB_APP_TIMEOUT_MS = 4500;
-const GITHUB_RATE_LIMIT_FALLBACK_MS = 15 * 60 * 1000;
-const GITHUB_RATE_LIMIT_MAX_RETRY_MS = 2 * 60 * 60 * 1000;
 const workerTransportErrors = new WeakMap<GitHubRequestError, unknown>();
 
 type GithubApiEnv = Record<string, unknown>;
@@ -12,13 +22,6 @@ export type GitHubRequestValidationDetail = {
   validationFields: string[];
   validationCodes: string[];
 };
-export type GitHubRateLimitHint = {
-  observedAt: number;
-  retryAt: number;
-  provenance: "retry_after" | "rate_limit_reset" | "rate_limit_status" | "fallback";
-  authoritative: boolean;
-};
-
 export class GitHubRequestError extends Error {
   readonly status?: number | undefined;
   readonly timedOut: boolean;
@@ -142,8 +145,11 @@ export async function githubAppJson(
     response = await fetch(githubApiUrl(env, path), {
       method: options.method || "GET",
       signal,
+      cache: "no-store",
+      redirect: "manual",
       headers: {
         Accept: "application/vnd.github+json",
+        "Cache-Control": "no-store",
         "Content-Type": "application/json",
         "User-Agent": "openclaw-clawsweeper-status",
         Authorization: `Bearer ${appJwt}`,
@@ -229,52 +235,6 @@ function throwPlainGitHubRequestError(error: unknown): never {
     throw new Error(error.message);
   }
   throw error;
-}
-
-export function githubResponseRateLimited(response: Response, text: string) {
-  return (
-    response.status === 429 ||
-    response.headers.has("retry-after") ||
-    response.headers.get("x-ratelimit-remaining") === "0" ||
-    /(?:secondary )?rate limit|api rate limit|abuse detection/i.test(text)
-  );
-}
-
-export function githubResponseRateLimitHint(
-  response: Response,
-  observedAt: number,
-): GitHubRateLimitHint {
-  const maxRetryAt = observedAt + GITHUB_RATE_LIMIT_MAX_RETRY_MS;
-  const retryAfter = String(response.headers.get("retry-after") || "").trim();
-  if (retryAfter) {
-    const seconds = Number(retryAfter);
-    const parsed = Number.isFinite(seconds)
-      ? observedAt + Math.max(0, seconds) * 1_000
-      : Date.parse(retryAfter);
-    if (Number.isFinite(parsed)) {
-      return {
-        observedAt,
-        retryAt: Math.max(observedAt + 1_000, Math.min(maxRetryAt, parsed)),
-        provenance: "retry_after",
-        authoritative: true,
-      };
-    }
-  }
-  const resetSeconds = Number(response.headers.get("x-ratelimit-reset"));
-  if (Number.isFinite(resetSeconds) && resetSeconds > 0) {
-    return {
-      observedAt,
-      retryAt: Math.max(observedAt + 1_000, Math.min(maxRetryAt, resetSeconds * 1_000)),
-      provenance: "rate_limit_reset",
-      authoritative: true,
-    };
-  }
-  return {
-    observedAt,
-    retryAt: observedAt + GITHUB_RATE_LIMIT_FALLBACK_MS,
-    provenance: "fallback",
-    authoritative: false,
-  };
 }
 
 export function githubResponseValidationDetail(status: number, text: string) {

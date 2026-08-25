@@ -34,11 +34,15 @@ jobs:
           startsWith(github.event.workflow_run.display_title, 'Review scheduled hot item ') ||
           startsWith(github.event.workflow_run.display_title, 'Review scheduled normal item ') ||
           startsWith(github.event.workflow_run.display_title, 'Review event item') ||
+          startsWith(github.event.workflow_run.display_title, 'Review manual item') ||
+          startsWith(github.event.workflow_run.display_title, 'Review manual batch ') ||
           startsWith(github.event.workflow_run.display_title, 'Review hot ClawSweeper items') ||
           startsWith(github.event.workflow_run.display_title, 'Review hot target repo ') ||
+          startsWith(github.event.workflow_run.display_title, 'Review manual hot target') ||
           startsWith(github.event.workflow_run.display_title, 'Retry failed Codex reviews') ||
           startsWith(github.event.workflow_run.display_title, 'Review target repo ') ||
-          startsWith(github.event.workflow_run.display_title, 'Review ClawSweeper items')
+          startsWith(github.event.workflow_run.display_title, 'Review ClawSweeper items') ||
+          startsWith(github.event.workflow_run.display_title, 'Review manual target')
         )
       }}
     runs-on: ubuntu-latest

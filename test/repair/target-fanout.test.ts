@@ -1,18 +1,28 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import {
   SCHEDULED_REVIEW_PLAN_BATCH_SIZE,
+  admitSelectedRepositories,
   allocateReviewCandidateCapacity,
   defaultLimit,
   fetchFanoutCursor,
   filterEligibleRepositories,
   loadFanoutCursor,
+  loadEligibleRepositories,
   persistFanoutCursorFailOpen,
   planReviewFanout,
   publishReviewCoverageInventory,
@@ -31,6 +41,21 @@ import { mockGhBinEnv } from "../helpers.ts";
 const config: InventoryConfig = {
   owners: ["openclaw", "steipete"],
   denyRepositories: ["openclaw/clawsweeper-state"],
+  hostedTargetPolicy: {
+    configuredRepositories: ["partner/configured-repo"],
+    genericFallbacks: [
+      {
+        owner: "openclaw",
+        denyRepositories: ["openclaw/clawsweeper-state", "openclaw/.github"],
+        allowRepoNamePattern: /^[A-Za-z0-9_.-]+$/,
+      },
+      {
+        owner: "steipete",
+        denyRepositories: [],
+        allowRepoNamePattern: /^[A-Za-z0-9_.-]+$/,
+      },
+    ],
+  },
   includePrivate: false,
   includeArchived: false,
   includeForks: false,
@@ -315,6 +340,7 @@ test("target fanout publishes signed live open counts for dashboard coverage", a
 test("target fanout filters eligible repositories conservatively", () => {
   const repositories: ListedRepository[] = [
     repo("openclaw/openclaw"),
+    repo("openclaw/generic-public"),
     repo("openclaw/clawsweeper-state"),
     repo("openclaw/archived", { isArchived: true }),
     repo("openclaw/forked", { isFork: true }),
@@ -322,14 +348,84 @@ test("target fanout filters eligible repositories conservatively", () => {
     repo("openclaw/empty", { defaultBranch: "" }),
     repo("steipete/private-tool", { visibility: "PRIVATE" }),
     repo("steipete/internal-tool", { visibility: "INTERNAL" }),
+    repo("partner/configured-repo"),
+    repo("outside/repo"),
   ];
 
   assert.deepEqual(filterEligibleRepositories(repositories, config), [
+    { targetRepo: "openclaw/generic-public", defaultBranch: "main", visibility: "PUBLIC" },
     { targetRepo: "openclaw/openclaw", defaultBranch: "main", visibility: "PUBLIC" },
+    { targetRepo: "partner/configured-repo", defaultBranch: "main", visibility: "PUBLIC" },
   ]);
 });
 
-test("target fanout skips owners without minted inventory tokens in Actions", () => {
+test("target fanout owner overrides stay within configured inventory", async () => {
+  await assert.rejects(
+    loadEligibleRepositories(config, ["outside"]),
+    /target fanout owner is not configured: outside/,
+  );
+});
+
+test("target fanout rejects outside repositories before visibility probes", async () => {
+  let probes = 0;
+  assert.deepEqual(
+    await admitSelectedRepositories(
+      [{ targetRepo: "outside/repo", defaultBranch: "main", visibility: "PUBLIC" }],
+      {
+        policy: config.hostedTargetPolicy,
+        token: "central-metadata",
+        reader: async () => {
+          probes += 1;
+          return Response.json({
+            full_name: "outside/repo",
+            private: false,
+            visibility: "public",
+          });
+        },
+      },
+    ),
+    [],
+  );
+  assert.equal(probes, 0);
+});
+
+test("target fanout omits terminal selected targets after central public probe", async () => {
+  const repositories = [
+    { targetRepo: "openclaw/public-tool", defaultBranch: "main", visibility: "PUBLIC" },
+    { targetRepo: "openclaw/private-tool", defaultBranch: "main", visibility: "PUBLIC" },
+  ];
+  const admitted = await admitSelectedRepositories(repositories, {
+    policy: config.hostedTargetPolicy,
+    token: "central-metadata",
+    reader: async (input, init) => {
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer central-metadata");
+      const repoName = new URL(String(input)).pathname.split("/").slice(2).join("/");
+      return Response.json({
+        full_name: repoName,
+        private: repoName === "openclaw/private-tool",
+        visibility: repoName === "openclaw/private-tool" ? "private" : "public",
+      });
+    },
+  });
+
+  assert.deepEqual(admitted, [repositories[0]]);
+});
+
+test("target fanout aborts selected retryable targets before dispatch", async () => {
+  await assert.rejects(
+    admitSelectedRepositories(
+      [{ targetRepo: "openclaw/retry-later", defaultBranch: "main", visibility: "PUBLIC" }],
+      {
+        policy: config.hostedTargetPolicy,
+        token: "central-metadata",
+        reader: async () => Response.json({}, { status: 503 }),
+      },
+    ),
+    /target fanout visibility probe is retryable for openclaw\/retry-later; no dispatches were sent and the cursor was not advanced/,
+  );
+});
+
+test("target fanout skips owner inventory without tokens in Actions", () => {
   const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-"));
   const logPath = join(dir, "gh.log");
   const ghPath = join(dir, "gh.js");
@@ -339,9 +435,187 @@ test("target fanout skips owners without minted inventory tokens in Actions", ()
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({args, ghToken: process.env.GH_TOKEN || ""}) + "\\n");
-if (args[0] === "repo" && args[1] === "list") {
+process.exit(2);
+`,
+  );
+  chmodSync(ghPath, 0o755);
+
+  const output = execFileSync(
+    process.execPath,
+    [
+      "dist/repair/target-fanout.js",
+      "--mode",
+      "hot-intake",
+      "--limit",
+      "2",
+      "--repo",
+      "openclaw/clawsweeper",
+    ],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: "true",
+        ...mockGhBinEnv(ghPath),
+        CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN: "central-metadata",
+        CLAWSWEEPER_WEBHOOK_SECRET: "cursor-secret",
+      },
+    },
+  );
+
+  const summary = JSON.parse(output) as { dispatched: string[]; total: number };
+  assert.equal(summary.total, 0);
+  assert.deepEqual(summary.dispatched, []);
+  assert.equal(existsSync(logPath) ? readFileSync(logPath, "utf8") : "", "");
+});
+
+test("target fanout dispatches generic public inventory after central visibility probes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-"));
+  const logPath = join(dir, "gh.log");
+  const fetchLogPath = join(dir, "fetch.log");
+  const ghPath = join(dir, "gh.js");
+  const preloadPath = join(dir, "fetch-preload.cjs");
+  writeFileSync(
+    ghPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({args, ghToken: process.env.GH_TOKEN || ""}) + "\\n");
+if (args[0] === "repo" && args[1] === "list" && args[2] === "openclaw") {
   process.stdout.write(JSON.stringify([
-    {nameWithOwner:"openclaw/B",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
+    {nameWithOwner:"openclaw/clawhub",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}},
+    {nameWithOwner:"openclaw/example-tool",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"trunk"}},
+    {nameWithOwner:"openclaw/private-tool",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PRIVATE",defaultBranchRef:{name:"main"}}
+  ]));
+  process.exit(0);
+}
+if (args[0] === "repo" && args[1] === "list" && args[2] === "steipete") {
+  process.stdout.write(JSON.stringify([
+    {nameWithOwner:"steipete/camsnap",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"master"}}
+  ]));
+  process.exit(0);
+}
+if (args[0] === "api" && args[1] === "graphql") {
+  process.stdout.write(JSON.stringify({data:{
+    r0:{issues:{totalCount:1},pullRequests:{totalCount:0}},
+    r1:{issues:{totalCount:1},pullRequests:{totalCount:0}},
+    r2:{issues:{totalCount:0},pullRequests:{totalCount:0}}
+  }}));
+  process.exit(0);
+}
+if (args[0] === "api" && args[1].endsWith("/dispatches")) process.exit(0);
+process.exit(2);
+`,
+  );
+  chmodSync(ghPath, 0o755);
+  writeFileSync(
+    preloadPath,
+    `const fs = require("node:fs");
+globalThis.fetch = async (input, init) => {
+  const url = new URL(String(input));
+  fs.appendFileSync(${JSON.stringify(fetchLogPath)}, JSON.stringify({url:String(input), authorization:new Headers(init && init.headers).get("authorization") || ""}) + "\\n");
+  if (url.hostname === "api.github.com" && url.pathname.startsWith("/repos/")) {
+    const target = url.pathname.split("/").slice(2).join("/");
+    return Response.json({full_name:target,private:false,visibility:"public"});
+  }
+  throw new Error("unexpected fetch " + String(input));
+};
+`,
+  );
+
+  const output = execFileSync(
+    process.execPath,
+    [
+      "--require",
+      preloadPath,
+      "dist/repair/target-fanout.js",
+      "--mode",
+      "hot-intake",
+      "--limit",
+      "2",
+      "--repo",
+      "openclaw/clawsweeper",
+    ],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: "true",
+        ...mockGhBinEnv(ghPath),
+        CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
+        CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
+        CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: "inventory-steipete",
+        CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN: "central-metadata",
+      },
+    },
+  );
+
+  const summary = JSON.parse(output) as { dispatched: string[]; total: number };
+  assert.equal(summary.total, 2);
+  assert.deepEqual(summary.dispatched, ["openclaw/clawhub", "openclaw/example-tool"]);
+  const calls = readFileSync(logPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { args: string[]; ghToken: string });
+  assert.deepEqual(
+    calls
+      .filter((call) => call.args[0] === "repo" && call.args[1] === "list")
+      .map((call) => [call.args[2], call.ghToken]),
+    [
+      ["openclaw", "inventory-openclaw"],
+      ["steipete", "inventory-steipete"],
+    ],
+  );
+  assert.deepEqual(
+    calls
+      .filter((call) => call.args[0] === "api" && call.args[1]?.endsWith("/dispatches"))
+      .map((call) => [call.args.join(" "), call.ghToken]),
+    [
+      [
+        "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=openclaw/clawhub -f client_payload[target_branch]=main -f client_payload[hot_intake]=true -f client_payload[batch_size]=50 -f client_payload[shard_count]=1",
+        "dispatch-token",
+      ],
+      [
+        "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=openclaw/example-tool -f client_payload[target_branch]=trunk -f client_payload[hot_intake]=true -f client_payload[batch_size]=50 -f client_payload[shard_count]=1",
+        "dispatch-token",
+      ],
+    ],
+  );
+  assert.deepEqual(
+    readFileSync(fetchLogPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { url: string; authorization: string }),
+    [
+      {
+        url: "https://api.github.com/repos/openclaw/clawhub",
+        authorization: "Bearer central-metadata",
+      },
+      {
+        url: "https://api.github.com/repos/openclaw/example-tool",
+        authorization: "Bearer central-metadata",
+      },
+    ],
+  );
+});
+
+test("target fanout retryable probe exits before dispatch or cursor advancement", () => {
+  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-"));
+  const logPath = join(dir, "gh.log");
+  const fetchLogPath = join(dir, "fetch.log");
+  const ghPath = join(dir, "gh.js");
+  const preloadPath = join(dir, "fetch-preload.cjs");
+  writeFileSync(
+    ghPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({args, ghToken: process.env.GH_TOKEN || ""}) + "\\n");
+if (args[0] === "repo" && args[1] === "list" && args[2] === "openclaw") {
+  process.stdout.write(JSON.stringify([
+    {nameWithOwner:"openclaw/retry-later",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
   ]));
   process.exit(0);
 }
@@ -354,86 +628,36 @@ process.exit(2);
 `,
   );
   chmodSync(ghPath, 0o755);
-
-  const output = execFileSync(
-    process.execPath,
-    [
-      "dist/repair/target-fanout.js",
-      "--mode",
-      "hot-intake",
-      "--limit",
-      "2",
-      "--repo",
-      "openclaw/clawsweeper",
-    ],
-    {
-      cwd: process.cwd(),
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        GITHUB_ACTIONS: "true",
-        ...mockGhBinEnv(ghPath),
-        GH_TOKEN: "workflow-token",
-        CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
-        CLAWSWEEPER_WEBHOOK_SECRET: "cursor-secret",
-        CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
-        CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: "",
-      },
-    },
-  );
-
-  const summary = JSON.parse(output) as { dispatched: string[]; total: number };
-  assert.equal(summary.total, 1);
-  assert.deepEqual(summary.dispatched, ["openclaw/b"]);
-  const calls = readFileSync(logPath, "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line) as { args: string[]; ghToken: string });
-  assert.deepEqual(
-    calls.filter((call) => call.args[0] === "repo").map((call) => call.ghToken),
-    ["inventory-openclaw"],
-  );
-});
-
-test("target fanout can use anonymous public inventory in Actions", () => {
-  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-"));
-  const logPath = join(dir, "gh.log");
-  const ghPath = join(dir, "gh.js");
   writeFileSync(
-    ghPath,
-    `#!/usr/bin/env node
-const fs = require("node:fs");
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({args, ghToken: process.env.GH_TOKEN || ""}) + "\\n");
-if (args[0] === "repo" && args[1] === "list") {
-  const owner = args[2];
-  const data = owner === "openclaw"
-    ? [{nameWithOwner:"openclaw/B",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}]
-    : [{nameWithOwner:"steipete/A",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}];
-  process.stdout.write(JSON.stringify(data));
-  process.exit(0);
-}
-if (args[0] === "api" && args[1] === "graphql") {
-  process.stdout.write(JSON.stringify({data:{
-    r0:{issues:{totalCount:1},pullRequests:{totalCount:0}},
-    r1:{issues:{totalCount:1},pullRequests:{totalCount:0}}
-  }}));
-  process.exit(0);
-}
-if (args[0] === "api" && args[1].endsWith("/dispatches")) process.exit(0);
-process.exit(2);
+    preloadPath,
+    `const fs = require("node:fs");
+globalThis.fetch = async (input, init) => {
+  const url = new URL(String(input));
+  const method = String((init && init.method) || "GET");
+  fs.appendFileSync(${JSON.stringify(fetchLogPath)}, JSON.stringify({method,url:String(input),authorization:new Headers(init && init.headers).get("authorization") || ""}) + "\\n");
+  if (url.pathname === "/internal/state/cursors/hot-intake") {
+    return Response.json({ok:true,mode:"hot-intake",next_cursor:0,revision:0,updated_at:null});
+  }
+  if (url.hostname === "api.github.com" && url.pathname === "/repos/openclaw/retry-later") {
+    return Response.json({error:"busy"}, {status:503});
+  }
+  throw new Error("unexpected fetch " + String(input));
+};
 `,
   );
-  chmodSync(ghPath, 0o755);
 
-  const output = execFileSync(
+  const result = spawnSync(
     process.execPath,
     [
+      "--require",
+      preloadPath,
       "dist/repair/target-fanout.js",
       "--mode",
       "hot-intake",
       "--limit",
-      "2",
+      "1",
+      "--cursor-store-url",
+      "https://queue.example",
       "--repo",
       "openclaw/clawsweeper",
     ],
@@ -446,35 +670,61 @@ process.exit(2);
         ...mockGhBinEnv(ghPath),
         CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
         CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
-        CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: "__public__",
+        CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN: "central-metadata",
+        CLAWSWEEPER_WEBHOOK_SECRET: "cursor-secret",
       },
     },
   );
 
-  const summary = JSON.parse(output) as { dispatched: string[]; total: number };
-  assert.equal(summary.total, 2);
-  assert.deepEqual(summary.dispatched, ["openclaw/b", "steipete/a"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /retryable for openclaw\/retry-later/);
   const calls = readFileSync(logPath, "utf8")
     .trim()
     .split("\n")
-    .map((line) => JSON.parse(line) as { args: string[]; ghToken: string });
+    .map((line) => JSON.parse(line) as { args: string[] });
+  assert.equal(
+    calls.some((call) => call.args[1]?.endsWith("/dispatches")),
+    false,
+  );
+  const fetches = readFileSync(fetchLogPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { method: string; url: string; authorization: string });
+  assert.equal(
+    fetches.some((call) => call.method === "PUT"),
+    false,
+  );
   assert.deepEqual(
-    calls.filter((call) => call.args[0] === "repo").map((call) => call.ghToken),
-    ["inventory-openclaw", "dispatch-token"],
+    fetches.map((call) => [new URL(call.url).pathname, call.authorization]),
+    [
+      ["/internal/state/cursors/hot-intake", ""],
+      ["/repos/openclaw/retry-later", "Bearer central-metadata"],
+    ],
   );
 });
 
-test("target fanout falls back to public inventory env outside Actions", () => {
+test("target fanout uses explicit inventory and central metadata tokens in Actions", () => {
   const source = readFileSync("src/repair/target-fanout.ts", "utf8");
-  const helperStart = source.indexOf("function inventoryEnv(");
-  const helperEnd = source.indexOf("function publicInventoryEnv(", helperStart);
+  const inventoryStart = source.indexOf("function inventoryEnv(");
+  const inventoryEnd = source.indexOf("function publicInventoryEnv(", inventoryStart);
+  const metadataStart = source.indexOf("function hostedTargetMetadataToken(");
+  const metadataEnd = source.indexOf("function dispatchEnv(", metadataStart);
 
-  assert.notEqual(helperStart, -1);
-  assert.notEqual(helperEnd, -1);
-  const helper = source.slice(helperStart, helperEnd);
-  assert.match(helper, /if \(process\.env\.GITHUB_ACTIONS === "true"\) return null;/);
-  assert.match(helper, /return publicInventoryEnv\(\);/);
-  assert.doesNotMatch(helper, /GH_TOKEN: ""/);
+  assert.notEqual(inventoryStart, -1);
+  assert.notEqual(inventoryEnd, -1);
+  assert.notEqual(metadataStart, -1);
+  assert.notEqual(metadataEnd, -1);
+  const inventoryHelper = source.slice(inventoryStart, inventoryEnd);
+  assert.match(inventoryHelper, /CLAWSWEEPER_INVENTORY_TOKEN_/);
+  assert.match(inventoryHelper, /if \(process\.env\.GITHUB_ACTIONS === "true"\) return null;/);
+  assert.match(inventoryHelper, /return publicInventoryEnv\(\);/);
+  const metadataHelper = source.slice(metadataStart, metadataEnd);
+  assert.match(metadataHelper, /CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN/);
+  assert.match(
+    metadataHelper,
+    /if \(explicit \|\| process\.env\.GITHUB_ACTIONS === "true"\) return explicit;/,
+  );
+  assert.doesNotMatch(source, /CLAWSWEEPER_TARGET_METADATA_TOKEN/);
 });
 
 test("target fanout selection advances cursor with wraparound", () => {
@@ -573,24 +823,25 @@ test("target fanout cursor-store outage fails open", async () => {
 test("normal target fanout dispatches even when canonical storage is unavailable", () => {
   const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-"));
   const logPath = join(dir, "gh.log");
+  const fetchLogPath = join(dir, "fetch.log");
   const ghPath = join(dir, "gh.js");
+  const preloadPath = join(dir, "fetch-preload.cjs");
   writeFileSync(
     ghPath,
     `#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({args, ghToken: process.env.GH_TOKEN || ""}) + "\\n");
-if (args[0] === "repo" && args[1] === "list") {
-  const owner = args[2];
-  const data = owner === "openclaw"
-    ? [
-        {nameWithOwner:"openclaw/B",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}},
-        {nameWithOwner:"openclaw/clawsweeper-state",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
-      ]
-    : [
-        {nameWithOwner:"steipete/A",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"master"}}
-      ];
-  process.stdout.write(JSON.stringify(data));
+if (args[0] === "repo" && args[1] === "list" && args[2] === "openclaw") {
+  process.stdout.write(JSON.stringify([
+    {nameWithOwner:"openclaw/clawhub",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
+  ]));
+  process.exit(0);
+}
+if (args[0] === "repo" && args[1] === "list" && args[2] === "steipete") {
+  process.stdout.write(JSON.stringify([
+    {nameWithOwner:"steipete/camsnap",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"master"}}
+  ]));
   process.exit(0);
 }
 if (args[0] === "api" && args[1] === "graphql") {
@@ -605,10 +856,26 @@ process.exit(2);
 `,
   );
   chmodSync(ghPath, 0o755);
+  writeFileSync(
+    preloadPath,
+    `const fs = require("node:fs");
+globalThis.fetch = async (input, init) => {
+  const url = new URL(String(input));
+  fs.appendFileSync(${JSON.stringify(fetchLogPath)}, JSON.stringify({url:String(input), authorization:new Headers(init && init.headers).get("authorization") || ""}) + "\\n");
+  if (url.hostname === "api.github.com" && url.pathname.startsWith("/repos/")) {
+    const target = url.pathname.split("/").slice(2).join("/");
+    return Response.json({full_name:target,private:false,visibility:"public"});
+  }
+  throw new Error("unexpected fetch " + String(input));
+};
+`,
+  );
 
   const output = execFileSync(
     process.execPath,
     [
+      "--require",
+      preloadPath,
       "dist/repair/target-fanout.js",
       "--mode",
       "normal-review",
@@ -626,12 +893,14 @@ process.exit(2);
       encoding: "utf8",
       env: {
         ...process.env,
+        GITHUB_ACTIONS: "true",
         ...mockGhBinEnv(ghPath),
         GH_TOKEN: "workflow-token",
         CLAWSWEEPER_DISPATCH_TOKEN: "dispatch-token",
         CLAWSWEEPER_WEBHOOK_SECRET: "cursor-secret",
         CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
         CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: "inventory-steipete",
+        CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN: "central-metadata",
       },
     },
   );
@@ -643,19 +912,27 @@ process.exit(2);
     review_candidate_capacity: number;
     candidate_batches: Record<string, number>;
   };
-  assert.deepEqual(summary.dispatched, ["steipete/a", "openclaw/b"]);
+  assert.deepEqual(summary.dispatched, ["steipete/camsnap", "openclaw/clawhub"]);
   assert.equal(summary.next_cursor, 0);
   assert.equal(summary.cursor_persisted, false);
   assert.equal(summary.review_candidate_capacity, 100);
-  assert.deepEqual(summary.candidate_batches, { "steipete/a": 1, "openclaw/b": 1 });
+  assert.deepEqual(summary.candidate_batches, {
+    "steipete/camsnap": 1,
+    "openclaw/clawhub": 1,
+  });
 
   const calls = readFileSync(logPath, "utf8")
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line) as { args: string[]; ghToken: string });
   assert.deepEqual(
-    calls.filter((call) => call.args[0] === "repo").map((call) => call.ghToken),
-    ["inventory-openclaw", "inventory-steipete"],
+    calls
+      .filter((call) => call.args[0] === "repo" && call.args[1] === "list")
+      .map((call) => [call.args[2], call.ghToken]),
+    [
+      ["openclaw", "inventory-openclaw"],
+      ["steipete", "inventory-steipete"],
+    ],
   );
   assert.deepEqual(
     calls
@@ -668,8 +945,24 @@ process.exit(2);
       .filter((call) => call.args[0] === "api" && call.args[1]?.endsWith("/dispatches"))
       .map((call) => call.args.join(" ")),
     [
-      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=steipete/a -f client_payload[target_branch]=master -f client_payload[hot_intake]=false -f client_payload[batch_size]=1 -f client_payload[shard_count]=1",
-      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=openclaw/b -f client_payload[target_branch]=main -f client_payload[hot_intake]=false -f client_payload[batch_size]=1 -f client_payload[shard_count]=1",
+      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=steipete/camsnap -f client_payload[target_branch]=master -f client_payload[hot_intake]=false -f client_payload[batch_size]=1 -f client_payload[shard_count]=1",
+      "api repos/openclaw/clawsweeper/dispatches -f event_type=clawsweeper_target_sweep -f client_payload[target_repo]=openclaw/clawhub -f client_payload[target_branch]=main -f client_payload[hot_intake]=false -f client_payload[batch_size]=1 -f client_payload[shard_count]=1",
+    ],
+  );
+  assert.deepEqual(
+    readFileSync(fetchLogPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { url: string; authorization: string }),
+    [
+      {
+        url: "https://api.github.com/repos/steipete/camsnap",
+        authorization: "Bearer central-metadata",
+      },
+      {
+        url: "https://api.github.com/repos/openclaw/clawhub",
+        authorization: "Bearer central-metadata",
+      },
     ],
   );
 });
@@ -677,17 +970,19 @@ process.exit(2);
 test("target fanout dry-run does not persist its selected cursor", () => {
   const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-"));
   const logPath = join(dir, "gh.log");
+  const fetchLogPath = join(dir, "fetch.log");
   const ghPath = join(dir, "gh.js");
+  const preloadPath = join(dir, "fetch-preload.cjs");
   writeFileSync(
     ghPath,
     `#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
-if (args[0] === "repo" && args[1] === "list") {
+if (args[0] === "repo" && args[1] === "list" && args[2] === "openclaw") {
   process.stdout.write(JSON.stringify([
-    {nameWithOwner:"openclaw/A",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}},
-    {nameWithOwner:"openclaw/B",isArchived:false,isDisabled:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
+    {nameWithOwner:"openclaw/clawhub",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}},
+    {nameWithOwner:"openclaw/fs-safe",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
   ]));
   process.exit(0);
 }
@@ -703,10 +998,26 @@ process.exit(2);
 `,
   );
   chmodSync(ghPath, 0o755);
+  writeFileSync(
+    preloadPath,
+    `const fs = require("node:fs");
+globalThis.fetch = async (input, init) => {
+  const url = new URL(String(input));
+  fs.appendFileSync(${JSON.stringify(fetchLogPath)}, JSON.stringify({url:String(input), authorization:new Headers(init && init.headers).get("authorization") || ""}) + "\\n");
+  if (url.hostname === "api.github.com" && url.pathname.startsWith("/repos/")) {
+    const target = url.pathname.split("/").slice(2).join("/");
+    return Response.json({full_name:target,private:false,visibility:"public"});
+  }
+  throw new Error("unexpected fetch " + String(input));
+};
+`,
+  );
 
   const output = execFileSync(
     process.execPath,
     [
+      "--require",
+      preloadPath,
       "dist/repair/target-fanout.js",
       "--mode",
       "hot-intake",
@@ -723,8 +1034,10 @@ process.exit(2);
       encoding: "utf8",
       env: {
         ...process.env,
+        GITHUB_ACTIONS: "true",
         ...mockGhBinEnv(ghPath),
         CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "inventory-openclaw",
+        CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN: "central-metadata",
       },
     },
   );
@@ -733,7 +1046,7 @@ process.exit(2);
     dispatched: string[];
     cursor_persisted: boolean;
   };
-  assert.deepEqual(summary.dispatched, ["openclaw/a"]);
+  assert.deepEqual(summary.dispatched, ["openclaw/clawhub"]);
   assert.equal(summary.cursor_persisted, false);
   const calls = readFileSync(logPath, "utf8")
     .trim()
@@ -741,6 +1054,7 @@ process.exit(2);
     .map((line) => JSON.parse(line) as string[]);
   assert.equal(calls.filter((call) => call[0] === "api" && call[1] === "graphql").length, 1);
   assert.equal(calls.filter((call) => call[1]?.endsWith("/dispatches")).length, 0);
+  assert.match(readFileSync(fetchLogPath, "utf8"), /Bearer central-metadata/);
 });
 
 function repo(nameWithOwner: string, overrides: Partial<ListedRepository> = {}): ListedRepository {

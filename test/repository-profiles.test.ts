@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -150,6 +151,31 @@ test("Go-root targets use explicit npm profiles without broadening close policy"
   }
 });
 
+test("dashboard targets stay an explicit public-output scope, not hosted admission policy", () => {
+  const wrangler = readFileSync("dashboard/wrangler.toml", "utf8");
+  const dashboardTargets = wrangler.match(/^TARGET_REPOS = "([^"]+)"$/m)?.[1]?.split(",");
+  assert.deepEqual(dashboardTargets, [
+    "openclaw/openclaw",
+    "openclaw/clawhub",
+    "openclaw/clawsweeper",
+    "openclaw/fs-safe",
+  ]);
+  const bayTargets = wrangler.match(/^PUBLIC_BAY_REPOS = "([^"]+)"$/m)?.[1]?.split(",");
+  assert.deepEqual(bayTargets, dashboardTargets);
+
+  const profileConfig = JSON.parse(readFileSync("config/target-repositories.json", "utf8")) as {
+    repositories: Array<{ target_repo: string; hosted?: boolean }>;
+  };
+  assert.equal(
+    profileConfig.repositories.some((profile) => "hosted" in profile),
+    false,
+  );
+  assert.ok(
+    profileConfig.repositories.some((profile) => profile.target_repo === "steipete/camsnap"),
+  );
+  assert.ok(!dashboardTargets?.includes("steipete/camsnap"));
+});
+
 test("generic OpenClaw fallback keeps denied repositories unsupported", () => {
   assert.throws(
     () => repositoryProfileFor("openclaw/clawsweeper-state"),
@@ -157,11 +183,10 @@ test("generic OpenClaw fallback keeps denied repositories unsupported", () => {
   );
 });
 
-test("generic fallback does not support repositories outside configured owners", () => {
-  assert.throws(
-    () => repositoryProfileFor("other-org/example-tool"),
-    /Unsupported target repo: other-org\/example-tool/,
-  );
+test("repository profiles reject targets outside configured profiles and owner fallbacks", () => {
+  for (const targetRepo of ["other-org/example-tool", "other-org", "other org/repo"]) {
+    assert.throws(() => repositoryProfileFor(targetRepo), /Unsupported target repo/);
+  }
 });
 
 test("profile lookup normalizes candidate target repos as well as input", () => {

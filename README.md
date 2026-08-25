@@ -393,7 +393,9 @@ Review is proposal-only. It never closes items.
 
 - A planner scans open issues and PRs, then assigns exact item numbers to shards.
 - Manual runs can pass `item_number` or comma-separated `item_numbers` to review
-  exact Audit Health findings without scanning for a normal batch.
+  exact Audit Health findings without scanning for a normal batch. Batch
+  dispatchers can use `shard_count` to bound parallel shards and `batch_size`
+  to set the number of items assigned to each worker.
 - Each shard checks out the selected target repository at `main`.
 - Codex reviews with the internal model, high reasoning, the default service tier, and a
   10-minute per-item timeout.

@@ -329,6 +329,7 @@ test("signed webhook loopback covers lifecycle, comments, reviews, checks, runs,
   const env = {
     CLAWSWEEPER_WEBHOOK_SECRET: secret,
     EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    hostedPublicTargetProbe: async () => "public" as const,
   };
   const now = new Date().toISOString();
   const events = [

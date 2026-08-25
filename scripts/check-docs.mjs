@@ -92,6 +92,7 @@ export function checkDocumentation(root = process.cwd()) {
 
   for (const relativeFile of markdownFiles) {
     const text = fs.readFileSync(path.join(root, relativeFile), "utf8");
+    checkMarkdownFences({ relativeFile, text, findings });
     checkLinks({ root, relativeFile, text, inventory, findings });
     if (
       !relativeFile.startsWith("docs/proof/") &&
@@ -106,6 +107,51 @@ export function checkDocumentation(root = process.cwd()) {
   checkOperationalHealthDocumentation({ root, findings });
   checkOperatorDocumentation({ root, inventory, findings });
   return findings.sort(compareFindings);
+}
+
+function checkMarkdownFences({ relativeFile, text, findings }) {
+  let openFence = null;
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    const match = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/);
+    if (!match) continue;
+    const marker = match[1];
+    const suffix = match[2];
+    if (marker.length !== 3) {
+      addFinding(
+        findings,
+        relativeFile,
+        index + 1,
+        "markdown-fence",
+        "use exactly three backticks or tildes for fenced code blocks",
+      );
+    }
+    if (!openFence) {
+      openFence = { marker: marker[0], line: index + 1 };
+      continue;
+    }
+    if (marker[0] === openFence.marker && suffix.trim() === "") {
+      openFence = null;
+      continue;
+    }
+    if (suffix.trim() !== "") {
+      addFinding(
+        findings,
+        relativeFile,
+        index + 1,
+        "markdown-fence",
+        `fenced code block starts before the block from line ${openFence.line} closes`,
+      );
+    }
+  }
+  if (openFence) {
+    addFinding(
+      findings,
+      relativeFile,
+      openFence.line,
+      "markdown-fence",
+      "fenced code block is not closed",
+    );
+  }
 }
 
 function checkOperatorDocumentation({ root, inventory, findings }) {
