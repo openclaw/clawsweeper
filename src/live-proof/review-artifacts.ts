@@ -43,6 +43,11 @@ export interface ReviewLiveProofDependencies {
   repositoryProfileFor: (repo: string) => RepositoryProfile;
 }
 
+export const reviewLiveProofGoEnvironment = (environment: NodeJS.ProcessEnv, profile: string) => ({
+  GOFLAGS: [environment.GOFLAGS, "-modcacherw"].filter(Boolean).join(" "),
+  GOMODCACHE: join(profile, "go-mod-cache"),
+});
+
 export function inspectReviewLiveProofs(
   options: Pick<ReviewLiveProofOptions, "itemNumbers" | "recordsDir" | "repo">,
   dependencies: ReviewLiveProofDependencies,
@@ -123,6 +128,7 @@ function executeReviewLiveProof(
       CLAWSWEEPER_SANITIZED_LIVE_PROOF: "1",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_NOSYSTEM: "1",
+      ...reviewLiveProofGoEnvironment(environment, profile),
       HOME: profile,
       npm_config_cache: join(profile, "npm-cache"),
       PNPM_HOME: join(profile, "pnpm"),

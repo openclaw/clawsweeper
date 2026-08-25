@@ -6,8 +6,25 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
-import { executeReviewLiveProofs } from "../dist/live-proof/review-artifacts.js";
+import {
+  executeReviewLiveProofs,
+  reviewLiveProofGoEnvironment,
+} from "../dist/live-proof/review-artifacts.js";
 import { parseLiveVerificationResult } from "../dist/live-proof/verification.js";
+
+test("review live proof composes inherited Go environment settings", () => {
+  const profile = join("scratch", "profile");
+  const environment = reviewLiveProofGoEnvironment(
+    {
+      GOFLAGS: "-trimpath -modcacherw=false",
+      GOMODCACHE: join("shared", "go", "pkg", "mod"),
+    },
+    profile,
+  );
+
+  assert.equal(environment.GOFLAGS, "-trimpath -modcacherw=false -modcacherw");
+  assert.equal(environment.GOMODCACHE, join(profile, "go-mod-cache"));
+});
 
 test(
   "review live proof runs an unsandboxed static plan with a sanitized child environment",
