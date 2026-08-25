@@ -8141,6 +8141,18 @@ test("resolveTargetRepoToolchain reads openclaw/clawhub from the real config wit
   }
 });
 
+test("resolveTargetRepoToolchain uses the explicit camsnap no-validation profile", () => {
+  __resetTargetRepoToolchainCache();
+  try {
+    const toolchain = resolveTargetRepoToolchain("steipete/camsnap");
+    assert.equal(toolchain.packageManager, "npm");
+    assert.deepEqual(toolchain.baseValidationCommands, []);
+    assert.equal(toolchain.changedGate, null);
+  } finally {
+    __resetTargetRepoToolchainCache();
+  }
+});
+
 test("resolveTargetRepoToolchain keeps the OpenClaw changed gate even without core_target_overrides", () => {
   // Regression guard for the earlier ordering bug: if core_target_overrides is
   // ever removed but a generic openclaw fallback is kept (changed_gate: null),

@@ -130,6 +130,23 @@ test("generic steipete fallback starts review-only", () => {
   assert.deepEqual(profile.liveTest, TERMINAL_LIVE_TEST);
 });
 
+test("camsnap uses its Go-native review-only live-proof profile", () => {
+  const profile = repositoryProfileFor("Steipete/CamSnap");
+
+  assert.equal(profile.targetRepo, "steipete/camsnap");
+  assert.equal(profile.packageManager, "npm");
+  assert.deepEqual(profile.applyCloseRules.issue, []);
+  assert.deepEqual(profile.applyCloseRules.pull_request, []);
+  assert.deepEqual(profile.liveTest, {
+    enabled: true,
+    surfaceDefault: "terminal",
+    setup: [],
+    allowInstallScripts: false,
+    readyTimeoutSeconds: 240,
+    maxRecordingSeconds: 90,
+  });
+});
+
 test("generic OpenClaw fallback keeps denied repositories unsupported", () => {
   assert.throws(
     () => repositoryProfileFor("openclaw/clawsweeper-state"),
