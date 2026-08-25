@@ -1,4 +1,4 @@
-# Exact-review Durable Object sanitized JSON error proof
+# Exact-review Worker sanitized JSON error proof
 
 This proof starts the actual local Wrangler Worker and its ExactReviewQueue
 Durable Object, then drives the signed internal
@@ -15,11 +15,13 @@ The scenario sends three identical-shape signed requests: a baseline list
 The script detects whether the checked-out tree contains the fix and asserts
 accordingly:
 
-- before (base tree): the injected failure escapes the unguarded Durable
-  Object `fetch`, and the client receives a non-JSON 500 with no sanitized
-  error contract; in the local dev runtime the error page also exposes the
-  planted token to the client.
-- after (fixed tree): the client receives HTTP 500 with
+- before (base tree): the injected Durable Object failure escapes the Worker,
+  and the client receives a non-JSON 500 with no sanitized error contract; in
+  the local dev runtime the error page also exposes the planted token to the
+  client.
+- after (fixed tree): the Durable Object still rejects so its transaction
+  remains fail closed, while the Worker converts that rejected stub call into
+  HTTP 500 with
   `content-type: application/json` and body
   `{"error":"injected sqlite read failure exposing GH_TOKEN=[REDACTED]"}`;
   the planted token never reaches the client.
@@ -39,5 +41,6 @@ crabbox run \
 
 Limits: the before-mode HTML error page is the local dev runtime's rendering
 of the escaped exception; deployed workerd returns its generic internal-error
-response instead. The invariant proven is the failure contract at the Durable
-Object boundary: unguarded escape versus sanitized JSON 500.
+response instead. The invariant proven is the Worker-facing failure contract:
+an escaped Durable Object rejection becomes a sanitized JSON 500 without
+changing the Durable Object transaction boundary.

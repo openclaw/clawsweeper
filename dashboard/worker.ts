@@ -28,6 +28,7 @@ import {
   githubAppJsonAsPlainError as githubAppJson,
   signGithubAppJwt,
 } from "./github-api.ts";
+import { sanitizedServerError } from "./error-safety.ts";
 import {
   HEALTH_HISTORY_RETENTION_DAYS,
   HEALTH_HISTORY_SAMPLE_MS,
@@ -4422,13 +4423,25 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
   const queue = exactReviewQueueStub(env);
   if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
   const body = request ? await request.text() : undefined;
-  return queue.fetch(
-    new Request(`https://clawsweeper-exact-review-queue${path}`, {
-      method: request?.method || "GET",
-      headers: body ? { "content-type": "application/json" } : undefined,
-      ...(body ? { body } : {}),
-    }),
-  );
+  try {
+    const response = await queue.fetch(
+      new Request(`https://clawsweeper-exact-review-queue${path}`, {
+        method: request?.method || "GET",
+        headers: body ? { "content-type": "application/json" } : undefined,
+        ...(body ? { body } : {}),
+      }),
+    );
+    if (response.status < 500) return response;
+    const responseBody = await response.clone().text();
+    try {
+      JSON.parse(responseBody);
+      return response;
+    } catch {
+      return json({ error: sanitizedServerError(responseBody) }, response.status);
+    }
+  } catch (error) {
+    return json({ error: sanitizedServerError(error) }, 500);
+  }
 }
 
 const PUBLIC_QUEUE_COUNT_LIMIT = 1_000_000;

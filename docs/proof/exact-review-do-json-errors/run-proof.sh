@@ -19,7 +19,7 @@ if [ -e "$output_dir" ]; then
 fi
 mkdir -p "$output_dir"
 
-if grep -q "handleFetchRequest" dashboard/exact-review-queue.ts; then
+if grep -q 'sanitizedServerError(responseBody)' dashboard/worker.ts; then
   proof_mode=after
 else
   proof_mode=before
@@ -191,7 +191,9 @@ if (mode === "before") {
     token_leaked: tokenLeaked,
   });
 } else {
-  assertProof("sanitized_json_contract", jsonContract, { content_type: failing.contentType });
+  assertProof("worker_sanitized_json_contract", jsonContract, {
+    content_type: failing.contentType,
+  });
   assertProof("planted_token_redacted", !tokenLeaked && failing.text.includes("[REDACTED"), {
     response_body: redact(failing.text).slice(0, 300),
   });
@@ -218,7 +220,7 @@ await writeFile(
 await writeFile(
   path.join(outputDir, "transcript.md"),
   [
-    "# exact-review Durable Object JSON error proof",
+    "# exact-review Worker JSON error proof",
     `mode: ${mode}`,
     `head: ${headSha}`,
     "",

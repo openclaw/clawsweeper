@@ -1,8 +1,11 @@
 import {
   assert,
+  createHmac,
   test,
   ExactReviewQueue,
   MemoryDurableStorage,
+  MemoryDurableNamespace,
+  worker,
 } from "./dashboard-worker-harness.ts";
 
 function publicationsListRequest(limit: number) {
@@ -20,7 +23,30 @@ function newQueue(storage: MemoryDurableStorage) {
   );
 }
 
-test("exact-review Durable Object returns a sanitized JSON error when a route throws", async () => {
+function signedPublicationsListRequest(body: string, secret: string) {
+  return new Request("https://clawsweeper.openclaw.ai/internal/exact-review/publications/list", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret)
+        .update(body)
+        .digest("hex")}`,
+    },
+    body,
+  });
+}
+
+test("exact-review Durable Object rejects storage failures directly", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = newQueue(storage);
+  assert.equal((await queue.fetch(publicationsListRequest(100))).status, 200);
+
+  storage.failNextSql(/SELECT item_key, item_json/);
+  await assert.rejects(queue.fetch(publicationsListRequest(100)), /injected SQL failure/);
+  assert.equal((await queue.fetch(publicationsListRequest(100))).status, 200);
+});
+
+test("exact-review Worker sanitizes rejected Durable Object calls", async () => {
   const storage = new MemoryDurableStorage();
   const queue = newQueue(storage);
   assert.equal((await queue.fetch(publicationsListRequest(100))).status, 200);
@@ -31,22 +57,60 @@ test("exact-review Durable Object returns a sanitized JSON error when a route th
       "injected sqlite read failure exposing GH_TOKEN=ghp_examplesecrettoken0123456789abcd",
     ),
   );
-  const response = await queue.fetch(publicationsListRequest(100));
+  const secret = "test-webhook-secret";
+  const requestBody = JSON.stringify({ limit: 100 });
+  const response = await worker.fetch(signedPublicationsListRequest(requestBody, secret), {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  });
 
   assert.equal(response.status, 500);
   assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
-  const body = (await response.json()) as { error?: unknown };
-  assert.equal(typeof body.error, "string");
-  assert.equal(JSON.stringify(body).includes("ghp_examplesecrettoken"), false);
+  const responseBody = (await response.json()) as { error?: unknown };
+  assert.equal(typeof responseBody.error, "string");
+  assert.equal(JSON.stringify(responseBody).includes("ghp_examplesecrettoken"), false);
 });
 
-test("exact-review Durable Object preserves intentional non-200 responses", async () => {
-  const storage = new MemoryDurableStorage();
-  const queue = newQueue(storage);
+test("exact-review Worker normalizes malformed Durable Object 5xx responses", async () => {
+  const plantedToken = "ghp_examplesecrettoken0123456789abcd";
+  const secret = "test-webhook-secret";
+  const body = JSON.stringify({ limit: 100 });
+  const response = await worker.fetch(signedPublicationsListRequest(body, secret), {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+      async fetch() {
+        return new Response(`upstream failure GH_TOKEN=${plantedToken}`, {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    }),
+  });
 
-  const response = await queue.fetch(publicationsListRequest(0));
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
+  const responseBody = (await response.json()) as { error?: unknown };
+  assert.equal(typeof responseBody.error, "string");
+  assert.equal(JSON.stringify(responseBody).includes(plantedToken), false);
+  assert.match(String(responseBody.error), /\[REDACTED\]/);
+});
 
-  assert.equal(response.status, 400);
-  const body = (await response.json()) as { error?: unknown };
-  assert.equal(body.error, "invalid_limit");
+test("exact-review Worker preserves intentional non-JSON 4xx responses", async () => {
+  const secret = "test-webhook-secret";
+  const body = JSON.stringify({ limit: 0 });
+  const response = await worker.fetch(signedPublicationsListRequest(body, secret), {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+      async fetch() {
+        return new Response("intentional conflict", {
+          status: 409,
+          headers: { "content-type": "text/plain" },
+        });
+      },
+    }),
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.headers.get("content-type"), "text/plain");
+  assert.equal(await response.text(), "intentional conflict");
 });
