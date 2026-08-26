@@ -156,6 +156,7 @@ export interface CreateReportRenderingDependencies {
   pullHeadShaFromReport: (markdown: string) => string | null;
   realBehaviorProofBlocksMerge: (markdown: string) => boolean;
   renderDataModelWarningFromReport: (markdown: string) => string;
+  renderSqliteSchemaWarningFromReport: (markdown: string) => string;
   renderOpenClawPrSurfaceFromReport: (markdown: string) => string;
   renderReviewMetricsDigest: (metrics: readonly ReviewMetric[]) => string;
   repairLoopPassModeFromReport: (markdown: string) => "" | "autofix" | "automerge";

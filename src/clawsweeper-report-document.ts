@@ -1,6 +1,7 @@
 import {
   configSurfaceChangeFromContext,
   dataModelChangeFromContext,
+  sqliteSchemaChangeFromContext,
 } from "./clawsweeper-change-detection.js";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
@@ -581,6 +582,7 @@ export function createReportDocumentRendering(
     const pullFilesTruncated = Boolean(options.context.counts?.pullFilesTruncated);
     const configSurfaceChange = configSurfaceChangeFromContext(options.item.repo, options.context);
     const dataModelChange = dataModelChangeFromContext(options.item.repo, options.context);
+    const sqliteSchemaChange = sqliteSchemaChangeFromContext(options.item.repo, options.context);
     const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
     const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
     const markdown = `---
@@ -719,6 +721,8 @@ config_surface_change: ${configSurfaceChange.change}
 config_surface_keys: ${jsonFrontMatterValue(configSurfaceChange.keys)}
 data_model_change: ${dataModelChange.change}
 data_model_surfaces: ${jsonFrontMatterValue(dataModelChange.surfaces)}
+sqlite_schema_change: ${sqliteSchemaChange.change}
+sqlite_schema_files: ${jsonFrontMatterValue(sqliteSchemaChange.files)}
 pr_surface_files: ${jsonFrontMatterValue(prSurfaceFiles)}
 pr_surface_files_truncated: ${pullFilesTruncated}
 item_category: ${options.decision.itemCategory}

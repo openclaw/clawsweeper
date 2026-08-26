@@ -354,6 +354,35 @@ export function createReportOrchestrationFoundation(
     return `Persistent data-model change detected: ${surfaceText}${overflow}. ${proofLine}`;
   }
 
+  function renderSqliteSchemaWarningFromReport(markdown: string): string {
+    if (
+      frontMatterValue(markdown, "type") !== "pull_request" ||
+      normalizeRepo(markdownRepository(markdown)) !== "openclaw/openclaw" ||
+      (!frontMatterBoolean(markdown, "sqlite_schema_change") &&
+        frontMatterStringArray(markdown, "sqlite_schema_files").length === 0)
+    ) {
+      return "";
+    }
+
+    const files = frontMatterStringArray(markdown, "sqlite_schema_files");
+    const fileText = files.length
+      ? files
+          .slice(0, 4)
+          .map((file) => trustedCommentCodeSpan(file))
+          .join(", ")
+      : "an unidentified schema file";
+    const overflow = files.length > 4 ? `, and ${files.length - 4} more` : "";
+    const proofLine = dataModelUpgradeProofFromReport(markdown)
+      ? "Migration or upgrade compatibility proof is recorded, but maintainers should still confirm that the schema change is necessary."
+      : "If the change is necessary, verify migration and upgrade compatibility against an existing database before merge.";
+    return [
+      "> [!WARNING]",
+      "> **SQLite table change**",
+      ">",
+      `> This PR modifies persisted SQLite tables in ${fileText}${overflow}. Prefer a design that avoids changing persisted SQLite tables. ${proofLine}`,
+    ].join("\n");
+  }
+
   function trustedCommentCodeSpan(value: string): string {
     const escaped = value
       .replace(/&/g, "&amp;")
@@ -529,6 +558,7 @@ export function createReportOrchestrationFoundation(
     shouldRenderOpenClawPrSurface,
     renderOpenClawPrSurfaceFromReport,
     renderDataModelWarningFromReport,
+    renderSqliteSchemaWarningFromReport,
     trustedCommentCodeSpan,
     reviewMetricsFromReport,
     renderReviewMetricsDigest,

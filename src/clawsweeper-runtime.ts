@@ -144,6 +144,7 @@ export { itemNumbersArg } from "./clawsweeper-args.js";
 export {
   configSurfaceChangeFromPullFilesForTest,
   dataModelChangeFromPullFilesForTest,
+  sqliteSchemaChangeFromPullFilesForTest,
 } from "./clawsweeper-change-detection.js";
 export {
   prepareMediaProofArtifactsForTest,

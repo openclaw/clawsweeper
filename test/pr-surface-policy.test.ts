@@ -6,6 +6,7 @@ import {
   dataModelChangeFromPullFilesForTest,
   renderReviewCommentFromReport,
   reviewAutomationMarkersFromReport,
+  sqliteSchemaChangeFromPullFilesForTest,
 } from "../dist/clawsweeper.js";
 import { reportFrontMatter } from "./helpers.ts";
 
@@ -292,6 +293,95 @@ test("data model detector ignores query-only and non-semantic docs changes", () 
   });
 
   assert.deepEqual(detection, { change: false, surfaces: [] });
+});
+
+test("SQLite schema detector finds production table changes and ignores non-schema SQL", () => {
+  const detection = sqliteSchemaChangeFromPullFilesForTest({
+    pullFiles: [
+      {
+        filename: "packages/memory-host-sdk/src/host/memory-schema-base.ts",
+        patch:
+          "@@\n     CREATE TABLE IF NOT EXISTS memory_index_chunks (\n       id TEXT PRIMARY KEY,\n+      source_kind TEXT NOT NULL,\n     );",
+      },
+      {
+        filename: "src/transcripts/sqlite-schema.ts",
+        patch:
+          "@@\n+CREATE TABLE IF NOT EXISTS meeting_transcript_summaries (\n+  id TEXT PRIMARY KEY\n+);",
+      },
+      {
+        filename: "src/memory/search.ts",
+        patch: "@@\n+  return db.prepare('SELECT * FROM memory_index_chunks').all();",
+      },
+      {
+        filename: "src/memory/manager-db.test.ts",
+        patch: "@@\n+  db.exec('CREATE TABLE fixture_rows (id TEXT PRIMARY KEY)');",
+      },
+      {
+        filename: "docs/storage.md",
+        patch: "@@\n+CREATE TABLE example_rows (id TEXT PRIMARY KEY);",
+      },
+    ],
+  });
+
+  assert.deepEqual(detection, {
+    change: true,
+    files: [
+      "packages/memory-host-sdk/src/host/memory-schema-base.ts",
+      "src/transcripts/sqlite-schema.ts",
+    ],
+  });
+});
+
+test("SQLite schema warning is visible for table changes and absent otherwise", () => {
+  const reportBody = `
+
+## Summary
+
+Keep this PR open for maintainer review.
+
+## What This Changes
+
+Adds a column to the persisted memory index.
+`;
+  const warningComment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      number: "74464",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      sqlite_schema_change: "true",
+      sqlite_schema_files: JSON.stringify([
+        "packages/memory-host-sdk/src/host/memory-schema-base.ts",
+      ]),
+    })}${reportBody}`,
+    "none",
+  );
+  const ordinaryComment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      number: "74465",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      sqlite_schema_change: "false",
+      sqlite_schema_files: JSON.stringify([]),
+    })}${reportBody}`,
+    "none",
+  );
+
+  assert.match(warningComment, /> \[!WARNING\]/);
+  assert.match(warningComment, /SQLite table change/);
+  assert.match(warningComment, /`packages\/memory-host-sdk\/src\/host\/memory-schema-base\.ts`/);
+  assert.match(warningComment, /Prefer a design that avoids changing persisted SQLite tables/);
+  assert.ok(
+    warningComment.indexOf("SQLite table change") <
+      warningComment.indexOf("<summary><strong>Agent review details</strong></summary>"),
+  );
+  assert.doesNotMatch(ordinaryComment, /SQLite table change/);
+  assert.doesNotMatch(ordinaryComment, /\[!WARNING\]/);
 });
 
 test("data model detector flags path-hinted persisted field declarations", () => {

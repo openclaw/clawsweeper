@@ -1,4 +1,9 @@
-import type { ConfigSurfaceChange, DataModelChange, ItemContext } from "./clawsweeper-types.js";
+import type {
+  ConfigSurfaceChange,
+  DataModelChange,
+  ItemContext,
+  SqliteSchemaChange,
+} from "./clawsweeper-types.js";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -129,6 +134,109 @@ export function dataModelChangeFromPullFilesForTest(options: {
   };
   if (options.pullFiles !== undefined) context.pullFiles = options.pullFiles;
   return dataModelChangeFromContext(options.repo ?? "openclaw/openclaw", context);
+}
+
+export function sqliteSchemaChangeFromContext(
+  repo: string,
+  context: ItemContext,
+): SqliteSchemaChange {
+  if (repo !== "openclaw/openclaw") {
+    return { change: false, files: [] };
+  }
+
+  const files = new Set<string>();
+  for (const entry of context.pullFiles ?? []) {
+    const file = asRecord(entry);
+    const path = typeof file.filename === "string" ? file.filename.trim() : "";
+    const previousPath =
+      typeof file.previous_filename === "string" ? file.previous_filename.trim() : "";
+    const productionPaths = [path, previousPath].filter(isProductionSourcePath);
+    if (productionPaths.length === 0) continue;
+
+    const patch = typeof file.patch === "string" ? file.patch : null;
+    const likelySchemaPath = productionPaths.find(isLikelySqliteSchemaPath);
+    if (patch === null) {
+      if (likelySchemaPath) files.add(path || likelySchemaPath);
+      continue;
+    }
+
+    const changedLines = changedPatchLines(patch);
+    if (
+      sqliteSchemaPatchChangesTables(patch, changedLines) ||
+      (likelySchemaPath &&
+        (configSurfacePatchIsTruncated(patch) || changedLines.some(sqliteSchemaDeclarationLine)))
+    ) {
+      files.add(path || likelySchemaPath || productionPaths[0]!);
+    }
+  }
+
+  return { change: files.size > 0, files: [...files].sort() };
+}
+
+export function sqliteSchemaChangeFromPullFilesForTest(options: {
+  repo?: string;
+  pullFiles?: unknown[];
+  pullFilesTruncated?: boolean;
+}): SqliteSchemaChange {
+  const counts: ItemContext["counts"] = { comments: 0, timeline: 0 };
+  if (options.pullFilesTruncated !== undefined)
+    counts.pullFilesTruncated = options.pullFilesTruncated;
+  const context: ItemContext = {
+    issue: {},
+    comments: [],
+    timeline: [],
+    counts,
+  };
+  if (options.pullFiles !== undefined) context.pullFiles = options.pullFiles;
+  return sqliteSchemaChangeFromContext(options.repo ?? "openclaw/openclaw", context);
+}
+
+function isProductionSourcePath(path: string): boolean {
+  return Boolean(
+    path &&
+    !isDocsPath(path) &&
+    !/(^|\/)(?:__tests__|examples?|fixtures?|test|tests)(?:\/|$)/i.test(path) &&
+    !/\.(?:spec|test)\.[^/]+$/i.test(path),
+  );
+}
+
+function isLikelySqliteSchemaPath(path: string): boolean {
+  return /(?:^|\/)(?:migrations?|sqlite)(?:\/|[-_.])|(?:sqlite|memory|database|db)[-_.]?schema|schema[-_.]?sqlite|sqlite[-_.]?store|\.sql$/i.test(
+    path,
+  );
+}
+
+function sqliteSchemaPatchChangesTables(patch: string, changedLines: readonly string[]): boolean {
+  const changedText = changedLines.join("\n");
+  if (
+    /\b(?:CREATE|ALTER|DROP)\s+(?:VIRTUAL\s+)?TABLE\b|\bRENAME\s+TABLE\b|\bsqliteTable\s*\(/i.test(
+      changedText,
+    )
+  ) {
+    return true;
+  }
+
+  const patchText = patch
+    .split("\n")
+    .filter((line) => !line.startsWith("@@") && !line.startsWith("+++") && !line.startsWith("---"))
+    .map((line) => line.replace(/^[ +-]/, ""))
+    .join("\n");
+  return (
+    /\b(?:CREATE|ALTER)\s+(?:VIRTUAL\s+)?TABLE\b|\bsqliteTable\s*\(/i.test(patchText) &&
+    changedLines.some(sqliteSchemaDeclarationLine)
+  );
+}
+
+function sqliteSchemaDeclarationLine(line: string): boolean {
+  const text = line.replace(/^[+-]/, "").trim();
+  return (
+    /\b(?:CREATE|ALTER|DROP)\s+(?:VIRTUAL\s+)?TABLE\b|\bRENAME\s+TABLE\b|\bsqliteTable\s*\(/i.test(
+      text,
+    ) ||
+    /^(?:[`"']?[A-Za-z_][\w$]*[`"']?\s+|[A-Za-z_$][\w$]*\s*:\s*)(?:BLOB|INTEGER|NULL|REAL|TEXT|ANY|blob|integer|numeric|real|text)\b/i.test(
+      text,
+    )
+  );
 }
 
 function isOpenClawConfigSurfacePath(path: string): boolean {

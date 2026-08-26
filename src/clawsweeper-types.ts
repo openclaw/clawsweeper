@@ -1252,6 +1252,11 @@ export interface DataModelChange {
   surfaces: string[];
 }
 
+export interface SqliteSchemaChange {
+  change: boolean;
+  files: string[];
+}
+
 export interface IssueAdvisoryLabelState {
   type: string | undefined;
   itemCategory: string | undefined;

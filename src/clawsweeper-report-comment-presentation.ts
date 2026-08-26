@@ -61,6 +61,7 @@ export function createReportCommentPresentation(
     realBehaviorProofBlocksMerge,
     renderCloseCommentFromReport,
     renderDataModelWarningFromReport,
+    renderSqliteSchemaWarningFromReport,
     renderOpenClawPrSurfaceFromReport,
     renderReviewMetricsDigest,
     repairLoopPassModeFromReport,
@@ -198,6 +199,7 @@ export function createReportCommentPresentation(
     const lines = [`${verdictLine}${reviewFreshnessText(markdown)}`, ""];
     const prSurface = renderOpenClawPrSurfaceFromReport(markdown);
     const dataModelWarning = renderDataModelWarningFromReport(markdown);
+    const sqliteSchemaWarning = renderSqliteSchemaWarningFromReport(markdown);
     const rootCauseClusterBlock = publicRootCauseClusterBlock(rootCauseCluster);
     const mantisSuggestion = isPullRequest
       ? publicMantisRecommendationBlock(mantisRecommendation)
@@ -321,6 +323,7 @@ export function createReportCommentPresentation(
       });
       lines.push("# ClawSweeper review", "");
       appendHeadingSection(lines, "What this changes", changeSummaryLine);
+      if (sqliteSchemaWarning) lines.push(sqliteSchemaWarning, "");
       if (regressionPublicLine) {
         appendHeadingSection(lines, "Regression provenance", regressionPublicLine);
       }
