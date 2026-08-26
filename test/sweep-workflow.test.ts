@@ -1556,7 +1556,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
 });
 
-test("review shards provision Go only for inspected live-proof candidates with a root module", () => {
+test("review shards provision Go only when every live-proof candidate has a root module", () => {
   type Step = {
     name?: string;
     uses?: string;
@@ -1583,6 +1583,11 @@ test("review shards provision Go only for inspected live-proof candidates with a
   assert.match(resolveGo.if ?? "", /inspect-shard-live-proofs.*candidate_count != '0'/);
   assert.match(resolveGo.if ?? "", /inspect-shard-live-proofs\.outcome == 'success'/);
   assert.match(resolveGo.run ?? "", /git -C "\$TARGET_CHECKOUT" show "\$head_sha:go\.mod"/);
+  assert.match(resolveGo.run ?? "", /candidate_count="\$\(jq -r 'length'/);
+  assert.match(resolveGo.run ?? "", /root_module_count=0/);
+  assert.match(resolveGo.run ?? "", /root_module_count=\$\(\(root_module_count \+ 1\)\)/);
+  assert.match(resolveGo.run ?? "", /if \[ "\$root_module_count" -ne "\$candidate_count" \]; then/);
+  assert.match(resolveGo.run ?? "", /retaining automatic toolchain fallback/);
   assert.match(resolveGo.run ?? "", /\$\{go_version:-1\.16\}/);
   assert.match(resolveGo.run ?? "", /replace\(\/-\.\+\$\/, ""\)/);
   assert.match(resolveGo.run ?? "", /minor < 21 \? 2 : -1/);
@@ -1592,6 +1597,10 @@ test("review shards provision Go only for inspected live-proof candidates with a
     "review-artifacts/shard-${{ matrix.shard }}/live-proof-toolchain/.go-version",
   );
   assert.match(resolveGo.run ?? "", /printf '%s\\n'/);
+  assert.ok(
+    (resolveGo.run ?? "").indexOf('if [ "$root_module_count" -ne "$candidate_count" ]; then') <
+      (resolveGo.run ?? "").indexOf('if [ ! -s "$versions_file" ]; then'),
+  );
   assert.equal(setupGo.uses, "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16");
   assert.equal(
     setupGo.with?.["go-version-file"],

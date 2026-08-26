@@ -4598,6 +4598,8 @@ jobs:
           set -euo pipefail
           versions_file="$(mktemp)"
           trap 'rm -f "$versions_file"' EXIT
+          candidate_count="$(jq -r 'length' <<< "$CANDIDATES")"
+          root_module_count=0
           while read -r item; do
             record="$RECORDS_DIR/$item.md"
             head_sha="$(sed -n 's/^pull_head_sha:[[:space:]]*//p' "$record" | head -n 1)"
@@ -4605,6 +4607,7 @@ jobs:
             if ! go_mod="$(git -C "$TARGET_CHECKOUT" show "$head_sha:go.mod" 2>/dev/null)"; then
               continue
             fi
+            root_module_count=$((root_module_count + 1))
             go_version="$(awk '$1 == "go" { print $2; exit }' <<< "$go_mod")"
             toolchain_version="$(awk '$1 == "toolchain" && $2 ~ /^go/ { sub(/^go/, "", $2); print $2; exit }' <<< "$go_mod")"
             printf '%s\n' "${go_version:-1.16}" >> "$versions_file"
@@ -4612,6 +4615,11 @@ jobs:
               printf '%s\n' "$toolchain_version" >> "$versions_file"
             fi
           done < <(jq -r '.[]' <<< "$CANDIDATES")
+          if [ "$root_module_count" -ne "$candidate_count" ]; then
+            echo "::notice::Skipping job-wide Go setup because some candidates have no root go.mod; retaining automatic toolchain fallback."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ ! -s "$versions_file" ]; then
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0

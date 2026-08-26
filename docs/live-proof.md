@@ -40,12 +40,14 @@ recording toolchain (`ffmpeg`, Xvfb, xterm, and related X11 tools) is installed
 only when at least one recommended plan has a non-`static_text` payoff. Review
 jobs also read each candidate's exact reviewed-head root `go.mod` and provision
 the highest required Go version before execution. Targets without a root
-`go.mod`, and reviews without a live-proof candidate, do not run Go setup. The
-action disables shared Go caching and exports `GOTOOLCHAIN=local`; the sanitized
-child keeps that setting while using its private writable module cache. Review
-job timeouts include the target installation and deterministic drive. Review
-jobs default to `ubuntu-latest`; `CLAWSWEEPER_REVIEW_RUNNER` remains an optional
-runner override.
+`go.mod`, mixed review shards where any candidate lacks a root `go.mod`, and
+reviews without a live-proof candidate do not run Go setup. Mixed shards retain
+the existing automatic toolchain fallback for every candidate. When setup runs,
+the action disables shared Go caching and exports `GOTOOLCHAIN=local`; the
+sanitized child keeps that setting while using its private writable module
+cache. Review job timeouts include the target installation and deterministic
+drive. Review jobs default to `ubuntu-latest`; `CLAWSWEEPER_REVIEW_RUNNER`
+remains an optional runner override.
 
 For every candidate, trusted ClawSweeper code materializes the report's exact
 head SHA into a scratch worktree, then invokes the existing `live-proof`
