@@ -1948,11 +1948,21 @@ jobs:
             )
           }}
         env:
+          CLASSIFICATION: >-
+            ${{
+              (
+                steps.exact-review-generation-result.outputs.outcome != 'success' &&
+                steps.exact-review-generation-result.outputs.retry_kind == '' &&
+                steps.reserve-exact-review-lease.outputs.status != 'held' &&
+                steps.reserve-exact-review-lease.outputs.status != 'superseded'
+              ) && 'codex_or_content_failure' || 'queue_completion_failure'
+            }}
+          COMPLETION_OUTCOME: ${{ steps.complete-exact-review-queue.outcome || 'not_started' }}
           RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status || 'unknown' }}
           REVIEW_EXIT_CODE: ${{ steps.review-exact-event-item.outputs.exit_code || 'unknown' }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome || 'not_started' }}
         run: |
-          echo "::error::Exact review generation failed: classification=codex_or_content_failure reservation=$RESERVATION_STATUS review_outcome=$REVIEW_OUTCOME review_exit=$REVIEW_EXIT_CODE"
+          echo "::error::Exact review run failed: classification=$CLASSIFICATION reservation=$RESERVATION_STATUS review_outcome=$REVIEW_OUTCOME review_exit=$REVIEW_EXIT_CODE queue_completion=$COMPLETION_OUTCOME"
           exit 1
 
   event-review-publish:

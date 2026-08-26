@@ -37,6 +37,10 @@ import {
   triageRoutingGroupsForLabels,
 } from "../dashboard/triage-routing-groups.ts";
 import { ExactReviewPublicationBatchStore } from "../dashboard/exact-review-publication-batches.ts";
+import {
+  ExactReviewDirectPublicationStore,
+  validateDirectPublicationPlan,
+} from "../dashboard/exact-review-direct-publication.ts";
 import type { ExactReviewQueueItem } from "../dashboard/exact-review-queue.ts";
 import {
   commandAcknowledgementState,
@@ -1058,6 +1062,8 @@ export {
   TRIAGE_ROUTING_GROUPS,
   triageRoutingGroupsForLabels,
   ExactReviewPublicationBatchStore,
+  ExactReviewDirectPublicationStore,
+  validateDirectPublicationPlan,
   commandAcknowledgementState,
   EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS,
   ExactReviewLifecycleProjectionStore,

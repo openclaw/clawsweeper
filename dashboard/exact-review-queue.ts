@@ -3485,16 +3485,37 @@ export class ExactReviewQueue {
         );
         if (matches.length !== 1) continue;
         const item = matches[0];
-        const { requeued: didRequeue, parked } = finishExactReviewQueueItem(
-          state,
-          item,
-          now,
-          run.outcome,
-          0,
-          false,
-          undefined,
-          this.random,
-        );
+        const leaseRevision = Number(item.leaseRevision || 0);
+        const directLifecycle = item.decision.publication?.directLifecycle;
+        const owedDirectLifecycleRequeue =
+          run.outcome === "success" &&
+          item.revision <= leaseRevision &&
+          directLifecycle?.plan.kind === "requeue" &&
+          (directLifecycle.receiptOutcome === "accepted" ||
+            directLifecycle.receiptOutcome === "deduped");
+        if (owedDirectLifecycleRequeue) {
+          this.recordLifecycleTerminal(
+            {
+              canonicalTargetKey: `${item.decision.targetRepo}#${item.decision.itemNumber}`,
+              fenceKey: item.key,
+              revision: leaseRevision,
+              kind: "requeue",
+            },
+            now,
+          );
+        }
+        const { requeued: didRequeue, parked } = owedDirectLifecycleRequeue
+          ? this.requeueDirectLifecyclePublicationSync(state, item, now)
+          : finishExactReviewQueueItem(
+              state,
+              item,
+              now,
+              run.outcome,
+              0,
+              false,
+              undefined,
+              this.random,
+            );
         reconciled += 1;
         if (parked) continue;
         if (didRequeue) {
