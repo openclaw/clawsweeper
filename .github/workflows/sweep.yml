@@ -1359,7 +1359,7 @@ jobs:
           CANDIDATES: ${{ steps.inspect-exact-live-proof.outputs.candidates }}
           RECORDS_DIR: artifacts/event
           TARGET_CHECKOUT: ${{ steps.target.outputs.target_checkout_dir }}
-          VERSION_FILE: .artifacts/exact-live-proof-go/.tool-versions
+          VERSION_FILE: .artifacts/exact-live-proof-go/.go-version
         run: |
           set -euo pipefail
           versions_file="$(mktemp)"
@@ -1409,7 +1409,7 @@ jobs:
           NODE
           )"
           mkdir -p "$(dirname "$VERSION_FILE")"
-          printf 'golang %s\n' "$version" > "$VERSION_FILE"
+          printf '%s\n' "$version" > "$VERSION_FILE"
           {
             echo "available=true"
             echo "path=$VERSION_FILE"
@@ -4593,7 +4593,7 @@ jobs:
           CANDIDATES: ${{ steps.inspect-shard-live-proofs.outputs.candidates }}
           RECORDS_DIR: review-artifacts/shard-${{ matrix.shard }}
           TARGET_CHECKOUT: ${{ needs.plan.outputs.target_checkout_dir }}
-          VERSION_FILE: review-artifacts/shard-${{ matrix.shard }}/live-proof-toolchain/.tool-versions
+          VERSION_FILE: review-artifacts/shard-${{ matrix.shard }}/live-proof-toolchain/.go-version
         run: |
           set -euo pipefail
           versions_file="$(mktemp)"
@@ -4643,7 +4643,7 @@ jobs:
           NODE
           )"
           mkdir -p "$(dirname "$VERSION_FILE")"
-          printf 'golang %s\n' "$version" > "$VERSION_FILE"
+          printf '%s\n' "$version" > "$VERSION_FILE"
           {
             echo "available=true"
             echo "path=$VERSION_FILE"

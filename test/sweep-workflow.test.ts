@@ -825,7 +825,11 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(resolveExactLiveProofGo.run ?? "", /replace\(\/-\.\+\$\/, ""\)/);
   assert.match(resolveExactLiveProofGo.run ?? "", /minor < 21 \? 2 : -1/);
   assert.match(resolveExactLiveProofGo.run ?? "", /compare\(versions\.at\(-1\), "1\.14\.0"\)/);
-  assert.match(resolveExactLiveProofGo.run ?? "", /printf 'golang %s\\n'/);
+  assert.equal(
+    resolveExactLiveProofGo.env?.VERSION_FILE,
+    ".artifacts/exact-live-proof-go/.go-version",
+  );
+  assert.match(resolveExactLiveProofGo.run ?? "", /printf '%s\\n'/);
   assert.equal(
     setupExactLiveProofGo.uses,
     "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16",
@@ -1583,7 +1587,11 @@ test("review shards provision Go only for inspected live-proof candidates with a
   assert.match(resolveGo.run ?? "", /replace\(\/-\.\+\$\/, ""\)/);
   assert.match(resolveGo.run ?? "", /minor < 21 \? 2 : -1/);
   assert.match(resolveGo.run ?? "", /compare\(versions\.at\(-1\), "1\.14\.0"\)/);
-  assert.match(resolveGo.run ?? "", /printf 'golang %s\\n'/);
+  assert.equal(
+    resolveGo.env?.VERSION_FILE,
+    "review-artifacts/shard-${{ matrix.shard }}/live-proof-toolchain/.go-version",
+  );
+  assert.match(resolveGo.run ?? "", /printf '%s\\n'/);
   assert.equal(setupGo.uses, "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16");
   assert.equal(
     setupGo.with?.["go-version-file"],
