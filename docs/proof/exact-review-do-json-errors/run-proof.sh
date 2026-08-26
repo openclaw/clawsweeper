@@ -13,6 +13,21 @@ wrangler_log="$runtime_dir/wrangler.log"
 proof_entry="dashboard/proof-entry-do-error.ts"
 proof_config="dashboard/wrangler.proof.toml"
 
+if [ -e "$proof_entry" ] || [ -e "$proof_config" ]; then
+  echo "Refusing to overwrite existing proof injection files" >&2
+  exit 1
+fi
+
+cleanup() {
+  if [ -n "${wrangler_pid:-}" ]; then
+    kill "$wrangler_pid" >/dev/null 2>&1 || true
+    wait "$wrangler_pid" >/dev/null 2>&1 || true
+  fi
+  rm -f "$proof_entry" "$proof_config"
+  rm -rf "$runtime_dir"
+}
+trap cleanup EXIT
+
 if [ -e "$output_dir" ]; then
   echo "Refusing to overwrite existing proof output: $output_dir" >&2
   exit 1
@@ -240,16 +255,6 @@ await writeFile(
 );
 console.log(JSON.stringify({ mode, head: headSha, assertions }, null, 2));
 PROOF_DRIVER
-
-cleanup() {
-  if [ -n "${wrangler_pid:-}" ]; then
-    kill "$wrangler_pid" >/dev/null 2>&1 || true
-    wait "$wrangler_pid" >/dev/null 2>&1 || true
-  fi
-  rm -f "$proof_entry" "$proof_config"
-  rm -rf "$runtime_dir"
-}
-trap cleanup EXIT
 
 if [ "${EXACT_REVIEW_DO_PROOF_SKIP_INSTALL:-0}" != "1" ]; then
   corepack pnpm install --frozen-lockfile
