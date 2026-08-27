@@ -25,6 +25,18 @@ test("review prompt assets match tracked files", () => {
   );
 });
 
+test("assembled review prompt supplies the live-proof single-line command guidance", () => {
+  const prompt = reviewPromptForTest(item({ kind: "pull_request" }), {}, git);
+  assert.match(prompt, /Keep `entry` and\s+every terminal `run\.command` on one line/);
+  assert.match(prompt, /no literal CR, LF, U\+2028, or U\+2029/);
+  assert.match(prompt, /including leading or trailing line breaks/);
+  assert.match(prompt, /`run\.command` must not be blank\s+after trimming/);
+  assert.match(prompt, /use an existing script or a properly quoted\s+single-line command/);
+  assert.match(prompt, /not a multiline heredoc/);
+  assert.match(prompt, /Escaped newline sequences[\s\S]*decoded command remains one line/);
+  assert.doesNotMatch(prompt, /## Maintainer Request/);
+});
+
 for (const [repo, core] of [
   ["openclaw/openclaw", true],
   ["openclaw/clawsweeper", false],

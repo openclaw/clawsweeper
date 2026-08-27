@@ -533,8 +533,13 @@ user-visible. Reserve `not_applicable` for a change with genuinely nothing to
 run, such as docs-only edits or generated assets in a repository with no
 meaningful runnable surface. Use `surface: "browser"` for browser behavior and
 `surface: "terminal"` for terminal behavior. The `entry` must be a URL path for
-browser verification or a command for terminal verification. Set
-`terminalCompletion: "exit_zero"` when the final terminal command must finish
+browser verification or a command for terminal verification. Keep `entry` and
+every terminal `run.command` on one line: no literal CR, LF, U+2028, or U+2029,
+including leading or trailing line breaks. A `run.command` must not be blank
+after trimming. For complex commands, use an existing script or a properly quoted
+single-line command, not a multiline heredoc. Escaped newline sequences inside
+quoted source strings are allowed only when the decoded command remains one line.
+Set `terminalCompletion: "exit_zero"` when the final terminal command must finish
 successfully. Use `terminalCompletion: "ready_while_running"` only for a final
 server, watcher, or TUI command that must still be running after a stable
 `expect_output` marker appears. Every terminal command before the final command

@@ -835,7 +835,8 @@
         },
         "entry": {
           "type": "string",
-          "description": "The URL path for browser proof or command for terminal proof. Terminal entry executes automatically before all steps. For a one-shot proof, put the proof command here followed by stable expect_output steps, or use a safe setup entry followed by exactly one run of the proof command. Each command runs in a separate Bash process in the same checkout; share state through files or combine dependent setup and execution in one command. Use an empty string unless status is recommended."
+          "pattern": "^[^\\r\\n\\u2028\\u2029]*$",
+          "description": "A single-line URL path for browser proof or command for terminal proof, with no literal CR, LF, U+2028, or U+2029, including leading or trailing line breaks. Terminal entry executes automatically before all steps. For a one-shot proof, put the proof command here followed by stable expect_output steps, or use a safe setup entry followed by exactly one run of the proof command. Each command runs in a separate Bash process in the same checkout; share state through files or combine dependent setup and execution in one command. Use an empty string unless status is recommended."
         },
         "steps": {
           "type": "array",
@@ -915,7 +916,8 @@
                   "action": { "type": "string", "const": "run" },
                   "command": {
                     "type": "string",
-                    "description": "A new terminal command to execute, not a restatement of entry. Identical commands still execute; include a rerun only when intentional."
+                    "pattern": "^[^\\r\\n\\u2028\\u2029]*\\S[^\\r\\n\\u2028\\u2029]*$",
+                    "description": "A nonblank single-line terminal command with no literal CR, LF, U+2028, or U+2029, including leading or trailing line breaks, not a restatement of entry. Identical commands still execute; include a rerun only when intentional."
                   }
                 }
               },

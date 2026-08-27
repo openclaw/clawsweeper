@@ -5,6 +5,7 @@ import {
   parseDecision,
   renderLiveProofReportSectionForTest,
   reportLiveProofPlanForTest,
+  reviewDecisionSchemaText,
   rootCauseClusterFromReportForTest,
 } from "../dist/clawsweeper.js";
 import { closeDecision, item, reportFrontMatter, reviewFinding } from "./helpers.ts";
@@ -557,6 +558,125 @@ test("report live-proof parsing preserves safe legacy plans and rejects ambiguou
   assert.match(parsedTerminal.reason, /regenerate the review report/);
 });
 
+test("shipped live-proof command patterns reject separators with JavaScript RegExp", () => {
+  const planSchema = JSON.parse(reviewDecisionSchemaText()).properties.liveProofPlan;
+  const runSchema = planSchema.properties.steps.items.anyOf.find(
+    (step: { properties: { action: { const: string } } }) => step.properties.action.const === "run",
+  );
+  const terminalPlan = {
+    status: "recommended",
+    surface: "terminal",
+    terminalCompletion: "exit_zero",
+    reason: "The CLI prints its result.",
+    payoff: { kind: "static_text", justification: "The final output is sufficient." },
+    entry: "node scripts/proof.mjs",
+    steps: [{ action: "expect_output", text: "ready" }],
+  };
+  for (const [field, stringSchema] of [
+    ["entry", planSchema.properties.entry],
+    ["command", runSchema.properties.command],
+  ] as const) {
+    assert.equal(stringSchema.type, "string");
+    assert.equal(typeof stringSchema.pattern, "string");
+    assert.doesNotMatch(stringSchema.pattern, /\(\?[=!<]/, "The provider rejects lookaround.");
+    // Without m, ECMAScript $ matches only the end of input. Provider proof is separate.
+    const pattern = new RegExp(stringSchema.pattern);
+    const parse = (value: unknown) =>
+      parseDecision(
+        closeDecision({
+          liveProofPlan:
+            field === "entry"
+              ? { ...terminalPlan, entry: value }
+              : { ...terminalPlan, steps: [{ action: "run", command: value }] },
+        }),
+      ).liveProofPlan;
+    for (const command of [
+      "node scripts/proof.mjs",
+      "pnpm run build && node dist/cli.js --help",
+      String.raw`node -e 'process.stdout.write("ready\n")'`,
+      " \tprintf ready\t ",
+      "printf\tready",
+    ]) {
+      assert.ok(pattern.test(command), `${field}: ${JSON.stringify(command.slice(0, 80))}`);
+      const parsed = parse(command);
+      assert.equal(field === "entry" ? parsed.entry : parsed.steps[0].command, command.trim());
+    }
+    for (const separator of ["\n", "\r", "\r\n", "\u2028", "\u2029"]) {
+      // Keep trailing rejection coverage: the parser checks separators before trimming.
+      for (const command of [
+        `${separator}printf ready`,
+        `printf ready${separator}`,
+        `printf ready${separator}printf done`,
+      ]) {
+        assert.equal(pattern.test(command), false, `${field}: ${JSON.stringify(command)}`);
+        assert.throws(() => parse(command), /must be a single-line string/);
+      }
+    }
+    const heredoc = "node <<'PROOF'\nconsole.log('ready')\nPROOF";
+    assert.equal(pattern.test(heredoc), false);
+    assert.throws(() => parse(heredoc), /must be a single-line string/);
+    for (const blank of ["", " ", "\t", " \t\u00a0\ufeff "]) {
+      assert.equal(pattern.test(blank), field === "entry");
+      assert.throws(() => parse(blank), /must not be empty/);
+    }
+    for (const nonString of [null, undefined, 42]) {
+      assert.throws(() => parse(nonString), /must be a string/);
+    }
+  }
+});
+
+test("live-proof entry schema preserves browser paths and nonrecommended empty entries", () => {
+  const planSchema = JSON.parse(reviewDecisionSchemaText()).properties.liveProofPlan;
+  const entryPattern = new RegExp(planSchema.properties.entry.pattern);
+  assert.equal(planSchema.type, "object");
+  assert.ok(planSchema.required.includes("entry"));
+  const payoff = { kind: "static_text", justification: "No recording is needed." };
+  for (const status of ["not_applicable", "declined_suspicious"]) {
+    for (const entry of ["", " \t "]) {
+      assert.ok(entryPattern.test(entry));
+      const plan = {
+        status,
+        surface: "none",
+        terminalCompletion: "not_applicable",
+        reason: "No execution.",
+        payoff,
+        entry,
+        steps: [],
+      };
+      assert.deepEqual(parseDecision(closeDecision({ liveProofPlan: plan })).liveProofPlan, {
+        ...plan,
+        entry: "",
+      });
+    }
+  }
+  const browserPlan = {
+    status: "recommended",
+    surface: "browser",
+    terminalCompletion: "not_applicable",
+    reason: "The settings page is visible.",
+    payoff,
+    entry: " /settings?tab=general ",
+    steps: [{ action: "expect_text", text: "Settings" }],
+  };
+  assert.ok(entryPattern.test(browserPlan.entry));
+  assert.equal(
+    parseDecision(closeDecision({ liveProofPlan: browserPlan })).liveProofPlan.entry,
+    "/settings?tab=general",
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          liveProofPlan: { ...browserPlan, entry: "https://example.com/settings" },
+        }),
+      ),
+    /must be a URL path/,
+  );
+  for (const liveProofPlan of [null, undefined]) {
+    assert.throws(() => parseDecision(closeDecision({ liveProofPlan })), /must be an object/);
+  }
+});
+
 test("decision parser preserves every terminal command including exact entry repeats", () => {
   const terminalPlan = {
     status: "recommended",
@@ -575,6 +695,15 @@ test("decision parser preserves every terminal command including exact entry rep
   };
   const exact = parseDecision(closeDecision({ liveProofPlan: terminalPlan })).liveProofPlan;
   assert.deepEqual(exact.steps, terminalPlan.steps);
+  for (const oneShot of [
+    { ...terminalPlan, steps: [terminalPlan.steps[1]] },
+    { ...terminalPlan, entry: "printf setup", steps: terminalPlan.steps },
+  ]) {
+    assert.deepEqual(
+      parseDecision(closeDecision({ liveProofPlan: oneShot })).liveProofPlan,
+      oneShot,
+    );
+  }
   const section = renderLiveProofReportSectionForTest(
     parseDecision(closeDecision({ liveProofPlan: exact })),
   );

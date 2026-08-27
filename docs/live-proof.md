@@ -101,6 +101,21 @@ string rather than counts, timings, or run-dependent numbers. When no exact
 value is certain, the planner must choose a more stable assertion instead of
 inventing one.
 
+The [review prompt](../prompts/review-item.md) and decision parser require
+`liveProofPlan.entry` and terminal `run.command` strings to contain no literal
+CR, LF, U+2028, or U+2029, including leading or trailing line breaks. The parser
+checks this before trimming; a `run.command` must remain nonempty after trimming.
+For complex commands, use an existing script or a properly quoted single-line
+command instead of a multiline heredoc. Escaped newline sequences inside quoted
+source strings are distinct from literal newlines in the decoded command.
+Browser entries remain URL paths; nonrecommended plans use an empty entry and
+no steps.
+
+The [decision schema](../schema/clawsweeper-decision.schema.json) constrains
+these strings with ordinary anchored character classes, not regex lookaround
+(which the structured-output provider rejects). The parser remains the final
+validation boundary for every generated plan.
+
 Browser plans are serialized as JSON data into a generated plain
 `playwright-core` script; plan values are never inserted as source code.
 Recorded browser runs use installed Chrome with a 1280x800 video context and
