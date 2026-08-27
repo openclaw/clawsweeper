@@ -1563,12 +1563,8 @@ function cleanupTerminalWindow(
   ) {
     return;
   }
-  try {
-    terminateTerminalProcessGroup(runner, checkout, window.processGroupId);
-    window.processGroupCleaned = true;
-  } catch (error) {
-    throw new AggregateError([error], "failed to clean terminal process group");
-  }
+  terminateTerminalProcessGroup(runner, checkout, window.processGroupId);
+  window.processGroupCleaned = true;
 }
 
 function readTerminalCommandState(
