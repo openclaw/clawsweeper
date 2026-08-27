@@ -2088,7 +2088,15 @@ test("pinned-base validation reproduction proves the same base failure", () => {
   fs.mkdirSync(path.join(cwd, "src"));
   fs.writeFileSync(
     path.join(cwd, "check.js"),
-    "console.error('src/base.ts:1: lint failed'); process.exit(1);\n",
+    [
+      "const fs = require('node:fs');",
+      "const { execFileSync } = require('node:child_process');",
+      "const profile = Object.fromEntries(['HOME', 'XDG_CACHE_HOME', 'COREPACK_HOME'].map(key => [key, process.env[key]]));",
+      "for (const directory of Object.values(profile)) if (!fs.statSync(directory).isDirectory()) throw new Error('missing validation profile');",
+      "console.log('pinned-base-profile:' + JSON.stringify({ ...profile, cwd: process.cwd(), head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), pnpmOffline: process.env.PNPM_CONFIG_OFFLINE, npmOffline: process.env.npm_config_offline }));",
+      "console.error('src/base.ts:1: lint failed'); process.exit(1);",
+      "",
+    ].join("\n"),
   );
   fs.writeFileSync(path.join(cwd, "src/base.ts"), "export const base = true;\n");
   fs.writeFileSync(path.join(cwd, "src/repair.ts"), "export const value = 1;\n");
@@ -2099,13 +2107,32 @@ test("pinned-base validation reproduction proves the same base failure", () => {
   git(cwd, "add", "src/repair.ts");
   git(cwd, "commit", "-m", "repair change");
 
-  const baseError = reproduceValidationFailureAtPinnedBase({
-    commands: ["pnpm check:changed"],
-    targetDir: cwd,
-    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
-  });
+  const profiles = withPinnedBasePnpm(() =>
+    Array.from({ length: 2 }, () => {
+      const baseError = reproduceValidationFailureAtPinnedBase({
+        commands: ["pnpm check:changed"],
+        targetDir: cwd,
+        options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+      });
 
-  assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
+      assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
+      const observation = /pinned-base-profile:(\{[^\r\n]*?\})/.exec(String(baseError));
+      assert.ok(observation, "check.js must report its validation environment");
+      return JSON.parse(observation[1]);
+    }),
+  );
+  for (const profile of profiles) {
+    assert.equal(profile.head, pinnedBaseRef);
+    assert.notEqual(profile.cwd, fs.realpathSync(cwd));
+    assert.equal(profile.pnpmOffline, "true");
+    assert.equal(profile.npmOffline, "true");
+    assert.equal(fs.existsSync(profile.cwd), false, "pinned checkout must be removed");
+    for (const key of ["HOME", "XDG_CACHE_HOME", "COREPACK_HOME"]) {
+      assert.notEqual(profile[key], process.env[key]);
+      assert.notEqual(profiles[0][key], profiles[1][key], "reproductions need separate profiles");
+      assert.equal(fs.existsSync(profile[key]), false, "validation profile must be removed");
+    }
+  }
 });
 
 test("pinned-base reproduction avoids fetching unrelated missing partial-clone history", () => {
@@ -2154,11 +2181,13 @@ test("pinned-base reproduction avoids fetching unrelated missing partial-clone h
   assert.match(missingObjects, new RegExp(`^\\?${omittedHistoricalBlob}$`, "m"));
   git(target, "remote", "set-url", "origin", "https://invalid.invalid/offline.git");
 
-  const baseError = reproduceValidationFailureAtPinnedBase({
-    commands: ["pnpm check:changed"],
-    targetDir: target,
-    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
-  });
+  const baseError = withPinnedBasePnpm(() =>
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: target,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+    }),
+  );
 
   assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
   assert.match(
@@ -2197,11 +2226,13 @@ test("pinned-base reproduction preserves the source comparison branch for change
   git(cwd, "update-ref", "refs/remotes/origin/main", pinnedBaseRef);
   assert.notEqual(sourceMainSha, pinnedBaseRef);
 
-  const baseError = reproduceValidationFailureAtPinnedBase({
-    commands: ["pnpm check:changed"],
-    targetDir: cwd,
-    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
-  });
+  const baseError = withPinnedBasePnpm(() =>
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: cwd,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+    }),
+  );
 
   assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
 });
@@ -2248,14 +2279,16 @@ test("pinned-base reproduction hydrates blobs required by the older pinned snaps
     new RegExp(`^\\?${requiredBlob}$`, "m"),
   );
 
-  const baseError = reproduceValidationFailureAtPinnedBase({
-    commands: ["pnpm check:changed"],
-    targetDir: target,
-    options: validationOptions("openclaw/openclaw", {
-      pinnedBaseRef,
-      pinnedBaseRemoteUrl: pathToFileURL(remote).href,
+  const baseError = withPinnedBasePnpm(() =>
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: target,
+      options: validationOptions("openclaw/openclaw", {
+        pinnedBaseRef,
+        pinnedBaseRemoteUrl: pathToFileURL(remote).href,
+      }),
     }),
-  });
+  );
 
   assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
 });
@@ -2277,11 +2310,13 @@ test("pinned-base reproduction preserves the source SHA-256 object format", () =
   const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
   assert.equal(pinnedBaseRef.length, 64);
 
-  const baseError = reproduceValidationFailureAtPinnedBase({
-    commands: ["pnpm check:changed"],
-    targetDir: cwd,
-    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
-  });
+  const baseError = withPinnedBasePnpm(() =>
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: cwd,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+    }),
+  );
 
   assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
 });
@@ -2326,11 +2361,13 @@ test("pinned-base reproduction does not inherit target-controlled checkout hooks
   });
   git(cwd, "config", "core.hooksPath", hooks);
 
-  const baseError = reproduceValidationFailureAtPinnedBase({
-    commands: ["pnpm check:changed"],
-    targetDir: cwd,
-    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
-  });
+  const baseError = withPinnedBasePnpm(() =>
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: cwd,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+    }),
+  );
 
   assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
   assert.equal(fs.existsSync(marker), false);
@@ -8847,6 +8884,34 @@ function linuxValidationContainmentAvailable() {
     { stdio: "ignore" },
   );
   return probe.status === 0;
+}
+
+function withPinnedBasePnpm(callback) {
+  // Dependency-free pinned-base fixtures skip setup and must not resolve host pnpm.
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-pinned-base-pnpm-"));
+  const pnpmPath = path.join(binDir, "pnpm.cjs");
+  fs.writeFileSync(
+    pnpmPath,
+    `const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2).filter(arg => ![
+  "--config.verify-deps-before-run=false",
+  "--config.enable-pre-post-scripts=false",
+].includes(arg));
+assert.deepEqual(args, ["check:changed"]);
+assert.equal(JSON.parse(fs.readFileSync("package.json", "utf8")).scripts["check:changed"], "node check.js");
+const child = spawnSync(process.execPath, ["check.js"], { stdio: "inherit" });
+if (child.error) throw child.error;
+if (child.signal) process.kill(process.pid, child.signal);
+else process.exit(child.status ?? 1);
+`,
+  );
+  try {
+    return withMockCommand("pnpm", pnpmPath, callback);
+  } finally {
+    fs.rmSync(binDir, { recursive: true, force: true });
+  }
 }
 
 function withMockCommand(command, scriptPath, callback) {
