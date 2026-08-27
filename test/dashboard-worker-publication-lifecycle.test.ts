@@ -19,6 +19,7 @@ import {
   createExactReviewAdmissionHarness,
   buildExactReviewQueueRequest,
   exactReviewPublicationOverrides,
+  exactReviewQueueStatusSnapshot,
   leasedExactReviewQueueItem,
   leasedExactReviewPublicationItem,
   type ExactReviewQueueItem,
@@ -241,6 +242,12 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
       ?.admission.deliveryId,
     "direct-publication-delivery:701",
   );
+  assert.deepEqual(
+    new ExactReviewLifecycleProjectionStore(storage)
+      .read("openclaw/openclaw#701", leased.key, 4)
+      ?.canonicalReceipts.map((receipt) => receipt.receiptId),
+    ["direct-v2:openclaw/openclaw#701:4:accepted", "direct-v2:openclaw/openclaw#701:4:deduped"],
+  );
   const directTelemetry = new ExactReviewLifecycleTelemetryStore(storage).summary(Date.now());
   assert.deepEqual(directTelemetry.publication.direct, {
     accepted: 1,
@@ -276,6 +283,14 @@ test("direct publication endpoint authenticates, dedupes, and returns a structur
     plan: { kind: "router" },
     receiptOutcome: "accepted",
   });
+  const directRecoveryStatus = await exactReviewQueueStatusSnapshot({
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  });
+  assert.equal(
+    directRecoveryStatus?.bay_projection.items.find((item) => item.item_number === 701)
+      ?.legacy_batch_path,
+    false,
+  );
   assert.deepEqual(
     {
       ...Array.from(

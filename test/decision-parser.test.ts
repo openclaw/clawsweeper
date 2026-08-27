@@ -5,7 +5,6 @@ import {
   parseDecision,
   renderLiveProofReportSectionForTest,
   reportLiveProofPlanForTest,
-  reviewDecisionSchemaText,
   rootCauseClusterFromReportForTest,
 } from "../dist/clawsweeper.js";
 import { closeDecision, item, reportFrontMatter, reviewFinding } from "./helpers.ts";
@@ -558,11 +557,7 @@ test("report live-proof parsing preserves safe legacy plans and rejects ambiguou
   assert.match(parsedTerminal.reason, /regenerate the review report/);
 });
 
-test("shipped live-proof command patterns reject separators with JavaScript RegExp", () => {
-  const planSchema = JSON.parse(reviewDecisionSchemaText()).properties.liveProofPlan;
-  const runSchema = planSchema.properties.steps.items.anyOf.find(
-    (step: { properties: { action: { const: string } } }) => step.properties.action.const === "run",
-  );
+test("historical live-proof parser rejects command separators", () => {
   const terminalPlan = {
     status: "recommended",
     surface: "terminal",
@@ -572,15 +567,7 @@ test("shipped live-proof command patterns reject separators with JavaScript RegE
     entry: "node scripts/proof.mjs",
     steps: [{ action: "expect_output", text: "ready" }],
   };
-  for (const [field, stringSchema] of [
-    ["entry", planSchema.properties.entry],
-    ["command", runSchema.properties.command],
-  ] as const) {
-    assert.equal(stringSchema.type, "string");
-    assert.equal(typeof stringSchema.pattern, "string");
-    assert.doesNotMatch(stringSchema.pattern, /\(\?[=!<]/, "The provider rejects lookaround.");
-    // Without m, ECMAScript $ matches only the end of input. Provider proof is separate.
-    const pattern = new RegExp(stringSchema.pattern);
+  for (const field of ["entry", "command"] as const) {
     const parse = (value: unknown) =>
       parseDecision(
         closeDecision({
@@ -597,7 +584,6 @@ test("shipped live-proof command patterns reject separators with JavaScript RegE
       " \tprintf ready\t ",
       "printf\tready",
     ]) {
-      assert.ok(pattern.test(command), `${field}: ${JSON.stringify(command.slice(0, 80))}`);
       const parsed = parse(command);
       assert.equal(field === "entry" ? parsed.entry : parsed.steps[0].command, command.trim());
     }
@@ -608,15 +594,12 @@ test("shipped live-proof command patterns reject separators with JavaScript RegE
         `printf ready${separator}`,
         `printf ready${separator}printf done`,
       ]) {
-        assert.equal(pattern.test(command), false, `${field}: ${JSON.stringify(command)}`);
         assert.throws(() => parse(command), /must be a single-line string/);
       }
     }
     const heredoc = "node <<'PROOF'\nconsole.log('ready')\nPROOF";
-    assert.equal(pattern.test(heredoc), false);
     assert.throws(() => parse(heredoc), /must be a single-line string/);
     for (const blank of ["", " ", "\t", " \t\u00a0\ufeff "]) {
-      assert.equal(pattern.test(blank), field === "entry");
       assert.throws(() => parse(blank), /must not be empty/);
     }
     for (const nonString of [null, undefined, 42]) {
@@ -625,15 +608,10 @@ test("shipped live-proof command patterns reject separators with JavaScript RegE
   }
 });
 
-test("live-proof entry schema preserves browser paths and nonrecommended empty entries", () => {
-  const planSchema = JSON.parse(reviewDecisionSchemaText()).properties.liveProofPlan;
-  const entryPattern = new RegExp(planSchema.properties.entry.pattern);
-  assert.equal(planSchema.type, "object");
-  assert.ok(planSchema.required.includes("entry"));
+test("historical live-proof parser preserves browser paths and nonrecommended empty entries", () => {
   const payoff = { kind: "static_text", justification: "No recording is needed." };
   for (const status of ["not_applicable", "declined_suspicious"]) {
     for (const entry of ["", " \t "]) {
-      assert.ok(entryPattern.test(entry));
       const plan = {
         status,
         surface: "none",
@@ -658,7 +636,6 @@ test("live-proof entry schema preserves browser paths and nonrecommended empty e
     entry: " /settings?tab=general ",
     steps: [{ action: "expect_text", text: "Settings" }],
   };
-  assert.ok(entryPattern.test(browserPlan.entry));
   assert.equal(
     parseDecision(closeDecision({ liveProofPlan: browserPlan })).liveProofPlan.entry,
     "/settings?tab=general",

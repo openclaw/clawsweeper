@@ -1,348 +1,103 @@
 # Live proof
 
-- Status: active
+- Status: retired for automatic review generation; compatibility support only
 - Owner: ClawSweeper review and publication maintainers
-- Source of truth: `prompts/review-item.md`, `src/live-proof/`,
-  `.github/workflows/sweep.yml`, `.github/workflows/exact-review-batch-publish.yml`,
-  and repository `live_test` profiles
-- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
-- Update when: planner assertion guidance, the plan schema, security boundary,
-  execution gates, media limits, storage path, or comment rendering changes
+- Source of truth: `schema/clawsweeper-decision.schema.json`,
+  `src/live-proof/`, `.github/workflows/sweep.yml`,
+  `.github/workflows/exact-review-batch-publish.yml`, and
+  `.github/workflows/live-proof-maintenance.yml`
+- Update when: the compatibility decision shape, historical artifact validation,
+  publication folding, media storage, comment rendering, or retraction changes
 
-Live proof turns a review-time `liveProofPlan` into deterministic browser or
-terminal execution, with an optional recording when the behavior is worth
-watching. Classification and execution now happen in the same review job. The
-review first writes its decision artifact, then immediately executes the typed
-plan against the exact `pull_head_sha` recorded in that artifact. There is no
-separate dispatch, public PR-head lookup, second hydration, or live-head check.
+ClawSweeper no longer generates live proof during exact-event or scheduled
+reviews. Review jobs do not inspect `liveProofPlan`, provision proof-specific
+tools, execute pull-request code, record proof results, or upload newly generated
+proof files. Exact review bundles contain the review and action ledger only, and
+ordinary exact reviews remain eligible for direct publication without waiting
+for proof.
 
-The planner gates execution in order: the repository must opt in with
-`live_test.enabled`, the item must be a pull request, and the plan must be
-`recommended` with a runnable browser or terminal surface.
-`declined_suspicious` is a strict no-execution result. A `static_text` payoff
-still runs and publishes verification, but it bypasses recording, transcoding,
-and poster generation.
+There is no replacement proof lane, execution toggle, or OpenClaw Bay action.
+Future review journeys simply omit the former automatic proof delay. Bay has a
+presentation-only switch for including the retired proof/legacy-batch path in
+historical cards and timing; that switch is off by default and cannot trigger
+work.
 
-Only after those gates pass does the verification child resolve the target
-repository profile's `package_manager`. If the configured Bun, pnpm, or npm
-executable is missing, the child runs that package manager's official installer
-inside the same sanitized scratch profile and verifies that the executable is
-available before target setup. Installer failures become a failed
-`live-verification.json` result and are published through the normal artifact
-path; they do not fail the review itself. Reviews that do not verify never probe
-or install a target package manager.
+## Decision compatibility
 
-The selected repository profile also owns `live_test.setup`. Setup commands run
-from the exact-head target root, not the ClawSweeper checkout or a discovered
-package directory. Nested packages therefore need explicit target-native
-commands: Crabbox uses `npm ci --prefix worker`, which becomes
-`npm ci --ignore-scripts --prefix worker` under the default install-script policy.
-An owner fallback cannot describe every repository's package layout; configure
-the target profile rather than assuming OpenClaw's root pnpm setup applies.
+`liveProofPlan` remains a required decision and report field so older records
+continue to parse. New model output is constrained to this empty compatibility
+shape:
 
-## Review-job execution
-
-After the review command returns, the job inspects the produced reports before
-installing tools. tmux is installed only when a terminal candidate exists. The
-recording toolchain (`ffmpeg`, Xvfb, xterm, and related X11 tools) is installed
-only when at least one recommended plan has a non-`static_text` payoff. Review
-jobs use each candidate's exact reviewed-head root `go.mod` as the setup gate,
-then use a root `go.work` instead when present and provision the highest
-candidate baseline. A directive-less root workspace requires Go 1.18. Nested Go
-configuration and mixed shards with rootless candidates enable
-`GOTOOLCHAIN=auto` after setup so each proof can select a newer toolchain without
-letting nested fixtures choose the shared baseline. Automatic fallback baselines
-are floored at Go 1.21, the first release with toolchain switching. Root-only
-candidates retain the setup action's `GOTOOLCHAIN=local`; the sanitized child
-keeps the selected setting while using its private writable module cache. Review
-job timeouts include the target installation and deterministic drive. Review
-jobs default to `ubuntu-latest`; `CLAWSWEEPER_REVIEW_RUNNER` remains an optional
-runner override.
-
-For every candidate, trusted ClawSweeper code materializes the report's exact
-head SHA into a scratch worktree, then invokes the existing `live-proof`
-planner/driver/verifier as a normal child process. The security posture has
-three controls:
-
-- The review reads the entire diff before deciding whether the plan is safe.
-  `liveProofPlan.status: declined_suspicious` is the execution gate. The prompt
-  requires that result whenever the diff or its dependencies could plausibly
-  exfiltrate, including new or bumped dependencies the reviewer cannot inspect.
-- The child receives a newly constructed environment. An explicit denylist
-  removes `OPENAI_API_KEY`, `CLAWSWEEPER_OPENCLAW_OPENAI_KEY`, `GH_TOKEN`,
-  `GITHUB_TOKEN`, and `CLAWSWEEPER_WEBHOOK_SECRET`; provider rules remove every
-  `AWS_*` and R2 variable; and a heuristic removes every name ending in
-  `*_TOKEN`, `*_KEY`, `*_SECRET`, or `*_PASSWORD`. The child asserts and reports
-  that zero matching names remain before it reads the plan, and every target
-  setup/build/run command receives the sanitized environment again.
-- Direct pnpm, npm, and Bun install commands in `live_test.setup` gain
-  `--ignore-scripts` by default. This matters because a lockfile-only dependency
-  bump can execute a dependency postinstall that never appears in the reviewed
-  diff. A repository may opt in only with the explicit
-  `live_test.allow_install_scripts: true` flag. No current repository opts in.
-
-Untrusted target code therefore runs unsandboxed in a credentialed review job.
-Environment sanitization reduces what the direct child inherits, but it is not
-a kernel security boundary and does not make a suspicious plan safe. Linux
-user/mount/PID/network containment remains a future hardening step; it is not a
-runner requirement today. The repair lane's separate containment remains in use
-and is unaffected by this live-proof policy.
-
-HOME, package-manager caches, and temporary files point into the scratch profile.
-
-The production review prompt supplies trusted execution context from the effective
-repository profile, including configured/fallback resolution, enablement, package
-manager, normalized setup commands, install-script policy, and browser-only startup.
-It also supplies `terminalExecutionLimitSeconds` from the existing effective
-`live_test.max_recording_seconds` limit (`profile.liveTest.maxRecordingSeconds`),
-which bounds the whole terminal plan even for `static_text` without recording.
-The trusted `terminalStdio: "pty"` fact identifies real terminal standard I/O:
-reporter defaults may differ from redirected logs, and wrappers may pipe their
-own child output. Select a reporter for format-specific assertions or use
-format-independent text. These facts are separate from PR-authored context. The proof target is a cold
-checkout of the exact reviewed head: reviewer/controller `dist` and other generated
-output do not transfer. The planner must inspect the relevant package scripts and
-import chain, then include any build or code-generation prerequisites that setup
-does not supply before the first dependent command. When an existing repository or
-package-manager script owns the required prerequisites, invoke that wrapper and do
-not bypass it by calling its internal script directly. An arbitrary test script
-need not build. When no owning wrapper exists, use an explicit fail-fast command
-chain. The executor does not infer or repair missing prerequisites.
-
-Plans must use assertions the demonstration can satisfy. Browser interactions
-should derive search or filter values from content the page already renders,
-and terminal plans should assert stable output such as a header, flag, or error
-string rather than counts, timings, or run-dependent numbers. When no exact
-value is certain, the planner must choose a more stable assertion instead of
-inventing one.
-
-Package-version assertions should prefer machine-readable package-manager output
-after inspecting the target's pinned CLI version and supported schema. Capture
-the complete JSON from a separate subprocess's stdout, not terminal rendering or
-grep. Reject spawn errors, signals, nonzero exits, invalid/missing JSON, and
-unsupported shapes before emitting a stable marker. pnpm 11 `why --json` returns
-a top-level array of resolutions: it must be nonempty, and every resolution must
-have the exact requested package name and version. Nested `dependents` describe
-the dependency tree, not additional resolutions. One matching resolution must
-not hide wrong or mixed versions.
-
-The [review prompt](../prompts/review-item.md) owns a runnable single-line Node
-example using `spawnSync`, complete `JSON.parse`, and exact name/version checks.
-Run it once as `entry` or one `run` after safe setup, then assert its stable
-marker with the existing literal `expect_output` and `terminalCompletion:
-exit_zero`. Successful proof need not mirror the full child output. Never
-substitute exit success alone, `|| true`, a bare version substring, fuzzy matching,
-punctuation normalization, or a marker emitted before assertions. Without
-structured support, verify exact display and package/version boundaries instead
-of guessing `name version` versus `name@version`.
-
-This avoids the false failure in the
-[Crabline review](https://github.com/openclaw/crabline/pull/281#issuecomment-5447976937):
-`pnpm why postcss` printed `postcss@8.5.26`, but the generated plan expected
-`postcss 8.5.26`. The executor correctly rejected the absent literal despite exit
-zero. Version evidence does not establish runtime exposure, security, or
-compatibility; the incident's Vite/Vitest dependents were development-only.
-No executor, schema v1, lifecycle, or rendering contract changes are needed, so
-OpenClaw Bay is unaffected.
-
-Inspect the exact checked-out command, wrapper, and reporter contract. For finite
-test commands, prefer a real final summary with `exit_zero`; require individual
-test names only when an explicitly selected reporter emits them. Default reporters
-may emit slow-test names only after the file completes, not as per-test progress;
-absence before completion does not establish a test failure. Test declarations
-alone do not establish emitted output. Keep existing program/test budgets intact:
-do not weaken tests, increase timeouts, append fabricated success echoes/sentinels,
-or add sleeps as a workaround. If a meaningful scenario cannot reliably fit the
-supplied terminal limit, narrow to a real valid scenario or use `not_applicable`
-with a concrete harness-capability reason. No runnable surface is also a valid
-`not_applicable` reason.
-
-The [review prompt](../prompts/review-item.md) and decision parser require
-`liveProofPlan.entry` and terminal `run.command` strings to contain no literal
-CR, LF, U+2028, or U+2029, including leading or trailing line breaks. The parser
-checks this before trimming; a `run.command` must remain nonempty after trimming.
-For complex commands, use an existing script or a properly quoted single-line
-command instead of a multiline heredoc. Escaped newline sequences inside quoted
-source strings are distinct from literal newlines in the decoded command.
-Browser entries remain URL paths; nonrecommended plans use an empty entry and
-no steps.
-
-Persisted reports encode empty steps as `Steps:` followed by a blank line and
-the bare JSON array `[]`. Nonempty steps remain one JSON object per Markdown
-bullet. The renderer/report-parser boundary retains the **legacy-empty-list-v1**
-contract for already-produced reports: a solitary `- none` also means no steps.
-Only surrounding payload whitespace is ignored; case variants, quoted sentinels,
-list-wrapped arrays, mixed or duplicated empty markers, missing payloads, and
-malformed or extra step text fail closed. Exactly one `Steps:` payload is
-required. It ends at the next report section or an exact standalone
-`<!-- clawsweeper-live-verification -->` or
-`<!-- clawsweeper-live-proof-recording -->` attachment marker. Markers must match
-raw lines exactly (LF or CRLF); leading or trailing whitespace is not ignored,
-including at the section or report end. Those production suffixes are not steps;
-attached verification keeps its separate validation.
-Both empty formats still pass through decision validation, so a `recommended`
-plan with no steps remains invalid and inspection rejects it before execution.
-
-The [decision schema](../schema/clawsweeper-decision.schema.json) constrains
-these strings with ordinary anchored character classes, not regex lookaround
-(which the structured-output provider rejects). The parser remains the final
-validation boundary for every generated plan.
-
-Browser plans are serialized as JSON data into a generated plain
-`playwright-core` script; plan values are never inserted as source code.
-Recorded browser runs use installed Chrome with a 1280x800 video context and
-fall back to Playwright Chromium only when Chrome cannot launch. Browser output
-is step telemetry only: ClawSweeper never serializes document text. Recorded
-terminal plans use tmux, Xvfb with its TCP listener disabled, fullscreen xterm,
-and ffmpeg `x11grab`; unrecorded terminal plans use tmux directly.
-
-Browser startup writes the configured start command's output to `server.log`
-and records its process in `server.pid`. Readiness polling stops early when that
-process exits; both an early exit and a readiness timeout publish a one-line
-startup reason plus the sanitized, capped tail of the last 40 log lines. This
-usually exposes a failed build or code-generation command that ran before the
-dev server could bind its port without publishing an unbounded target log.
-
-Every drive writes `live-verification.json` with the exact reviewed head, entry,
-typed steps and outcomes, bounded terminal output, and overall pass/fail result.
-A setup or drive failure still publishes verification and no media. Command
-failure summaries retain evidence from both stderr and stdout, sharing a
-1,000-character budget across nonempty streams and any spawn error. Summaries
-are flattened to one line so an informational stderr notice cannot hide a
-stdout failure in the human-readable reason. Existing output bounds and
-publication sanitization still apply. Media is eligible only when an expectation
-was absent initially and satisfied after the plan acted, and the recording passes
-the three-second floor. Eligible recordings
-are capped at 90 seconds and 50 MB, transcoded to H.264 MP4, probed, and paired
-with `poster.jpg` plus a metadata-only manifest.
-
-## Existing artifact and publication path
-
-The review artifact contains its report plus `live-proof/<item>/` with the
-verification result and, when eligible, the manifest, MP4, and poster. The exact
-review bundle binds those files into its existing hashed inventory. No second
-live-proof artifact is uploaded.
-
-The existing publication jobs download and validate the review artifact. Before
-their normal record mutation, they fold each verification result into the review
-report. If media exists, publication re-probes it and uploads it with its own R2
-credentials to:
-
-```text
-live-proof/<repo-slug>/<item>/<head-sha>/live-proof.mp4
-live-proof/<repo-slug>/<item>/<head-sha>/live-proof.jpg
+```json
+{
+  "status": "not_applicable",
+  "surface": "none",
+  "terminalCompletion": "not_applicable",
+  "reason": "Automatic live proof is retired.",
+  "payoff": {
+    "kind": "static_text",
+    "justification": "No recording payoff is assessed."
+  },
+  "entry": "",
+  "steps": []
+}
 ```
 
-Public URLs are constructed only from trusted publication configuration; bundle
-data cannot supply a host. Publication validates the result against the report's
-repository, item, type, and `pull_head_sha`, but it does not query GitHub for a
-new head. The normal record publisher then writes the canonical record and the
-existing comment-sync path upserts the marker-backed review comment.
+The runtime parser deliberately continues to accept historical
+`recommended` and `declined_suspicious` plans, browser and terminal surfaces,
+visual payoff kinds, entries, and typed steps. Report generation and parsing
+also retain those values. This backward compatibility does not authorize new
+automatic execution.
 
-Browser comments contain sanitized per-step outcomes and a one-line failing-step
-reason, never page text. Terminal comments retain capped output and list
-assertions only when present. Each command runs in a real PTY, and terminal
-assertions inspect tmux-rendered history observed by the controller. Capture
-keeps a rolling 1 MiB diagnostic tail, but that target-writable artifact is not
-assertion authority. Once the controller observes an assertion, later history
-eviction does not erase that fact. Sealing proves the capture helper consumed the
-stream before completion. Successful runs publish the final visible 50-row
-terminal viewport, and long-running proofs publish their current viewport.
-Failed runs publish each command's bounded combined diagnostics under one label.
-Private supervisor files and runner paths never enter published terminal output.
-Each entry or `run` action executes as a separately supervised Bash process in
-the same checkout, so plans should share state through files or one command
-rather than shell-local mutations. Terminal assertions observe only bytes emitted
-to the terminal; artifact content must be emitted by the entry or a preceding run,
-for example with `cat`, before an `expect_output` step can assert it.
-The terminal `entry` executes automatically before all typed steps. Every `run`
-executes independently, including a first `run` identical to `entry` or a later
-repeated command; the parser and driver do not deduplicate commands. Intentional
-reruns after state changes remain valid and execute in order.
+Repository `live_test` profiles and the low-level live-proof modules remain
+only because historical tooling and records still depend on their types and
+validation behavior. Review prompts no longer receive repository proof setup,
+tooling, checkout, or browser-startup execution context.
 
-Plan one-shot proofs, including commands that refuse an existing output directory,
-in one of two ways: put the proof command in `entry` followed by stable
-`expect_output` steps, or put safe setup in `entry` followed by exactly one `run`
-of the proof command and its expectations. Do not replay a proof just to capture
-its output or produce media. For a useful recording transition, choose setup plus
-one run so the expected output appears after the action; otherwise use
-`static_text` and verify once. Preserve non-overwrite guards rather than deleting
-the original output to accommodate an accidental replay.
+Historical terminal verification remains compatible with the authoritative
+`terminalCompletion` result added before retirement. Existing `exit_zero` and
+`ready_while_running` records keep their controller-observed exit, viewport,
+and cleanup evidence; new decisions always use `not_applicable`.
 
-Nonzero exits, signals, command timeouts, and missing markers for still-running
-commands remain failures. Terminal plans declare `terminalCompletion:
-exit_zero` when the final command must finish successfully, or
-`terminalCompletion: ready_while_running` when the final command must remain
-live after satisfying an output expectation. Non-recorded long-running proofs
-must remain live through a three-second stability hold before publication.
-Every earlier command must exit zero. Finite commands wait within the remaining
-terminal budget before their expectations are judged against controller-observed
-output after capture sealing. Multiple expectations reuse that completed capture.
-A successful exit never waives missing output: it remains failed/unverified proof
-with a proof-plan assertion mismatch reason asking to verify the
-command/wrapper/reporter contract,
-not by itself evidence of a product/test failure. Product-defect findings require actual
-evidence. Only the final `ready_while_running` command retains the 30-second
-marker wait and the existing stability and liveness checks. The held supervisor
-records the command's exit status and stays alive through capture sealing and
-controller-owned cleanup. Each proof uses a private tmux socket directory. The
-controller binds the exact pane PID and controlling terminal before opening the
-start gate. Child standard I/O opens that concrete PTY path, not `/dev/tty`, so
-inherited descriptors remain usable when a subprocess starts a detached session.
-The pane process validates that tuple and opens a private lease file
-on reserved descriptor 9, inherited by the held target and its descendants.
-Before opening a second execution gate, the controller starts a cleanup watchdog
-outside the pane process tree through the private tmux server and requires an
-exact atomic armed receipt bound to the pane PID, terminal, nonce, and lease
-inode.
+For historical `exit_zero` plans, finite commands wait within the remaining
+terminal budget before assertions are evaluated against sealed,
+controller-observed output. A successful exit does not waive a missing output
+assertion. Historical `ready_while_running` plans retain their bounded marker,
+stability, and liveness checks. Child standard I/O stays bound to the concrete
+PTY path so detached subprocesses can preserve their inherited descriptors.
 
-After capture and the final viewport are sealed, controller cleanup requests the
-already-armed watchdog. Pane death triggers the same watchdog independently. It
-TERM-sweeps, then repeatedly KILL-sweeps processes still holding the lease plus
-bound-terminal members only while the original pane still owns both its lease
-and bound terminal. Lease-holder discovery remains active after pane death.
-Darwin finds lease holders with stock `lsof -X`, restricting discovery to open
-descriptors and fileports rather than mapped images or working directories;
-duplicated lease descriptors remain discoverable. Linux inspects `/proc` for
-reserved inherited descriptor 9. Terminal membership queries select the bound
-TTY directly. These queries avoid unrelated host work without changing the
-cleanup budget or identity guards. Cleanup succeeds only when an exact
-zero-survivor receipt matches the bound identity and the original pane is dead.
-Missing, malformed, stale, replaced, surviving-process, or timeout evidence
-fails visibly. Target commands do not inherit `TMUX`, `TMUX_PANE`, or
-`TMUX_TMPDIR`.
+The retained verifier also preserves the final watchdog cleanup contract for
+historical terminal records: cleanup is bound to the original pane, terminal,
+nonce, and lease, requires an exact zero-survivor receipt after the pane dies,
+and fails visibly for missing, stale, replaced, surviving-process, or timeout
+evidence. Target commands do not inherit `TMUX`, `TMUX_PANE`, or `TMUX_TMPDIR`.
 
-The lease is lifecycle cleanup, not hostile same-UID isolation. A target that
-deliberately closes inherited descriptors or attacks same-user controller
-processes requires container, VM, namespace, or separate-user containment.
-All untrusted fields are bounded and neutralized against Markdown fences, HTML,
-and ClawSweeper marker spoofing. OpenClaw Bay is unaffected because schema v1
-and the existing lifecycle and publication contracts do not change.
+## Historical artifact publication
 
-## Local simulation
+Existing and already-queued proof-bearing artifacts remain supported while they
+age out:
 
-The low-level driver can still run against an existing checkout:
+- exact-review bundle validation still accepts the historical
+  `live-proof/<item>/` inventory
+- exact-event, batch, and scheduled publication jobs still validate and fold
+  `live-verification.json` into review reports
+- valid historical manifests, MP4 recordings, and posters can still be uploaded
+  to the established R2 paths
+- review comments still render the **Live Verification** section and optional
+  recording block
+- historical terminal results retain their bounded authoritative final viewport,
+  exit status, and cleanup evidence
+- the manual **Maintain live proof** workflow can still retract a published
+  recording without removing the underlying historical verification
 
-```bash
-CLAWSWEEPER_LIVE_PROOF_ENABLED=1 node dist/clawsweeper.js live-proof \
-  --repo owner/name \
-  --item 123 \
-  --plan ./fixtures/browser-live-proof-plan.json \
-  --checkout /absolute/path/to/checkout \
-  --output ./artifacts/live-proof
-```
+These publication paths consume trusted workflow artifacts; they do not inspect
+a new plan or execute target code.
 
-This developer command does not add sandboxing by itself. The production review
-path is `live-proof-review`, which owns exact-head materialization, environment
-sanitization, and the unsandboxed child invocation.
+## OpenClaw Bay
 
-## Retracting a published recording
-
-Retraction remains a trusted maintenance action. Run the manual **Maintain live
-proof** workflow with the target repository and pull-request number. It removes
-only the recording block while retaining the plan and verification result, then
-publishes the canonical record and refreshes the review comment.
-
-The maintenance workflow is `workflow_dispatch`-only. It never downloads a
-review artifact, executes target code, reads a media manifest, or compares a
-head SHA.
+OpenClaw Bay remains observer-only. Its default beach and one-hour review-time
+metric show the normal direct-publication path. A presentation-only **Include
+retired proof/batch** switch can add historical automatic-proof and other legacy
+batch-path journeys for comparison. The switch is deliberately off by default,
+does not affect durable queue state, and adds no queue, workflow, GitHub,
+recovery, or other mutation control.

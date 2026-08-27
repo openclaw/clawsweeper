@@ -2601,11 +2601,27 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
         arriving: 1,
         "setting-up": 0,
         reviewing: 1,
-        publishing: 0,
+        publishing: 1,
         applying: 1,
         repairing: 0,
       },
-      total: 3,
+      queue_legacy_batch_stages: {
+        arriving: 0,
+        "setting-up": 0,
+        reviewing: 0,
+        publishing: 0,
+        applying: 0,
+        repairing: 0,
+      },
+      live_legacy_batch_stages: {
+        arriving: 0,
+        "setting-up": 0,
+        reviewing: 1,
+        publishing: 1,
+        applying: 0,
+        repairing: 0,
+      },
+      total: 4,
     });
     assert.deepEqual(
       publicItems.map((item) => ({
@@ -2635,18 +2651,6 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
         },
         {
           repository: "openclaw/openclaw",
-          item_number: 92522,
-          stage: "reviewing",
-          source: "live",
-          action_repository: "openclaw/clawsweeper",
-          run_id: 42,
-          job_id: 4201,
-          status: "in_progress",
-          step_kinds: ["setup", "review", "review"],
-          step_statuses: ["completed", "completed", "in_progress"],
-        },
-        {
-          repository: "openclaw/openclaw",
           item_number: 92523,
           stage: "arriving",
           source: "live",
@@ -2656,6 +2660,30 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
           status: "queued",
           step_kinds: [],
           step_statuses: [],
+        },
+        {
+          repository: "openclaw/openclaw",
+          item_number: 92521,
+          stage: "publishing",
+          source: "live",
+          action_repository: "openclaw/clawsweeper",
+          run_id: 42,
+          job_id: 4202,
+          status: "in_progress",
+          step_kinds: ["apply", "publish"],
+          step_statuses: ["completed", "in_progress"],
+        },
+        {
+          repository: "openclaw/openclaw",
+          item_number: 92522,
+          stage: "reviewing",
+          source: "live",
+          action_repository: "openclaw/clawsweeper",
+          run_id: 42,
+          job_id: 4201,
+          status: "in_progress",
+          step_kinds: ["setup", "review", "review"],
+          step_statuses: ["completed", "completed", "in_progress"],
         },
       ],
     );
@@ -3627,7 +3655,7 @@ test("dashboard serves stale status while coalescing one background refresh", as
     value: { default: cache },
   });
   await cache.put(
-    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v6/_/stale"),
+    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/stale"),
     jsonResponse({
       schema_version: 1,
       generated_at: "2026-06-13T18:00:00Z",

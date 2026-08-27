@@ -1774,6 +1774,7 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "history",
   "points",
   "overall",
+  "including_legacy_batch",
   "terminal_buffer",
   "recently_washed",
   "cluster_repair",
@@ -1823,6 +1824,10 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "activity",
   "queue_stages",
   "live_stages",
+  "legacy_batch_stages",
+  "legacy_batch_active_overlaps",
+  "queue_legacy_batch_stages",
+  "live_legacy_batch_stages",
   "stages",
   "active_stages",
   "window",
@@ -1845,6 +1850,7 @@ const PUBLIC_STATUS_BOOLEAN_FIELDS = new Set([
   "timing_coverage_complete",
   "workflow_run_census_complete",
   "durable_server_observed",
+  "legacy_batch_path",
 ]);
 const PUBLIC_BAY_STAGES = [
   "arriving",
@@ -1937,6 +1943,7 @@ type PublicBayReference = {
   item_number: number;
   stage: (typeof PUBLIC_BAY_STAGES)[number];
   source: "queue" | "live";
+  legacy_batch_path: boolean;
   action?: PublicBayAction;
 };
 
@@ -2153,6 +2160,7 @@ function publicBayReference(
     typeof source.source === "string" && PUBLIC_BAY_REFERENCE_SOURCES.has(source.source)
       ? source.source
       : fallbackSource;
+  const legacyBatchPath = source.legacy_batch_path;
   if (
     !PUBLIC_BAY_REPOSITORY_PATTERN.test(repository) ||
     typeof itemNumber !== "number" ||
@@ -2160,7 +2168,8 @@ function publicBayReference(
     itemNumber <= 0 ||
     itemNumber > PUBLIC_BAY_ITEM_NUMBER_LIMIT ||
     !PUBLIC_BAY_STAGE_SET.has(stage) ||
-    !referenceSource
+    !referenceSource ||
+    (legacyBatchPath !== undefined && typeof legacyBatchPath !== "boolean")
   ) {
     return null;
   }
@@ -2172,6 +2181,7 @@ function publicBayReference(
     item_number: itemNumber,
     stage: stage as (typeof PUBLIC_BAY_STAGES)[number],
     source: referenceSource,
+    legacy_batch_path: legacyBatchPath === true,
     ...(action ? { action } : {}),
   };
 }
@@ -2189,7 +2199,7 @@ function publicBayReferences(
     const reference = publicBayReference(entry, allowedRepositories, fallbackSource);
     if (reference === null) return [];
     if (reference === undefined) continue;
-    const key = `${reference.repository}#${reference.item_number}`;
+    const key = `${reference.source}:${reference.legacy_batch_path ? "legacy" : "direct"}:${reference.repository}#${reference.item_number}`;
     if (seen.has(key)) continue;
     seen.add(key);
     references.push(reference);
@@ -2204,6 +2214,7 @@ function publicBayTerminalOutcome(value, allowedRepositories: ReadonlySet<string
   const explicitRepository = typeof source.repository === "string" ? source.repository.trim() : "";
   const explicitNumber = source.item_number ?? source.number;
   const journeyDuration = source.journey_duration_ms;
+  const legacyBatchPath = source.legacy_batch_path;
   const itemKey = typeof source.item_key === "string" ? source.item_key.trim() : "";
   const keyMatch = itemKey.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
   const repository = explicitRepository || keyMatch?.[1] || "";
@@ -2217,7 +2228,8 @@ function publicBayTerminalOutcome(value, allowedRepositories: ReadonlySet<string
     typeof itemNumber === "number" &&
     Number.isSafeInteger(itemNumber) &&
     itemNumber > 0 &&
-    itemNumber <= PUBLIC_BAY_ITEM_NUMBER_LIMIT
+    itemNumber <= PUBLIC_BAY_ITEM_NUMBER_LIMIT &&
+    (legacyBatchPath === undefined || typeof legacyBatchPath === "boolean")
   ) {
     const canonicalRepository = repository.toLowerCase();
     if (allowedRepositories.has(canonicalRepository)) {
@@ -2237,6 +2249,7 @@ function publicBayTerminalOutcome(value, allowedRepositories: ReadonlySet<string
         item_number: itemNumber,
         outcome,
         journey_duration_ms: journeyDuration,
+        legacy_batch_path: legacyBatchPath === true,
         ...(action ? { action } : {}),
       };
     }
@@ -2252,19 +2265,64 @@ function publicBayTerminalOutcomes(value, limit, allowedRepositories: ReadonlySe
 function publicBayActivity(value, allowedRepositories: ReadonlySet<string>) {
   const source = objectValue(value);
   if (source.complete !== true) {
-    return { complete: false, queue_stages: null, live_stages: null, total: null };
+    return {
+      complete: false,
+      queue_stages: null,
+      live_stages: null,
+      queue_legacy_batch_stages: null,
+      live_legacy_batch_stages: null,
+      total: null,
+    };
   }
   const queueStages = publicBayStageCounts(source.queue_stages, true);
   const liveStages = publicBayStageCounts(source.live_stages, true);
+  const queueLegacyBatchStages = Object.prototype.hasOwnProperty.call(
+    source,
+    "queue_legacy_batch_stages",
+  )
+    ? publicBayStageCounts(source.queue_legacy_batch_stages, true)
+    : emptyPublicBayStageCounts();
+  const liveLegacyBatchStages = Object.prototype.hasOwnProperty.call(
+    source,
+    "live_legacy_batch_stages",
+  )
+    ? publicBayStageCounts(source.live_legacy_batch_stages, true)
+    : emptyPublicBayStageCounts();
   const total = typeof source.total === "number" ? source.total : Number.NaN;
   const expected =
     queueStages && liveStages
       ? PUBLIC_BAY_STAGES.reduce((sum, stage) => sum + queueStages[stage] + liveStages[stage], 0)
       : -1;
-  if (!queueStages || !liveStages || !Number.isSafeInteger(total) || total !== expected) {
-    return { complete: false, queue_stages: null, live_stages: null, total: null };
+  if (
+    !queueStages ||
+    !liveStages ||
+    !queueLegacyBatchStages ||
+    !liveLegacyBatchStages ||
+    !Number.isSafeInteger(total) ||
+    total !== expected ||
+    PUBLIC_BAY_STAGES.some(
+      (stage) =>
+        queueLegacyBatchStages[stage] > queueStages[stage] ||
+        liveLegacyBatchStages[stage] > liveStages[stage],
+    )
+  ) {
+    return {
+      complete: false,
+      queue_stages: null,
+      live_stages: null,
+      queue_legacy_batch_stages: null,
+      live_legacy_batch_stages: null,
+      total: null,
+    };
   }
-  const result = { complete: true, queue_stages: queueStages, live_stages: liveStages, total };
+  const result = {
+    complete: true,
+    queue_stages: queueStages,
+    live_stages: liveStages,
+    queue_legacy_batch_stages: queueLegacyBatchStages,
+    live_legacy_batch_stages: liveLegacyBatchStages,
+    total,
+  };
   const items = publicBayReferences(
     source.items,
     PUBLIC_BAY_ACTIVITY_REFERENCE_LIMIT,
@@ -2276,6 +2334,9 @@ function publicBayActivity(value, allowedRepositories: ReadonlySet<string>) {
 function publicBayProjectionValue(value, allowedRepositories: ReadonlySet<string> = new Set()) {
   const source = objectValue(value);
   const stages = publicBayStageCounts(source.stages, true);
+  const legacyBatchStages = Object.prototype.hasOwnProperty.call(source, "legacy_batch_stages")
+    ? publicBayStageCounts(source.legacy_batch_stages, true)
+    : emptyPublicBayStageCounts();
   const sampleLimit = typeof source.sample_limit === "number" ? source.sample_limit : Number.NaN;
   const total = typeof source.total === "number" ? source.total : Number.NaN;
   const expectedTotal = stages
@@ -2285,6 +2346,8 @@ function publicBayProjectionValue(value, allowedRepositories: ReadonlySet<string
     source.complete === true &&
     sampleLimit === 24 &&
     stages !== null &&
+    legacyBatchStages !== null &&
+    !PUBLIC_BAY_STAGES.some((stage) => legacyBatchStages[stage] > stages[stage]) &&
     Number.isSafeInteger(total) &&
     total >= 0 &&
     total <= 10_000 &&
@@ -2293,7 +2356,14 @@ function publicBayProjectionValue(value, allowedRepositories: ReadonlySet<string
   if (!complete) {
     return {
       complete: false,
-      activity: { complete: false, queue_stages: null, live_stages: null, total: null },
+      activity: {
+        complete: false,
+        queue_stages: null,
+        live_stages: null,
+        queue_legacy_batch_stages: null,
+        live_legacy_batch_stages: null,
+        total: null,
+      },
     };
   }
   const result = {
@@ -2301,9 +2371,17 @@ function publicBayProjectionValue(value, allowedRepositories: ReadonlySet<string
     sample_limit: sampleLimit,
     total,
     stages,
+    legacy_batch_stages: legacyBatchStages,
     activity: hasActivity
       ? publicBayActivity(source.activity, allowedRepositories)
-      : { complete: false, queue_stages: null, live_stages: null, total: null },
+      : {
+          complete: false,
+          queue_stages: null,
+          live_stages: null,
+          queue_legacy_batch_stages: null,
+          live_legacy_batch_stages: null,
+          total: null,
+        },
   };
   const items = publicBayReferences(
     source.items,
@@ -2320,41 +2398,96 @@ function composePublicBayActivity(
   allowedRepositories: ReadonlySet<string>,
 ) {
   if (objectValue(projection).complete !== true || !activeTargets.complete) {
-    return { complete: false, queue_stages: null, live_stages: null, total: null };
+    return {
+      complete: false,
+      queue_stages: null,
+      live_stages: null,
+      queue_legacy_batch_stages: null,
+      live_legacy_batch_stages: null,
+      total: null,
+    };
   }
   const stages = publicBayStageCounts(objectValue(projection).stages, true);
   const overlaps = publicBayStageCounts(objectValue(projection).active_overlaps, true);
   const liveStages = publicBayStageCounts(activeTargets.stages, true);
-  if (!stages || !overlaps || !liveStages) {
-    return { complete: false, queue_stages: null, live_stages: null, total: null };
+  const legacyBatchStages =
+    publicBayStageCounts(objectValue(projection).legacy_batch_stages, true) ??
+    emptyPublicBayStageCounts();
+  const legacyBatchOverlaps =
+    publicBayStageCounts(objectValue(projection).legacy_batch_active_overlaps, true) ??
+    emptyPublicBayStageCounts();
+  const liveLegacyBatchStages = publicBayStageCounts(activeTargets.legacyBatchStages, true);
+  if (!stages || !overlaps || !liveStages || !liveLegacyBatchStages) {
+    return {
+      complete: false,
+      queue_stages: null,
+      live_stages: null,
+      queue_legacy_batch_stages: null,
+      live_legacy_batch_stages: null,
+      total: null,
+    };
   }
   const queueStages = {} as Record<(typeof PUBLIC_BAY_STAGES)[number], number>;
+  const queueLegacyBatchStages = {} as Record<(typeof PUBLIC_BAY_STAGES)[number], number>;
   for (const stage of PUBLIC_BAY_STAGES) {
-    if (overlaps[stage] > stages[stage]) {
-      return { complete: false, queue_stages: null, live_stages: null, total: null };
+    if (
+      overlaps[stage] > stages[stage] ||
+      legacyBatchOverlaps[stage] > legacyBatchStages[stage] ||
+      legacyBatchStages[stage] > stages[stage] ||
+      liveLegacyBatchStages[stage] > liveStages[stage]
+    ) {
+      return {
+        complete: false,
+        queue_stages: null,
+        live_stages: null,
+        queue_legacy_batch_stages: null,
+        live_legacy_batch_stages: null,
+        total: null,
+      };
     }
     queueStages[stage] = stages[stage] - overlaps[stage];
+    queueLegacyBatchStages[stage] = legacyBatchStages[stage] - legacyBatchOverlaps[stage];
   }
   const total = PUBLIC_BAY_STAGES.reduce(
     (sum, stage) => sum + queueStages[stage] + liveStages[stage],
     0,
   );
   const activeKeys = new Set(activeTargets.keys);
+  const activeLegacyKeys = new Set(activeTargets.legacyKeys);
   const queueItems = publicBayReferences(
     objectValue(projection).items,
     PUBLIC_BAY_QUEUE_REFERENCE_LIMIT,
     allowedRepositories,
     "queue",
-  ).filter((item) => !activeKeys.has(`${item.repository}#${item.item_number}`));
+  ).filter((item) => {
+    const itemKey = `${item.repository}#${item.item_number}`;
+    return item.legacy_batch_path ? !activeLegacyKeys.has(itemKey) : !activeKeys.has(itemKey);
+  });
   const liveItems = publicBayReferences(activeTargets.items, 100, allowedRepositories, "live");
-  const items = [...liveItems, ...queueItems].slice(0, PUBLIC_BAY_ACTIVITY_REFERENCE_LIMIT);
+  const items = [...liveItems, ...queueItems]
+    .sort(
+      (left, right) =>
+        Number(left.legacy_batch_path) - Number(right.legacy_batch_path) ||
+        Number(left.source === "queue") - Number(right.source === "queue"),
+    )
+    .slice(0, PUBLIC_BAY_ACTIVITY_REFERENCE_LIMIT);
   return {
     complete: true,
     queue_stages: queueStages,
     live_stages: liveStages,
+    queue_legacy_batch_stages: queueLegacyBatchStages,
+    live_legacy_batch_stages: liveLegacyBatchStages,
     total,
     ...(items.length ? { items } : {}),
   };
+}
+
+export function composePublicBayActivityForTest(projection, activeTargets) {
+  return composePublicBayActivity(
+    projection,
+    activeTargets,
+    new Set(["openclaw/openclaw", "openclaw/clawsweeper"]),
+  );
 }
 
 function publicWorkerBayStage(value): (typeof PUBLIC_BAY_STAGES)[number] | undefined {
@@ -2420,6 +2553,53 @@ function publicWorkerBayStage(value): (typeof PUBLIC_BAY_STAGES)[number] | undef
   if (/apply|publish|merge|close|automerge/.test(fallback)) return "applying";
   if (/review|codex|assist/.test(fallback)) return "reviewing";
   return undefined;
+}
+
+function publicWorkerLegacyBatchPath(value): boolean {
+  const worker = objectValue(value);
+  const steps = Array.isArray(worker.steps) ? worker.steps.slice(0, 100) : [];
+  const directLifecycleRecovery = steps
+    .flatMap((value) => {
+      const step = objectValue(value);
+      const status = String(step.status || "").toLowerCase();
+      const conclusion = String(step.conclusion || "").toLowerCase();
+      return status === "completed" && conclusion === "success" ? [step.name] : [];
+    })
+    .some((name) => /replay committed direct lifecycle handoff/i.test(String(name || "")));
+  if (directLifecycleRecovery) return false;
+  const ranAutomaticProof = steps.some((value) => {
+    const step = objectValue(value);
+    const name = String(step.name || "")
+      .slice(0, 256)
+      .toLowerCase();
+    const status = String(step.status || "").toLowerCase();
+    const conclusion = String(step.conclusion || "").toLowerCase();
+    return (
+      /(?:inspect|execute|fold) (?:exact review |review |exact )?live proof|live-proof/.test(
+        name,
+      ) &&
+      (status === "in_progress" || (status === "completed" && conclusion !== "skipped"))
+    );
+  });
+  if (ranAutomaticProof) return true;
+  const jobName = String(worker.name || worker.job_name || "")
+    .slice(0, 256)
+    .trim()
+    .toLowerCase();
+  const workflowTitle = String(worker.workflow_title || "")
+    .slice(0, 256)
+    .trim()
+    .toLowerCase();
+  return (
+    /^review shard(?:\b|\s)/.test(jobName) ||
+    jobName === "publish review artifacts" ||
+    jobName === "publish exact review artifact" ||
+    /publish exact review batch/.test(`${jobName} ${workflowTitle}`)
+  );
+}
+
+export function publicWorkerLegacyBatchPathForTest(value): boolean {
+  return publicWorkerLegacyBatchPath(value);
 }
 
 function publicWorkerTargetKeys(value) {
@@ -2514,7 +2694,13 @@ function publicBayActiveTargets(
   let complete = producerComplete === true && Array.isArray(workers) && workerList.length <= 100;
   const selected = new Map<
     string,
-    { stage: (typeof PUBLIC_BAY_STAGES)[number]; startedAt: number; action: PublicBayAction | null }
+    {
+      itemKey: string;
+      stage: (typeof PUBLIC_BAY_STAGES)[number];
+      startedAt: number;
+      action: PublicBayAction | null;
+      legacyBatchPath: boolean;
+    }
   >();
   for (const worker of workerList.slice(0, 100)) {
     if (!worker || typeof worker !== "object" || Array.isArray(worker)) {
@@ -2531,9 +2717,11 @@ function publicBayActiveTargets(
     }
     const startedAt = Date.parse(String(record.started_at || ""));
     const action = publicBayActionFromWorker(record, allowedRepositories);
+    const legacyBatchPath = publicWorkerLegacyBatchPath(record);
     if (!Number.isFinite(startedAt)) complete = false;
     for (const itemKey of targets.keys) {
-      const previous = selected.get(itemKey);
+      const pathKey = `${legacyBatchPath ? "legacy" : "direct"}:${itemKey}`;
+      const previous = selected.get(pathKey);
       if (
         !previous ||
         startedAt > previous.startedAt ||
@@ -2541,10 +2729,12 @@ function publicBayActiveTargets(
           PUBLIC_BAY_STAGES.indexOf(stage as (typeof PUBLIC_BAY_STAGES)[number]) >
             PUBLIC_BAY_STAGES.indexOf(previous.stage as (typeof PUBLIC_BAY_STAGES)[number]))
       ) {
-        selected.set(itemKey, {
+        selected.set(pathKey, {
+          itemKey,
           stage,
           startedAt: Number.isFinite(startedAt) ? startedAt : 0,
           action,
+          legacyBatchPath,
         });
       }
     }
@@ -2554,23 +2744,41 @@ function publicBayActiveTargets(
     (typeof PUBLIC_BAY_STAGES)[number],
     number
   >;
-  for (const { stage } of selected.values()) counts[stage] += 1;
-  const keys = [...selected.keys()].slice(0, 100);
-  const items = keys.flatMap((key) => {
-    const match = key.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
-    const selectedItem = selected.get(key);
-    if (!match || !selectedItem) return [];
+  const legacyBatchStages = emptyPublicBayStageCounts();
+  for (const { stage, legacyBatchPath } of selected.values()) {
+    counts[stage] += 1;
+    if (legacyBatchPath) legacyBatchStages[stage] += 1;
+  }
+  const selectedItems = [...selected.values()].slice(0, 100);
+  const keys = [
+    ...new Set(selectedItems.filter((item) => !item.legacyBatchPath).map((item) => item.itemKey)),
+  ];
+  const legacyKeys = [
+    ...new Set(selectedItems.filter((item) => item.legacyBatchPath).map((item) => item.itemKey)),
+  ];
+  const items = selectedItems.flatMap((selectedItem) => {
+    const match = selectedItem.itemKey.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
+    if (!match) return [];
     return [
       {
         repository: match[1],
         item_number: Number(match[2]),
         stage: selectedItem.stage,
         source: "live" as const,
+        legacy_batch_path: selectedItem.legacyBatchPath,
         ...(selectedItem.action ? { action: selectedItem.action } : {}),
       },
     ];
   });
-  return { complete, keys, stages: counts, items };
+  return { complete, keys, legacyKeys, stages: counts, legacyBatchStages, items };
+}
+
+export function publicBayActiveTargetsForTest(workers) {
+  return publicBayActiveTargets(
+    workers,
+    true,
+    new Set(["openclaw/openclaw", "openclaw/clawsweeper"]),
+  );
 }
 
 function unavailablePublicStatusProjection() {
@@ -2905,7 +3113,7 @@ async function refreshStatusCaches(request, env) {
 
 function statusCacheRequest(request, bucket, publicBayScope) {
   const scope = publicBayScope ? encodeURIComponent(publicBayScope) : "_";
-  return new Request(new URL(`/api/status-cache/v6/${scope}/${bucket}`, request.url).toString(), {
+  return new Request(new URL(`/api/status-cache/v7/${scope}/${bucket}`, request.url).toString(), {
     method: "GET",
   });
 }
@@ -5201,7 +5409,11 @@ async function recentDurablePublicationEventsSnapshot(env, window = "24h") {
 
 export async function exactReviewQueueStatusSnapshot(
   env,
-  options: { bayPriorityKeys?: string[]; bayActiveKeys?: string[] } = {},
+  options: {
+    bayPriorityKeys?: string[];
+    bayActiveKeys?: string[];
+    bayActiveLegacyKeys?: string[];
+  } = {},
 ) {
   if (!exactReviewQueueStub(env)) return null;
   const priorityKeys = [...new Set(options.bayPriorityKeys || [])]
@@ -5210,9 +5422,13 @@ export async function exactReviewQueueStatusSnapshot(
   const activeKeys = [...new Set(options.bayActiveKeys || [])]
     .filter((itemKey) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/.test(itemKey))
     .slice(0, 100);
+  const activeLegacyKeys = [...new Set(options.bayActiveLegacyKeys || [])]
+    .filter((itemKey) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/.test(itemKey))
+    .slice(0, 100);
   const search = new URLSearchParams();
   for (const itemKey of priorityKeys) search.append("bay_priority_key", itemKey);
   for (const itemKey of activeKeys) search.append("bay_active_key", itemKey);
+  for (const itemKey of activeLegacyKeys) search.append("bay_active_legacy_key", itemKey);
   const response = await exactReviewQueueRequest(
     env,
     `/stats${search.size ? `?${search.toString()}` : ""}`,
@@ -5250,6 +5466,9 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
   const sampleLimit = publicQueueCount(timings.sample_limit, 100_000);
   const overall = objectValue(timings.overall);
   const history = bayLifecycleTimingHistory(timings.history);
+  const includingLegacyBatch = objectValue(timings.including_legacy_batch);
+  const includingLegacyBatchOverall = objectValue(includingLegacyBatch.overall);
+  const includingLegacyBatchHistory = bayLifecycleTimingHistory(includingLegacyBatch.history);
   const samples = publicQueueCount(overall.samples, 100_000);
   const average =
     overall.average_ms === null ? null : publicQueueCount(overall.average_ms, 24 * 60 * 60 * 1000);
@@ -5258,6 +5477,21 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
   const invalidTimingAggregate =
     samples === null ||
     (samples === 0 ? average !== null || median !== null : average === null || median === null);
+  const allSamples = publicQueueCount(includingLegacyBatchOverall.samples, 100_000);
+  const allAverage =
+    includingLegacyBatchOverall.average_ms === null
+      ? null
+      : publicQueueCount(includingLegacyBatchOverall.average_ms, 24 * 60 * 60 * 1000);
+  const allMedian =
+    includingLegacyBatchOverall.median_ms === null
+      ? null
+      : publicQueueCount(includingLegacyBatchOverall.median_ms, 24 * 60 * 60 * 1000);
+  const invalidAllTimingAggregate =
+    allSamples === null ||
+    (allSamples === 0
+      ? allAverage !== null || allMedian !== null
+      : allAverage === null || allMedian === null) ||
+    (samples !== null && allSamples < samples);
   const terminalCount = publicQueueCount(terminal.terminal_count, 20);
   const tideThreshold = publicQueueCount(terminal.tide_threshold, 100);
   const tideGeneration = publicQueueCount(terminal.tide_generation, 1_000_000);
@@ -5272,7 +5506,9 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
     windowMinutes !== 60 ||
     sampleLimit === null ||
     invalidTimingAggregate ||
+    invalidAllTimingAggregate ||
     !history ||
+    !includingLegacyBatchHistory ||
     terminalCount === null ||
     tideThreshold !== 20 ||
     tideGeneration === null ||
@@ -5297,6 +5533,10 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
       sample_limit: sampleLimit,
       overall: { average_ms: average, median_ms: median, samples },
       history,
+      including_legacy_batch: {
+        overall: { average_ms: allAverage, median_ms: allMedian, samples: allSamples },
+        history: includingLegacyBatchHistory,
+      },
     },
     terminal_count: terminalCount,
     tide_threshold: tideThreshold,
@@ -5316,11 +5556,13 @@ function bayLifecycleTerminalRows(value) {
     const outcome = String(row.outcome || "");
     const completedAt = publicQueueTimestamp(row.completed_at);
     const journeyDuration = publicQueueCount(row.journey_duration_ms, 24 * 60 * 60 * 1000);
+    const legacyBatchPath = row.legacy_batch_path;
     if (
       !/^[a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9]\d*$/.test(itemKey) ||
       !["success", "failure", "cancelled"].includes(outcome) ||
       !completedAt ||
-      journeyDuration === null
+      journeyDuration === null ||
+      typeof legacyBatchPath !== "boolean"
     ) {
       return null;
     }
@@ -5329,6 +5571,7 @@ function bayLifecycleTerminalRows(value) {
       outcome,
       completed_at: completedAt,
       journey_duration_ms: journeyDuration,
+      legacy_batch_path: legacyBatchPath,
     });
   }
   return rows;
@@ -6209,6 +6452,7 @@ async function statusSnapshot(env) {
   // complete durable lifecycle snapshot.
   const cached = scopedCached || (await readCachedSnapshot(env, ttl));
   const cachedTimings = objectValue(cached?.bay?.timings);
+  const cachedIncludingLegacyBatch = objectValue(cachedTimings.including_legacy_batch);
   const cachedProjection = cached ? publicStatusProjection(cached, allowedRepositories) : null;
   // A malformed durable document should fail closed without triggering a
   // costly background collection. A complete legacy document, however, must
@@ -6218,6 +6462,8 @@ async function statusSnapshot(env) {
     cachedTimings.sample_kind === "completed_review_journeys" &&
     cachedTimings.source === "durable_exact_review_lifecycles" &&
     cachedTimings.completion_source === "verified_final_review_receipts" &&
+    Object.prototype.hasOwnProperty.call(cachedIncludingLegacyBatch, "overall") &&
+    Object.prototype.hasOwnProperty.call(cachedIncludingLegacyBatch, "history") &&
     scopedCached === cached
   ) {
     return cachedProjection;
@@ -6448,6 +6694,10 @@ async function statusSnapshot(env) {
           sample_limit: 0,
           overall: { average_ms: null, median_ms: null, samples: 0 },
           history: { bucket_minutes: 5, points: [] },
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
         },
       };
   const { recent_attempts: _recentAttempts, ...publicWorkerHealth } = workerHealth;
@@ -6520,7 +6770,11 @@ async function attachExactReviewQueueStatus(snapshot, env) {
   let exactReviewQueue = null;
   let recentDurablePublicationEvents = null;
   const exactReviewQueueRequest = withTimeout(
-    exactReviewQueueStatusSnapshot(env, { bayPriorityKeys, bayActiveKeys: activeKeys }),
+    exactReviewQueueStatusSnapshot(env, {
+      bayPriorityKeys,
+      bayActiveKeys: activeKeys,
+      bayActiveLegacyKeys: activeTargets.legacyKeys,
+    }),
     OPTIONAL_SECTION_TIMEOUT_MS,
     "exact-review queue",
   );

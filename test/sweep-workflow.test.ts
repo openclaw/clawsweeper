@@ -793,75 +793,21 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.equal(step(reviewer, "Review exact event item").env?.REPO_TOKEN, undefined);
   assert.match(step(reviewer, "Review exact event item").run ?? "", /--skip-start-comment/);
   for (const name of [
+    "Inspect exact review live proof",
+    "Resolve exact live-proof Go version",
+    "Set up exact live-proof Go toolchain",
+    "Enable exact live-proof automatic Go fallback",
     "Install exact live-proof terminal tools",
     "Install exact live-proof recording tools",
+    "Execute exact review live proof",
   ]) {
-    const install = step(reviewer, name).run ?? "";
-    assert.match(install, /run_bounded_install\(\)/);
-    assert.match(install, /local install_timeout_seconds=300/);
-    assert.match(install, /setsid "\$@" &/);
-    assert.match(install, /kill -TERM -- "-\$install_pgid"/);
-    assert.match(install, /grace_second < install_grace_seconds/);
-    assert.match(install, /kill -KILL -- "-\$install_pgid"/);
-    assert.match(install, /run_bounded_install sudo apt-get update/);
-    assert.match(install, /run_bounded_install sudo apt-get install --yes/);
+    assert.equal(
+      reviewer.steps.some((candidate) => candidate.name === name),
+      false,
+      `retired automatic live-proof step remains: ${name}`,
+    );
   }
-  const resolveExactLiveProofGo = step(reviewer, "Resolve exact live-proof Go version");
-  const setupExactLiveProofGo = step(reviewer, "Set up exact live-proof Go toolchain");
-  assert.match(
-    step(reviewer, "Inspect exact review live proof").run ?? "",
-    /echo "candidates=\$\(jq -c '\.candidates'/,
-  );
-  assert.match(
-    resolveExactLiveProofGo.if ?? "",
-    /inspect-exact-live-proof.*candidate_count != '0'/,
-  );
-  assert.match(resolveExactLiveProofGo.if ?? "", /inspect-exact-live-proof\.outcome == 'success'/);
-  assert.match(
-    resolveExactLiveProofGo.run ?? "",
-    /git -C "\$TARGET_CHECKOUT" show "\$head_sha:go\.mod"/,
-  );
-  assert.match(resolveExactLiveProofGo.run ?? "", /\$\{go_version:-\$default_go_version\}/);
-  assert.match(resolveExactLiveProofGo.run ?? "", /replace\(\/-\.\+\$\/, ""\)/);
-  assert.match(resolveExactLiveProofGo.run ?? "", /minor < 21 \? 2 : -1/);
-  assert.match(resolveExactLiveProofGo.run ?? "", /compare\(versions\.at\(-1\), minimum\)/);
-  assert.equal(
-    resolveExactLiveProofGo.env?.VERSION_FILE,
-    ".artifacts/exact-live-proof-go/.go-version",
-  );
-  assert.match(resolveExactLiveProofGo.run ?? "", /printf '%s\\n'/);
-  assert.equal(
-    setupExactLiveProofGo.uses,
-    "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16",
-  );
-  assert.equal(
-    setupExactLiveProofGo.with?.["go-version-file"],
-    "${{ steps.resolve-exact-live-proof-go.outputs.path }}",
-  );
-  assert.equal(setupExactLiveProofGo.with?.cache, "false");
-  assert.match(
-    setupExactLiveProofGo.if ?? "",
-    /claim-exact-review-queue\.outputs\.claimed == 'true'/,
-  );
-  assert.match(
-    setupExactLiveProofGo.if ?? "",
-    /resolve-exact-live-proof-go\.outputs\.available == 'true'/,
-  );
-  assert.match(
-    setupExactLiveProofGo.if ?? "",
-    /hashFiles\(steps\.resolve-exact-live-proof-go\.outputs\.path\) != ''/,
-  );
-  assert.ok(
-    reviewer.steps.indexOf(step(reviewer, "Inspect exact review live proof")) <
-      reviewer.steps.indexOf(resolveExactLiveProofGo),
-  );
-  assert.ok(
-    reviewer.steps.indexOf(resolveExactLiveProofGo) < reviewer.steps.indexOf(setupExactLiveProofGo),
-  );
-  assert.ok(
-    reviewer.steps.indexOf(setupExactLiveProofGo) <
-      reviewer.steps.indexOf(step(reviewer, "Execute exact review live proof")),
-  );
+
   const reserveLease = step(reviewer, "Reserve exact review lease");
   assert.equal(reserveLease.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
   assert.match(reserveLease.run ?? "", /pnpm run --silent reserve-review-lease/);
@@ -983,8 +929,11 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(create.if ?? "", /review-exact-event-item\.outcome == 'success'/);
   assert.match(create.if ?? "", /review-exact-event-item\.outputs\.retry_at == ''/);
   assert.match(create.if ?? "", /review-exact-event-item\.outputs\.superseded != 'true'/);
+  assert.doesNotMatch(create.if ?? "", /live-proof|live_proof|inspect-exact|execute-exact/);
   assert.equal(create.env?.EXACT_REVIEW_PRODUCER_JOB, "event-review-apply");
   assert.equal(create.env?.EXACT_REVIEW_DECISION, "${{ steps.live-item.outputs.decision }}");
+  assert.equal(create.env?.EXACT_REVIEW_LIVE_PROOF_DIR, undefined);
+  assert.doesNotMatch(directSetupState.if ?? "", /live-proof|live_proof|execute-exact/);
   assert.match(create.run ?? "", /mkdir -p \.artifacts/);
   assert.ok(
     (create.run ?? "").indexOf("mkdir -p .artifacts") <
@@ -1709,245 +1658,58 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
 });
 
-test(
-  "review shards provision the highest candidate Go workspace version only for root modules",
-  { skip: process.platform === "win32" ? "requires Bash" : false },
-  () => {
-    type Step = {
-      name?: string;
-      uses?: string;
-      if?: string;
-      run?: string;
-      with?: Record<string, string | number | boolean>;
-    };
-    const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
-      jobs: Record<string, { steps: Step[] }>;
-    };
-    const steps = workflow.jobs.review!.steps;
-    const exactSteps = workflow.jobs["event-review-apply"]!.steps;
-    const step = (name: string) => {
-      const value = steps.find((candidate) => candidate.name === name);
-      assert.ok(value, `missing step: ${name}`);
-      return value;
-    };
-    const exactStep = (name: string) => {
-      const value = exactSteps.find((candidate) => candidate.name === name);
-      assert.ok(value, `missing exact step: ${name}`);
-      return value;
-    };
-    const resolveGo = step("Resolve review-shard live-proof Go version");
-    const setupGo = step("Set up review-shard live-proof Go toolchain");
-    const enableGoFallback = step("Enable review-shard live-proof automatic Go fallback");
-    const resolveExactGo = exactStep("Resolve exact live-proof Go version");
-    const enableExactGoFallback = exactStep("Enable exact live-proof automatic Go fallback");
-
-    assert.match(
-      step("Inspect review-shard live proofs").run ?? "",
-      /echo "candidates=\$\(jq -c '\.candidates'/,
-    );
-    assert.match(resolveGo.if ?? "", /inspect-shard-live-proofs.*candidate_count != '0'/);
-    assert.match(resolveGo.if ?? "", /inspect-shard-live-proofs\.outcome == 'success'/);
-    assert.match(
-      resolveGo.run ?? "",
-      /go_mod="\$\(git -C "\$TARGET_CHECKOUT" show "\$head_sha:go\.mod"/,
-    );
-    assert.match(
-      resolveGo.run ?? "",
-      /go_work="\$\(git -C "\$TARGET_CHECKOUT" show "\$head_sha:go\.work"/,
-    );
-    assert.match(resolveGo.run ?? "", /go_config="\$go_work"/);
-    assert.match(resolveGo.run ?? "", /default_go_version=1\.18/);
-    assert.match(resolveGo.run ?? "", /go_config="\$go_mod"/);
-    assert.match(resolveGo.run ?? "", /default_go_version=1\.16/);
-    assert.match(resolveGo.run ?? "", /git -C "\$TARGET_CHECKOUT" ls-tree -rz --name-only/);
-    assert.match(resolveGo.run ?? "", /while IFS= read -r -d '' path/);
-    assert.match(resolveGo.run ?? "", /\*\/go\.mod \| \*\/go\.work\)/);
-    assert.match(resolveGo.run ?? "", /requires_automatic_toolchain=true/);
-    assert.match(resolveExactGo.run ?? "", /git -C "\$TARGET_CHECKOUT" ls-tree -rz --name-only/);
-    assert.match(resolveExactGo.run ?? "", /while IFS= read -r -d '' path/);
-    assert.match(resolveExactGo.run ?? "", /requires_automatic_toolchain=true/);
-    assert.match(resolveGo.run ?? "", /candidate_count="\$\(jq -r 'length'/);
-    assert.match(resolveGo.run ?? "", /root_module_count=0/);
-    assert.match(resolveGo.run ?? "", /root_module_count=\$\(\(root_module_count \+ 1\)\)/);
-    assert.match(resolveGo.run ?? "", /root_module_count" -ne "\$candidate_count"/);
-    assert.match(resolveGo.run ?? "", /automatic=\$requires_automatic_toolchain/);
-    assert.match(resolveGo.run ?? "", /\$\{go_version:-\$default_go_version\}/);
-    assert.match(resolveGo.run ?? "", /replace\(\/-\.\+\$\/, ""\)/);
-    assert.match(resolveGo.run ?? "", /minor < 21 \? 2 : -1/);
-    assert.match(resolveGo.run ?? "", /minimum_go_version=1\.14\.0/);
-    assert.match(resolveGo.run ?? "", /minimum_go_version=1\.21\.0/);
-    assert.match(resolveGo.run ?? "", /compare\(versions\.at\(-1\), minimum\)/);
+test("scheduled review shards retire automatic live proof without removing historical publication", () => {
+  type Step = {
+    name?: string;
+    if?: string;
+    uses?: string;
+    run?: string;
+    env?: Record<string, string>;
+    with?: Record<string, string | number | boolean>;
+  };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Step[] }>;
+  };
+  const reviewSteps = workflow.jobs.review!.steps;
+  for (const name of [
+    "Inspect review-shard live proofs",
+    "Resolve review-shard live-proof Go version",
+    "Set up review-shard live-proof Go toolchain",
+    "Enable review-shard live-proof automatic Go fallback",
+    "Install review-shard terminal tools",
+    "Install review-shard recording tools",
+    "Execute review-shard live proofs",
+  ]) {
     assert.equal(
-      resolveGo.env?.VERSION_FILE,
-      "review-artifacts/shard-${{ matrix.shard }}/live-proof-toolchain/.go-version",
+      reviewSteps.some((candidate) => candidate.name === name),
+      false,
+      `retired automatic live-proof step remains: ${name}`,
     );
-    assert.match(resolveGo.run ?? "", /printf '%s\\n'/);
-    const rootlessGuard = (resolveGo.run ?? "").indexOf(
-      'if [ "$root_module_count" -ne "$candidate_count" ]; then',
-    );
-    const availabilityGuard = (resolveGo.run ?? "").indexOf('if [ ! -s "$versions_file" ]; then');
-    assert.notEqual(rootlessGuard, -1);
-    assert.notEqual(availabilityGuard, -1);
-    assert.ok(rootlessGuard < availabilityGuard);
-    assert.equal(setupGo.uses, "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16");
-    assert.equal(
-      setupGo.with?.["go-version-file"],
-      "${{ steps.resolve-shard-live-proof-go.outputs.path }}",
-    );
-    assert.equal(setupGo.with?.cache, "false");
-    assert.match(setupGo.if ?? "", /resolve-shard-live-proof-go\.outputs\.available == 'true'/);
-    assert.match(
-      setupGo.if ?? "",
-      /hashFiles\(steps\.resolve-shard-live-proof-go\.outputs\.path\) != ''/,
-    );
-    assert.match(enableGoFallback.if ?? "", /resolve-shard-live-proof-go\.outputs\.automatic/);
-    assert.match(enableGoFallback.run ?? "", /GOTOOLCHAIN=auto.*GITHUB_ENV/);
-    assert.match(enableExactGoFallback.if ?? "", /resolve-exact-live-proof-go\.outputs\.automatic/);
-    assert.match(enableExactGoFallback.run ?? "", /GOTOOLCHAIN=auto.*GITHUB_ENV/);
-    assert.ok(steps.indexOf(step("Inspect review-shard live proofs")) < steps.indexOf(resolveGo));
-    assert.ok(steps.indexOf(resolveGo) < steps.indexOf(setupGo));
-    assert.ok(steps.indexOf(setupGo) < steps.indexOf(enableGoFallback));
-    assert.ok(
-      steps.indexOf(enableGoFallback) < steps.indexOf(step("Execute review-shard live proofs")),
-    );
+  }
 
-    const root = mkdtempSync(`${tmpPrefix}go-workspace-resolver-`);
-    const target = join(root, "target");
-    const records = join(root, "records");
-    const runGit = (...args: string[]) =>
-      execFileSync("git", args, { cwd: target, encoding: "utf8" }).trim();
-    try {
-      mkdirSync(target);
-      mkdirSync(records);
-      runGit("init", "-b", "main");
-      runGit("config", "user.name", "ClawSweeper Test");
-      runGit("config", "user.email", "test@example.com");
-      runGit("config", "commit.gpgsign", "false");
+  const metrics = reviewSteps.find((candidate) => candidate.name === "Record shard metrics");
+  assert.ok(metrics);
+  assert.doesNotMatch(JSON.stringify(metrics), /live[_-]proof/i);
+  const upload = reviewSteps.find(
+    (candidate) => candidate.with?.name === "review-shard-${{ matrix.shard }}",
+  );
+  assert.ok(upload);
+  assert.match(upload.if ?? "", /review-shard\.outcome/);
+  assert.match(String(upload.with?.path), /review-artifacts\/shard-/);
+  assert.doesNotMatch(String(upload.with?.path), /live-proof/);
 
-      writeFileSync(join(target, "go.mod"), "module example.com/root\n\ngo 1.26.0\n");
-      writeFileSync(join(target, "go.work"), "go 1.27.2\n\nuse .\n");
-      runGit("add", ".");
-      runGit("commit", "-m", "workspace");
-      const workspaceHead = runGit("rev-parse", "HEAD");
+  assert.ok(
+    workflow.jobs.publish!.steps.some(
+      (candidate) => candidate.name === "Fold live proofs into review artifacts",
+    ),
+  );
+  assert.ok(
+    workflow.jobs["event-review-publish"]!.steps.some(
+      (candidate) => candidate.name === "Fold exact live proof into the review artifact",
+    ),
+  );
+});
 
-      writeFileSync(join(target, "go.mod"), "module example.com/root\n\ngo 1.29.0\n");
-      writeFileSync(join(target, "go.work"), "go 1.27.0\n\nuse .\n");
-      runGit("add", ".");
-      runGit("commit", "-m", "workspace governs module");
-      const workspaceGovernedHead = runGit("rev-parse", "HEAD");
-
-      writeFileSync(join(target, "go.mod"), "module example.com/root\n\ngo 1.17\n");
-      writeFileSync(join(target, "go.work"), "use .\n");
-      runGit("add", ".");
-      runGit("commit", "-m", "implicit workspace version");
-      const implicitWorkspaceHead = runGit("rev-parse", "HEAD");
-
-      const nestedWorkspaceDir = join(target, "nested-\u00e9\nworkspace");
-      mkdirSync(nestedWorkspaceDir);
-      writeFileSync(
-        join(nestedWorkspaceDir, "go.mod"),
-        "module example.com/excluded\n\ngo 1.28.0\n",
-      );
-      runGit("add", ".");
-      runGit("commit", "-m", "excluded nested module");
-      const excludedNestedHead = runGit("rev-parse", "HEAD");
-
-      writeFileSync(join(nestedWorkspaceDir, "go.work"), "go 1.28.0\n");
-      runGit("add", ".");
-      runGit("commit", "-m", "nested workspace");
-      const nestedWorkspaceHead = runGit("rev-parse", "HEAD");
-
-      rmSync(nestedWorkspaceDir, { recursive: true });
-      rmSync(join(target, "go.work"));
-      writeFileSync(join(target, "go.mod"), "module example.com/root\n\ngo 1.25.0\n");
-      runGit("add", "-A");
-      runGit("commit", "-m", "root module");
-      const rootHead = runGit("rev-parse", "HEAD");
-
-      mkdirSync(join(target, "nested"));
-      writeFileSync(join(target, "nested", "go.mod"), "module example.com/nested\n\ngo 1.28.0\n");
-      runGit("add", "-A");
-      runGit("commit", "-m", "independent nested module");
-      const independentNestedHead = runGit("rev-parse", "HEAD");
-
-      rmSync(join(target, "go.mod"));
-      rmSync(join(target, "nested"), { recursive: true });
-      mkdirSync(join(target, "nested"));
-      writeFileSync(join(target, "nested", "go.mod"), "module example.com/nested\n\ngo 1.28.0\n");
-      runGit("add", "-A");
-      runGit("commit", "-m", "nested module only");
-      const nestedOnlyHead = runGit("rev-parse", "HEAD");
-
-      writeFileSync(join(records, "1.md"), `pull_head_sha: ${workspaceHead}\n`);
-      writeFileSync(join(records, "2.md"), `pull_head_sha: ${rootHead}\n`);
-      writeFileSync(join(records, "3.md"), `pull_head_sha: ${independentNestedHead}\n`);
-      writeFileSync(join(records, "4.md"), `pull_head_sha: ${nestedOnlyHead}\n`);
-      writeFileSync(join(records, "5.md"), `pull_head_sha: ${nestedWorkspaceHead}\n`);
-      writeFileSync(join(records, "6.md"), `pull_head_sha: ${excludedNestedHead}\n`);
-      writeFileSync(join(records, "7.md"), `pull_head_sha: ${workspaceGovernedHead}\n`);
-      writeFileSync(join(records, "8.md"), `pull_head_sha: ${implicitWorkspaceHead}\n`);
-
-      const resolve = (label: string, candidates: string) => {
-        const versionFile = join(root, label, ".go-version");
-        const outputFile = join(root, `${label}-output`);
-        execFileSync("/bin/bash", ["-c", resolveGo.run ?? ""], {
-          cwd: root,
-          env: {
-            ...process.env,
-            CANDIDATES: candidates,
-            GITHUB_OUTPUT: outputFile,
-            RECORDS_DIR: records,
-            TARGET_CHECKOUT: target,
-            VERSION_FILE: versionFile,
-          },
-        });
-        return {
-          output: readFileSync(outputFile, "utf8"),
-          version: existsSync(versionFile) ? readFileSync(versionFile, "utf8").trim() : undefined,
-        };
-      };
-
-      assert.deepEqual(resolve("all-root", "[1,2]"), {
-        output:
-          "automatic=false\navailable=true\npath=" +
-          join(root, "all-root", ".go-version") +
-          "\nversion=1.27.2\n",
-        version: "1.27.2",
-      });
-      assert.deepEqual(resolve("workspace-governs", "[7]"), {
-        output:
-          "automatic=false\navailable=true\npath=" +
-          join(root, "workspace-governs", ".go-version") +
-          "\nversion=1.27.0\n",
-        version: "1.27.0",
-      });
-      assert.deepEqual(resolve("implicit-workspace", "[8]"), {
-        output:
-          "automatic=false\navailable=true\npath=" +
-          join(root, "implicit-workspace", ".go-version") +
-          "\nversion=1.18\n",
-        version: "1.18",
-      });
-      for (const [label, candidates, version] of [
-        ["mixed", "[1,3]", "1.27.2"],
-        ["missing-root", "[1,4]", "1.27.2"],
-        ["nested-workspace", "[5]", "1.21.0"],
-        ["excluded-nested", "[6]", "1.21.0"],
-      ] as const) {
-        const result = resolve(label, candidates);
-        assert.equal(result.version, version);
-        assert.match(result.output, /automatic=true/);
-        assert.match(result.output, /available=true/);
-      }
-      assert.deepEqual(resolve("rootless-only", "[4]"), {
-        output: "automatic=true\navailable=false\n",
-        version: undefined,
-      });
-    } finally {
-      rmSync(root, { force: true, recursive: true });
-    }
-  },
-);
 test("exact event publication derives lifecycle receipt and final command acknowledgement from the projection", () => {
   type Step = {
     name?: string;

@@ -539,145 +539,11 @@ For PRs, always fill `telegramVisibleProof`. Use `status: "needed"` only when th
 `telegramVisibleProof.status: "not_needed"` and
 `mantisRecommendation.status: "not_recommended"`.
 
-For PRs, always fill `liveProofPlan`. Default to `status: "recommended"` whenever
-the repository has a runnable browser or terminal surface. The point is to run
-the real system from the PR head and verify observable behavior, not merely to
-run its tests. This includes refactors, internal plumbing, and CI/config changes:
-plan a narrow smoke verification such as “the binary still starts and prints X”
-or “the command still resolves Y” even when the implementation change is not
-user-visible. Use `not_applicable` when there is no meaningful runnable surface
-or no meaningful scenario can run reliably within the supplied harness capabilities;
-give the concrete limitation. Use `surface: "browser"` for browser behavior and
-`surface: "terminal"` for terminal behavior. The `entry` must be a URL path for
-browser verification or a command for terminal verification. Keep `entry` and
-every terminal `run.command` on one line: no literal CR, LF, U+2028, or U+2029,
-including leading or trailing line breaks. A `run.command` must not be blank
-after trimming. For complex commands, use an existing script or a properly quoted
-single-line command, not a multiline heredoc. Escaped newline sequences inside
-quoted source strings are allowed only when the decoded command remains one line.
-Set `terminalCompletion: "exit_zero"` when the final terminal command must finish
-successfully. Use `terminalCompletion: "ready_while_running"` only for a final
-server, watcher, or TUI command that must still be running after a stable
-`expect_output` marker appears. Every terminal command before the final command
-must exit zero. Browser and non-runnable plans use
-`terminalCompletion: "not_applicable"`. A terminal
-`entry` executes automatically before all typed steps. Every `run` step executes
-independently as a new command, including commands identical to `entry` or earlier
-steps; nothing is deduplicated. For a one-shot proof (for example, a command that
-refuses an existing output directory), put the proof command in `entry` followed
-by stable `expect_output` steps, or use a safe setup `entry` followed by exactly
-one `run` of the proof command and its expectations. Do not repeat a one-shot
-command just to capture output or create media. Intentional reruns, including
-identical commands after a state change, are valid and will execute. Each command
-runs in a separate Bash process in the same checkout; share state through files
-or combine dependent setup and execution in one command, not shell-local variables
-or `cd` from an earlier command. Inspect the relevant package scripts and import
-chain against the trusted live-proof execution context below. Supply any remaining
-build or code-generation prerequisites before the first dependent execution.
-When an existing repository or package-manager script owns the required
-prerequisites, invoke that wrapper and do not bypass it by calling its internal
-script directly. Do not assume an arbitrary test script builds. When no owning
-wrapper exists, use an explicit fail-fast chain such as `prerequisite && command`.
-Inspect the exact checked-out command, wrapper, and reporter contract before
-choosing output assertions. Terminal stdio is a real PTY, so reporter defaults can
-differ from redirected logs; inspect wrappers that pipe their own child output.
-For finite test commands, prefer a real final summary with `exit_zero`. Explicitly
-select an emitting reporter for individual test names or format-specific assertions;
-otherwise use format-independent output text. Default reporters may emit slow-test
-names only when the file completes; those names are not guaranteed per-test progress signals. A test
-declaration is not an output contract.
-The trusted `terminalExecutionLimitSeconds` bounds the whole terminal plan,
-including `static_text`. Respect existing program/test budgets; never weaken tests,
-increase timeouts, append a fabricated success echo/sentinel, or add sleeps to
-make proof pass. If the scenario cannot reliably fit, narrow to a real valid
-scenario or use `not_applicable` with the concrete harness-capability reason.
-Emit at most ten
-deterministic, typed `steps`: browser plans may use `goto`, `click`, `fill`,
-`press`, `wait_for`, `wait`, and `expect_text`; terminal plans may use `run`,
-`wait`, and `expect_output`. Include at least one concrete expectation of real
-output. When proposing media, include at least one state-changing step and an
-expectation whose text is absent before that action and appears only afterward.
-For a terminal one-shot proof, use a safe setup `entry` and one `run` for that
-transition, rather than replaying a proof already executed by `entry`. If there
-is no useful transition to record, choose `static_text` and verify once;
-the absent-then-present rule decides whether media is useful, not whether the
-system should run. Never assert the typed command itself. Targets for `click`,
-`fill`, and `wait_for` must be valid CSS or Playwright selectors, including
-`text=...` selectors when appropriate, never prose descriptions of state. The
-plan must be demonstrable from the PR head alone without external accounts,
-credentials, or third-party services. Step values must never contain secrets or
-tokens of any kind. `expect_output` observes only bytes emitted to the terminal;
-artifact content must be emitted by `entry` or a preceding `run` (for example,
-with `cat`) before asserting it.
-
-Every assertion must name something the demonstration can actually satisfy.
-Assert values that the page or command will genuinely produce: for a search
-box, search for a value the page itself already displays; for a command, assert
-a stable substring of its output such as a header, flag name, or error string,
-not a count, timing, or number that varies per run. If you cannot name a value
-the run will certainly print or render, assert something more stable rather
-than inventing one.
-Missing output after a successful finite exit leaves the proof unverified. Check
-the assertion's command/wrapper/reporter contract before inferring a product defect;
-exit zero never waives a missing assertion.
-
-For dependency/package-version assertions, prefer the package manager's
-machine-readable output when supported. Inspect the target's pinned CLI version
-and supported schema first; do not guess human formatting such as `name version`
-versus `name@version`. Capture the complete JSON from an independent subprocess's
-stdout, not rendered terminal history or grep. Reject spawn errors, signals,
-nonzero exits, invalid JSON, missing output, and unsupported shapes before
-emitting a stable success marker. For pnpm 11 `why --json`, the top-level array
-contains resolved packages: require a nonempty array and EVERY resolution to
-have the exact requested name and version. Do not traverse `dependents` as
-resolutions or accept one correct version while wrong/mixed versions remain.
-
-Runnable pnpm 11 package-version example (adapt the package/version after
-inspection; these values are illustrative, not repository dependency policy):
-
-<!-- live-proof-pnpm11-package-version-example -->
-```bash
-node -e 'try { const result = require("node:child_process").spawnSync(process.argv[1], process.argv.slice(2), {encoding:"utf8"}); if (result.error || result.signal || result.status !== 0) throw new Error("pnpm why failed: " + (result.error?.message ?? result.signal ?? result.status)); const resolutions = JSON.parse(result.stdout); if (!Array.isArray(resolutions) || resolutions.length === 0 || !resolutions.every(p => p?.name === "postcss" && p?.version === "8.5.26")) throw new Error("unexpected package resolutions"); console.log("verified postcss@8.5.26"); } catch (error) { console.error(error.message); process.exitCode = 1; }' pnpm why postcss --json
-```
-
-Use this single-line command once as `entry` (or one `run` after safe setup),
-followed by `{"action":"expect_output","text":"verified postcss@8.5.26"}`
-and `terminalCompletion: "exit_zero"`; `static_text` is sufficient. The marker
-comes only after every assertion passes; successful proof need not mirror the
-full child output. Never use `|| true`, command exit alone, bare version
-substrings, punctuation normalization, fuzzy matching, or an unconditional/early
-marker. If structured output is unavailable, use only verified exact display
-with package/version boundaries, not guessed formatting. Version proof does
-not establish runtime exposure, security, or compatibility; development-only
-dependents remain development-only evidence.
-
-Judge whether the run has something worth watching, solely to choose its
-presentation. Choose `payoff.kind: "static_text"` when the whole demonstration
-is a short burst of plain text that a reader can understand better in a quoted
-code block; ClawSweeper must still execute the plan and publish its verification
-result, but it should skip video capture. Choose a visual payoff only when a
-recording is genuinely worth watching: output that streams or progresses over
-seconds, a TUI or interactive terminal, colored or formatted output whose
-presentation matters, an animation, or a browser interaction that changes what
-is on screen. This is a judgment call about what a viewer would watch, never a
-judgment about whether to run; explain the presentation choice in
-`payoff.justification`.
-
-Live proof recordings are published publicly, and ClawSweeper will execute a
-recommended plan as unsandboxed code on a machine that holds credentials. Your
-`liveProofPlan.status: "declined_suspicious"` judgment is the safety control:
-after reading the entire diff, decline whenever it or the dependencies installed
-from its lockfiles could plausibly exfiltrate. This includes new or bumped dependencies you cannot inspect,
-as well as code that reads environment variables or credential stores, encodes or
-transmits data to unexpected hosts, or could plausibly exfiltrate or display sensitive data
-on screen. Do not recommend execution merely because package lifecycle scripts
-are disabled and the target child receives a sanitized environment. If unsure,
-use `declined_suspicious`, not `not_applicable`. For `not_applicable` and
-`declined_suspicious`, use `surface: "none"`, an empty `entry`, and an empty
-`steps` array. Use the same safe empty shape for issues, with
-`payoff.kind: "static_text"`, `terminalCompletion: "not_applicable"`, and a
-concise explanation that no recording payoff was assessed.
-
+Always fill `liveProofPlan` with the retired compatibility shape. Use
+`status: "not_applicable"`, `surface: "none"`,
+`terminalCompletion: "not_applicable"`, `payoff.kind: "static_text"`, an
+empty `entry`, and an empty `steps` array. Explain briefly that automatic live
+proof is retired. Do not recommend or plan proof execution.
 For PRs, also emit Codex `/review`-style findings in `reviewFindings`.
 Review the diff as another engineer's proposed patch and list every discrete,
 actionable bug the author would likely fix. Findings must be introduced by the
@@ -1191,9 +1057,9 @@ Always fill `telegramVisibleProof` using the changed-behavior classification
 above. The `proof: telegram-e2e` label tells the execution worker to use the
 repository `telegram-e2e-userbot` skill.
 
-Always fill `liveProofPlan` using the user-visible behavior and public-recording
-security classification above. This is a read-only demonstration plan; never
-execute the PR or claim that a recording exists during review.
+Always fill `liveProofPlan` with the fixed retired compatibility shape specified
+above. Do not derive commands, steps, or another demonstration plan from the
+reviewed behavior.
 
 Always fill `mantisRecommendation`. This is maintainer guidance only: it must
 never trigger OpenClaw Mantis, claim Mantis has run, ask ClawSweeper to dispatch

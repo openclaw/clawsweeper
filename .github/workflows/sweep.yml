@@ -1329,239 +1329,6 @@ jobs:
             echo "terminal_during_review=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Inspect exact review live proof
-        id: inspect-exact-live-proof
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.terminal_during_review != 'true' }}
-        env:
-          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
-          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-        run: |
-          set -euo pipefail
-          summary="$(node dist/clawsweeper.js live-proof-review \
-            --inspect \
-            --repo "$TARGET_REPO" \
-            --item-numbers "$ITEM_NUMBER" \
-            --records-dir artifacts/event \
-            --checkout "${{ steps.target.outputs.target_checkout_dir }}" \
-            --output artifacts/event/live-proof)"
-          echo "$summary"
-          {
-            echo "candidate_count=$(jq -r '.candidates | length' <<< "$summary")"
-            echo "candidates=$(jq -c '.candidates' <<< "$summary")"
-            echo "record_media=$(jq -r '.recordMedia' <<< "$summary")"
-            echo "requires_terminal=$(jq -r '.requiresTerminal' <<< "$summary")"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Resolve exact live-proof Go version
-        id: resolve-exact-live-proof-go
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.inspect-exact-live-proof.outputs.candidate_count != '0' && steps.inspect-exact-live-proof.outcome == 'success' }}
-        env:
-          CANDIDATES: ${{ steps.inspect-exact-live-proof.outputs.candidates }}
-          RECORDS_DIR: artifacts/event
-          TARGET_CHECKOUT: ${{ steps.target.outputs.target_checkout_dir }}
-          VERSION_FILE: .artifacts/exact-live-proof-go/.go-version
-        run: |
-          set -euo pipefail
-          versions_file="$(mktemp)"
-          trap 'rm -f "$versions_file"' EXIT
-          requires_automatic_toolchain=false
-          while read -r item; do
-            record="$RECORDS_DIR/$item.md"
-            head_sha="$(sed -n 's/^pull_head_sha:[[:space:]]*//p' "$record" | head -n 1)"
-            printf '%s' "$head_sha" | grep -Eq '^[0-9a-f]{40}$'
-            if ! go_mod="$(git -C "$TARGET_CHECKOUT" show "$head_sha:go.mod" 2>/dev/null)"; then
-              requires_automatic_toolchain=true
-              continue
-            fi
-            if go_work="$(git -C "$TARGET_CHECKOUT" show "$head_sha:go.work" 2>/dev/null)"; then
-              go_config="$go_work"
-              default_go_version=1.18
-            else
-              go_config="$go_mod"
-              default_go_version=1.16
-            fi
-            while IFS= read -r -d '' path; do
-              case "$path" in
-                */go.mod | */go.work)
-                  requires_automatic_toolchain=true
-                  ;;
-              esac
-            done < <(git -C "$TARGET_CHECKOUT" ls-tree -rz --name-only "$head_sha")
-            go_version="$(awk '$1 == "go" { print $2; exit }' <<< "$go_config")"
-            toolchain_version="$(awk '$1 == "toolchain" && $2 ~ /^go/ { sub(/^go/, "", $2); print $2; exit }' <<< "$go_config")"
-            printf '%s\n' "${go_version:-$default_go_version}" >> "$versions_file"
-            if [ -n "$toolchain_version" ]; then
-              printf '%s\n' "$toolchain_version" >> "$versions_file"
-            fi
-          done < <(jq -r '.[]' <<< "$CANDIDATES")
-          echo "automatic=$requires_automatic_toolchain" >> "$GITHUB_OUTPUT"
-          if [ ! -s "$versions_file" ]; then
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          minimum_go_version=1.14.0
-          if [ "$requires_automatic_toolchain" = "true" ]; then
-            minimum_go_version=1.21.0
-          fi
-          version="$(node - "$versions_file" "$minimum_go_version" <<'NODE'
-          const fs = require("node:fs");
-          const path = process.argv[2];
-          const minimum = process.argv[3];
-          const versions = fs
-            .readFileSync(path, "utf8")
-            .trim()
-            .split(/\s+/)
-            .map((version) => version.replace(/-.+$/, ""));
-          const key = (version) => {
-            const match = /^1\.(\d+)(?:(beta|rc)(\d+)|\.(\d+))?$/.exec(version);
-            if (!match) throw new Error(`unsupported Go version ${version}`);
-            const minor = Number(match[1]);
-            if (match[2] === "beta") return [minor, 0, Number(match[3])];
-            if (match[2] === "rc") return [minor, 1, Number(match[3])];
-            if (match[4] !== undefined) return [minor, 2, Number(match[4])];
-            return [minor, minor < 21 ? 2 : -1, 0];
-          };
-          const compare = (left, right) => {
-            const a = key(left);
-            const b = key(right);
-            return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
-          };
-          versions.sort(compare);
-          process.stdout.write(compare(versions.at(-1), minimum) < 0 ? minimum : versions.at(-1));
-          NODE
-          )"
-          mkdir -p "$(dirname "$VERSION_FILE")"
-          printf '%s\n' "$version" > "$VERSION_FILE"
-          {
-            echo "available=true"
-            echo "path=$VERSION_FILE"
-            echo "version=$version"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Set up exact live-proof Go toolchain
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.resolve-exact-live-proof-go.outputs.available == 'true' && hashFiles(steps.resolve-exact-live-proof-go.outputs.path) != '' }}
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version-file: ${{ steps.resolve-exact-live-proof-go.outputs.path }}
-          cache: "false"
-
-      - name: Enable exact live-proof automatic Go fallback
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.resolve-exact-live-proof-go.outputs.automatic == 'true' }}
-        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
-
-      - name: Install exact live-proof terminal tools
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.inspect-exact-live-proof.outputs.requires_terminal == 'true' }}
-        run: |
-          run_bounded_install() {
-            local install_timeout_seconds=300
-            local install_grace_seconds=5
-            local install_pid=""
-            local install_pgid=""
-            local watchdog_pid=""
-            terminate_install_group() {
-              [ -n "$install_pgid" ] || return 0
-              kill -TERM -- "-$install_pgid" 2>/dev/null || return 0
-              for ((grace_second = 0; grace_second < install_grace_seconds; grace_second += 1)); do
-                if ! kill -0 -- "-$install_pgid" 2>/dev/null; then
-                  return 0
-                fi
-                sleep 1
-              done
-              kill -KILL -- "-$install_pgid" 2>/dev/null || true
-            }
-            cleanup_install() {
-              [ -n "$watchdog_pid" ] && kill "$watchdog_pid" 2>/dev/null || true
-              [ -n "$watchdog_pid" ] && wait "$watchdog_pid" 2>/dev/null || true
-              terminate_install_group
-            }
-            trap cleanup_install EXIT INT TERM
-            setsid "$@" &
-            install_pid=$!
-            install_pgid=$install_pid
-            (
-              sleep "$install_timeout_seconds"
-              if kill -0 -- "-$install_pgid" 2>/dev/null; then
-                echo "::error::Exact live-proof package install exceeded ${install_timeout_seconds}s."
-                terminate_install_group
-              fi
-            ) &
-            watchdog_pid=$!
-            set +e
-            wait "$install_pid"
-            local install_exit_code=$?
-            set -e
-            cleanup_install
-            trap - EXIT INT TERM
-            return "$install_exit_code"
-          }
-          run_bounded_install sudo apt-get update
-          run_bounded_install sudo apt-get install --yes tmux
-
-      - name: Install exact live-proof recording tools
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.inspect-exact-live-proof.outputs.record_media == 'true' }}
-        run: |
-          run_bounded_install() {
-            local install_timeout_seconds=300
-            local install_grace_seconds=5
-            local install_pid=""
-            local install_pgid=""
-            local watchdog_pid=""
-            terminate_install_group() {
-              [ -n "$install_pgid" ] || return 0
-              kill -TERM -- "-$install_pgid" 2>/dev/null || return 0
-              for ((grace_second = 0; grace_second < install_grace_seconds; grace_second += 1)); do
-                if ! kill -0 -- "-$install_pgid" 2>/dev/null; then
-                  return 0
-                fi
-                sleep 1
-              done
-              kill -KILL -- "-$install_pgid" 2>/dev/null || true
-            }
-            cleanup_install() {
-              [ -n "$watchdog_pid" ] && kill "$watchdog_pid" 2>/dev/null || true
-              [ -n "$watchdog_pid" ] && wait "$watchdog_pid" 2>/dev/null || true
-              terminate_install_group
-            }
-            trap cleanup_install EXIT INT TERM
-            setsid "$@" &
-            install_pid=$!
-            install_pgid=$install_pid
-            (
-              sleep "$install_timeout_seconds"
-              if kill -0 -- "-$install_pgid" 2>/dev/null; then
-                echo "::error::Exact live-proof package install exceeded ${install_timeout_seconds}s."
-                terminate_install_group
-              fi
-            ) &
-            watchdog_pid=$!
-            set +e
-            wait "$install_pid"
-            local install_exit_code=$?
-            set -e
-            cleanup_install
-            trap - EXIT INT TERM
-            return "$install_exit_code"
-          }
-          run_bounded_install sudo apt-get update
-          run_bounded_install sudo apt-get install --yes ffmpeg x11-utils xfonts-base xvfb xterm
-
-      - name: Execute exact review live proof
-        id: execute-exact-live-proof
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.inspect-exact-live-proof.outputs.candidate_count != '0' && steps.inspect-exact-live-proof.outcome == 'success' }}
-        env:
-          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
-          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
-        run: |
-          set -euo pipefail
-          node dist/clawsweeper.js live-proof-review \
-            --repo "$TARGET_REPO" \
-            --item-numbers "$ITEM_NUMBER" \
-            --records-dir artifacts/event \
-            --checkout "${{ steps.target.outputs.target_checkout_dir }}" \
-            --output artifacts/event/live-proof
-          test -f "artifacts/event/live-proof/$ITEM_NUMBER/live-verification.json"
-          echo "produced=true" >> "$GITHUB_OUTPUT"
-
       - name: Finalize exact event action ledger
         if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         continue-on-error: true
@@ -1582,7 +1349,7 @@ jobs:
 
       - name: Create exact review artifact bundle
         id: create-exact-review-bundle
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.target.outputs.target_enabled == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.scheduled_semantic_noop != 'true' && steps.live-item.outputs.admission_retry != 'true' && steps.setup-pnpm.outcome == 'success' && steps.review-exact-event-item.outputs.superseded != 'true' && (steps.live-item.outputs.proceed != 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.retry_at == '' && (steps.inspect-exact-live-proof.outputs.candidate_count == '0' || steps.execute-exact-live-proof.outcome == 'success'))) }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.target.outputs.target_enabled == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.scheduled_semantic_noop != 'true' && steps.live-item.outputs.admission_retry != 'true' && steps.setup-pnpm.outcome == 'success' && steps.review-exact-event-item.outputs.superseded != 'true' && (steps.live-item.outputs.proceed != 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.retry_at == '')) }}
         env:
           EXACT_REVIEW_ACTION_LEDGER_ROOT: ${{ env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT }}
           EXACT_REVIEW_BUNDLE_DIR: .artifacts/exact-review-bundle
@@ -1594,7 +1361,6 @@ jobs:
           EXACT_REVIEW_ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
           EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           EXACT_REVIEW_LIVE_GUARDED_OPEN: ${{ steps.live-item.outputs.guarded_open }}
-          EXACT_REVIEW_LIVE_PROOF_DIR: artifacts/event/live-proof/${{ steps.target.outputs.item_number }}
           EXACT_REVIEW_LIVE_PROCEEDED: ${{ steps.review-exact-event-item.outputs.terminal_during_review == 'true' && 'false' || steps.live-item.outputs.proceed }}
           EXACT_REVIEW_LIVE_TERMINAL_MISSING: ${{ steps.live-item.outputs.terminal_missing }}
           EXACT_REVIEW_LIVE_TERMINAL_NOOP: ${{ steps.review-exact-event-item.outputs.terminal_during_review == 'true' && 'true' || steps.live-item.outputs.terminal_noop }}
@@ -1614,7 +1380,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - uses: ./.github/actions/setup-state
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.create-exact-review-bundle.outcome == 'success' && steps.live-item.outputs.proceed == 'true' && steps.execute-exact-live-proof.outputs.produced != 'true' && (vars.EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED || '1') == '1' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.create-exact-review-bundle.outcome == 'success' && steps.live-item.outputs.proceed == 'true' && (vars.EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED || '1') == '1' }}
         id: direct-setup-state
         with:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -4610,161 +4376,6 @@ jobs:
           echo "exit_code=$review_exit_code" >> "$GITHUB_OUTPUT"
           exit "$review_exit_code"
 
-      - name: Inspect review-shard live proofs
-        id: inspect-shard-live-proofs
-        if: ${{ steps.review-shard.outcome == 'success' }}
-        working-directory: clawsweeper
-        env:
-          TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
-          ITEM_NUMBERS: ${{ matrix.item_numbers }}
-        run: |
-          set -euo pipefail
-          summary="$(node dist/clawsweeper.js live-proof-review \
-            --inspect \
-            --repo "$TARGET_REPO" \
-            --item-numbers "$ITEM_NUMBERS" \
-            --records-dir "../review-artifacts/shard-${{ matrix.shard }}" \
-            --checkout "../${{ needs.plan.outputs.target_checkout_dir }}" \
-            --output "../review-artifacts/shard-${{ matrix.shard }}/live-proof")"
-          echo "$summary"
-          {
-            echo "candidate_count=$(jq -r '.candidates | length' <<< "$summary")"
-            echo "candidates=$(jq -c '.candidates' <<< "$summary")"
-            echo "record_media=$(jq -r '.recordMedia' <<< "$summary")"
-            echo "requires_terminal=$(jq -r '.requiresTerminal' <<< "$summary")"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Resolve review-shard live-proof Go version
-        id: resolve-shard-live-proof-go
-        if: ${{ steps.inspect-shard-live-proofs.outputs.candidate_count != '0' && steps.inspect-shard-live-proofs.outcome == 'success' }}
-        env:
-          CANDIDATES: ${{ steps.inspect-shard-live-proofs.outputs.candidates }}
-          RECORDS_DIR: review-artifacts/shard-${{ matrix.shard }}
-          TARGET_CHECKOUT: ${{ needs.plan.outputs.target_checkout_dir }}
-          VERSION_FILE: review-artifacts/shard-${{ matrix.shard }}/live-proof-toolchain/.go-version
-        run: |
-          set -euo pipefail
-          versions_file="$(mktemp)"
-          trap 'rm -f "$versions_file"' EXIT
-          candidate_count="$(jq -r 'length' <<< "$CANDIDATES")"
-          root_module_count=0
-          requires_automatic_toolchain=false
-          while read -r item; do
-            record="$RECORDS_DIR/$item.md"
-            head_sha="$(sed -n 's/^pull_head_sha:[[:space:]]*//p' "$record" | head -n 1)"
-            printf '%s' "$head_sha" | grep -Eq '^[0-9a-f]{40}$'
-            if ! go_mod="$(git -C "$TARGET_CHECKOUT" show "$head_sha:go.mod" 2>/dev/null)"; then
-              requires_automatic_toolchain=true
-              continue
-            fi
-            root_module_count=$((root_module_count + 1))
-            if go_work="$(git -C "$TARGET_CHECKOUT" show "$head_sha:go.work" 2>/dev/null)"; then
-              go_config="$go_work"
-              default_go_version=1.18
-            else
-              go_config="$go_mod"
-              default_go_version=1.16
-            fi
-            while IFS= read -r -d '' path; do
-              case "$path" in
-                */go.mod | */go.work)
-                  requires_automatic_toolchain=true
-                  ;;
-              esac
-            done < <(git -C "$TARGET_CHECKOUT" ls-tree -rz --name-only "$head_sha")
-            go_version="$(awk '$1 == "go" { print $2; exit }' <<< "$go_config")"
-            toolchain_version="$(awk '$1 == "toolchain" && $2 ~ /^go/ { sub(/^go/, "", $2); print $2; exit }' <<< "$go_config")"
-            printf '%s\n' "${go_version:-$default_go_version}" >> "$versions_file"
-            if [ -n "$toolchain_version" ]; then
-              printf '%s\n' "$toolchain_version" >> "$versions_file"
-            fi
-          done < <(jq -r '.[]' <<< "$CANDIDATES")
-          if [ "$root_module_count" -ne "$candidate_count" ]; then
-            requires_automatic_toolchain=true
-          fi
-          echo "automatic=$requires_automatic_toolchain" >> "$GITHUB_OUTPUT"
-          if [ ! -s "$versions_file" ]; then
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          minimum_go_version=1.14.0
-          if [ "$requires_automatic_toolchain" = "true" ]; then
-            minimum_go_version=1.21.0
-          fi
-          version="$(node - "$versions_file" "$minimum_go_version" <<'NODE'
-          const fs = require("node:fs");
-          const path = process.argv[2];
-          const minimum = process.argv[3];
-          const versions = fs
-            .readFileSync(path, "utf8")
-            .trim()
-            .split(/\s+/)
-            .map((version) => version.replace(/-.+$/, ""));
-          const key = (version) => {
-            const match = /^1\.(\d+)(?:(beta|rc)(\d+)|\.(\d+))?$/.exec(version);
-            if (!match) throw new Error(`unsupported Go version ${version}`);
-            const minor = Number(match[1]);
-            if (match[2] === "beta") return [minor, 0, Number(match[3])];
-            if (match[2] === "rc") return [minor, 1, Number(match[3])];
-            if (match[4] !== undefined) return [minor, 2, Number(match[4])];
-            return [minor, minor < 21 ? 2 : -1, 0];
-          };
-          const compare = (left, right) => {
-            const a = key(left);
-            const b = key(right);
-            return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
-          };
-          versions.sort(compare);
-          process.stdout.write(compare(versions.at(-1), minimum) < 0 ? minimum : versions.at(-1));
-          NODE
-          )"
-          mkdir -p "$(dirname "$VERSION_FILE")"
-          printf '%s\n' "$version" > "$VERSION_FILE"
-          {
-            echo "available=true"
-            echo "path=$VERSION_FILE"
-            echo "version=$version"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Set up review-shard live-proof Go toolchain
-        if: ${{ steps.resolve-shard-live-proof-go.outputs.available == 'true' && hashFiles(steps.resolve-shard-live-proof-go.outputs.path) != '' }}
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version-file: ${{ steps.resolve-shard-live-proof-go.outputs.path }}
-          cache: "false"
-
-      - name: Enable review-shard live-proof automatic Go fallback
-        if: ${{ steps.resolve-shard-live-proof-go.outputs.automatic == 'true' }}
-        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
-
-      - name: Install review-shard terminal tools
-        if: ${{ steps.inspect-shard-live-proofs.outputs.requires_terminal == 'true' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes tmux
-
-      - name: Install review-shard recording tools
-        if: ${{ steps.inspect-shard-live-proofs.outputs.record_media == 'true' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes ffmpeg x11-utils xfonts-base xvfb xterm
-
-      - name: Execute review-shard live proofs
-        id: execute-shard-live-proofs
-        if: ${{ steps.inspect-shard-live-proofs.outputs.candidate_count != '0' && steps.inspect-shard-live-proofs.outcome == 'success' }}
-        working-directory: clawsweeper
-        env:
-          TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
-          ITEM_NUMBERS: ${{ matrix.item_numbers }}
-        run: |
-          set -euo pipefail
-          node dist/clawsweeper.js live-proof-review \
-            --repo "$TARGET_REPO" \
-            --item-numbers "$ITEM_NUMBERS" \
-            --records-dir "../review-artifacts/shard-${{ matrix.shard }}" \
-            --checkout "../${{ needs.plan.outputs.target_checkout_dir }}" \
-            --output "../review-artifacts/shard-${{ matrix.shard }}/live-proof"
-
       - name: Finalize review action ledger
         if: always()
         continue-on-error: true
@@ -4788,8 +4399,6 @@ jobs:
         env:
           ITEM_NUMBERS: ${{ matrix.item_numbers }}
           REVIEW_OUTCOME: ${{ steps.review-shard.outcome || 'not_started' }}
-          LIVE_PROOF_CANDIDATE_COUNT: ${{ steps.inspect-shard-live-proofs.outputs.candidate_count || '0' }}
-          LIVE_PROOF_OUTCOME: ${{ steps.execute-shard-live-proofs.outcome || 'not_started' }}
           STARTED_AT: ${{ steps.shard-start.outputs.started_at || '' }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
         run: |
@@ -4799,16 +4408,13 @@ jobs:
             --arg shard "${{ matrix.shard }}" \
             --arg item_numbers "$ITEM_NUMBERS" \
             --arg review_outcome "$REVIEW_OUTCOME" \
-            --arg live_proof_candidate_count "$LIVE_PROOF_CANDIDATE_COUNT" \
-            --arg live_proof_outcome "$LIVE_PROOF_OUTCOME" \
             --arg started_at "$STARTED_AT" \
             --arg completed_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
             --arg target_repo "$TARGET_REPO" \
             '{
               shard: ($shard | tonumber),
               item_numbers: $item_numbers,
-              review_outcome: (if ($live_proof_candidate_count | tonumber) > 0 and $live_proof_outcome != "success" then "live_proof_failed" else $review_outcome end),
-              live_proof_outcome: $live_proof_outcome,
+              review_outcome: $review_outcome,
               started_at: $started_at,
               completed_at: $completed_at,
               target_repo: $target_repo
@@ -4826,16 +4432,12 @@ jobs:
           JSON
 
       - uses: actions/upload-artifact@v7
-        if: ${{ always() && (steps.inspect-shard-live-proofs.outputs.candidate_count == '0' || steps.execute-shard-live-proofs.outcome == 'success') }}
+        if: ${{ always() && steps.review-shard.outcome == 'success' }}
         with:
           name: review-shard-${{ matrix.shard }}
           path: |
             review-artifacts/shard-${{ matrix.shard }}/*.md
             review-artifacts/shard-${{ matrix.shard }}/review-cache-metrics.json
-            review-artifacts/shard-${{ matrix.shard }}/live-proof/*/live-verification.json
-            review-artifacts/shard-${{ matrix.shard }}/live-proof/*/live-proof-manifest.json
-            review-artifacts/shard-${{ matrix.shard }}/live-proof/*/live-proof.mp4
-            review-artifacts/shard-${{ matrix.shard }}/live-proof/*/poster.jpg
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v7

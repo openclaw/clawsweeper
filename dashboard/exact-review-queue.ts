@@ -3020,7 +3020,13 @@ export class ExactReviewQueue {
                 supersededRevisions: [],
               }
             : this.directPublicationStore.accept(validated, now);
-        this.recordLifecycleDirectPublication({ validated, owned, accepted, now });
+        this.recordLifecycleDirectPublication({
+          validated,
+          owned,
+          accepted,
+          now,
+          publicationPath: deferredBatchCompletion ? "batch" : "direct",
+        });
         if (!deferredBatchCompletion) {
           this.recordLifecycleTelemetryDirect({
             validated,
@@ -3522,6 +3528,9 @@ export class ExactReviewQueue {
       const bayActiveKeys = exactReviewQueueBayActiveKeys(
         url.searchParams.getAll("bay_active_key"),
       );
+      const bayActiveLegacyKeys = exactReviewQueueBayActiveKeys(
+        url.searchParams.getAll("bay_active_legacy_key"),
+      );
       const now = Date.now();
       const snapshot = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
@@ -3622,6 +3631,7 @@ export class ExactReviewQueue {
         bayPriorityKeys,
         batchByItemKey,
         bayActiveKeys,
+        bayActiveLegacyKeys,
       );
       return json({
         ...stats,
@@ -7019,7 +7029,7 @@ export class ExactReviewQueue {
     this.syncBayLifecycle(terminal);
   }
 
-  private recordLifecycleDirectPublication({ validated, owned, accepted, now }) {
+  private recordLifecycleDirectPublication({ validated, owned, accepted, now, publicationPath }) {
     const sourceDecision = owned?.decision.publication
       ? owned.decision.publication.producerDecision
       : (owned?.leaseDecision ?? owned?.decision);
@@ -7085,7 +7095,7 @@ export class ExactReviewQueue {
     this.lifecycleProjectionStore.recordCanonicalReceipt({
       ...identity,
       outcome: accepted.outcome,
-      receiptId: `direct:${validated.fenceKey}:${validated.revision}:${accepted.outcome}`,
+      receiptId: `${publicationPath === "batch" ? "batch" : "direct-v2"}:${validated.fenceKey}:${validated.revision}:${accepted.outcome}`,
       observedAt: now,
     });
     if (accepted.outcome === "superseded") {

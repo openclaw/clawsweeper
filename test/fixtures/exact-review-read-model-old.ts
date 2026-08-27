@@ -53,6 +53,7 @@ type OldBayItem = {
   created_at: string;
   updated_at: string;
   next_attempt_at: string;
+  legacy_batch_path: boolean;
   batch_id?: string;
 };
 
@@ -76,6 +77,7 @@ export function oldExactReviewQueueBayProjection(
       created_at: new Date(item.createdAt).toISOString(),
       updated_at: new Date(item.updatedAt).toISOString(),
       next_attempt_at: new Date(item.nextAttemptAt).toISOString(),
+      legacy_batch_path: exactReviewQueueIsPublication(item),
       ...(batch ? { batch_id: batch.batchId } : {}),
     };
     const previous = projected.get(candidate.item_key);
@@ -107,6 +109,12 @@ export function oldExactReviewQueueBayProjection(
         ),
     ]),
   ) as Record<OldBayStage, OldBayItem[]>;
+  const legacyBatchStages = Object.fromEntries(
+    OLD_BAY_STAGES.map((stage) => [
+      stage,
+      rows.filter((item) => item.stage === stage && item.legacy_batch_path).length,
+    ]),
+  ) as Record<OldBayStage, number>;
   const priorityRows = exactReviewQueueBayPriorityKeys(priorityItemKeys)
     .map((itemKey) => projected.get(itemKey))
     .filter((item): item is OldBayItem => Boolean(item))
@@ -127,7 +135,9 @@ export function oldExactReviewQueueBayProjection(
     sample_limit: OLD_BAY_SAMPLE_LIMIT,
     total: rows.length,
     stages,
+    legacy_batch_stages: legacyBatchStages,
     active_overlaps: Object.fromEntries(OLD_BAY_STAGES.map((stage) => [stage, 0])),
+    legacy_batch_active_overlaps: Object.fromEntries(OLD_BAY_STAGES.map((stage) => [stage, 0])),
     items: sample,
   };
 }

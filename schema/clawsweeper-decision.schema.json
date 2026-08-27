@@ -791,26 +791,25 @@
     "liveProofPlan": {
       "type": "object",
       "additionalProperties": false,
-      "description": "For PRs, recommend a deterministic live proof only when a user-visible browser or terminal behavior can be demonstrated from the PR head in 90 seconds or less without external accounts, credentials, secrets, or third-party services. ClawSweeper executes recommended plans unsandboxed on a machine that holds credentials, so declined_suspicious is the safety control. Use it whenever the diff or installed dependencies, including new or bumped dependencies that cannot be inspected, could plausibly exfiltrate, read credential stores, transmit data to unexpected hosts, or display sensitive data. If unsure, use declined_suspicious.",
+      "description": "Compatibility-only field for the retired automatic live-proof feature. New decisions must use the fixed empty shape; historical reports may still contain earlier plan values.",
       "required": ["status", "surface", "terminalCompletion", "reason", "payoff", "entry", "steps"],
       "properties": {
         "status": {
           "type": "string",
-          "enum": ["recommended", "not_applicable", "declined_suspicious"]
+          "const": "not_applicable"
         },
         "surface": {
           "type": "string",
-          "enum": ["browser", "terminal", "none"],
-          "description": "Use browser or terminal only when status is recommended; otherwise use none."
+          "const": "none"
         },
         "terminalCompletion": {
           "type": "string",
-          "enum": ["exit_zero", "ready_while_running", "not_applicable"],
-          "description": "For terminal proof, use exit_zero when the final command must finish successfully or ready_while_running when the final command is a server or TUI that must remain live after its expected output appears. All earlier terminal commands must exit zero. Use not_applicable for browser, declined, and non-applicable plans."
+          "const": "not_applicable",
+          "description": "Compatibility-only terminal completion mode for retired automatic live proof."
         },
         "reason": {
           "type": "string",
-          "description": "One concise sentence explaining the live-proof classification."
+          "description": "One concise sentence noting that automatic live proof is retired."
         },
         "payoff": {
           "type": "object",
@@ -819,29 +818,21 @@
           "properties": {
             "kind": {
               "type": "string",
-              "enum": [
-                "progressive_output",
-                "ui_interaction",
-                "tui_or_color",
-                "animation",
-                "static_text"
-              ]
+              "const": "static_text"
             },
             "justification": {
               "type": "string",
-              "description": "One sentence explaining why static text is sufficient or what a viewer sees change in a useful recording. Never repeat a one-shot terminal command just for media; use a safe setup entry followed by one run for a transition, or choose static_text and verify once."
+              "description": "One concise sentence noting that no recording payoff is assessed."
             }
           }
         },
         "entry": {
           "type": "string",
-          "pattern": "^[^\\r\\n\\u2028\\u2029]*$",
-          "description": "A single-line URL path for browser proof or command for terminal proof, with no literal CR, LF, U+2028, or U+2029, including leading or trailing line breaks. Terminal entry executes automatically before all steps. For a one-shot proof, put the proof command here followed by stable expect_output steps, or use a safe setup entry followed by exactly one run of the proof command. Each command runs in a separate Bash process in the same checkout; share state through files or combine dependent setup and execution in one command. When a repository or package-manager wrapper owns required prerequisites, invoke it and do not bypass it with an internal script. Use an empty string unless status is recommended."
+          "const": ""
         },
         "steps": {
           "type": "array",
-          "maxItems": 10,
-          "description": "Structured deterministic actions executed after entry for the recommended surface. Every terminal run executes independently, even when identical to entry or an earlier run; nothing is deduplicated. Do not repeat one-shot commands to capture output or create media. Intentional reruns after state changes are valid and execute. Use an empty array unless status is recommended. Step values must never contain secrets or tokens.",
+          "maxItems": 0,
           "items": {
             "anyOf": [
               {
@@ -849,8 +840,13 @@
                 "additionalProperties": false,
                 "required": ["action", "path"],
                 "properties": {
-                  "action": { "type": "string", "const": "goto" },
-                  "path": { "type": "string" }
+                  "action": {
+                    "type": "string",
+                    "const": "goto"
+                  },
+                  "path": {
+                    "type": "string"
+                  }
                 }
               },
               {
@@ -858,8 +854,13 @@
                 "additionalProperties": false,
                 "required": ["action", "target"],
                 "properties": {
-                  "action": { "type": "string", "const": "click" },
-                  "target": { "type": "string" }
+                  "action": {
+                    "type": "string",
+                    "const": "click"
+                  },
+                  "target": {
+                    "type": "string"
+                  }
                 }
               },
               {
@@ -867,9 +868,16 @@
                 "additionalProperties": false,
                 "required": ["action", "target", "value"],
                 "properties": {
-                  "action": { "type": "string", "const": "fill" },
-                  "target": { "type": "string" },
-                  "value": { "type": "string" }
+                  "action": {
+                    "type": "string",
+                    "const": "fill"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
                 }
               },
               {
@@ -877,8 +885,13 @@
                 "additionalProperties": false,
                 "required": ["action", "key"],
                 "properties": {
-                  "action": { "type": "string", "const": "press" },
-                  "key": { "type": "string" }
+                  "action": {
+                    "type": "string",
+                    "const": "press"
+                  },
+                  "key": {
+                    "type": "string"
+                  }
                 }
               },
               {
@@ -886,8 +899,13 @@
                 "additionalProperties": false,
                 "required": ["action", "target"],
                 "properties": {
-                  "action": { "type": "string", "const": "wait_for" },
-                  "target": { "type": "string" }
+                  "action": {
+                    "type": "string",
+                    "const": "wait_for"
+                  },
+                  "target": {
+                    "type": "string"
+                  }
                 }
               },
               {
@@ -895,29 +913,14 @@
                 "additionalProperties": false,
                 "required": ["action", "seconds"],
                 "properties": {
-                  "action": { "type": "string", "const": "wait" },
-                  "seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 90 }
-                }
-              },
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["action", "text"],
-                "properties": {
-                  "action": { "type": "string", "const": "expect_text" },
-                  "text": { "type": "string" }
-                }
-              },
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["action", "command"],
-                "properties": {
-                  "action": { "type": "string", "const": "run" },
-                  "command": {
+                  "action": {
                     "type": "string",
-                    "pattern": "^[^\\r\\n\\u2028\\u2029]*\\S[^\\r\\n\\u2028\\u2029]*$",
-                    "description": "A nonblank single-line terminal command with no literal CR, LF, U+2028, or U+2029, including leading or trailing line breaks, not a restatement of entry. Identical commands still execute; include a rerun only when intentional. When a repository or package-manager wrapper owns required prerequisites, invoke it and do not bypass it with an internal script."
+                    "const": "wait"
+                  },
+                  "seconds": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 90
                   }
                 }
               },
@@ -926,10 +929,41 @@
                 "additionalProperties": false,
                 "required": ["action", "text"],
                 "properties": {
-                  "action": { "type": "string", "const": "expect_output" },
-                  "text": {
+                  "action": {
                     "type": "string",
-                    "description": "A stable substring of bytes emitted to the terminal; artifact content must be emitted by entry or a preceding run, for example with cat, before it can be asserted."
+                    "const": "expect_text"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "command"],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "run"
+                  },
+                  "command": {
+                    "type": "string",
+                    "description": "A new terminal command to execute, not a restatement of entry. Identical commands still execute; include a rerun only when intentional."
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "text"],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "expect_output"
+                  },
+                  "text": {
+                    "type": "string"
                   }
                 }
               }

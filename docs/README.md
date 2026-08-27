@@ -105,8 +105,8 @@ everything else requires human comparison with current main.
 - [PR review comments](pr-review-comments.md) — active; review-thread handling
 - [Related issue discovery](related-issue-discovery.md) — active; duplicate and
   adjacent-report context
-- [Live proof](live-proof.md) — active; secretless browser/terminal execution,
-  trusted media attachment, and local simulation
+- [Live proof](live-proof.md) — retired for automatic generation;
+  compatibility-only validation, rendering, publication, and retraction
 
 `docs/proof/**` contains inspectable artifacts for specific changes. Those
 files support their recorded claim but do not override current runbooks.

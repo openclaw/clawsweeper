@@ -4210,7 +4210,7 @@ test("live-proof attach dry-run prints exact uploads and mutations without perfo
   assert.match(output, /dry-run: upsert marker-backed review comment/);
 });
 
-test("live proof executes in review jobs and publishes through existing artifact lanes", () => {
+test("automatic live proof is retired while historical artifact publication remains", () => {
   assert.throws(() => readFileSync(".github/workflows/live-proof.yml", "utf8"));
   assert.throws(() => readFileSync(".github/actions/dispatch-live-proofs/action.yml", "utf8"));
   const sweep = readFileSync(".github/workflows/sweep.yml", "utf8");
@@ -4241,32 +4241,55 @@ test("live proof executes in review jobs and publishes through existing artifact
       [...indexes].sort((left, right) => left - right),
     );
   };
+
   const exactReviewSteps = sweepWorkflow.jobs["event-review-apply"]?.steps ?? [];
   assertOrdered(exactReviewSteps, [
     "Review exact event item",
-    "Inspect exact review live proof",
-    "Execute exact review live proof",
     "Create exact review artifact bundle",
     "Upload exact review artifact bundle",
   ]);
+  for (const name of [
+    "Inspect exact review live proof",
+    "Resolve exact live-proof Go version",
+    "Set up exact live-proof Go toolchain",
+    "Enable exact live-proof automatic Go fallback",
+    "Install exact live-proof terminal tools",
+    "Install exact live-proof recording tools",
+    "Execute exact review live proof",
+  ]) {
+    assert.equal(
+      exactReviewSteps.some((step) => step.name === name),
+      false,
+    );
+  }
+  const exactBundle = exactReviewSteps.find(
+    (step) => step.name === "Create exact review artifact bundle",
+  );
+  assert.equal(exactBundle?.env?.EXACT_REVIEW_LIVE_PROOF_DIR, undefined);
+  assert.doesNotMatch(exactBundle?.if ?? "", /live-proof|live_proof|execute-exact/);
   const directSetup = exactReviewSteps.find((step) => step.id === "direct-setup-state");
-  assert.match(directSetup?.if ?? "", /execute-exact-live-proof\.outputs\.produced != 'true'/);
-  assert.doesNotMatch(JSON.stringify(exactReviewSteps), /CLAWSWEEPER_LIVE_PROOF_AWS/);
-  assert.doesNotMatch(JSON.stringify(exactReviewSteps), /containment|unshare/);
+  assert.doesNotMatch(directSetup?.if ?? "", /live-proof|live_proof|execute-exact/);
 
   const shardSteps = sweepWorkflow.jobs.review?.steps ?? [];
-  assertOrdered(shardSteps, [
-    "Review shard",
+  for (const name of [
     "Inspect review-shard live proofs",
+    "Resolve review-shard live-proof Go version",
+    "Set up review-shard live-proof Go toolchain",
+    "Enable review-shard live-proof automatic Go fallback",
+    "Install review-shard terminal tools",
+    "Install review-shard recording tools",
     "Execute review-shard live proofs",
-  ]);
-  const recordingInstall = shardSteps.find(
-    (step) => step.name === "Install review-shard recording tools",
+  ]) {
+    assert.equal(
+      shardSteps.some((step) => step.name === name),
+      false,
+    );
+  }
+  const shardUpload = shardSteps.find(
+    (step) => step.with?.name === "review-shard-${{ matrix.shard }}",
   );
-  assert.match(recordingInstall?.if ?? "", /record_media == 'true'/);
-  const shardUpload = shardSteps.find((step) => step.uses === "actions/upload-artifact@v7");
-  assert.match(JSON.stringify(shardUpload), /live-verification\.json/);
-  assert.doesNotMatch(JSON.stringify(shardSteps), /containment|unshare/);
+  assert.match(shardUpload?.if ?? "", /review-shard\.outcome/);
+  assert.doesNotMatch(JSON.stringify(shardUpload), /live-proof/);
 
   const exactPublishSteps = sweepWorkflow.jobs["event-review-publish"]?.steps ?? [];
   assertOrdered(exactPublishSteps, [

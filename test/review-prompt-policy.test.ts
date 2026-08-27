@@ -381,22 +381,6 @@ test("review prompt accepts real production transport-boundary proof for reliabi
   );
 });
 
-test("review prompt requires live-proof assertions the demonstration can satisfy", () => {
-  const prompt = readFileSync("prompts/review-item.md", "utf8");
-
-  assert.match(
-    prompt,
-    /Every assertion must name something the demonstration can actually satisfy/,
-  );
-  assert.match(prompt, /search for a value the page itself already displays/);
-  assert.match(
-    prompt,
-    /stable substring of its output such as a header, flag name, or error string/,
-  );
-  assert.match(prompt, /not a count, timing, or number that varies per run/);
-  assert.match(prompt, /assert something more stable rather\s+than inventing one/);
-});
-
 test("generated shared-channel review prompt preserves scoped policy and real fault evidence", () => {
   const proof =
     "The real production owner and grammY HTTP client produced a recorded 429 older → 200 newest trace against a local HTTP server.";
@@ -730,91 +714,25 @@ test("review prompt classifies Telegram visible proof candidates", () => {
   assert.doesNotMatch(prompt, /`slack_desktop_smoke`/);
 });
 
-test("review prompt and schema classify deterministic live-proof plans in field order", () => {
+test("review prompt and generation schema constrain live proof to the retired compatibility shape", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
   const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
-  const docs = readFileSync("docs/live-proof.md", "utf8");
   const liveProofPlan = schema.properties.liveProofPlan;
 
-  assert.ok(
-    prompt.indexOf("For PRs, always fill `telegramVisibleProof`") <
-      prompt.indexOf("For PRs, always fill `liveProofPlan`"),
-  );
-  assert.match(prompt, /Default to `status: "recommended"` whenever/);
-  assert.match(prompt, /refactors, internal plumbing, and CI\/config changes/);
-  assert.match(prompt, /without\s+external accounts,\s+credentials, or third-party services/);
-  assert.match(prompt, /reads environment variables or credential\s+stores/);
-  assert.match(prompt, /exfiltrate or display sensitive data\s+on screen/);
-  assert.match(prompt, /unsandboxed code on a machine that holds credentials/);
-  assert.match(prompt, /judgment is the safety control/);
-  assert.match(prompt, /after reading the entire diff/);
-  assert.match(prompt, /new or bumped dependencies you cannot inspect/);
-  assert.match(prompt, /If unsure,\s+use `declined_suspicious`/);
-  assert.match(prompt, /short burst of plain text/);
-  assert.match(prompt, /quoted\s+code block/);
-  assert.match(prompt, /output that streams or progresses over\s+seconds/);
-  assert.match(prompt, /solely to choose its\s+presentation/);
-  assert.match(prompt, /must still execute the plan and publish its verification\s+result/);
-  assert.match(prompt, /never a\s+judgment about whether to run/);
-  assert.match(prompt, /`liveProofPlan\.status: "declined_suspicious"`/);
-  assert.match(prompt, /never\s+execute the PR or claim that a recording exists/);
-  assert.match(prompt, /`entry` executes automatically before all typed steps/);
-  assert.match(prompt, /`terminalCompletion: "exit_zero"`/);
-  assert.match(prompt, /`terminalCompletion: "ready_while_running"`/);
-  assert.match(prompt, /Every terminal command before the final command\s+must exit zero/);
-  assert.match(prompt, /Every `run` step executes\s+independently/);
-  assert.match(prompt, /nothing is deduplicated/);
-  assert.match(prompt, /one-shot proof[\s\S]*stable `expect_output` steps/);
-  assert.match(prompt, /safe setup `entry` followed by exactly\s+one `run`/);
-  assert.match(prompt, /Do not repeat a one-shot\s+command just to capture output or create media/);
-  assert.match(prompt, /Intentional reruns,[\s\S]*are valid and will execute/);
-  assert.match(prompt, /choose `static_text` and verify once/);
-  assert.match(
-    prompt,
-    /When an existing repository or package-manager script owns the required\s+prerequisites,[\s\S]*invoke that wrapper and do not bypass it by calling its internal\s+script directly/,
-  );
-  assert.match(
-    prompt,
-    /`expect_output` observes only bytes emitted to the terminal[\s\S]*artifact content must be emitted by `entry` or a preceding `run`[\s\S]*with `cat`/,
-  );
-  assert.match(
-    liveProofPlan.properties.entry.description,
-    /executes automatically before all steps/,
-  );
-  assert.match(
-    liveProofPlan.properties.entry.description,
-    /repository or package-manager wrapper owns required prerequisites[\s\S]*do not bypass it with an internal script/,
-  );
-  assert.match(liveProofPlan.properties.steps.description, /nothing is deduplicated/);
-  assert.match(liveProofPlan.properties.steps.description, /Intentional reruns/);
-  assert.match(
-    liveProofPlan.properties.payoff.properties.justification.description,
-    /Never repeat a one-shot terminal command just for media/,
-  );
-  const runStep = liveProofPlan.properties.steps.items.anyOf.find(
-    (step: { properties: { action: { const: string } } }) => step.properties.action.const === "run",
-  );
-  assert.match(runStep.properties.command.description, /Identical commands still execute/);
-  assert.match(
-    runStep.properties.command.description,
-    /repository or package-manager wrapper owns required prerequisites[\s\S]*do not bypass it with an internal script/,
-  );
-  const expectOutputStep = liveProofPlan.properties.steps.items.anyOf.find(
-    (step: { properties: { action: { const: string } } }) =>
-      step.properties.action.const === "expect_output",
-  );
-  assert.match(
-    expectOutputStep.properties.text.description,
-    /bytes emitted to the terminal[\s\S]*artifact content must be emitted by entry or a preceding run[\s\S]*with cat/,
-  );
-  assert.match(
-    docs,
-    /When an existing repository or\s+package-manager script owns the required prerequisites,[\s\S]*invoke that wrapper and do\s+not bypass it by calling its internal script directly/,
-  );
-  assert.match(
-    docs,
-    /Terminal assertions observe only bytes emitted\s+to the terminal[\s\S]*artifact content must be emitted by the entry or a preceding run,[\s\S]*with `cat`/,
-  );
+  assert.match(prompt, /retired compatibility shape/);
+  assert.match(prompt, /`status: "not_applicable"`/);
+  assert.match(prompt, /`surface: "none"`/);
+  assert.match(prompt, /`terminalCompletion: "not_applicable"`/);
+  assert.match(prompt, /`payoff\.kind: "static_text"`/);
+  assert.match(prompt, /empty `entry`/);
+  assert.match(prompt, /empty `steps` array/);
+  assert.match(prompt, /Do not recommend or plan proof execution/);
+  assert.match(prompt, /fixed retired compatibility shape/);
+  assert.match(prompt, /Do not derive commands, steps, or another demonstration plan/);
+  assert.doesNotMatch(prompt, /Always fill `liveProofPlan` using the user-visible behavior/);
+  assert.doesNotMatch(prompt, /This is a read-only demonstration plan/);
+  assert.doesNotMatch(prompt, /Default to `status: "recommended"`/);
+  assert.doesNotMatch(prompt, /Trusted Live-Proof Execution Context/);
 
   assert.deepEqual(liveProofPlan.required, [
     "status",
@@ -834,30 +752,13 @@ test("review prompt and schema classify deterministic live-proof plans in field 
     "entry",
     "steps",
   ]);
-  assert.deepEqual(liveProofPlan.properties.status.enum, [
-    "recommended",
-    "not_applicable",
-    "declined_suspicious",
-  ]);
-  assert.deepEqual(liveProofPlan.properties.surface.enum, ["browser", "terminal", "none"]);
-  assert.deepEqual(liveProofPlan.properties.terminalCompletion.enum, [
-    "exit_zero",
-    "ready_while_running",
-    "not_applicable",
-  ]);
-  assert.deepEqual(liveProofPlan.properties.payoff.required, ["kind", "justification"]);
-  assert.deepEqual(Object.keys(liveProofPlan.properties.payoff.properties), [
-    "kind",
-    "justification",
-  ]);
-  assert.deepEqual(liveProofPlan.properties.payoff.properties.kind.enum, [
-    "progressive_output",
-    "ui_interaction",
-    "tui_or_color",
-    "animation",
-    "static_text",
-  ]);
-  assert.equal(liveProofPlan.properties.steps.maxItems, 10);
+  assert.equal(liveProofPlan.properties.status.const, "not_applicable");
+  assert.equal(liveProofPlan.properties.surface.const, "none");
+  assert.equal(liveProofPlan.properties.terminalCompletion.const, "not_applicable");
+  assert.equal(liveProofPlan.properties.payoff.properties.kind.const, "static_text");
+  assert.equal(liveProofPlan.properties.entry.const, "");
+  assert.equal(liveProofPlan.properties.steps.maxItems, 0);
+  assert.ok(Array.isArray(liveProofPlan.properties.steps.items.anyOf));
   const requiredOrder = schema.required;
   const liveProofIndex = requiredOrder.indexOf("liveProofPlan");
   assert.equal(requiredOrder[liveProofIndex - 1], "telegramVisibleProof");

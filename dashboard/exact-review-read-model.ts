@@ -3,6 +3,7 @@ import {
   exactReviewQueueHasCommandContext,
   exactReviewQueueIsBatchablePublication,
   exactReviewQueueIsPublication,
+  exactReviewQueueUsesLegacyBatchPath,
   isLowPriorityExactReviewDecision,
 } from "./exact-review-decision.ts";
 import { numberFrom } from "./exact-review-queue-shared.ts";
@@ -187,6 +188,7 @@ type ExactReviewBayProjectionItem = {
   created_at: string;
   updated_at: string;
   next_attempt_at: string;
+  legacy_batch_path: boolean;
   batch_id?: string;
   batch_created_at?: string;
 };
@@ -651,9 +653,24 @@ function observeExactReviewBayCandidate(
     updatedAt,
   };
   const previous = projected.get(itemKey);
-  const latest = previous?.[0];
-  if (!latest || updatedAt > latest.updatedAt) {
+  if (!previous) {
     projected.set(itemKey, [candidate]);
+    return true;
+  }
+  const legacyBatchPath = exactReviewQueueUsesLegacyBatchPath(item);
+  const samePath = previous.filter(
+    (existing) => exactReviewQueueUsesLegacyBatchPath(existing.item) === legacyBatchPath,
+  );
+  const latest = samePath[0];
+  if (!latest) {
+    previous.push(candidate);
+  } else if (updatedAt > latest.updatedAt) {
+    projected.set(itemKey, [
+      ...previous.filter(
+        (existing) => exactReviewQueueUsesLegacyBatchPath(existing.item) !== legacyBatchPath,
+      ),
+      candidate,
+    ]);
   } else if (updatedAt === latest.updatedAt) {
     previous.push(candidate);
   }
@@ -674,6 +691,7 @@ export function exactReviewQueueBayProjection(
   priorityItemKeys: string[] = [],
   batchByItemKey: ReadonlyMap<string, ExactReviewBayBatchOwner> = new Map(),
   activeItemKeys: string[] = [],
+  activeLegacyItemKeys: string[] = [],
 ) {
   const census = buildExactReviewQueueCensus(items, {
     state: { items: {} },
@@ -684,6 +702,7 @@ export function exactReviewQueueBayProjection(
     priorityItemKeys,
     batchByItemKey,
     activeItemKeys,
+    activeLegacyItemKeys,
   );
 }
 
@@ -692,6 +711,7 @@ function exactReviewQueueBayProjectionFromCensus(
   priorityItemKeys: string[] = [],
   batchByItemKey: ReadonlyMap<string, ExactReviewBayBatchOwner> = new Map(),
   activeItemKeys: string[] = [],
+  activeLegacyItemKeys: string[] = [],
 ) {
   if (!census.bayComplete) {
     return {
@@ -699,7 +719,9 @@ function exactReviewQueueBayProjectionFromCensus(
       sample_limit: EXACT_REVIEW_BAY_SAMPLE_LIMIT,
       total: null,
       stages: null,
+      legacy_batch_stages: null,
       active_overlaps: null,
+      legacy_batch_active_overlaps: null,
       items: [],
     };
   }
@@ -708,6 +730,9 @@ function exactReviewQueueBayProjectionFromCensus(
     ExactReviewBayStage,
     number
   >;
+  const legacyBatchStages = Object.fromEntries(
+    EXACT_REVIEW_BAY_STAGES.map((stage) => [stage, 0]),
+  ) as Record<ExactReviewBayStage, number>;
   const rowsByStage: Record<ExactReviewBayStage, ExactReviewBayProjectionItem[]> = {
     arriving: [],
     "setting-up": [],
@@ -717,7 +742,10 @@ function exactReviewQueueBayProjectionFromCensus(
     repairing: [],
   };
   for (const candidates of census.bayCandidates.values()) {
-    const [first, ...remaining] = candidates;
+    const directCandidates = candidates.filter(
+      (candidate) => !exactReviewQueueUsesLegacyBatchPath(candidate.item),
+    );
+    const [first, ...remaining] = directCandidates.length > 0 ? directCandidates : candidates;
     if (!first) continue;
     let selected = first;
     let selectedStage = exactReviewQueueBayStage(selected.item, batchByItemKey);
@@ -740,10 +768,12 @@ function exactReviewQueueBayProjectionFromCensus(
       created_at: new Date(selected.item.createdAt).toISOString(),
       updated_at: new Date(selected.item.updatedAt).toISOString(),
       next_attempt_at: new Date(selected.item.nextAttemptAt).toISOString(),
+      legacy_batch_path: exactReviewQueueUsesLegacyBatchPath(selected.item),
       ...(batch ? { batch_id: batch.batchId } : {}),
     };
     projected.set(row.item_key, row);
     stages[row.stage] += 1;
+    if (row.legacy_batch_path) legacyBatchStages[row.stage] += 1;
     rowsByStage[row.stage].push(row);
   }
   for (const stage of EXACT_REVIEW_BAY_STAGES) {
@@ -756,29 +786,61 @@ function exactReviewQueueBayProjectionFromCensus(
   const activeOverlaps = Object.fromEntries(
     EXACT_REVIEW_BAY_STAGES.map((stage) => [stage, 0]),
   ) as Record<ExactReviewBayStage, number>;
-  for (const itemKey of exactReviewQueueBayActiveKeys(activeItemKeys)) {
-    const item = projected.get(itemKey);
-    if (item) activeOverlaps[item.stage] += 1;
+  const legacyBatchActiveOverlaps = Object.fromEntries(
+    EXACT_REVIEW_BAY_STAGES.map((stage) => [stage, 0]),
+  ) as Record<ExactReviewBayStage, number>;
+  for (const [itemKeys, legacyBatchPath] of [
+    [activeItemKeys, false],
+    [activeLegacyItemKeys, true],
+  ] as const) {
+    for (const itemKey of exactReviewQueueBayActiveKeys(itemKeys)) {
+      const item = projected.get(itemKey);
+      if (item && item.legacy_batch_path === legacyBatchPath) {
+        activeOverlaps[item.stage] += 1;
+        if (legacyBatchPath) legacyBatchActiveOverlaps[item.stage] += 1;
+      }
+    }
   }
   const priorityRows = exactReviewQueueBayPriorityKeys(priorityItemKeys)
     .map((itemKey) => projected.get(itemKey))
-    .filter((item): item is ExactReviewBayProjectionItem => Boolean(item))
-    .slice(0, EXACT_REVIEW_BAY_SAMPLE_LIMIT);
-  const priorityKeys = new Set(priorityRows.map((item) => item.item_key));
-  const sample = [...priorityRows];
-  const longestStage = Math.max(
-    ...EXACT_REVIEW_BAY_STAGES.map((stage) => rowsByStage[stage].length),
-  );
-  for (
-    let index = 0;
-    sample.length < EXACT_REVIEW_BAY_SAMPLE_LIMIT && index < longestStage;
-    index += 1
-  ) {
-    for (const stage of EXACT_REVIEW_BAY_STAGES) {
-      const item = rowsByStage[stage][index];
-      if (!item || priorityKeys.has(item.item_key)) continue;
-      sample.push(item);
-      if (sample.length === EXACT_REVIEW_BAY_SAMPLE_LIMIT) break;
+    .filter((item): item is ExactReviewBayProjectionItem => Boolean(item));
+  const sampledKeys = new Set<string>();
+  const sample: ExactReviewBayProjectionItem[] = [];
+  const append = (item: ExactReviewBayProjectionItem | undefined, legacyBatchPath: boolean) => {
+    if (
+      !item ||
+      item.legacy_batch_path !== legacyBatchPath ||
+      sampledKeys.has(item.item_key) ||
+      sample.length >= EXACT_REVIEW_BAY_SAMPLE_LIMIT
+    ) {
+      return;
+    }
+    sampledKeys.add(item.item_key);
+    sample.push(item);
+  };
+  // The default Bay view hides legacy proof/batch journeys. Sample every
+  // available normal direct journey before legacy rows so hidden records
+  // cannot consume the bounded public-reference budget.
+  for (const legacyBatchPath of [false, true]) {
+    const categoryRowsByStage = Object.fromEntries(
+      EXACT_REVIEW_BAY_STAGES.map((stage) => [
+        stage,
+        rowsByStage[stage].filter((item) => item.legacy_batch_path === legacyBatchPath),
+      ]),
+    ) as Record<ExactReviewBayStage, ExactReviewBayProjectionItem[]>;
+    const longestCategoryStage = Math.max(
+      ...EXACT_REVIEW_BAY_STAGES.map((stage) => categoryRowsByStage[stage].length),
+    );
+    for (const item of priorityRows) append(item, legacyBatchPath);
+    for (
+      let index = 0;
+      sample.length < EXACT_REVIEW_BAY_SAMPLE_LIMIT && index < longestCategoryStage;
+      index += 1
+    ) {
+      for (const stage of EXACT_REVIEW_BAY_STAGES) {
+        append(categoryRowsByStage[stage][index], legacyBatchPath);
+        if (sample.length === EXACT_REVIEW_BAY_SAMPLE_LIMIT) break;
+      }
     }
   }
   return {
@@ -786,7 +848,9 @@ function exactReviewQueueBayProjectionFromCensus(
     sample_limit: EXACT_REVIEW_BAY_SAMPLE_LIMIT,
     total: projected.size,
     stages,
+    legacy_batch_stages: legacyBatchStages,
     active_overlaps: activeOverlaps,
+    legacy_batch_active_overlaps: legacyBatchActiveOverlaps,
     items: sample,
   };
 }
@@ -1205,6 +1269,7 @@ export function exactReviewQueueBayProjectionFromStats(
   priorityItemKeys: string[] = [],
   batchByItemKey: ReadonlyMap<string, ExactReviewBayBatchOwner> = new Map(),
   activeItemKeys: string[] = [],
+  activeLegacyItemKeys: string[] = [],
 ) {
   const census = stats[EXACT_REVIEW_STATS_CENSUS];
   if (!census) throw new Error("exact-review queue stats are missing their census");
@@ -1213,6 +1278,7 @@ export function exactReviewQueueBayProjectionFromStats(
     priorityItemKeys,
     batchByItemKey,
     activeItemKeys,
+    activeLegacyItemKeys,
   );
   Object.defineProperty(stats, "bay_projection", {
     value: projection,

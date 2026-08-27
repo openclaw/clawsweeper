@@ -117,6 +117,7 @@ type BayLifecycleEvent = {
   outcome: BayLifecycleOutcome;
   triggered_at: number;
   completed_at: number;
+  legacy_batch_path: boolean;
 };
 
 type BayTerminalRecord = {
@@ -125,6 +126,7 @@ type BayTerminalRecord = {
   outcome: BayLifecycleOutcome;
   completed_at: string;
   journey_duration_ms: number;
+  legacy_batch_path: boolean;
 };
 
 type BayTimingHistoryPoint = {
@@ -172,6 +174,10 @@ export type ExactReviewBayLifecycleSnapshot = {
     sample_limit: number;
     overall: { average_ms: number | null; median_ms: number | null; samples: number | null };
     history: { bucket_minutes: number; points: BayTimingHistoryPoint[] };
+    including_legacy_batch: {
+      overall: { average_ms: number | null; median_ms: number | null; samples: number | null };
+      history: { bucket_minutes: number; points: BayTimingHistoryPoint[] };
+    };
   } | null;
   terminal: {
     tide_threshold: number;
@@ -222,6 +228,11 @@ export class ExactReviewLifecycleTelemetryStore {
          ON ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE} (observed_at, event_id)`,
     );
     this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_telemetry_direct_path
+         ON ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE}
+         (canonical_target_key, fence_key, revision, outcome)`,
+    );
+    this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_BATCH_TABLE} (
          event_id TEXT PRIMARY KEY,
          batch_id TEXT NOT NULL,
@@ -245,7 +256,8 @@ export class ExactReviewLifecycleTelemetryStore {
          revision INTEGER NOT NULL CHECK (revision >= 1),
          outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'cancelled')),
          triggered_at INTEGER NOT NULL,
-         completed_at INTEGER NOT NULL
+         completed_at INTEGER NOT NULL,
+         legacy_batch_path INTEGER NOT NULL DEFAULT 1 CHECK (legacy_batch_path IN (0, 1))
        ) STRICT`,
     );
     this.storage.sql.exec(
@@ -293,6 +305,7 @@ export class ExactReviewLifecycleTelemetryStore {
          outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'cancelled')),
          triggered_at INTEGER NOT NULL,
          completed_at INTEGER NOT NULL,
+         legacy_batch_path INTEGER NOT NULL DEFAULT 1 CHECK (legacy_batch_path IN (0, 1)),
          PRIMARY KEY (repository_scope, bucket, event_id)
        ) STRICT`,
     );
@@ -301,6 +314,158 @@ export class ExactReviewLifecycleTelemetryStore {
          ON ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
          (repository_scope, bucket, completed_at, event_id)`,
     );
+    const bayEventColumns = new Set(
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}')`,
+        ),
+      ).map((row) => String(row.name || "")),
+    );
+    if (!bayEventColumns.has("legacy_batch_path")) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+           ADD COLUMN legacy_batch_path INTEGER NOT NULL DEFAULT 1
+           CHECK (legacy_batch_path IN (0, 1))`,
+      );
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} AS events
+            SET legacy_batch_path = 0
+          WHERE EXISTS (
+            SELECT 1
+              FROM ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE} AS direct
+             WHERE direct.canonical_target_key = events.canonical_target_key
+               AND direct.fence_key = events.fence_key
+               AND direct.revision = events.revision
+               AND direct.outcome IN ('accepted', 'deduped')
+          )`,
+      );
+      if (this.lifecycleProjectionTableExistsSync()) {
+        this.storage.sql.exec(
+          `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} AS events
+              SET legacy_batch_path = 0
+            WHERE EXISTS (
+              SELECT 1
+                FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} AS projection
+               WHERE projection.canonical_target_key = events.canonical_target_key
+                 AND projection.fence_key = events.fence_key
+                 AND projection.revision = events.revision
+                 AND json_valid(projection.projection_json)
+                 AND (
+                   projection.fence_key NOT LIKE '%@publish:%'
+                   OR EXISTS (
+                   SELECT 1
+                     FROM json_each(projection.projection_json, '$.canonicalReceipts') AS receipt
+                    WHERE json_extract(receipt.value, '$.receiptId') LIKE 'direct-v2:%'
+                      AND json_extract(receipt.value, '$.outcome') IN ('accepted', 'deduped')
+                   )
+                   OR (
+                     EXISTS (
+                       SELECT 1
+                         FROM json_each(projection.projection_json, '$.canonicalReceipts') AS receipt
+                        WHERE json_extract(receipt.value, '$.receiptId') LIKE 'direct:%'
+                          AND json_extract(receipt.value, '$.outcome') IN ('accepted', 'deduped')
+                     )
+                     AND COALESCE(
+                       json_extract(projection.projection_json, '$.routerReceipt.receiptId'),
+                       ''
+                     ) NOT LIKE 'router-batch%'
+                     AND NOT EXISTS (
+                       SELECT 1
+                         FROM json_each(projection.projection_json, '$.routerReceipts') AS receipt
+                        WHERE json_extract(receipt.value, '$.receiptId') LIKE 'router-batch%'
+                     )
+                   )
+                 )
+            )`,
+        );
+      }
+    }
+    const tideBufferColumns = new Set(
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}')`,
+        ),
+      ).map((row) => String(row.name || "")),
+    );
+    if (!tideBufferColumns.has("legacy_batch_path")) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+           ADD COLUMN legacy_batch_path INTEGER NOT NULL DEFAULT 1
+           CHECK (legacy_batch_path IN (0, 1))`,
+      );
+      if (this.lifecycleProjectionTableExistsSync()) {
+        this.storage.sql.exec(
+          `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE} AS tide
+              SET legacy_batch_path = COALESCE(
+                (
+                  SELECT events.legacy_batch_path
+                    FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} AS events
+                   WHERE events.event_id = tide.event_id
+                     AND events.canonical_target_key = tide.canonical_target_key
+                   LIMIT 1
+                ),
+                (
+                  SELECT CASE
+                    WHEN projection.fence_key NOT LIKE '%@publish:%' THEN 0
+                    WHEN EXISTS (
+                      SELECT 1
+                        FROM ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE} AS direct
+                       WHERE direct.canonical_target_key = projection.canonical_target_key
+                         AND direct.fence_key = projection.fence_key
+                         AND direct.revision = projection.revision
+                         AND direct.outcome IN ('accepted', 'deduped')
+                    ) THEN 0
+                    WHEN EXISTS (
+                      SELECT 1
+                        FROM json_each(projection.projection_json, '$.canonicalReceipts') AS receipt
+                       WHERE json_extract(receipt.value, '$.receiptId') LIKE 'direct-v2:%'
+                         AND json_extract(receipt.value, '$.outcome') IN ('accepted', 'deduped')
+                    ) THEN 0
+                    WHEN EXISTS (
+                      SELECT 1
+                        FROM json_each(projection.projection_json, '$.canonicalReceipts') AS receipt
+                       WHERE json_extract(receipt.value, '$.receiptId') LIKE 'direct:%'
+                         AND json_extract(receipt.value, '$.outcome') IN ('accepted', 'deduped')
+                    )
+                      AND COALESCE(
+                        json_extract(projection.projection_json, '$.routerReceipt.receiptId'),
+                        ''
+                      ) NOT LIKE 'router-batch%'
+                      AND NOT EXISTS (
+                        SELECT 1
+                          FROM json_each(projection.projection_json, '$.routerReceipts') AS receipt
+                         WHERE json_extract(receipt.value, '$.receiptId') LIKE 'router-batch%'
+                      ) THEN 0
+                    ELSE 1
+                  END
+                    FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} AS projection
+                   WHERE 'bay:v2:' || projection.fence_key || ':' || projection.revision = tide.event_id
+                     AND projection.canonical_target_key = tide.canonical_target_key
+                     AND json_valid(projection.projection_json)
+                   LIMIT 1
+                ),
+                1
+              )`,
+        );
+      } else {
+        this.storage.sql.exec(
+          `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE} AS tide
+              SET legacy_batch_path = COALESCE(
+                (
+                  SELECT events.legacy_batch_path
+                    FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} AS events
+                   WHERE events.event_id = tide.event_id
+                     AND events.canonical_target_key = tide.canonical_target_key
+                   LIMIT 1
+                ),
+                1
+              )`,
+        );
+      }
+    }
+    if (this.lifecycleProjectionTableExistsSync()) {
+      this.repairFailedPublisherPathClassificationSync();
+    }
     for (const table of [
       EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
       EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
@@ -379,6 +544,123 @@ export class ExactReviewLifecycleTelemetryStore {
     }
     if (tideProgressBackfillTables.size) this.backfillLifecycleIdempotencyMarkersSync();
     this.schemaReady = true;
+  }
+
+  private repairFailedPublisherPathClassificationSync() {
+    // An earlier deployment of this schema treated every failure as a direct
+    // review, including failed @publish fences. Recompute that bounded retained
+    // set on startup so stores that already have the column converge too.
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} AS events
+          SET legacy_batch_path = CASE
+            WHEN EXISTS (
+              SELECT 1
+                FROM ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE} AS direct
+               WHERE direct.canonical_target_key = events.canonical_target_key
+                 AND direct.fence_key = events.fence_key
+                 AND direct.revision = events.revision
+                 AND direct.outcome IN ('accepted', 'deduped')
+            ) THEN 0
+            WHEN EXISTS (
+              SELECT 1
+                FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} AS projection
+               WHERE projection.canonical_target_key = events.canonical_target_key
+                 AND projection.fence_key = events.fence_key
+                 AND projection.revision = events.revision
+                 AND json_valid(projection.projection_json)
+                 AND (
+                   EXISTS (
+                     SELECT 1
+                       FROM json_each(projection.projection_json, '$.canonicalReceipts') AS receipt
+                      WHERE json_extract(receipt.value, '$.receiptId') LIKE 'direct-v2:%'
+                        AND json_extract(receipt.value, '$.outcome') IN ('accepted', 'deduped')
+                   )
+                   OR (
+                     EXISTS (
+                       SELECT 1
+                         FROM json_each(projection.projection_json, '$.canonicalReceipts') AS receipt
+                        WHERE json_extract(receipt.value, '$.receiptId') LIKE 'direct:%'
+                          AND json_extract(receipt.value, '$.outcome') IN ('accepted', 'deduped')
+                     )
+                     AND COALESCE(
+                       json_extract(projection.projection_json, '$.routerReceipt.receiptId'),
+                       ''
+                     ) NOT LIKE 'router-batch%'
+                     AND NOT EXISTS (
+                       SELECT 1
+                         FROM json_each(projection.projection_json, '$.routerReceipts') AS receipt
+                        WHERE json_extract(receipt.value, '$.receiptId') LIKE 'router-batch%'
+                     )
+                   )
+                 )
+            ) THEN 0
+            ELSE 1
+          END
+        WHERE events.fence_key LIKE '%@publish:%'
+          AND EXISTS (
+            SELECT 1
+              FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} AS projection
+             WHERE projection.canonical_target_key = events.canonical_target_key
+               AND projection.fence_key = events.fence_key
+               AND projection.revision = events.revision
+               AND json_valid(projection.projection_json)
+               AND json_extract(projection.projection_json, '$.terminalDisposition.kind') = 'failure'
+          )`,
+    );
+    this.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE} AS tide
+          SET legacy_batch_path = CASE
+            WHEN EXISTS (
+              SELECT 1
+                FROM ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE} AS direct
+               WHERE 'bay:v2:' || direct.fence_key || ':' || direct.revision = tide.event_id
+                 AND direct.canonical_target_key = tide.canonical_target_key
+                 AND direct.outcome IN ('accepted', 'deduped')
+            ) THEN 0
+            WHEN EXISTS (
+              SELECT 1
+                FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} AS projection
+               WHERE 'bay:v2:' || projection.fence_key || ':' || projection.revision = tide.event_id
+                 AND projection.canonical_target_key = tide.canonical_target_key
+                 AND json_valid(projection.projection_json)
+                 AND (
+                   EXISTS (
+                     SELECT 1
+                       FROM json_each(projection.projection_json, '$.canonicalReceipts') AS receipt
+                      WHERE json_extract(receipt.value, '$.receiptId') LIKE 'direct-v2:%'
+                        AND json_extract(receipt.value, '$.outcome') IN ('accepted', 'deduped')
+                   )
+                   OR (
+                     EXISTS (
+                       SELECT 1
+                         FROM json_each(projection.projection_json, '$.canonicalReceipts') AS receipt
+                        WHERE json_extract(receipt.value, '$.receiptId') LIKE 'direct:%'
+                          AND json_extract(receipt.value, '$.outcome') IN ('accepted', 'deduped')
+                     )
+                     AND COALESCE(
+                       json_extract(projection.projection_json, '$.routerReceipt.receiptId'),
+                       ''
+                     ) NOT LIKE 'router-batch%'
+                     AND NOT EXISTS (
+                       SELECT 1
+                         FROM json_each(projection.projection_json, '$.routerReceipts') AS receipt
+                        WHERE json_extract(receipt.value, '$.receiptId') LIKE 'router-batch%'
+                     )
+                   )
+                 )
+            ) THEN 0
+            ELSE 1
+          END
+        WHERE EXISTS (
+          SELECT 1
+            FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} AS projection
+           WHERE 'bay:v2:' || projection.fence_key || ':' || projection.revision = tide.event_id
+             AND projection.canonical_target_key = tide.canonical_target_key
+             AND projection.fence_key LIKE '%@publish:%'
+             AND json_valid(projection.projection_json)
+             AND json_extract(projection.projection_json, '$.terminalDisposition.kind') = 'failure'
+        )`,
+    );
   }
 
   /**
@@ -498,7 +780,7 @@ export class ExactReviewLifecycleTelemetryStore {
   }
 
   private materializeBayLifecycleSync(projection: ExactReviewLifecycleProjection) {
-    const event = bayLifecycleEvent(projection);
+    let event = bayLifecycleEvent(projection);
     const identity = [
       projection.canonicalTargetKey,
       projection.fenceKey,
@@ -514,6 +796,18 @@ export class ExactReviewLifecycleTelemetryStore {
       delete projection.bayTelemetryEventId;
       this.pruneBayEventsSync(Math.max(Date.now(), this.coverageStartedAtSync()));
       return;
+    }
+    if (
+      event.legacy_batch_path &&
+      (this.hasAcceptedDirectOutcomeSync(
+        projection.canonicalTargetKey,
+        projection.fenceKey,
+        projection.revision,
+      ) ||
+        (projection.terminalDisposition?.kind !== "failure" &&
+          this.hasRetainedDirectTideOutcomeSync(event.event_id, projection.canonicalTargetKey)))
+    ) {
+      event = { ...event, legacy_batch_path: false };
     }
     // Callers may already hold the queue's durable transaction. Durable
     // Objects serialize each invocation, so these synchronous statements stay
@@ -538,21 +832,23 @@ export class ExactReviewLifecycleTelemetryStore {
       if (timingEventExists) {
         this.storage.sql.exec(
           `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-              SET outcome = ?, triggered_at = ?, completed_at = ?
+              SET outcome = ?, triggered_at = ?, completed_at = ?, legacy_batch_path = ?
             WHERE event_id = ?`,
           event.outcome,
           event.triggered_at,
           event.completed_at,
+          Number(event.legacy_batch_path),
           event.event_id,
         );
       }
       this.storage.sql.exec(
         `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
-            SET outcome = ?, triggered_at = ?, completed_at = ?
+            SET outcome = ?, triggered_at = ?, completed_at = ?, legacy_batch_path = ?
           WHERE event_id = ?`,
         event.outcome,
         event.triggered_at,
         event.completed_at,
+        Number(event.legacy_batch_path),
         event.event_id,
       );
       projection.bayTelemetryEventId = event.event_id;
@@ -560,12 +856,14 @@ export class ExactReviewLifecycleTelemetryStore {
     }
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-         (event_id, canonical_target_key, fence_key, revision, outcome, triggered_at, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+         (event_id, canonical_target_key, fence_key, revision, outcome, triggered_at, completed_at,
+          legacy_batch_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(event_id) DO UPDATE SET
          outcome = excluded.outcome,
          triggered_at = excluded.triggered_at,
-         completed_at = excluded.completed_at`,
+         completed_at = excluded.completed_at,
+         legacy_batch_path = excluded.legacy_batch_path`,
       event.event_id,
       projection.canonicalTargetKey,
       projection.fenceKey,
@@ -573,6 +871,7 @@ export class ExactReviewLifecycleTelemetryStore {
       event.outcome,
       event.triggered_at,
       event.completed_at,
+      Number(event.legacy_batch_path),
     );
     const globalProgress = this.tideProgressSync();
     const scopeRow = this.tideScopeRowSync();
@@ -616,7 +915,10 @@ export class ExactReviewLifecycleTelemetryStore {
   ): ExactReviewBayLifecycleSnapshot {
     this.ensureSchemaSync();
     try {
-      const repositoryFilter = bayRepositoryFilter(allowedRepositories);
+      const repositoryFilter = bayRepositoryFilter(
+        allowedRepositories,
+        "events.canonical_target_key",
+      );
       if (!repositoryFilter) return unknownBaySnapshot("unavailable");
       if (this.hasBayLifecyclePending()) return unknownBaySnapshot("unavailable");
       // Filtered public snapshots are valid only for the exact configured
@@ -639,12 +941,18 @@ export class ExactReviewLifecycleTelemetryStore {
       );
       const rows = Array.from(
         this.storage.sql.exec(
-          `SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at
-             FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-            WHERE completed_at >= ? AND completed_at <= ?
-              AND (? = 0 OR triggered_at >= ?)
+          `SELECT
+             events.event_id,
+             events.canonical_target_key,
+             events.outcome,
+             events.triggered_at,
+             events.completed_at,
+             events.legacy_batch_path
+             FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} AS events
+            WHERE events.completed_at >= ? AND events.completed_at <= ?
+              AND (? = 0 OR events.triggered_at >= ?)
               ${repositoryFilter.where}
-            ORDER BY completed_at, event_id LIMIT ?`,
+            ORDER BY events.completed_at, events.event_id LIMIT ?`,
           timingCutoff,
           now,
           Number(triggerCoverageStartedAt !== null),
@@ -657,13 +965,19 @@ export class ExactReviewLifecycleTelemetryStore {
         return unknownBaySnapshot("over_cap");
       const durations: number[] = [];
       const timingRows: Array<{ completedAt: number; duration: number }> = [];
+      const allDurations: number[] = [];
+      const allTimingRows: Array<{ completedAt: number; duration: number }> = [];
       for (const row of rows) {
         const triggeredAt = Number(row.triggered_at);
         const completedAt = Number(row.completed_at);
         if (!validBayJourney(triggeredAt, completedAt)) return unknownBaySnapshot("unavailable");
         const duration = completedAt - triggeredAt;
-        durations.push(duration);
-        timingRows.push({ completedAt, duration });
+        allDurations.push(duration);
+        allTimingRows.push({ completedAt, duration });
+        if (Number(row.legacy_batch_path) === 0) {
+          durations.push(duration);
+          timingRows.push({ completedAt, duration });
+        }
       }
 
       // `tide_base_count` is the exact all-time completion count for this
@@ -676,17 +990,8 @@ export class ExactReviewLifecycleTelemetryStore {
       const bufferRows = this.tideBufferRowsSync(tideScope, "terminal");
       const washedRows = this.tideBufferRowsSync(tideScope, "washed");
       if (bufferRows.length !== terminalCount) return unknownBaySnapshot("unavailable");
-      const average = durations.length
-        ? Math.round(durations.reduce((total, value) => total + value, 0) / durations.length)
-        : null;
-      const ordered = [...durations].sort((left, right) => left - right);
-      const median = ordered.length
-        ? Math.round(
-            ordered.length % 2
-              ? ordered[Math.floor(ordered.length / 2)]!
-              : (ordered[ordered.length / 2 - 1]! + ordered[ordered.length / 2]!) / 2,
-          )
-        : null;
+      const aggregate = bayTimingAggregate(durations);
+      const allAggregate = bayTimingAggregate(allDurations);
       return {
         version: 2,
         collection: { state: "complete" },
@@ -698,10 +1003,17 @@ export class ExactReviewLifecycleTelemetryStore {
           window_minutes: EXACT_REVIEW_LIFECYCLE_BAY_TIMING_WINDOW_MS / 60_000,
           sample_kind: "completed_final_review_journeys",
           sample_limit: EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT,
-          overall: { average_ms: average, median_ms: median, samples: durations.length },
+          overall: aggregate,
           history: {
             bucket_minutes: 5,
             points: bayTimingHistory(timingRows),
+          },
+          including_legacy_batch: {
+            overall: allAggregate,
+            history: {
+              bucket_minutes: 5,
+              points: bayTimingHistory(allTimingRows),
+            },
           },
         },
         terminal: {
@@ -736,6 +1048,28 @@ export class ExactReviewLifecycleTelemetryStore {
         input.outcome,
         input.observedAt,
       );
+      if (input.outcome === "accepted" || input.outcome === "deduped") {
+        this.storage.sql.exec(
+          `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+              SET legacy_batch_path = 0
+            WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+          input.canonicalTargetKey,
+          input.fenceKey,
+          input.revision,
+        );
+        this.storage.sql.exec(
+          `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+              SET legacy_batch_path = 0
+            WHERE event_id IN (
+              SELECT event_id
+                FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+               WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?
+            )`,
+          input.canonicalTargetKey,
+          input.fenceKey,
+          input.revision,
+        );
+      }
     });
   }
 
@@ -1110,6 +1444,42 @@ export class ExactReviewLifecycleTelemetryStore {
     );
   }
 
+  private hasAcceptedDirectOutcomeSync(
+    canonicalTargetKey: string,
+    fenceKey: string,
+    revision: number,
+  ) {
+    return (
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT 1 AS found
+             FROM ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE}
+            WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?
+              AND outcome IN ('accepted', 'deduped')
+            LIMIT 1`,
+          canonicalTargetKey,
+          fenceKey,
+          revision,
+        ),
+      ).length > 0
+    );
+  }
+
+  private hasRetainedDirectTideOutcomeSync(eventId: string, canonicalTargetKey: string) {
+    return (
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT 1 AS found
+             FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+            WHERE event_id = ? AND canonical_target_key = ? AND legacy_batch_path = 0
+            LIMIT 1`,
+          eventId,
+          canonicalTargetKey,
+        ),
+      ).length > 0
+    );
+  }
+
   private recordTideCompletionSync(
     scope: string,
     table:
@@ -1158,8 +1528,9 @@ export class ExactReviewLifecycleTelemetryStore {
   ) {
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
-         (repository_scope, bucket, event_id, canonical_target_key, outcome, triggered_at, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (repository_scope, bucket, event_id, canonical_target_key, outcome, triggered_at,
+          completed_at, legacy_batch_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       scope,
       bucket,
       event.event_id,
@@ -1167,16 +1538,23 @@ export class ExactReviewLifecycleTelemetryStore {
       event.outcome,
       event.triggered_at,
       event.completed_at,
+      Number(event.legacy_batch_path),
     );
   }
 
   private tideBufferRowsSync(scope: string, bucket: "terminal" | "washed") {
     const rows = Array.from(
       this.storage.sql.exec(
-        `SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at
-           FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
-          WHERE repository_scope = ? AND bucket = ?
-          ORDER BY completed_at, event_id LIMIT ?`,
+        `SELECT
+           tide.event_id,
+           tide.canonical_target_key,
+           tide.outcome,
+           tide.triggered_at,
+           tide.completed_at,
+           tide.legacy_batch_path
+           FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE} AS tide
+          WHERE tide.repository_scope = ? AND tide.bucket = ?
+          ORDER BY tide.completed_at, tide.event_id LIMIT ?`,
         scope,
         bucket,
         EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD + 1,
@@ -1295,9 +1673,25 @@ export class ExactReviewLifecycleTelemetryStore {
     if (triggerCoverageStartedAt !== null && !validTimestamp(triggerCoverageStartedAt))
       throw new Error("invalid Bay lifecycle trigger coverage epoch");
     const filter = bayRepositoryFilterForTideScope(scope);
-    const replacementEvent = replacement ? bayLifecycleEvent(replacement) : null;
+    let replacementEvent = replacement ? bayLifecycleEvent(replacement) : null;
     const replacementIdentity = identity ?? ["", "", 0];
     const replacing = Boolean(replacement && identity);
+    if (
+      replacementEvent?.legacy_batch_path &&
+      replacement &&
+      (this.hasAcceptedDirectOutcomeSync(
+        replacement.canonicalTargetKey,
+        replacement.fenceKey,
+        replacement.revision,
+      ) ||
+        (replacement.terminalDisposition?.kind !== "failure" &&
+          this.hasRetainedDirectTideOutcomeSync(
+            replacementEvent.event_id,
+            replacement.canonicalTargetKey,
+          )))
+    ) {
+      replacementEvent = { ...replacementEvent, legacy_batch_path: false };
+    }
     const rows = Array.from(
       this.storage.sql.exec(
         `WITH lifecycle_events AS (
@@ -1325,6 +1719,52 @@ export class ExactReviewLifecycleTelemetryStore {
                  THEN CAST(json_extract(projection_json, '$.acknowledgement.observed.observedAt') AS INTEGER)
                ELSE CAST(json_extract(projection_json, '$.githubEffect.observedAt') AS INTEGER)
              END AS completed_at
+             ,CASE
+               WHEN ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}.fence_key NOT LIKE '%@publish:%'
+                 THEN 0
+               WHEN json_extract(projection_json, '$.terminalDisposition.kind') != 'failure'
+                 AND EXISTS (
+                 SELECT 1
+                   FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} AS retained
+                  WHERE retained.event_id =
+                        'bay:v2:' || ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}.fence_key || ':' ||
+                        ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}.revision
+                    AND retained.canonical_target_key =
+                        ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}.canonical_target_key
+                    AND retained.legacy_batch_path = 0
+               ) THEN 0
+               WHEN EXISTS (
+                 SELECT 1
+                   FROM ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE} AS direct
+                  WHERE direct.canonical_target_key =
+                        ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}.canonical_target_key
+                    AND direct.fence_key = ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}.fence_key
+                    AND direct.revision = ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}.revision
+                    AND direct.outcome IN ('accepted', 'deduped')
+               ) THEN 0
+               WHEN EXISTS (
+                 SELECT 1
+                   FROM json_each(projection_json, '$.canonicalReceipts') AS receipt
+                  WHERE json_extract(receipt.value, '$.receiptId') LIKE 'direct-v2:%'
+                    AND json_extract(receipt.value, '$.outcome') IN ('accepted', 'deduped')
+               ) THEN 0
+               WHEN EXISTS (
+                 SELECT 1
+                   FROM json_each(projection_json, '$.canonicalReceipts') AS receipt
+                  WHERE json_extract(receipt.value, '$.receiptId') LIKE 'direct:%'
+                    AND json_extract(receipt.value, '$.outcome') IN ('accepted', 'deduped')
+               )
+                 AND COALESCE(
+                   json_extract(projection_json, '$.routerReceipt.receiptId'),
+                   ''
+                 ) NOT LIKE 'router-batch%'
+                 AND NOT EXISTS (
+                   SELECT 1
+                     FROM json_each(projection_json, '$.routerReceipts') AS receipt
+                    WHERE json_extract(receipt.value, '$.receiptId') LIKE 'router-batch%'
+                 ) THEN 0
+               ELSE 1
+             END AS legacy_batch_path
            FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
            WHERE json_valid(projection_json)
              AND json_extract(projection_json, '$.terminalDisposition.kind')
@@ -1333,9 +1773,9 @@ export class ExactReviewLifecycleTelemetryStore {
                ? = 0 OR canonical_target_key != ? OR fence_key != ? OR revision != ?
              )
            UNION ALL
-           SELECT ?, ?, ?, ?, ? WHERE ? = 1
+           SELECT ?, ?, ?, ?, ?, ? WHERE ? = 1
          ), filtered AS (
-            SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at
+            SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at, legacy_batch_path
               FROM lifecycle_events
              WHERE completed_at >= ? AND completed_at >= triggered_at
                AND completed_at - triggered_at <= ?
@@ -1348,11 +1788,12 @@ export class ExactReviewLifecycleTelemetryStore {
              outcome,
              triggered_at,
              completed_at,
+             legacy_batch_path,
              ROW_NUMBER() OVER (ORDER BY completed_at, event_id) AS ordinal,
              COUNT(*) OVER () AS total
              FROM filtered
          )
-         SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at, ordinal, total
+         SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at, legacy_batch_path, ordinal, total
            FROM ranked
           WHERE ordinal > MAX(0, total - (total % ?) - ?)
           ORDER BY ordinal`,
@@ -1365,6 +1806,7 @@ export class ExactReviewLifecycleTelemetryStore {
         replacementEvent?.outcome ?? null,
         replacementEvent?.triggered_at ?? null,
         replacementEvent?.completed_at ?? null,
+        replacementEvent ? Number(replacementEvent.legacy_batch_path) : null,
         Number(replacementEvent !== null),
         globalTideCoverageStart(scope, coverageStartedAt),
         EXACT_REVIEW_LIFECYCLE_BAY_MAX_JOURNEY_MS,
@@ -1519,15 +1961,21 @@ export class ExactReviewLifecycleTelemetryStore {
       | typeof EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
     progress: BayTideProgress,
   ) {
-    const repositoryFilter = bayRepositoryFilterForTideScope(scope);
+    const repositoryFilter = bayRepositoryFilterForTideScope(scope, "events.canonical_target_key");
     const rows = Array.from(
       this.storage.sql.exec(
-        `SELECT event_id, canonical_target_key, outcome, triggered_at, completed_at
-             FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
-           WHERE completed_at >= ?
-             AND (? = 0 OR triggered_at >= ?)
+        `SELECT
+           events.event_id,
+           events.canonical_target_key,
+           events.outcome,
+           events.triggered_at,
+           events.completed_at,
+           events.legacy_batch_path
+             FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} AS events
+           WHERE events.completed_at >= ?
+             AND (? = 0 OR events.triggered_at >= ?)
              ${repositoryFilter.where}
-           ORDER BY completed_at, event_id`,
+           ORDER BY events.completed_at, events.event_id`,
         globalTideCoverageStart(scope, progress.coverageStartedAt),
         Number(scope !== BAY_GLOBAL_TIDE_SCOPE),
         progress.coverageStartedAt,
@@ -1578,6 +2026,23 @@ function bayLifecycleEvent(projection: ExactReviewLifecycleProjection): BayLifec
     outcome,
     triggered_at: triggeredAt,
     completed_at: completedAt,
+    legacy_batch_path:
+      projection.fenceKey.includes("@publish:") &&
+      !(
+        projection.canonicalReceipts.some(
+          (receipt) =>
+            receipt.receiptId.startsWith("direct-v2:") &&
+            (receipt.outcome === "accepted" || receipt.outcome === "deduped"),
+        ) ||
+        (projection.canonicalReceipts.some(
+          (receipt) =>
+            receipt.receiptId.startsWith("direct:") &&
+            (receipt.outcome === "accepted" || receipt.outcome === "deduped"),
+        ) &&
+          !projection.routerReceipts.some((receipt) =>
+            receipt.receiptId.startsWith("router-batch"),
+          ))
+      ),
   };
 }
 
@@ -1616,6 +2081,19 @@ function bayTimingHistory(
   );
 }
 
+function bayTimingAggregate(durations: readonly number[]) {
+  if (!durations.length) return { average_ms: null, median_ms: null, samples: 0 };
+  const ordered = [...durations].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  return {
+    average_ms: Math.round(durations.reduce((total, value) => total + value, 0) / durations.length),
+    median_ms: Math.round(
+      ordered.length % 2 ? ordered[middle]! : (ordered[middle - 1]! + ordered[middle]!) / 2,
+    ),
+    samples: durations.length,
+  };
+}
+
 function hadBayLifecycleTerminalEvent(projection: ExactReviewLifecycleProjection) {
   return projection.terminalDispositions.some(
     (terminal) => terminal.kind === "review_completed_routed" || terminal.kind === "failure",
@@ -1626,7 +2104,10 @@ function bayLifecycleEventId(projection: ExactReviewLifecycleProjection) {
   return `bay:v2:${projection.fenceKey}:${projection.revision}`;
 }
 
-function bayRepositoryFilter(allowedRepositories?: ReadonlySet<string>) {
+function bayRepositoryFilter(
+  allowedRepositories?: ReadonlySet<string>,
+  canonicalTargetColumn = "canonical_target_key",
+) {
   if (!allowedRepositories) return { where: "", bindings: [] as string[], scope: "" };
   const repositories = [
     ...new Set([...allowedRepositories].map((value) => value.trim().toLowerCase())),
@@ -1639,15 +2120,18 @@ function bayRepositoryFilter(allowedRepositories?: ReadonlySet<string>) {
   }
   if (repositories.length === 0) return { where: "AND 1 = 0", bindings: [] as string[], scope: "" };
   return {
-    where: `AND LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) IN (${repositories.map(() => "?").join(", ")})`,
+    where: `AND LOWER(SUBSTR(${canonicalTargetColumn}, 1, INSTR(${canonicalTargetColumn}, '#') - 1)) IN (${repositories.map(() => "?").join(", ")})`,
     bindings: repositories,
     scope: repositories.join(","),
   };
 }
 
-function bayRepositoryFilterForTideScope(scope: string) {
+function bayRepositoryFilterForTideScope(
+  scope: string,
+  canonicalTargetColumn = "canonical_target_key",
+) {
   if (scope === BAY_GLOBAL_TIDE_SCOPE) return { where: "", bindings: [] as string[] };
-  const filter = bayRepositoryFilter(new Set(scope ? scope.split(",") : []));
+  const filter = bayRepositoryFilter(new Set(scope ? scope.split(",") : []), canonicalTargetColumn);
   if (!filter || filter.scope !== scope) throw new Error("invalid Bay lifecycle tide scope");
   return filter;
 }
@@ -1666,11 +2150,13 @@ function bayLifecycleEventFromTimingRow(row: Record<string, unknown>): BayLifecy
   const outcome = String(row.outcome || "") as BayLifecycleOutcome;
   const triggeredAt = Number(row.triggered_at);
   const completedAt = Number(row.completed_at);
+  const legacyBatchPath = Number(row.legacy_batch_path);
   if (
     !eventId ||
     !validCanonicalTargetKey(itemKey) ||
     !["success", "failure", "cancelled"].includes(outcome) ||
-    !validBayJourney(triggeredAt, completedAt)
+    !validBayJourney(triggeredAt, completedAt) ||
+    (legacyBatchPath !== 0 && legacyBatchPath !== 1)
   ) {
     throw new Error("invalid retained Bay lifecycle timing event");
   }
@@ -1680,6 +2166,7 @@ function bayLifecycleEventFromTimingRow(row: Record<string, unknown>): BayLifecy
     outcome,
     triggered_at: triggeredAt,
     completed_at: completedAt,
+    legacy_batch_path: legacyBatchPath === 1,
   };
 }
 
@@ -1713,11 +2200,13 @@ function bayTerminalRows(rows: Array<Record<string, unknown>>): BayTerminalRecor
     const outcome = String(row.outcome || "");
     const triggeredAt = Number(row.triggered_at);
     const completedAt = Number(row.completed_at);
+    const legacyBatchPath = Number(row.legacy_batch_path);
     if (
       !eventId ||
       !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(itemKey) ||
       !["success", "failure", "cancelled"].includes(outcome) ||
-      !validBayJourney(triggeredAt, completedAt)
+      !validBayJourney(triggeredAt, completedAt) ||
+      (legacyBatchPath !== 0 && legacyBatchPath !== 1)
     ) {
       throw new Error("invalid Bay lifecycle terminal row");
     }
@@ -1727,6 +2216,7 @@ function bayTerminalRows(rows: Array<Record<string, unknown>>): BayTerminalRecor
       outcome: outcome as BayLifecycleOutcome,
       completed_at: new Date(completedAt).toISOString(),
       journey_duration_ms: completedAt - triggeredAt,
+      legacy_batch_path: legacyBatchPath === 1,
     });
   }
   return events;

@@ -1086,7 +1086,7 @@ test("batch claims retain lifecycle identity until canonical routing is durable"
       runAttempt: number;
       outcome: string;
     }>;
-    canonicalReceipts: Array<{ outcome: string }>;
+    canonicalReceipts: Array<{ outcome: string; receiptId: string }>;
     routerReceipts: Array<{ receiptId: string }>;
     terminalDisposition: { kind: string } | null;
   };
@@ -1116,6 +1116,7 @@ test("batch claims retain lifecycle identity until canonical routing is durable"
     ],
   );
   assert.equal(projection.canonicalReceipts[0]?.outcome, "accepted");
+  assert.match(projection.canonicalReceipts[0]?.receiptId ?? "", /^batch:/);
   assert.deepEqual(
     projection.routerReceipts.map((receipt) => receipt.receiptId),
     ["router-batch:9735:2:735"],
