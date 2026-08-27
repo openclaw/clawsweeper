@@ -28,8 +28,8 @@ import {
   ensureLiveProofPackageManager,
   executeLiveProof,
   liveProofPackageManagerInstallCommand,
-  liveProofSetupCommand,
 } from "../dist/live-proof/execute.js";
+import { liveProofSetupCommand } from "../dist/live-proof/setup.js";
 import {
   assertLiveProofEnvironmentSanitized,
   sanitizedLiveProofEnvironment,

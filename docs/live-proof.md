@@ -82,6 +82,18 @@ and is unaffected by this live-proof policy.
 
 HOME, package-manager caches, and temporary files point into the scratch profile.
 
+The production review prompt supplies trusted execution context from the effective
+repository profile, including configured/fallback resolution, enablement, package
+manager, normalized setup commands, install-script policy, and browser-only startup.
+These facts are separate from PR-authored context. The proof target is a cold
+checkout of the exact reviewed head: reviewer/controller `dist` and other generated
+output do not transfer. The planner must inspect the relevant package scripts and
+import chain, then include any build or code-generation prerequisites that setup
+does not supply before the first dependent command. Prefer an existing script that
+owns this sequencing; an arbitrary test script need not build. Otherwise use an
+explicit fail-fast command chain. The executor does not infer or repair missing
+prerequisites.
+
 Plans must use assertions the demonstration can satisfy. Browser interactions
 should derive search or filter values from content the page already renders,
 and terminal plans should assert stable output such as a header, flag, or error

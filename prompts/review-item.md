@@ -544,11 +544,13 @@ command just to capture output or create media. Intentional reruns, including
 identical commands after a state change, are valid and will execute. Each command
 runs in a separate Bash process in the same checkout; share state through files
 or combine dependent setup and execution in one command, not shell-local variables
-or `cd` from an earlier command. For terminal verification, prefer invoking a
-repository-defined `pnpm run` (or equivalent package-manager) script over
-hand-composing individual build/test commands whenever one already expresses
-the needed setup, so the plan does not need to independently reconstruct build
-or dependency sequencing that the script already encodes correctly. Emit at most ten
+or `cd` from an earlier command. Inspect the relevant package scripts and import
+chain against the trusted live-proof execution context below. Supply any remaining
+build or code-generation prerequisites before the first dependent execution.
+Prefer a repository-defined `pnpm run` (or equivalent package-manager) script when
+it actually owns that sequencing; do not assume an arbitrary test script builds.
+Otherwise use an explicit fail-fast chain such as `prerequisite && command`.
+Emit at most ten
 deterministic, typed `steps`: browser plans may use `goto`, `click`, `fill`,
 `press`, `wait_for`, `wait`, and `expect_text`; terminal plans may use `run`,
 `wait`, and `expect_output`. Include at least one concrete expectation of real

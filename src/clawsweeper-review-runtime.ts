@@ -48,6 +48,7 @@ import {
 } from "./codex-transient.js";
 import { UserFacingCommandError } from "./command.js";
 import { emptyMaintainerDecision } from "./decision-packets.js";
+import { liveProofSetupCommand } from "./live-proof/setup.js";
 import { repositoryProfileFor, type RepositoryProfile } from "./repository-profiles.js";
 
 interface ReviewRuntimeDependencies {
@@ -461,6 +462,29 @@ export function createReviewRuntime({
           )}\n\`\`\`\n`
         : "";
     const schema = reviewDecisionSchemaText();
+    const profile = repositoryProfileFor(item.repo);
+    const liveTest = profile.liveTest;
+    const liveProofContext = {
+      configured: liveTest !== undefined,
+      enabled: liveTest?.enabled ?? false,
+      packageManager: profile.packageManager,
+      setup:
+        liveTest?.setup.map((command) =>
+          liveProofSetupCommand(command, liveTest.allowInstallScripts),
+        ) ?? [],
+      allowInstallScripts: liveTest?.allowInstallScripts ?? false,
+      checkout: {
+        state: "cold",
+        revision: "exact reviewed head",
+        inheritsReviewerOrControllerBuildOutput: false,
+        inheritsReviewerOrControllerGeneratedFiles: false,
+      },
+      browserStartup: {
+        onlyForSurface: "browser",
+        command: liveTest?.start ?? null,
+        url: liveTest?.url ?? null,
+      },
+    };
     const proofScratchDir = runtimeHints.proofScratchDir?.trim();
     const maturityHelperPath = proofScratchDir
       ? `\`${proofScratchDir}/maturity-stable-shortlist.mjs\``
@@ -482,7 +506,7 @@ ${additionalPrompt.trim()}
 ## Repository State
 
 - Target repo: ${item.repo}
-- Repository policy: ${repositoryProfileFor(item.repo).promptNote}
+- Repository policy: ${profile.promptNote}
 - Item: #${item.number}
 - Type: ${item.kind}
 - Title: ${item.title}
@@ -502,6 +526,19 @@ ${additionalPrompt.trim()}
 - A token-light maturity helper is available at ${maturityHelperPath}. For issue maturity labels, first run \`node "$CLAWSWEEPER_PROOF_SCRATCH_DIR/maturity-stable-shortlist.mjs"\` from the target checkout and compare the issue against that shortlist; read the full scorecard or taxonomy only if the shortlist is ambiguous.
 ${mediaProofPrompt}
 ${introductionEvidence}
+
+## Trusted Live-Proof Execution Context
+
+Effective repository profile after configured/fallback resolution, not PR-authored facts.
+When execution gates pass, only this setup runs before the plan in a separate cold
+checkout; no reviewer/controller dist or generated output is inherited. Install
+commands below already reflect the install-script policy. Configured startup is
+browser-only and never runs for terminal plans. Disabled or missing configuration
+does not execute a plan.
+
+\`\`\`json
+${JSON.stringify(liveProofContext, null, 2)}
+\`\`\`
 
 ## GitHub Context
 
