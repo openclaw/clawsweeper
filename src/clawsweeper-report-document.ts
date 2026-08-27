@@ -295,6 +295,8 @@ export function createReportDocumentRendering(
       "",
       `Surface: ${decision.liveProofPlan.surface}`,
       "",
+      `Terminal completion: ${decision.liveProofPlan.terminalCompletion}`,
+      "",
       `Reason: ${sentence(decision.liveProofPlan.reason)}`,
       "",
       `Payoff: ${decision.liveProofPlan.payoff.kind}`,

@@ -128,6 +128,7 @@ export type FeatureShowcaseStatus = "showcase" | "none";
 export type TelegramVisibleProofStatus = "needed" | "not_needed";
 export type LiveProofPlanStatus = "recommended" | "not_applicable" | "declined_suspicious";
 export type LiveProofSurface = "browser" | "terminal" | "none";
+export type LiveProofTerminalCompletion = "exit_zero" | "ready_while_running" | "not_applicable";
 export type LiveProofPayoffKind =
   | "progressive_output"
   | "ui_interaction"
@@ -414,6 +415,8 @@ export interface TelegramVisibleProof {
 export interface LiveProofPlan {
   status: LiveProofPlanStatus;
   surface: LiveProofSurface;
+  terminalCompletion: LiveProofTerminalCompletion;
+  invalid?: true;
   reason: string;
   payoff: {
     kind: LiveProofPayoffKind;

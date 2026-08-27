@@ -403,6 +403,7 @@ test("decision parser validates typed live-proof plans and report roundtrips", (
   const liveProofPlan = {
     status: "recommended",
     surface: "browser",
+    terminalCompletion: "not_applicable",
     reason: "The changed settings confirmation is visible in the browser.",
     payoff: {
       kind: "ui_interaction",
@@ -431,12 +432,14 @@ test("decision parser validates typed live-proof plans and report roundtrips", (
     { ...liveProofPlan, payoff: { kind: "static_image", justification: "Nothing moves." } },
     { ...liveProofPlan, payoff: { kind: "ui_interaction", justification: "" } },
     { ...liveProofPlan, surface: "none" },
+    { ...liveProofPlan, terminalCompletion: "exit_zero" },
     { ...liveProofPlan, entry: "https://example.com/settings" },
     { ...liveProofPlan, steps: [{ action: "run", command: "pnpm test" }] },
     { ...liveProofPlan, steps: [{ action: "click", target: "text=Save", extra: true }] },
     {
       status: "not_applicable",
       surface: "none",
+      terminalCompletion: "not_applicable",
       reason: "The change is internal plumbing.",
       payoff: {
         kind: "static_text",
@@ -449,12 +452,116 @@ test("decision parser validates typed live-proof plans and report roundtrips", (
   for (const invalidPlan of invalidPlans) {
     assert.throws(() => parseDecision(closeDecision({ liveProofPlan: invalidPlan })), /liveProof/);
   }
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          liveProofPlan: {
+            ...liveProofPlan,
+            surface: "terminal",
+            terminalCompletion: "not_applicable",
+            entry: "pnpm test",
+            steps: [{ action: "expect_output", text: "passed" }],
+          },
+        }),
+      ),
+    /terminalCompletion must identify terminal completion behavior/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          liveProofPlan: {
+            ...liveProofPlan,
+            surface: "terminal",
+            terminalCompletion: "ready_while_running",
+            entry: "pnpm dev",
+            steps: [{ action: "wait", seconds: 1 }],
+          },
+        }),
+      ),
+    /must expect output after the final run for ready_while_running/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          liveProofPlan: {
+            ...liveProofPlan,
+            surface: "terminal",
+            terminalCompletion: "ready_while_running",
+            entry: "pnpm dev",
+            steps: [
+              { action: "expect_output", text: "Ready" },
+              { action: "run", command: "pnpm dev:secondary" },
+            ],
+          },
+        }),
+      ),
+    /must expect output after the final run for ready_while_running/,
+  );
+});
+
+test("report live-proof parsing fails closed when the plan is missing or invalid", () => {
+  for (const markdown of [
+    "## Work Candidate\n\nCandidate: none\n",
+    "## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nEntry: pnpm test\n",
+  ]) {
+    const plan = reportLiveProofPlanForTest(markdown);
+    assert.equal(plan.status, "not_applicable");
+    assert.equal(plan.surface, "none");
+    assert.equal(plan.terminalCompletion, "not_applicable");
+    assert.equal(plan.invalid, true);
+    assert.match(plan.reason, /missing or invalid/);
+    assert.match(plan.reason, /regenerate the review report/);
+    assert.equal(plan.entry, "");
+    assert.deepEqual(plan.steps, []);
+  }
+});
+
+test("report live-proof parsing preserves safe legacy plans and rejects ambiguous terminal plans", () => {
+  const browserPlan = {
+    status: "recommended",
+    surface: "browser",
+    terminalCompletion: "not_applicable",
+    reason: "The changed page is visible.",
+    payoff: {
+      kind: "ui_interaction",
+      justification: "The viewer sees the page state after navigation.",
+    },
+    entry: "/settings",
+    steps: [{ action: "expect_text", text: "Saved" }],
+  };
+  const browserSection = renderLiveProofReportSectionForTest(
+    parseDecision(closeDecision({ liveProofPlan: browserPlan })),
+  ).replace(/\nTerminal completion: [^\n]+\n/, "\n");
+  const parsedBrowser = reportLiveProofPlanForTest(
+    `## Live Proof\n\n${browserSection}\n\n## Mantis Recommendation\n`,
+  );
+  assert.deepEqual(parsedBrowser, browserPlan);
+
+  const terminalPlan = {
+    ...browserPlan,
+    surface: "terminal",
+    terminalCompletion: "exit_zero",
+    entry: "pnpm test",
+    steps: [{ action: "expect_output", text: "passed" }],
+  };
+  const terminalSection = renderLiveProofReportSectionForTest(
+    parseDecision(closeDecision({ liveProofPlan: terminalPlan })),
+  ).replace(/\nTerminal completion: [^\n]+\n/, "\n");
+  const parsedTerminal = reportLiveProofPlanForTest(
+    `## Live Proof\n\n${terminalSection}\n\n## Mantis Recommendation\n`,
+  );
+  assert.equal(parsedTerminal.invalid, true);
+  assert.match(parsedTerminal.reason, /regenerate the review report/);
 });
 
 test("decision parser preserves every terminal command including exact entry repeats", () => {
   const terminalPlan = {
     status: "recommended",
     surface: "terminal",
+    terminalCompletion: "exit_zero",
     reason: "The changed CLI output is visible.",
     payoff: {
       kind: "static_text",
@@ -542,6 +649,7 @@ test("decision parser preserves every terminal command including exact entry rep
   const browserPlan = {
     status: "recommended",
     surface: "browser",
+    terminalCompletion: "not_applicable",
     reason: "The changed page is visible.",
     payoff: {
       kind: "ui_interaction",

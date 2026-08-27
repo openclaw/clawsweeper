@@ -165,6 +165,7 @@ export function closeDecision(overrides = {}) {
     liveProofPlan: {
       status: "not_applicable",
       surface: "none",
+      terminalCompletion: "not_applicable",
       reason: "This non-PR issue triage does not need live proof.",
       payoff: {
         kind: "static_text",

@@ -533,7 +533,13 @@ user-visible. Reserve `not_applicable` for a change with genuinely nothing to
 run, such as docs-only edits or generated assets in a repository with no
 meaningful runnable surface. Use `surface: "browser"` for browser behavior and
 `surface: "terminal"` for terminal behavior. The `entry` must be a URL path for
-browser verification or a command for terminal verification. A terminal
+browser verification or a command for terminal verification. Set
+`terminalCompletion: "exit_zero"` when the final terminal command must finish
+successfully. Use `terminalCompletion: "ready_while_running"` only for a final
+server, watcher, or TUI command that must still be running after a stable
+`expect_output` marker appears. Every terminal command before the final command
+must exit zero. Browser and non-runnable plans use
+`terminalCompletion: "not_applicable"`. A terminal
 `entry` executes automatically before all typed steps. Every `run` step executes
 independently as a new command, including commands identical to `entry` or earlier
 steps; nothing is deduplicated. For a one-shot proof (for example, a command that
@@ -599,8 +605,8 @@ are disabled and the target child receives a sanitized environment. If unsure,
 use `declined_suspicious`, not `not_applicable`. For `not_applicable` and
 `declined_suspicious`, use `surface: "none"`, an empty `entry`, and an empty
 `steps` array. Use the same safe empty shape for issues, with
-`payoff.kind: "static_text"` and a concise explanation that no recording payoff
-was assessed.
+`payoff.kind: "static_text"`, `terminalCompletion: "not_applicable"`, and a
+concise explanation that no recording payoff was assessed.
 
 For PRs, also emit Codex `/review`-style findings in `reviewFindings`.
 Review the diff as another engineer's proposed patch and list every discrete,

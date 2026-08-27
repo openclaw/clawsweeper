@@ -653,6 +653,9 @@ test("review prompt and schema classify deterministic live-proof plans in field 
   assert.match(prompt, /`liveProofPlan\.status: "declined_suspicious"`/);
   assert.match(prompt, /never\s+execute the PR or claim that a recording exists/);
   assert.match(prompt, /`entry` executes automatically before all typed steps/);
+  assert.match(prompt, /`terminalCompletion: "exit_zero"`/);
+  assert.match(prompt, /`terminalCompletion: "ready_while_running"`/);
+  assert.match(prompt, /Every terminal command before the final command\s+must exit zero/);
   assert.match(prompt, /Every `run` step executes\s+independently/);
   assert.match(prompt, /nothing is deduplicated/);
   assert.match(prompt, /one-shot proof[\s\S]*stable `expect_output` steps/);
@@ -678,6 +681,7 @@ test("review prompt and schema classify deterministic live-proof plans in field 
   assert.deepEqual(liveProofPlan.required, [
     "status",
     "surface",
+    "terminalCompletion",
     "reason",
     "payoff",
     "entry",
@@ -686,6 +690,7 @@ test("review prompt and schema classify deterministic live-proof plans in field 
   assert.deepEqual(Object.keys(liveProofPlan.properties), [
     "status",
     "surface",
+    "terminalCompletion",
     "reason",
     "payoff",
     "entry",
@@ -697,6 +702,11 @@ test("review prompt and schema classify deterministic live-proof plans in field 
     "declined_suspicious",
   ]);
   assert.deepEqual(liveProofPlan.properties.surface.enum, ["browser", "terminal", "none"]);
+  assert.deepEqual(liveProofPlan.properties.terminalCompletion.enum, [
+    "exit_zero",
+    "ready_while_running",
+    "not_applicable",
+  ]);
   assert.deepEqual(liveProofPlan.properties.payoff.required, ["kind", "justification"]);
   assert.deepEqual(Object.keys(liveProofPlan.properties.payoff.properties), [
     "kind",
@@ -735,6 +745,8 @@ Keep this browser PR open for maintainer review.
 Status: recommended
 
 Surface: browser
+
+Terminal completion: not_applicable
 
 Reason: The settings confirmation is visible in the browser.
 

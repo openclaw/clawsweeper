@@ -781,6 +781,7 @@ ${extra}
       liveProofPlan: {
         status: "not_applicable",
         surface: "none",
+        terminalCompletion: "not_applicable",
         reason: "Live proof was not assessed because the Codex review failed.",
         payoff: {
           kind: "static_text",

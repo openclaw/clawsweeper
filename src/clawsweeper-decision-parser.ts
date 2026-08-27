@@ -20,6 +20,7 @@ import {
   LIVE_PROOF_PAYOFF_SCHEMA_KEYS,
   LIVE_PROOF_STEP_SCHEMA_KEYS,
   LIVE_PROOF_SURFACES,
+  LIVE_PROOF_TERMINAL_COMPLETIONS,
   MANTIS_RECOMMENDATION_SCENARIOS,
   MANTIS_RECOMMENDATION_SCHEMA_KEYS,
   MANTIS_RECOMMENDATION_STATUSES,
@@ -634,6 +635,11 @@ export function createDecisionParser({
     rejectUnexpectedKeys(record, LIVE_PROOF_PLAN_SCHEMA_KEYS, path);
     const status = requireEnum(record.status, LIVE_PROOF_PLAN_STATUSES, `${path}.status`);
     const surface = requireEnum(record.surface, LIVE_PROOF_SURFACES, `${path}.surface`);
+    const terminalCompletion = requireEnum(
+      record.terminalCompletion,
+      LIVE_PROOF_TERMINAL_COMPLETIONS,
+      `${path}.terminalCompletion`,
+    );
     const reason = neutralizeOwnedSectionSpoofing(
       requireSingleLineString(record.reason, `${path}.reason`),
     ).trim();
@@ -655,11 +661,20 @@ export function createDecisionParser({
     );
     if (status !== "recommended") {
       if (surface !== "none") throw new Error(`${path}.surface must be none unless recommended`);
+      if (terminalCompletion !== "not_applicable") {
+        throw new Error(`${path}.terminalCompletion must be not_applicable unless recommended`);
+      }
       if (entry) throw new Error(`${path}.entry must be empty unless recommended`);
       if (steps.length) throw new Error(`${path}.steps must be empty unless recommended`);
-      return { status, surface, reason, payoff, entry, steps };
+      return { status, surface, terminalCompletion, reason, payoff, entry, steps };
     }
     if (surface === "none") throw new Error(`${path}.surface must identify a recommended surface`);
+    if (surface === "terminal" && terminalCompletion === "not_applicable") {
+      throw new Error(`${path}.terminalCompletion must identify terminal completion behavior`);
+    }
+    if (surface !== "terminal" && terminalCompletion !== "not_applicable") {
+      throw new Error(`${path}.terminalCompletion is only allowed for terminal proof`);
+    }
     if (!entry) throw new Error(`${path}.entry must not be empty when recommended`);
     if (!steps.length) throw new Error(`${path}.steps must not be empty when recommended`);
     if (surface === "browser" && !entry.startsWith("/")) {
@@ -672,7 +687,18 @@ export function createDecisionParser({
     if (steps.some((step) => !allowedActions.has(step.action))) {
       throw new Error(`${path}.steps contain an action that does not match ${surface} proof`);
     }
-    return { status, surface, reason, payoff, entry, steps };
+    if (terminalCompletion === "ready_while_running") {
+      const finalRunIndex = steps.reduce(
+        (lastIndex, step, index) => (step.action === "run" ? index : lastIndex),
+        -1,
+      );
+      if (!steps.slice(finalRunIndex + 1).some((step) => step.action === "expect_output")) {
+        throw new Error(
+          `${path}.steps must expect output after the final run for ready_while_running terminal proof`,
+        );
+      }
+    }
+    return { status, surface, terminalCompletion, reason, payoff, entry, steps };
   }
 
   function parseMantisRecommendation(value: unknown, path: string): MantisRecommendation {

@@ -21,7 +21,6 @@ import type { RepositoryProfile } from "../repository-profiles.js";
 import {
   driveBrowser,
   driveTerminal,
-  TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL,
   type LiveProofStepLogEntry,
   liveProofStepActions,
 } from "./drivers.js";
@@ -82,6 +81,9 @@ export async function executeLiveProof(
   }
 
   const plan = readPlan(options, dependencies);
+  if (plan.invalid) {
+    throw new Error(plan.reason);
+  }
   if (plan.status !== "recommended") {
     log(`[live-proof] skip: liveProofPlan status is ${plan.status}`);
     return;
@@ -436,8 +438,7 @@ function demonstratedChange(steps: readonly LiveProofStepLogEntry[]): boolean {
     (step) =>
       (step.action === "expect_text" || step.action === "expect_output") &&
       !step.presentAtStart &&
-      step.satisfied &&
-      step.detail !== TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL,
+      step.satisfied,
   );
 }
 

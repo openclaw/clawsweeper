@@ -1,11 +1,13 @@
 import type { LiveProofPlan, LiveProofStep } from "../clawsweeper-types.js";
 import type { LiveProofDriveStatus } from "./manifest.js";
-import { TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL, type LiveProofStepLogEntry } from "./drivers.js";
+import type { LiveProofStepLogEntry } from "./drivers.js";
 
 export const LIVE_VERIFICATION_SCHEMA_VERSION = 1;
 export const LIVE_VERIFICATION_OUTPUT_MAX_CHARS = 16_000;
 export const LIVE_VERIFICATION_COMMENT_OUTPUT_MAX_CHARS = 4_000;
 const OUTPUT_TRUNCATION_MARKER = "… output truncated …";
+const LEGACY_TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL =
+  "command exited successfully; expected output was not observed in the captured pane";
 
 export type LiveVerificationStepStatus = "completed" | "failed" | "not_run";
 
@@ -294,31 +296,19 @@ export function renderLiveVerificationCommentBlock(result: LiveVerificationResul
       "**Assertions:**",
       "",
       ...assertions.map((step) => {
-        const outcome =
-          step.status === "completed" && step.satisfied === true
-            ? terminalOutputWasNotObserved(parsed.surface, step)
-              ? "NOT OBSERVED"
-              : "PASS"
-            : "FAIL";
-        const detail = outcome === "NOT OBSERVED" ? ` — ${sanitizeInline(step.detail)}` : "";
+        const passed = step.status === "completed" && step.satisfied === true;
+        const notObserved =
+          passed &&
+          parsed.surface === "terminal" &&
+          step.action === "expect_output" &&
+          step.detail === LEGACY_TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL;
+        const outcome = !passed ? "FAIL" : notObserved ? "NOT OBSERVED" : "PASS";
+        const detail = notObserved ? ` — ${sanitizeInline(step.detail)}` : "";
         return `- ${outcome} \`${sanitizeInline(step.action)}\`: ${sanitizeInline(step.assertion ?? "")}${detail}`;
       }),
     );
   }
   return lines.join("\n");
-}
-
-function terminalOutputWasNotObserved(
-  surface: LiveProofPlan["surface"],
-  step: LiveVerificationStepResult,
-): boolean {
-  return (
-    surface === "terminal" &&
-    step.action === "expect_output" &&
-    step.status === "completed" &&
-    step.satisfied === true &&
-    step.detail === TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL
-  );
 }
 
 export function sanitizeUntrustedOutput(value: string): string {

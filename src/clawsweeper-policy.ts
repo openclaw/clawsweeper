@@ -16,6 +16,7 @@ import type {
   LiveProofPlanStatus,
   LiveProofPayoffKind,
   LiveProofSurface,
+  LiveProofTerminalCompletion,
   MantisRecommendationScenario,
   MantisRecommendationStatus,
   MaturityLabelName,
@@ -663,6 +664,11 @@ export const LIVE_PROOF_PLAN_STATUSES = new Set<LiveProofPlanStatus>([
   "declined_suspicious",
 ]);
 export const LIVE_PROOF_SURFACES = new Set<LiveProofSurface>(["browser", "terminal", "none"]);
+export const LIVE_PROOF_TERMINAL_COMPLETIONS = new Set<LiveProofTerminalCompletion>([
+  "exit_zero",
+  "ready_while_running",
+  "not_applicable",
+]);
 export const LIVE_PROOF_PAYOFF_KINDS = new Set<LiveProofPayoffKind>([
   "progressive_output",
   "ui_interaction",
@@ -810,6 +816,7 @@ export const TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS = new Set(["status", "summary"])
 export const LIVE_PROOF_PLAN_SCHEMA_KEYS = new Set([
   "status",
   "surface",
+  "terminalCompletion",
   "reason",
   "payoff",
   "entry",

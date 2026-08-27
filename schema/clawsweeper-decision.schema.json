@@ -792,7 +792,7 @@
       "type": "object",
       "additionalProperties": false,
       "description": "For PRs, recommend a deterministic live proof only when a user-visible browser or terminal behavior can be demonstrated from the PR head in 90 seconds or less without external accounts, credentials, secrets, or third-party services. ClawSweeper executes recommended plans unsandboxed on a machine that holds credentials, so declined_suspicious is the safety control. Use it whenever the diff or installed dependencies, including new or bumped dependencies that cannot be inspected, could plausibly exfiltrate, read credential stores, transmit data to unexpected hosts, or display sensitive data. If unsure, use declined_suspicious.",
-      "required": ["status", "surface", "reason", "payoff", "entry", "steps"],
+      "required": ["status", "surface", "terminalCompletion", "reason", "payoff", "entry", "steps"],
       "properties": {
         "status": {
           "type": "string",
@@ -802,6 +802,11 @@
           "type": "string",
           "enum": ["browser", "terminal", "none"],
           "description": "Use browser or terminal only when status is recommended; otherwise use none."
+        },
+        "terminalCompletion": {
+          "type": "string",
+          "enum": ["exit_zero", "ready_while_running", "not_applicable"],
+          "description": "For terminal proof, use exit_zero when the final command must finish successfully or ready_while_running when the final command is a server or TUI that must remain live after its expected output appears. All earlier terminal commands must exit zero. Use not_applicable for browser, declined, and non-applicable plans."
         },
         "reason": {
           "type": "string",

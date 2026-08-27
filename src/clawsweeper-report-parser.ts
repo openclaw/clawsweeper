@@ -130,11 +130,17 @@ const parseRecordedLiveProofPlan = createDecisionParser({
 export function reportLiveProofPlan(markdown: string): LiveProofPlan {
   const section = reportSectionValue(markdown, LIVE_PROOF_SECTION_HEADING);
   const rawSteps = reportSectionList(section, "Steps");
+  const status = reportSectionLineValue(section, "Status");
+  const surface = reportSectionLineValue(section, "Surface");
+  const terminalCompletion =
+    reportSectionLineValue(section, "Terminal completion") ??
+    (status !== "recommended" || surface !== "terminal" ? "not_applicable" : undefined);
   try {
     return parseRecordedLiveProofPlan(
       {
-        status: reportSectionLineValue(section, "Status"),
-        surface: reportSectionLineValue(section, "Surface"),
+        status,
+        surface,
+        terminalCompletion,
         reason: reportSectionLineValue(section, "Reason"),
         payoff: {
           kind: reportSectionLineValue(section, "Payoff"),
@@ -149,10 +155,13 @@ export function reportLiveProofPlan(markdown: string): LiveProofPlan {
     return {
       status: "not_applicable",
       surface: "none",
-      reason: "No live-proof plan was recorded in this report.",
+      terminalCompletion: "not_applicable",
+      invalid: true,
+      reason:
+        "The live-proof plan is missing or invalid; regenerate the review report before execution.",
       payoff: {
         kind: "static_text",
-        justification: "No recording payoff was recorded in this report.",
+        justification: "Invalid report plans are non-runnable and fail closed.",
       },
       entry: "",
       steps: [],
