@@ -451,6 +451,105 @@ test("decision parser validates typed live-proof plans and report roundtrips", (
   }
 });
 
+test("decision parser removes only a leading duplicate terminal entry", () => {
+  const terminalPlan = {
+    status: "recommended",
+    surface: "terminal",
+    reason: "The changed CLI output is visible.",
+    payoff: {
+      kind: "static_text",
+      justification: "The final command result is readable as text.",
+    },
+    entry: "pnpm openclaw --help",
+    steps: [
+      { action: "run", command: "pnpm openclaw --help" },
+      { action: "expect_output", text: "Usage:" },
+    ],
+  };
+  const exact = parseDecision(closeDecision({ liveProofPlan: terminalPlan })).liveProofPlan;
+  assert.deepEqual(exact.steps, [{ action: "expect_output", text: "Usage:" }]);
+
+  const trimmed = parseDecision(
+    closeDecision({
+      liveProofPlan: {
+        ...terminalPlan,
+        entry: "  pnpm openclaw --help  ",
+        steps: [
+          { action: "run", command: " pnpm openclaw --help " },
+          { action: "expect_output", text: "Usage:" },
+        ],
+      },
+    }),
+  ).liveProofPlan;
+  assert.equal(trimmed.entry, "pnpm openclaw --help");
+  assert.deepEqual(trimmed.steps, [{ action: "expect_output", text: "Usage:" }]);
+
+  const distinct = parseDecision(
+    closeDecision({
+      liveProofPlan: {
+        ...terminalPlan,
+        steps: [
+          { action: "run", command: "pnpm openclaw status" },
+          { action: "run", command: "pnpm openclaw --help" },
+          { action: "expect_output", text: "Usage:" },
+        ],
+      },
+    }),
+  ).liveProofPlan;
+  assert.deepEqual(distinct.steps, [
+    { action: "run", command: "pnpm openclaw status" },
+    { action: "run", command: "pnpm openclaw --help" },
+    { action: "expect_output", text: "Usage:" },
+  ]);
+
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          liveProofPlan: {
+            ...terminalPlan,
+            steps: [{ action: "run", command: "pnpm openclaw --help" }],
+          },
+        }),
+      ),
+    /decision\.liveProofPlan\.steps must not be empty when recommended/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          liveProofPlan: {
+            ...terminalPlan,
+            steps: [
+              { action: "run", command: "pnpm openclaw --help" },
+              ...Array.from({ length: 10 }, () => ({ action: "wait", seconds: 1 })),
+            ],
+          },
+        }),
+      ),
+    /decision\.liveProofPlan\.steps must contain at most 10 items/,
+  );
+
+  const browserPlan = {
+    status: "recommended",
+    surface: "browser",
+    reason: "The changed page is visible.",
+    payoff: {
+      kind: "ui_interaction",
+      justification: "The viewer sees the page state after navigation.",
+    },
+    entry: "/settings",
+    steps: [
+      { action: "goto", path: "/settings" },
+      { action: "expect_text", text: "Saved" },
+    ],
+  };
+  assert.deepEqual(
+    parseDecision(closeDecision({ liveProofPlan: browserPlan })).liveProofPlan.steps,
+    browserPlan.steps,
+  );
+});
+
 test("decision parser accepts only a complete regression-provenance candidate shape", () => {
   const provenance = {
     repo: "openclaw/clawsweeper",

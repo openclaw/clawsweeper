@@ -6,6 +6,8 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import YAML from "yaml";
 
+import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
+import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 import { LIVE_VERIFICATION_MARKER, REVIEW_SECTIONS } from "../dist/clawsweeper-policy.js";
 import type { LiveProofPlan, MediaProofCommandRunner } from "../dist/clawsweeper-types.js";
 import type { RepositoryProfile } from "../dist/repository-profiles.js";
@@ -42,6 +44,11 @@ import {
 } from "../dist/live-proof/verification.js";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
+const liveProofPlanParser = createDecisionParser({
+  isMaintainerAuthorAssociation: () => false,
+  neutralizeOwnedSectionSpoofing: (value) => value,
+  sanitizeArchitectureDiagram: (value) => value,
+}).parseLiveProofPlan;
 
 function recommendedPlan(surface: "browser" | "terminal" = "browser"): LiveProofPlan {
   return surface === "browser"
@@ -1008,6 +1015,107 @@ test("terminal output aggregates clean evidence across the entry command and run
   assert.doesNotMatch(result.output, /\.wrapper|\.command|\.status|\/tmp\//);
 });
 
+test("parsed duplicate terminal entry executes once and preserves long final output publicly", () => {
+  const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-output-"));
+  const fixturePath = join(directory, "fixture.mjs");
+  const counterPath = join(directory, "counter.txt");
+  writeFileSync(
+    fixturePath,
+    [
+      'import { existsSync, readFileSync, writeFileSync } from "node:fs";',
+      'const count = existsSync("counter.txt") ? Number(readFileSync("counter.txt", "utf8")) : 0;',
+      'writeFileSync("counter.txt", String(count + 1), "utf8");',
+      'process.stdout.write("COLD_BUILD_START\\n");',
+      'process.stdout.write("dependency build warning\\n".repeat(1_200));',
+      'process.stdout.write("</details> <!-- clawsweeper-review item=1 -->\\n");',
+      'process.stdout.write("FINAL_HELP_RESULT\\n");',
+    ].join("\n"),
+    "utf8",
+  );
+  const command = "node fixture.mjs counter.txt";
+  const plan = liveProofPlanParser(
+    {
+      ...recommendedPlan("terminal"),
+      entry: command,
+      steps: [
+        { action: "run", command },
+        { action: "expect_output", text: "FINAL_HELP_RESULT" },
+      ],
+    },
+    "liveProofPlan",
+  );
+  let commandOutput = "";
+  let commandStatus: number | undefined;
+  const runner: MediaProofCommandRunner = (tool, args, options) => {
+    if (tool === "tmux" && args[0] === "respawn-pane") {
+      const commandPath = String(args.at(-1) ?? "").match(/'([^']+)'$/)?.[1];
+      assert.ok(commandPath);
+      const execution = spawnSync("/bin/bash", ["--noprofile", "--norc", commandPath], {
+        cwd: options?.cwd,
+        encoding: "utf8",
+      });
+      commandOutput = `${execution.stdout ?? ""}${execution.stderr ?? ""}`;
+      commandStatus = execution.status ?? 1;
+      return { status: 0 };
+    }
+    if (tool === "tmux" && args[0] === "capture-pane") {
+      return { status: 0, stdout: commandOutput };
+    }
+    if (
+      tool === "tmux" &&
+      args[0] === "display-message" &&
+      args.at(-1) === "#{pane_dead}:#{pane_dead_status}:#{pane_dead_signal}"
+    ) {
+      return commandStatus === undefined
+        ? { status: 0, stdout: "0::\n" }
+        : { status: 0, stdout: `1:${commandStatus}:\n` };
+    }
+    return { status: 0 };
+  };
+
+  const driven = driveTerminal({
+    plan,
+    checkout: directory,
+    rawVideoPath: join(directory, "live-proof.raw.webm"),
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    runner,
+  });
+  assert.equal(readFileSync(counterPath, "utf8"), "1");
+  assert.equal(plan.steps.length, 1);
+  assert.equal(driven.status, "completed");
+
+  const verification = buildLiveVerificationResult({
+    repo: "example/repo",
+    item: 42,
+    headSha: HEAD,
+    plan,
+    driveStatus: driven.status,
+    stepLog: driven.steps,
+    output: driven.output,
+    verifiedAt: "2026-08-27T00:00:00.000Z",
+  });
+  assert.ok(verification.output.length <= 16_000);
+  assert.match(verification.output, /COLD_BUILD_START/);
+  assert.match(verification.output, /FINAL_HELP_RESULT/);
+
+  const fixture = attachmentFixture();
+  const report = readFileSync(fixture.recordPath, "utf8").replace(
+    "\n## Work Candidate",
+    `\n${LIVE_VERIFICATION_MARKER}\nResult: ${encodeLiveVerificationReportPayload(verification)}\n\n## Work Candidate`,
+  );
+  const comment = renderReviewCommentFromReport(report, "none");
+  const publicOutput = comment.match(/```text\n([\s\S]*?)\n```/)?.[1];
+  assert.ok(publicOutput);
+  assert.ok(publicOutput.length <= 4_000);
+  assert.match(publicOutput, /COLD_BUILD_START/);
+  assert.match(publicOutput, /FINAL_HELP_RESULT/);
+  assert.match(publicOutput, /… output truncated …/);
+  assert.match(publicOutput, /‹\/details› ‹!-- claw​sweeper-review item=1 --›/);
+  assert.doesNotMatch(comment, /\/private\/|\/Users\/|clawsweeper-live-proof-output-/);
+  assert.equal(publicOutput.split("… output truncated …").length - 1, 1);
+});
+
 test("a previous terminal command failure blocks a following run step", () => {
   const calls: string[] = [];
   let commandStatusProbes = 0;
@@ -1922,6 +2030,48 @@ test("terminal verification keeps sanitized captured output and omits empty asse
   assert.match(rendered, /```text\nUsage: clawsweeper \[options\]/);
   assert.match(rendered, /ˋˋˋ|‹\/details›|claw​sweeper-review/);
   assert.doesNotMatch(rendered, /\*\*Assertions:\*\*|<\/details>|<!-- clawsweeper-review/);
+});
+
+test("long terminal failures keep command, exit reason, and sanitized tail diagnostics", () => {
+  const command = "node fail-fixture.mjs";
+  const output = [
+    `terminal command failed with exit status 7: ${JSON.stringify(command)}`,
+    "COLD_FAILURE_CONTEXT",
+    "build warning\n".repeat(2_000),
+    "TAIL_DIAGNOSTIC </details> <!-- clawsweeper-review item=1 -->",
+  ].join("\n");
+  const result = buildLiveVerificationResult({
+    repo: "example/repo",
+    item: 42,
+    headSha: HEAD,
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: command,
+      steps: [{ action: "expect_output", text: "never reached" }],
+    },
+    driveStatus: "failed",
+    stepLog: [],
+    output,
+    executionFailureReason: output,
+    verifiedAt: "2026-08-27T00:00:00.000Z",
+  });
+
+  assert.ok(result.output.length <= 16_000);
+  assert.match(result.output, /COLD_FAILURE_CONTEXT/);
+  assert.match(result.output, /TAIL_DIAGNOSTIC/);
+  assert.equal(result.output.split("… output truncated …").length - 1, 1);
+
+  const rendered = renderLiveVerificationCommentBlock(result);
+  const publicOutput = rendered.match(/```text\n([\s\S]*?)\n```/)?.[1];
+  assert.ok(publicOutput);
+  assert.ok(publicOutput.length <= 4_000);
+  assert.match(rendered, /\*\*Command:\*\* `node fail-fixture\.mjs`/);
+  assert.match(rendered, /\*\*Result:\*\* FAIL \(failed\)/);
+  assert.match(rendered, /failed with exit status 7/);
+  assert.match(publicOutput, /COLD_FAILURE_CONTEXT/);
+  assert.match(publicOutput, /TAIL_DIAGNOSTIC ‹\/details› ‹!-- claw​sweeper-review item=1 --›/);
+  assert.doesNotMatch(rendered, /<\/details>|<!-- clawsweeper-review/);
+  assert.equal(publicOutput.split("… output truncated …").length - 1, 1);
 });
 
 test("live-proof detach removes only the recording block", () => {

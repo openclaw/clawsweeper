@@ -509,12 +509,13 @@ user-visible. Reserve `not_applicable` for a change with genuinely nothing to
 run, such as docs-only edits or generated assets in a repository with no
 meaningful runnable surface. Use `surface: "browser"` for browser behavior and
 `surface: "terminal"` for terminal behavior. The `entry` must be a URL path for
-browser verification or a command for terminal verification. For terminal
-verification, prefer invoking a repository-defined `pnpm run` (or equivalent
-package-manager) script over hand-composing individual build/test commands
-whenever one already expresses the needed setup, so the plan does not need to
-independently reconstruct build or dependency sequencing that the script
-already encodes correctly. Emit at most ten
+browser verification or a command for terminal verification. A terminal
+`entry` executes automatically before the typed steps; never repeat that command
+as the first `run`. For terminal verification, prefer invoking a
+repository-defined `pnpm run` (or equivalent package-manager) script over
+hand-composing individual build/test commands whenever one already expresses
+the needed setup, so the plan does not need to independently reconstruct build
+or dependency sequencing that the script already encodes correctly. Emit at most ten
 deterministic, typed `steps`: browser plans may use `goto`, `click`, `fill`,
 `press`, `wait_for`, `wait`, and `expect_text`; terminal plans may use `run`,
 `wait`, and `expect_output`. Include at least one concrete expectation of real

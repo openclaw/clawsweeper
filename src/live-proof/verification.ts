@@ -5,6 +5,7 @@ import { TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL, type LiveProofStepLogEntry } from 
 export const LIVE_VERIFICATION_SCHEMA_VERSION = 1;
 export const LIVE_VERIFICATION_OUTPUT_MAX_CHARS = 16_000;
 export const LIVE_VERIFICATION_COMMENT_OUTPUT_MAX_CHARS = 4_000;
+const OUTPUT_TRUNCATION_MARKER = "… output truncated …";
 
 export type LiveVerificationStepStatus = "completed" | "failed" | "not_run";
 
@@ -139,7 +140,7 @@ export function buildLiveVerificationResult(options: {
     output:
       options.plan.surface === "browser" && options.executionFailureReason === undefined
         ? ""
-        : trimText(options.output, LIVE_VERIFICATION_OUTPUT_MAX_CHARS),
+        : truncateOutput(options.output, LIVE_VERIFICATION_OUTPUT_MAX_CHARS),
     ...(failure ? { failure } : {}),
     overall_pass: overallPass,
     verified_at: options.verifiedAt,
@@ -321,13 +322,16 @@ function terminalOutputWasNotObserved(
 }
 
 export function sanitizeUntrustedOutput(value: string): string {
+  return truncateOutput(sanitizeUntrustedText(value), LIVE_VERIFICATION_COMMENT_OUTPUT_MAX_CHARS);
+}
+
+function sanitizeUntrustedText(value: string): string {
   const normalized = value.replaceAll("\r\n", "\n").replace(/[\r\u2028\u2029]/g, "\n");
-  const inert = normalized
+  return normalized
     .replaceAll("`", "ˋ")
     .replaceAll("<", "‹")
     .replaceAll(">", "›")
     .replace(/([‹<]\s*!?--\s*)clawsweeper/gi, "$1claw\u200bsweeper");
-  return trimText(inert, LIVE_VERIFICATION_COMMENT_OUTPUT_MAX_CHARS);
 }
 
 function parseStep(value: unknown, index: number): LiveVerificationStepResult {
@@ -478,7 +482,7 @@ function renderFailureSummary(result: LiveVerificationResult): string {
 }
 
 function sanitizeInline(value: string): string {
-  return sanitizeUntrustedOutput(value).replaceAll("\n", " ").slice(0, 2_000);
+  return sanitizeUntrustedText(value).replaceAll("\n", " ").slice(0, 2_000);
 }
 
 function oneLineReason(value: string): string {
@@ -495,6 +499,15 @@ function oneLineReason(value: string): string {
 function trimText(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars - 24)}\n… output truncated …`;
+}
+
+function truncateOutput(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const separator = `\n${OUTPUT_TRUNCATION_MARKER}\n`;
+  const available = maxChars - separator.length;
+  const headChars = Math.ceil(available / 2);
+  const tailChars = Math.floor(available / 2);
+  return `${value.slice(0, headChars)}${separator}${value.slice(-tailChars)}`;
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {

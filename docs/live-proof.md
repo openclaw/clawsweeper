@@ -144,11 +144,14 @@ assertion remains a completed, non-gating schema-v1 step, is explicitly labeled
 paths never enter published terminal output. Each entry or `run` action executes
 as a separately supervised Bash process in the same checkout, so plans should
 share state through files or one command rather than shell-local mutations.
+The terminal `entry` executes automatically before typed steps and must not be
+repeated as the first `run`; exact leading duplicates are normalized away before
+execution.
 Nonzero exits, signals, command timeouts, and missing markers for still-running
 commands remain failures.
 All untrusted fields are bounded and neutralized against Markdown fences, HTML,
-and ClawSweeper marker spoofing. OpenClaw Bay is unaffected: the durable schema-v1
-passing-assertion invariant and observer ownership remain unchanged.
+and ClawSweeper marker spoofing. OpenClaw Bay is unaffected because schema v1
+and the existing lifecycle and publication contracts do not change.
 
 ## Local simulation
 
