@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -28,6 +36,8 @@ function runtimeBudgetFixture(number: number) {
   const reportPath = join(root, "apply-report.json");
   const cursorTracePath = join(root, "apply-cursor-trace.json");
   mkdirSync(itemsDir, { recursive: true });
+  mkdirSync(closedDir, { recursive: true });
+  symlinkSync(join(root, "unavailable-archive.md"), join(closedDir, "999.md"));
   mkdirSync(plansDir, { recursive: true });
   writeFileSync(join(itemsDir, `${number}.md`), implementedCloseReport({ number }), "utf8");
   return { root, itemsDir, closedDir, plansDir, reportPath, cursorTracePath };

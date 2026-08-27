@@ -691,6 +691,16 @@ position. Coverage proof, live-state refresh, freshness checks, and close gates
 remain unchanged. Explicit targeted apply runs keep their requested item set and
 ordering policy.
 
+Apply keeps selected report bodies in memory and loads independently reviewed
+paired records only when a close guard requests them. Exact-event publication
+does not expand its selected set. Broad apply still sorts the complete open
+candidate set; it no longer loads a second copy for paired lookups. Finalization
+reloads only requested, result, and unfinished/in-flight item records from the
+open and closed directories, rather than retaining the archive. This includes
+partial failures and runtime-budget yields and does not change cursor ordering,
+close eligibility, canonical baselines, or ledger identities. OpenClaw Bay needs
+no change: the public status, record, and ledger contracts are unchanged.
+
 Before a close-mode apply run starts, the workflow summarizes the selected close
 candidate mix by quality bucket in the status detail. Buckets such as
 implemented-on-main, duplicate/superseded, needs PR close proof,
