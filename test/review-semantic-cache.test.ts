@@ -11,6 +11,9 @@ import {
   validReviewSemanticRecord,
 } from "../dist/review-semantic-cache.js";
 import { stableJson } from "../dist/stable-json.js";
+import { compactPrimaryBody } from "../dist/clawsweeper-primary-body.js";
+import { createReviewStructuralRecord } from "../dist/review-structural-cache.js";
+import { longProofBody, sha256 } from "./primary-body-fixture.ts";
 
 const NOW = Date.parse("2026-07-12T12:00:00Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -173,6 +176,84 @@ function decision(overrides: Record<string, unknown> = {}) {
     ...overrides,
   });
 }
+
+test("semantic reuse retains full-body structural identity beyond displayed excerpts", () => {
+  const body = longProofBody();
+  const edited = body.slice(0, -1) + "!";
+  const compact = compactPrimaryBody(body);
+  const compactEdited = compactPrimaryBody(edited);
+  assert.equal(compact.body, compactEdited.body);
+  assert.deepEqual(compact.bodyCoverage?.excerpts, compactEdited.bodyCoverage?.excerpts);
+  const structural = (source: string) => {
+    const result = createReviewStructuralRecord(
+      {
+        repo: "openclaw/openclaw",
+        number: 123,
+        kind: "pull_request",
+        nodeId: "PR_fixture",
+        author: "contributor",
+        authorAssociation: "CONTRIBUTOR",
+        titleDigest: sha256("title"),
+        bodyDigest: sha256(source),
+        state: "OPEN",
+        locked: false,
+        labels: [],
+        labelsTruncated: false,
+        activityUpdatedAt: "2026-07-10T10:00:00Z",
+        comments: [],
+        commentsTruncated: false,
+        timeline: [],
+        timelineTruncated: false,
+        relationSensitive: false,
+        targetHeadSha: "e".repeat(40),
+        latestReleaseTag: "v1.0.0",
+        latestReleaseSha: "f".repeat(40),
+        pull: {
+          headSha: "b".repeat(40),
+          baseSha: "c".repeat(40),
+          draft: false,
+          mergeable: "MERGEABLE",
+          mergeStateStatus: "CLEAN",
+          additions: 1,
+          deletions: 1,
+          changedFiles: 1,
+          commitCount: 1,
+          checksDigest: "d".repeat(64),
+          reviews: [],
+          reviewsTruncated: false,
+          reviewThreads: [],
+          reviewThreadsTruncated: false,
+        },
+      },
+      { reviewPolicy: "policy-1", reviewModel: "gpt-5.6" },
+    );
+    assert.ok(result);
+    return result.contextRevision;
+  };
+  const beforeRevision = structural(body);
+  const afterRevision = structural(edited);
+  assert.notEqual(beforeRevision, afterRevision);
+  const contextWithBody = (bodyContext: typeof compact) => ({
+    issue: { ...input().context.issue, ...bodyContext },
+    pullRequest: { ...input().context.pullRequest, ...bodyContext },
+  });
+  const priorRecord = record({
+    context: contextWithBody(compact),
+    structuralContextRevision: beforeRevision,
+  });
+  const currentRecord = record({
+    context: contextWithBody(compactEdited),
+    structuralContextRevision: afterRevision,
+  });
+  assert.equal(decision({ priorRecord, currentRecord: priorRecord }).hit, true);
+  assert.equal(decision({ priorRecord, currentRecord }).hit, false);
+  // Even an identical projection cannot bypass the required full-source structural revision.
+  const unchangedProjection = record({
+    context: contextWithBody(compact),
+    structuralContextRevision: afterRevision,
+  });
+  assert.equal(decision({ priorRecord, currentRecord: unchangedProjection }).hit, false);
+});
 
 test("TypeScript whitespace and ordinary comments do not perturb the semantic digest", () => {
   const plain = record();

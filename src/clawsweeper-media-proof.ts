@@ -47,7 +47,10 @@ function proofMediaUrlsFromContext(context: ItemContext): string[] {
     prHydrationSnapshot: ___,
     ...proofContext
   } = context;
-  const text = JSON.stringify(proofContext);
+  // Supplemental body excerpts are reviewer text, never new host download inputs.
+  const text = JSON.stringify(proofContext, (key, value) =>
+    key === "bodyCoverage" ? undefined : value,
+  );
   const matches = text.match(/https?:\/\/[^\s<>"'\\)]+/g) ?? [];
   const urls: string[] = [];
   const seen = new Set<string>();

@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   compactPullRequestForTest,
+  assistPromptContextForTest,
   renderReviewContextBudgetForTest,
   reviewContextLedgerForTest,
   reviewDecisionSchemaText,
@@ -16,6 +17,108 @@ import { liveProofSetupCommand } from "../dist/live-proof/setup.js";
 import { REPOSITORY_PROFILES, repositoryProfileFor } from "../dist/repository-profiles.js";
 import type { RepositoryLiveTestConfig } from "../dist/repository-profiles.js";
 import { git, item } from "./helpers.ts";
+import type { PrimaryBodyContext } from "../dist/clawsweeper-primary-body.js";
+import {
+  assertBodyCoverage,
+  hydratePrimaryBody,
+  inertTrace,
+  longProofBody,
+  scriptSentinel,
+} from "./primary-body-fixture.ts";
+
+for (const kind of ["issue", "pull_request"] as const) {
+  test(`raw ${kind} body reaches real review JSON with exact bounded late proof coverage`, () => {
+    const body = longProofBody();
+    const { target, context } = hydratePrimaryBody(body, kind, { closingBodies: [body] });
+    context.semanticPullFiles = [{ patch: "PERSISTENCE_ONLY_SEMANTIC_SENTINEL" }];
+    context.pullCommitsRevision = "PERSISTENCE_ONLY_COMMIT_SENTINEL";
+    if (context.prHydrationSnapshot) {
+      context.prHydrationSnapshot.completeReviewComments = [
+        { body: "PERSISTENCE_ONLY_COMMENT_SENTINEL" },
+      ];
+    }
+    const prompt = reviewPromptForTest(target, context, git);
+    const jsonText = prompt.split("## GitHub Context\n")[1]?.match(/```json\n([\s\S]*?)\n```/)?.[1];
+    assert.ok(jsonText);
+    const rendered = JSON.parse(jsonText);
+    for (const key of kind === "issue" ? ["issue"] : ["issue", "pullRequest"]) {
+      const compact = rendered[key] as PrimaryBodyContext;
+      assertBodyCoverage(body, compact);
+      assert.ok(compact.bodyCoverage?.excerpts.some(({ text }) => text.includes(inertTrace)));
+      assert.equal(rendered[key].number, target.number);
+      assert.deepEqual(rendered[key], JSON.parse(JSON.stringify(context[key])));
+      assert.deepEqual(assistPromptContextForTest(context)[key].bodyCoverage, compact.bodyCoverage);
+      assert.equal(
+        reviewContextLedgerForTest(context).find((entry) => entry.section === key)?.chars,
+        JSON.stringify(context[key], null, 2).length,
+      );
+    }
+    if (kind === "issue") {
+      assert.equal(rendered.closingPullRequests[0].bodyCoverage, undefined);
+      assert.ok(rendered.closingPullRequests[0].body.endsWith("[truncated 48641 chars]"));
+    }
+    assert.doesNotMatch(prompt, new RegExp(scriptSentinel));
+    assert.doesNotMatch(
+      prompt,
+      /PERSISTENCE_ONLY_|semanticPullFiles|prHydrationSnapshot|pullCommitsRevision/,
+    );
+    const introduction =
+      prompt.match(/\n\n## PR Introduction Evidence\n[\s\S]*?\n```\n/)?.[0] ?? "";
+    assert.equal(
+      reviewPromptTelemetryForTest(target, context, git).contextChars,
+      jsonText.length + introduction.length,
+    );
+  });
+
+  test(`primary ${kind} null/empty and boundary bodies use host coverage only`, () => {
+    for (const body of [null, "", "x".repeat(11999), "x".repeat(12000), "x".repeat(12001)]) {
+      const { context } = hydratePrimaryBody(body, kind);
+      for (const compact of kind === "issue"
+        ? [context.issue]
+        : [context.issue, context.pullRequest]) {
+        if ((body?.length ?? 0) <= 12000) {
+          assert.equal(compact.body, body ?? "");
+          assert.equal(compact.bodyCoverage, undefined);
+        } else assertBodyCoverage(body!, compact);
+      }
+    }
+  });
+}
+
+test("separate issue/pull body reads retain their own source identity", () => {
+  const body = longProofBody();
+  const { context } = hydratePrimaryBody(body, "pull_request", {
+    pullBody: body.slice(0, -1) + "!",
+  });
+  assert.notEqual(
+    context.issue.bodyCoverage.sourceBodySha256,
+    context.pullRequest.bodyCoverage.sourceBodySha256,
+  );
+  assert.deepEqual(context.issue.bodyCoverage.excerpts, context.pullRequest.bodyCoverage.excerpts);
+});
+
+for (const [layout, body] of [
+  ["unrecognized", "x".repeat(20000)],
+  ["overflow", "x".repeat(15000) + ("\n## Proof\n" + "x".repeat(4000)).repeat(100)],
+  [
+    "oversized",
+    "x".repeat(15000) + "\n<details><summary>Output\n```text\n" + "row=5\n".repeat(10000),
+  ],
+] as const) {
+  test(`${layout} layout keeps honest coverage in final primary issue/PR JSON`, () => {
+    const { target, context } = hydratePrimaryBody(body, "pull_request");
+    const prompt = reviewPromptForTest(target, context, git);
+    const rendered = JSON.parse(
+      prompt.split("## GitHub Context\n")[1]!.match(/```json\n([\s\S]*?)\n```/)![1]!,
+    );
+    for (const compact of [rendered.issue, rendered.pullRequest]) {
+      assertBodyCoverage(body, compact);
+      assert.ok(compact.bodyCoverage.omittedUnits > 0);
+      assert.equal(compact.bodyCoverage.complete, false);
+      assert.equal(compact.bodyCoverage.status, undefined);
+    }
+  });
+}
 
 test("review prompt assets match tracked files", () => {
   assert.equal(reviewPromptTemplate(), readFileSync("prompts/review-item.md", "utf8"));

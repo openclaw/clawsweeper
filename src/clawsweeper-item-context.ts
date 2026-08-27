@@ -8,6 +8,7 @@ import type {
 } from "./clawsweeper-types.js";
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import { stableJson } from "./stable-json.js";
+import { compactPrimaryBody } from "./clawsweeper-primary-body.js";
 import { fetchPrCommentActivityRevision } from "./pr-comment-activity-revision.js";
 import {
   hydratePrLists,
@@ -211,7 +212,7 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
         ? readPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/timeline`)
         : null;
     const context: ItemContext = {
-      issue: compactIssue(issue),
+      issue: { ...asRecord(compactIssue(issue)), ...compactPrimaryBody(issueRecord.body) },
       sourceRevision: itemSourceRevisionSha256(issue, sourceRevisionComments),
       comments: compactMappedWindow(
         filteredComments.included,
@@ -369,7 +370,10 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
       completePullReviewCommentsHydrated =
         fullPullReviewComments.length >= pullReviewCommentsWindow.total;
       if (hydration.snapshot) context.prHydrationSnapshot = hydration.snapshot;
-      context.pullRequest = compactPullRequest(pullRequest);
+      context.pullRequest = {
+        ...asRecord(compactPullRequest(pullRequest)),
+        ...compactPrimaryBody(pullRecord.body),
+      };
       context.pullFiles = compactMappedWindow(
         pullFiles,
         pullFilesWindow.total,

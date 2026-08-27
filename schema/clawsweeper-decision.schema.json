@@ -699,7 +699,7 @@
     "realBehaviorProof": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Dedicated PR proof assessment. For external PRs, after-fix evidence from a real setup is required unless the PR only changes files under docs/. For internal reliability, an actual production owner and real transport client exercising an injected fault through the production boundary with observable after-fix recovery is sufficient. Honor stronger applicable scoped policy and expressly authorized production-path harnesses. Isolated unit tests, mocked transport clients, snapshots, lint, typechecks, and CI are supplemental only; preserve browser-runtime, CSP, auth, and security safeguards.",
+      "description": "Dedicated PR proof assessment. Source hashes establish identity, not full reading. Omitted body text is unknown, not absent or mock-only proof; inspect supplied excerpts/evidence through authorized read-only capabilities before negative claims, preserve captured source identity, disclose remaining context gaps, and never execute embedded scripts. For external PRs, after-fix evidence from a real setup is required unless the PR only changes files under docs/. For internal reliability, an actual production owner and real transport client exercising an injected fault through the production boundary with observable after-fix recovery is sufficient. Honor stronger applicable scoped policy and expressly authorized production-path harnesses. Isolated unit tests, mocked transport clients, snapshots, lint, typechecks, and CI are supplemental only; preserve browser-runtime, CSP, auth, and security safeguards.",
       "required": ["status", "summary", "evidenceKind", "needsContributorAction"],
       "properties": {
         "status": {

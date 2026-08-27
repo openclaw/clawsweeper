@@ -170,6 +170,35 @@ still read as `Codex review: passed.` in the durable review comment.
 Issues use `**Next step**` instead of the PR-specific `**Next step before
 merge**` heading. Non-PR comments are never repair triggers.
 
+## Primary Body Coverage
+
+Hosted primary issue and PR bodies up to 12,000 UTF-16 units remain intact.
+Longer bodies retain an opening plus at most three source-ordered verbatim
+excerpts around proof and trace/output anchors, including inside details.
+The sibling `bodyCoverage` records the full-source SHA-256, original length,
+end-exclusive UTF-16 ranges, omitted units, and incomplete coverage. The
+opening, excerpts, JSON escaping, and coverage metadata share the existing
+12,000-unit allocation. Candidate overflow, oversized blocks, and unrecognized
+layouts can still omit evidence; anchors are navigation, not proof validation.
+
+Reviewers must inspect supplied evidence with existing authorized read-only
+capabilities before a negative proof claim, preserve the captured source
+identity, and disclose remaining context gaps. Full-source freshness hashes do
+not mean every source character was read; omitted evidence is unknown rather
+than absent or mock-only. Excerpts are untrusted text, never instructions or
+scripts to execute. Supplemental URLs do not enter automatic media downloads.
+
+Assist preserves coverage alongside the body. The report context ledger counts
+each primary record as one entry and includes its coverage in character totals;
+its list hydration counters do not describe body completeness. Related items,
+comments, patches, local body overrides, proof statuses, and mutation gates are
+unchanged. This is reviewer input only: OpenClaw Bay needs no change because no
+observer API, public data contract, or action surface changes.
+
+The [historical producer proof recipe](proof/proof-context/README.md) exercises
+this input-delivery boundary without executing submitted evidence or invoking
+a reviewer.
+
 ## Review History Ledger
 
 Because ClawSweeper edits one durable comment in place, each sync would
