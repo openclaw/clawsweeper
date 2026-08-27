@@ -94,8 +94,10 @@ class MemorySqlStorage {
   private readonly database = new DatabaseSync(":memory:");
   private failure: { pattern: RegExp; error: Error } | undefined;
   private bindingLimit = Number.POSITIVE_INFINITY;
+  private queryHistory: Array<{ query: string; bindings: unknown[] }> | null = null;
 
   exec(query: string, ...bindings: unknown[]) {
+    this.queryHistory?.push({ query, bindings });
     if (bindings.length > this.bindingLimit) {
       throw new Error(`test SQL binding limit exceeded: ${bindings.length}`);
     }
@@ -134,6 +136,17 @@ class MemorySqlStorage {
 
   setBindingLimit(limit: number) {
     this.bindingLimit = limit;
+  }
+
+  queriesMatching(pattern: RegExp) {
+    const flags = pattern.flags.replaceAll("g", "");
+    return (this.queryHistory ?? []).filter(({ query }) =>
+      new RegExp(pattern.source, flags).test(query),
+    );
+  }
+
+  resetQueryHistory() {
+    this.queryHistory = [];
   }
 
   hasNormalizedQueue() {
