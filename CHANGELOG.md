@@ -59,7 +59,6 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Terminal live-proof plans no longer execute a duplicated leading entry command, and bounded verification output now keeps both startup context and the final command outcome in artifacts and public comments.
 - Bounded apply/proof/comment-sync record retention to selected records and paired dependencies, avoiding unrelated archive loads during ledger finalization without changing close guards.
 - Kept projected GitHub reads out of the durable ETag cache so incompatible response shapes cannot hide requested reviewers from close guards. Thanks @goutamadwant! (#1242)
 - Normalized unexpected exact-review failures at the Worker boundary without weakening Durable Object transaction rollback. Thanks @yetval and @vincentkoc! (#1240)
