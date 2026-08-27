@@ -1364,27 +1364,49 @@ jobs:
           set -euo pipefail
           versions_file="$(mktemp)"
           trap 'rm -f "$versions_file"' EXIT
+          requires_automatic_toolchain=false
           while read -r item; do
             record="$RECORDS_DIR/$item.md"
             head_sha="$(sed -n 's/^pull_head_sha:[[:space:]]*//p' "$record" | head -n 1)"
             printf '%s' "$head_sha" | grep -Eq '^[0-9a-f]{40}$'
             if ! go_mod="$(git -C "$TARGET_CHECKOUT" show "$head_sha:go.mod" 2>/dev/null)"; then
+              requires_automatic_toolchain=true
               continue
             fi
-            go_version="$(awk '$1 == "go" { print $2; exit }' <<< "$go_mod")"
-            toolchain_version="$(awk '$1 == "toolchain" && $2 ~ /^go/ { sub(/^go/, "", $2); print $2; exit }' <<< "$go_mod")"
-            printf '%s\n' "${go_version:-1.16}" >> "$versions_file"
+            if go_work="$(git -C "$TARGET_CHECKOUT" show "$head_sha:go.work" 2>/dev/null)"; then
+              go_config="$go_work"
+              default_go_version=1.18
+            else
+              go_config="$go_mod"
+              default_go_version=1.16
+            fi
+            while IFS= read -r -d '' path; do
+              case "$path" in
+                */go.mod | */go.work)
+                  requires_automatic_toolchain=true
+                  ;;
+              esac
+            done < <(git -C "$TARGET_CHECKOUT" ls-tree -rz --name-only "$head_sha")
+            go_version="$(awk '$1 == "go" { print $2; exit }' <<< "$go_config")"
+            toolchain_version="$(awk '$1 == "toolchain" && $2 ~ /^go/ { sub(/^go/, "", $2); print $2; exit }' <<< "$go_config")"
+            printf '%s\n' "${go_version:-$default_go_version}" >> "$versions_file"
             if [ -n "$toolchain_version" ]; then
               printf '%s\n' "$toolchain_version" >> "$versions_file"
             fi
           done < <(jq -r '.[]' <<< "$CANDIDATES")
+          echo "automatic=$requires_automatic_toolchain" >> "$GITHUB_OUTPUT"
           if [ ! -s "$versions_file" ]; then
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          version="$(node - "$versions_file" <<'NODE'
+          minimum_go_version=1.14.0
+          if [ "$requires_automatic_toolchain" = "true" ]; then
+            minimum_go_version=1.21.0
+          fi
+          version="$(node - "$versions_file" "$minimum_go_version" <<'NODE'
           const fs = require("node:fs");
           const path = process.argv[2];
+          const minimum = process.argv[3];
           const versions = fs
             .readFileSync(path, "utf8")
             .trim()
@@ -1405,7 +1427,7 @@ jobs:
             return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
           };
           versions.sort(compare);
-          process.stdout.write(compare(versions.at(-1), "1.14.0") < 0 ? "1.14.0" : versions.at(-1));
+          process.stdout.write(compare(versions.at(-1), minimum) < 0 ? minimum : versions.at(-1));
           NODE
           )"
           mkdir -p "$(dirname "$VERSION_FILE")"
@@ -1422,6 +1444,10 @@ jobs:
         with:
           go-version-file: ${{ steps.resolve-exact-live-proof-go.outputs.path }}
           cache: "false"
+
+      - name: Enable exact live-proof automatic Go fallback
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.resolve-exact-live-proof-go.outputs.automatic == 'true' }}
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - name: Install exact live-proof terminal tools
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.inspect-exact-live-proof.outputs.requires_terminal == 'true' }}
@@ -4600,33 +4626,53 @@ jobs:
           trap 'rm -f "$versions_file"' EXIT
           candidate_count="$(jq -r 'length' <<< "$CANDIDATES")"
           root_module_count=0
+          requires_automatic_toolchain=false
           while read -r item; do
             record="$RECORDS_DIR/$item.md"
             head_sha="$(sed -n 's/^pull_head_sha:[[:space:]]*//p' "$record" | head -n 1)"
             printf '%s' "$head_sha" | grep -Eq '^[0-9a-f]{40}$'
             if ! go_mod="$(git -C "$TARGET_CHECKOUT" show "$head_sha:go.mod" 2>/dev/null)"; then
+              requires_automatic_toolchain=true
               continue
             fi
             root_module_count=$((root_module_count + 1))
-            go_version="$(awk '$1 == "go" { print $2; exit }' <<< "$go_mod")"
-            toolchain_version="$(awk '$1 == "toolchain" && $2 ~ /^go/ { sub(/^go/, "", $2); print $2; exit }' <<< "$go_mod")"
-            printf '%s\n' "${go_version:-1.16}" >> "$versions_file"
+            if go_work="$(git -C "$TARGET_CHECKOUT" show "$head_sha:go.work" 2>/dev/null)"; then
+              go_config="$go_work"
+              default_go_version=1.18
+            else
+              go_config="$go_mod"
+              default_go_version=1.16
+            fi
+            while IFS= read -r -d '' path; do
+              case "$path" in
+                */go.mod | */go.work)
+                  requires_automatic_toolchain=true
+                  ;;
+              esac
+            done < <(git -C "$TARGET_CHECKOUT" ls-tree -rz --name-only "$head_sha")
+            go_version="$(awk '$1 == "go" { print $2; exit }' <<< "$go_config")"
+            toolchain_version="$(awk '$1 == "toolchain" && $2 ~ /^go/ { sub(/^go/, "", $2); print $2; exit }' <<< "$go_config")"
+            printf '%s\n' "${go_version:-$default_go_version}" >> "$versions_file"
             if [ -n "$toolchain_version" ]; then
               printf '%s\n' "$toolchain_version" >> "$versions_file"
             fi
           done < <(jq -r '.[]' <<< "$CANDIDATES")
           if [ "$root_module_count" -ne "$candidate_count" ]; then
-            echo "::notice::Skipping job-wide Go setup because some candidates have no root go.mod; retaining automatic toolchain fallback."
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            requires_automatic_toolchain=true
           fi
+          echo "automatic=$requires_automatic_toolchain" >> "$GITHUB_OUTPUT"
           if [ ! -s "$versions_file" ]; then
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          version="$(node - "$versions_file" <<'NODE'
+          minimum_go_version=1.14.0
+          if [ "$requires_automatic_toolchain" = "true" ]; then
+            minimum_go_version=1.21.0
+          fi
+          version="$(node - "$versions_file" "$minimum_go_version" <<'NODE'
           const fs = require("node:fs");
           const path = process.argv[2];
+          const minimum = process.argv[3];
           const versions = fs
             .readFileSync(path, "utf8")
             .trim()
@@ -4647,7 +4693,7 @@ jobs:
             return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
           };
           versions.sort(compare);
-          process.stdout.write(compare(versions.at(-1), "1.14.0") < 0 ? "1.14.0" : versions.at(-1));
+          process.stdout.write(compare(versions.at(-1), minimum) < 0 ? minimum : versions.at(-1));
           NODE
           )"
           mkdir -p "$(dirname "$VERSION_FILE")"
@@ -4664,6 +4710,10 @@ jobs:
         with:
           go-version-file: ${{ steps.resolve-shard-live-proof-go.outputs.path }}
           cache: "false"
+
+      - name: Enable review-shard live-proof automatic Go fallback
+        if: ${{ steps.resolve-shard-live-proof-go.outputs.automatic == 'true' }}
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - name: Install review-shard terminal tools
         if: ${{ steps.inspect-shard-live-proofs.outputs.requires_terminal == 'true' }}
