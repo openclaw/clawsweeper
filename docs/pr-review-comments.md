@@ -107,6 +107,13 @@ review metrics, stored-data warnings, root-cause clusters, proof suggestions,
 merge-risk options, full review comments, labels, evidence, optional rank-up
 moves, the rank legend, workflow notes, and review history.
 
+For OpenClaw PRs, stored-data warnings flag possible persistence changes in
+production source or semantic documentation changes, not setup in test,
+fixture, or example source paths. Renames retain evidence from either production
+path. Missing, empty, or truncated patches on likely production persistence paths,
+and truncated file lists, still produce conservative unknown warnings. The
+warning requests review; it does not prove a persisted contract changed.
+
 Security defaults to `None.` when there are no concerns. Do not spend public
 space explaining why an uneventful security pass is uneventful.
 

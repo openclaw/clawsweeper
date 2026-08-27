@@ -84,7 +84,10 @@ export function dataModelChangeFromContext(repo: string, context: ItemContext): 
     const path = typeof file.filename === "string" ? file.filename.trim() : "";
     const previousPath =
       typeof file.previous_filename === "string" ? file.previous_filename.trim() : "";
-    const candidates = [path, previousPath].filter(Boolean);
+    // Scope each rename side before unknown handling, retaining the semantic docs branch.
+    const candidates = [path, previousPath].filter(
+      (candidate) => isProductionSourcePath(candidate) || isDocsPath(candidate),
+    );
     const likelyPath = candidates.find(isLikelyOpenClawDataModelPath) ?? "";
     const patch = typeof file.patch === "string" ? file.patch : null;
     const lines = patch === null ? [] : changedPatchLines(patch);

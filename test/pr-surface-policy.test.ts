@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -239,7 +240,99 @@ test("config surface detector fails closed for truncated pull files", () => {
   });
 });
 
-test("data model detector finds persistent schema and embedding metadata changes", () => {
+test("tooling diagnostic and subprocess regression do not produce a stored-data warning", () => {
+  const fixture = JSON.parse(
+    readFileSync(new URL("./fixtures/persistence-classifier-130585.json", import.meta.url), "utf8"),
+  );
+  const detection = dataModelChangeFromPullFilesForTest({ pullFiles: fixture.pullFiles });
+
+  assert.deepEqual(detection, { change: false, surfaces: [] });
+
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      repository: "openclaw/openclaw",
+      type: "pull_request",
+      number: "130585",
+      url: fixture.pullRequest,
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "none",
+      pull_head_sha: fixture.headSha,
+      data_model_change: String(detection.change),
+      data_model_surfaces: JSON.stringify(detection.surfaces),
+    })}
+
+## Summary
+
+Corrects missing-tool installation guidance and adds a subprocess regression.
+`,
+    "none",
+  );
+
+  assert.doesNotMatch(comment, /Persistent data-model change detected|### Stored data model/);
+});
+
+for (const { name, file, surfaces, pullFilesTruncated } of [
+  {
+    name: "colocated test serialization",
+    file: { filename: "src/cache/store.test.ts", patch: '@@\n+writeFile("fixture.json", "{}");' },
+    surfaces: [],
+  },
+  {
+    name: "test setup with a missing patch",
+    file: { filename: "src/cache/__tests__/setup.ts" },
+    surfaces: [],
+  },
+  {
+    name: "fixture with a truncated patch",
+    file: {
+      filename: "fixtures/schema.sql",
+      patch: "@@\n+CREATE TABLE example (id TEXT);\n\n[truncated 90 chars]",
+    },
+    surfaces: [],
+  },
+  {
+    name: "example storage setup",
+    file: { filename: "examples/storage.ts", patch: '@@\n+await state.storage.put("key", value);' },
+    surfaces: [],
+  },
+  {
+    name: "test to production rename with a missing patch",
+    file: { filename: "src/state.ts", previous_filename: "fixtures/state.ts" },
+    surfaces: ["unknown-data-model-change: src/state.ts"],
+  },
+  {
+    name: "production to test rename with serialization removed",
+    file: {
+      filename: "tests/runtime/io.ts",
+      previous_filename: "src/runtime/io.ts",
+      patch: "@@\n-await writeFile(target, JSON.stringify(value));",
+    },
+    surfaces: ["serialized state: src/runtime/io.ts"],
+  },
+  {
+    name: "production to fixture rename with a missing patch",
+    file: { filename: "fixtures/state.ts", previous_filename: "src/state.ts" },
+    surfaces: ["unknown-data-model-change: src/state.ts"],
+  },
+  {
+    name: "truncated file list containing only test setup",
+    file: { filename: "test/setup.ts", patch: '@@\n+writeFile("fixture.json", "{}");' },
+    pullFilesTruncated: true,
+    surfaces: ["unknown-truncated-pull-files"],
+  },
+]) {
+  test(`data model detector scopes ${name}`, () => {
+    const detection = dataModelChangeFromPullFilesForTest({
+      pullFiles: [file],
+      pullFilesTruncated,
+    });
+
+    assert.deepEqual(detection, { change: surfaces.length > 0, surfaces });
+  });
+}
+
+test("data model detector finds production persistence and semantic docs changes in mixed diffs", () => {
   const detection = dataModelChangeFromPullFilesForTest({
     pullFiles: [
       {
@@ -259,6 +352,22 @@ test("data model detector finds persistent schema and embedding metadata changes
         filename: "packages/database/migrations/019_backfill_sessions.sql",
         patch: "@@\n+UPDATE sessions SET last_model = 'unknown' WHERE last_model IS NULL;",
       },
+      {
+        filename: "src/runtime/io.ts",
+        patch: "@@\n+await writeFile(target, JSON.stringify(value));",
+      },
+      {
+        filename: "src/workers/store.ts",
+        patch: '@@\n+await state.storage.put("revision", revision);',
+      },
+      {
+        filename: "docs/storage.md",
+        patch: "@@\n+The serialized format now includes a revision field.",
+      },
+      {
+        filename: "src/memory/vector-store.test.ts",
+        patch: '@@\n+writeFile("fixture.json", JSON.stringify(value));',
+      },
     ],
   });
 
@@ -266,8 +375,11 @@ test("data model detector finds persistent schema and embedding metadata changes
     change: true,
     surfaces: [
       "database schema: packages/database/migrations/018_sessions.sql",
+      "durable storage schema: src/workers/store.ts",
       "migration/backfill/repair: packages/database/migrations/019_backfill_sessions.sql",
       "migration/backfill/repair: src/doctor/backfill.ts",
+      "serialized state: docs/storage.md",
+      "serialized state: src/runtime/io.ts",
       "vector/embedding metadata: src/memory/vector-store.ts",
     ],
   });
