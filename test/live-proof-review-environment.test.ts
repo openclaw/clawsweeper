@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
-import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
+import type { LiveProofPlan, MediaProofCommandRunner } from "../dist/clawsweeper-types.js";
 import { mediaProofCommandRunner } from "../dist/clawsweeper-media-proof.js";
 import { driveTerminal } from "../dist/live-proof/drivers.js";
 import {
@@ -218,7 +226,7 @@ test(
           terminalCompletion: "exit_zero",
           reason: "The package script prints a deterministic marker.",
           payoff: { kind: "static_text", justification: "Text is sufficient." },
-          entry: "pnpm run proof",
+          entry: "CI=1 pnpm --reporter=append-only run proof",
           steps: [{ action: "expect_output", text: "ECHO_ONLY_MARKER" }],
         },
         checkout: root,
@@ -521,7 +529,8 @@ test(
           terminalCompletion: "exit_zero",
           reason: "The target command must not inherit ClawSweeper's tmux control session.",
           payoff: { kind: "static_text", justification: "Text is sufficient." },
-          entry: 'test -z "${TMUX-}" && test -z "${TMUX_PANE-}" && printf \'TMUX_ENV_CLEAN\\n\'',
+          entry:
+            'test -z "${TMUX-}" && test -z "${TMUX_PANE-}" && test -z "${TMUX_TMPDIR-}" && printf \'TMUX_ENV_CLEAN\\n\'',
           steps: [{ action: "expect_output", text: "TMUX_ENV_CLEAN" }],
         },
         checkout: root,
@@ -595,54 +604,76 @@ test(
 );
 
 test(
-  "terminal proof cleanup terminates a signal-resistant background process in the owned group",
-  { timeout: 30_000 },
+  "terminal proof cleanup terminates a signal-resistant descendant in a distinct process group",
+  { timeout: 60_000 },
   () => {
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-cleanup-"));
-    const rawVideoPath = join(root, `cleanup-${process.pid}-${Date.now()}.webm`);
-    const processToken = `clawsweeper-proof-child-${process.pid}-${Date.now()}`;
     try {
       writeFileSync(
         join(root, "background.mjs"),
         [
           'import { writeFileSync } from "node:fs";',
-          'writeFileSync("background.pid", String(process.pid));',
+          "const [pidPath] = process.argv.slice(2);",
+          "writeFileSync(pidPath, String(process.pid));",
           'process.on("SIGHUP", () => {});',
           'process.on("SIGTERM", () => {});',
-          "setTimeout(() => process.exit(0), 10_000);",
           "setInterval(() => {}, 1_000);",
         ].join("\n"),
       );
-      const result = driveTerminal({
-        plan: {
-          status: "recommended",
-          surface: "terminal",
-          terminalCompletion: "exit_zero",
-          reason: "The command exits successfully after printing its result.",
-          payoff: { kind: "static_text", justification: "Text is sufficient." },
-          entry:
-            `node background.mjs ${processToken} >/dev/null 2>&1 & ` +
-            "while [ ! -s background.pid ]; do sleep 0.01; done; printf 'cleanup-ready\\n'",
-          steps: [{ action: "expect_output", text: "cleanup-ready" }],
-        },
-        checkout: root,
-        rawVideoPath,
-        maxRecordingSeconds: 90,
-        recordMedia: false,
-        runner: mediaProofCommandRunner,
-      });
+      for (const terminalCompletion of ["exit_zero", "ready_while_running"] as const) {
+        const pidPath = `${terminalCompletion}.pid`;
+        const shellGroupPath = `${terminalCompletion}.shell-pgid`;
+        const childGroupPath = `${terminalCompletion}.child-pgid`;
+        const processToken = `clawsweeper-proof-child-${terminalCompletion}-${process.pid}-${Date.now()}`;
+        const entry = [
+          "set -m",
+          `node background.mjs ${pidPath} ${processToken} >/dev/null 2>&1 &`,
+          "child=$!",
+          `while [ ! -s ${pidPath} ]; do sleep 0.01; done`,
+          `/bin/ps -o pgid= -p "$$" | /usr/bin/tr -d '[:space:]' >${shellGroupPath}`,
+          `/bin/ps -o pgid= -p "$child" | /usr/bin/tr -d '[:space:]' >${childGroupPath}`,
+          "printf 'cleanup-ready\\n'",
+          ...(terminalCompletion === "ready_while_running" ? ["while :; do sleep 1; done"] : []),
+        ].join("\n");
+        const result = driveTerminal({
+          plan: {
+            status: "recommended",
+            surface: "terminal",
+            terminalCompletion,
+            reason:
+              terminalCompletion === "exit_zero"
+                ? "The command exits successfully after printing its result."
+                : "The command remains live after printing its readiness result.",
+            payoff: { kind: "static_text", justification: "Text is sufficient." },
+            entry,
+            steps: [{ action: "expect_output", text: "cleanup-ready" }],
+          },
+          checkout: root,
+          rawVideoPath: join(root, `${terminalCompletion}.webm`),
+          maxRecordingSeconds: 90,
+          recordMedia: false,
+          runner: mediaProofCommandRunner,
+        });
 
-      assert.equal(result.status, "completed");
-      const backgroundPid = Number.parseInt(readFileSync(join(root, "background.pid"), "utf8"), 10);
-      assert.equal(Number.isSafeInteger(backgroundPid), true);
-      let matches = processesContaining(processToken);
-      const deadline = Date.now() + 2_000;
-      while (matches.length > 0 && Date.now() < deadline) {
-        execFileSync("sleep", ["0.05"]);
-        matches = processesContaining(processToken);
+        assert.equal(result.status, "completed", `${terminalCompletion}: ${result.output}`);
+        const backgroundPid = Number.parseInt(readFileSync(join(root, pidPath), "utf8"), 10);
+        const shellGroup = readFileSync(join(root, shellGroupPath), "utf8");
+        const childGroup = readFileSync(join(root, childGroupPath), "utf8");
+        assert.equal(Number.isSafeInteger(backgroundPid), true);
+        assert.notEqual(
+          childGroup,
+          shellGroup,
+          `${terminalCompletion} did not create a distinct PGID`,
+        );
+        let matches = processesContaining(processToken);
+        const deadline = Date.now() + 2_000;
+        while (matches.length > 0 && Date.now() < deadline) {
+          execFileSync("sleep", ["0.05"]);
+          matches = processesContaining(processToken);
+        }
+        assert.deepEqual(matches, []);
+        assert.throws(() => process.kill(backgroundPid, 0), { code: "ESRCH" });
       }
-      assert.deepEqual(matches, []);
-      assert.throws(() => process.kill(backgroundPid, 0), { code: "ESRCH" });
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
@@ -691,6 +722,8 @@ test(
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-window-"));
     const rawVideoPath = join(root, "window-proof.webm");
     const processToken = `clawsweeper-proof-window-${process.pid}-${Date.now()}`;
+    let terminalSession = "";
+    let privateTmuxEnvironment: NodeJS.ProcessEnv | undefined;
     try {
       writeFileSync(
         join(root, "linger.mjs"),
@@ -701,21 +734,61 @@ test(
           "setInterval(() => {}, 1_000);",
         ].join("\n"),
       );
+      let diversionCreated = false;
+      const runner: MediaProofCommandRunner = (command, args, options = {}) => {
+        const result = mediaProofCommandRunner(command, args, options);
+        if (
+          !diversionCreated &&
+          command === "tmux" &&
+          args[0] === "capture-pane" &&
+          String(result.stdout ?? "").includes("original-pane-ready")
+        ) {
+          const target = String(args[args.indexOf("-t") + 1] ?? "");
+          terminalSession = target.slice(0, target.indexOf(":"));
+          privateTmuxEnvironment = { ...options.env };
+          assert.ok(terminalSession);
+          assert.ok(privateTmuxEnvironment.TMUX_TMPDIR);
+          const create = mediaProofCommandRunner(
+            "tmux",
+            [
+              "new-window",
+              "-d",
+              "-t",
+              `${terminalSession}:`,
+              "-n",
+              "diversion",
+              "-c",
+              root,
+              `node linger.mjs diversion.pid ${processToken}`,
+            ],
+            { cwd: root, env: privateTmuxEnvironment },
+          );
+          assert.equal(create.status, 0, String(create.stderr ?? create.error ?? ""));
+          const deadline = Date.now() + 2_000;
+          while (!existsSync(join(root, "diversion.pid")) && Date.now() < deadline) {
+            execFileSync("sleep", ["0.05"]);
+          }
+          assert.equal(existsSync(join(root, "diversion.pid")), true);
+          const select = mediaProofCommandRunner(
+            "tmux",
+            ["select-window", "-t", `${terminalSession}:diversion`],
+            { cwd: root, env: privateTmuxEnvironment },
+          );
+          assert.equal(select.status, 0, String(select.stderr ?? select.error ?? ""));
+          diversionCreated = true;
+        }
+        return result;
+      };
       const result = driveTerminal({
         plan: {
           status: "recommended",
           surface: "terminal",
           terminalCompletion: "exit_zero",
-          reason: "The command changes the selected tmux window before producing its result.",
+          reason: "The controller changes the selected tmux window after observing target output.",
           payoff: { kind: "static_text", justification: "Text is sufficient." },
           entry: [
-            "terminal_session=$(tmux display-message -p '#S')",
-            "printf '%s' \"$terminal_session\" > terminal.session",
             `node linger.mjs original.pid ${processToken} >/dev/null 2>&1 &`,
             "while [ ! -s original.pid ]; do sleep 0.01; done",
-            `tmux new-window -d -t "$terminal_session:" -n diversion "node linger.mjs diversion.pid ${processToken}"`,
-            "while [ ! -s diversion.pid ]; do sleep 0.01; done",
-            `tmux select-window -t "$terminal_session:diversion"`,
             "printf 'original-pane-ready\\n'",
           ].join("\n"),
           steps: [{ action: "expect_output", text: "original-pane-ready" }],
@@ -724,14 +797,14 @@ test(
         rawVideoPath,
         maxRecordingSeconds: 90,
         recordMedia: false,
-        runner: mediaProofCommandRunner,
+        runner,
       });
 
       assert.equal(result.status, "completed", result.output);
       assert.equal(result.steps[0]?.satisfied, true);
       assert.match(result.output, /original-pane-ready/);
+      assert.equal(diversionCreated, true);
 
-      const terminalSession = readFileSync(join(root, "terminal.session"), "utf8");
       const originalPid = Number.parseInt(readFileSync(join(root, "original.pid"), "utf8"), 10);
       const diversionPid = Number.parseInt(readFileSync(join(root, "diversion.pid"), "utf8"), 10);
       let matches = processesContaining(processToken);
@@ -743,8 +816,12 @@ test(
       assert.deepEqual(matches, []);
       assert.throws(() => process.kill(originalPid, 0), { code: "ESRCH" });
       assert.throws(() => process.kill(diversionPid, 0), { code: "ESRCH" });
-      assert.throws(() =>
-        execFileSync("tmux", ["has-session", "-t", terminalSession], { stdio: "ignore" }),
+      assert.notEqual(
+        mediaProofCommandRunner("tmux", ["has-session", "-t", terminalSession], {
+          cwd: root,
+          env: privateTmuxEnvironment,
+        }).status,
+        0,
       );
       assert.deepEqual(
         readdirSync(root).filter((name) => name.startsWith("window-proof.webm.")),

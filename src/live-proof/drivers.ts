@@ -4,6 +4,7 @@ import {
   constants as fsConstants,
   existsSync,
   fstatSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   readSync,
@@ -230,6 +231,7 @@ export function terminalCommandPlan(options: {
   sessionPrefix: string;
   maxRecordingSeconds: number;
   rawVideoPath: string;
+  tmuxTmpDir: string;
   recordMedia?: boolean;
 }): TerminalCommandInvocation[] {
   const terminalSession = `${options.sessionPrefix}-terminal`;
@@ -329,7 +331,12 @@ export function terminalCommandPlan(options: {
         "-s",
         xtermSession,
         "env",
+        "-u",
+        "TMUX",
+        "-u",
+        "TMUX_PANE",
         "DISPLAY=:99",
+        `TMUX_TMPDIR=${options.tmuxTmpDir}`,
         "xterm",
         "-fullscreen",
         "-geometry",
@@ -396,18 +403,12 @@ interface TerminalOutputWindow {
   expectations: readonly string[];
   observedExpectations: Set<string>;
   panePid?: number;
-  processGroupId?: number;
+  nonce: string;
   frozenExit?: Extract<TerminalPaneState, { status: "exited" }>;
   finalizedExitStatus?: number;
   captureOpen: boolean;
-  processGroupCleaned: boolean;
+  paneCleaned: boolean;
   finalViewport?: string;
-}
-
-interface TerminalProcessOwnership {
-  parentPid: number;
-  processGroupId: number;
-  terminalProcessGroupId: number;
 }
 
 interface TerminalCommandFiles {
@@ -417,6 +418,9 @@ interface TerminalCommandFiles {
   captureTemporary: string;
   captureDone: string;
   captureDoneTemporary: string;
+  cleanupScript: string;
+  cleanupResult: string;
+  cleanupResultTemporary: string;
   status: string;
   statusTemporary: string;
   release: string;
@@ -425,8 +429,6 @@ interface TerminalCommandFiles {
   startTemporary: string;
   ready: string;
   readyTemporary: string;
-  processGroup: string;
-  processGroupTemporary: string;
 }
 
 type TerminalLaunchMode = "held";
@@ -518,6 +520,54 @@ process.stdin.resume();
 `;
 }
 
+function generateTerminalCleanupScript(): string {
+  return `#!/bin/bash
+set +m
+
+tty_name=$1
+pane_pid=$2
+nonce=$3
+result_temporary=$4
+result=$5
+
+finish() {
+  builtin printf "%s %s %s\\n" "$pane_pid" "$nonce" "$1" >"$result_temporary"
+  mv -f -- "$result_temporary" "$result"
+  exit "$2"
+}
+
+if [ "$(/usr/bin/uname -s)" = Darwin ]; then
+  term_tty() { /usr/bin/killall -q -TERM -t "$tty_name" 2>/dev/null; }
+  probe_tty() { /usr/bin/killall -0 -t "$tty_name" >/dev/null 2>&1; }
+  kill_tty() { /usr/bin/killall -q -KILL -t "$tty_name" 2>/dev/null; }
+else
+  term_tty() { /usr/bin/pkill -TERM -t "$tty_name" -f '.*' 2>/dev/null; }
+  probe_tty() { /usr/bin/pgrep -t "$tty_name" -f '.*' >/dev/null 2>&1; }
+  kill_tty() { /usr/bin/pkill -KILL -t "$tty_name" -f '.*' 2>/dev/null; }
+fi
+
+for sweep in 1 2 3; do
+  term_tty
+  status=$?
+  case "$status" in 0|1) ;; *) finish "error:term:$status" "$status" ;; esac
+  sleep 0.05
+done
+
+for ((sweep = 1; sweep <= 100; sweep += 1)); do
+  probe_tty
+  status=$?
+  if [ "$status" -eq 1 ]; then finish ok 0; fi
+  if [ "$status" -ne 0 ]; then finish "error:probe:$status" "$status"; fi
+  kill_tty
+  status=$?
+  case "$status" in 0|1) ;; *) finish "error:kill:$status" "$status" ;; esac
+  sleep 0.05
+done
+
+finish error:survivors 124
+`;
+}
+
 export function driveTerminal(options: {
   plan: LiveProofPlan;
   checkout: string;
@@ -527,6 +577,9 @@ export function driveTerminal(options: {
   runner: MediaProofCommandRunner;
 }): LiveProofDriveResult {
   const sessionPrefix = `clawsweeper-live-proof-${process.pid}-${randomUUID()}`;
+  // tmux Unix sockets have a small path cap on macOS; /tmp is the shared
+  // cross-platform short root, while mkdtemp keeps each proof private.
+  const tmuxTmpDir = mkdtempSync("/tmp/clawsweeper-tmux-");
   const terminalSession = `${sessionPrefix}-terminal`;
   const terminalPane = `${terminalSession}:0.0`;
   const displaySession = `${sessionPrefix}-display`;
@@ -541,10 +594,21 @@ export function driveTerminal(options: {
   let capturedOutput = "";
   let failureReason = "";
   const recordMedia = options.recordMedia !== false;
-  const privatePaths: string[] = [];
+  const privatePaths: string[] = [tmuxTmpDir];
   const commandWindows: TerminalOutputWindow[] = [];
   let commandIndex = 0;
   let terminalDeadline = 0;
+  const runner: MediaProofCommandRunner = (command, args, runOptions = {}) => {
+    if (command !== "tmux") return options.runner(command, args, runOptions);
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      ...runOptions.env,
+      TMUX_TMPDIR: tmuxTmpDir,
+    };
+    delete env.TMUX;
+    delete env.TMUX_PANE;
+    return options.runner(command, args, { ...runOptions, env });
+  };
   const nextCommand = (): { files: TerminalCommandFiles; launchMode: TerminalLaunchMode } => {
     const prefix = `${options.rawVideoPath}.command-${process.pid}-${commandIndex}`;
     commandIndex += 1;
@@ -555,6 +619,9 @@ export function driveTerminal(options: {
       captureTemporary: `${prefix}.combined.tmp`,
       captureDone: `${prefix}.capture.done`,
       captureDoneTemporary: `${prefix}.capture.done.tmp`,
+      cleanupScript: `${prefix}.cleanup.sh`,
+      cleanupResult: `${prefix}.cleanup.result`,
+      cleanupResultTemporary: `${prefix}.cleanup.result.tmp`,
       status: `${prefix}.status`,
       statusTemporary: `${prefix}.status.tmp`,
       release: `${prefix}.release`,
@@ -563,8 +630,6 @@ export function driveTerminal(options: {
       startTemporary: `${prefix}.start.tmp`,
       ready: `${prefix}.ready`,
       readyTemporary: `${prefix}.ready.tmp`,
-      processGroup: `${prefix}.process-group`,
-      processGroupTemporary: `${prefix}.process-group.tmp`,
     };
     privatePaths.push(...Object.values(files));
     return { files, launchMode: "held" };
@@ -574,29 +639,30 @@ export function driveTerminal(options: {
       sessionPrefix,
       maxRecordingSeconds: options.maxRecordingSeconds,
       rawVideoPath: options.rawVideoPath,
+      tmuxTmpDir,
       recordMedia,
     })) {
       requireSuccess(
         invocation.command,
         invocation.args,
-        options.runner(invocation.command, invocation.args, { cwd: options.checkout }),
+        runner(invocation.command, invocation.args, { cwd: options.checkout }),
       );
       if (invocation.waitAfter === "display") {
-        waitForDisplay(options.runner, options.checkout);
+        waitForDisplay(runner, options.checkout);
       } else if (invocation.waitAfter === "recorder") {
-        waitForRecorder(options.runner, options.checkout, recorderSession, options.rawVideoPath);
+        waitForRecorder(runner, options.checkout, recorderSession, options.rawVideoPath);
         recordingStartedAt = Date.now();
       }
     }
     const expectations = terminalExpectations(options.plan);
     terminalDeadline = Date.now() + options.maxRecordingSeconds * 1_000;
-    initialPaneSnapshot = captureTerminalPane(options.runner, options.checkout, terminalPane);
+    initialPaneSnapshot = captureTerminalPane(runner, options.checkout, terminalPane);
     try {
       const command = nextCommand();
       outputWindow = runTerminalCommand(
         options.plan.entry,
         terminalPane,
-        options.runner,
+        runner,
         options.checkout,
         command.files,
         expectations,
@@ -618,7 +684,7 @@ export function driveTerminal(options: {
           const result = runTerminalStep(
             step,
             terminalPane,
-            options.runner,
+            runner,
             options.checkout,
             outputWindow,
             nextCommand,
@@ -673,7 +739,7 @@ export function driveTerminal(options: {
           outputWindow,
           options.plan.terminalCompletion,
           terminalPane,
-          options.runner,
+          runner,
           options.checkout,
           cutover,
           terminalDeadline,
@@ -692,22 +758,22 @@ export function driveTerminal(options: {
       }
     };
     if (!recordMedia && !failed && options.plan.terminalCompletion === "ready_while_running") {
-      sleepWithinTerminalBudget(options.runner, TERMINAL_READY_STABILITY_SECONDS, terminalDeadline);
+      sleepWithinTerminalBudget(runner, TERMINAL_READY_STABILITY_SECONDS, terminalDeadline);
     }
     validateCurrentCommand(!recordMedia);
     if (recordMedia) {
-      if (!failed) holdEndState(options.runner, recordingStartedAt, terminalDeadline);
+      if (!failed) holdEndState(runner, recordingStartedAt, terminalDeadline);
       validateCurrentCommand(false);
-      finalizeRecorder(options.runner, options.checkout, recorderSession);
+      finalizeRecorder(runner, options.checkout, recorderSession);
       validateCurrentCommand(true);
-      requireRecording(options.runner, options.checkout, options.rawVideoPath);
+      requireRecording(runner, options.checkout, options.rawVideoPath);
     }
     if (failed) {
       for (const window of commandWindows) {
         try {
           if (window.captureOpen) {
-            refreshTerminalCommandOutput(window, options.runner, options.checkout, terminalPane);
-            closeTerminalCapture(window, options.runner, options.checkout, terminalPane);
+            refreshTerminalCommandOutput(window, runner, options.checkout, terminalPane);
+            closeTerminalCapture(window, runner, options.checkout, terminalPane);
           }
         } catch (error) {
           const captureFailure = terminalPrivateErrorMessage(error, privatePaths);
@@ -721,14 +787,14 @@ export function driveTerminal(options: {
     } else {
       const viewport =
         outputWindow?.finalViewport ??
-        captureTerminalViewport(options.runner, options.checkout, terminalPane);
+        captureTerminalViewport(runner, options.checkout, terminalPane);
       capturedOutput = terminalPrivateErrorMessage(
         viewport.trim() ? viewport.replace(/\n$/, "") : "",
         privatePaths,
       );
     }
   } catch (error) {
-    const diagnosticError = terminalErrorWithDiagnostics(error, options.runner, options.checkout, {
+    const diagnosticError = terminalErrorWithDiagnostics(error, runner, options.checkout, {
       terminal: terminalPane,
       display: displaySession,
       xterm: xtermSession,
@@ -745,31 +811,40 @@ export function driveTerminal(options: {
       }
     };
     for (const window of commandWindows) {
-      cleanup(() => closeTerminalCapture(window, options.runner, options.checkout, terminalPane));
-      cleanup(() => cleanupTerminalWindow(window, terminalPane, options.runner, options.checkout));
+      cleanup(() => closeTerminalCapture(window, runner, options.checkout, terminalPane));
+      cleanup(() => cleanupTerminalWindow(window, terminalPane, runner, options.checkout));
     }
     if (recordMedia) {
       cleanup(() => {
-        options.runner("tmux", ["kill-session", "-t", recorderSession]);
+        runner("tmux", ["kill-session", "-t", recorderSession]);
       });
       cleanup(() => {
-        options.runner("tmux", ["kill-session", "-t", xtermSession]);
+        runner("tmux", ["kill-session", "-t", xtermSession]);
       });
       cleanup(() => {
-        options.runner("tmux", ["kill-session", "-t", displaySession]);
+        runner("tmux", ["kill-session", "-t", displaySession]);
       });
     }
     cleanup(() => {
-      options.runner("tmux", ["kill-session", "-t", terminalSession]);
+      runner("tmux", ["kill-session", "-t", terminalSession]);
     });
     for (const privatePath of privatePaths) {
-      cleanup(() => rmSync(privatePath, { force: true }));
+      cleanup(() => rmSync(privatePath, { force: true, recursive: privatePath === tmuxTmpDir }));
     }
     if (cleanupErrors.length > 0) {
-      thrown = new AggregateError(
-        thrown ? [thrown, ...cleanupErrors] : cleanupErrors,
-        thrown ? "terminal proof and cleanup failed" : "terminal cleanup failed",
-      );
+      if (failed && !thrown) {
+        const cleanupFailure = cleanupErrors
+          .map((error) => terminalPrivateErrorMessage(error, privatePaths))
+          .join("; ");
+        capturedOutput = [capturedOutput, `[cleanup failure]\n${cleanupFailure}`]
+          .filter(Boolean)
+          .join("\n\n");
+      } else {
+        thrown = new AggregateError(
+          thrown ? [thrown, ...cleanupErrors] : cleanupErrors,
+          thrown ? "terminal proof and cleanup failed" : "terminal cleanup failed",
+        );
+      }
     }
   }
   if (thrown) throw thrown;
@@ -1006,6 +1081,10 @@ function runTerminalCommand(
     encoding: "utf8",
     mode: 0o600,
   });
+  writeFileSync(files.cleanupScript, generateTerminalCleanupScript(), {
+    encoding: "utf8",
+    mode: 0o700,
+  });
   const window: TerminalOutputWindow = {
     command,
     files,
@@ -1013,39 +1092,32 @@ function runTerminalCommand(
     chunks: [],
     expectations,
     observedExpectations: new Set(),
+    nonce: randomUUID(),
     captureOpen: false,
-    processGroupCleaned: false,
+    paneCleaned: false,
   };
+  const clearHistoryArgs = ["clear-history", "-t", target];
+  requireSuccess("tmux", clearHistoryArgs, runner("tmux", clearHistoryArgs, { cwd: checkout }));
   try {
     // The start gate keeps the pane alive while capture attaches, so fast
     // commands cannot emit before pipe-pane owns their output.
-    const heldCommand = [
-      "trap ':' TERM",
+    const commandRunner = [
+      "set +m",
+      "trap ':' HUP TERM",
+      "tty_path=$(/usr/bin/tty)",
+      'case "$tty_path" in /dev/*) tty_name=${tty_path#/dev/} ;; *) exit 125 ;; esac',
       'while [ ! -e "$5" ]; do sleep 0.05; done',
       "builtin printf '\\033[2J\\033[H'",
-      'builtin printf "ready\\n" >"$6"',
+      '( /usr/bin/env -u TMUX -u TMUX_PANE -u TMUX_TMPDIR /bin/bash --noprofile --norc "$1"; status=$?; builtin printf "%s\\n" "$status" >"$2"; mv -f -- "$2" "$3" ) </dev/tty >/dev/tty 2>&1 &',
+      'builtin printf "%s %s\\n" "$$" "$8" >"$6"',
       'mv -f -- "$6" "$7"',
-      '/bin/bash --noprofile --norc "$1"',
-      "status=$?",
-      'builtin printf "%s\\n" "$status" >"$2"',
-      'mv -f -- "$2" "$3"',
-      'while [ ! -e "$4" ]; do sleep 0.05; done',
-      'exit "$status"',
-    ].join("; ");
-    const commandRunner = [
-      "set -m",
-      `( ${heldCommand} ) &\ngroup=$!`,
-      'group_pgid=$(/bin/ps -o pgid= -p "$group" | /usr/bin/tr -d "[:space:]")',
-      'if [ "$group_pgid" != "$group" ]; then builtin kill "$group" 2>/dev/null || true; exit 125; fi',
-      'builtin printf "%s\\n" "$group" >"$8"',
-      'mv -f -- "$8" "$9"',
-      // fg preserves controlling-terminal semantics while suppressing Bash's
-      // job-command echo. The held subshell keeps the trusted PGID reserved.
-      "fg %1 >/dev/null",
-      'exit "$?"',
-    ].join("; ");
+      'while :; do if [ -f "$4" ]; then IFS=" " read -r release_pid release_nonce release_extra 2>/dev/null <"$4" || true; if [ "$release_pid" = "$$" ] && [ "$release_nonce" = "$8" ] && [ -z "${release_extra-}" ]; then break; fi; fi; sleep 0.05; done',
+      'builtin printf -v cleanup_command "%q " /bin/bash "$9" "$tty_name" "$$" "$8" "${10}" "${11}"',
+      'tmux run-shell -b "$cleanup_command" || exit 126',
+      "while :; do sleep 3600; done",
+    ].join("\n");
     const shellCommand =
-      `/usr/bin/env -u TMUX -u TMUX_PANE /bin/bash --noprofile --norc -c ${quote(commandRunner)} ` +
+      `/bin/bash --noprofile --norc -c ${quote(commandRunner)} ` +
       [
         "clawsweeper-terminal",
         files.command,
@@ -1055,49 +1127,17 @@ function runTerminalCommand(
         files.start,
         files.readyTemporary,
         files.ready,
-        files.processGroupTemporary,
-        files.processGroup,
+        window.nonce,
+        files.cleanupScript,
+        files.cleanupResultTemporary,
+        files.cleanupResult,
       ]
         .map(quote)
         .join(" ");
     const respawnArgs = ["respawn-pane", "-k", "-t", target, "-c", checkout, shellCommand];
     requireSuccess("tmux", respawnArgs, runner("tmux", respawnArgs, { cwd: checkout }));
-    for (let elapsed = 0; elapsed <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10; elapsed += 1) {
-      const panePid = readTerminalPanePid(runner, checkout, terminalPane);
-      const processGroupText = readBoundedTerminalFile(files.processGroup, 64);
-      if (panePid && processGroupText !== undefined) {
-        const rawProcessGroup = processGroupText.trim();
-        if (!/^\d+$/.test(rawProcessGroup)) {
-          throw new Error("terminal command process group is malformed");
-        }
-        const processGroupId = Number.parseInt(rawProcessGroup, 10);
-        if (!Number.isSafeInteger(processGroupId) || processGroupId <= 0) {
-          throw new Error("terminal command process group is malformed");
-        }
-        const ownership = readTerminalProcessOwnership(runner, checkout, processGroupId);
-        if (
-          ownership?.parentPid === panePid &&
-          ownership.processGroupId === processGroupId &&
-          ownership.terminalProcessGroupId === processGroupId
-        ) {
-          window.panePid = panePid;
-          window.processGroupId = processGroupId;
-          rmSync(files.processGroup, { force: true });
-          rmSync(files.processGroupTemporary, { force: true });
-          break;
-        }
-      }
-      if (elapsed < TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10) {
-        requireSuccess("sleep", ["0.1"], runner("sleep", ["0.1"]));
-      }
-    }
-    if (!window.panePid || !window.processGroupId) {
-      throw new Error("terminal command did not publish its owned process group");
-    }
-    const clearHistoryArgs = ["clear-history", "-t", target];
-    requireSuccess("tmux", clearHistoryArgs, runner("tmux", clearHistoryArgs, { cwd: checkout }));
     const captureCommand =
-      `/usr/bin/env -u TMUX -u TMUX_PANE node ${quote(files.captureScript)} ` +
+      `/usr/bin/env -u TMUX -u TMUX_PANE -u TMUX_TMPDIR node ${quote(files.captureScript)} ` +
       [files.capture, files.captureTemporary, files.captureDone, files.captureDoneTemporary]
         .map(quote)
         .join(" ");
@@ -1115,7 +1155,9 @@ function runTerminalCommand(
   for (let elapsed = 0; elapsed <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS; elapsed += 1) {
     const panePid = readTerminalPanePid(runner, checkout, terminalPane);
     if (panePid) {
-      if (panePid !== window.panePid) {
+      if (window.panePid === undefined) {
+        window.panePid = panePid;
+      } else if (panePid !== window.panePid) {
         throw new TerminalCommandExecutionError(
           `terminal pane identity changed from launch pid ${window.panePid} to ${panePid}`,
           window,
@@ -1123,9 +1165,9 @@ function runTerminalCommand(
       }
       try {
         const state = readTerminalCommandState(window, runner, checkout, terminalPane);
-        const readiness = readBoundedTerminalFile(files.ready, 64);
+        const readiness = readBoundedTerminalFile(files.ready, 128);
         if (readiness !== undefined) {
-          if (readiness !== "ready\n") {
+          if (readiness !== `${panePid} ${window.nonce}\n`) {
             throw new Error("terminal command readiness acknowledgement is malformed");
           }
           refreshTerminalCommandOutput(window, runner, checkout, terminalPane);
@@ -1309,8 +1351,8 @@ function finalizeHeldTerminalCommand(
   if (heldState?.status !== "running") {
     throw new Error("held terminal command wrapper exited before controller cleanup");
   }
-  // The wrapper remains the live pane owner until cleanup signals its process
-  // group. The recorded child status is authoritative; pane exit is cleanup.
+  // The wrapper remains the live pane owner until tty-scoped cleanup finishes.
+  // The recorded child status is authoritative; pane exit is cleanup.
   closeTerminalCapture(window, runner, checkout, terminalPane);
   observeTerminalSnapshot(
     window,
@@ -1498,73 +1540,64 @@ function renderFailedTerminalOutput(
   return sections.join("\n\n");
 }
 
-function terminateTerminalProcessGroup(
-  runner: MediaProofCommandRunner,
-  checkout: string,
-  processGroupId: number | undefined,
-): void {
-  if (!processGroupId) return;
-  const signalErrors: unknown[] = [];
-  const runSignal = (signal: "-TERM" | "-KILL") => {
-    try {
-      const result = runner("/bin/kill", [signal, `-${processGroupId}`], { cwd: checkout });
-      if (result.status !== 0) {
-        signalErrors.push(
-          new Error(
-            `/bin/kill ${signal} -${processGroupId} failed: ${mediaProofSpawnDetail(result)}`,
-          ),
-        );
-      }
-    } catch (error) {
-      signalErrors.push(error);
-    }
-  };
-  const processGroupExists = (): boolean => {
-    const result = runner("/bin/kill", ["-0", `-${processGroupId}`], { cwd: checkout });
-    return result.status === 0;
-  };
-  runSignal("-TERM");
-  requireSuccess("sleep", ["0.1"], runner("sleep", ["0.1"]));
-  if (!processGroupExists()) return;
-  runSignal("-KILL");
-  for (let attempt = 0; attempt <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10; attempt += 1) {
-    if (!processGroupExists()) return;
-    if (attempt < TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10) {
-      requireSuccess("sleep", ["0.1"], runner("sleep", ["0.1"]));
-    }
-  }
-  const surviving = new Error(`terminal process group ${processGroupId} survived SIGKILL`);
-  throw signalErrors.length > 0
-    ? new AggregateError(
-        [...signalErrors, surviving],
-        `failed to clean terminal process group ${processGroupId}`,
-      )
-    : surviving;
-}
-
 function cleanupTerminalWindow(
   window: TerminalOutputWindow,
   terminalPane: string,
   runner: MediaProofCommandRunner,
   checkout: string,
 ): void {
-  if (window.processGroupCleaned) return;
-  const panePid = readTerminalPanePid(runner, checkout, terminalPane);
-  if (!panePid || panePid !== window.panePid || !window.processGroupId) return;
-  const ownership = readTerminalProcessOwnership(runner, checkout, window.processGroupId);
-  if (!ownership) {
-    window.processGroupCleaned = true;
-    return;
+  if (window.paneCleaned) return;
+  if (window.captureOpen) {
+    refreshTerminalCommandOutput(window, runner, checkout, terminalPane);
+    closeTerminalCapture(window, runner, checkout, terminalPane);
   }
-  if (
-    ownership.parentPid !== panePid ||
-    ownership.processGroupId !== window.processGroupId ||
-    ownership.terminalProcessGroupId !== window.processGroupId
-  ) {
-    return;
+  const state = readTerminalPaneState(runner, checkout, terminalPane);
+  if (!state) throw new Error("terminal pane disappeared before controller release");
+  if (window.panePid === undefined || state.pid !== window.panePid) {
+    throw new Error(
+      `terminal pane identity changed from launch pid ${window.panePid ?? "unknown"} to ${state.pid}`,
+    );
   }
-  terminateTerminalProcessGroup(runner, checkout, window.processGroupId);
-  window.processGroupCleaned = true;
+  if (state.status !== "running") {
+    throw new Error("terminal pane wrapper exited before controller release");
+  }
+  window.finalViewport ??= captureTerminalViewport(runner, checkout, terminalPane);
+  writeFileSync(window.files.releaseTemporary, `${state.pid} ${window.nonce}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  renameSync(window.files.releaseTemporary, window.files.release);
+  // The wrapper schedules tty-scoped fixed-point teardown through its private
+  // tmux server. Exact pane death and the matching receipt are both required.
+  let cleanupAcknowledged = false;
+  for (let elapsed = 0; elapsed <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10; elapsed += 1) {
+    const cleanupResult = readBoundedTerminalFile(window.files.cleanupResult, 128);
+    if (cleanupResult !== undefined) {
+      if (cleanupResult !== `${state.pid} ${window.nonce} ok\n`) {
+        throw new Error(`terminal pane cleanup failed: ${cleanupResult.trim() || "empty result"}`);
+      }
+      cleanupAcknowledged = true;
+    }
+    const releasedState = readTerminalPaneState(runner, checkout, terminalPane);
+    if (!releasedState) {
+      throw new Error("terminal pane disappeared before cleanup completion was observed");
+    }
+    if (releasedState.pid !== state.pid) {
+      throw new Error(
+        `terminal pane identity changed during cleanup from ${state.pid} to ${releasedState.pid}`,
+      );
+    }
+    if (releasedState.status === "exited" && cleanupAcknowledged) {
+      window.paneCleaned = true;
+      return;
+    }
+    if (elapsed < TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10) {
+      requireSuccess("sleep", ["0.1"], runner("sleep", ["0.1"]));
+    }
+  }
+  throw new Error(
+    `terminal pane cleanup did not finish within ${TERMINAL_COMMAND_START_TIMEOUT_SECONDS} seconds`,
+  );
 }
 
 function readTerminalCommandState(
@@ -1615,36 +1648,6 @@ function readTerminalPaneState(
     return { status: "exited", pid, exitStatus: terminalSignalExitStatus(signal) };
   }
   throw new Error("terminal pane status is malformed");
-}
-
-function readTerminalProcessOwnership(
-  runner: MediaProofCommandRunner,
-  checkout: string,
-  processGroupId: number,
-): TerminalProcessOwnership | undefined {
-  const args = ["-o", "ppid=,pgid=,tpgid=", "-p", String(processGroupId)];
-  const result = runner("/bin/ps", args, { cwd: checkout });
-  if (result.status !== 0) return undefined;
-  const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(String(result.stdout ?? ""));
-  if (!match) throw new Error("terminal command process ownership is malformed");
-  const parentPid = Number.parseInt(match[1]!, 10);
-  const parsedProcessGroupId = Number.parseInt(match[2]!, 10);
-  const terminalProcessGroupId = Number.parseInt(match[3]!, 10);
-  if (
-    !Number.isSafeInteger(parentPid) ||
-    parentPid <= 0 ||
-    !Number.isSafeInteger(parsedProcessGroupId) ||
-    parsedProcessGroupId <= 0 ||
-    !Number.isSafeInteger(terminalProcessGroupId) ||
-    terminalProcessGroupId <= 0
-  ) {
-    throw new Error("terminal command process ownership is malformed");
-  }
-  return {
-    parentPid,
-    processGroupId: parsedProcessGroupId,
-    terminalProcessGroupId,
-  };
 }
 
 function readTerminalPanePid(

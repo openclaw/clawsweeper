@@ -183,10 +183,19 @@ live after satisfying an output expectation. Non-recorded long-running proofs
 must remain live through a three-second stability hold before publication.
 Every earlier command must exit zero. The supervisor exits with the command's
 status, and tmux's pane lifecycle records whether that supervisor is still
-running or how it exited. Before the target starts, Bash job control creates and
-records a dedicated foreground process group while preserving controlling-
-terminal behavior. Cleanup signals only that trusted group; the pane PID remains
-an identity check and is never treated as a process-group ID.
+running or how it exited. Each proof uses a private tmux socket directory. The
+original pane wrapper launches the target asynchronously with job control
+disabled and stdio bound to its controlling terminal, then publishes its pane
+PID with a fresh nonce. After capture and the final viewport are sealed, the
+controller releases that exact tuple. The wrapper schedules a cleanup job
+through its private tmux server; that job TERM-sweeps and repeatedly applies
+terminal-scoped KILL until the terminal has no processes left. Cleanup succeeds
+only when the exact pane is dead and a matching atomic success receipt exists.
+A Darwin cleanup uses `killall -t`; other platforms use `pgrep`/`pkill` with an
+explicit all-process pattern.
+A stale tuple, pane replacement, cleanup command error, surviving process, or
+timeout fails the proof visibly. Target commands do not inherit `TMUX`,
+`TMUX_PANE`, or `TMUX_TMPDIR`.
 All untrusted fields are bounded and neutralized against Markdown fences, HTML,
 and ClawSweeper marker spoofing. OpenClaw Bay is unaffected because schema v1
 and the existing lifecycle and publication contracts do not change.
