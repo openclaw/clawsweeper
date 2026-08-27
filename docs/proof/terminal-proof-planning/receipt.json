@@ -1,10 +1,15 @@
 {
   "base": "f211e21fb89d00777ac07cc13c358f9f7b02a939",
-  "head": "f211e21fb89d00777ac07cc13c358f9f7b02a939",
+  "head": "ca48d41487affa905cb775da8a985d1b128b18c3",
   "committed": false,
-  "trackedDiffSha256": "d5a38a5dc5ae5b5bf447e6e719695b78a771c5492c7a4f94077491fe0cd8899f",
+  "uncommittedScope": "Constrained proof generator, README and latest normalized receipt; production inputs are unchanged from the recorded head. Final committed-head replay pending.",
+  "supersedes": {
+    "head": "ca48d41487affa905cb775da8a985d1b128b18c3",
+    "receiptSha256": "a4b1fcdcf7fb9df85cad699cb19ad78b30b03bc29c6264fa4609abb874ad0386",
+    "reason": "The prior full-access generations remain historical; neither decision is used by this constrained proof."
+  },
   "provider": "local macOS tmux",
-  "node": "v26.7.0",
+  "node": "v24.19.0",
   "tmux": "tmux 3.7c",
   "schemaShapeUnchanged": true,
   "recordingTested": false,
@@ -26,33 +31,75 @@
     "scripts/e2e/terminal-proof-once.mjs": "63ddce39df0362fd32c4a2a4aca0425403b54a7c9b8200a03d821121adb9b107",
     "scripts/e2e/terminal-proof-planning.mjs": "06142bb8cc2fff3679820124cb64855be6681c54574562f654bc86f697f91994"
   },
+  "proofGeneratorSha256": "2b12954b5afe14cb2d451a5457342ca1ad5f29703b2deb5426f162f80692f41e",
   "runs": [
     {
       "variant": "fast",
       "generation": {
         "generator": "Codex",
+        "cliVersion": "codex-cli 0.150.0-alpha.13",
+        "provider": "openai",
+        "auth": "existing ChatGPT login",
+        "startedAt": "2026-08-27T06:56:21.887Z",
+        "completedAt": "2026-08-27T06:57:29.731Z",
         "exitCode": 0,
-        "approvalNever": true,
-        "sandboxDangerFullAccess": true,
-        "structuredDecisionExists": true
+        "helperSha256": "2b12954b5afe14cb2d451a5457342ca1ad5f29703b2deb5426f162f80692f41e",
+        "promptSha256": "0bdb313ab2a4c796bc95b34f472e1782b9a03310c6de823d7c10f790a907a604",
+        "schemaSha256": "625131a54e8521d181c56e47d0ed1a1ec6883715124edddc4de39f5cc4e8465b",
+        "decisionSha256": "e63766c229b938e3461439ed3e85422a8847d3a30a42333de99ded49223d5fec",
+        "isolation": {
+          "approval": "never",
+          "permissionProfile": "terminal-proof",
+          "filesystem": {
+            ":minimal": "read",
+            ":workspace_roots": "read"
+          },
+          "effectiveReadRoots": [
+            ":minimal",
+            "<empty-workspace>",
+            "<CLI bundled shell>",
+            "<CLI executable shim>"
+          ],
+          "writablePaths": [],
+          "childNetworkEnabled": false,
+          "userConfigIgnored": true,
+          "execRulesIgnored": true,
+          "projectConfigAbsent": true,
+          "projectInstructionsDisabled": true,
+          "skillsDisabled": true,
+          "shellToolsDisabled": true,
+          "mcpDisabled": true,
+          "pluginsDisabled": true,
+          "webSearchDisabled": true,
+          "emptyWorkspaceBeforeAndAfter": true,
+          "outsideSentinelReadDenied": true,
+          "workspaceWriteDenied": true,
+          "startupSandbox": "read-only",
+          "toolInventory": [
+            "functions.apply_patch",
+            "functions.exec",
+            "functions.send_user_message_async",
+            "functions.wait"
+          ],
+          "toolCalls": 0,
+          "inferenceRequests": 1,
+          "toolInventoryEvidence": "actual local inference request trace; no raw transcript retained in bundle"
+        },
+        "recordingTested": false
       },
       "promptSha256": "0bdb313ab2a4c796bc95b34f472e1782b9a03310c6de823d7c10f790a907a604",
       "schemaSha256": "625131a54e8521d181c56e47d0ed1a1ec6883715124edddc4de39f5cc4e8465b",
-      "decisionSha256": "c69775472a65e94a09841a7ce2b1847cd5d6ad830bf97664451ef9dd61b2b3a9",
+      "decisionSha256": "e63766c229b938e3461439ed3e85422a8847d3a30a42333de99ded49223d5fec",
       "generatedPlan": {
         "status": "recommended",
         "surface": "terminal",
-        "reason": "The complete supplied source supports a safe, dependency-free local run against the initially absent output directory.",
+        "reason": "The complete dependency-free source supports a deterministic local run with no accounts, secrets, or network, and the output directory is initially absent.",
         "payoff": {
           "kind": "static_text",
-          "justification": "The default invocation produces a short burst of plain text, so one captured transcript is more useful than a recording."
+          "justification": "The default invocation produces a short burst of plain text, so a captured output block is more useful than a recording."
         },
         "entry": "node once.mjs output",
         "steps": [
-          {
-            "action": "expect_output",
-            "text": "PROOF_STARTED"
-          },
           {
             "action": "expect_output",
             "text": "PASS exclusive directory"
@@ -78,7 +125,6 @@
       "drive_status": "completed",
       "overall_pass": true,
       "observedAssertions": [
-        "PROOF_STARTED",
         "PASS exclusive directory",
         "PASS original bytes retained",
         "PASS local fixture",
@@ -132,28 +178,73 @@
           }
         }
       ],
-      "artifact": ".artifacts/terminal-proof-planning/fast/receipt.json",
-      "artifactSha256": "a93995e89828a5d09e389006d5e1363b431fbddc1f2c1f23662697cb2479375d"
+      "artifact": ".artifacts/terminal-proof-planning/final-constrained-fast/receipt.json",
+      "artifactSha256": "19cdc91956c91742dec67ea22120a8f6dbc4780a269d961ede1ccb44e3530c49"
     },
     {
       "variant": "delayed",
       "generation": {
         "generator": "Codex",
+        "cliVersion": "codex-cli 0.150.0-alpha.13",
+        "provider": "openai",
+        "auth": "existing ChatGPT login",
+        "startedAt": "2026-08-27T06:56:21.987Z",
+        "completedAt": "2026-08-27T06:57:23.137Z",
         "exitCode": 0,
-        "approvalNever": true,
-        "sandboxDangerFullAccess": true,
-        "structuredDecisionExists": true
+        "helperSha256": "2b12954b5afe14cb2d451a5457342ca1ad5f29703b2deb5426f162f80692f41e",
+        "promptSha256": "aa1108fc8f46041fab7012f9e071217acfe5180d6abef6053ae8334291f7b803",
+        "schemaSha256": "625131a54e8521d181c56e47d0ed1a1ec6883715124edddc4de39f5cc4e8465b",
+        "decisionSha256": "8e771cc4a1fae316d577cb0a8cefdfacc41be190bead3781b2d786f5bee1cdae",
+        "isolation": {
+          "approval": "never",
+          "permissionProfile": "terminal-proof",
+          "filesystem": {
+            ":minimal": "read",
+            ":workspace_roots": "read"
+          },
+          "effectiveReadRoots": [
+            ":minimal",
+            "<empty-workspace>",
+            "<CLI bundled shell>",
+            "<CLI executable shim>"
+          ],
+          "writablePaths": [],
+          "childNetworkEnabled": false,
+          "userConfigIgnored": true,
+          "execRulesIgnored": true,
+          "projectConfigAbsent": true,
+          "projectInstructionsDisabled": true,
+          "skillsDisabled": true,
+          "shellToolsDisabled": true,
+          "mcpDisabled": true,
+          "pluginsDisabled": true,
+          "webSearchDisabled": true,
+          "emptyWorkspaceBeforeAndAfter": true,
+          "outsideSentinelReadDenied": true,
+          "workspaceWriteDenied": true,
+          "startupSandbox": "read-only",
+          "toolInventory": [
+            "functions.apply_patch",
+            "functions.exec",
+            "functions.send_user_message_async",
+            "functions.wait"
+          ],
+          "toolCalls": 0,
+          "inferenceRequests": 1,
+          "toolInventoryEvidence": "actual local inference request trace; no raw transcript retained in bundle"
+        },
+        "recordingTested": false
       },
       "promptSha256": "aa1108fc8f46041fab7012f9e071217acfe5180d6abef6053ae8334291f7b803",
       "schemaSha256": "625131a54e8521d181c56e47d0ed1a1ec6883715124edddc4de39f5cc4e8465b",
-      "decisionSha256": "192b93f22aa3adc7a0182db5076f75dc2bce89c2c900dc9a9bbfe52bed55a7cc",
+      "decisionSha256": "8e771cc4a1fae316d577cb0a8cefdfacc41be190bead3781b2d786f5bee1cdae",
       "generatedPlan": {
         "status": "recommended",
         "surface": "terminal",
-        "reason": "The complete supplied source is local-only and dependency-free, and one delayed invocation fits within the 90-second demonstration window.",
+        "reason": "The complete dependency-free fixture supports a local 34-second demonstration without accounts, secrets, or network access.",
         "payoff": {
           "kind": "progressive_output",
-          "justification": "A recording shows the transition from setup to immediate startup output and delayed completion after 34 seconds."
+          "justification": "A recording shows the immediate start marker and the delayed transition to five completion lines after one invocation."
         },
         "entry": "printf 'SETUP_READY\\n'",
         "steps": [
@@ -168,10 +259,6 @@
           {
             "action": "expect_output",
             "text": "PROOF_STARTED"
-          },
-          {
-            "action": "wait",
-            "seconds": 35
           },
           {
             "action": "expect_output",
@@ -253,8 +340,29 @@
           }
         }
       ],
-      "artifact": ".artifacts/terminal-proof-planning/delayed/receipt.json",
-      "artifactSha256": "982441a0d10c4097db065794a4bb51c568f0e8d5d70eca562e8fc6af573d28b9"
+      "artifact": ".artifacts/terminal-proof-planning/final-constrained-delayed/receipt.json",
+      "artifactSha256": "baf9f4e99e05b527908c7485903ae87d2e3a0ace9008ee9d4816febd9c838a09"
     }
+  ],
+  "validation": {
+    "build": "passed",
+    "focusedTests": {
+      "passed": 138,
+      "failed": 0,
+      "command": "node --test test/decision-parser.test.ts test/review-prompt-policy.test.ts test/review-prompt-context.test.ts test/live-proof.test.ts"
+    },
+    "fullSuite": "Not rerun for this narrow correction; earlier 49 diagnosed host-fixture failures remain outside this patch. CI after commit pending.",
+    "staticChecks": "passed: active surface, dashboard queue boundary, dashboard strict, docs, limits, formatting",
+    "helperChecks": "passed: syntax, lint, final attestation of both actual traces, actual restricted inventory accepted; shell, MCP, hosted search and altered wrapper inventories rejected",
+    "diffCheck": "passed"
+  },
+  "limits": [
+    "macOS Seatbelt and the pinned CLI version only; no cross-platform claim.",
+    "One bounded generation per variant completed, with zero tool calls. A prior attempt stopped before inference during state-database backfill.",
+    "Model metadata requires Code Mode wrappers; their inspected definitions expose only sandboxed apply_patch. The CLI has no blanket no-tools flag.",
+    "The fast decision required collector re-attestation for the inspected Code Mode wrapper; final permission checks were applied to both original traces without altering decision bytes. Launch and attestation helper hashes are retained separately.",
+    "The real CLI retains its existing internal state and ChatGPT authentication. Credentials were not copied or extracted. No external network probe was performed.",
+    "Controlled tmux fixture only; recording, publication, live GitHub/apply/close/workflow changes and arbitrary future planner outputs are not proved.",
+    "OpenClaw Bay is unaffected: no schema shape, lifecycle, publication or observer contract change."
   ]
 }
