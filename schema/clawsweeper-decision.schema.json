@@ -824,18 +824,18 @@
             },
             "justification": {
               "type": "string",
-              "description": "One sentence naming what a viewer actually sees move or change over the recording."
+              "description": "One sentence explaining why static text is sufficient or what a viewer sees change in a useful recording. Never repeat a one-shot terminal command just for media; use a safe setup entry followed by one run for a transition, or choose static_text and verify once."
             }
           }
         },
         "entry": {
           "type": "string",
-          "description": "The URL path for browser proof or command for terminal proof. Use an empty string unless status is recommended."
+          "description": "The URL path for browser proof or command for terminal proof. Terminal entry executes automatically before all steps. For a one-shot proof, put the proof command here followed by stable expect_output steps, or use a safe setup entry followed by exactly one run of the proof command. Each command runs in a separate Bash process in the same checkout; share state through files or combine dependent setup and execution in one command. Use an empty string unless status is recommended."
         },
         "steps": {
           "type": "array",
           "maxItems": 10,
-          "description": "Structured deterministic actions for the recommended surface. Use an empty array unless status is recommended. Step values must never contain secrets or tokens.",
+          "description": "Structured deterministic actions executed after entry for the recommended surface. Every terminal run executes independently, even when identical to entry or an earlier run; nothing is deduplicated. Do not repeat one-shot commands to capture output or create media. Intentional reruns after state changes are valid and execute. Use an empty array unless status is recommended. Step values must never contain secrets or tokens.",
           "items": {
             "anyOf": [
               {
@@ -908,7 +908,10 @@
                 "required": ["action", "command"],
                 "properties": {
                   "action": { "type": "string", "const": "run" },
-                  "command": { "type": "string" }
+                  "command": {
+                    "type": "string",
+                    "description": "A new terminal command to execute, not a restatement of entry. Identical commands still execute; include a rerun only when intentional."
+                  }
                 }
               },
               {

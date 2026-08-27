@@ -1,0 +1,260 @@
+{
+  "base": "f211e21fb89d00777ac07cc13c358f9f7b02a939",
+  "head": "f211e21fb89d00777ac07cc13c358f9f7b02a939",
+  "committed": false,
+  "trackedDiffSha256": "d5a38a5dc5ae5b5bf447e6e719695b78a771c5492c7a4f94077491fe0cd8899f",
+  "provider": "local macOS tmux",
+  "node": "v26.7.0",
+  "tmux": "tmux 3.7c",
+  "schemaShapeUnchanged": true,
+  "recordingTested": false,
+  "baseSourceHashes": {
+    "prompts/review-item.md": "73640c8cd2f7e928ab6f20041ba43cdc36612ce4e35acc18e182591f88b3821a",
+    "schema/clawsweeper-decision.schema.json": "ba2269bb534e7eac4c40eea4a48642ea320b20b996c8ad3e8a5c90c662921bd8",
+    "src/clawsweeper-decision-parser.ts": "8174e9d4f0e69f7fca413bee5cbaa8ce8a642262c7360b50d4da0ddc5f560969",
+    "src/clawsweeper-review-runtime.ts": "92ffe35a940aa4f45e29bdc1c96b04aa9607863901faa359af82ddf804741b09",
+    "src/live-proof/drivers.ts": "313ae1906133139f1b4d1038bbadf03cd9e9640a4bbb165cf17a230b3cb06a04",
+    "src/live-proof/verification.ts": "8540f8de6228cccee39be8685128f8dd0a71acf5f28859e42a69b858cc6233d0"
+  },
+  "sourceHashes": {
+    "prompts/review-item.md": "67f5c29c24d2340a35a5a2596c2acb44c4152825781c7ae32649c45664290c72",
+    "schema/clawsweeper-decision.schema.json": "758dd96182b5db7b9b4cb98164b4dbb9efd30d3cb7baf7590ad2159ef7b1aad9",
+    "src/clawsweeper-decision-parser.ts": "a62773925ba606969ae416ebc7d50b11fbf9c48dcefdb1d902038e4bf5041e7c",
+    "src/clawsweeper-review-runtime.ts": "92ffe35a940aa4f45e29bdc1c96b04aa9607863901faa359af82ddf804741b09",
+    "src/live-proof/drivers.ts": "313ae1906133139f1b4d1038bbadf03cd9e9640a4bbb165cf17a230b3cb06a04",
+    "src/live-proof/verification.ts": "8540f8de6228cccee39be8685128f8dd0a71acf5f28859e42a69b858cc6233d0",
+    "scripts/e2e/terminal-proof-once.mjs": "63ddce39df0362fd32c4a2a4aca0425403b54a7c9b8200a03d821121adb9b107",
+    "scripts/e2e/terminal-proof-planning.mjs": "06142bb8cc2fff3679820124cb64855be6681c54574562f654bc86f697f91994"
+  },
+  "runs": [
+    {
+      "variant": "fast",
+      "generation": {
+        "generator": "Codex",
+        "exitCode": 0,
+        "approvalNever": true,
+        "sandboxDangerFullAccess": true,
+        "structuredDecisionExists": true
+      },
+      "promptSha256": "0bdb313ab2a4c796bc95b34f472e1782b9a03310c6de823d7c10f790a907a604",
+      "schemaSha256": "625131a54e8521d181c56e47d0ed1a1ec6883715124edddc4de39f5cc4e8465b",
+      "decisionSha256": "c69775472a65e94a09841a7ce2b1847cd5d6ad830bf97664451ef9dd61b2b3a9",
+      "generatedPlan": {
+        "status": "recommended",
+        "surface": "terminal",
+        "reason": "The complete supplied source supports a safe, dependency-free local run against the initially absent output directory.",
+        "payoff": {
+          "kind": "static_text",
+          "justification": "The default invocation produces a short burst of plain text, so one captured transcript is more useful than a recording."
+        },
+        "entry": "node once.mjs output",
+        "steps": [
+          {
+            "action": "expect_output",
+            "text": "PROOF_STARTED"
+          },
+          {
+            "action": "expect_output",
+            "text": "PASS exclusive directory"
+          },
+          {
+            "action": "expect_output",
+            "text": "PASS original bytes retained"
+          },
+          {
+            "action": "expect_output",
+            "text": "PASS local fixture"
+          },
+          {
+            "action": "expect_output",
+            "text": "PASS stable assertions"
+          },
+          {
+            "action": "expect_output",
+            "text": "PASS proof complete"
+          }
+        ]
+      },
+      "drive_status": "completed",
+      "overall_pass": true,
+      "observedAssertions": [
+        "PROOF_STARTED",
+        "PASS exclusive directory",
+        "PASS original bytes retained",
+        "PASS local fixture",
+        "PASS stable assertions",
+        "PASS proof complete"
+      ],
+      "oneShotInvocationsBeforeReplay": 1,
+      "replayExit": 17,
+      "originalBytesPreserved": true,
+      "resultSha256": "07c326543a57b838084e917ce5a3ad31b6053a48b190dee8a641fd2174daefd7",
+      "deliberateDuplicateInvocations": 2,
+      "intentionalRepeatTrace": "beforeafter",
+      "controls": [
+        {
+          "scenario": "duplicate",
+          "generated": false,
+          "drive_status": "failed",
+          "overall_pass": false,
+          "failure": {
+            "phase": "step",
+            "reason": "terminal command failed with exit status 17: \"node once.mjs output\"",
+            "step": 1,
+            "action": "run"
+          }
+        },
+        {
+          "scenario": "intentional-repeat",
+          "generated": false,
+          "drive_status": "completed",
+          "overall_pass": true,
+          "failure": null
+        },
+        {
+          "scenario": "nonzero",
+          "generated": false,
+          "drive_status": "failed",
+          "overall_pass": false,
+          "failure": {
+            "phase": "execution",
+            "reason": "terminal command failed with exit status 7: \"printf 'CONTROL_FAILED\\\\n'; exit 7\""
+          }
+        },
+        {
+          "scenario": "timeout",
+          "generated": false,
+          "drive_status": "failed",
+          "overall_pass": false,
+          "failure": {
+            "phase": "execution",
+            "reason": "terminal command did not produce output or exit within 30 seconds: \"sleep 40\""
+          }
+        }
+      ],
+      "artifact": ".artifacts/terminal-proof-planning/fast/receipt.json",
+      "artifactSha256": "a93995e89828a5d09e389006d5e1363b431fbddc1f2c1f23662697cb2479375d"
+    },
+    {
+      "variant": "delayed",
+      "generation": {
+        "generator": "Codex",
+        "exitCode": 0,
+        "approvalNever": true,
+        "sandboxDangerFullAccess": true,
+        "structuredDecisionExists": true
+      },
+      "promptSha256": "aa1108fc8f46041fab7012f9e071217acfe5180d6abef6053ae8334291f7b803",
+      "schemaSha256": "625131a54e8521d181c56e47d0ed1a1ec6883715124edddc4de39f5cc4e8465b",
+      "decisionSha256": "192b93f22aa3adc7a0182db5076f75dc2bce89c2c900dc9a9bbfe52bed55a7cc",
+      "generatedPlan": {
+        "status": "recommended",
+        "surface": "terminal",
+        "reason": "The complete supplied source is local-only and dependency-free, and one delayed invocation fits within the 90-second demonstration window.",
+        "payoff": {
+          "kind": "progressive_output",
+          "justification": "A recording shows the transition from setup to immediate startup output and delayed completion after 34 seconds."
+        },
+        "entry": "printf 'SETUP_READY\\n'",
+        "steps": [
+          {
+            "action": "expect_output",
+            "text": "SETUP_READY"
+          },
+          {
+            "action": "run",
+            "command": "node once.mjs output 34"
+          },
+          {
+            "action": "expect_output",
+            "text": "PROOF_STARTED"
+          },
+          {
+            "action": "wait",
+            "seconds": 35
+          },
+          {
+            "action": "expect_output",
+            "text": "PASS exclusive directory"
+          },
+          {
+            "action": "expect_output",
+            "text": "PASS original bytes retained"
+          },
+          {
+            "action": "expect_output",
+            "text": "PASS local fixture"
+          },
+          {
+            "action": "expect_output",
+            "text": "PASS stable assertions"
+          },
+          {
+            "action": "expect_output",
+            "text": "PASS proof complete"
+          }
+        ]
+      },
+      "drive_status": "completed",
+      "overall_pass": true,
+      "observedAssertions": [
+        "SETUP_READY",
+        "PROOF_STARTED",
+        "PASS exclusive directory",
+        "PASS original bytes retained",
+        "PASS local fixture",
+        "PASS stable assertions",
+        "PASS proof complete"
+      ],
+      "oneShotInvocationsBeforeReplay": 1,
+      "replayExit": 17,
+      "originalBytesPreserved": true,
+      "resultSha256": "07c326543a57b838084e917ce5a3ad31b6053a48b190dee8a641fd2174daefd7",
+      "deliberateDuplicateInvocations": 2,
+      "intentionalRepeatTrace": "beforeafter",
+      "controls": [
+        {
+          "scenario": "duplicate",
+          "generated": false,
+          "drive_status": "failed",
+          "overall_pass": false,
+          "failure": {
+            "phase": "step",
+            "reason": "terminal command failed with exit status 17: \"node once.mjs output\"",
+            "step": 1,
+            "action": "run"
+          }
+        },
+        {
+          "scenario": "intentional-repeat",
+          "generated": false,
+          "drive_status": "completed",
+          "overall_pass": true,
+          "failure": null
+        },
+        {
+          "scenario": "nonzero",
+          "generated": false,
+          "drive_status": "failed",
+          "overall_pass": false,
+          "failure": {
+            "phase": "execution",
+            "reason": "terminal command failed with exit status 7: \"printf 'CONTROL_FAILED\\\\n'; exit 7\""
+          }
+        },
+        {
+          "scenario": "timeout",
+          "generated": false,
+          "drive_status": "failed",
+          "overall_pass": false,
+          "failure": {
+            "phase": "execution",
+            "reason": "terminal command did not produce output or exit within 30 seconds: \"sleep 40\""
+          }
+        }
+      ],
+      "artifact": ".artifacts/terminal-proof-planning/delayed/receipt.json",
+      "artifactSha256": "982441a0d10c4097db065794a4bb51c568f0e8d5d70eca562e8fc6af573d28b9"
+    }
+  ]
+}

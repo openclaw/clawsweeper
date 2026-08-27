@@ -1015,7 +1015,50 @@ test("terminal output aggregates clean evidence across the entry command and run
   assert.doesNotMatch(result.output, /\.wrapper|\.command|\.status|\/tmp\//);
 });
 
-test("parsed duplicate terminal entry executes once and preserves long final output publicly", () => {
+test("parsed terminal repeats execute independently and retain failure gates", () => {
+  const command = "proof-command";
+  for (const failRepeat of [false, true]) {
+    const executed: string[] = [];
+    const fixtureRunner = terminalLifecycleRunner([], { terminalCaptures: ["Ready\n"] });
+    const plan = liveProofPlanParser(
+      {
+        ...recommendedPlan("terminal"),
+        entry: command,
+        steps: [
+          { action: "run", command },
+          { action: "run", command: "change-state" },
+          { action: "run", command },
+          { action: "expect_output", text: "Ready" },
+        ],
+      },
+      "liveProofPlan",
+    );
+    const result = driveTerminal({
+      plan,
+      checkout: "/tmp/checkout",
+      rawVideoPath: "/tmp/live-proof.raw.webm",
+      maxRecordingSeconds: 90,
+      recordMedia: false,
+      readCommandStatus: () => (failRepeat && executed.length === 2 ? 7 : 0),
+      runner: (tool, args, options) => {
+        if (tool === "tmux" && args[0] === "respawn-pane") {
+          const path = String(args.at(-1)).match(/'([^']+)'$/)?.[1];
+          assert.ok(path);
+          executed.push(readFileSync(path, "utf8").trimEnd());
+        }
+        return fixtureRunner(tool, args, options);
+      },
+    });
+    assert.deepEqual(
+      executed,
+      failRepeat ? [command, command] : [command, command, "change-state", command],
+    );
+    assert.equal(result.status, failRepeat ? "failed" : "completed");
+    if (failRepeat) assert.match(result.steps[0]?.detail ?? "", /exit status 7/);
+  }
+});
+
+test("terminal entry with expectations executes once and preserves long final output publicly", () => {
   const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-output-"));
   const fixturePath = join(directory, "fixture.mjs");
   const counterPath = join(directory, "counter.txt");
@@ -1037,10 +1080,7 @@ test("parsed duplicate terminal entry executes once and preserves long final out
     {
       ...recommendedPlan("terminal"),
       entry: command,
-      steps: [
-        { action: "run", command },
-        { action: "expect_output", text: "FINAL_HELP_RESULT" },
-      ],
+      steps: [{ action: "expect_output", text: "FINAL_HELP_RESULT" }],
     },
     "liveProofPlan",
   );

@@ -144,9 +144,20 @@ assertion remains a completed, non-gating schema-v1 step, is explicitly labeled
 paths never enter published terminal output. Each entry or `run` action executes
 as a separately supervised Bash process in the same checkout, so plans should
 share state through files or one command rather than shell-local mutations.
-The terminal `entry` executes automatically before typed steps and must not be
-repeated as the first `run`; exact leading duplicates are normalized away before
-execution.
+The terminal `entry` executes automatically before all typed steps. Every `run`
+executes independently, including a first `run` identical to `entry` or a later
+repeated command; the parser and driver do not deduplicate commands. Intentional
+reruns after state changes remain valid and execute in order.
+
+Plan one-shot proofs, including commands that refuse an existing output directory,
+in one of two ways: put the proof command in `entry` followed by stable
+`expect_output` steps, or put safe setup in `entry` followed by exactly one `run`
+of the proof command and its expectations. Do not replay a proof just to capture
+its output or produce media. For a useful recording transition, choose setup plus
+one run so the expected output appears after the action; otherwise use
+`static_text` and verify once. Preserve non-overwrite guards rather than deleting
+the original output to accommodate an accidental replay.
+
 Nonzero exits, signals, command timeouts, and missing markers for still-running
 commands remain failures.
 All untrusted fields are bounded and neutralized against Markdown fences, HTML,

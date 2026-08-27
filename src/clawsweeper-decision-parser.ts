@@ -650,16 +650,9 @@ export function createDecisionParser({
     if (!payoff.justification) throw new Error(`${path}.payoff.justification must not be empty`);
     if (!Array.isArray(record.steps)) throw new Error(`${path}.steps must be an array`);
     if (record.steps.length > 10) throw new Error(`${path}.steps must contain at most 10 items`);
-    const parsedSteps = record.steps.map((step, index) =>
+    const steps = record.steps.map((step, index) =>
       parseLiveProofStep(step, `${path}.steps[${index}]`),
     );
-    const steps =
-      status === "recommended" &&
-      surface === "terminal" &&
-      parsedSteps[0]?.action === "run" &&
-      parsedSteps[0].command === entry
-        ? parsedSteps.slice(1)
-        : parsedSteps;
     if (status !== "recommended") {
       if (surface !== "none") throw new Error(`${path}.surface must be none unless recommended`);
       if (entry) throw new Error(`${path}.entry must be empty unless recommended`);

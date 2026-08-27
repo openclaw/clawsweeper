@@ -652,6 +652,28 @@ test("review prompt and schema classify deterministic live-proof plans in field 
   assert.match(prompt, /never a\s+judgment about whether to run/);
   assert.match(prompt, /`liveProofPlan\.status: "declined_suspicious"`/);
   assert.match(prompt, /never\s+execute the PR or claim that a recording exists/);
+  assert.match(prompt, /`entry` executes automatically before all typed steps/);
+  assert.match(prompt, /Every `run` step executes\s+independently/);
+  assert.match(prompt, /nothing is deduplicated/);
+  assert.match(prompt, /one-shot proof[\s\S]*stable `expect_output` steps/);
+  assert.match(prompt, /safe setup `entry` followed by exactly\s+one `run`/);
+  assert.match(prompt, /Do not repeat a one-shot\s+command just to capture output or create media/);
+  assert.match(prompt, /Intentional reruns,[\s\S]*are valid and will execute/);
+  assert.match(prompt, /choose `static_text` and verify once/);
+  assert.match(
+    liveProofPlan.properties.entry.description,
+    /executes automatically before all steps/,
+  );
+  assert.match(liveProofPlan.properties.steps.description, /nothing is deduplicated/);
+  assert.match(liveProofPlan.properties.steps.description, /Intentional reruns/);
+  assert.match(
+    liveProofPlan.properties.payoff.properties.justification.description,
+    /Never repeat a one-shot terminal command just for media/,
+  );
+  const runStep = liveProofPlan.properties.steps.items.anyOf.find(
+    (step: { properties: { action: { const: string } } }) => step.properties.action.const === "run",
+  );
+  assert.match(runStep.properties.command.description, /Identical commands still execute/);
 
   assert.deepEqual(liveProofPlan.required, [
     "status",

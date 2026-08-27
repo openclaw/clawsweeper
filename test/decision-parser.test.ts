@@ -451,7 +451,7 @@ test("decision parser validates typed live-proof plans and report roundtrips", (
   }
 });
 
-test("decision parser removes only a leading duplicate terminal entry", () => {
+test("decision parser preserves every terminal command including exact entry repeats", () => {
   const terminalPlan = {
     status: "recommended",
     surface: "terminal",
@@ -467,7 +467,14 @@ test("decision parser removes only a leading duplicate terminal entry", () => {
     ],
   };
   const exact = parseDecision(closeDecision({ liveProofPlan: terminalPlan })).liveProofPlan;
-  assert.deepEqual(exact.steps, [{ action: "expect_output", text: "Usage:" }]);
+  assert.deepEqual(exact.steps, terminalPlan.steps);
+  const section = renderLiveProofReportSectionForTest(
+    parseDecision(closeDecision({ liveProofPlan: exact })),
+  );
+  assert.deepEqual(
+    reportLiveProofPlanForTest(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
+    exact,
+  );
 
   const trimmed = parseDecision(
     closeDecision({
@@ -482,14 +489,15 @@ test("decision parser removes only a leading duplicate terminal entry", () => {
     }),
   ).liveProofPlan;
   assert.equal(trimmed.entry, "pnpm openclaw --help");
-  assert.deepEqual(trimmed.steps, [{ action: "expect_output", text: "Usage:" }]);
+  assert.deepEqual(trimmed.steps, terminalPlan.steps);
 
   const distinct = parseDecision(
     closeDecision({
       liveProofPlan: {
         ...terminalPlan,
         steps: [
-          { action: "run", command: "pnpm openclaw status" },
+          { action: "run", command: "pnpm openclaw --help" },
+          { action: "run", command: "printf changed > state.txt" },
           { action: "run", command: "pnpm openclaw --help" },
           { action: "expect_output", text: "Usage:" },
         ],
@@ -497,21 +505,22 @@ test("decision parser removes only a leading duplicate terminal entry", () => {
     }),
   ).liveProofPlan;
   assert.deepEqual(distinct.steps, [
-    { action: "run", command: "pnpm openclaw status" },
+    { action: "run", command: "pnpm openclaw --help" },
+    { action: "run", command: "printf changed > state.txt" },
     { action: "run", command: "pnpm openclaw --help" },
     { action: "expect_output", text: "Usage:" },
   ]);
 
+  assert.deepEqual(
+    parseDecision(
+      closeDecision({
+        liveProofPlan: { ...terminalPlan, steps: [terminalPlan.steps[0]] },
+      }),
+    ).liveProofPlan.steps,
+    [terminalPlan.steps[0]],
+  );
   assert.throws(
-    () =>
-      parseDecision(
-        closeDecision({
-          liveProofPlan: {
-            ...terminalPlan,
-            steps: [{ action: "run", command: "pnpm openclaw --help" }],
-          },
-        }),
-      ),
+    () => parseDecision(closeDecision({ liveProofPlan: { ...terminalPlan, steps: [] } })),
     /decision\.liveProofPlan\.steps must not be empty when recommended/,
   );
   assert.throws(

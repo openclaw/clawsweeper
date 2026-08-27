@@ -510,8 +510,17 @@ run, such as docs-only edits or generated assets in a repository with no
 meaningful runnable surface. Use `surface: "browser"` for browser behavior and
 `surface: "terminal"` for terminal behavior. The `entry` must be a URL path for
 browser verification or a command for terminal verification. A terminal
-`entry` executes automatically before the typed steps; never repeat that command
-as the first `run`. For terminal verification, prefer invoking a
+`entry` executes automatically before all typed steps. Every `run` step executes
+independently as a new command, including commands identical to `entry` or earlier
+steps; nothing is deduplicated. For a one-shot proof (for example, a command that
+refuses an existing output directory), put the proof command in `entry` followed
+by stable `expect_output` steps, or use a safe setup `entry` followed by exactly
+one `run` of the proof command and its expectations. Do not repeat a one-shot
+command just to capture output or create media. Intentional reruns, including
+identical commands after a state change, are valid and will execute. Each command
+runs in a separate Bash process in the same checkout; share state through files
+or combine dependent setup and execution in one command, not shell-local variables
+or `cd` from an earlier command. For terminal verification, prefer invoking a
 repository-defined `pnpm run` (or equivalent package-manager) script over
 hand-composing individual build/test commands whenever one already expresses
 the needed setup, so the plan does not need to independently reconstruct build
@@ -520,7 +529,10 @@ deterministic, typed `steps`: browser plans may use `goto`, `click`, `fill`,
 `press`, `wait_for`, `wait`, and `expect_text`; terminal plans may use `run`,
 `wait`, and `expect_output`. Include at least one concrete expectation of real
 output. When proposing media, include at least one state-changing step and an
-expectation whose text is absent before that action and appears only afterward;
+expectation whose text is absent before that action and appears only afterward.
+For a terminal one-shot proof, use a safe setup `entry` and one `run` for that
+transition, rather than replaying a proof already executed by `entry`. If there
+is no useful transition to record, choose `static_text` and verify once;
 the absent-then-present rule decides whether media is useful, not whether the
 system should run. Never assert the typed command itself. Targets for `click`,
 `fill`, and `wait_for` must be valid CSS or Playwright selectors, including
