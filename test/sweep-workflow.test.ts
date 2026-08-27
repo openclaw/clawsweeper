@@ -7069,6 +7069,7 @@ test("apply job requeues drift-blocked close reviews only for default cursor run
   assert.match(step, /apply-requeue-review-item-numbers --report apply-report\.json --limit 5/);
   assert.match(step, /APPLY_SYNC_COMMENTS_ONLY:-false.*=.*"true"/s);
   assert.match(step, /APPLY_AUTO_SELECTED_BATCH:-false.*!=.*"true"/s);
-  assert.match(step, /event_type: "clawsweeper_target_sweep"/);
-  assert.match(step, /shard_count: "1"/);
+  assert.match(step, /event_type: "clawsweeper_item"/);
+  assert.match(step, /source_action: "source_drift_requeue"/);
+  assert.match(step, /supersedes_in_progress: false/);
 });

@@ -283,6 +283,26 @@ single-item review only needs the target repository and live GitHub item state;
 generated state is checked out afterward, just before publishing the review
 record, safe close result, and command-router ledger.
 
+Default close-mode apply refreshes use that same queue-only intake. The merged
+apply report selects at most five distinct source-drift items in report order,
+with unverified-checkout holds filling spare slots. The producer resolves the
+repository default branch and each selected item's kind with narrow GitHub
+reads, then sends `clawsweeper_item` with `source_action: source_drift_requeue`
+and `supersedes_in_progress: false`. It does not send `clawsweeper_target_sweep`,
+run a broad planner, or hydrate canonical repository records before enqueue.
+Read or dispatch failures remain visible step failures; a dispatch notice is
+not a durable admission receipt. The existing intake signs the queue request.
+
+`source_drift_requeue` uses the queue's existing low-priority recovery contract:
+existing pending or leased work, including maintainer-command context and source
+authority, wins; delivery deduplication, pending backpressure, and lease fencing
+remain queue-owned. Exact selection requests a fresh review of current source
+without a new `force` flag, stale source pin, or producer-supplied lease. Closed
+or missing targets still stop at the queue/executor live-state checks. General
+manual and broad dispatch behavior, the independent proof cursor, and close
+policy are unchanged. OpenClaw Bay needs no change: this producer reuses existing
+queue/lifecycle fields and adds no published schema, status field, or control.
+
 ## Automerge Fast Path
 
 Automerge is an exact-item event path. A maintainer command dispatches one

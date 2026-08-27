@@ -7023,6 +7023,7 @@ jobs:
         if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' && steps.target.outputs.target_repo == 'openclaw/openclaw' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          DISPATCH_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [ "${APPLY_NOOP:-false}" = "true" ] ||
@@ -7040,23 +7041,26 @@ jobs:
           target_branch="$(gh api "repos/${APPLY_TARGET_REPO}" --jq .default_branch)"
           IFS=',' read -r -a requeue_items <<< "$items"
           for item_number in "${requeue_items[@]}"; do
+            item_kind="$(gh api "repos/${APPLY_TARGET_REPO}/issues/${item_number}" --jq 'if .pull_request then "pull_request" else "issue" end')"
             jq -n \
               --arg target_repo "$APPLY_TARGET_REPO" \
               --arg target_branch "$target_branch" \
               --arg item_number "$item_number" \
+              --arg item_kind "$item_kind" \
               '{
-                event_type: "clawsweeper_target_sweep",
+                event_type: "clawsweeper_item",
                 client_payload: {
                   target_repo: $target_repo,
                   target_branch: $target_branch,
                   item_number: $item_number,
-                  batch_size: "1",
-                  shard_count: "1",
-                  hot_intake: "false",
+                  item_kind: $item_kind,
+                  source_event: (if $item_kind == "pull_request" then "pull_request" else "issues" end),
+                  source_action: "source_drift_requeue",
+                  supersedes_in_progress: false,
                   codex_timeout_ms: "1200000"
                 }
-              }' | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
-            echo "::notice::Requeued exact review for ${APPLY_TARGET_REPO}#${item_number}: its close was blocked by source drift or an unverified-checkout review."
+              }' | gh api --method POST "repos/${DISPATCH_REPOSITORY}/dispatches" --input -
+            echo "::notice::Dispatched exact review refresh for ${APPLY_TARGET_REPO}#${item_number}: its close was blocked by source drift or an unverified-checkout review; durable admission is owned by queue intake."
           done
 
   publish-apply-observability:

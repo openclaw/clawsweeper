@@ -59,6 +59,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Routed default apply's bounded source-drift refreshes through exact-event queue intake so full-repository hydration cannot fail before admission.
 - Indexed webhook receipt expiry by receipt time to avoid scanning and sorting retained history on each accepted delivery, preserving 30-day retention and transactional cleanup.
 - Bounded apply/proof/comment-sync record retention to selected records and paired dependencies, avoiding unrelated archive loads during ledger finalization without changing close guards.
 - Kept projected GitHub reads out of the durable ETag cache so incompatible response shapes cannot hide requested reviewers from close guards. Thanks @goutamadwant! (#1242)

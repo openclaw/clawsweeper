@@ -9,7 +9,13 @@ test("scheduled queue source actions are automatic while exact actions remain ex
     assert.equal(isExplicitReviewDispatch(args, true), false, sourceAction);
   }
 
-  for (const sourceAction of ["issues_opened", "exact_review_command", "legacy_dispatch", ""]) {
+  for (const sourceAction of [
+    "issues_opened",
+    "exact_review_command",
+    "legacy_dispatch",
+    "source_drift_requeue",
+    "",
+  ]) {
     const args = sourceAction ? parseArgs(["--review-source-action", sourceAction]) : parseArgs([]);
     assert.equal(isExplicitReviewDispatch(args, true), true, sourceAction || "missing action");
   }
