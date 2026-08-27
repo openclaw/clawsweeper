@@ -759,11 +759,7 @@ test(
         Number.isSafeInteger(backgroundPid) &&
         processesContaining(processToken).some((line) => line.startsWith(`${backgroundPid} `))
       ) {
-        try {
-          process.kill(backgroundPid, "SIGKILL");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-        }
+        killProcess(backgroundPid);
       }
       rmSync(root, { force: true, recursive: true });
     }
@@ -1004,4 +1000,12 @@ function processesContaining(fragment: string): string[] {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.includes(fragment));
+}
+
+function killProcess(pid: number): void {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
 }
