@@ -58,6 +58,7 @@ const MINIMUM_RECORDING_MILLISECONDS = 6_000;
 const TERMINAL_STREAM_MAX_BYTES = 1_000_000;
 const TERMINAL_HISTORY_LINES = 50_000;
 const TERMINAL_CAPTURE_CHUNK_BYTES = 64 * 1024;
+const TERMINAL_CLEANUP_COMMAND = "exit 0";
 
 type TerminalCommandInvocation = {
   command: string;
@@ -399,7 +400,7 @@ interface TerminalOutputWindow {
   frozenExit?: Extract<TerminalPaneState, { status: "exited" }>;
   finalizedExitStatus?: number;
   captureOpen: boolean;
-  processGroupCleaned: boolean;
+  paneCleaned: boolean;
   finalViewport?: string;
 }
 
@@ -735,7 +736,7 @@ export function driveTerminal(options: {
     };
     for (const window of commandWindows) {
       cleanup(() => closeTerminalCapture(window, options.runner, options.checkout, terminalPane));
-      cleanup(() => cleanupTerminalWindow(window, options.runner, options.checkout));
+      cleanup(() => cleanupTerminalWindow(window, terminalPane, options.runner, options.checkout));
     }
     if (recordMedia) {
       cleanup(() => {
@@ -912,7 +913,7 @@ function runTerminalStep(
           terminalDeadline,
           true,
         );
-        cleanupTerminalWindow(outputWindow, runner, checkout);
+        cleanupTerminalWindow(outputWindow, terminalPane, runner, checkout);
       } catch (error) {
         throw new Error(
           `terminal run was blocked by the previous command: ${error instanceof Error ? error.message : String(error)}`,
@@ -1003,7 +1004,7 @@ function runTerminalCommand(
     expectations,
     observedExpectations: new Set(),
     captureOpen: false,
-    processGroupCleaned: false,
+    paneCleaned: false,
   };
   const clearHistoryArgs = ["clear-history", "-t", target];
   requireSuccess("tmux", clearHistoryArgs, runner("tmux", clearHistoryArgs, { cwd: checkout }));
@@ -1019,9 +1020,8 @@ function runTerminalCommand(
       "status=$?",
       'builtin printf "%s\\n" "$status" >"$2"',
       'mv -f -- "$2" "$3"',
-      // Keep the pane's process-group leader alive until the controller kills
-      // the still-owned group. Releasing it first makes pane_pid stale and can
-      // signal an unrelated process after fast PID reuse.
+      // Keep the pane owner alive until tmux tears down the exact pane job.
+      // pane_pid is an identity check, not a portable process-group id.
       'while [ ! -e "$4" ]; do sleep 0.05; done',
       'exit "$status"',
     ].join("; ");
@@ -1438,71 +1438,28 @@ function renderFailedTerminalOutput(
   return sections.join("\n\n");
 }
 
-function terminateTerminalProcessGroup(
-  runner: MediaProofCommandRunner,
-  checkout: string,
-  panePid: number | undefined,
-): void {
-  if (!panePid) return;
-  const signalErrors: unknown[] = [];
-  const runSignal = (signal: "-TERM" | "-KILL") => {
-    try {
-      const result = runner("/bin/kill", [signal, `-${panePid}`], { cwd: checkout });
-      if (result.status !== 0) {
-        signalErrors.push(
-          new Error(`/bin/kill ${signal} -${panePid} failed: ${mediaProofSpawnDetail(result)}`),
-        );
-      }
-    } catch (error) {
-      signalErrors.push(error);
-    }
-  };
-  const processGroupExists = (): boolean => {
-    const result = runner("/bin/kill", ["-0", `-${panePid}`], { cwd: checkout });
-    return result.status === 0;
-  };
-  // Signal command status is advisory because the group may disappear between
-  // calls. Only the final liveness probe decides whether cleanup succeeded.
-  runSignal("-TERM");
-  requireSuccess("sleep", ["0.1"], runner("sleep", ["0.1"]));
-  if (!processGroupExists()) return;
-  runSignal("-KILL");
-  for (let attempt = 0; attempt <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10; attempt += 1) {
-    if (!processGroupExists()) return;
-    if (attempt < TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10) {
-      requireSuccess("sleep", ["0.1"], runner("sleep", ["0.1"]));
-    }
-  }
-  const surviving = new Error(`terminal process group ${panePid} survived SIGKILL`);
-  throw signalErrors.length > 0
-    ? new AggregateError(
-        [...signalErrors, surviving],
-        `failed to clean terminal process group ${panePid}`,
-      )
-    : surviving;
-}
-
 function cleanupTerminalWindow(
   window: TerminalOutputWindow,
+  terminalPane: string,
   runner: MediaProofCommandRunner,
   checkout: string,
 ): void {
-  const errors: unknown[] = [];
-  if (!window.processGroupCleaned) {
-    if (window.frozenExit) {
-      window.processGroupCleaned = true;
-      return;
-    }
-    try {
-      terminateTerminalProcessGroup(runner, checkout, window.panePid);
-      window.processGroupCleaned = true;
-    } catch (error) {
-      errors.push(error);
-    }
+  if (window.paneCleaned) return;
+  let state: TerminalPaneState | undefined;
+  try {
+    state = readTerminalCommandState(window, runner, checkout, terminalPane);
+  } catch {
+    // A corrupt or replaced pane is no longer safe to mutate individually.
+    // The enclosing terminal-session teardown remains the cleanup owner.
+    return;
   }
-  if (errors.length > 0) {
-    throw new AggregateError(errors, "failed to clean terminal process group");
+  if (!state || state.status === "exited") {
+    window.paneCleaned = true;
+    return;
   }
+  const args = ["respawn-pane", "-k", "-t", terminalPane, "-c", checkout, TERMINAL_CLEANUP_COMMAND];
+  requireSuccess("tmux", args, runner("tmux", args, { cwd: checkout }));
+  window.paneCleaned = true;
 }
 
 function readTerminalCommandState(

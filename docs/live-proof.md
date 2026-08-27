@@ -183,7 +183,9 @@ live after satisfying an output expectation. Non-recorded long-running proofs
 must remain live through a three-second stability hold before publication.
 Every earlier command must exit zero. The supervisor exits with the command's
 status, and tmux's pane lifecycle records whether that supervisor is still
-running or how it exited.
+running or how it exited. Cleanup asks tmux to tear down the exact owned pane;
+the pane PID is only an identity check and is never treated as a portable
+process-group ID.
 All untrusted fields are bounded and neutralized against Markdown fences, HTML,
 and ClawSweeper marker spoofing. OpenClaw Bay is unaffected because schema v1
 and the existing lifecycle and publication contracts do not change.
