@@ -10,6 +10,7 @@ import {
   readSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { constants as osConstants } from "node:os";
@@ -403,6 +404,9 @@ interface TerminalOutputWindow {
   expectations: readonly string[];
   observedExpectations: Set<string>;
   panePid?: number;
+  paneTty?: string;
+  leaseIdentity: string;
+  cleanupArmedReceipt?: string;
   nonce: string;
   frozenExit?: Extract<TerminalPaneState, { status: "exited" }>;
   finalizedExitStatus?: number;
@@ -421,10 +425,9 @@ interface TerminalCommandFiles {
   cleanupScript: string;
   cleanupResult: string;
   cleanupResultTemporary: string;
+  lease: string;
   status: string;
   statusTemporary: string;
-  release: string;
-  releaseTemporary: string;
   start: string;
   startTemporary: string;
   ready: string;
@@ -450,8 +453,8 @@ class TerminalCommandExecutionError extends Error {
 }
 
 type TerminalPaneState =
-  | { status: "running"; pid: number }
-  | { status: "exited"; pid: number; exitStatus: number };
+  | { status: "running"; pid: number; tty: string }
+  | { status: "exited"; pid: number; tty: string; exitStatus: number };
 
 function generateTerminalCaptureScript(): string {
   return `import {
@@ -523,48 +526,86 @@ process.stdin.resume();
 function generateTerminalCleanupScript(): string {
   return `#!/bin/bash
 set +m
-
-tty_name=$1
+tty_path=$1
 pane_pid=$2
 nonce=$3
-result_temporary=$4
-result=$5
-
-finish() {
-  builtin printf "%s %s %s\\n" "$pane_pid" "$nonce" "$1" >"$result_temporary"
-  mv -f -- "$result_temporary" "$result"
-  exit "$2"
-}
-
+lease_path=$4
+lease_identity=$5
+request=$6
+result_temporary=$7
+result=$8
+scan_file="$result_temporary.scan.$$"
+receipt() { builtin printf "%s\\n" "$1" >"$result_temporary" && mv -f -- "$result_temporary" "$result" || exit 125; }
+finish() { receipt "v1|done|$nonce|$pane_pid|$tty_path|$lease_identity|$1|$2|$3"; /bin/rm -f -- "$scan_file"; exit "$4"; }
+case "$tty_path" in /dev/*) tty_name=\${tty_path#/dev/} ;; *) finish startup error:tty 0 125 ;; esac
+case "$pane_pid" in ""|*[!0-9]*) finish startup error:pane-pid 0 125 ;; esac
+case "$lease_identity" in *[!0-9:]*|:*|*:|*:*:*|"") finish startup error:lease-identity 0 125 ;; *:*) ;; *) finish startup error:lease-identity 0 125 ;; esac
 if [ "$(/usr/bin/uname -s)" = Darwin ]; then
-  term_tty() { /usr/bin/killall -q -TERM -t "$tty_name" 2>/dev/null; }
-  probe_tty() { /usr/bin/killall -0 -t "$tty_name" >/dev/null 2>&1; }
-  kill_tty() { /usr/bin/killall -q -KILL -t "$tty_name" 2>/dev/null; }
+  lease_identity_now() { /usr/bin/stat -f '%d:%i' -- "$lease_path" 2>/dev/null; }
+  lease_pids() { /usr/sbin/lsof -t -- "$lease_path" 2>/dev/null; status=$?; [ "$status" -le 1 ]; }
+  holds_lease() { /usr/sbin/lsof -t -a -p "$1" -- "$lease_path" 2>/dev/null | /usr/bin/grep -qx "$1"; }
 else
-  term_tty() { /usr/bin/pkill -TERM -t "$tty_name" -f '.*' 2>/dev/null; }
-  probe_tty() { /usr/bin/pgrep -t "$tty_name" -f '.*' >/dev/null 2>&1; }
-  kill_tty() { /usr/bin/pkill -KILL -t "$tty_name" -f '.*' 2>/dev/null; }
+  lease_identity_now() { /usr/bin/stat -Lc '%d:%i' -- "$lease_path" 2>/dev/null; }
+  holds_lease() {
+    for descriptor in /proc/"$1"/fd/*; do
+      [ -e "$descriptor" ] || continue
+      [ "$(/usr/bin/stat -Lc '%d:%i' -- "$descriptor" 2>/dev/null)" = "$lease_identity" ] && return 0
+    done
+    return 1
+  }
+  lease_pids() { for process_path in /proc/[0-9]*; do holder_pid=\${process_path#/proc/}; holds_lease "$holder_pid" && builtin printf "%s\\n" "$holder_pid"; done; return 0; }
 fi
-
+tty_pids() { /bin/ps -axo pid=,tty= | /usr/bin/awk -v tty="$tty_name" '$2 == tty { print $1 }'; }
+on_bound_tty() { [ "$(/bin/ps -o tty= -p "$1" 2>/dev/null | /usr/bin/tr -d '[:space:]')" = "$tty_name" ]; }
+scan_bound_processes() {
+  : >"$scan_file"
+  lease_pids >>"$scan_file" || return $?
+  tty_pids >>"$scan_file" || return $?
+  /usr/bin/sort -n -u -o "$scan_file" "$scan_file"
+}
+signal_bound_processes() {
+  while IFS= read -r candidate; do
+    case "$candidate" in ""|*[!0-9]*) continue ;; esac
+    holds_lease "$candidate" || on_bound_tty "$candidate" || continue
+    /bin/kill "-$1" "$candidate" 2>/dev/null || [ "$?" -eq 1 ] || return $?
+  done <"$scan_file"
+}
+[ "$(lease_identity_now)" = "$lease_identity" ] || finish startup error:lease-identity 0 125
+holds_lease "$pane_pid" && on_bound_tty "$pane_pid" || finish startup error:pane-identity 0 125
+receipt "v1|armed|$nonce|$pane_pid|$tty_path|$lease_identity|$$"
+trigger=
+while [ -z "$trigger" ]; do
+  if [ -e "$request" ]; then
+    IFS= read -r cleanup_request <"$request" || finish controller error:request 0 125
+    [ "$cleanup_request" = "v1|cleanup|$nonce|$pane_pid|$tty_path|$lease_identity" ] || finish controller error:request 0 125
+    trigger=controller
+  elif ! holds_lease "$pane_pid" || ! on_bound_tty "$pane_pid"; then
+    trigger=pane-death
+  else
+    sleep 0.05
+  fi
+done
 for sweep in 1 2 3; do
-  term_tty
-  status=$?
-  case "$status" in 0|1) ;; *) finish "error:term:$status" "$status" ;; esac
+  scan_bound_processes || finish "$trigger" error:scan 0 125
+  signal_bound_processes TERM || finish "$trigger" error:term 0 125
   sleep 0.05
 done
-
+stable_empty=0
 for ((sweep = 1; sweep <= 100; sweep += 1)); do
-  probe_tty
-  status=$?
-  if [ "$status" -eq 1 ]; then finish ok 0; fi
-  if [ "$status" -ne 0 ]; then finish "error:probe:$status" "$status"; fi
-  kill_tty
-  status=$?
-  case "$status" in 0|1) ;; *) finish "error:kill:$status" "$status" ;; esac
+  scan_bound_processes || finish "$trigger" error:scan 0 125
+  survivors=$(/usr/bin/wc -l <"$scan_file")
+  if [ "$survivors" -eq 0 ]; then
+    stable_empty=$((stable_empty + 1))
+    if [ "$stable_empty" -ge 2 ]; then finish "$trigger" ok 0 0; fi
+  else
+    stable_empty=0
+    signal_bound_processes KILL || finish "$trigger" error:kill "$survivors" 125
+  fi
   sleep 0.05
 done
-
-finish error:survivors 124
+scan_bound_processes || finish "$trigger" error:scan 0 125
+survivors=$(/usr/bin/wc -l <"$scan_file")
+finish "$trigger" error:survivors "$survivors" 124
 `;
 }
 
@@ -622,10 +663,9 @@ export function driveTerminal(options: {
       cleanupScript: `${prefix}.cleanup.sh`,
       cleanupResult: `${prefix}.cleanup.result`,
       cleanupResultTemporary: `${prefix}.cleanup.result.tmp`,
+      lease: `${prefix}.lease`,
       status: `${prefix}.status`,
       statusTemporary: `${prefix}.status.tmp`,
-      release: `${prefix}.release`,
-      releaseTemporary: `${prefix}.release.tmp`,
       start: `${prefix}.start`,
       startTemporary: `${prefix}.start.tmp`,
       ready: `${prefix}.ready`,
@@ -1071,7 +1111,7 @@ function runTerminalCommand(
   terminalDeadline: number,
 ): TerminalOutputWindow {
   const target = terminalPane;
-  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const quote = quoteTerminalShellArgument;
   for (const path of Object.values(files)) rmSync(path, { force: true });
   writeFileSync(files.command, command.endsWith("\n") ? command : `${command}\n`, {
     encoding: "utf8",
@@ -1085,6 +1125,8 @@ function runTerminalCommand(
     encoding: "utf8",
     mode: 0o700,
   });
+  writeFileSync(files.lease, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
+  const leaseStat = statSync(files.lease);
   const window: TerminalOutputWindow = {
     command,
     files,
@@ -1092,6 +1134,7 @@ function runTerminalCommand(
     chunks: [],
     expectations,
     observedExpectations: new Set(),
+    leaseIdentity: `${leaseStat.dev}:${leaseStat.ino}`,
     nonce: randomUUID(),
     captureOpen: false,
     paneCleaned: false,
@@ -1105,15 +1148,16 @@ function runTerminalCommand(
       "set +m",
       "trap ':' HUP TERM",
       "tty_path=$(/usr/bin/tty)",
-      'case "$tty_path" in /dev/*) tty_name=${tty_path#/dev/} ;; *) exit 125 ;; esac',
-      'while [ ! -e "$5" ]; do sleep 0.05; done',
+      'case "$tty_path" in /dev/*) ;; *) exit 125 ;; esac',
+      'exec 9<"$8" || exit 125',
+      'while [ ! -e "$4" ]; do sleep 0.05; done',
+      'IFS="|" read -r bound_pid bound_tty bound_nonce bound_lease bound_extra <"$4" || exit 125',
+      '[ "$bound_pid" = "$$" ] && [ "$bound_tty" = "$tty_path" ] && [ "$bound_nonce" = "$7" ] && [ "$bound_lease" = "$9" ] && [ -z "${bound_extra-}" ] || exit 125',
       "builtin printf '\\033[2J\\033[H'",
-      '( /usr/bin/env -u TMUX -u TMUX_PANE -u TMUX_TMPDIR /bin/bash --noprofile --norc "$1"; status=$?; builtin printf "%s\\n" "$status" >"$2"; mv -f -- "$2" "$3" ) </dev/tty >/dev/tty 2>&1 &',
-      'builtin printf "%s %s\\n" "$$" "$8" >"$6"',
-      'mv -f -- "$6" "$7"',
-      'while :; do if [ -f "$4" ]; then IFS=" " read -r release_pid release_nonce release_extra 2>/dev/null <"$4" || true; if [ "$release_pid" = "$$" ] && [ "$release_nonce" = "$8" ] && [ -z "${release_extra-}" ]; then break; fi; fi; sleep 0.05; done',
-      'builtin printf -v cleanup_command "%q " /bin/bash "$9" "$tty_name" "$$" "$8" "${10}" "${11}"',
-      'tmux run-shell -b "$cleanup_command" || exit 126',
+      'builtin printf "%s|%s|%s|%s\\n" "$$" "$tty_path" "$7" "$9" >"$5"',
+      'mv -f -- "$5" "$6"',
+      'while :; do IFS= read -r execute_gate <"$6" || exit 125; [ "$execute_gate" = "v1|execute|$7|$$|$tty_path|$9" ] && break; sleep 0.05; done',
+      '( /usr/bin/env -u TMUX -u TMUX_PANE -u TMUX_TMPDIR /bin/bash --noprofile --norc "$1"; status=$?; builtin printf "%s\\n" "$status" >"$2"; mv -f -- "$2" "$3" ) 9<&9 </dev/tty >/dev/tty 2>&1 &',
       "while :; do sleep 3600; done",
     ].join("\n");
     const shellCommand =
@@ -1123,19 +1167,23 @@ function runTerminalCommand(
         files.command,
         files.statusTemporary,
         files.status,
-        files.release,
         files.start,
         files.readyTemporary,
         files.ready,
         window.nonce,
-        files.cleanupScript,
-        files.cleanupResultTemporary,
-        files.cleanupResult,
+        files.lease,
+        window.leaseIdentity,
       ]
         .map(quote)
         .join(" ");
     const respawnArgs = ["respawn-pane", "-k", "-t", target, "-c", checkout, shellCommand];
     requireSuccess("tmux", respawnArgs, runner("tmux", respawnArgs, { cwd: checkout }));
+    const launchedState = readTerminalPaneState(runner, checkout, terminalPane);
+    if (launchedState?.status !== "running") {
+      throw new Error("terminal command pane did not remain live after respawn");
+    }
+    window.panePid = launchedState.pid;
+    window.paneTty = launchedState.tty;
     const captureCommand =
       `/usr/bin/env -u TMUX -u TMUX_PANE -u TMUX_TMPDIR node ${quote(files.captureScript)} ` +
       [files.capture, files.captureTemporary, files.captureDone, files.captureDoneTemporary]
@@ -1144,8 +1192,11 @@ function runTerminalCommand(
     const pipeArgs = ["pipe-pane", "-O", "-t", target, captureCommand];
     requireSuccess("tmux", pipeArgs, runner("tmux", pipeArgs, { cwd: checkout }));
     window.captureOpen = true;
-    writeFileSync(files.startTemporary, "start\n", { encoding: "utf8", mode: 0o600 });
-    renameSync(files.startTemporary, files.start);
+    writeTerminalControlFile(
+      files.startTemporary,
+      files.start,
+      `${launchedState.pid}|${launchedState.tty}|${window.nonce}|${window.leaseIdentity}\n`,
+    );
   } catch (error) {
     throw new TerminalCommandExecutionError(
       error instanceof Error ? error.message : String(error),
@@ -1153,35 +1204,28 @@ function runTerminalCommand(
     );
   }
   for (let elapsed = 0; elapsed <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS; elapsed += 1) {
-    const panePid = readTerminalPanePid(runner, checkout, terminalPane);
-    if (panePid) {
-      if (window.panePid === undefined) {
-        window.panePid = panePid;
-      } else if (panePid !== window.panePid) {
-        throw new TerminalCommandExecutionError(
-          `terminal pane identity changed from launch pid ${window.panePid} to ${panePid}`,
-          window,
-        );
-      }
-      try {
-        const state = readTerminalCommandState(window, runner, checkout, terminalPane);
-        const readiness = readBoundedTerminalFile(files.ready, 128);
-        if (readiness !== undefined) {
-          if (readiness !== `${panePid} ${window.nonce}\n`) {
-            throw new Error("terminal command readiness acknowledgement is malformed");
-          }
-          refreshTerminalCommandOutput(window, runner, checkout, terminalPane);
-          return window;
+    try {
+      const state = readTerminalCommandState(window, runner, checkout, terminalPane);
+      const readiness = readBoundedTerminalFile(files.ready, 256);
+      if (readiness !== undefined) {
+        if (
+          readiness !==
+          `${window.panePid}|${window.paneTty}|${window.nonce}|${window.leaseIdentity}\n`
+        ) {
+          throw new Error("terminal command readiness acknowledgement is malformed");
         }
-        if (state?.status === "exited") {
-          throw new Error("terminal command exited before clearing its pane");
-        }
-      } catch (error) {
-        throw new TerminalCommandExecutionError(
-          error instanceof Error ? error.message : String(error),
-          window,
-        );
+        armTerminalCleanupWatchdog(window, terminalPane, runner, checkout);
+        refreshTerminalCommandOutput(window, runner, checkout, terminalPane);
+        return window;
       }
+      if (state?.status === "exited") {
+        throw new Error("terminal command exited before clearing its pane");
+      }
+    } catch (error) {
+      throw new TerminalCommandExecutionError(
+        error instanceof Error ? error.message : String(error),
+        window,
+      );
     }
     if (elapsed < TERMINAL_COMMAND_START_TIMEOUT_SECONDS) {
       pollTerminalSleep(runner, terminalDeadline);
@@ -1191,6 +1235,70 @@ function runTerminalCommand(
     `terminal command pane did not start within ${TERMINAL_COMMAND_START_TIMEOUT_SECONDS} seconds: ${JSON.stringify(command)}`,
     window,
   );
+}
+
+function armTerminalCleanupWatchdog(
+  window: TerminalOutputWindow,
+  terminalPane: string,
+  runner: MediaProofCommandRunner,
+  checkout: string,
+): void {
+  const identity = terminalCleanupIdentity(window);
+  rmSync(window.files.start, { force: true });
+  const cleanupCommand = [
+    "/bin/bash",
+    window.files.cleanupScript,
+    window.paneTty!,
+    String(window.panePid!),
+    window.nonce,
+    window.files.lease,
+    window.leaseIdentity,
+    window.files.start,
+    window.files.cleanupResultTemporary,
+    window.files.cleanupResult,
+  ]
+    .map(quoteTerminalShellArgument)
+    .join(" ");
+  const cleanupArgs = ["run-shell", "-b", cleanupCommand];
+  requireSuccess("tmux", cleanupArgs, runner("tmux", cleanupArgs, { cwd: checkout }));
+  for (let elapsed = 0; elapsed <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10; elapsed += 1) {
+    const state = readTerminalCommandState(window, runner, checkout, terminalPane);
+    if (state?.status === "exited") {
+      throw new Error("terminal pane exited before its cleanup watchdog armed");
+    }
+    const receipt = readBoundedTerminalFile(window.files.cleanupResult, 512);
+    if (receipt !== undefined) {
+      if (receipt.startsWith("v1|done|")) {
+        throw new Error(
+          `terminal cleanup watchdog failed before arming: ${receipt.trim() || "empty result"}`,
+        );
+      }
+      const fields = receipt.trimEnd().split("|");
+      const watchdogPid = Number.parseInt(fields[6] ?? "", 10);
+      if (
+        receipt !== `v1|armed|${identity}|${watchdogPid}\n` ||
+        !Number.isSafeInteger(watchdogPid) ||
+        watchdogPid <= 0
+      ) {
+        throw new Error("terminal cleanup watchdog acknowledgement is malformed");
+      }
+      window.cleanupArmedReceipt = receipt;
+      const armedState = readTerminalCommandState(window, runner, checkout, terminalPane);
+      if (armedState?.status !== "running") {
+        throw new Error("terminal pane exited after its cleanup watchdog armed");
+      }
+      writeTerminalControlFile(
+        window.files.startTemporary,
+        window.files.ready,
+        `v1|execute|${identity}\n`,
+      );
+      return;
+    }
+    if (elapsed < TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10) {
+      requireSuccess("sleep", ["0.1"], runner("sleep", ["0.1"]));
+    }
+  }
+  throw new Error("terminal cleanup watchdog did not arm before target execution");
 }
 
 function validateFinalTerminalCommand(
@@ -1471,6 +1579,11 @@ function readBoundedTerminalFile(path: string, maximumBytes: number): string | u
   }
 }
 
+function writeTerminalControlFile(temporaryPath: string, path: string, value: string): void {
+  writeFileSync(temporaryPath, value, { encoding: "utf8", mode: 0o600 });
+  renameSync(temporaryPath, path);
+}
+
 function remainingTerminalBudgetSeconds(deadline: number): number {
   return Math.max(0, Math.ceil((deadline - Date.now()) / 1_000));
 }
@@ -1540,6 +1653,13 @@ function renderFailedTerminalOutput(
   return sections.join("\n\n");
 }
 
+function terminalCleanupIdentity(window: TerminalOutputWindow): string {
+  if (window.panePid === undefined || window.paneTty === undefined || !window.leaseIdentity) {
+    throw new Error("terminal cleanup watchdog is missing its launch identity");
+  }
+  return `${window.nonce}|${window.panePid}|${window.paneTty}|${window.leaseIdentity}`;
+}
+
 function cleanupTerminalWindow(
   window: TerminalOutputWindow,
   terminalPane: string,
@@ -1547,33 +1667,33 @@ function cleanupTerminalWindow(
   checkout: string,
 ): void {
   if (window.paneCleaned) return;
+  const identity = terminalCleanupIdentity(window);
   if (window.captureOpen) {
     refreshTerminalCommandOutput(window, runner, checkout, terminalPane);
     closeTerminalCapture(window, runner, checkout, terminalPane);
   }
   const state = readTerminalPaneState(runner, checkout, terminalPane);
-  if (!state) throw new Error("terminal pane disappeared before controller release");
-  if (window.panePid === undefined || state.pid !== window.panePid) {
-    throw new Error(
-      `terminal pane identity changed from launch pid ${window.panePid ?? "unknown"} to ${state.pid}`,
+  if (!state) throw new Error("terminal pane disappeared before controller cleanup");
+  assertTerminalPaneIdentity(window, state);
+  window.finalViewport ??= captureTerminalViewport(runner, checkout, terminalPane);
+  if (!existsSync(window.files.start)) {
+    writeTerminalControlFile(
+      window.files.readyTemporary,
+      window.files.start,
+      `v1|cleanup|${identity}\n`,
     );
   }
-  if (state.status !== "running") {
-    throw new Error("terminal pane wrapper exited before controller release");
-  }
-  window.finalViewport ??= captureTerminalViewport(runner, checkout, terminalPane);
-  writeFileSync(window.files.releaseTemporary, `${state.pid} ${window.nonce}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  renameSync(window.files.releaseTemporary, window.files.release);
-  // The wrapper schedules tty-scoped fixed-point teardown through its private
-  // tmux server. Exact pane death and the matching receipt are both required.
+  // The watchdog was armed before target execution and survives pane death.
+  // Its exact receipt and the original pane's death are both authoritative.
   let cleanupAcknowledged = false;
   for (let elapsed = 0; elapsed <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10; elapsed += 1) {
-    const cleanupResult = readBoundedTerminalFile(window.files.cleanupResult, 128);
-    if (cleanupResult !== undefined) {
-      if (cleanupResult !== `${state.pid} ${window.nonce} ok\n`) {
+    const cleanupResult = readBoundedTerminalFile(window.files.cleanupResult, 512);
+    if (cleanupResult !== undefined && cleanupResult !== window.cleanupArmedReceipt) {
+      if (
+        !["controller", "pane-death"].some(
+          (trigger) => cleanupResult === `v1|done|${identity}|${trigger}|ok|0\n`,
+        )
+      ) {
         throw new Error(`terminal pane cleanup failed: ${cleanupResult.trim() || "empty result"}`);
       }
       cleanupAcknowledged = true;
@@ -1582,11 +1702,7 @@ function cleanupTerminalWindow(
     if (!releasedState) {
       throw new Error("terminal pane disappeared before cleanup completion was observed");
     }
-    if (releasedState.pid !== state.pid) {
-      throw new Error(
-        `terminal pane identity changed during cleanup from ${state.pid} to ${releasedState.pid}`,
-      );
-    }
+    assertTerminalPaneIdentity(window, releasedState);
     if (releasedState.status === "exited" && cleanupAcknowledged) {
       window.paneCleaned = true;
       return;
@@ -1608,13 +1724,22 @@ function readTerminalCommandState(
 ): TerminalPaneState | undefined {
   if (window.frozenExit) return window.frozenExit;
   const state = readTerminalPaneState(runner, checkout, terminalPane);
-  if (state && window.panePid !== undefined && state.pid !== window.panePid) {
-    throw new Error(
-      `terminal pane identity changed from launch pid ${window.panePid} to ${state.pid}`,
-    );
-  }
+  if (state) assertTerminalPaneIdentity(window, state);
   if (state?.status === "exited") window.frozenExit = state;
   return state;
+}
+
+function assertTerminalPaneIdentity(window: TerminalOutputWindow, state: TerminalPaneState): void {
+  if (
+    window.panePid === undefined ||
+    window.paneTty === undefined ||
+    state.pid !== window.panePid ||
+    state.tty !== window.paneTty
+  ) {
+    throw new Error(
+      `terminal pane identity changed from launch ${window.panePid ?? "unknown"}|${window.paneTty ?? "unknown"} to ${state.pid}|${state.tty}`,
+    );
+  }
 }
 
 function readTerminalPaneState(
@@ -1627,42 +1752,34 @@ function readTerminalPaneState(
     "-p",
     "-t",
     terminalPane,
-    "#{pane_pid}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}",
+    "#{pane_pid}|#{pane_tty}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}",
   ];
   const result = runner("tmux", args, { cwd: checkout });
   if (result.status !== 0) return undefined;
-  const match = /^(\d+)\|(0|1)\|([^|]*)\|([^|]*)$/.exec(String(result.stdout ?? "").trim());
+  const match = /^(\d+)\|(\/dev\/[^|]+)\|(0|1)\|([^|]*)\|([^|]*)$/.exec(
+    String(result.stdout ?? "").trim(),
+  );
   if (!match) throw new Error("terminal pane status is malformed");
   const pid = Number.parseInt(match[1]!, 10);
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("terminal pane status is malformed");
-  if (match[2] === "0") {
-    if (match[3] || match[4]) throw new Error("terminal pane status is malformed");
-    return { status: "running", pid };
+  const tty = match[2]!;
+  if (match[3] === "0") {
+    if (match[4] || match[5]) throw new Error("terminal pane status is malformed");
+    return { status: "running", pid, tty };
   }
-  const status = match[3]!;
-  const signal = match[4]!;
+  const status = match[4]!;
+  const signal = match[5]!;
   if (/^\d+$/.test(status) && !signal) {
     const exitStatus = Number.parseInt(status, 10);
-    if (exitStatus >= 0 && exitStatus <= 255) return { status: "exited", pid, exitStatus };
+    if (exitStatus >= 0 && exitStatus <= 255) return { status: "exited", pid, tty, exitStatus };
   } else if (!status && signal) {
-    return { status: "exited", pid, exitStatus: terminalSignalExitStatus(signal) };
+    return { status: "exited", pid, tty, exitStatus: terminalSignalExitStatus(signal) };
   }
   throw new Error("terminal pane status is malformed");
 }
 
-function readTerminalPanePid(
-  runner: MediaProofCommandRunner,
-  checkout: string,
-  terminalPane: string,
-): number | undefined {
-  const args = ["display-message", "-p", "-t", terminalPane, "#{pane_pid}"];
-  const result = runner("tmux", args, { cwd: checkout });
-  if (result.status !== 0) return undefined;
-  const pid = Number.parseInt(String(result.stdout ?? "").trim(), 10);
-  if (!Number.isSafeInteger(pid) || pid <= 0) {
-    throw new Error("terminal pane pid is malformed");
-  }
-  return pid;
+function quoteTerminalShellArgument(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function terminalPrivateErrorMessage(error: unknown, privatePaths: readonly string[]): string {

@@ -898,11 +898,11 @@ test("terminal seals rolling capture before rendering a still-running timeout", 
 
   assert.equal(result.status, "failed");
   assert.match(result.output, /EARLY_DIAGNOSTIC/);
-  assert.equal(
-    calls.findIndex((call) => call.startsWith("tmux pipe-pane -t ")) <
-      calls.findIndex((call) => call.startsWith("release ")),
-    true,
-  );
+  const watchdog = calls.findIndex((call) => call.startsWith("tmux run-shell -b "));
+  const target = calls.indexOf("target-start");
+  const pipeClose = calls.findIndex((call) => call.startsWith("tmux pipe-pane -t "));
+  assert.ok(watchdog < target);
+  assert.ok(target < pipeClose);
 });
 
 test("terminal rejects a capture stream that does not seal with clean EOF", () => {
@@ -997,7 +997,7 @@ test("terminal waits for tmux to publish a final zero exit", () => {
   assert.equal(result.steps[0]?.satisfied, true);
 });
 
-test("held terminal cutover seals capture before releasing pane-owned cleanup", () => {
+test("held terminal cutover seals capture before controller-owned cleanup", () => {
   const calls: string[] = [];
   const result = driveTerminal({
     plan: {
@@ -1021,19 +1021,24 @@ test("held terminal cutover seals capture before releasing pane-owned cleanup", 
     (call, index) =>
       index > pipeClose && call.startsWith("tmux capture-pane") && !call.includes(" -S "),
   );
-  const cleanup = calls.findIndex((call) => call.startsWith("release "));
+  const cleanupArm = calls.findIndex((call) => call.startsWith("tmux run-shell -b "));
+  const watchdogArmed = calls.indexOf("watchdog-armed");
+  const targetStart = calls.indexOf("target-start");
+  const cleanupRequest = calls.indexOf("cleanup-controller");
   assert.ok(respawn < pipeOpen);
-  assert.ok(pipeOpen < status);
+  assert.ok(pipeOpen < cleanupArm);
+  assert.ok(cleanupArm < watchdogArmed);
+  assert.ok(watchdogArmed < targetStart);
+  assert.ok(targetStart < status);
   assert.ok(status < pipeClose);
   assert.ok(pipeClose < viewport);
-  assert.ok(viewport < cleanup);
-  assert.notEqual(cleanup, -1);
+  assert.ok(viewport < cleanupRequest);
 });
 
 test("held terminal completion rejects malformed and missing status evidence", () => {
   for (const [options, expected] of [
     [{ recordedStatuses: ["invalid"] }, /status is malformed/],
-    [{ recordedStatuses: [null], heldPaneExitsBeforeRelease: true }, /before recording.*status/],
+    [{ recordedStatuses: [null], heldPaneExitsBeforeCleanup: true }, /before recording.*status/],
   ] as const) {
     const result = driveTerminal({
       plan: {
@@ -1056,7 +1061,7 @@ test("held terminal completion rejects malformed and missing status evidence", (
   }
 });
 
-test("terminal cleanup rejects a wrapper that exits before controller release", () => {
+test("terminal cleanup still runs after the pane wrapper exits", () => {
   const calls: string[] = [];
   const result = driveTerminal({
     plan: {
@@ -1070,17 +1075,46 @@ test("terminal cleanup rejects a wrapper that exits before controller release", 
     recordMedia: false,
     runner: terminalLifecycleRunner(calls, {
       recordedStatuses: [null],
-      heldPaneExitsBeforeRelease: true,
+      heldPaneExitsBeforeCleanup: true,
       terminalCaptures: ["Ready\n"],
     }),
   });
 
   assert.equal(result.status, "failed");
-  assert.match(result.output, /wrapper exited before controller release/);
+  assert.match(result.output, /before recording.*status/);
   assert.equal(
-    calls.some((call) => call.startsWith("release ")),
-    false,
+    calls.some((call) => call.startsWith("tmux run-shell -b ")),
+    true,
   );
+  assert.equal(calls.includes("cleanup-pane-death"), true);
+});
+
+test("terminal does not start the target without an exact watchdog arm receipt", () => {
+  for (const options of [
+    { watchdogNeverArms: true },
+    { armedAcknowledgement: "v1|armed|stale|41001|/dev/ttys001|1:2|42001\n" },
+  ]) {
+    const calls: string[] = [];
+    const result = driveTerminal({
+      plan: {
+        ...recommendedPlan("terminal"),
+        entry: "demo",
+        steps: [{ action: "expect_output", text: "Ready" }],
+      },
+      checkout: "/tmp/checkout",
+      rawVideoPath: "/tmp/live-proof.raw.webm",
+      maxRecordingSeconds: 90,
+      recordMedia: false,
+      runner: terminalLifecycleRunner(calls, {
+        ...options,
+        terminalCaptures: ["Ready\n"],
+      }),
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(calls.includes("target-start"), false);
+    assert.match(result.output, /cleanup watchdog/);
+  }
 });
 
 test("held terminal completion rejects a non-regular status path without blocking", () => {
@@ -1165,7 +1199,7 @@ test("terminal completion uses the configured proof budget beyond thirty seconds
   assert.ok(calls.filter((call) => call === "sleep 1").length > 30);
 });
 
-test("terminal pane status corruption fails closed before controller release", () => {
+test("terminal pane status corruption fails closed before controller cleanup", () => {
   const calls: string[] = [];
   const result = driveTerminal({
     plan: {
@@ -1187,7 +1221,7 @@ test("terminal pane status corruption fails closed before controller release", (
   assert.equal(result.status, "failed");
   assert.match(result.output, /pane status is malformed/);
   assert.equal(
-    calls.some((call) => call.startsWith("release ")),
+    calls.some((call) => call.startsWith("tmux run-shell -b ")),
     false,
   );
 });
@@ -1341,7 +1375,7 @@ test("ready_while_running requires a satisfied marker and a live final command",
   const finalLivenessProbe = calls.findLastIndex(
     (call) =>
       call.startsWith("tmux display-message") &&
-      call.endsWith("#{pane_pid}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"),
+      call.endsWith("#{pane_pid}|#{pane_tty}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"),
   );
   const pipeClose = calls.findLastIndex((call) => call.startsWith("tmux pipe-pane -t "));
   assert.equal(pipeClose < finalLivenessProbe, true);
@@ -1402,10 +1436,10 @@ test("ready_while_running rejects a command that exits during pipe shutdown", ()
       pipeCloseFailed &&
       tool === "tmux" &&
       args[0] === "display-message" &&
-      args.at(-1) === "#{pane_pid}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"
+      args.at(-1) === "#{pane_pid}|#{pane_tty}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"
     ) {
       calls.push([tool, ...args].join(" "));
-      return { status: 0, stdout: `${panePid}|1|0|\n` };
+      return { status: 0, stdout: `${panePid}|/dev/ttys001|1|0|\n` };
     }
     if (tool === "tmux" && args[0] === "pipe-pane" && !args.includes("-O") && !pipeCloseFailed) {
       calls.push([tool, ...args].join(" "));
@@ -1416,7 +1450,7 @@ test("ready_while_running rejects a command that exits during pipe shutdown", ()
     if (
       tool === "tmux" &&
       args[0] === "display-message" &&
-      args.at(-1) === "#{pane_pid}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"
+      args.at(-1) === "#{pane_pid}|#{pane_tty}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"
     ) {
       panePid = Number.parseInt(String(result.stdout), 10);
     }
@@ -1446,7 +1480,7 @@ test("ready_while_running rejects a command that exits during pipe shutdown", ()
   assert.equal(calls.filter((call) => call.startsWith("tmux pipe-pane -t ")).length, 1);
 });
 
-test("terminal rejects a pane pid change without signaling either identity", () => {
+test("terminal rejects a pane identity change without scheduling tty cleanup", () => {
   const calls: string[] = [];
   const fixtureRunner = terminalLifecycleRunner(calls, {
     commandKeepsRunning: true,
@@ -1458,18 +1492,10 @@ test("terminal rejects a pane pid change without signaling either identity", () 
     if (
       tool === "tmux" &&
       args[0] === "display-message" &&
-      args.at(-1) === "#{pane_pid}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"
+      args.at(-1) === "#{pane_pid}|#{pane_tty}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"
     ) {
       stateProbe += 1;
-      if (stateProbe > 1) return { ...result, stdout: "41999|0||\n" };
-    }
-    if (
-      stateProbe > 1 &&
-      tool === "tmux" &&
-      args[0] === "display-message" &&
-      args.at(-1) === "#{pane_pid}"
-    ) {
-      return { ...result, stdout: "41999\n" };
+      if (stateProbe > 1) return { ...result, stdout: "41999|/dev/ttys999|0||\n" };
     }
     return result;
   };
@@ -1488,14 +1514,14 @@ test("terminal rejects a pane pid change without signaling either identity", () 
   });
 
   assert.equal(result.status, "failed");
-  assert.match(result.output, /pane identity changed from launch pid 41001 to 41999/);
+  assert.match(result.output, /pane identity changed from launch 41001\|\/dev\/ttys001/);
   assert.equal(
-    calls.some((call) => call.startsWith("/bin/kill ")),
+    calls.some((call) => call.startsWith("tmux run-shell -b ")),
     false,
   );
 });
 
-test("terminal cleanup waits for the exact pane to acknowledge its release tuple", () => {
+test("terminal cleanup requires the exact pane receipt and pane death", () => {
   const calls: string[] = [];
   let cleanupScript = "";
   const result = driveTerminal({
@@ -1519,23 +1545,21 @@ test("terminal cleanup waits for the exact pane to acknowledge its release tuple
   });
 
   assert.equal(result.status, "completed");
-  assert.match(cleanupScript, /killall -q -TERM -t "\$tty_name"/);
-  assert.match(cleanupScript, /killall -0 -t "\$tty_name"/);
-  assert.match(cleanupScript, /killall -q -KILL -t "\$tty_name"/);
-  assert.match(cleanupScript, /pkill -TERM -t "\$tty_name" -f '\.\*'/);
-  assert.match(cleanupScript, /pgrep -t "\$tty_name" -f '\.\*'/);
-  assert.match(cleanupScript, /pkill -KILL -t "\$tty_name" -f '\.\*'/);
+  assert.match(cleanupScript, /\/usr\/sbin\/lsof -t -- "\$lease_path"/);
+  assert.match(cleanupScript, /for descriptor in \/proc\/"\$1"\/fd\/\*/);
+  assert.match(cleanupScript, /holds_lease "\$candidate" \|\| on_bound_tty "\$candidate"/);
+  assert.match(cleanupScript, /signal_bound_processes TERM/);
+  assert.match(cleanupScript, /signal_bound_processes KILL/);
+  assert.match(cleanupScript, /stable_empty.*-ge 2/s);
   const respawn = calls.find((call) => call.startsWith("tmux respawn-pane"));
-  assert.match(respawn ?? "", /tmux run-shell -b/);
+  assert.doesNotMatch(respawn ?? "", /tmux run-shell -b/);
   assert.match(respawn ?? "", /while :; do sleep 3600; done/);
-  assert.doesNotMatch(respawn ?? "", /exec tmux run-shell/);
-  assert.match(respawn ?? "", /if \[ -f "\$4" \]; then/);
-  assert.match(
-    respawn ?? "",
-    /read -r release_pid release_nonce release_extra 2>\/dev\/null <"\$4"/,
-  );
-  assert.doesNotMatch(respawn ?? "", /<"\$4" 2>\/dev\/null/);
-  assert.equal(calls.filter((call) => call.startsWith("release ")).length, 1);
+  assert.match(respawn ?? "", /exec 9<"\$8"/);
+  assert.match(respawn ?? "", /read -r bound_pid bound_tty bound_nonce bound_lease bound_extra/);
+  assert.match(respawn ?? "", /v1\|execute/);
+  assert.equal(calls.filter((call) => call.startsWith("tmux run-shell -b ")).length, 1);
+  assert.ok(calls.indexOf("watchdog-armed") < calls.indexOf("target-start"));
+  assert.notEqual(calls.indexOf("cleanup-controller"), -1);
   assert.equal(
     calls.some((call) => call.startsWith("/bin/kill ") || call.startsWith("/bin/ps ")),
     false,
@@ -1554,7 +1578,7 @@ test("terminal rejects a malformed pane readiness acknowledgement", () => {
     maxRecordingSeconds: 90,
     recordMedia: false,
     runner: terminalLifecycleRunner([], {
-      readyAcknowledgement: "41001 stale-nonce\n",
+      readyAcknowledgement: "41001|/dev/ttys001|stale-nonce\n",
       terminalCaptures: ["Ready\n"],
     }),
   });
@@ -1563,7 +1587,7 @@ test("terminal rejects a malformed pane readiness acknowledgement", () => {
   assert.match(result.output, /readiness acknowledgement is malformed/);
 });
 
-test("terminal cleanup fails when the pane does not die after release", () => {
+test("terminal cleanup fails when the pane does not die after scheduling", () => {
   const calls: string[] = [];
   assert.throws(
     () =>
@@ -1586,10 +1610,10 @@ test("terminal cleanup fails when the pane does not die after release", () => {
       }),
     /terminal cleanup failed/,
   );
-  assert.equal(calls.filter((call) => call.startsWith("release ")).length, 1);
+  assert.equal(calls.filter((call) => call.startsWith("tmux run-shell -b ")).length, 1);
 });
 
-test("terminal cleanup fails when tmux replaces the pane after release", () => {
+test("terminal cleanup fails when tmux replaces the pane after scheduling", () => {
   assert.throws(
     () =>
       driveTerminal({
@@ -1631,6 +1655,30 @@ test("terminal cleanup rejects an operational error receipt after pane death", (
           commandKeepsRunning: true,
           terminalCaptures: ["Ready\n"],
           cleanupResult: "error:kill:2",
+        }),
+      }),
+    /terminal cleanup failed/,
+  );
+});
+
+test("terminal cleanup cannot accept success while lease survivors remain", () => {
+  assert.throws(
+    () =>
+      driveTerminal({
+        plan: {
+          ...recommendedPlan("terminal"),
+          terminalCompletion: "ready_while_running",
+          entry: "demo-server",
+          steps: [{ action: "expect_output", text: "Ready" }],
+        },
+        checkout: "/tmp/checkout",
+        rawVideoPath: "/tmp/live-proof.raw.webm",
+        maxRecordingSeconds: 90,
+        recordMedia: false,
+        runner: terminalLifecycleRunner([], {
+          commandKeepsRunning: true,
+          terminalCaptures: ["Ready\n"],
+          cleanupSurvivors: 1,
         }),
       }),
     /terminal cleanup failed/,
@@ -1798,8 +1846,10 @@ test("terminal entry executes once and publishes only its final visible viewport
   let commandViewport = "";
   let commandStatus = 0;
   let panePid = 42_001;
+  const paneTty = "/dev/ttys001";
   let paneDead = false;
   let invocation: ReturnType<typeof terminalCommandInvocation>;
+  let cleanup: TerminalCleanupInvocation | undefined;
   let commandExecuted = false;
   let capture:
     | {
@@ -1810,10 +1860,20 @@ test("terminal entry executes once and publishes only its final visible viewport
         captureDoneTemporary: string;
       }
     | undefined;
-  const executeCommand = (cwd: string | undefined) => {
-    if (commandExecuted || !invocation || !capture || !existsSync(invocation.start)) return;
-    writeFileSync(invocation.readyTemporary, `${panePid} ${invocation.nonce}\n`, "utf8");
-    renameSync(invocation.readyTemporary, invocation.ready);
+  const advanceCommand = (cwd: string | undefined) => {
+    if (!invocation || !capture) return;
+    if (!existsSync(invocation.ready)) {
+      if (!existsSync(invocation.start)) return;
+      writeFileSync(
+        invocation.readyTemporary,
+        `${panePid}|${paneTty}|${invocation.nonce}|${invocation.leaseIdentity}\n`,
+        "utf8",
+      );
+      renameSync(invocation.readyTemporary, invocation.ready);
+    }
+    if (commandExecuted || !readFileSync(invocation.ready, "utf8").startsWith("v1|execute|")) {
+      return;
+    }
     const execution = spawnSync("/bin/bash", ["--noprofile", "--norc", invocation.command], {
       cwd,
       encoding: "utf8",
@@ -1823,6 +1883,16 @@ test("terminal entry executes once and publishes only its final visible viewport
     commandStatus = execution.signal ? 143 : (execution.status ?? 1);
     writeFileSync(invocation.status, `${commandStatus}\n`, "utf8");
     commandExecuted = true;
+  };
+  const advanceCleanup = () => {
+    if (!cleanup || !existsSync(cleanup.request) || paneDead) return;
+    writeFileSync(
+      cleanup.resultTemporary,
+      `v1|done|${cleanup.nonce}|${cleanup.panePid}|${cleanup.paneTty}|${cleanup.leaseIdentity}|controller|ok|0\n`,
+      "utf8",
+    );
+    renameSync(cleanup.resultTemporary, cleanup.result);
+    paneDead = true;
   };
   const runner: MediaProofCommandRunner = (tool, args, options) => {
     if (tool === "tmux" && args[0] === "pipe-pane" && args.includes("-O")) {
@@ -1847,30 +1917,25 @@ test("terminal entry executes once and publishes only its final visible viewport
     if (
       tool === "tmux" &&
       args[0] === "display-message" &&
-      args.at(-1) === "#{pane_pid}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"
+      args.at(-1) === "#{pane_pid}|#{pane_tty}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"
     ) {
-      executeCommand(options?.cwd);
-      if (
-        invocation &&
-        existsSync(invocation.release) &&
-        readFileSync(invocation.release, "utf8") === `${panePid} ${invocation.nonce}\n`
-      ) {
-        writeFileSync(
-          invocation.cleanupResultTemporary,
-          `${panePid} ${invocation.nonce} ok\n`,
-          "utf8",
-        );
-        renameSync(invocation.cleanupResultTemporary, invocation.cleanupResult);
-        paneDead = true;
-      }
+      advanceCommand(options?.cwd);
+      advanceCleanup();
       return {
         status: 0,
-        stdout: paneDead ? `${panePid}|1|0|\n` : `${panePid}|0||\n`,
+        stdout: paneDead ? `${panePid}|${paneTty}|1|0|\n` : `${panePid}|${paneTty}|0||\n`,
       };
     }
-    if (tool === "tmux" && args[0] === "display-message" && args.at(-1) === "#{pane_pid}") {
-      executeCommand(options?.cwd);
-      return { status: 0, stdout: `${panePid}\n` };
+    if (tool === "tmux" && args[0] === "run-shell") {
+      cleanup = terminalCleanupInvocation(args);
+      assert.ok(cleanup);
+      writeFileSync(
+        cleanup.resultTemporary,
+        `v1|armed|${cleanup.nonce}|${cleanup.panePid}|${cleanup.paneTty}|${cleanup.leaseIdentity}|42001\n`,
+        "utf8",
+      );
+      renameSync(cleanup.resultTemporary, cleanup.result);
+      return { status: 0 };
     }
     if (tool === "tmux" && args[0] === "capture-pane") {
       return { status: 0, stdout: args.includes("-S") ? commandOutput : commandViewport };
@@ -2199,12 +2264,14 @@ test("terminal recording holds the end state and enforces its minimum before fin
   const completed = calls.findIndex((call) => call.startsWith("status "));
   const hold = calls.findIndex((call) => call === "sleep 6");
   const finalize = calls.findIndex((call) => /tmux send-keys .* q$/.test(call));
-  const cleanup = calls.findIndex((call) => call.startsWith("release "));
+  const cleanupArm = calls.findIndex((call) => call.startsWith("tmux run-shell -b "));
+  const cleanupRequest = calls.indexOf("cleanup-controller");
   assert.notEqual(completed, -1);
   assert.notEqual(hold, -1);
   assert.ok(hold > completed);
   assert.ok(finalize > hold);
-  assert.ok(cleanup > finalize);
+  assert.ok(cleanupArm < finalize);
+  assert.ok(cleanupRequest > finalize);
 });
 
 test("terminal driver reports display readiness timeout with all pane diagnostics", () => {
@@ -3580,12 +3647,15 @@ function terminalLifecycleRunner(
     captureCompletion?: string;
     paneStatusDuringFinalize?: { status: "exited"; exitStatus: number };
     terminalPaneSequence?: Array<{ status: "running" } | { status: "exited"; exitStatus: number }>;
-    heldPaneExitsBeforeRelease?: boolean;
+    heldPaneExitsBeforeCleanup?: boolean;
     malformedPaneStatus?: string;
     malformedPaneStatusAfterProbe?: number;
     cleanupNeverCompletes?: boolean;
     cleanupReplacementPid?: number;
     cleanupResult?: string;
+    cleanupSurvivors?: number;
+    watchdogNeverArms?: boolean;
+    armedAcknowledgement?: string;
     readyAcknowledgement?: string;
     inspectCleanupScript?: (script: string) => void;
     leaveCaptureTemporaryFiles?: boolean;
@@ -3604,8 +3674,9 @@ function terminalLifecycleRunner(
   let commandLaunch = 0;
   let terminalStateProbe = 0;
   let panePid = 41_000;
+  let paneTty = "/dev/ttys001";
   let paneDead = false;
-  let releaseObserved = false;
+  let targetStarted = false;
   let forcedPaneState: { status: "exited"; exitStatus: number } | undefined;
   let activeCommand:
     | {
@@ -3613,16 +3684,15 @@ function terminalLifecycleRunner(
         held: boolean;
         status: string;
         statusTemporary: string;
-        release: string;
         start: string;
         ready: string;
         readyTemporary: string;
+        lease: string;
+        leaseIdentity: string;
         nonce: string;
-        cleanupScript: string;
-        cleanupResult: string;
-        cleanupResultTemporary: string;
       }
     | undefined;
+  let activeCleanup: TerminalCleanupInvocation | undefined;
   let activeFiles:
     | {
         captureScript: string;
@@ -3643,6 +3713,8 @@ function terminalLifecycleRunner(
       options.heldCommandKeepsRunning ||
       options.commandKeepsRunning ||
       options.keepsRunningCommands?.includes(typedCommand) ||
+      !existsSync(activeCommand.ready) ||
+      !readFileSync(activeCommand.ready, "utf8").startsWith("v1|execute|") ||
       existsSync(activeCommand.status)
     ) {
       return;
@@ -3670,40 +3742,72 @@ function terminalLifecycleRunner(
     }
     writeFileSync(
       activeCommand.readyTemporary,
-      options.readyAcknowledgement ?? `${panePid} ${activeCommand.nonce}\n`,
+      options.readyAcknowledgement ??
+        `${panePid}|${paneTty}|${activeCommand.nonce}|${activeCommand.leaseIdentity}\n`,
       "utf8",
     );
     renameSync(activeCommand.readyTemporary, activeCommand.ready);
   };
+  const armTerminalCleanup = (cleanup: TerminalCleanupInvocation) => {
+    activeCleanup = cleanup;
+    options.inspectCleanupScript?.(readFileSync(cleanup.script, "utf8"));
+    if (options.watchdogNeverArms) return;
+    writeFileSync(
+      cleanup.resultTemporary,
+      options.armedAcknowledgement ??
+        `v1|armed|${cleanup.nonce}|${cleanup.panePid}|${cleanup.paneTty}|${cleanup.leaseIdentity}|42001\n`,
+      "utf8",
+    );
+    renameSync(cleanup.resultTemporary, cleanup.result);
+    calls.push("watchdog-armed");
+  };
   const completeTerminalCleanup = () => {
-    if (!activeCommand || paneDead || !existsSync(activeCommand.release)) return;
-    const release = readFileSync(activeCommand.release, "utf8");
-    if (!releaseObserved) {
-      calls.push(`release ${activeCommand.release} ${release.trim()}`);
-      releaseObserved = true;
-    }
-    if (release !== `${panePid} ${activeCommand.nonce}\n` || options.cleanupNeverCompletes) return;
+    const cleanup = activeCleanup;
+    if (!cleanup || options.cleanupNeverCompletes) return;
+    const controllerRequested = existsSync(cleanup.request);
+    const paneDied =
+      options.heldPaneExitsBeforeCleanup === true &&
+      activeCommand !== undefined &&
+      existsSync(activeCommand.ready) &&
+      readFileSync(activeCommand.ready, "utf8").startsWith("v1|execute|");
+    if (!controllerRequested && !paneDied) return;
     if (options.cleanupReplacementPid !== undefined) {
       panePid = options.cleanupReplacementPid;
       return;
     }
+    const trigger = controllerRequested ? "controller" : "pane-death";
+    calls.push(`cleanup-${trigger}`);
     writeFileSync(
-      activeCommand.cleanupResultTemporary,
-      `${panePid} ${activeCommand.nonce} ${options.cleanupResult ?? "ok"}\n`,
+      cleanup.resultTemporary,
+      `v1|done|${cleanup.nonce}|${cleanup.panePid}|${cleanup.paneTty}|${cleanup.leaseIdentity}|${trigger}|${options.cleanupResult ?? "ok"}|${options.cleanupSurvivors ?? 0}\n`,
       "utf8",
     );
-    renameSync(activeCommand.cleanupResultTemporary, activeCommand.cleanupResult);
+    renameSync(cleanup.resultTemporary, cleanup.result);
     paneDead = true;
   };
   const terminalPaneState = () => {
     if (commandLaunch === 0) return { status: "running" } as const;
     acknowledgeTerminalReady();
+    if (
+      activeCommand &&
+      existsSync(activeCommand.ready) &&
+      readFileSync(activeCommand.ready, "utf8").startsWith("v1|execute|")
+    ) {
+      if (!targetStarted) {
+        targetStarted = true;
+        calls.push("target-start");
+      }
+      updateTerminalFiles();
+    }
     completeTerminalCleanup();
-    if (activeCommand && existsSync(activeCommand.ready)) updateTerminalFiles();
     if (forcedPaneState) return forcedPaneState;
     if (paneDead) return { status: "exited", exitStatus: 0 } as const;
     if (activeCommand?.held) {
-      if (options.heldPaneExitsBeforeRelease) {
+      if (
+        options.heldPaneExitsBeforeCleanup &&
+        existsSync(activeCommand.ready) &&
+        readFileSync(activeCommand.ready, "utf8").startsWith("v1|execute|")
+      ) {
         return { status: "exited", exitStatus: commandExitStatus() } as const;
       }
       return { status: "running" } as const;
@@ -3779,12 +3883,12 @@ function terminalLifecycleRunner(
       const invocation = terminalCommandInvocation(args);
       assert.ok(invocation);
       typedCommand = readFileSync(invocation.command, "utf8").trimEnd();
-      options.inspectCleanupScript?.(readFileSync(invocation.cleanupScript, "utf8"));
       activeCommand = invocation;
+      activeCleanup = undefined;
       commandLaunch += 1;
       panePid += 1;
       paneDead = false;
-      releaseObserved = false;
+      targetStarted = false;
       forcedPaneState = undefined;
       terminalCaptureProbe = 0;
       terminalHistoryProbe = 0;
@@ -3795,7 +3899,8 @@ function terminalLifecycleRunner(
       const target = String(args[args.indexOf("-t") + 1] ?? "");
       if (
         target.includes("-terminal") &&
-        args.at(-1) === "#{pane_pid}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"
+        args.at(-1) ===
+          "#{pane_pid}|#{pane_tty}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"
       ) {
         const malformed =
           options.malformedPaneStatus !== undefined &&
@@ -3807,13 +3912,8 @@ function terminalLifecycleRunner(
         const state = terminalPaneState();
         terminalStateProbe += 1;
         return state.status === "running"
-          ? { status: 0, stdout: `${panePid}|0||\n` }
-          : { status: 0, stdout: `${panePid}|1|${state.exitStatus}|\n` };
-      }
-      if (target.includes("-terminal") && args.at(-1) === "#{pane_pid}") {
-        acknowledgeTerminalReady();
-        if (activeCommand && existsSync(activeCommand.ready)) updateTerminalFiles();
-        return { status: 0, stdout: `${panePid}\n` };
+          ? { status: 0, stdout: `${panePid}|${paneTty}|0||\n` }
+          : { status: 0, stdout: `${panePid}|${paneTty}|1|${state.exitStatus}|\n` };
       }
       if (finalizing) {
         const exited = finalizeProbe >= (options.finalizeExitAfter ?? 0);
@@ -3858,9 +3958,16 @@ function terminalLifecycleRunner(
       }
       return { status: 0, stdout: `${options.paneOutput?.[label] ?? `${label} pane`}\n` };
     }
+    if (command === "tmux" && args[0] === "run-shell") {
+      const cleanup = terminalCleanupInvocation(args);
+      assert.ok(cleanup);
+      armTerminalCleanup(cleanup);
+      return { status: 0 };
+    }
     if (command === "sleep" && activeFiles) {
       if (args[0] !== "0.1") terminalCaptureProbe += 1;
       updateTerminalFiles();
+      completeTerminalCleanup();
     }
     return { status: 0 };
   };
@@ -3872,37 +3979,61 @@ function terminalCommandInvocation(args: readonly string[]):
       held: boolean;
       status: string;
       statusTemporary: string;
-      release: string;
       start: string;
       ready: string;
       readyTemporary: string;
+      lease: string;
+      leaseIdentity: string;
       nonce: string;
-      cleanupScript: string;
-      cleanupResult: string;
-      cleanupResultTemporary: string;
     }
   | undefined {
   const target = String(args[args.indexOf("-t") + 1] ?? "");
   if (!target.includes("-terminal")) return undefined;
   const shellCommand = String(args.at(-1) ?? "");
   const quoted = [...shellCommand.matchAll(/'([^']*)'/g)].map((match) => match[1]!);
-  const invocation = quoted.slice(-12);
-  if (invocation.length !== 12 || invocation[0] !== "clawsweeper-terminal") return undefined;
+  const invocation = quoted.slice(-10);
+  if (invocation.length !== 10 || invocation[0] !== "clawsweeper-terminal") return undefined;
   return {
     command: invocation[1]!,
-    held: shellCommand.includes(
-      'read -r release_pid release_nonce release_extra 2>/dev/null <"$4"',
-    ),
+    held: shellCommand.includes("while :; do sleep 3600; done"),
     statusTemporary: invocation[2]!,
     status: invocation[3]!,
-    release: invocation[4]!,
-    start: invocation[5]!,
-    readyTemporary: invocation[6]!,
-    ready: invocation[7]!,
-    nonce: invocation[8]!,
-    cleanupScript: invocation[9]!,
-    cleanupResultTemporary: invocation[10]!,
-    cleanupResult: invocation[11]!,
+    start: invocation[4]!,
+    readyTemporary: invocation[5]!,
+    ready: invocation[6]!,
+    nonce: invocation[7]!,
+    lease: invocation[8]!,
+    leaseIdentity: invocation[9]!,
+  };
+}
+
+interface TerminalCleanupInvocation {
+  script: string;
+  paneTty: string;
+  panePid: string;
+  nonce: string;
+  lease: string;
+  leaseIdentity: string;
+  request: string;
+  resultTemporary: string;
+  result: string;
+}
+
+function terminalCleanupInvocation(args: readonly string[]): TerminalCleanupInvocation | undefined {
+  const shellCommand = String(args.at(-1) ?? "");
+  const quoted = [...shellCommand.matchAll(/'([^']*)'/g)].map((match) => match[1]!);
+  const invocation = quoted.slice(-10);
+  if (invocation.length !== 10 || invocation[0] !== "/bin/bash") return undefined;
+  return {
+    script: invocation[1]!,
+    paneTty: invocation[2]!,
+    panePid: invocation[3]!,
+    nonce: invocation[4]!,
+    lease: invocation[5]!,
+    leaseIdentity: invocation[6]!,
+    request: invocation[7]!,
+    resultTemporary: invocation[8]!,
+    result: invocation[9]!,
   };
 }
 

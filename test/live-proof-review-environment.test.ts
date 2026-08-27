@@ -681,6 +681,96 @@ test(
 );
 
 test(
+  "terminal proof cleanup survives target-triggered pane wrapper death",
+  { timeout: 60_000 },
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-wrapper-death-"));
+    let backgroundPid: number | undefined;
+    let processToken = "";
+    const pidPath = "wrapper-death.pid";
+    try {
+      const shellGroupPath = "wrapper-death.shell-pgid";
+      const childGroupPath = "wrapper-death.child-pgid";
+      processToken = `clawsweeper-proof-wrapper-death-${process.pid}-${Date.now()}`;
+      writeFileSync(
+        join(root, "background.mjs"),
+        [
+          'import { writeFileSync } from "node:fs";',
+          "const [pidPath] = process.argv.slice(2);",
+          "writeFileSync(pidPath, String(process.pid));",
+          'process.on("SIGHUP", () => {});',
+          'process.on("SIGTERM", () => {});',
+          "setInterval(() => {}, 1_000);",
+        ].join("\n"),
+      );
+      const entry = [
+        "set -m",
+        `node background.mjs ${pidPath} ${processToken} >/dev/null 2>&1 &`,
+        "child=$!",
+        `while [ ! -s ${pidPath} ]; do sleep 0.01; done`,
+        `/bin/ps -o pgid= -p "$$" | /usr/bin/tr -d '[:space:]' >${shellGroupPath}`,
+        `/bin/ps -o pgid= -p "$child" | /usr/bin/tr -d '[:space:]' >${childGroupPath}`,
+        'pane_wrapper=$(/bin/ps -o ppid= -p "$PPID" | /usr/bin/tr -d "[:space:]")',
+        'case "$pane_wrapper" in ""|*[!0-9]*) exit 125 ;; esac',
+        "printf 'wrapper-death-ready\\n'",
+        "sleep 1",
+        '/bin/kill -KILL "$pane_wrapper"',
+        "while :; do sleep 1; done",
+      ].join("\n");
+      const result = driveTerminal({
+        plan: {
+          status: "recommended",
+          surface: "terminal",
+          terminalCompletion: "ready_while_running",
+          reason: "The command remains live after reporting readiness.",
+          payoff: { kind: "static_text", justification: "Text is sufficient." },
+          entry,
+          steps: [{ action: "expect_output", text: "wrapper-death-ready" }],
+        },
+        checkout: root,
+        rawVideoPath: join(root, "proof.webm"),
+        maxRecordingSeconds: 90,
+        recordMedia: false,
+        runner: mediaProofCommandRunner,
+      });
+
+      assert.equal(result.status, "failed", result.output);
+      assert.match(result.output, /terminated by a signal with exit status 137/);
+      assert.doesNotMatch(result.output, /cleanup failure/);
+      backgroundPid = Number.parseInt(readFileSync(join(root, pidPath), "utf8"), 10);
+      assert.notEqual(
+        readFileSync(join(root, childGroupPath), "utf8"),
+        readFileSync(join(root, shellGroupPath), "utf8"),
+        "wrapper-death fixture did not create a distinct child process group",
+      );
+      let matches = processesContaining(processToken);
+      const deadline = Date.now() + 2_000;
+      while (matches.length > 0 && Date.now() < deadline) {
+        execFileSync("sleep", ["0.05"]);
+        matches = processesContaining(processToken);
+      }
+      assert.deepEqual(matches, []);
+      assert.throws(() => process.kill(backgroundPid, 0), { code: "ESRCH" });
+    } finally {
+      if (backgroundPid === undefined && existsSync(join(root, pidPath))) {
+        backgroundPid = Number.parseInt(readFileSync(join(root, pidPath), "utf8"), 10);
+      }
+      if (
+        Number.isSafeInteger(backgroundPid) &&
+        processesContaining(processToken).some((line) => line.startsWith(`${backgroundPid} `))
+      ) {
+        try {
+          process.kill(backgroundPid, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
   "non-recorded ready proof rejects a command that exits during the stability hold",
   { timeout: 30_000 },
   () => {

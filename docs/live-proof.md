@@ -184,18 +184,26 @@ must remain live through a three-second stability hold before publication.
 Every earlier command must exit zero. The supervisor exits with the command's
 status, and tmux's pane lifecycle records whether that supervisor is still
 running or how it exited. Each proof uses a private tmux socket directory. The
-original pane wrapper launches the target asynchronously with job control
-disabled and stdio bound to its controlling terminal, then publishes its pane
-PID with a fresh nonce. After capture and the final viewport are sealed, the
-controller releases that exact tuple. The wrapper schedules a cleanup job
-through its private tmux server; that job TERM-sweeps and repeatedly applies
-terminal-scoped KILL until the terminal has no processes left. Cleanup succeeds
-only when the exact pane is dead and a matching atomic success receipt exists.
-A Darwin cleanup uses `killall -t`; other platforms use `pgrep`/`pkill` with an
-explicit all-process pattern.
-A stale tuple, pane replacement, cleanup command error, surviving process, or
-timeout fails the proof visibly. Target commands do not inherit `TMUX`,
-`TMUX_PANE`, or `TMUX_TMPDIR`.
+controller binds the exact pane PID and controlling terminal before opening the
+start gate. The pane process validates that tuple and opens a private lease file
+descriptor inherited by the held target and its descendants. Before opening a
+second execution gate, the controller starts a cleanup watchdog outside the pane
+process tree through the private tmux server and requires an exact atomic armed
+receipt bound to the pane PID, terminal, nonce, and lease inode.
+
+After capture and the final viewport are sealed, controller cleanup requests the
+already-armed watchdog. Pane death triggers the same watchdog independently. It
+TERM-sweeps, then repeatedly KILL-sweeps the union of processes on the bound
+terminal and processes still holding the lease until two consecutive scans are
+empty. Darwin finds lease holders with the stock `lsof`; Linux inspects `/proc`
+file descriptors. Cleanup succeeds only when an exact zero-survivor receipt
+matches the bound identity and the original pane is dead. Missing, malformed,
+stale, replaced, surviving-process, or timeout evidence fails visibly. Target
+commands do not inherit `TMUX`, `TMUX_PANE`, or `TMUX_TMPDIR`.
+
+The lease is lifecycle cleanup, not hostile same-UID isolation. A target that
+deliberately closes inherited descriptors or attacks same-user controller
+processes requires container, VM, namespace, or separate-user containment.
 All untrusted fields are bounded and neutralized against Markdown fences, HTML,
 and ClawSweeper marker spoofing. OpenClaw Bay is unaffected because schema v1
 and the existing lifecycle and publication contracts do not change.
