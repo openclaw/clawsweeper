@@ -595,7 +595,7 @@ test(
 );
 
 test(
-  "terminal proof cleanup terminates a background process in the pane group",
+  "terminal proof cleanup terminates a signal-resistant background process in the owned group",
   { timeout: 30_000 },
   () => {
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-cleanup-"));
@@ -607,6 +607,8 @@ test(
         [
           'import { writeFileSync } from "node:fs";',
           'writeFileSync("background.pid", String(process.pid));',
+          'process.on("SIGHUP", () => {});',
+          'process.on("SIGTERM", () => {});',
           "setTimeout(() => process.exit(0), 10_000);",
           "setInterval(() => {}, 1_000);",
         ].join("\n"),

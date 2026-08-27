@@ -894,7 +894,7 @@ test("terminal seals rolling capture before rendering a still-running timeout", 
   assert.match(result.output, /EARLY_DIAGNOSTIC/);
   assert.equal(
     calls.findIndex((call) => call.startsWith("tmux pipe-pane -t ")) <
-      calls.findIndex((call) => call.endsWith(" exit 0")),
+      calls.findIndex((call) => call.startsWith("/bin/kill -TERM -")),
     true,
   );
 });
@@ -991,7 +991,7 @@ test("terminal waits for tmux to publish a final zero exit", () => {
   assert.equal(result.steps[0]?.satisfied, true);
 });
 
-test("held terminal cutover seals capture before tmux tears down the live pane", () => {
+test("held terminal cutover seals capture before cleaning the owned process group", () => {
   const calls: string[] = [];
   const result = driveTerminal({
     plan: {
@@ -1015,7 +1015,7 @@ test("held terminal cutover seals capture before tmux tears down the live pane",
     (call, index) =>
       index > pipeClose && call.startsWith("tmux capture-pane") && !call.includes(" -S "),
   );
-  const cleanup = calls.findIndex((call) => call.endsWith(" exit 0"));
+  const cleanup = calls.findIndex((call) => call.startsWith("/bin/kill -TERM -"));
   assert.ok(respawn < pipeOpen);
   assert.ok(pipeOpen < status);
   assert.ok(status < pipeClose);
@@ -1053,7 +1053,7 @@ test("held terminal completion rejects malformed and missing status evidence", (
   }
 });
 
-test("terminal cleanup never signals a pane pid after tmux reports it exited", () => {
+test("terminal cleanup uses the trusted group even when pane status reports exit", () => {
   const calls: string[] = [];
   const result = driveTerminal({
     plan: {
@@ -1074,10 +1074,8 @@ test("terminal cleanup never signals a pane pid after tmux reports it exited", (
 
   assert.equal(result.status, "failed");
   assert.match(result.output, /before recording.*status/);
-  assert.equal(
-    calls.some((call) => call.endsWith(" exit 0")),
-    false,
-  );
+  assert.ok(calls.includes("/bin/kill -TERM -51001"));
+  assert.equal(calls.includes("/bin/kill -TERM -41001"), false);
 });
 
 test("held terminal completion rejects a non-regular status path without blocking", () => {
@@ -1183,13 +1181,8 @@ test("terminal pane status corruption fails closed and still cleans up", () => {
 
   assert.equal(result.status, "failed");
   assert.match(result.output, /pane status is malformed/);
-  assert.equal(
-    calls.some((call) => call.endsWith(" exit 0")),
-    false,
-  );
-  assert.ok(
-    calls.some((call) => call.startsWith("tmux kill-session -t ") && call.endsWith("-terminal")),
-  );
+  assert.ok(calls.includes("/bin/kill -TERM -51001"));
+  assert.equal(calls.includes("/bin/kill -TERM -41001"), false);
 });
 
 test("terminal command failure after an observed marker is caught after the recording hold", () => {
@@ -1446,7 +1439,7 @@ test("ready_while_running rejects a command that exits during pipe shutdown", ()
   assert.equal(calls.filter((call) => call.startsWith("tmux pipe-pane -t ")).length, 1);
 });
 
-test("terminal rejects a pane pid change without tearing down the replacement pane", () => {
+test("terminal rejects a pane pid change without signaling either identity", () => {
   const calls: string[] = [];
   const fixtureRunner = terminalLifecycleRunner(calls, {
     commandKeepsRunning: true,
@@ -1462,6 +1455,14 @@ test("terminal rejects a pane pid change without tearing down the replacement pa
     ) {
       stateProbe += 1;
       if (stateProbe > 1) return { ...result, stdout: "41999|0||\n" };
+    }
+    if (
+      stateProbe > 1 &&
+      tool === "tmux" &&
+      args[0] === "display-message" &&
+      args.at(-1) === "#{pane_pid}"
+    ) {
+      return { ...result, stdout: "41999\n" };
     }
     return result;
   };
@@ -1481,13 +1482,12 @@ test("terminal rejects a pane pid change without tearing down the replacement pa
 
   assert.equal(result.status, "failed");
   assert.match(result.output, /pane identity changed from launch pid 41001 to 41999/);
-  assert.equal(
-    calls.some((call) => call.endsWith(" exit 0")),
-    false,
-  );
+  assert.equal(calls.includes("/bin/kill -TERM -51001"), false);
+  assert.equal(calls.includes("/bin/kill -TERM -41001"), false);
+  assert.equal(calls.includes("/bin/kill -TERM -41999"), false);
 });
 
-test("terminal cleanup uses tmux ownership instead of pane-pid process-group signals", () => {
+test("terminal cleanup uses an explicit process group instead of the pane pid", () => {
   const calls: string[] = [];
   const result = driveTerminal({
     plan: {
@@ -1507,14 +1507,39 @@ test("terminal cleanup uses tmux ownership instead of pane-pid process-group sig
   });
 
   assert.equal(result.status, "completed");
-  assert.equal(calls.filter((call) => call.endsWith(" exit 0")).length, 1);
-  assert.equal(
-    calls.some((call) => call.startsWith("/bin/kill ")),
-    false,
-  );
+  assert.ok(calls.includes("/bin/kill -TERM -51001"));
+  assert.equal(calls.includes("/bin/kill -TERM -41001"), false);
 });
 
-test("terminal cleanup reports a failed tmux-owned teardown", () => {
+test("terminal cleanup tolerates signal failures only after the owned group is absent", () => {
+  const calls: string[] = [];
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      terminalCompletion: "ready_while_running",
+      entry: "demo-server",
+      steps: [{ action: "expect_output", text: "Ready" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    runner: terminalLifecycleRunner(calls, {
+      commandKeepsRunning: true,
+      terminalCaptures: ["Ready\n"],
+      termStatus: 1,
+      killStatus: 1,
+      processGroupDisappearsAfterKill: true,
+    }),
+  });
+
+  assert.equal(result.status, "completed");
+  assert.ok(calls.includes("/bin/kill -TERM -51001"));
+  assert.ok(calls.includes("/bin/kill -KILL -51001"));
+  assert.ok(calls.filter((call) => call === "/bin/kill -0 -51001").length >= 2);
+});
+
+test("terminal cleanup fails when the owned process group survives SIGKILL", () => {
   const calls: string[] = [];
   assert.throws(
     () =>
@@ -1532,12 +1557,13 @@ test("terminal cleanup reports a failed tmux-owned teardown", () => {
         runner: terminalLifecycleRunner(calls, {
           commandKeepsRunning: true,
           terminalCaptures: ["Ready\n"],
-          cleanupStatus: 1,
+          killStatus: 1,
+          processGroupSurvivesKill: true,
         }),
       }),
     /terminal cleanup failed/,
   );
-  assert.equal(calls.filter((call) => call.endsWith(" exit 0")).length, 1);
+  assert.ok(calls.filter((call) => call === "/bin/kill -0 -51001").length > 2);
 });
 
 test("ready_while_running fails when the final command exits during the recording hold", () => {
@@ -1701,6 +1727,7 @@ test("terminal entry executes once and publishes only its final visible viewport
   let commandViewport = "";
   let commandStatus = 0;
   let panePid = 42_001;
+  const processGroupId = 52_001;
   let invocation: ReturnType<typeof terminalCommandInvocation>;
   let commandExecuted = false;
   let capture:
@@ -1744,6 +1771,7 @@ test("terminal entry executes once and publishes only its final visible viewport
       invocation = terminalCommandInvocation(args);
       if (!invocation) return { status: 0 };
       commandExecuted = false;
+      writeFileSync(invocation.processGroup, `${processGroupId}\n`, "utf8");
       return { status: 0 };
     }
     if (
@@ -1763,6 +1791,9 @@ test("terminal entry executes once and publishes only its final visible viewport
     }
     if (tool === "tmux" && args[0] === "capture-pane") {
       return { status: 0, stdout: args.includes("-S") ? commandOutput : commandViewport };
+    }
+    if (tool === "/bin/ps") {
+      return { status: 0, stdout: `${panePid} ${processGroupId} ${processGroupId}\n` };
     }
     if (tool === "/bin/kill" && args[0] === "-0") return { status: 1 };
     return { status: 0 };
@@ -2089,7 +2120,7 @@ test("terminal recording holds the end state and enforces its minimum before fin
   const completed = calls.findIndex((call) => call.startsWith("status "));
   const hold = calls.findIndex((call) => call === "sleep 6");
   const finalize = calls.findIndex((call) => /tmux send-keys .* q$/.test(call));
-  const cleanup = calls.findIndex((call) => call.endsWith(" exit 0"));
+  const cleanup = calls.findIndex((call) => call.startsWith("/bin/kill -TERM -"));
   assert.notEqual(completed, -1);
   assert.notEqual(hold, -1);
   assert.ok(hold > completed);
@@ -3477,7 +3508,10 @@ function terminalLifecycleRunner(
     heldPaneExitsBeforeRelease?: boolean;
     malformedPaneStatus?: string;
     malformedPaneStatusAfterProbe?: number;
-    cleanupStatus?: number;
+    termStatus?: number;
+    killStatus?: number;
+    processGroupSurvivesKill?: boolean;
+    processGroupDisappearsAfterKill?: boolean;
     leaveCaptureTemporaryFiles?: boolean;
     recordStatusOnHistoryProbe?: number;
     terminalCaptureAfterStatus?: string;
@@ -3494,7 +3528,9 @@ function terminalLifecycleRunner(
   let commandLaunch = 0;
   let terminalStateProbe = 0;
   let panePid = 41_000;
+  let processGroupId = 51_000;
   let panePresent = true;
+  let processGroupAlive = false;
   let forcedPaneState: { status: "exited"; exitStatus: number } | undefined;
   let activeCommand:
     | {
@@ -3635,21 +3671,20 @@ function terminalLifecycleRunner(
     if (command === "tmux" && args[0] === "respawn-pane") {
       const target = String(args[args.indexOf("-t") + 1] ?? "");
       if (!target.includes("-terminal")) return { status: 0 };
-      if (args.at(-1) === "exit 0") {
-        if ((options.cleanupStatus ?? 0) === 0) panePresent = false;
-        return { status: options.cleanupStatus ?? 0 };
-      }
       const invocation = terminalCommandInvocation(args);
       assert.ok(invocation);
       typedCommand = readFileSync(invocation.command, "utf8").trimEnd();
       activeCommand = invocation;
       commandLaunch += 1;
       panePid += 1;
+      processGroupId += 1;
       panePresent = true;
+      processGroupAlive = true;
       forcedPaneState = undefined;
       terminalCaptureProbe = 0;
       terminalHistoryProbe = 0;
       terminalStateProbe = 0;
+      writeFileSync(invocation.processGroup, `${processGroupId}\n`, "utf8");
       return { status: 0 };
     }
     if (command === "tmux" && args[0] === "display-message") {
@@ -3686,6 +3721,12 @@ function terminalLifecycleRunner(
       const exited = recorderPaneProbe >= (options.recorderDiesAtProbe ?? Number.POSITIVE_INFINITY);
       recorderPaneProbe += 1;
       return { status: 0, stdout: exited ? "1\n" : "0\n" };
+    }
+    if (command === "/bin/ps") {
+      return {
+        status: processGroupAlive ? 0 : 1,
+        stdout: processGroupAlive ? `${panePid} ${processGroupId} ${processGroupId}\n` : "",
+      };
     }
     if (command === "tmux" && args[0] === "capture-pane") {
       const target = String(args[args.indexOf("-t") + 1] ?? "");
@@ -3725,6 +3766,23 @@ function terminalLifecycleRunner(
       if (args[0] !== "0.1") terminalCaptureProbe += 1;
       updateTerminalFiles();
     }
+    if (command === "/bin/kill" && args[0] === "-TERM") {
+      if ((options.termStatus ?? 0) === 0) processGroupAlive = true;
+      return { status: options.termStatus ?? 0 };
+    }
+    if (command === "/bin/kill" && args[0] === "-KILL") {
+      if (
+        options.processGroupDisappearsAfterKill ||
+        ((options.killStatus ?? 0) === 0 && !options.processGroupSurvivesKill)
+      ) {
+        processGroupAlive = false;
+        panePresent = false;
+      }
+      return { status: options.killStatus ?? 0 };
+    }
+    if (command === "/bin/kill" && args[0] === "-0") {
+      return { status: processGroupAlive ? 0 : 1 };
+    }
     return { status: 0 };
   };
 }
@@ -3739,14 +3797,16 @@ function terminalCommandInvocation(args: readonly string[]):
       start: string;
       ready: string;
       readyTemporary: string;
+      processGroup: string;
+      processGroupTemporary: string;
     }
   | undefined {
   const target = String(args[args.indexOf("-t") + 1] ?? "");
   if (!target.includes("-terminal")) return undefined;
   const shellCommand = String(args.at(-1) ?? "");
   const quoted = [...shellCommand.matchAll(/'([^']*)'/g)].map((match) => match[1]!);
-  const invocation = quoted.slice(-8);
-  if (invocation.length !== 8 || invocation[0] !== "clawsweeper-terminal") return undefined;
+  const invocation = quoted.slice(-10);
+  if (invocation.length !== 10 || invocation[0] !== "clawsweeper-terminal") return undefined;
   return {
     command: invocation[1]!,
     held: shellCommand.includes('while [ ! -e "$4" ]'),
@@ -3756,6 +3816,8 @@ function terminalCommandInvocation(args: readonly string[]):
     start: invocation[5]!,
     readyTemporary: invocation[6]!,
     ready: invocation[7]!,
+    processGroupTemporary: invocation[8]!,
+    processGroup: invocation[9]!,
   };
 }
 

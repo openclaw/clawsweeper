@@ -58,7 +58,6 @@ const MINIMUM_RECORDING_MILLISECONDS = 6_000;
 const TERMINAL_STREAM_MAX_BYTES = 1_000_000;
 const TERMINAL_HISTORY_LINES = 50_000;
 const TERMINAL_CAPTURE_CHUNK_BYTES = 64 * 1024;
-const TERMINAL_CLEANUP_COMMAND = "exit 0";
 
 type TerminalCommandInvocation = {
   command: string;
@@ -397,11 +396,18 @@ interface TerminalOutputWindow {
   expectations: readonly string[];
   observedExpectations: Set<string>;
   panePid?: number;
+  processGroupId?: number;
   frozenExit?: Extract<TerminalPaneState, { status: "exited" }>;
   finalizedExitStatus?: number;
   captureOpen: boolean;
-  paneCleaned: boolean;
+  processGroupCleaned: boolean;
   finalViewport?: string;
+}
+
+interface TerminalProcessOwnership {
+  parentPid: number;
+  processGroupId: number;
+  terminalProcessGroupId: number;
 }
 
 interface TerminalCommandFiles {
@@ -419,6 +425,8 @@ interface TerminalCommandFiles {
   startTemporary: string;
   ready: string;
   readyTemporary: string;
+  processGroup: string;
+  processGroupTemporary: string;
 }
 
 type TerminalLaunchMode = "held";
@@ -555,6 +563,8 @@ export function driveTerminal(options: {
       startTemporary: `${prefix}.start.tmp`,
       ready: `${prefix}.ready`,
       readyTemporary: `${prefix}.ready.tmp`,
+      processGroup: `${prefix}.process-group`,
+      processGroupTemporary: `${prefix}.process-group.tmp`,
     };
     privatePaths.push(...Object.values(files));
     return { files, launchMode: "held" };
@@ -1004,14 +1014,13 @@ function runTerminalCommand(
     expectations,
     observedExpectations: new Set(),
     captureOpen: false,
-    paneCleaned: false,
+    processGroupCleaned: false,
   };
-  const clearHistoryArgs = ["clear-history", "-t", target];
-  requireSuccess("tmux", clearHistoryArgs, runner("tmux", clearHistoryArgs, { cwd: checkout }));
   try {
     // The start gate keeps the pane alive while capture attaches, so fast
     // commands cannot emit before pipe-pane owns their output.
-    const commandRunner = [
+    const heldCommand = [
+      "trap ':' TERM",
       'while [ ! -e "$5" ]; do sleep 0.05; done',
       "builtin printf '\\033[2J\\033[H'",
       'builtin printf "ready\\n" >"$6"',
@@ -1020,10 +1029,20 @@ function runTerminalCommand(
       "status=$?",
       'builtin printf "%s\\n" "$status" >"$2"',
       'mv -f -- "$2" "$3"',
-      // Keep the pane owner alive until tmux tears down the exact pane job.
-      // pane_pid is an identity check, not a portable process-group id.
       'while [ ! -e "$4" ]; do sleep 0.05; done',
       'exit "$status"',
+    ].join("; ");
+    const commandRunner = [
+      "set -m",
+      `( ${heldCommand} ) &\ngroup=$!`,
+      'group_pgid=$(/bin/ps -o pgid= -p "$group" | /usr/bin/tr -d "[:space:]")',
+      'if [ "$group_pgid" != "$group" ]; then builtin kill "$group" 2>/dev/null || true; exit 125; fi',
+      'builtin printf "%s\\n" "$group" >"$8"',
+      'mv -f -- "$8" "$9"',
+      // fg preserves controlling-terminal semantics while suppressing Bash's
+      // job-command echo. The held subshell keeps the trusted PGID reserved.
+      "fg %1 >/dev/null",
+      'exit "$?"',
     ].join("; ");
     const shellCommand =
       `/usr/bin/env -u TMUX -u TMUX_PANE /bin/bash --noprofile --norc -c ${quote(commandRunner)} ` +
@@ -1036,11 +1055,47 @@ function runTerminalCommand(
         files.start,
         files.readyTemporary,
         files.ready,
+        files.processGroupTemporary,
+        files.processGroup,
       ]
         .map(quote)
         .join(" ");
     const respawnArgs = ["respawn-pane", "-k", "-t", target, "-c", checkout, shellCommand];
     requireSuccess("tmux", respawnArgs, runner("tmux", respawnArgs, { cwd: checkout }));
+    for (let elapsed = 0; elapsed <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10; elapsed += 1) {
+      const panePid = readTerminalPanePid(runner, checkout, terminalPane);
+      const processGroupText = readBoundedTerminalFile(files.processGroup, 64);
+      if (panePid && processGroupText !== undefined) {
+        const rawProcessGroup = processGroupText.trim();
+        if (!/^\d+$/.test(rawProcessGroup)) {
+          throw new Error("terminal command process group is malformed");
+        }
+        const processGroupId = Number.parseInt(rawProcessGroup, 10);
+        if (!Number.isSafeInteger(processGroupId) || processGroupId <= 0) {
+          throw new Error("terminal command process group is malformed");
+        }
+        const ownership = readTerminalProcessOwnership(runner, checkout, processGroupId);
+        if (
+          ownership?.parentPid === panePid &&
+          ownership.processGroupId === processGroupId &&
+          ownership.terminalProcessGroupId === processGroupId
+        ) {
+          window.panePid = panePid;
+          window.processGroupId = processGroupId;
+          rmSync(files.processGroup, { force: true });
+          rmSync(files.processGroupTemporary, { force: true });
+          break;
+        }
+      }
+      if (elapsed < TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10) {
+        requireSuccess("sleep", ["0.1"], runner("sleep", ["0.1"]));
+      }
+    }
+    if (!window.panePid || !window.processGroupId) {
+      throw new Error("terminal command did not publish its owned process group");
+    }
+    const clearHistoryArgs = ["clear-history", "-t", target];
+    requireSuccess("tmux", clearHistoryArgs, runner("tmux", clearHistoryArgs, { cwd: checkout }));
     const captureCommand =
       `/usr/bin/env -u TMUX -u TMUX_PANE node ${quote(files.captureScript)} ` +
       [files.capture, files.captureTemporary, files.captureDone, files.captureDoneTemporary]
@@ -1060,7 +1115,12 @@ function runTerminalCommand(
   for (let elapsed = 0; elapsed <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS; elapsed += 1) {
     const panePid = readTerminalPanePid(runner, checkout, terminalPane);
     if (panePid) {
-      window.panePid = panePid;
+      if (panePid !== window.panePid) {
+        throw new TerminalCommandExecutionError(
+          `terminal pane identity changed from launch pid ${window.panePid} to ${panePid}`,
+          window,
+        );
+      }
       try {
         const state = readTerminalCommandState(window, runner, checkout, terminalPane);
         const readiness = readBoundedTerminalFile(files.ready, 64);
@@ -1438,28 +1498,77 @@ function renderFailedTerminalOutput(
   return sections.join("\n\n");
 }
 
+function terminateTerminalProcessGroup(
+  runner: MediaProofCommandRunner,
+  checkout: string,
+  processGroupId: number | undefined,
+): void {
+  if (!processGroupId) return;
+  const signalErrors: unknown[] = [];
+  const runSignal = (signal: "-TERM" | "-KILL") => {
+    try {
+      const result = runner("/bin/kill", [signal, `-${processGroupId}`], { cwd: checkout });
+      if (result.status !== 0) {
+        signalErrors.push(
+          new Error(
+            `/bin/kill ${signal} -${processGroupId} failed: ${mediaProofSpawnDetail(result)}`,
+          ),
+        );
+      }
+    } catch (error) {
+      signalErrors.push(error);
+    }
+  };
+  const processGroupExists = (): boolean => {
+    const result = runner("/bin/kill", ["-0", `-${processGroupId}`], { cwd: checkout });
+    return result.status === 0;
+  };
+  runSignal("-TERM");
+  requireSuccess("sleep", ["0.1"], runner("sleep", ["0.1"]));
+  if (!processGroupExists()) return;
+  runSignal("-KILL");
+  for (let attempt = 0; attempt <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10; attempt += 1) {
+    if (!processGroupExists()) return;
+    if (attempt < TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10) {
+      requireSuccess("sleep", ["0.1"], runner("sleep", ["0.1"]));
+    }
+  }
+  const surviving = new Error(`terminal process group ${processGroupId} survived SIGKILL`);
+  throw signalErrors.length > 0
+    ? new AggregateError(
+        [...signalErrors, surviving],
+        `failed to clean terminal process group ${processGroupId}`,
+      )
+    : surviving;
+}
+
 function cleanupTerminalWindow(
   window: TerminalOutputWindow,
   terminalPane: string,
   runner: MediaProofCommandRunner,
   checkout: string,
 ): void {
-  if (window.paneCleaned) return;
-  let state: TerminalPaneState | undefined;
+  if (window.processGroupCleaned) return;
+  const panePid = readTerminalPanePid(runner, checkout, terminalPane);
+  if (!panePid || panePid !== window.panePid || !window.processGroupId) return;
+  const ownership = readTerminalProcessOwnership(runner, checkout, window.processGroupId);
+  if (!ownership) {
+    window.processGroupCleaned = true;
+    return;
+  }
+  if (
+    ownership.parentPid !== panePid ||
+    ownership.processGroupId !== window.processGroupId ||
+    ownership.terminalProcessGroupId !== window.processGroupId
+  ) {
+    return;
+  }
   try {
-    state = readTerminalCommandState(window, runner, checkout, terminalPane);
-  } catch {
-    // A corrupt or replaced pane is no longer safe to mutate individually.
-    // The enclosing terminal-session teardown remains the cleanup owner.
-    return;
+    terminateTerminalProcessGroup(runner, checkout, window.processGroupId);
+    window.processGroupCleaned = true;
+  } catch (error) {
+    throw new AggregateError([error], "failed to clean terminal process group");
   }
-  if (!state || state.status === "exited") {
-    window.paneCleaned = true;
-    return;
-  }
-  const args = ["respawn-pane", "-k", "-t", terminalPane, "-c", checkout, TERMINAL_CLEANUP_COMMAND];
-  requireSuccess("tmux", args, runner("tmux", args, { cwd: checkout }));
-  window.paneCleaned = true;
 }
 
 function readTerminalCommandState(
@@ -1510,6 +1619,36 @@ function readTerminalPaneState(
     return { status: "exited", pid, exitStatus: terminalSignalExitStatus(signal) };
   }
   throw new Error("terminal pane status is malformed");
+}
+
+function readTerminalProcessOwnership(
+  runner: MediaProofCommandRunner,
+  checkout: string,
+  processGroupId: number,
+): TerminalProcessOwnership | undefined {
+  const args = ["-o", "ppid=,pgid=,tpgid=", "-p", String(processGroupId)];
+  const result = runner("/bin/ps", args, { cwd: checkout });
+  if (result.status !== 0) return undefined;
+  const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(String(result.stdout ?? ""));
+  if (!match) throw new Error("terminal command process ownership is malformed");
+  const parentPid = Number.parseInt(match[1]!, 10);
+  const parsedProcessGroupId = Number.parseInt(match[2]!, 10);
+  const terminalProcessGroupId = Number.parseInt(match[3]!, 10);
+  if (
+    !Number.isSafeInteger(parentPid) ||
+    parentPid <= 0 ||
+    !Number.isSafeInteger(parsedProcessGroupId) ||
+    parsedProcessGroupId <= 0 ||
+    !Number.isSafeInteger(terminalProcessGroupId) ||
+    terminalProcessGroupId <= 0
+  ) {
+    throw new Error("terminal command process ownership is malformed");
+  }
+  return {
+    parentPid,
+    processGroupId: parsedProcessGroupId,
+    terminalProcessGroupId,
+  };
 }
 
 function readTerminalPanePid(
