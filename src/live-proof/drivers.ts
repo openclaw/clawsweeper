@@ -420,7 +420,7 @@ interface TerminalCommandFiles {
   readyTemporary: string;
 }
 
-type TerminalLaunchMode = "held" | "direct";
+type TerminalLaunchMode = "held";
 
 interface TerminalStepResult {
   outputWindow: TerminalOutputWindow | undefined;
@@ -536,10 +536,8 @@ export function driveTerminal(options: {
   const commandWindows: TerminalOutputWindow[] = [];
   let commandIndex = 0;
   let terminalDeadline = 0;
-  const totalCommands = 1 + options.plan.steps.filter((step) => step.action === "run").length;
   const nextCommand = (): { files: TerminalCommandFiles; launchMode: TerminalLaunchMode } => {
     const prefix = `${options.rawVideoPath}.command-${process.pid}-${commandIndex}`;
-    const isFinalCommand = commandIndex === totalCommands - 1;
     commandIndex += 1;
     const files = {
       command: `${prefix}.sh`,
@@ -558,13 +556,7 @@ export function driveTerminal(options: {
       readyTemporary: `${prefix}.ready.tmp`,
     };
     privatePaths.push(...Object.values(files));
-    return {
-      files,
-      launchMode:
-        isFinalCommand && options.plan.terminalCompletion === "ready_while_running"
-          ? "direct"
-          : "held",
-    };
+    return { files, launchMode: "held" };
   };
   try {
     for (const invocation of terminalCommandPlan({
@@ -954,46 +946,20 @@ function runTerminalStep(
     if (outputWindow.observedExpectations.has(step.text)) {
       return { outputWindow, expectationSatisfied: true };
     }
-    if (outputWindow.launchMode === "held") {
-      const status = readHeldTerminalStatus(outputWindow);
-      if (status !== undefined) {
-        finalizeHeldTerminalCommand(outputWindow, status, terminalPane, runner, checkout);
-        if (outputWindow.observedExpectations.has(step.text)) {
-          return { outputWindow, expectationSatisfied: true };
-        }
-        if (status !== 0) throw terminalCommandFailure(outputWindow, status);
-        throw new Error(
-          `terminal command exited successfully before expected output appeared: ${JSON.stringify(step.text)}`,
-        );
-      }
-      const state = readTerminalCommandState(outputWindow, runner, checkout, terminalPane);
-      if (state?.status === "exited") {
-        throw new Error("held terminal command exited before recording its completion status");
-      }
-    } else {
-      const state = readTerminalCommandState(outputWindow, runner, checkout, terminalPane);
-      if (state?.status !== "exited") {
-        if (elapsed < TERMINAL_EXPECT_OUTPUT_TIMEOUT_SECONDS) {
-          pollTerminalSleep(runner, terminalDeadline);
-        }
-        continue;
-      }
-      refreshTerminalCommandOutput(outputWindow, runner, checkout, terminalPane);
-      closeTerminalCapture(outputWindow, runner, checkout, terminalPane);
-      observeTerminalSnapshot(
-        outputWindow,
-        captureTerminalHistory(runner, checkout, terminalPane).replaceAll(
-          outputWindow.files.command,
-          "<private command>",
-        ),
-      );
+    const status = readHeldTerminalStatus(outputWindow);
+    if (status !== undefined) {
+      finalizeHeldTerminalCommand(outputWindow, status, terminalPane, runner, checkout);
       if (outputWindow.observedExpectations.has(step.text)) {
         return { outputWindow, expectationSatisfied: true };
       }
-      if (state.exitStatus !== 0) throw terminalCommandFailure(outputWindow, state.exitStatus);
+      if (status !== 0) throw terminalCommandFailure(outputWindow, status);
       throw new Error(
         `terminal command exited successfully before expected output appeared: ${JSON.stringify(step.text)}`,
       );
+    }
+    const state = readTerminalCommandState(outputWindow, runner, checkout, terminalPane);
+    if (state?.status === "exited") {
+      throw new Error("held terminal command exited before recording its completion status");
     }
     if (elapsed < TERMINAL_EXPECT_OUTPUT_TIMEOUT_SECONDS) {
       pollTerminalSleep(runner, terminalDeadline);
@@ -1044,27 +1010,21 @@ function runTerminalCommand(
   try {
     // The start gate keeps the pane alive while capture attaches, so fast
     // commands cannot emit before pipe-pane owns their output.
-    const commandRunner =
-      launchMode === "held"
-        ? [
-            'while [ ! -e "$5" ]; do sleep 0.05; done',
-            "builtin printf '\\033[2J\\033[H'",
-            'builtin printf "ready\\n" >"$6"',
-            'mv -f -- "$6" "$7"',
-            '/bin/bash --noprofile --norc "$1"',
-            "status=$?",
-            'builtin printf "%s\\n" "$status" >"$2"',
-            'mv -f -- "$2" "$3"',
-            'while [ ! -e "$4" ]; do sleep 0.05; done',
-            'exit "$status"',
-          ].join("; ")
-        : [
-            'while [ ! -e "$5" ]; do sleep 0.05; done',
-            "builtin printf '\\033[2J\\033[H'",
-            'builtin printf "ready\\n" >"$6"',
-            'mv -f -- "$6" "$7"',
-            'exec /bin/bash --noprofile --norc "$1"',
-          ].join("; ");
+    const commandRunner = [
+      'while [ ! -e "$5" ]; do sleep 0.05; done',
+      "builtin printf '\\033[2J\\033[H'",
+      'builtin printf "ready\\n" >"$6"',
+      'mv -f -- "$6" "$7"',
+      '/bin/bash --noprofile --norc "$1"',
+      "status=$?",
+      'builtin printf "%s\\n" "$status" >"$2"',
+      'mv -f -- "$2" "$3"',
+      // Keep the pane's process-group leader alive until the controller kills
+      // the still-owned group. Releasing it first makes pane_pid stale and can
+      // signal an unrelated process after fast PID reuse.
+      'while [ ! -e "$4" ]; do sleep 0.05; done',
+      'exit "$status"',
+    ].join("; ");
     const shellCommand =
       `/usr/bin/env -u TMUX -u TMUX_PANE /bin/bash --noprofile --norc -c ${quote(commandRunner)} ` +
       [
@@ -1157,13 +1117,19 @@ function validateFinalTerminalCommand(
   if (completion !== "ready_while_running") {
     throw new Error("terminal proof is missing a terminal completion contract");
   }
-  if (window.launchMode !== "direct") {
-    throw new Error("ready_while_running terminal proof did not execute the target directly");
+  if (window.launchMode !== "held") {
+    throw new Error("ready_while_running terminal proof did not use held command supervision");
   }
   if (window.observedExpectations.size === 0) {
     throw new Error("ready_while_running terminal proof requires a satisfied output expectation");
   }
   refreshTerminalCommandOutput(window, runner, checkout, terminalPane);
+  const status = readHeldTerminalStatus(window);
+  if (status !== undefined) {
+    throw new Error(
+      `ready_while_running terminal command exited after satisfying its expectation: ${terminalCommandFailure(window, status).message}`,
+    );
+  }
   const state = readTerminalCommandState(window, runner, checkout, terminalPane);
   if (state?.status === "running") {
     if (cutover) {
@@ -1180,6 +1146,12 @@ function validateFinalTerminalCommand(
         throw error;
       }
       window.finalViewport = captureTerminalViewport(runner, checkout, terminalPane);
+      const sealedStatus = readHeldTerminalStatus(window);
+      if (sealedStatus !== undefined) {
+        throw new Error(
+          `ready_while_running terminal command exited after satisfying its expectation: ${terminalCommandFailure(window, sealedStatus).message}`,
+        );
+      }
       const sealedState = readTerminalCommandState(window, runner, checkout, terminalPane);
       if (sealedState?.status === "exited") {
         throw new Error(
@@ -1275,10 +1247,10 @@ function finalizeHeldTerminalCommand(
 ): void {
   const heldState = readTerminalCommandState(window, runner, checkout, terminalPane);
   if (heldState?.status !== "running") {
-    throw new Error("held terminal command wrapper exited before controller release");
+    throw new Error("held terminal command wrapper exited before controller cleanup");
   }
-  // The wrapper remains the live pane owner until the stream and viewport are
-  // frozen; only then may tmux publish the child's recorded exit status.
+  // The wrapper remains the live pane owner until cleanup signals its process
+  // group. The recorded child status is authoritative; pane exit is cleanup.
   closeTerminalCapture(window, runner, checkout, terminalPane);
   observeTerminalSnapshot(
     window,
@@ -1288,36 +1260,7 @@ function finalizeHeldTerminalCommand(
     ),
   );
   window.finalViewport = captureTerminalViewport(runner, checkout, terminalPane);
-  releaseHeldTerminalCommand(window);
-  for (let elapsed = 0; elapsed <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10; elapsed += 1) {
-    const state = readTerminalCommandState(window, runner, checkout, terminalPane);
-    if (state?.status === "exited") {
-      if (state.exitStatus !== recordedStatus) {
-        throw new Error(
-          `held terminal command status mismatch: recorded ${recordedStatus}, tmux reported ${state.exitStatus}`,
-        );
-      }
-      window.finalizedExitStatus = recordedStatus;
-      return;
-    }
-    if (!state) {
-      throw new Error("held terminal command lost its authoritative pane after release");
-    }
-    if (elapsed < TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10) {
-      requireSuccess("sleep", ["0.1"], runner("sleep", ["0.1"]));
-    }
-  }
-  throw new Error(
-    `held terminal command did not exit within ${TERMINAL_COMMAND_START_TIMEOUT_SECONDS} seconds after release`,
-  );
-}
-
-function releaseHeldTerminalCommand(window: TerminalOutputWindow): void {
-  writeFileSync(window.files.releaseTemporary, "release\n", {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  renameSync(window.files.releaseTemporary, window.files.release);
+  window.finalizedExitStatus = recordedStatus;
 }
 
 function refreshTerminalCommandOutput(
@@ -1546,6 +1489,10 @@ function cleanupTerminalWindow(
 ): void {
   const errors: unknown[] = [];
   if (!window.processGroupCleaned) {
+    if (window.frozenExit) {
+      window.processGroupCleaned = true;
+      return;
+    }
     try {
       terminateTerminalProcessGroup(runner, checkout, window.panePid);
       window.processGroupCleaned = true;

@@ -991,7 +991,7 @@ test("terminal waits for tmux to publish a final zero exit", () => {
   assert.equal(result.steps[0]?.satisfied, true);
 });
 
-test("held terminal cutover seals capture and snapshots the live pane before release", () => {
+test("held terminal cutover seals capture before cleaning the live process group", () => {
   const calls: string[] = [];
   const result = driveTerminal({
     plan: {
@@ -1015,19 +1015,22 @@ test("held terminal cutover seals capture and snapshots the live pane before rel
     (call, index) =>
       index > pipeClose && call.startsWith("tmux capture-pane") && !call.includes(" -S "),
   );
-  const release = calls.findIndex((call) => call.startsWith("release "));
+  const cleanup = calls.findIndex((call) => call.startsWith("/bin/kill -TERM "));
   assert.ok(respawn < pipeOpen);
   assert.ok(pipeOpen < status);
   assert.ok(status < pipeClose);
   assert.ok(pipeClose < viewport);
-  assert.ok(viewport < release);
+  assert.ok(viewport < cleanup);
+  assert.equal(
+    calls.some((call) => call.startsWith("release ")),
+    false,
+  );
 });
 
-test("held terminal completion rejects malformed, missing, and mismatched status evidence", () => {
+test("held terminal completion rejects malformed and missing status evidence", () => {
   for (const [options, expected] of [
     [{ recordedStatuses: ["invalid"] }, /status is malformed/],
     [{ recordedStatuses: [null], heldPaneExitsBeforeRelease: true }, /before recording.*status/],
-    [{ tmuxExitStatuses: [9] }, /status mismatch: recorded 0, tmux reported 9/],
   ] as const) {
     const result = driveTerminal({
       plan: {
@@ -1048,6 +1051,33 @@ test("held terminal completion rejects malformed, missing, and mismatched status
     assert.equal(result.status, "failed");
     assert.match(result.output, expected);
   }
+});
+
+test("terminal cleanup never signals a pane pid after tmux reports it exited", () => {
+  const calls: string[] = [];
+  const result = driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "demo",
+      steps: [{ action: "expect_output", text: "Ready" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    runner: terminalLifecycleRunner(calls, {
+      recordedStatuses: [null],
+      heldPaneExitsBeforeRelease: true,
+      terminalCaptures: ["Ready\n"],
+    }),
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.output, /before recording.*status/);
+  assert.equal(
+    calls.some((call) => call.startsWith("/bin/kill ")),
+    false,
+  );
 });
 
 test("held terminal completion rejects a non-regular status path without blocking", () => {
@@ -1317,10 +1347,10 @@ test("ready_while_running requires a satisfied marker and a live final command",
   assert.equal(calls.includes("sleep 3"), true);
 });
 
-test("terminal launch mode holds intermediates and directly executes only the final ready command", () => {
+test("terminal launch mode keeps intermediates and the final ready command supervised", () => {
   const launchModes: boolean[] = [];
   const fixtureRunner = terminalLifecycleRunner([], {
-    commandKeepsRunning: true,
+    keepsRunningCommands: ["server"],
     terminalCapturesByCommand: {
       prepare: ["prepared\n"],
       server: ["Ready\n"],
@@ -1351,7 +1381,7 @@ test("terminal launch mode holds intermediates and directly executes only the fi
   });
 
   assert.equal(result.status, "completed");
-  assert.deepEqual(launchModes, [true, false]);
+  assert.deepEqual(launchModes, [true, true]);
 });
 
 test("ready_while_running rejects a command that exits during pipe shutdown", () => {
@@ -1716,10 +1746,9 @@ test("terminal entry executes once and publishes only its final visible viewport
       args.at(-1) === "#{pane_pid}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"
     ) {
       executeCommand(options?.cwd);
-      const released = invocation ? existsSync(invocation.release) : false;
       return {
         status: 0,
-        stdout: released ? `${panePid}|1|${commandStatus}|\n` : `${panePid}|0||\n`,
+        stdout: `${panePid}|0||\n`,
       };
     }
     if (tool === "tmux" && args[0] === "display-message" && args.at(-1) === "#{pane_pid}") {
@@ -2053,12 +2082,16 @@ test("terminal recording holds the end state and enforces its minimum before fin
   const completed = calls.findIndex((call) => call.startsWith("status "));
   const hold = calls.findIndex((call) => call === "sleep 6");
   const finalize = calls.findIndex((call) => /tmux send-keys .* q$/.test(call));
-  const release = calls.findIndex((call) => call.startsWith("release "));
+  const cleanup = calls.findIndex((call) => call.startsWith("/bin/kill -TERM "));
   assert.notEqual(completed, -1);
   assert.notEqual(hold, -1);
   assert.ok(hold > completed);
   assert.ok(finalize > hold);
-  assert.ok(release > finalize);
+  assert.ok(cleanup > finalize);
+  assert.equal(
+    calls.some((call) => call.startsWith("release ")),
+    false,
+  );
 });
 
 test("terminal driver reports display readiness timeout with all pane diagnostics", () => {
@@ -3426,11 +3459,11 @@ function terminalLifecycleRunner(
     commandExitStatuses?: number[];
     commandSignal?: string;
     commandKeepsRunning?: boolean;
+    keepsRunningCommands?: string[];
     heldCommandKeepsRunning?: boolean;
     commandCompletionAfterProbe?: number;
     commandCompletionAfterProbes?: number[];
     recordedStatuses?: Array<number | string | null>;
-    tmuxExitStatuses?: number[];
     captureCompletion?: string;
     paneStatusDuringFinalize?: { status: "exited"; exitStatus: number };
     terminalPaneSequence?: Array<{ status: "running" } | { status: "exited"; exitStatus: number }>;
@@ -3459,7 +3492,6 @@ function terminalLifecycleRunner(
   let panePid = 41_000;
   let panePresent = true;
   let processGroupAlive = false;
-  let releaseObserved = false;
   let forcedPaneState: { status: "exited"; exitStatus: number } | undefined;
   let activeCommand:
     | {
@@ -3491,6 +3523,8 @@ function terminalLifecycleRunner(
     if (
       !activeCommand?.held ||
       options.heldCommandKeepsRunning ||
+      options.commandKeepsRunning ||
+      options.keepsRunningCommands?.includes(typedCommand) ||
       existsSync(activeCommand.status)
     ) {
       return;
@@ -3523,24 +3557,17 @@ function terminalLifecycleRunner(
     if (commandLaunch === 0) return { status: "running" } as const;
     acknowledgeTerminalReady();
     if (activeCommand && existsSync(activeCommand.ready)) updateTerminalFiles();
+    if (forcedPaneState) return forcedPaneState;
     if (activeCommand?.held) {
       if (options.heldPaneExitsBeforeRelease) {
         return { status: "exited", exitStatus: commandExitStatus() } as const;
       }
-      if (!existsSync(activeCommand.release)) return { status: "running" } as const;
-      if (!releaseObserved) {
-        calls.push(`release ${activeCommand.release}`);
-        releaseObserved = true;
-      }
-      processGroupAlive = false;
-      const exitStatus = options.tmuxExitStatuses?.[commandLaunch - 1] ?? commandExitStatus();
-      return { status: "exited", exitStatus } as const;
+      return { status: "running" } as const;
     }
     const explicitState =
       options.terminalPaneSequence?.[
         Math.min(terminalStateProbe, options.terminalPaneSequence.length - 1)
       ];
-    if (forcedPaneState) return forcedPaneState;
     if (explicitState) return explicitState;
     const captures = options.terminalCapturesByCommand?.[typedCommand] ??
       options.terminalCaptures ?? ["command output\n"];
@@ -3613,7 +3640,6 @@ function terminalLifecycleRunner(
       panePid += 1;
       panePresent = true;
       processGroupAlive = true;
-      releaseObserved = false;
       forcedPaneState = undefined;
       terminalCaptureProbe = 0;
       terminalHistoryProbe = 0;
