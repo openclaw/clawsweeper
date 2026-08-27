@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 
 import {
@@ -442,6 +443,41 @@ test("SQLite schema detector finds production table changes and ignores non-sche
       "src/transcripts/sqlite-schema.ts",
     ],
   });
+});
+
+test("production path classification preserves test segment and basename boundaries", () => {
+  const cases = [
+    ["test/schema.sql", false],
+    ["src/__TESTS__/schema.sql", false],
+    ["examples/schema.sql", false],
+    ["src/cache/store.spec.ts", false],
+    ["src/cache/store.TEST.TS", false],
+    ["src/spec/schema.sql", true],
+    ["src/test-fixtures/schema.sql", true],
+    ["src/cache/store.spec.", true],
+    ["src/cache/store.spec.unit.spec.", false],
+  ] as const;
+
+  for (const [filename, expectedChange] of cases) {
+    const detection = sqliteSchemaChangeFromPullFilesForTest({
+      pullFiles: [{ filename, patch: "@@\n+CREATE TABLE example (id TEXT);" }],
+    });
+
+    assert.equal(detection.change, expectedChange, filename);
+  }
+});
+
+test("production path classification is bounded for repeated test markers", () => {
+  const filename = `${".spec.".repeat(20_000)}/schema.sql`;
+  const startedAt = performance.now();
+  const detection = sqliteSchemaChangeFromPullFilesForTest({
+    pullFiles: [{ filename, patch: "@@\n+CREATE TABLE example (id TEXT);" }],
+  });
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.equal(detection.change, true);
+  assert.equal(detection.files.length, 1);
+  assert.ok(elapsedMs < 250, `classification took ${elapsedMs.toFixed(1)}ms`);
 });
 
 test("SQLite schema warning is visible for table changes and absent otherwise", () => {

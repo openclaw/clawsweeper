@@ -195,12 +195,22 @@ export function sqliteSchemaChangeFromPullFilesForTest(options: {
 }
 
 function isProductionSourcePath(path: string): boolean {
-  return Boolean(
-    path &&
-    !isDocsPath(path) &&
-    !/(^|\/)(?:__tests__|examples?|fixtures?|test|tests)(?:\/|$)/i.test(path) &&
-    !/\.(?:spec|test)\.[^/]+$/i.test(path),
-  );
+  if (!path || isDocsPath(path)) return false;
+  const segments = path.toLowerCase().split("/");
+  if (
+    segments.some((segment) =>
+      ["__tests__", "example", "examples", "fixture", "fixtures", "test", "tests"].includes(
+        segment,
+      ),
+    )
+  ) {
+    return false;
+  }
+  const basename = segments.at(-1) ?? "";
+  return ![".spec.", ".test."].some((marker) => {
+    const markerIndex = basename.indexOf(marker);
+    return markerIndex >= 0 && markerIndex + marker.length < basename.length;
+  });
 }
 
 function isLikelySqliteSchemaPath(path: string): boolean {
