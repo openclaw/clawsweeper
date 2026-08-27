@@ -217,27 +217,35 @@ function reconstructedRecords(
   });
 }
 
+function exportResponse(
+  env: Record<string, unknown>,
+  cursor: number,
+  sections: RecordSection[] = ["items", "commits"],
+  limit = 200,
+) {
+  return worker.fetch(
+    signedStateAppendRequest(EXPORT_PATH, { repoSlug: REPO_SLUG, sections, cursor, limit }, SECRET),
+    env,
+  );
+}
+
 async function exportPage(
   env: Record<string, unknown>,
   cursor: number,
   sections: RecordSection[] = ["items", "commits"],
+  limit = 200,
 ) {
-  const response = await worker.fetch(
-    signedStateAppendRequest(
-      EXPORT_PATH,
-      { repoSlug: REPO_SLUG, sections, cursor, limit: 200 },
-      SECRET,
-    ),
-    env,
-  );
+  const response = await exportResponse(env, cursor, sections, limit);
   assert.equal(response.status, 200);
   return response.json() as Promise<{
     records: Array<{
       section: RecordSection;
       id: string;
-      content: string;
-      digest: string;
+      content: string | null;
+      digest: string | null;
+      revision: number;
       storeRevision: number;
+      deleted: boolean;
     }>;
     nextCursor: number | null;
   }>;
@@ -295,7 +303,11 @@ test("signed record export bounds reconstruction work and source bytes while pag
       sourceBytes: reconstructedBytes,
       reconstructionQueries: reconstructed.length,
     });
-    received.push(...page.records);
+    for (const record of page.records) {
+      assert.equal(record.deleted, false);
+      assert.notEqual(record.digest, null);
+      received.push({ section: record.section, id: record.id, digest: record.digest! });
+    }
     pageSizes.push(page.records.length);
     if (page.nextCursor !== null) assert.ok(page.nextCursor > cursor);
     nextCursor = page.nextCursor;
@@ -314,6 +326,88 @@ test("signed record export bounds reconstruction work and source bytes while pag
   behaviorProof.expectedManifest = manifest(fixtures);
   behaviorProof.materializedManifest = manifest(received);
   behaviorProof.manifestParity = true;
+});
+
+test("signed record export preserves historical backfill items and canonical tombstones", async () => {
+  const { env, storage } = await exportHarness();
+  const historical = fixtureRecord({
+    source: "backfill",
+    section: "items",
+    id: "101",
+    content: "historical backfill item",
+    storeRevision: 1,
+  });
+  storage.sql.exec(
+    `INSERT INTO ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
+       (repo_slug, section, record_id, content, digest, byte_length, chunk_count, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
+    REPO_SLUG,
+    historical.section,
+    historical.id,
+    historical.content,
+    historical.digest,
+    historical.byteLength,
+    historical.storeRevision,
+  );
+  storage.sql.exec(
+    `INSERT INTO ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+       (repo_slug, section, record_id, digest, deleted, revision, store_revision, source, updated_at)
+     VALUES (?, ?, ?, ?, 0, 0, 1, 'backfill', 1)`,
+    REPO_SLUG,
+    historical.section,
+    historical.id,
+    historical.digest,
+  );
+  storage.sql.exec(
+    `INSERT INTO ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+       (repo_slug, section, record_id, digest, deleted, revision, store_revision, source, updated_at)
+     VALUES (?, 'items', '102', NULL, 1, 2, 2, 'canonical', 2)`,
+    REPO_SLUG,
+  );
+  storage.sql.exec(
+    `UPDATE ${EXACT_REVIEW_RECORD_EXPORT_META_TABLE}
+        SET current_revision = 2 WHERE singleton_id = 1`,
+  );
+
+  storage.sql.resetQueryHistory();
+  const first = await exportPage(env, 0, ["items"], 1);
+  assert.deepEqual(first.records, [
+    {
+      section: "items",
+      id: historical.id,
+      content: historical.content,
+      digest: historical.digest,
+      revision: 0,
+      storeRevision: 1,
+      updatedAt: new Date(1).toISOString(),
+      deleted: false,
+    },
+  ]);
+  assert.equal(first.nextCursor, 1);
+  assert.equal(storage.sql.queriesMatching(/FROM exact_review_record_backfill\s/).length, 1);
+  assert.equal(storage.sql.queriesMatching(/FROM exact_review_canonical_records\s/).length, 0);
+
+  storage.sql.resetQueryHistory();
+  const second = await exportPage(env, first.nextCursor, ["items"]);
+  assert.deepEqual(second.records, [
+    {
+      section: "items",
+      id: "102",
+      content: null,
+      digest: null,
+      revision: 2,
+      storeRevision: 2,
+      updatedAt: new Date(2).toISOString(),
+      deleted: true,
+    },
+  ]);
+  assert.equal(second.nextCursor, null);
+  assert.equal(
+    storage.sql.queriesMatching(
+      /FROM (?:exact_review_canonical_records|exact_review_record_backfill)\s/,
+    ).length,
+    0,
+  );
 });
 
 test("signed record export returns one oversized serialized record and advances", async () => {
@@ -361,7 +455,7 @@ test("signed record export returns one oversized serialized record and advances"
   assert.equal(second.nextCursor, null);
 });
 
-test("signed record export rejects missing and invalid logical byte metadata", async () => {
+test("signed record export returns sanitized 500 for missing and invalid logical byte metadata", async () => {
   const missingHarness = await exportHarness();
   const missing = fixtureRecord({
     source: "canonical",
@@ -378,10 +472,12 @@ test("signed record export rejects missing and invalid logical byte metadata", a
     missing.section,
     Number(missing.id),
   );
-  await assert.rejects(
-    exportPage(missingHarness.env, 0),
-    /invalid record export byte metadata.*items\/1/,
-  );
+  const missingResponse = await exportResponse(missingHarness.env, 0);
+  assert.equal(missingResponse.status, 500);
+  assert.equal(missingResponse.headers.get("content-type"), "application/json; charset=utf-8");
+  const missingBody = (await missingResponse.json()) as { error?: unknown };
+  assert.equal(typeof missingBody.error, "string");
+  assert.match(String(missingBody.error), /invalid record export byte metadata.*items\/1/);
 
   const invalidHarness = await exportHarness();
   const invalid = fixtureRecord({
@@ -400,8 +496,13 @@ test("signed record export rejects missing and invalid logical byte metadata", a
     invalid.section,
     invalid.id,
   );
-  await assert.rejects(
-    exportPage(invalidHarness.env, 0),
-    /invalid record export byte metadata.*commits/,
+  const invalidResponse = await exportResponse(invalidHarness.env, 0);
+  assert.equal(invalidResponse.status, 500);
+  assert.equal(invalidResponse.headers.get("content-type"), "application/json; charset=utf-8");
+  const invalidBody = (await invalidResponse.json()) as { error?: unknown };
+  assert.equal(typeof invalidBody.error, "string");
+  assert.match(
+    String(invalidBody.error),
+    new RegExp(`invalid record export byte metadata.*commits/${invalid.id}`),
   );
 });
