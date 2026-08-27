@@ -1546,8 +1546,39 @@ test("terminal cleanup requires the exact pane receipt and pane death", () => {
 
   assert.equal(result.status, "completed");
   assert.match(cleanupScript, /\/usr\/sbin\/lsof -t -- "\$lease_path"/);
-  assert.match(cleanupScript, /for descriptor in \/proc\/"\$1"\/fd\/\*/);
-  assert.match(cleanupScript, /holds_lease "\$candidate" \|\| on_bound_tty "\$candidate"/);
+  assert.match(cleanupScript, /stat -Lc '%d:%i' -- \/proc\/"\$1"\/fd\/9/);
+  assert.match(
+    cleanupScript,
+    /find -L \/proc\/\[0-9\]\*\/fd\/9 -maxdepth 0 -samefile "\$lease_path"/,
+  );
+  assert.match(
+    cleanupScript,
+    /awk -F\/ 'NF == 4 && \$2 == "proc" && \$3 ~ \/\^\[0-9\]\+\$\/ && \$4 == "fd" \{ print \$3 \}'/,
+  );
+  assert.doesNotMatch(cleanupScript, /\/proc\/"\$1"\/fd\/\*/);
+  assert.doesNotMatch(cleanupScript, /find -L \/proc\/\[0-9\]\*\/fd -/);
+  assert.match(
+    cleanupScript,
+    /pane_owns_tty\(\) \{ holds_lease "\$pane_pid" && on_bound_tty "\$pane_pid"; \}/,
+  );
+  assert.match(
+    cleanupScript,
+    /tty_pids\(\) \{\s+pane_owns_tty \|\| return 0\s+\/bin\/ps -axo pid=,tty=/,
+  );
+  assert.match(
+    cleanupScript,
+    /scan_bound_processes\(\) \{\s+: >"\$scan_file"\s+lease_pids >>"\$scan_file" \|\| return \$\?\s+tty_pids >>"\$scan_file"/,
+  );
+  assert.match(
+    cleanupScript,
+    /if ! holds_lease "\$candidate"; then\s+on_bound_tty "\$candidate" \|\| continue\s+pane_owns_tty \|\| continue\s+fi\s+\/bin\/kill/,
+  );
+  assert.match(cleanupScript, /pane_owns_tty \|\| finish startup error:pane-identity/);
+  assert.match(cleanupScript, /elif ! pane_owns_tty; then\s+trigger=pane-death/);
+  assert.doesNotMatch(
+    cleanupScript,
+    /holds_lease "\$candidate" \|\| on_bound_tty "\$candidate" \|\| continue/,
+  );
   assert.match(cleanupScript, /signal_bound_processes TERM/);
   assert.match(cleanupScript, /signal_bound_processes KILL/);
   assert.match(cleanupScript, /stable_empty.*-ge 2/s);
@@ -1555,6 +1586,7 @@ test("terminal cleanup requires the exact pane receipt and pane death", () => {
   assert.doesNotMatch(respawn ?? "", /tmux run-shell -b/);
   assert.match(respawn ?? "", /while :; do sleep 3600; done/);
   assert.match(respawn ?? "", /exec 9<"\$8"/);
+  assert.match(respawn ?? "", /\) 9<&9 <\/dev\/tty/);
   assert.match(respawn ?? "", /read -r bound_pid bound_tty bound_nonce bound_lease bound_extra/);
   assert.match(respawn ?? "", /v1\|execute/);
   assert.equal(calls.filter((call) => call.startsWith("tmux run-shell -b ")).length, 1);

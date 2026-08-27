@@ -186,20 +186,23 @@ status, and tmux's pane lifecycle records whether that supervisor is still
 running or how it exited. Each proof uses a private tmux socket directory. The
 controller binds the exact pane PID and controlling terminal before opening the
 start gate. The pane process validates that tuple and opens a private lease file
-descriptor inherited by the held target and its descendants. Before opening a
-second execution gate, the controller starts a cleanup watchdog outside the pane
-process tree through the private tmux server and requires an exact atomic armed
-receipt bound to the pane PID, terminal, nonce, and lease inode.
+on reserved descriptor 9, inherited by the held target and its descendants.
+Before opening a second execution gate, the controller starts a cleanup watchdog
+outside the pane process tree through the private tmux server and requires an
+exact atomic armed receipt bound to the pane PID, terminal, nonce, and lease
+inode.
 
 After capture and the final viewport are sealed, controller cleanup requests the
 already-armed watchdog. Pane death triggers the same watchdog independently. It
-TERM-sweeps, then repeatedly KILL-sweeps the union of processes on the bound
-terminal and processes still holding the lease until two consecutive scans are
-empty. Darwin finds lease holders with the stock `lsof`; Linux inspects `/proc`
-file descriptors. Cleanup succeeds only when an exact zero-survivor receipt
-matches the bound identity and the original pane is dead. Missing, malformed,
-stale, replaced, surviving-process, or timeout evidence fails visibly. Target
-commands do not inherit `TMUX`, `TMUX_PANE`, or `TMUX_TMPDIR`.
+TERM-sweeps, then repeatedly KILL-sweeps processes still holding the lease plus
+bound-terminal members only while the original pane still owns both its lease
+and bound terminal. Lease-holder discovery remains active after pane death.
+Darwin finds lease holders with the stock `lsof`; Linux inspects `/proc` for
+reserved inherited descriptor 9. Cleanup succeeds only when an exact
+zero-survivor receipt matches the bound identity and the original pane is dead.
+Missing, malformed, stale, replaced, surviving-process, or timeout evidence
+fails visibly. Target commands do not inherit `TMUX`, `TMUX_PANE`, or
+`TMUX_TMPDIR`.
 
 The lease is lifecycle cleanup, not hostile same-UID isolation. A target that
 deliberately closes inherited descriptors or attacks same-user controller

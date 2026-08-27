@@ -60,6 +60,7 @@ const MINIMUM_RECORDING_MILLISECONDS = 6_000;
 const TERMINAL_STREAM_MAX_BYTES = 1_000_000;
 const TERMINAL_HISTORY_LINES = 50_000;
 const TERMINAL_CAPTURE_CHUNK_BYTES = 64 * 1024;
+const TERMINAL_LEASE_FD = 9;
 
 type TerminalCommandInvocation = {
   command: string;
@@ -546,17 +547,15 @@ if [ "$(/usr/bin/uname -s)" = Darwin ]; then
   holds_lease() { /usr/sbin/lsof -t -a -p "$1" -- "$lease_path" 2>/dev/null | /usr/bin/grep -qx "$1"; }
 else
   lease_identity_now() { /usr/bin/stat -Lc '%d:%i' -- "$lease_path" 2>/dev/null; }
-  holds_lease() {
-    for descriptor in /proc/"$1"/fd/*; do
-      [ -e "$descriptor" ] || continue
-      [ "$(/usr/bin/stat -Lc '%d:%i' -- "$descriptor" 2>/dev/null)" = "$lease_identity" ] && return 0
-    done
-    return 1
-  }
-  lease_pids() { for process_path in /proc/[0-9]*; do holder_pid=\${process_path#/proc/}; holds_lease "$holder_pid" && builtin printf "%s\\n" "$holder_pid"; done; return 0; }
+  holds_lease() { [ "$(/usr/bin/stat -Lc '%d:%i' -- /proc/"$1"/fd/${TERMINAL_LEASE_FD} 2>/dev/null)" = "$lease_identity" ]; }
+  lease_pids() { /usr/bin/find -L /proc/[0-9]*/fd/${TERMINAL_LEASE_FD} -maxdepth 0 -samefile "$lease_path" -printf '%h\\n' 2>/dev/null | /usr/bin/awk -F/ 'NF == 4 && $2 == "proc" && $3 ~ /^[0-9]+$/ && $4 == "fd" { print $3 }'; }
 fi
-tty_pids() { /bin/ps -axo pid=,tty= | /usr/bin/awk -v tty="$tty_name" '$2 == tty { print $1 }'; }
 on_bound_tty() { [ "$(/bin/ps -o tty= -p "$1" 2>/dev/null | /usr/bin/tr -d '[:space:]')" = "$tty_name" ]; }
+pane_owns_tty() { holds_lease "$pane_pid" && on_bound_tty "$pane_pid"; }
+tty_pids() {
+  pane_owns_tty || return 0
+  /bin/ps -axo pid=,tty= | /usr/bin/awk -v tty="$tty_name" '$2 == tty { print $1 }'
+}
 scan_bound_processes() {
   : >"$scan_file"
   lease_pids >>"$scan_file" || return $?
@@ -566,12 +565,15 @@ scan_bound_processes() {
 signal_bound_processes() {
   while IFS= read -r candidate; do
     case "$candidate" in ""|*[!0-9]*) continue ;; esac
-    holds_lease "$candidate" || on_bound_tty "$candidate" || continue
+    if ! holds_lease "$candidate"; then
+      on_bound_tty "$candidate" || continue
+      pane_owns_tty || continue
+    fi
     /bin/kill "-$1" "$candidate" 2>/dev/null || [ "$?" -eq 1 ] || return $?
   done <"$scan_file"
 }
 [ "$(lease_identity_now)" = "$lease_identity" ] || finish startup error:lease-identity 0 125
-holds_lease "$pane_pid" && on_bound_tty "$pane_pid" || finish startup error:pane-identity 0 125
+pane_owns_tty || finish startup error:pane-identity 0 125
 receipt "v1|armed|$nonce|$pane_pid|$tty_path|$lease_identity|$$"
 trigger=
 while [ -z "$trigger" ]; do
@@ -579,7 +581,7 @@ while [ -z "$trigger" ]; do
     IFS= read -r cleanup_request <"$request" || finish controller error:request 0 125
     [ "$cleanup_request" = "v1|cleanup|$nonce|$pane_pid|$tty_path|$lease_identity" ] || finish controller error:request 0 125
     trigger=controller
-  elif ! holds_lease "$pane_pid" || ! on_bound_tty "$pane_pid"; then
+  elif ! pane_owns_tty; then
     trigger=pane-death
   else
     sleep 0.05
@@ -1149,7 +1151,7 @@ function runTerminalCommand(
       "trap ':' HUP TERM",
       "tty_path=$(/usr/bin/tty)",
       'case "$tty_path" in /dev/*) ;; *) exit 125 ;; esac',
-      'exec 9<"$8" || exit 125',
+      `exec ${TERMINAL_LEASE_FD}<"$8" || exit 125`,
       'while [ ! -e "$4" ]; do sleep 0.05; done',
       'IFS="|" read -r bound_pid bound_tty bound_nonce bound_lease bound_extra <"$4" || exit 125',
       '[ "$bound_pid" = "$$" ] && [ "$bound_tty" = "$tty_path" ] && [ "$bound_nonce" = "$7" ] && [ "$bound_lease" = "$9" ] && [ -z "${bound_extra-}" ] || exit 125',
@@ -1157,7 +1159,7 @@ function runTerminalCommand(
       'builtin printf "%s|%s|%s|%s\\n" "$$" "$tty_path" "$7" "$9" >"$5"',
       'mv -f -- "$5" "$6"',
       'while :; do IFS= read -r execute_gate <"$6" || exit 125; [ "$execute_gate" = "v1|execute|$7|$$|$tty_path|$9" ] && break; sleep 0.05; done',
-      '( /usr/bin/env -u TMUX -u TMUX_PANE -u TMUX_TMPDIR /bin/bash --noprofile --norc "$1"; status=$?; builtin printf "%s\\n" "$status" >"$2"; mv -f -- "$2" "$3" ) 9<&9 </dev/tty >/dev/tty 2>&1 &',
+      `( /usr/bin/env -u TMUX -u TMUX_PANE -u TMUX_TMPDIR /bin/bash --noprofile --norc "$1"; status=$?; builtin printf "%s\\n" "$status" >"$2"; mv -f -- "$2" "$3" ) ${TERMINAL_LEASE_FD}<&${TERMINAL_LEASE_FD} </dev/tty >/dev/tty 2>&1 &`,
       "while :; do sleep 3600; done",
     ].join("\n");
     const shellCommand =

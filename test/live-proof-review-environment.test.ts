@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import {
   existsSync,
   mkdirSync,
@@ -760,6 +761,97 @@ test(
         processesContaining(processToken).some((line) => line.startsWith(`${backgroundPid} `))
       ) {
         killProcess(backgroundPid);
+      }
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "terminal proof cleanup ignores an unrelated process holding a checkout directory descriptor",
+  { skip: process.platform !== "linux", timeout: 60_000 },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-directory-fd-"));
+    const helperPath = join(root, "directory-holder.mjs");
+    writeFileSync(
+      helperPath,
+      [
+        'import { fstatSync } from "node:fs";',
+        "if (!fstatSync(9).isDirectory()) process.exit(2);",
+        "if (process.stdin.isTTY || process.stdout.isTTY || process.stderr.isTTY) process.exit(2);",
+        "process.stdout.write('ready\\n');",
+        "setInterval(() => {}, 1_000);",
+      ].join("\n"),
+    );
+    const checkout = root;
+    const helper = spawn(
+      "/bin/bash",
+      [
+        "--noprofile",
+        "--norc",
+        "-c",
+        'exec 9<"$1" || exit 125\nexec "$2" "$3"',
+        "clawsweeper-directory-holder",
+        checkout,
+        process.execPath,
+        helperPath,
+      ],
+      {
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    try {
+      const ready = new Promise<string>((resolveReady, rejectReady) => {
+        const timeout = setTimeout(
+          () => rejectReady(new Error("directory descriptor helper did not become ready")),
+          5_000,
+        );
+        helper.once("error", (error) => {
+          clearTimeout(timeout);
+          rejectReady(error);
+        });
+        helper.once("exit", (code, signal) => {
+          clearTimeout(timeout);
+          rejectReady(
+            new Error(
+              `directory descriptor helper exited before readiness: code=${String(code)} signal=${String(signal)}`,
+            ),
+          );
+        });
+        helper.stdout.once("data", (chunk) => {
+          clearTimeout(timeout);
+          resolveReady(String(chunk));
+        });
+      });
+      assert.equal(await ready, "ready\n");
+      const helperPid = helper.pid;
+      assert.ok(helperPid);
+
+      const result = driveTerminal({
+        plan: {
+          status: "recommended",
+          surface: "terminal",
+          terminalCompletion: "exit_zero",
+          reason: "The command prints a deterministic result.",
+          payoff: { kind: "static_text", justification: "Text is sufficient." },
+          entry: "printf 'directory-fd-ready\\n'",
+          steps: [{ action: "expect_output", text: "directory-fd-ready" }],
+        },
+        checkout,
+        rawVideoPath: join(root, "proof.webm"),
+        maxRecordingSeconds: 90,
+        recordMedia: false,
+        runner: mediaProofCommandRunner,
+      });
+
+      assert.equal(result.status, "completed", result.output);
+      assert.doesNotThrow(() => process.kill(helperPid, 0));
+    } finally {
+      if (helper.exitCode === null && helper.signalCode === null) {
+        const exited = once(helper, "exit");
+        helper.kill("SIGKILL");
+        await exited;
       }
       rmSync(root, { force: true, recursive: true });
     }
