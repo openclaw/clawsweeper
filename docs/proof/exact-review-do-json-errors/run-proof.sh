@@ -34,7 +34,7 @@ if [ -e "$output_dir" ]; then
 fi
 mkdir -p "$output_dir"
 
-if grep -q 'sanitizedServerError(responseBody)' dashboard/worker.ts; then
+if grep -q 'exact_review_queue_request_failed' dashboard/worker.ts; then
   proof_mode=after
 else
   proof_mode=before
@@ -61,7 +61,11 @@ import baseWorker, {
 } from "./worker.ts";
 
 const PROOF_FAILURE_MESSAGE =
-  "injected sqlite read failure exposing GH_TOKEN=ghp_examplesecrettoken0123456789abcd";
+  "injected sqlite read failure exposing private-marker-0123456789abcdef";
+const PROOF_FAILURE_STACK = [
+  `Error: ${PROOF_FAILURE_MESSAGE}`,
+  "at readQueue (file:///srv/clawsweeper-internal/exact-review-queue.ts:91:4)",
+].join("\n");
 
 function bindingProxy(target: any, overrides: Record<PropertyKey, unknown>) {
   return new Proxy(target, {
@@ -81,7 +85,7 @@ export class ExactReviewQueue extends BaseExactReviewQueue {
       exec: (query: string, ...args: unknown[]) => {
         if (armedPattern && armedPattern.test(String(query))) {
           armedPattern = null;
-          throw new Error(PROOF_FAILURE_MESSAGE);
+          throw PROOF_FAILURE_STACK;
         }
         return realStorage.sql.exec(query, ...args);
       },
@@ -138,7 +142,8 @@ const mode = process.env.EXACT_REVIEW_DO_PROOF_MODE === "before" ? "before" : "a
 const headSha = String(process.env.EXACT_REVIEW_DO_PROOF_HEAD || "unknown");
 if (!origin || !secret) throw new Error("proof origin and secret are required");
 
-const plantedToken = "ghp_examplesecrettoken0123456789abcd";
+const plantedMarker = "private-marker-0123456789abcdef";
+const stackMarker = "file:///srv/clawsweeper-internal/exact-review-queue.ts:91:4";
 const routePath = "/internal/exact-review/publications/list";
 const assertions = [];
 const transcript = [];
@@ -149,7 +154,7 @@ function assertProof(name, condition, details = {}) {
 }
 
 function redact(value) {
-  return String(value).split(plantedToken).join("ghp_[PLANTED_TOKEN_REDACTED]");
+  return String(value).split(plantedMarker).join("[PLANTED_MARKER_REDACTED]");
 }
 
 async function signedPost(label, value) {
@@ -197,19 +202,28 @@ const jsonContract =
   failing.contentType.includes("application/json") &&
   parsedFailing !== null &&
   typeof parsedFailing.error === "string";
-const tokenLeaked = failing.text.includes(plantedToken);
+const markerLeaked = failing.text.includes(plantedMarker);
+const stackLeaked = failing.text.includes(stackMarker);
 
 assertProof("failure_status_500", failing.status === 500, { http_status: failing.status });
 if (mode === "before") {
-  assertProof("broken_failure_contract_on_base", !jsonContract || tokenLeaked, {
+  assertProof("stack_exposed_on_base", stackLeaked, {
     json_contract: jsonContract,
-    token_leaked: tokenLeaked,
+    marker_leaked: markerLeaked,
+    stack_leaked: stackLeaked,
   });
 } else {
-  assertProof("worker_sanitized_json_contract", jsonContract, {
+  assertProof("worker_safe_json_contract", jsonContract, {
     content_type: failing.contentType,
   });
-  assertProof("planted_token_redacted", !tokenLeaked && failing.text.includes("[REDACTED"), {
+  assertProof(
+    "fixed_public_error",
+    parsedFailing.error === "exact_review_queue_unavailable",
+    {
+      response_body: redact(failing.text).slice(0, 300),
+    },
+  );
+  assertProof("internal_details_not_exposed", !markerLeaked && !stackLeaked, {
     response_body: redact(failing.text).slice(0, 300),
   });
 }
@@ -218,13 +232,14 @@ const summary = {
   mode,
   head_sha: headSha,
   route: routePath,
-  planted_token: "ghp_[PLANTED_TOKEN_REDACTED]",
+  planted_marker: "[PLANTED_MARKER_REDACTED]",
   failure_response: {
     status: failing.status,
     content_type: failing.contentType,
     body: redact(failing.text).slice(0, 2000),
     json_contract: jsonContract,
-    token_leaked: tokenLeaked,
+    marker_leaked: markerLeaked,
+    stack_leaked: stackLeaked,
   },
   assertions,
 };
@@ -282,3 +297,5 @@ EXACT_REVIEW_DO_PROOF_ORIGIN="http://127.0.0.1:${port}" \
   node "$driver"
 
 test -s "$output_dir/proof-summary.json"
+grep -q 'exact_review_queue_request_failed' "$wrangler_log"
+printf '%s\n' 'exact_review_queue_request_failed' >"$output_dir/internal-diagnostics.txt"

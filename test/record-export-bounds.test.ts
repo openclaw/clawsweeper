@@ -455,54 +455,58 @@ test("signed record export returns one oversized serialized record and advances"
   assert.equal(second.nextCursor, null);
 });
 
-test("signed record export returns sanitized 500 for missing and invalid logical byte metadata", async () => {
-  const missingHarness = await exportHarness();
-  const missing = fixtureRecord({
-    source: "canonical",
-    section: "items",
-    id: "1",
-    content: "missing-metadata",
-    storeRevision: 1,
-  });
-  seedFixtureRecord(missingHarness.storage, missing);
-  missingHarness.storage.sql.exec(
-    `DELETE FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
+test("signed record export hides missing and invalid logical byte metadata", async () => {
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...values: unknown[]) => errors.push(values);
+  try {
+    const missingHarness = await exportHarness();
+    const missing = fixtureRecord({
+      source: "canonical",
+      section: "items",
+      id: "1",
+      content: "missing-metadata",
+      storeRevision: 1,
+    });
+    seedFixtureRecord(missingHarness.storage, missing);
+    missingHarness.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
       WHERE repo_slug = ? AND section = ? AND item_id = ?`,
-    REPO_SLUG,
-    missing.section,
-    Number(missing.id),
-  );
-  const missingResponse = await exportResponse(missingHarness.env, 0);
-  assert.equal(missingResponse.status, 500);
-  assert.equal(missingResponse.headers.get("content-type"), "application/json; charset=utf-8");
-  const missingBody = (await missingResponse.json()) as { error?: unknown };
-  assert.equal(typeof missingBody.error, "string");
-  assert.match(String(missingBody.error), /invalid record export byte metadata.*items\/1/);
+      REPO_SLUG,
+      missing.section,
+      Number(missing.id),
+    );
+    const missingResponse = await exportResponse(missingHarness.env, 0);
+    assert.equal(missingResponse.status, 500);
+    assert.equal(missingResponse.headers.get("content-type"), "application/json; charset=utf-8");
+    assert.deepEqual(await missingResponse.json(), { error: "exact_review_queue_unavailable" });
 
-  const invalidHarness = await exportHarness();
-  const invalid = fixtureRecord({
-    source: "backfill",
-    section: "commits",
-    id: "b".repeat(40),
-    content: "invalid-metadata",
-    storeRevision: 1,
-  });
-  seedFixtureRecord(invalidHarness.storage, invalid);
-  invalidHarness.storage.sql.exec(
-    `UPDATE ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
+    const invalidHarness = await exportHarness();
+    const invalid = fixtureRecord({
+      source: "backfill",
+      section: "commits",
+      id: "b".repeat(40),
+      content: "invalid-metadata",
+      storeRevision: 1,
+    });
+    seedFixtureRecord(invalidHarness.storage, invalid);
+    invalidHarness.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
         SET byte_length = 9007199254740992
       WHERE repo_slug = ? AND section = ? AND record_id = ?`,
-    REPO_SLUG,
-    invalid.section,
-    invalid.id,
-  );
-  const invalidResponse = await exportResponse(invalidHarness.env, 0);
-  assert.equal(invalidResponse.status, 500);
-  assert.equal(invalidResponse.headers.get("content-type"), "application/json; charset=utf-8");
-  const invalidBody = (await invalidResponse.json()) as { error?: unknown };
-  assert.equal(typeof invalidBody.error, "string");
-  assert.match(
-    String(invalidBody.error),
-    new RegExp(`invalid record export byte metadata.*commits/${invalid.id}`),
-  );
+      REPO_SLUG,
+      invalid.section,
+      invalid.id,
+    );
+    const invalidResponse = await exportResponse(invalidHarness.env, 0);
+    assert.equal(invalidResponse.status, 500);
+    assert.equal(invalidResponse.headers.get("content-type"), "application/json; charset=utf-8");
+    assert.deepEqual(await invalidResponse.json(), { error: "exact_review_queue_unavailable" });
+    assert.deepEqual(errors, [
+      ["exact_review_queue_request_failed"],
+      ["exact_review_queue_request_failed"],
+    ]);
+  } finally {
+    console.error = originalError;
+  }
 });

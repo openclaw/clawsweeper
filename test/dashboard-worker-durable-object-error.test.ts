@@ -46,40 +46,73 @@ test("exact-review Durable Object rejects storage failures directly", async () =
   assert.equal((await queue.fetch(publicationsListRequest(100))).status, 200);
 });
 
-test("exact-review Worker sanitizes rejected Durable Object calls", async () => {
-  const storage = new MemoryDurableStorage();
-  const queue = newQueue(storage);
-  assert.equal((await queue.fetch(publicationsListRequest(100))).status, 200);
-
-  storage.failNextSql(
-    /SELECT item_key, item_json/,
-    new Error(
-      "injected sqlite read failure exposing GH_TOKEN=ghp_examplesecrettoken0123456789abcd",
-    ),
-  );
+test("exact-review Worker projects rejected Durable Object calls to a fixed public error", async () => {
+  const internalStack = [
+    "Error: database pool internals",
+    "at readQueue (file:///srv/clawsweeper-private/exact-review-queue.ts:91:4)",
+  ].join("\n");
   const secret = "test-webhook-secret";
   const requestBody = JSON.stringify({ limit: 100 });
-  const response = await worker.fetch(signedPublicationsListRequest(requestBody, secret), {
-    CLAWSWEEPER_WEBHOOK_SECRET: secret,
-    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
-  });
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...values: unknown[]) => errors.push(values);
+  try {
+    const response = await worker.fetch(signedPublicationsListRequest(requestBody, secret), {
+      CLAWSWEEPER_WEBHOOK_SECRET: secret,
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+        async fetch() {
+          throw internalStack;
+        },
+      }),
+    });
 
-  assert.equal(response.status, 500);
-  assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
-  const responseBody = (await response.json()) as { error?: unknown };
-  assert.equal(typeof responseBody.error, "string");
-  assert.equal(JSON.stringify(responseBody).includes("ghp_examplesecrettoken"), false);
+    assert.equal(response.status, 500);
+    assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
+    assert.deepEqual(await response.json(), { error: "exact_review_queue_unavailable" });
+    assert.deepEqual(errors, [["exact_review_queue_request_failed"]]);
+  } finally {
+    console.error = originalError;
+  }
 });
 
-test("exact-review Worker normalizes malformed Durable Object 5xx responses", async () => {
-  const plantedToken = "ghp_examplesecrettoken0123456789abcd";
+test("exact-review Worker projects malformed Durable Object 5xx responses to a fixed public error", async () => {
+  const plantedMarker = "private-marker-0123456789abcdef";
   const secret = "test-webhook-secret";
   const body = JSON.stringify({ limit: 100 });
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...values: unknown[]) => errors.push(values);
+  try {
+    const response = await worker.fetch(signedPublicationsListRequest(body, secret), {
+      CLAWSWEEPER_WEBHOOK_SECRET: secret,
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+        async fetch() {
+          return new Response(`upstream failure marker=${plantedMarker}`, {
+            status: 503,
+            headers: { "content-type": "application/json" },
+          });
+        },
+      }),
+    });
+
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
+    assert.deepEqual(await response.json(), { error: "exact_review_queue_unavailable" });
+    assert.deepEqual(errors, [["exact_review_queue_malformed_server_response"]]);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test("exact-review Worker preserves structured Durable Object 5xx responses", async () => {
+  const secret = "test-webhook-secret";
+  const body = JSON.stringify({ limit: 100 });
+  const responseBody = { error: "lease_decision_unavailable", retryable: true };
   const response = await worker.fetch(signedPublicationsListRequest(body, secret), {
     CLAWSWEEPER_WEBHOOK_SECRET: secret,
     EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
       async fetch() {
-        return new Response(`upstream failure GH_TOKEN=${plantedToken}`, {
+        return new Response(JSON.stringify(responseBody), {
           status: 503,
           headers: { "content-type": "application/json" },
         });
@@ -88,11 +121,8 @@ test("exact-review Worker normalizes malformed Durable Object 5xx responses", as
   });
 
   assert.equal(response.status, 503);
-  assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
-  const responseBody = (await response.json()) as { error?: unknown };
-  assert.equal(typeof responseBody.error, "string");
-  assert.equal(JSON.stringify(responseBody).includes(plantedToken), false);
-  assert.match(String(responseBody.error), /\[REDACTED\]/);
+  assert.equal(response.headers.get("content-type"), "application/json");
+  assert.deepEqual(await response.json(), responseBody);
 });
 
 test("exact-review Worker preserves intentional non-JSON 4xx responses", async () => {

@@ -28,7 +28,6 @@ import {
   githubAppJsonAsPlainError as githubAppJson,
   signGithubAppJwt,
 } from "./github-api.ts";
-import { sanitizedServerError } from "./error-safety.ts";
 import {
   HEALTH_HISTORY_RETENTION_DAYS,
   HEALTH_HISTORY_SAMPLE_MS,
@@ -4437,10 +4436,12 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
       JSON.parse(responseBody);
       return response;
     } catch {
-      return json({ error: sanitizedServerError(responseBody) }, response.status);
+      console.error("exact_review_queue_malformed_server_response");
+      return json({ error: "exact_review_queue_unavailable" }, response.status);
     }
-  } catch (error) {
-    return json({ error: sanitizedServerError(error) }, 500);
+  } catch {
+    console.error("exact_review_queue_request_failed");
+    return json({ error: "exact_review_queue_unavailable" }, 500);
   }
 }
 
