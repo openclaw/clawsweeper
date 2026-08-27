@@ -84,10 +84,9 @@ export function dataModelChangeFromContext(repo: string, context: ItemContext): 
     const path = typeof file.filename === "string" ? file.filename.trim() : "";
     const previousPath =
       typeof file.previous_filename === "string" ? file.previous_filename.trim() : "";
-    // Scope each rename side before unknown handling, retaining the semantic docs branch.
-    const candidates = [path, previousPath].filter(
-      (candidate) => isProductionSourcePath(candidate) || isDocsPath(candidate),
-    );
+    // Scope each rename side before unknown handling, retaining semantic docs
+    // while excluding CI definitions that cannot define an OpenClaw data model.
+    const candidates = [path, previousPath].filter(isDataModelCandidatePath);
     const likelyPath = candidates.find(isLikelyOpenClawDataModelPath) ?? "";
     const patch = typeof file.patch === "string" ? file.patch : null;
     const lines = patch === null ? [] : changedPatchLines(patch);
@@ -211,6 +210,12 @@ function isProductionSourcePath(path: string): boolean {
     const markerIndex = basename.indexOf(marker);
     return markerIndex >= 0 && markerIndex + marker.length < basename.length;
   });
+}
+
+function isDataModelCandidatePath(path: string): boolean {
+  return (
+    !/^\.github\/workflows\//i.test(path) && (isProductionSourcePath(path) || isDocsPath(path))
+  );
 }
 
 function isLikelySqliteSchemaPath(path: string): boolean {

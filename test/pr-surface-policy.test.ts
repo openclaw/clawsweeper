@@ -273,6 +273,15 @@ Corrects missing-tool installation guidance and adds a subprocess regression.
   assert.doesNotMatch(comment, /Persistent data-model change detected|### Stored data model/);
 });
 
+test("real #119762 workflow metadata carrier does not produce a stored-data warning", () => {
+  const fixture = JSON.parse(
+    readFileSync(new URL("./fixtures/persistence-classifier-119762.json", import.meta.url), "utf8"),
+  );
+  const detection = dataModelChangeFromPullFilesForTest({ pullFiles: fixture.pullFiles });
+
+  assert.deepEqual(detection, { change: false, surfaces: [] });
+});
+
 test("bundled hook prose does not become a persistence warning or migration gate", () => {
   const fixture = JSON.parse(
     readFileSync(new URL("./fixtures/persistence-classifier-130734.json", import.meta.url), "utf8"),
@@ -389,6 +398,23 @@ for (const { name, file, surfaces, pullFilesTruncated } of [
     file: { filename: "test/setup.ts", patch: '@@\n+writeFile("fixture.json", "{}");' },
     pullFilesTruncated: true,
     surfaces: ["unknown-truncated-pull-files"],
+  },
+  {
+    name: "workflow-only persistence vocabulary",
+    file: {
+      filename: ".github/workflows/release.yml",
+      patch:
+        '@@\n+metadata=".artifacts/candidate.json"\n+await upgrade(state)\n+await writeFile(statePath, JSON.stringify(value));',
+    },
+    surfaces: [],
+  },
+  {
+    name: "workflow to production rename with a missing patch",
+    file: {
+      filename: "src/storage/session-state.ts",
+      previous_filename: ".github/workflows/session-state.yml",
+    },
+    surfaces: ["unknown-data-model-change: src/storage/session-state.ts"],
   },
 ]) {
   test(`data model detector scopes ${name}`, () => {
