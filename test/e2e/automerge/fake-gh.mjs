@@ -213,6 +213,14 @@ function handleApi() {
     }
   }
   if (endpoint === `repos/${state.repo}/issues/${state.pr.number}`) {
+    if (method === "PATCH") {
+      assertMutationToken();
+      const input = readInput();
+      if (typeof input.body === "string") state.pr.body = input.body;
+      state.pr.updatedAt = new Date().toISOString();
+      saveState();
+      respondJson(issueResponse());
+    }
     assertReadToken();
     respondJson(issueResponse());
   }
@@ -223,6 +231,7 @@ function handleApi() {
       respondJson(state.comments.at(-1));
     }
     assertReadToken();
+    applyFinalVerdictMutation();
     if (args.includes("--jq"))
       respondText(state.comments.map((comment) => comment.body).join("\n"));
     respondJson(state.comments, { paged: args.includes("--slurp") });
@@ -403,6 +412,25 @@ function addComment(body) {
     created_at: now,
     updated_at: now,
   });
+  saveState();
+}
+
+function applyFinalVerdictMutation() {
+  const mutation = state.finalVerdictMutation;
+  if (!mutation || mutation.applied) return;
+  mutation.commentReads = Number(mutation.commentReads ?? 0) + 1;
+  if (mutation.commentReads < mutation.triggerCommentRead) {
+    saveState();
+    return;
+  }
+  const now = new Date(Date.now() + 60_000).toISOString();
+  addComment(
+    [
+      "ClawSweeper found a newer exact-head blocker.",
+      `<!-- clawsweeper-verdict:needs-human live_verification=${mutation.liveVerification} item=${state.pr.number} sha=${currentHead()} reviewed_at=${now} -->`,
+    ].join("\n"),
+  );
+  mutation.applied = true;
   saveState();
 }
 

@@ -5,6 +5,12 @@ import {
   renderReviewCommentFromReport,
   reviewAutomationMarkersFromReport,
 } from "../dist/clawsweeper.js";
+import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
+import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
+import {
+  encodeLiveVerificationReportPayload,
+  liveProofPlanSha256,
+} from "../dist/live-proof/verification.js";
 import {
   detailsBody,
   prRatingReportSection,
@@ -132,6 +138,220 @@ Full review comments:
     /- `rating: 🧂 unranked krab`: Overall readiness is 🧂 unranked krab; proof is 🧂 unranked krab and patch quality is 🦞 diamond lobster\./,
   );
   assert.doesNotMatch(labelDetails, /PR readiness rating was derived from proof quality/);
+});
+
+test("active repair-loop statuses outrank proof fallback without preserving stale automerge", () => {
+  const cases = [
+    {
+      labels: ["clawsweeper:automerge", "status: 🔁 re-review loop"],
+      expected: "status: 🔁 re-review loop",
+    },
+    {
+      labels: ["clawsweeper:automerge", "status: 🛠️ actively grinding"],
+      expected: "status: 🛠️ actively grinding",
+    },
+    {
+      labels: ["clawsweeper:automerge"],
+      expected: "status: 📣 needs proof",
+    },
+  ];
+
+  for (const [index, fixture] of cases.entries()) {
+    const report = `${reportFrontMatter({
+      type: "pull_request",
+      number: String(74500 + index),
+      decision: "keep_open",
+      close_reason: "none",
+      review_status: "complete",
+      confidence: "high",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      labels: JSON.stringify(fixture.labels),
+      work_candidate: "none",
+      pull_head_sha: "abc123def456",
+    })}
+
+## Summary
+
+Keep this PR in its current repair-loop state.
+
+## What This Changes
+
+Updates the reviewed implementation.
+
+## Best Possible Solution
+
+Complete the active review workflow before merge.
+
+${realBehaviorProofReportSection({
+  status: "insufficient",
+  evidenceKind: "none",
+  needsContributorAction: true,
+  summary: "The current review has no usable real behavior proof.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+    const comment = renderReviewCommentFromReport(report, "none", {
+      previousLabels: ["status: 🚀 automerge armed"],
+    });
+    const labelDetails = detailsBody(comment, "Label changes");
+
+    assert.match(labelDetails, new RegExp(`add \`${fixture.expected}\``));
+    assert.match(labelDetails, /remove `status: 🚀 automerge armed`/);
+  }
+});
+
+test("attached verification pass ignores stale proof statuses and preserves current status details", () => {
+  const headSha = "a".repeat(40);
+  const plan: LiveProofPlan = {
+    status: "recommended",
+    surface: "terminal",
+    terminalCompletion: "exit_zero",
+    reason: "The changed CLI output is visible.",
+    payoff: {
+      kind: "progressive_output",
+      justification: "The viewer sees the clean help output.",
+    },
+    entry: "node scripts/run-node.mjs --help",
+    steps: [{ action: "expect_output", text: "Usage: openclaw" }],
+  };
+  const attachedVerification = `${LIVE_VERIFICATION_MARKER}
+Result: ${encodeLiveVerificationReportPayload({
+    schema_version: 1,
+    repo: "openclaw/openclaw",
+    item: 74510,
+    head_sha: headSha,
+    plan_sha256: liveProofPlanSha256(plan),
+    surface: "terminal",
+    entry: "node scripts/run-node.mjs --help",
+    drive_status: "completed",
+    steps: [
+      {
+        action: "expect_output",
+        status: "completed",
+        detail: "clean help output was observed",
+        assertion: "Usage: openclaw",
+        present_at_start: false,
+        satisfied: true,
+      },
+    ],
+    output: "Usage: openclaw",
+    overall_pass: true,
+    verified_at: "2026-08-27T12:00:00.000Z",
+  })}`;
+  const cases = [
+    {
+      labels: ["clawsweeper:automerge", "status: 📣 needs proof"],
+      stale: "status: 📣 needs proof",
+      expected: "status: 🚀 automerge armed",
+    },
+    {
+      labels: ["status: needs maintainer proof decision", "status: 👀 ready for maintainer look"],
+      stale: "status: needs maintainer proof decision",
+      expected: "status: 👀 ready for maintainer look",
+    },
+    {
+      labels: ["status: 🚀 automerge armed", "status: 📣 needs proof", "status: 🔁 re-review loop"],
+      stale: "status: 📣 needs proof",
+      expected: "status: 🔁 re-review loop",
+    },
+    {
+      labels: [
+        "status: 🚀 automerge armed",
+        "status: 📣 needs proof",
+        "status: 🛠️ actively grinding",
+      ],
+      stale: "status: 📣 needs proof",
+      expected: "status: 🛠️ actively grinding",
+    },
+  ];
+
+  for (const fixture of cases) {
+    const report = `${reportFrontMatter({
+      type: "pull_request",
+      number: "74510",
+      decision: "keep_open",
+      close_reason: "none",
+      review_status: "complete",
+      confidence: "high",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      labels: JSON.stringify(fixture.labels),
+      work_candidate: "none",
+      pull_head_sha: headSha,
+    })}
+
+## Summary
+
+Keep this PR open for its current review status.
+
+## What This Changes
+
+Updates the reviewed implementation.
+
+## Best Possible Solution
+
+Honor the attached verification result and current non-proof status.
+
+${realBehaviorProofReportSection({
+  status: "missing",
+  evidenceKind: "none",
+  needsContributorAction: true,
+  summary: "The model did not record real behavior proof.",
+})}
+
+## Live Proof
+
+Status: recommended
+
+Surface: terminal
+
+Terminal completion: exit_zero
+
+Reason: The changed CLI output is visible.
+
+Payoff: progressive_output
+
+Payoff justification: The viewer sees the clean help output.
+
+Entry: node scripts/run-node.mjs --help
+
+Steps:
+
+- {"action":"expect_output","text":"Usage: openclaw"}
+
+${attachedVerification}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+    const comment = renderReviewCommentFromReport(report, "none", {
+      previousLabels: [fixture.stale],
+    });
+    const labelDetails = detailsBody(comment, "Label changes");
+
+    assert.match(labelDetails, new RegExp(`add \`${fixture.expected}\``));
+    assert.match(labelDetails, new RegExp(`remove \`${fixture.stale}\``));
+    assert.doesNotMatch(labelDetails, new RegExp(`add \`${fixture.stale}\``));
+  }
 });
 
 test("failed Codex review comments suppress PR readiness ratings", () => {

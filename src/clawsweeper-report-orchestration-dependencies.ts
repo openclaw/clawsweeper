@@ -39,6 +39,7 @@ import type {
   TriagePriority,
   VisionFitStatus,
 } from "./clawsweeper-types.js";
+import type { AttachedLiveVerification } from "./live-proof/verification.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
 import { type ReviewStructuralPullState } from "./review-structural-cache.js";
 
@@ -346,6 +347,7 @@ export interface CreateReportOrchestrationDependencies {
   reportOverallCorrectness: (markdown: string) => OverallCorrectness;
   reportPrRating: (markdown: string) => PrRating;
   reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
+  reportAttachedLiveVerification: (markdown: string) => AttachedLiveVerification;
   reportReviewFindings: (markdown: string) => ReviewFinding[];
   reportRootCauseCluster: (markdown: string) => RootCauseClusterAssessment;
   reportSecurityReview: (markdown: string) => SecurityReview;

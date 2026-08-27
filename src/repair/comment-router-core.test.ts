@@ -69,6 +69,7 @@ test("explicit maintainer replay records resume intent for an enabled automerge"
         "No repair lane is needed; the member-sponsored automerge path should make the final exact-head decision.",
       commentCreatedAt: "2026-07-18T21:31:21Z",
       optInTime: resumeTime,
+      liveVerification: "passed",
     }),
     true,
   );

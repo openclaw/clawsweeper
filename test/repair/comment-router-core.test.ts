@@ -41,12 +41,14 @@ import {
   issueImplementationBlockerClass,
   issueImplementationJobBranch,
   issueImplementationJobPath,
+  latestTrustedExactHeadReview,
   isCanonicalLandingNeedsHumanText,
   isReadyHumanReviewPause,
   latestRepairLoopResumeTime,
   isAuthorReadOnlyCommandAllowed,
   isMaintainerCommandAllowed,
   isIssueImplementationCommandAllowed,
+  maintainerApprovalAppliesToExactHeadReview,
   maintainerAutomergeOptInApprovesNeedsHuman,
   maintainerModeCommandCanResumePausedMode,
   parseCommand,
@@ -1313,6 +1315,55 @@ test("existing repair jobs migrate and follow explicit maintainer mode changes",
     source.indexOf("function", source.indexOf("function routedCommandForComment") + 1),
   );
   assert.match(routed, /automerge_instructions: parsed\.automerge_instructions \?\? null/);
+  assert.match(routed, /live_verification: parsed\.live_verification \?\? null/);
+  const needsHuman = source.slice(
+    source.indexOf("function classifyNeedsHuman"),
+    source.indexOf("function maintainerAutomergeOptInApprovesNeedsHuman"),
+  );
+  assert.match(needsHuman, /validated_maintainer_human_approval: true/);
+  const approvedMissingProof = source.slice(
+    source.indexOf("const approvedProofOverride ="),
+    source.indexOf("if (AUTOCLOSE_INTENTS.has(command.intent))"),
+  );
+  assert.match(
+    approvedMissingProof,
+    /validated_maintainer_human_approval: true/,
+    "late maintainer missing-proof approval must reach the final exact-head gate",
+  );
+  const maintainerApproval = source.slice(
+    source.indexOf("function classifyMaintainerApprovedAutomerge"),
+    source.indexOf("function classifyNeedsHuman"),
+  );
+  assert.doesNotMatch(
+    maintainerApproval,
+    /trustedExactHeadReviewBlockReason/,
+    "repairable maintainer approvals must reach execution before exact-review merge gating",
+  );
+  const readiness = source.slice(
+    source.indexOf("function validateAutomergeReadiness"),
+    source.indexOf("function trustedExactHeadReviewBlockReason"),
+  );
+  assert.match(
+    readiness,
+    /command\.validated_maintainer_human_approval !== true/,
+    "validated approval must pass the pause label without removing it before merge",
+  );
+  assert.ok(
+    readiness.indexOf("const review = latestTrustedExactHeadReview") >
+      readiness.indexOf("const mergeStateStatus"),
+    "repairable readiness states must classify before the final exact-review merge gate",
+  );
+  assert.match(readiness, /maintainerApprovalAppliesToExactHeadReview\(\{/);
+  assert.match(
+    readiness,
+    /approvalValidated: command\.validated_maintainer_human_approval === true/,
+  );
+  assert.match(readiness, /optInTime: authoritativeMaintainerHumanApprovalTime\(command\)/);
+  assert.doesNotMatch(
+    readiness,
+    /allowHumanApproval: command\.validated_maintainer_human_approval === true/,
+  );
+  assert.doesNotMatch(readiness, /allowHumanApproval: command\.intent/);
   assert.doesNotMatch(ensure, /if \(command\.target\?\.has_automerge_job[\s\S]*?return \{/);
   const modeSelection = source.slice(
     source.indexOf("function repairJobModeForCommand"),
@@ -1606,7 +1657,7 @@ test("parseTrustedAutomation accepts trusted ClawSweeper pass verdicts for autom
   const parsed = parseTrustedAutomation(
     {
       user: { login: "clawsweeper[bot]" },
-      body: "ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
+      body: "ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass live_verification=absent sha=abc123 source_revision=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef reviewed_at=2026-07-09T21:00:00.000Z -->",
     },
     { trustedAuthors },
   );
@@ -1619,6 +1670,142 @@ test("parseTrustedAutomation accepts trusted ClawSweeper pass verdicts for autom
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   );
   assert.match(parsed.repair_reason, /verdict: pass/);
+});
+
+test("trusted exact-head review markers fail closed on verification state", () => {
+  const trustedAuthors = new Set(["clawsweeper[bot]"]);
+  const comment = (liveVerification: string | null) => ({
+    user: { login: "clawsweeper[bot]" },
+    body: `<!-- clawsweeper-verdict:pass sha=abc123${liveVerification ? ` live_verification=${liveVerification}` : ""} -->`,
+  });
+
+  assert.equal(parseTrustedAutomation(comment(null), { trustedAuthors }), null);
+  assert.equal(
+    parseTrustedAutomation(comment("failed"), { trustedAuthors })?.intent,
+    "clawsweeper_needs_human",
+  );
+  assert.deepEqual(
+    latestTrustedExactHeadReview({
+      comments: [comment(null)],
+      headSha: "abc123",
+      trustedAuthors,
+    }),
+    {
+      decision: "legacy",
+      liveVerification: "unknown",
+      command: null,
+      commentCreatedAt: null,
+      commentUpdatedAt: null,
+    },
+  );
+  assert.equal(
+    latestTrustedExactHeadReview({
+      comments: [comment("passed")],
+      headSha: "abc123",
+      trustedAuthors,
+    })?.decision,
+    "pass",
+  );
+});
+
+test("trusted exact-head review freshness uses edited publication time, not input order", () => {
+  const trustedAuthors = new Set(["clawsweeper[bot]"]);
+  const headSha = "abc123";
+  const editedPass = {
+    id: 101,
+    user: { login: "clawsweeper[bot]" },
+    created_at: "2026-08-27T12:00:00Z",
+    updated_at: "2026-08-27T12:05:00Z",
+    body: `<!-- clawsweeper-verdict:pass live_verification=absent sha=${headSha} -->`,
+  };
+  const repair = {
+    id: 102,
+    user: { login: "clawsweeper[bot]" },
+    created_at: "2026-08-27T12:02:00Z",
+    updated_at: "2026-08-27T12:02:00Z",
+    body: `<!-- clawsweeper-action:fix-required sha=${headSha} -->`,
+  };
+
+  for (const comments of [
+    [editedPass, repair],
+    [repair, editedPass],
+  ]) {
+    const review = latestTrustedExactHeadReview({ comments, headSha, trustedAuthors });
+    assert.equal(review?.decision, "pass");
+    assert.equal(review?.commentUpdatedAt, editedPass.updated_at);
+  }
+
+  const tiedRepair = { ...repair, updated_at: editedPass.updated_at };
+  for (const comments of [
+    [editedPass, tiedRepair],
+    [tiedRepair, editedPass],
+  ]) {
+    assert.equal(
+      latestTrustedExactHeadReview({ comments, headSha, trustedAuthors })?.decision,
+      "repair",
+    );
+  }
+});
+
+test("maintainer approval does not transfer to a newer same-head human blocker", () => {
+  const trustedAuthors = new Set(["clawsweeper[bot]"]);
+  const headSha = "abc123";
+  const canonical = {
+    user: { login: "clawsweeper[bot]" },
+    created_at: "2026-08-27T12:00:00Z",
+    body: [
+      "## Next step before merge",
+      "",
+      "No repair lane is needed: the PR already contains the narrow fix, but missing real behavior proof needs maintainer handling.",
+      "",
+      `<!-- clawsweeper-verdict:needs-human live_verification=absent sha=${headSha} -->`,
+    ].join("\n"),
+  };
+  const blocker = {
+    user: { login: "clawsweeper[bot]" },
+    created_at: "2026-08-27T12:02:00Z",
+    body: [
+      "## Security",
+      "",
+      "Needs attention: security-sensitive policy review is required before merge.",
+      "",
+      `<!-- clawsweeper-security:security-sensitive sha=${headSha} -->`,
+      `<!-- clawsweeper-verdict:needs-human live_verification=absent sha=${headSha} -->`,
+    ].join("\n"),
+  };
+  const approval = {
+    approvalValidated: true,
+    optInTime: "2026-08-27T12:01:00Z",
+    replacementAutomergeRequestedBy: null,
+  };
+  const approvedReview = latestTrustedExactHeadReview({
+    comments: [canonical],
+    headSha,
+    trustedAuthors,
+  });
+
+  assert.equal(
+    maintainerApprovalAppliesToExactHeadReview({
+      ...approval,
+      review: approvedReview,
+    }),
+    true,
+  );
+
+  const currentReview = latestTrustedExactHeadReview({
+    comments: [canonical, blocker],
+    headSha,
+    trustedAuthors,
+  });
+  assert.equal(currentReview?.decision, "human");
+  assert.match(String(currentReview?.command?.repair_reason ?? ""), /security-sensitive/i);
+  assert.equal(
+    maintainerApprovalAppliesToExactHeadReview({
+      ...approval,
+      review: currentReview,
+    }),
+    false,
+  );
 });
 
 test("parseTrustedAutomation accepts trusted ClawSweeper close markers for autoclose", () => {
@@ -1956,7 +2143,7 @@ test("first server-created same-head review lease suppresses verdicts without it
   const command = parseRoutedCommentCommand(
     {
       user: { login: "clawsweeper[bot]" },
-      body: `<!-- clawsweeper-verdict:pass item=${itemNumber} sha=${headSha} reviewed_at=2026-07-09T21:05:00.000Z -->`,
+      body: `<!-- clawsweeper-verdict:pass live_verification=absent item=${itemNumber} sha=${headSha} reviewed_at=2026-07-09T21:05:00.000Z -->`,
     },
     { trustedAuthors: new Set(["clawsweeper[bot]"]) },
   );
@@ -2054,7 +2241,7 @@ test("same-head completion freshness uses durable publication time", () => {
     user: { login: "clawsweeper[bot]" },
     created_at: "2026-07-09T21:00:00.000Z",
     updated_at: "2026-07-09T21:05:30.000Z",
-    body: `<!-- clawsweeper-verdict:pass item=103109 sha=${headSha} source_revision=${sourceRevision} reviewed_at=2026-07-09T21:04:30.000Z -->`,
+    body: `<!-- clawsweeper-verdict:pass live_verification=absent item=103109 sha=${headSha} source_revision=${sourceRevision} reviewed_at=2026-07-09T21:04:30.000Z -->`,
   };
 
   assert.deepEqual(
@@ -2110,7 +2297,7 @@ test("active review comments cannot replay their previous trusted verdict", () =
   const comment = {
     user: { login: "clawsweeper[bot]" },
     body: [
-      `<!-- clawsweeper-verdict:pass item=103109 sha=${headSha} -->`,
+      `<!-- clawsweeper-verdict:pass live_verification=absent item=103109 sha=${headSha} -->`,
       `<!-- clawsweeper-review-status:started item=103109 sha=${headSha} started_at=2026-07-09T21:01:47.000Z lease_expires_at=2026-07-09T21:31:47.000Z v=1 -->`,
       "<!-- clawsweeper-review item=103109 -->",
     ].join("\n\n"),
@@ -2239,6 +2426,69 @@ test("review dispatch coordination guards label sweeps and maintainer mode comma
       trustedVerdictGuard.indexOf("fetchPullRequestView(number)"),
   );
   assert.match(trustedVerdictGuard, /trustedAutomationPredatesReviewStartLease\(\{/);
+});
+
+test("proof override authorization is durable before merge while pause labels remain success-only", () => {
+  const source = readFileSync("src/repair/comment-router.ts", "utf8");
+  const mergeExecution = source.slice(
+    source.indexOf("if (\n      MERGE_INTENTS.has(command.intent)"),
+    source.indexOf('if (\n      command.intent === "clawsweeper_needs_human"'),
+  );
+  const executeIndex = mergeExecution.indexOf("const merge = executeAutomerge(command)");
+  const successIndex = mergeExecution.indexOf('if (merge.status === "executed")');
+  const labelRemovalIndex = mergeExecution.indexOf("applyRemoveLabelActions(command)");
+  const automergeOwner = source.slice(
+    source.indexOf("function executeAutomerge"),
+    source.indexOf("function latestAutomergeTarget"),
+  );
+  const initialReadinessIndex = automergeOwner.indexOf("validateAutomergeReadiness");
+  const descriptionIndex = automergeOwner.indexOf("applyDescriptionNoteActions(command)");
+  const finalSnapshotIndex = automergeOwner.indexOf(
+    "const finalSnapshot = finalAutomergeSnapshot(command)",
+  );
+  const mergeMessageIndex = automergeOwner.indexOf(
+    "const mergeMessage = buildAutomergeSquashMessage",
+  );
+  const mergeIndex = automergeOwner.indexOf("runGitHubSpawnMutation");
+  const finalSnapshotOwner = source.slice(
+    source.indexOf("function finalAutomergeSnapshot"),
+    source.indexOf("function blockedAutomergeResult"),
+  );
+  const pullBeforeIndex = finalSnapshotOwner.indexOf(
+    "const before = fetchPullRequestView(command.issue_number)",
+  );
+  const commentsIndex = finalSnapshotOwner.indexOf(
+    "const comments = freshIssueCommentsFor(command.issue_number)",
+  );
+  const pullAfterIndex = finalSnapshotOwner.indexOf(
+    "const after = fetchPullRequestView(command.issue_number)",
+  );
+  const leaseIndex = finalSnapshotOwner.indexOf("trustedAutomationPullReviewLeaseBlockReason");
+  const readinessIndex = finalSnapshotOwner.indexOf("validateAutomergeReadiness");
+
+  assert.ok(executeIndex >= 0);
+  assert.ok(successIndex > executeIndex);
+  assert.ok(labelRemovalIndex > successIndex);
+  assert.doesNotMatch(mergeExecution, /applyDescriptionNoteActions/);
+  assert.ok(initialReadinessIndex >= 0);
+  assert.ok(descriptionIndex > initialReadinessIndex);
+  assert.ok(finalSnapshotIndex > descriptionIndex);
+  assert.ok(mergeMessageIndex > finalSnapshotIndex);
+  assert.ok(mergeIndex > mergeMessageIndex);
+  assert.ok(pullBeforeIndex >= 0);
+  assert.ok(commentsIndex > pullBeforeIndex);
+  assert.ok(pullAfterIndex > commentsIndex);
+  assert.ok(leaseIndex > pullAfterIndex);
+  assert.ok(readinessIndex > leaseIndex);
+  assert.match(finalSnapshotOwner, /status: "not_ready"/);
+  assert.doesNotMatch(
+    automergeOwner.slice(mergeMessageIndex, mergeIndex),
+    /trustedAutomationReviewLeaseBlockReason/,
+  );
+  assert.doesNotMatch(automergeOwner, /applyRemoveLabelActions/);
+  assert.match(source, /waive only the missing real behavior proof requirement/);
+  assert.match(source, /does not state that the PR is ready or merged/);
+  assert.match(source, /does not bypass any current or later review finding/);
 });
 
 test("comment router durably claims dispatch commands and recovers exact workflow receipts", () => {
@@ -2798,7 +3048,7 @@ test("parseTrustedAutomation repairs trusted pass verdicts that still contain P 
         "",
         "**Review findings**",
         "- **[P2] Preserve queued delivery:** `src/queue.ts:42`",
-        "<!-- clawsweeper-verdict:pass sha=abc123 -->",
+        "<!-- clawsweeper-verdict:pass live_verification=absent sha=abc123 -->",
       ].join("\n"),
     },
     { trustedAuthors },
@@ -2824,7 +3074,7 @@ test("parseTrustedAutomation does not treat pass verdict risk notes as repair fi
         "**Next step before merge**",
         "- [P2] No repair lane is needed; the remaining action is landing risk acceptance.",
         "",
-        "<!-- clawsweeper-verdict:pass item=87563 sha=613071ef179bd015ec9071d5dde2edc1ad3d9424 confidence=high -->",
+        "<!-- clawsweeper-verdict:pass live_verification=absent item=87563 sha=613071ef179bd015ec9071d5dde2edc1ad3d9424 confidence=high -->",
       ].join("\n"),
     },
     { trustedAuthors },
@@ -2893,6 +3143,7 @@ test("canonical landing needs-human text can be approved by active automerge opt
       commentCreatedAt: "2026-05-17T00:45:00Z",
       commentUpdatedAt: "2026-05-17T00:55:00Z",
       optInTime: "2026-05-17T00:50:00Z",
+      liveVerification: "absent",
     }),
     true,
   );
@@ -2902,6 +3153,7 @@ test("canonical landing needs-human text can be approved by active automerge opt
         "The PR is an active automerge candidate with no code finding, but missing proof needs maintainer handling.",
       commentCreatedAt: "2026-05-17T00:55:00Z",
       optInTime: "2026-05-17T00:50:00Z",
+      liveVerification: "absent",
     }),
     true,
   );
@@ -2911,6 +3163,17 @@ test("canonical landing needs-human text can be approved by active automerge opt
         "The PR is an active automerge candidate with no code finding, but missing proof needs maintainer handling.",
       commentCreatedAt: "2026-05-17T00:55:00Z",
       optInTime: 0,
+      liveVerification: "absent",
+    }),
+    false,
+  );
+  assert.equal(
+    maintainerAutomergeOptInApprovesNeedsHuman({
+      reason:
+        "The PR is an active automerge candidate with no code finding, but missing proof needs maintainer handling.",
+      commentCreatedAt: "2026-05-17T00:55:00Z",
+      optInTime: "2026-05-17T00:50:00Z",
+      liveVerification: "passed",
     }),
     false,
   );
@@ -2954,6 +3217,7 @@ test("canonical landing needs-human accepts waiting automerge opt-in as active r
         "No repair lane is needed; the open PR already contains the focused implementation and this review found no actionable blocker for automation to fix.",
       commentCreatedAt: "2026-05-17T16:54:05Z",
       optInTime,
+      liveVerification: "passed",
     }),
     true,
   );
@@ -3017,6 +3281,7 @@ test("canonical landing needs-human accepts replacement PR automerge requester m
       commentCreatedAt: "2026-05-17T18:03:35Z",
       optInTime: 0,
       replacementAutomergeRequestedBy: automergeRequestedByFromBody(replacementBody),
+      liveVerification: "passed",
     }),
     true,
   );
@@ -3033,6 +3298,7 @@ test("canonical landing needs-human ignores bot replacement PR automerge request
         author: "clawsweeper[bot]",
         author_id: "274271284",
       },
+      liveVerification: "passed",
     }),
     false,
   );
@@ -4057,6 +4323,10 @@ test("automerge live readiness blocks become repair reasons", () => {
     "PR has merge conflicts and needs a cloud rebase repair before automerge",
   );
   assert.equal(automergeReadinessRepairReason("merge state status is BEHIND"), null);
+  assert.equal(
+    automergeReadinessRepairReason("maintainer-approved PR head is behind base"),
+    "PR head is behind base and needs a cloud rebase repair before automerge",
+  );
   assert.equal(automergeReadinessRepairReason("pull request is draft"), null);
 });
 

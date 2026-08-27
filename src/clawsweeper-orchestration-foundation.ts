@@ -45,6 +45,7 @@ export function createReportOrchestrationFoundation(
     publicReviewTextDiffers,
     publicTableCell,
     repoUrlFor,
+    reportAttachedLiveVerification,
     reportRealBehaviorProof,
     reportSecurityReview,
     reviewSectionValue,
@@ -460,6 +461,9 @@ export function createReportOrchestrationFoundation(
   } = labelSynchronization;
 
   function realBehaviorProofBlocksMerge(markdown: string): boolean {
+    const attached = reportAttachedLiveVerification(markdown);
+    if (attached.status === "failed" || attached.status === "malformed") return true;
+    if (attached.status === "passed") return false;
     if (frontMatterValue(markdown, "review_status") === "failed") return false;
     if (frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL)) return false;
     if (isDocsOnlyPullRequestReport(markdown)) return false;

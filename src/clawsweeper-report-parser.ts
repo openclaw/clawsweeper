@@ -12,7 +12,6 @@ import {
   IMPLEMENTATION_COMPLEXITIES,
   IMPACT_LABEL_NAMES,
   LIVE_PROOF_RECORDING_MARKER,
-  LIVE_VERIFICATION_MARKER,
   MANTIS_RECOMMENDATION_SCENARIOS,
   MANTIS_RECOMMENDATION_STATUSES,
   MATURITY_LABEL_NAMES,
@@ -29,8 +28,9 @@ import {
   VISION_FIT_STATUSES,
 } from "./clawsweeper-policy.js";
 import {
-  decodeLiveVerificationReportPayload,
+  parseAttachedLiveVerification,
   renderLiveVerificationCommentBlock,
+  type AttachedLiveVerification,
 } from "./live-proof/verification.js";
 import type {
   AgentsPolicyStatus,
@@ -536,6 +536,39 @@ export function createReportParser({
   }
 
   function reportRealBehaviorProof(markdown: string): RealBehaviorProof {
+    const attached = reportAttachedLiveVerification(markdown);
+    if (attached.status === "passed") {
+      return {
+        status: "sufficient",
+        summary: `ClawSweeper live verification passed on the reviewed ${attached.result.surface} surface.`,
+        evidenceKind: attached.result.surface === "terminal" ? "terminal" : "live_output",
+        needsContributorAction: false,
+      };
+    }
+    if (attached.status === "failed") {
+      if (attached.result.failure?.phase === "execution") {
+        return recordedRealBehaviorProof(markdown);
+      }
+      return {
+        status: "insufficient",
+        summary: `ClawSweeper live verification failed on the reviewed ${attached.result.surface} surface.`,
+        evidenceKind: attached.result.surface === "terminal" ? "terminal" : "live_output",
+        needsContributorAction: isExternalPullRequestReport(markdown),
+      };
+    }
+    if (attached.status === "malformed") {
+      return {
+        status: "missing",
+        summary:
+          "The attached ClawSweeper live verification result is malformed or does not match this pull request review.",
+        evidenceKind: "none",
+        needsContributorAction: isExternalPullRequestReport(markdown),
+      };
+    }
+    return recordedRealBehaviorProof(markdown);
+  }
+
+  function recordedRealBehaviorProof(markdown: string): RealBehaviorProof {
     const defaultProof = defaultRealBehaviorProof(markdown);
     if (defaultProof.status === "override" || isDocsOnlyPullRequestReport(markdown)) {
       return defaultProof;
@@ -652,7 +685,7 @@ export function createReportParser({
 
   function reportLiveProofRecordingBlock(markdown: string): string {
     const section = reviewSectionValue(markdown, "liveProof");
-    const verificationBlock = reportLiveVerificationBlock(section);
+    const verificationBlock = reportLiveVerificationBlock(markdown);
     const markerIndex = section.lastIndexOf(LIVE_PROOF_RECORDING_MARKER);
     if (markerIndex < 0) return verificationBlock;
     const lines = section
@@ -678,28 +711,35 @@ export function createReportParser({
     return [verificationBlock, lines.join("\n")].filter(Boolean).join("\n\n");
   }
 
-  function reportLiveVerificationBlock(section: string): string {
-    const markerIndex = section.lastIndexOf(`\n${LIVE_VERIFICATION_MARKER}\n`);
-    if (markerIndex < 0) return "";
-    const start = markerIndex + LIVE_VERIFICATION_MARKER.length + 2;
-    const tail = section.slice(start);
-    const resultLine = tail.split("\n", 1)[0] ?? "";
-    const match = /^Result: ([A-Za-z0-9_-]+)$/.exec(resultLine);
-    if (!match?.[1]) return "";
-    try {
-      return renderLiveVerificationCommentBlock(decodeLiveVerificationReportPayload(match[1]));
-    } catch {
-      return "";
-    }
+  function reportAttachedLiveVerification(markdown: string): AttachedLiveVerification {
+    return parseAttachedLiveVerification(
+      reviewSectionValue(markdown, "liveProof"),
+      {
+        repository: frontMatterValue(markdown, "repository"),
+        number: frontMatterValue(markdown, "number"),
+        type: frontMatterValue(markdown, "type"),
+        pullHeadSha: frontMatterValue(markdown, "pull_head_sha"),
+      },
+      reportLiveProofPlan(markdown),
+    );
+  }
+
+  function reportLiveVerificationBlock(markdown: string): string {
+    const attached = reportAttachedLiveVerification(markdown);
+    return attached.status === "passed" || attached.status === "failed"
+      ? renderLiveVerificationCommentBlock(attached.result)
+      : "";
   }
 
   function reportPrRating(markdown: string): PrRating {
     const section = reviewSectionValue(markdown, "prRating");
     const proof = reportRealBehaviorProof(markdown);
+    const attached = reportAttachedLiveVerification(markdown);
     const proofTierField = frontMatterField(markdown, "pr_rating_proof");
     const patchTierField = frontMatterField(markdown, "pr_rating_patch");
     const overallTierField = frontMatterField(markdown, "pr_rating_overall");
     if (
+      attached.status !== "absent" ||
       [proofTierField, patchTierField, overallTierField].some(
         (field) =>
           field.status === "ambiguous" ||
@@ -907,6 +947,7 @@ export function createReportParser({
     labelJustificationsFromReport,
     reportReviewFindings,
     reportSecurityReview,
+    reportAttachedLiveVerification,
     reportRealBehaviorProof,
     reportTelegramVisibleProof,
     reportLiveProofPlan,

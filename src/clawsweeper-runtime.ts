@@ -495,6 +495,7 @@ export const reportLiveProofPlanForTest = reportLiveProofPlan;
 const {
   reportEvidence,
   reportOverallCorrectness,
+  reportAttachedLiveVerification,
   mergeRiskOptionsFromReport,
   reportReviewFindings,
   reportSecurityReview,
@@ -507,6 +508,7 @@ const labelPolicy = createLabelPolicy({
   frontMatterValue,
   isAutomationReportAuthor,
   mergeRiskOptionsFromReport,
+  reportAttachedLiveVerification,
   reportOverallCorrectness,
   reportRealBehaviorProof,
   reportReviewFindings,
@@ -894,7 +896,9 @@ const reviewPresentation = createReviewPresentation({
   linkedSha,
   markdownLink,
   publicTableCell: (...args) => publicTableCell(...args),
+  reportAttachedLiveVerification,
   reportEvidence,
+  reportRealBehaviorProof,
   securityConcernLocation,
   splitFileAndLine,
 });
@@ -1488,6 +1492,7 @@ const {
 } = actionCommands;
 
 const liveProofAttachDependencies = {
+  reportLiveProofPlan: reportParser.reportLiveProofPlan,
   frontMatterValue: recordMetadata.frontMatterValue,
   sectionValue: recordMetadata.sectionValue,
   replaceSectionValue: recordMetadata.replaceSectionValue,

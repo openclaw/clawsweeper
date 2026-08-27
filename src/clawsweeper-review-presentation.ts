@@ -5,6 +5,7 @@ import {
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
 } from "./repair/exact-review-guard-labels.js";
+import type { AttachedLiveVerification } from "./live-proof/verification.js";
 import type {
   Evidence,
   LikelyOwner,
@@ -33,7 +34,9 @@ interface ReviewPresentationDependencies {
   linkedSha: (sha: string) => string;
   markdownLink: (label: string, url: string) => string;
   publicTableCell: (value: string) => string;
+  reportAttachedLiveVerification: (markdown: string) => AttachedLiveVerification;
   reportEvidence: (markdown: string) => Evidence[];
+  reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
   securityConcernLocation: (concern: SecurityConcern) => string;
   splitFileAndLine: (file: string) => { file: string; line?: number };
 }
@@ -50,7 +53,9 @@ export function createReviewPresentation({
   linkedSha,
   markdownLink,
   publicTableCell,
+  reportAttachedLiveVerification,
   reportEvidence,
+  reportRealBehaviorProof,
   securityConcernLocation,
   splitFileAndLine,
 }: ReviewPresentationDependencies) {
@@ -651,10 +656,46 @@ export function createReviewPresentation({
     return null;
   }
 
+  function isProofSpecificStatus(kind: PrStatusLabelKind): boolean {
+    return kind === "needs_proof" || kind === "needs_maintainer_proof_decision";
+  }
+
+  function activeRepairStatusFromLabels(labels: readonly string[]): PrStatusLabelKind | null {
+    for (const kind of ["re_review_loop", "actively_grinding"] as const) {
+      const status = PR_STATUS_LABELS.find((candidate) => candidate.kind === kind);
+      if (status && labels.includes(status.name)) return kind;
+    }
+    return null;
+  }
+
   function prStatusLabelKindFromReportLabels(markdown: string): PrStatusLabelKind | null {
     const parsedLabels = frontMatterStringArray(markdown, "labels");
     if (hasRepairLoopPauseLabel(parsedLabels)) return null;
-    const fromParsedLabels = prStatusLabelKindFromLabels(parsedLabels);
+    const attachedVerification = reportAttachedLiveVerification(markdown);
+    const proofResolvedByAttachedVerification = attachedVerification.status === "passed";
+    const effectiveParsedLabels = proofResolvedByAttachedVerification
+      ? parsedLabels.filter((label) => {
+          const status = PR_STATUS_LABELS.find((candidate) => candidate.name === label);
+          return !status || !isProofSpecificStatus(status.kind);
+        })
+      : parsedLabels;
+    const activeRepairStatus = activeRepairStatusFromLabels(effectiveParsedLabels);
+    if (activeRepairStatus) return activeRepairStatus;
+    if (
+      attachedVerification.status === "failed" &&
+      attachedVerification.result.failure?.phase === "execution"
+    ) {
+      return "needs_maintainer_proof_decision";
+    }
+    const fromParsedLabels = prStatusLabelKindFromLabels(effectiveParsedLabels);
+    const proof = reportRealBehaviorProof(markdown);
+    if (
+      proof.status === "missing" ||
+      proof.status === "mock_only" ||
+      proof.status === "insufficient"
+    ) {
+      return proof.needsContributorAction ? "needs_proof" : "needs_maintainer_proof_decision";
+    }
     if (fromParsedLabels) return fromParsedLabels;
     if (parsedLabels.includes(AUTOMERGE_LABEL)) return "automerge_armed";
     const rawLabels = frontMatterValue(markdown, "labels") ?? "";
@@ -665,7 +706,13 @@ export function createReviewPresentation({
     )
       return null;
     if (rawLabels.includes(AUTOMERGE_LABEL)) return "automerge_armed";
-    return PR_STATUS_LABELS.find((label) => rawLabels.includes(label.name))?.kind ?? null;
+    return (
+      PR_STATUS_LABELS.find(
+        (label) =>
+          rawLabels.includes(label.name) &&
+          !(proofResolvedByAttachedVerification && isProofSpecificStatus(label.kind)),
+      )?.kind ?? null
+    );
   }
 
   function mantisMaintainerCommentRequestsMutation(comment: string): boolean {

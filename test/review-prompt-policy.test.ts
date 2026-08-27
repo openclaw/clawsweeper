@@ -16,7 +16,11 @@ import {
   reviewPromptForTest,
 } from "../dist/clawsweeper.js";
 import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
-import { encodeLiveVerificationReportPayload } from "../dist/live-proof/verification.js";
+import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
+import {
+  encodeLiveVerificationReportPayload,
+  liveProofPlanSha256,
+} from "../dist/live-proof/verification.js";
 import { item, reportFrontMatter } from "./helpers.ts";
 
 test("review prompt routes PR likely owners through feature history", () => {
@@ -727,39 +731,52 @@ test("review prompt and schema classify deterministic live-proof plans in field 
 });
 
 test("pull request comments render live verification with optional recording", () => {
+  const headSha = "a".repeat(40);
+  const plan: LiveProofPlan = {
+    status: "recommended",
+    surface: "terminal",
+    terminalCompletion: "exit_zero",
+    reason: "The CLI result is visible in captured output.",
+    payoff: {
+      kind: "progressive_output",
+      justification: "The viewer sees the command output.",
+    },
+    entry: "pnpm cli --help",
+    steps: [{ action: "expect_output", text: "Usage" }],
+  };
   const planOnly = `${reportFrontMatter({
+    repository: "example/repo",
     type: "pull_request",
     number: "83150",
     decision: "keep_open",
     close_reason: "none",
     work_candidate: "none",
-    pull_head_sha: "abc123def456",
+    pull_head_sha: headSha,
   })}
 
 ## Summary
 
-Keep this browser PR open for maintainer review.
+Keep this CLI PR open for maintainer review.
 
 ## Live Proof
 
 Status: recommended
 
-Surface: browser
+Surface: terminal
 
-Terminal completion: not_applicable
+Terminal completion: exit_zero
 
-Reason: The settings confirmation is visible in the browser.
+Reason: The CLI result is visible in captured output.
 
-Payoff: ui_interaction
+Payoff: progressive_output
 
-Payoff justification: The viewer sees the confirmation appear after clicking Save.
+Payoff justification: The viewer sees the command output.
 
-Entry: /settings
+Entry: pnpm cli --help
 
 Steps:
 
-- {"action":"goto","path":"/settings"}
-- {"action":"expect_text","text":"Saved"}
+- {"action":"expect_output","text":"Usage"}
 
 ## Work Candidate
 
@@ -781,7 +798,8 @@ Status: none
       schema_version: 1,
       repo: "example/repo",
       item: 83150,
-      head_sha: "a".repeat(40),
+      head_sha: headSha,
+      plan_sha256: liveProofPlanSha256(plan),
       surface: "terminal",
       entry: "pnpm cli --help",
       drive_status: "completed",
@@ -816,7 +834,7 @@ Status: none
     "",
     "[![Live proof recording](https://artifacts.example.test/proof.jpg)](https://artifacts.example.test/proof.mp4)",
     "",
-    "*Recorded live on the PR head (`abc123def456`), 47s, browser surface.*",
+    `*Recorded live on the PR head (\`${headSha}\`), 47s, browser surface.*`,
   ].join("\n");
   const attachedComment = renderReviewCommentFromReport(
     planOnly.replace(
@@ -831,7 +849,9 @@ Status: none
   );
   assert.match(
     attachedComment,
-    /\*Recorded live on the PR head \(`abc123def456`\), 47s, browser surface\.\*/,
+    new RegExp(
+      `\\*Recorded live on the PR head \\(\\\`${headSha}\\\`\\), 47s, browser surface\\.\\*`,
+    ),
   );
 
   const untrustedComment = renderReviewCommentFromReport(

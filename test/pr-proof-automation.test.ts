@@ -9,8 +9,15 @@ import {
   reviewAutomationMarkersFromReport,
 } from "../dist/clawsweeper.js";
 import { restoreVerifiedMaintainerPullRequestAuthorAssociation } from "../dist/clawsweeper-review-command-workflow.js";
+import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
+import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
+import {
+  encodeLiveVerificationReportPayload,
+  liveProofPlanSha256,
+} from "../dist/live-proof/verification.js";
 import {
   changelogReviewDecision,
+  detailsBody,
   item,
   prRatingReportSection,
   realBehaviorProofReportSection,
@@ -711,6 +718,290 @@ Full review comments:
   assert.match(markers, /clawsweeper-verdict:needs-human/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-action:fix-required/);
+});
+
+test("attached verification overrides stale proof policy and exemption metadata", () => {
+  const headSha = "0123456789abcdef0123456789abcdef01234567";
+  const itemNumber = 74464;
+  const plan: LiveProofPlan = {
+    status: "recommended",
+    surface: "terminal",
+    terminalCompletion: "exit_zero",
+    reason: "The changed CLI output is visible.",
+    payoff: {
+      kind: "progressive_output",
+      justification: "The viewer sees the clean help output.",
+    },
+    entry: "node scripts/run-node.mjs --help",
+    steps: [{ action: "expect_output", text: "Usage: openclaw" }],
+  };
+  const verification = (overallPass: boolean) => ({
+    schema_version: 1 as const,
+    repo: "openclaw/openclaw",
+    item: itemNumber,
+    head_sha: headSha,
+    plan_sha256: liveProofPlanSha256(plan),
+    surface: "terminal" as const,
+    entry: "node scripts/run-node.mjs --help",
+    drive_status: overallPass ? ("completed" as const) : ("failed" as const),
+    steps: [
+      {
+        action: "expect_output" as const,
+        status: overallPass ? ("completed" as const) : ("failed" as const),
+        detail: overallPass
+          ? "clean help output was observed"
+          : "expected clean help output was not observed",
+        assertion: "Usage: openclaw",
+        present_at_start: false,
+        satisfied: overallPass,
+      },
+    ],
+    output: overallPass ? "Usage: openclaw" : "build warnings appeared before help",
+    ...(overallPass
+      ? {}
+      : {
+          failure: {
+            phase: "step" as const,
+            reason: "expected clean help output was not observed",
+            step: 1,
+            action: "expect_output" as const,
+          },
+        }),
+    overall_pass: overallPass,
+    verified_at: "2026-08-27T12:00:00.000Z",
+  });
+  const passed = verification(true);
+  const failed = verification(false);
+  const executionFailed = {
+    ...failed,
+    drive_status: "failed" as const,
+    steps: [
+      {
+        ...failed.steps[0],
+        status: "not_run" as const,
+        detail: "not run because the verification environment did not start",
+        satisfied: false,
+      },
+    ],
+    failure: {
+      phase: "execution" as const,
+      reason: "reviewer-side verification environment did not start",
+    },
+  };
+  const actionOnlyPayload = Buffer.from(
+    JSON.stringify({
+      ...passed,
+      steps: [
+        {
+          action: "run",
+          status: "completed",
+          detail: "command completed",
+          subject: "node scripts/run-node.mjs --help",
+        },
+      ],
+    }),
+    "utf8",
+  ).toString("base64url");
+  const reportFor = ({
+    payload,
+    labels = ["clawsweeper:automerge"],
+    planEntry = plan.entry,
+    pullFiles,
+    proof,
+  }: {
+    payload: string | null;
+    labels?: string[];
+    planEntry?: string;
+    pullFiles?: string[];
+    proof?: Parameters<typeof realBehaviorProofReportSection>[0];
+  }) => `${reportFrontMatter({
+    type: "pull_request",
+    number: String(itemNumber),
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(labels),
+    work_candidate: "none",
+    pull_head_sha: headSha,
+    ...(pullFiles ? { pull_files: JSON.stringify(pullFiles), pull_files_truncated: false } : {}),
+    pr_rating_overall: "S",
+    pr_rating_proof: "S",
+    pr_rating_patch: "S",
+  })}
+
+## Summary
+
+Keep this PR open for automerge.
+
+${realBehaviorProofReportSection(
+  proof ?? {
+    status: "missing",
+    evidenceKind: "none",
+    needsContributorAction: true,
+    summary: "The model did not record real behavior proof.",
+  },
+)}
+
+${prRatingReportSection({ overallTier: "S", proofTier: "S", patchTier: "S" })}
+
+## Live Proof
+
+Status: recommended
+
+Surface: terminal
+
+Terminal completion: exit_zero
+
+Reason: The changed CLI output is visible.
+
+Payoff: progressive_output
+
+Payoff justification: The viewer sees the clean help output.
+
+Entry: ${planEntry}
+
+Steps:
+
+- {"action":"expect_output","text":"Usage: openclaw"}
+
+${payload === null ? "No attached verification result." : `${LIVE_VERIFICATION_MARKER}\nResult: ${payload}`}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.98
+
+Full review comments:
+
+- none
+`;
+
+  const cases = [
+    {
+      name: "passed receipt overrides stale missing proof",
+      payload: encodeLiveVerificationReportPayload(passed),
+      state: "passed",
+      verdict: "pass",
+      result: "PASS",
+    },
+    {
+      name: "malformed payload fails closed",
+      payload: "invalid!",
+      state: "malformed",
+      verdict: "needs-human",
+    },
+    {
+      name: "action-only receipt cannot promote proof",
+      payload: actionOnlyPayload,
+      state: "malformed",
+      verdict: "needs-human",
+    },
+    {
+      name: "repository mismatch fails closed",
+      payload: encodeLiveVerificationReportPayload({ ...passed, repo: "other/repo" }),
+      state: "malformed",
+      verdict: "needs-human",
+    },
+    {
+      name: "item mismatch fails closed",
+      payload: encodeLiveVerificationReportPayload({ ...passed, item: itemNumber + 1 }),
+      state: "malformed",
+      verdict: "needs-human",
+    },
+    {
+      name: "head mismatch fails closed",
+      payload: encodeLiveVerificationReportPayload({ ...passed, head_sha: "f".repeat(40) }),
+      state: "malformed",
+      verdict: "needs-human",
+    },
+    {
+      name: "plan mismatch fails closed",
+      payload: encodeLiveVerificationReportPayload(passed),
+      planEntry: "node scripts/run-node.mjs status",
+      state: "malformed",
+      verdict: "needs-human",
+    },
+    {
+      name: "failed receipt blocks docs-only exemption",
+      payload: encodeLiveVerificationReportPayload(failed),
+      pullFiles: ["docs/usage.md"],
+      state: "failed",
+      verdict: "needs-human",
+      result: "FAIL",
+    },
+    {
+      name: "failed receipt blocks proof override",
+      payload: encodeLiveVerificationReportPayload(failed),
+      labels: ["clawsweeper:automerge", "proof: override"],
+      state: "failed",
+      verdict: "needs-human",
+      result: "FAIL",
+    },
+    {
+      name: "execution failure preserves supplied proof and routes to maintainer",
+      payload: encodeLiveVerificationReportPayload(executionFailed),
+      proof: {
+        status: "sufficient",
+        evidenceKind: "terminal",
+        needsContributorAction: false,
+        summary: "Contributor-supplied terminal output already proves the changed behavior.",
+      },
+      state: "failed",
+      verdict: "needs-human",
+      result: "FAIL",
+      expectedStatusLabel: "status: needs maintainer proof decision",
+      preservedProof: true,
+    },
+    {
+      name: "absent receipt preserves proof override",
+      payload: null,
+      labels: ["clawsweeper:automerge", "proof: override"],
+      state: "absent",
+      verdict: "pass",
+    },
+  ];
+
+  for (const scenario of cases) {
+    const report = reportFor(scenario);
+    const comment = renderReviewCommentFromReport(report, "none");
+    const labelDetails = detailsBody(comment, "Label changes");
+    const markers = reviewAutomationMarkersFromReport(report);
+    assert.match(markers, new RegExp(`clawsweeper-verdict:${scenario.verdict}`), scenario.name);
+    assert.match(markers, new RegExp(`live_verification=${scenario.state}`), scenario.name);
+    if (scenario.verdict === "pass") {
+      assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/, scenario.name);
+    } else {
+      assert.doesNotMatch(markers, /clawsweeper-verdict:pass/, scenario.name);
+    }
+    if (scenario.result) {
+      assert.match(comment, new RegExp(`\\*\\*Result:\\*\\* ${scenario.result}`), scenario.name);
+    } else {
+      assert.doesNotMatch(comment, /\*\*Result:\*\*/, scenario.name);
+    }
+    if (scenario.state === "failed" || scenario.state === "malformed") {
+      assert.doesNotMatch(
+        comment,
+        /\| \*\*Overall readiness\*\* \| .*challenger crab \*\*\(6\/6\)\*\*/,
+        scenario.name,
+      );
+    }
+    if (scenario.expectedStatusLabel) {
+      assert.match(
+        labelDetails,
+        new RegExp(`add \`${scenario.expectedStatusLabel}\``),
+        scenario.name,
+      );
+      assert.doesNotMatch(labelDetails, /add `status: 📣 needs proof`/, scenario.name);
+    }
+    if (scenario.preservedProof) {
+      assert.match(labelDetails, /add `proof: sufficient`/, scenario.name);
+      assert.doesNotMatch(comment, /Blocked until real behavior proof is added/, scenario.name);
+    }
+  }
 });
 
 test("mock-only real behavior proof blocks repair markers", () => {

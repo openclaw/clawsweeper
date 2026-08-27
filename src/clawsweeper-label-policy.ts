@@ -13,6 +13,7 @@ import {
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
 } from "./repair/exact-review-guard-labels.js";
+import type { AttachedLiveVerification } from "./live-proof/verification.js";
 import type {
   FeatureShowcase,
   FeatureShowcaseStatus,
@@ -33,6 +34,7 @@ interface LabelPolicyDependencies {
   frontMatterValue: (markdown: string, key: string) => string | undefined;
   isAutomationReportAuthor: (author: string | undefined) => boolean;
   mergeRiskOptionsFromReport: (markdown: string) => MergeRiskOption[];
+  reportAttachedLiveVerification: (markdown: string) => AttachedLiveVerification;
   reportOverallCorrectness: (markdown: string) => OverallCorrectness;
   reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
   reportReviewFindings: (markdown: string) => ReviewFinding[];
@@ -46,6 +48,7 @@ export function createLabelPolicy({
   frontMatterValue,
   isAutomationReportAuthor,
   mergeRiskOptionsFromReport,
+  reportAttachedLiveVerification,
   reportOverallCorrectness,
   reportRealBehaviorProof,
   reportReviewFindings,
@@ -124,10 +127,16 @@ export function createLabelPolicy({
     });
   }
 
-  function proofNeedsContributorAction(proof: Pick<RealBehaviorProof, "status">): boolean {
+  function proofIsUnresolved(proof: Pick<RealBehaviorProof, "status">): boolean {
     return (
       proof.status === "missing" || proof.status === "mock_only" || proof.status === "insufficient"
     );
+  }
+
+  function proofNeedsContributorAction(
+    proof: Pick<RealBehaviorProof, "status" | "needsContributorAction">,
+  ): boolean {
+    return proofIsUnresolved(proof) && proof.needsContributorAction;
   }
 
   function hasBlockingReviewFindings(
@@ -151,7 +160,7 @@ export function createLabelPolicy({
   }
 
   function hasUnresolvedContributorWork(options: {
-    realBehaviorProof: Pick<RealBehaviorProof, "status">;
+    realBehaviorProof: Pick<RealBehaviorProof, "status" | "needsContributorAction">;
     reviewFindings: readonly Pick<ReviewFinding, "priority">[];
     securityReview: Pick<SecurityReview, "status">;
     mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
@@ -166,7 +175,7 @@ export function createLabelPolicy({
   }
 
   function isReadyForMaintainerLook(options: {
-    realBehaviorProof: Pick<RealBehaviorProof, "status">;
+    realBehaviorProof: Pick<RealBehaviorProof, "status" | "needsContributorAction">;
     reviewFindings: readonly Pick<ReviewFinding, "priority">[];
     securityReview: Pick<SecurityReview, "status">;
     mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
@@ -183,7 +192,7 @@ export function createLabelPolicy({
   }
 
   function prStatusLabelKind(options: {
-    realBehaviorProof: Pick<RealBehaviorProof, "status">;
+    realBehaviorProof: Pick<RealBehaviorProof, "status" | "needsContributorAction">;
     reviewFindings: readonly Pick<ReviewFinding, "priority">[];
     securityReview: Pick<SecurityReview, "status">;
     mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
@@ -195,11 +204,12 @@ export function createLabelPolicy({
   }): PrStatusLabelKind | null {
     const unresolvedWork = hasUnresolvedContributorWork(options);
     if (options.hasRepairLoopPauseLabel) return null;
-    if (options.hasAutomergeLabel) return "automerge_armed";
     if (options.hasRecentReReviewRequest) return "re_review_loop";
     if (options.hasRecentAuthorActivity && unresolvedWork) return "actively_grinding";
     if (proofNeedsContributorAction(options.realBehaviorProof)) return "needs_proof";
+    if (proofIsUnresolved(options.realBehaviorProof)) return "needs_maintainer_proof_decision";
     if (unresolvedWork) return "waiting_on_author";
+    if (options.hasAutomergeLabel) return "automerge_armed";
     if (isReadyForMaintainerLook(options)) return "ready_for_maintainer_look";
     return null;
   }
@@ -298,8 +308,14 @@ export function createLabelPolicy({
     currentLabels: readonly string[],
   ): PrStatusLabelKind | null {
     if (frontMatterValue(markdown, "type") !== "pull_request") return null;
+    const proof = reportRealBehaviorProof(markdown);
+    const attached = reportAttachedLiveVerification(markdown);
+    const statusProof =
+      attached.status === "failed" && attached.result.failure?.phase === "execution"
+        ? { status: "insufficient" as const, needsContributorAction: false }
+        : proof;
     return prStatusLabelKind({
-      realBehaviorProof: reportRealBehaviorProof(markdown),
+      realBehaviorProof: statusProof,
       reviewFindings: reportReviewFindings(markdown),
       securityReview: reportSecurityReview(markdown),
       mergeRiskOptions: mergeRiskOptionsFromReport(markdown),
@@ -323,6 +339,7 @@ export function createLabelPolicy({
       isPullRequest?: boolean;
       nextSteps?: readonly string[];
       proofStatus?: string;
+      needsContributorAction?: boolean;
       findingPriorities?: readonly number[];
       securityStatus?: string;
       mergeRiskOptions?: readonly Pick<MergeRiskOption, "category" | "recommended">[];
@@ -351,6 +368,9 @@ export function createLabelPolicy({
         status: REAL_BEHAVIOR_PROOF_STATUSES.has(options.proofStatus as RealBehaviorProofStatus)
           ? (options.proofStatus as RealBehaviorProofStatus)
           : "not_applicable",
+        needsContributorAction:
+          options.needsContributorAction ??
+          ["missing", "mock_only", "insufficient"].includes(options.proofStatus ?? ""),
       },
       reviewFindings: (options.findingPriorities ?? [])
         .filter((priority): priority is 0 | 1 | 2 | 3 => [0, 1, 2, 3].includes(priority))

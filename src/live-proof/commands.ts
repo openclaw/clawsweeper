@@ -19,7 +19,7 @@ export interface LiveProofCommandDependencies {
   repositoryProfileFor: (repo: string) => RepositoryProfile;
   reportLiveProofPlan: (markdown: string) => LiveProofPlan;
   parseLiveProofPlan: (value: unknown) => LiveProofPlan;
-  attach: Omit<LiveProofAttachDependencies, "fetchPullRequest">;
+  attach: Omit<LiveProofAttachDependencies, "fetchPullRequest" | "reportLiveProofPlan">;
   fetchPullRequest?: (repo: string, item: number) => Promise<LiveProofPullRequestState>;
   runner?: MediaProofCommandRunner;
   env?: NodeJS.ProcessEnv;
@@ -77,6 +77,7 @@ export function createLiveProofCommands(dependencies: LiveProofCommandDependenci
         {
           ...dependencies.attach,
           fetchPullRequest,
+          reportLiveProofPlan: dependencies.reportLiveProofPlan,
           ...(dependencies.runner ? { runner: dependencies.runner } : {}),
           ...(dependencies.env ? { env: dependencies.env } : {}),
           ...(dependencies.log ? { log: dependencies.log } : {}),
@@ -93,6 +94,7 @@ export function createLiveProofCommands(dependencies: LiveProofCommandDependenci
       {
         ...dependencies.attach,
         fetchPullRequest,
+        reportLiveProofPlan: dependencies.reportLiveProofPlan,
         ...(dependencies.runner ? { runner: dependencies.runner } : {}),
         ...(dependencies.env ? { env: dependencies.env } : {}),
         ...(dependencies.log ? { log: dependencies.log } : {}),
@@ -112,6 +114,7 @@ export function createLiveProofCommands(dependencies: LiveProofCommandDependenci
         {
           ...dependencies.attach,
           fetchPullRequest,
+          reportLiveProofPlan: dependencies.reportLiveProofPlan,
           ...(dependencies.runner ? { runner: dependencies.runner } : {}),
           ...(dependencies.env ? { env: dependencies.env } : {}),
           ...(dependencies.log ? { log: dependencies.log } : {}),
@@ -125,6 +128,7 @@ export function createLiveProofCommands(dependencies: LiveProofCommandDependenci
       {
         ...dependencies.attach,
         fetchPullRequest,
+        reportLiveProofPlan: dependencies.reportLiveProofPlan,
         ...(dependencies.runner ? { runner: dependencies.runner } : {}),
         ...(dependencies.env ? { env: dependencies.env } : {}),
         ...(dependencies.log ? { log: dependencies.log } : {}),

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createLabelPolicy } from "../dist/clawsweeper-label-policy.js";
 import { createLabelSynchronization } from "../dist/clawsweeper-label-sync.js";
 import {
   featureShowcaseLabelsForTest,
@@ -174,6 +175,64 @@ test("ClawSweeper PR status routes security owner acceptance to maintainer look"
   );
 });
 
+test("unresolved proof routes contributors and maintainers to distinct owners", () => {
+  assert.deepEqual(
+    prStatusLabelsForTest(["clawsweeper:automerge"], {
+      proofStatus: "insufficient",
+      needsContributorAction: true,
+    }),
+    ["clawsweeper:automerge", "status: 📣 needs proof"],
+  );
+  assert.deepEqual(
+    prStatusLabelsForTest(["clawsweeper:automerge"], {
+      proofStatus: "insufficient",
+      needsContributorAction: false,
+    }),
+    ["clawsweeper:automerge", "status: needs maintainer proof decision"],
+  );
+});
+
+test("execution-phase attached verification failure is maintainer-owned without erasing proof", () => {
+  const policy = createLabelPolicy({
+    asRecord: (value) => value as Record<string, unknown>,
+    frontMatterValue: (_markdown, key) =>
+      key === "type"
+        ? "pull_request"
+        : key === "reviewed_at"
+          ? "2026-08-27T12:00:00.000Z"
+          : undefined,
+    isAutomationReportAuthor: () => false,
+    mergeRiskOptionsFromReport: () => [],
+    reportAttachedLiveVerification: () => ({
+      status: "failed",
+      result: {
+        failure: {
+          phase: "execution",
+          reason: "reviewer-side verification environment did not start",
+        },
+      },
+    }),
+    reportOverallCorrectness: () => "patch is correct",
+    reportRealBehaviorProof: () => ({
+      status: "sufficient",
+      evidenceKind: "terminal",
+      needsContributorAction: false,
+      summary: "Contributor-supplied terminal output already proves the changed behavior.",
+    }),
+    reportReviewFindings: () => [],
+    reportSecurityReview: () => ({ status: "cleared", summary: "", concerns: [] }),
+    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
+    timestampMs: (value) => (value ? Date.parse(value) : null),
+  });
+
+  assert.equal(
+    policy.prStatusLabelKindFromReport("report", { comments: [], timeline: [] }, [
+      "clawsweeper:automerge",
+    ]),
+    "needs_maintainer_proof_decision",
+  );
+});
+
 test("ClawSweeper PR status labels preserve other label families", () => {
   assert.deepEqual(
     prStatusLabelsForTest(
@@ -201,13 +260,17 @@ test("ClawSweeper PR status labels respect priority ordering", () => {
   const automergeArmedLabel = prStatusLabelSchemeForTest().find(
     (label) => label.kind === "automerge_armed",
   )?.name;
+  const reReviewLabel = prStatusLabelSchemeForTest().find(
+    (label) => label.kind === "re_review_loop",
+  )?.name;
   assert.ok(automergeArmedLabel);
+  assert.ok(reReviewLabel);
   assert.deepEqual(
     prStatusLabelsForTest(["clawsweeper:automerge"], {
       proofStatus: "missing",
       hasRecentReReviewRequest: true,
     }),
-    ["clawsweeper:automerge", automergeArmedLabel],
+    ["clawsweeper:automerge", reReviewLabel],
   );
   assert.deepEqual(
     prStatusLabelsForTest(

@@ -1,4 +1,4 @@
-import type { JsonValue, LooseRecord } from "./json-types.js";
+import { asJsonObject, type JsonObject, type JsonValue, type LooseRecord } from "./json-types.js";
 import { clawsweeperCoAuthorKey, coAuthorKey } from "./co-author-credit.js";
 import {
   extractClawSweeperCommandLine,
@@ -795,6 +795,9 @@ export function automergeReadinessRepairReason(reason: JsonValue): string | null
   if (text === "merge state status is dirty") {
     return "PR has merge conflicts and needs a cloud rebase repair before automerge";
   }
+  if (text === "maintainer-approved pr head is behind base") {
+    return "PR head is behind base and needs a cloud rebase repair before automerge";
+  }
   return null;
 }
 
@@ -834,13 +837,24 @@ export function isCanonicalLandingNeedsHumanText(value: JsonValue) {
   );
 }
 
+export function missingProofNeedsHumanReason(value: JsonValue) {
+  const text = String(value ?? "");
+  return /missing (?:real behavior )?proof|missing proof|proof needs maintainer handling|missing.*proof/i.test(
+    text,
+  );
+}
+
 export function maintainerAutomergeOptInApprovesNeedsHuman({
   reason,
   commentCreatedAt,
   commentUpdatedAt,
   optInTime,
   replacementAutomergeRequestedBy,
+  liveVerification,
 }: LooseRecord) {
+  const verificationState = String(liveVerification ?? "");
+  if (!["absent", "passed"].includes(verificationState)) return false;
+  if (verificationState !== "absent" && missingProofNeedsHumanReason(reason)) return false;
   if (!isCanonicalLandingNeedsHumanText(reason)) return false;
   if (replacementAutomergeRequestedBy && maintainerCredit(replacementAutomergeRequestedBy)) {
     return true;
@@ -1885,6 +1899,15 @@ export function parseTrustedAutomation(
     });
   }
   if (verdict && ["pass", "approved", "no-changes"].includes(verdict.action)) {
+    const liveVerification = markerLiveVerificationState(verdict);
+    if (liveVerification === "failed" || liveVerification === "malformed") {
+      return trustedHumanReview({
+        author,
+        reason: `attached live verification is ${liveVerification}`,
+        marker: verdict,
+      });
+    }
+    if (liveVerification === "unknown") return null;
     return trustedMerge({
       author,
       reason: `structured ClawSweeper verdict: ${verdict.action}${markerReasonSuffix(verdict.attrs)}`,
@@ -3058,6 +3081,7 @@ function trustedRepair({ author, reason, marker = null }: LooseRecord) {
     review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
     expected_source_revision: marker?.attrs?.source_revision ?? null,
     finding_id: marker?.attrs?.finding ?? null,
+    live_verification: markerLiveVerificationState(marker),
   };
 }
 
@@ -3076,6 +3100,7 @@ function trustedMerge({ author, reason, marker = null }: LooseRecord) {
     review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
     expected_source_revision: marker?.attrs?.source_revision ?? null,
     finding_id: marker?.attrs?.finding ?? null,
+    live_verification: markerLiveVerificationState(marker),
   };
 }
 
@@ -3117,7 +3142,188 @@ function trustedHumanReview({ author, reason, marker = null }: LooseRecord) {
     review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
     expected_source_revision: marker?.attrs?.source_revision ?? null,
     finding_id: marker?.attrs?.finding ?? null,
+    live_verification: markerLiveVerificationState(marker),
   };
+}
+
+export type TrustedLiveVerificationState = "absent" | "passed" | "failed" | "malformed" | "unknown";
+
+function markerLiveVerificationState(marker: unknown): TrustedLiveVerificationState {
+  return liveVerificationState(asJsonObject(asJsonObject(marker).attrs).live_verification);
+}
+
+function liveVerificationState(value: unknown): TrustedLiveVerificationState {
+  if (typeof value !== "string") return "unknown";
+  return ["absent", "passed", "failed", "malformed"].includes(value)
+    ? (value as Exclude<TrustedLiveVerificationState, "unknown">)
+    : "unknown";
+}
+
+export interface TrustedExactHeadReview {
+  decision: "pass" | "repair" | "human" | "non_landing" | "legacy";
+  liveVerification: TrustedLiveVerificationState;
+  command: JsonObject | null;
+  commentCreatedAt: string | null;
+  commentUpdatedAt: string | null;
+}
+
+export function maintainerApprovalAppliesToExactHeadReview({
+  approvalValidated,
+  review,
+  optInTime,
+  replacementAutomergeRequestedBy,
+}: {
+  approvalValidated: boolean;
+  review: TrustedExactHeadReview | null;
+  optInTime: JsonValue;
+  replacementAutomergeRequestedBy: JsonValue;
+}) {
+  if (!approvalValidated || review?.decision !== "human") return false;
+  return maintainerAutomergeOptInApprovesNeedsHuman({
+    reason: review.command?.repair_reason,
+    commentCreatedAt: review.commentCreatedAt,
+    commentUpdatedAt: review.commentUpdatedAt,
+    optInTime,
+    replacementAutomergeRequestedBy,
+    liveVerification: review.liveVerification,
+  });
+}
+
+export function latestTrustedExactHeadReview({
+  comments,
+  headSha,
+  trustedAuthors,
+}: {
+  comments: JsonValue[];
+  headSha: string;
+  trustedAuthors: ReadonlySet<string>;
+}): TrustedExactHeadReview | null {
+  let latest: {
+    review: TrustedExactHeadReview;
+    publishedAt: number;
+    commentId: bigint | null;
+    tieBreaker: string;
+  } | null = null;
+  for (const comment of comments) {
+    const commentRecord = asJsonObject(comment);
+    const commentCreatedAt =
+      typeof commentRecord.created_at === "string" ? commentRecord.created_at : null;
+    const commentUpdatedAt =
+      typeof commentRecord.updated_at === "string" ? commentRecord.updated_at : null;
+    const command = asJsonObject(parseTrustedAutomation(comment, { trustedAuthors }));
+    let review: TrustedExactHeadReview | null = null;
+    if (String(command.expected_head_sha ?? "") === headSha) {
+      if (command.intent === "clawsweeper_auto_merge") {
+        review = {
+          decision: "pass",
+          liveVerification: liveVerificationState(command.live_verification),
+          command,
+          commentCreatedAt,
+          commentUpdatedAt,
+        };
+      } else if (command.intent === "clawsweeper_auto_repair") {
+        review = {
+          decision: "repair",
+          liveVerification: liveVerificationState(command.live_verification),
+          command,
+          commentCreatedAt,
+          commentUpdatedAt,
+        };
+      } else if (command.intent === "clawsweeper_needs_human") {
+        review = {
+          decision: "human",
+          liveVerification: liveVerificationState(command.live_verification),
+          command,
+          commentCreatedAt,
+          commentUpdatedAt,
+        };
+      } else if (command.intent) {
+        review = {
+          decision: "non_landing",
+          liveVerification: liveVerificationState(command.live_verification),
+          command,
+          commentCreatedAt,
+          commentUpdatedAt,
+        };
+      }
+    }
+
+    if (!review) {
+      const author = String((comment as LooseRecord)?.user?.login ?? "").toLowerCase();
+      const verdict = trustedAuthors.has(author)
+        ? clawsweeperMarker(String((comment as LooseRecord)?.body ?? ""), "verdict")
+        : null;
+      if (verdict && String(verdict.attrs.sha ?? "") === headSha) {
+        const liveVerification = markerLiveVerificationState(verdict);
+        review = {
+          decision:
+            ["pass", "approved", "no-changes"].includes(verdict.action) &&
+            liveVerification === "unknown"
+              ? "legacy"
+              : "non_landing",
+          liveVerification,
+          command: null,
+          commentCreatedAt,
+          commentUpdatedAt,
+        };
+      }
+    }
+    if (!review) continue;
+
+    const candidate = {
+      review,
+      publishedAt: trustedReviewPublicationTime(commentUpdatedAt, commentCreatedAt),
+      commentId: trustedReviewCommentId(commentRecord.id),
+      tieBreaker: [
+        String(commentRecord.user?.login ?? "").toLowerCase(),
+        String(commentRecord.body ?? ""),
+        commentUpdatedAt ?? "",
+        commentCreatedAt ?? "",
+      ].join("\0"),
+    };
+    if (!latest || compareTrustedExactHeadReviewCandidates(candidate, latest) > 0) {
+      latest = candidate;
+    }
+  }
+  return latest?.review ?? null;
+}
+
+function trustedReviewPublicationTime(updatedAt: string | null, createdAt: string | null) {
+  const updatedAtMs = Date.parse(updatedAt ?? "");
+  if (Number.isFinite(updatedAtMs)) return updatedAtMs;
+  const createdAtMs = Date.parse(createdAt ?? "");
+  return Number.isFinite(createdAtMs) ? createdAtMs : 0;
+}
+
+function trustedReviewCommentId(value: JsonValue): bigint | null {
+  const text = String(value ?? "").trim();
+  if (!/^\d+$/.test(text)) return null;
+  try {
+    return BigInt(text);
+  } catch {
+    return null;
+  }
+}
+
+function compareTrustedExactHeadReviewCandidates(
+  left: {
+    publishedAt: number;
+    commentId: bigint | null;
+    tieBreaker: string;
+  },
+  right: {
+    publishedAt: number;
+    commentId: bigint | null;
+    tieBreaker: string;
+  },
+) {
+  if (left.publishedAt !== right.publishedAt) return left.publishedAt - right.publishedAt;
+  if (left.commentId !== null && right.commentId !== null && left.commentId !== right.commentId) {
+    return left.commentId > right.commentId ? 1 : -1;
+  }
+  if (left.commentId !== null && right.commentId === null) return 1;
+  if (left.commentId === null && right.commentId !== null) return -1;
+  return left.tieBreaker.localeCompare(right.tieBreaker);
 }
 
 function clawsweeperMarker(body: string, kind: string) {

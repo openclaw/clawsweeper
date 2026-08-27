@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import YAML from "yaml";
 
-import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
+import { renderReviewCommentFromReport, reportLiveProofPlanForTest } from "../dist/clawsweeper.js";
 import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 import { LIVE_VERIFICATION_MARKER, REVIEW_SECTIONS } from "../dist/clawsweeper-policy.js";
 import type { LiveProofPlan, MediaProofCommandRunner } from "../dist/clawsweeper-types.js";
@@ -47,6 +47,8 @@ import { parseLiveProofManifest } from "../dist/live-proof/manifest.js";
 import {
   buildLiveVerificationResult,
   encodeLiveVerificationReportPayload,
+  liveProofPlanSha256,
+  parseAttachedLiveVerification,
   parseLiveVerificationResult,
   renderLiveVerificationCommentBlock,
   sanitizeUntrustedOutput,
@@ -2004,8 +2006,31 @@ test("terminal entry executes once and publishes only its final visible viewport
 
   const fixture = attachmentFixture();
   const report = readFileSync(fixture.recordPath, "utf8").replace(
-    "\n## Work Candidate",
-    `\n${LIVE_VERIFICATION_MARKER}\nResult: ${encodeLiveVerificationReportPayload(verification)}\n\n## Work Candidate`,
+    /## Live Proof[\s\S]*?\n## Work Candidate/,
+    `## Live Proof
+
+Status: recommended
+
+Surface: terminal
+
+Terminal completion: exit_zero
+
+Reason: The changed CLI output is visible.
+
+Payoff: progressive_output
+
+Payoff justification: The viewer sees the CLI output stream as the command progresses.
+
+Entry: ${command}
+
+Steps:
+
+- {"action":"expect_output","text":"FINAL_HELP_RESULT"}
+
+${LIVE_VERIFICATION_MARKER}
+Result: ${encodeLiveVerificationReportPayload(verification)}
+
+## Work Candidate`,
   );
   const comment = renderReviewCommentFromReport(report, "none");
   const publicOutput = comment.match(/```text\n([\s\S]*?)\n```/)?.[1];
@@ -2867,6 +2892,206 @@ test("live verification validation rejects inconsistent or extensible public res
   );
 });
 
+test("attached live verification requires one report-bound result", () => {
+  const plan = recommendedPlan();
+  const verification = validVerification(plan);
+  const identity = {
+    repository: verification.repo,
+    number: String(verification.item),
+    type: "pull_request",
+    pullHeadSha: verification.head_sha,
+  };
+  const block = `${LIVE_VERIFICATION_MARKER}\nResult: ${encodeLiveVerificationReportPayload(verification)}`;
+
+  assert.deepEqual(parseAttachedLiveVerification("Status: recommended", identity, plan), {
+    status: "absent",
+  });
+  assert.deepEqual(
+    parseAttachedLiveVerification(
+      `Status: prose mentions ${LIVE_VERIFICATION_MARKER} without owning the line`,
+      identity,
+      plan,
+    ),
+    { status: "absent" },
+  );
+  assert.deepEqual(parseAttachedLiveVerification(block, identity, plan), {
+    status: "passed",
+    result: verification,
+  });
+  assert.deepEqual(
+    parseAttachedLiveVerification(
+      `${LIVE_VERIFICATION_MARKER}\r\nResult: ${encodeLiveVerificationReportPayload(verification)}`,
+      identity,
+      plan,
+    ),
+    { status: "passed", result: verification },
+  );
+  assert.deepEqual(parseAttachedLiveVerification(`${block}\r\n\r\n${block}`, identity, plan), {
+    status: "malformed",
+  });
+  assert.deepEqual(
+    parseAttachedLiveVerification(block, { ...identity, pullHeadSha: "f".repeat(40) }, plan),
+    { status: "malformed" },
+  );
+  assert.deepEqual(
+    parseAttachedLiveVerification(`${LIVE_VERIFICATION_MARKER}\nResult: invalid!`, identity, plan),
+    { status: "malformed" },
+  );
+  const actionOnlyPayload = Buffer.from(
+    JSON.stringify({
+      ...verification,
+      steps: [{ action: "click", status: "completed", detail: "clicked save" }],
+    }),
+    "utf8",
+  ).toString("base64url");
+  assert.deepEqual(
+    parseAttachedLiveVerification(
+      `${LIVE_VERIFICATION_MARKER}\nResult: ${actionOnlyPayload}`,
+      identity,
+      plan,
+    ),
+    { status: "malformed" },
+  );
+
+  for (const changedPlan of [
+    { ...plan, surface: "terminal" as const },
+    { ...plan, entry: "/new-settings" },
+    { ...plan, steps: [{ action: "expect_text" as const, text: "Updated" }] },
+  ]) {
+    assert.deepEqual(parseAttachedLiveVerification(block, identity, changedPlan), {
+      status: "malformed",
+    });
+  }
+
+  const { plan_sha256: _planSha256, ...legacyVerification } = verification;
+  const legacyPayload = Buffer.from(JSON.stringify(legacyVerification), "utf8").toString(
+    "base64url",
+  );
+  assert.deepEqual(
+    parseAttachedLiveVerification(
+      `${LIVE_VERIFICATION_MARKER}\nResult: ${legacyPayload}`,
+      identity,
+      plan,
+    ),
+    { status: "malformed" },
+  );
+});
+
+test("attached live verification requires one ordered outcome per exact plan step", () => {
+  const plan: LiveProofPlan = {
+    ...recommendedPlan(),
+    entry: "/settings",
+    steps: [
+      { action: "goto", path: "/settings" },
+      { action: "click", target: "button#save" },
+      { action: "expect_text", text: "Saved" },
+    ],
+  };
+  const verification = buildLiveVerificationResult({
+    repo: "example/repo",
+    item: 42,
+    headSha: HEAD,
+    plan,
+    driveStatus: "completed",
+    stepLog: [
+      { action: "goto", status: "completed", detail: "opened settings" },
+      { action: "click", status: "completed", detail: "clicked save" },
+      {
+        action: "expect_text",
+        status: "completed",
+        detail: "observed saved confirmation",
+        presentAtStart: false,
+        satisfied: true,
+      },
+    ],
+    output: "",
+    verifiedAt: "2026-08-28T00:00:00.000Z",
+  });
+  const identity = {
+    repository: verification.repo,
+    number: String(verification.item),
+    type: "pull_request",
+    pullHeadSha: verification.head_sha,
+  };
+  const attached = (steps: typeof verification.steps) =>
+    parseAttachedLiveVerification(
+      `${LIVE_VERIFICATION_MARKER}\nResult: ${encodeLiveVerificationReportPayload({
+        ...verification,
+        steps,
+      })}`,
+      identity,
+      plan,
+    );
+
+  assert.deepEqual(attached(verification.steps), { status: "passed", result: verification });
+  for (const scenario of [
+    { name: "forged surface", result: { ...verification, surface: "terminal" as const } },
+    { name: "forged entry", result: { ...verification, entry: "/admin" } },
+  ]) {
+    assert.deepEqual(
+      parseAttachedLiveVerification(
+        `${LIVE_VERIFICATION_MARKER}\nResult: ${encodeLiveVerificationReportPayload(scenario.result)}`,
+        identity,
+        plan,
+      ),
+      { status: "malformed" },
+      scenario.name,
+    );
+  }
+  for (const scenario of [
+    {
+      name: "omitted",
+      steps: [verification.steps[0]!, verification.steps[2]!],
+    },
+    {
+      name: "reordered",
+      steps: [verification.steps[1]!, verification.steps[0]!, verification.steps[2]!],
+    },
+    {
+      name: "replaced",
+      steps: [
+        verification.steps[0]!,
+        { ...verification.steps[1]!, subject: "button#publish" },
+        verification.steps[2]!,
+      ],
+    },
+    {
+      name: "extra",
+      steps: [...verification.steps, verification.steps[1]!],
+    },
+  ]) {
+    assert.deepEqual(attached(scenario.steps), { status: "malformed" }, scenario.name);
+  }
+});
+
+test("live-proof attach rejects a receipt for an older same-head plan", async () => {
+  const fixture = attachmentFixture();
+  writeFileSync(
+    fixture.recordPath,
+    readFileSync(fixture.recordPath, "utf8").replace("Entry: /settings", "Entry: /new-settings"),
+    "utf8",
+  );
+  const commands: string[] = [];
+
+  await assert.rejects(
+    attachLiveProof(
+      { bundleDir: fixture.bundleDir, recordPath: fixture.recordPath, dryRun: false },
+      attachDependencies({
+        runner: mediaRunner(commands),
+        fetchPullRequest: async () => {
+          throw new Error("plan mismatch must fail before fetching the pull request");
+        },
+        upsertReviewComment: () => {
+          throw new Error("plan mismatch must not publish");
+        },
+        logs: fixture.logs,
+      }),
+    ),
+    /live proof plan does not match/,
+  );
+  assert.equal(commands.length, 0);
+});
+
 test("live-proof attach refuses stale heads before upload or publication", async () => {
   const fixture = attachmentFixture();
   const commands: string[] = [];
@@ -3042,7 +3267,7 @@ test("browser verification publishes sanitized step outcomes and never document 
   assert.match(rendered, /ˋˋˋ|‹now›|claw​sweeper-review/);
 });
 
-test("terminal verification keeps sanitized captured output and omits empty assertions", () => {
+test("completed action-only verification cannot pass without an observed outcome", () => {
   const result = buildLiveVerificationResult({
     repo: "example/repo",
     item: 42,
@@ -3060,10 +3285,76 @@ test("terminal verification keeps sanitized captured output and omits empty asse
 
   const rendered = renderLiveVerificationCommentBlock(result);
   assert.match(rendered, /\*\*Command:\*\* `clawsweeper --help`/);
-  assert.match(rendered, /\*\*Result:\*\* PASS \(completed\)/);
+  assert.equal(result.overall_pass, false);
+  assert.deepEqual(result.failure, {
+    phase: "execution",
+    reason:
+      "live verification completed without a satisfied expect_text or expect_output observation",
+  });
+  assert.match(rendered, /\*\*Result:\*\* FAIL \(completed\)/);
+  assert.match(rendered, /without a satisfied expect_text or expect_output observation/);
   assert.match(rendered, /```text\nUsage: clawsweeper \[options\]/);
   assert.match(rendered, /ˋˋˋ|‹\/details›|claw​sweeper-review/);
   assert.doesNotMatch(rendered, /\*\*Assertions:\*\*|<\/details>|<!-- clawsweeper-review/);
+});
+
+test("every expected outcome must be satisfied before live verification passes", () => {
+  const plan: LiveProofPlan = {
+    ...recommendedPlan("terminal"),
+    entry: "clawsweeper verify",
+    steps: [
+      { action: "expect_output", text: "ready" },
+      { action: "expect_text", text: "finished" },
+    ],
+  };
+  const stepLog = [
+    {
+      action: "expect_output",
+      status: "completed",
+      detail: "observed",
+      presentAtStart: false,
+      satisfied: true,
+    },
+    {
+      action: "expect_text",
+      status: "completed",
+      detail: "outcome omitted",
+      presentAtStart: false,
+    },
+  ] as unknown as Parameters<typeof buildLiveVerificationResult>[0]["stepLog"];
+  const result = buildLiveVerificationResult({
+    repo: "example/repo",
+    item: 42,
+    headSha: HEAD,
+    plan,
+    driveStatus: "completed",
+    stepLog,
+    output: "ready",
+    verifiedAt: "2026-08-27T00:00:00.000Z",
+  });
+
+  assert.equal(result.overall_pass, false);
+  assert.deepEqual(result.failure, {
+    phase: "execution",
+    reason:
+      "live verification completed without every expect_text or expect_output observation satisfied",
+  });
+
+  const forgedPass = { ...result, failure: undefined, overall_pass: true };
+  const payload = Buffer.from(JSON.stringify(forgedPass), "utf8").toString("base64url");
+  assert.deepEqual(
+    parseAttachedLiveVerification(
+      `${LIVE_VERIFICATION_MARKER}\nResult: ${payload}`,
+      {
+        repository: result.repo,
+        number: String(result.item),
+        type: "pull_request",
+        pullHeadSha: result.head_sha,
+      },
+      plan,
+    ),
+    { status: "malformed" },
+  );
 });
 
 test("terminal verification preserves legacy unobserved assertion labels", () => {
@@ -3247,6 +3538,60 @@ test("live-proof maintenance syncs the marker-backed comment only after publicat
 
   assert.equal(result, "detached");
   assert.deepEqual(calls, ["hydrate", "detach", "publish", "comment"]);
+});
+
+test("live-proof comment sync requires the exact published bundle result", () => {
+  const fixture = recordedAttachmentFixture();
+  writeFileSync(
+    join(fixture.bundleDir, "live-verification.json"),
+    JSON.stringify({ ...validVerification(), verified_at: "2026-08-17T12:00:01.000Z" }),
+    "utf8",
+  );
+
+  assert.throws(
+    () =>
+      syncLiveProofComment(
+        { bundleDir: fixture.bundleDir, recordPath: fixture.recordPath },
+        attachDependencies({
+          runner: mediaRunner([]),
+          fetchPullRequest: async () => {
+            throw new Error("sync must not fetch the pull request");
+          },
+          upsertReviewComment: () => {
+            throw new Error("mismatched verification must not publish");
+          },
+          logs: fixture.logs,
+        }),
+      ),
+    /does not match the proof bundle/,
+  );
+});
+
+test("live-proof comment sync rejects a receipt for an older same-head plan", () => {
+  const fixture = recordedAttachmentFixture();
+  writeFileSync(
+    fixture.recordPath,
+    readFileSync(fixture.recordPath, "utf8").replace("Entry: /settings", "Entry: /new-settings"),
+    "utf8",
+  );
+
+  assert.throws(
+    () =>
+      syncLiveProofComment(
+        { bundleDir: fixture.bundleDir, recordPath: fixture.recordPath },
+        attachDependencies({
+          runner: mediaRunner([]),
+          fetchPullRequest: async () => {
+            throw new Error("sync must not fetch the pull request");
+          },
+          upsertReviewComment: () => {
+            throw new Error("plan mismatch must not publish");
+          },
+          logs: fixture.logs,
+        }),
+      ),
+    /live proof plan does not match/,
+  );
 });
 
 test("live-proof detach dry-run prints mutations without changing the record", () => {
@@ -3519,12 +3864,13 @@ function validManifest() {
   };
 }
 
-function validVerification() {
+function validVerification(plan = recommendedPlan()) {
   return {
     schema_version: 1 as const,
     repo: "example/repo",
     item: 42,
     head_sha: HEAD,
+    plan_sha256: liveProofPlanSha256(plan),
     surface: "browser" as const,
     entry: "/settings",
     drive_status: "completed" as const,
@@ -4240,6 +4586,7 @@ function attachDependencies(options: {
     },
     runner: options.runner,
     fetchPullRequest: options.fetchPullRequest,
+    reportLiveProofPlan: reportLiveProofPlanForTest,
     frontMatterValue,
     sectionValue,
     replaceSectionValue,
