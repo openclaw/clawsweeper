@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { reviewMergeBase } from "./pr-review-evidence.js";
 
 const MAX_REVIEW_FILES = 80;
 const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -57,6 +58,7 @@ export function ensureReviewTreeCommit({
       cwd: targetDir,
       env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
       stdio: "ignore",
+      timeout: 30_000,
     },
   );
   return !fetched.error && fetched.status === 0 && gitCommitExists(targetDir, sha);
@@ -89,6 +91,56 @@ export function ensurePullRequestReviewHead({
       destinationRef,
     })
   );
+}
+
+export function hydratePullRequestReviewHistory(options: {
+  targetDir: string;
+  baseSha: string;
+  headSha: string;
+  itemNumber: number;
+  testMergeSha?: string;
+}): string | null {
+  const { targetDir, baseSha, headSha, itemNumber, testMergeSha } = options;
+  if (
+    !GIT_OBJECT_ID.test(baseSha) ||
+    !GIT_OBJECT_ID.test(headSha) ||
+    !Number.isSafeInteger(itemNumber) ||
+    itemNumber <= 0
+  )
+    return null;
+  if (reviewMergeBase(targetDir, baseSha, headSha).status === "unavailable") {
+    // Existing tree hydration may have fetched only the PR tip. Bound history, not
+    // the reviewed identity; failure remains explicit in the local evidence reader.
+    spawnSync(
+      "git",
+      [
+        "fetch",
+        "--filter=blob:none",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--recurse-submodules=no",
+        "--depth=256",
+        "origin",
+        baseSha,
+        headSha,
+      ],
+      {
+        cwd: targetDir,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+        stdio: "ignore",
+        timeout: 30_000,
+      },
+    );
+  }
+  if (testMergeSha && GIT_OBJECT_ID.test(testMergeSha)) {
+    ensureReviewTreeCommit({
+      targetDir,
+      sha: testMergeSha,
+      sourceRef: `refs/pull/${itemNumber}/merge`,
+      destinationRef: `refs/clawsweeper/review-cache/merge-${itemNumber}`,
+    });
+  }
+  return reviewMergeBase(targetDir, baseSha, headSha).sha;
 }
 
 function reviewTreeMatchesCommit({ targetDir, sha }: { targetDir: string; sha: string }): boolean {

@@ -8294,10 +8294,18 @@ test("changed validation retries one transient check:changed failure", () => {
     os.tmpdir(),
     `clawsweeper-validation-attempt-${process.pid}-${Date.now()}.txt`,
   );
-  const cwd = gitPackageFixture({
-    "check:changed":
-      "node -e \"const fs=require('fs'); const file=process.env.CLAWSWEEPER_TEST_ATTEMPT_FILE; const count=fs.existsSync(file)?Number(fs.readFileSync(file,'utf8')):0; fs.writeFileSync(file, String(count+1)); if (count===0) { console.error('transient changed gate failure'); process.exit(1); }\"",
-  });
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.writeFileSync(
+    path.join(cwd, "check.js"),
+    [
+      "const fs = require('node:fs');",
+      "const file = process.env.CLAWSWEEPER_TEST_ATTEMPT_FILE;",
+      "const count = fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) : 0;",
+      "fs.writeFileSync(file, String(count + 1));",
+      "if (count === 0) { console.error('transient changed gate failure'); process.exit(1); }",
+      "",
+    ].join("\n"),
+  );
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "initial");
   attachOrigin(cwd);
@@ -8308,13 +8316,16 @@ test("changed validation retries one transient check:changed failure", () => {
   process.env.CLAWSWEEPER_TEST_ATTEMPT_FILE = marker;
   try {
     assert.deepEqual(
-      runAllowedValidationCommands(
-        ["pnpm check:changed"],
-        cwd,
-        validationOptions("openclaw/openclaw"),
+      withPinnedBasePnpm(() =>
+        runAllowedValidationCommands(
+          ["pnpm check:changed"],
+          cwd,
+          validationOptions("openclaw/openclaw"),
+        ),
       ),
       ["pnpm check:changed"],
     );
+    assert.equal(fs.readFileSync(marker, "utf8"), "2");
   } finally {
     restoreEnv("CLAWSWEEPER_VALIDATION_RETRIES", previous);
     restoreEnv("CLAWSWEEPER_TEST_ATTEMPT_FILE", previousMarker);
@@ -8887,7 +8898,7 @@ function linuxValidationContainmentAvailable() {
 }
 
 function withPinnedBasePnpm(callback) {
-  // Dependency-free pinned-base fixtures skip setup and must not resolve host pnpm.
+  // Dependency-free fixtures skip setup and must not resolve host pnpm.
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-pinned-base-pnpm-"));
   const pnpmPath = path.join(binDir, "pnpm.cjs");
   fs.writeFileSync(

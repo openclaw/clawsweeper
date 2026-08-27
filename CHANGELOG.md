@@ -19,6 +19,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- PR reviews now separate introduced changes from main-only drift, verify test-merge parents, and avoid stored-data warnings for ordinary Markdown prose beside source.
+- Review and repair fetches preserve the target branch ref when Git pruning is enabled.
 - Default close-mode apply runs now requeue up to five exact re-reviews for records whose close was blocked by source drift or an unverified-checkout review, so stale backlog records converge to closeable instead of being skipped by every cursor sweep.
 - Live verification now publishes a sanitized, capped dev-server log tail when browser startup fails, and detects a start command that exits before its URL becomes reachable without waiting for the readiness timeout.
 - Live verification now installs a missing target package manager on demand after execution is approved, publishes installer failures as verification results, and guides plans toward stable assertions the run can satisfy.

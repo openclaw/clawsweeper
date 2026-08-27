@@ -760,6 +760,7 @@ export interface ReviewContextLedgerEntry {
 }
 
 export interface ReviewPromptRuntimeHints {
+  targetDir?: string;
   proofScratchDir?: string;
   mediaProofManifestPath?: string;
   mediaProofSummary?: string;

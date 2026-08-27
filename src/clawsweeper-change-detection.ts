@@ -100,7 +100,7 @@ export function dataModelChangeFromContext(repo: string, context: ItemContext): 
     }
 
     for (const candidate of candidates) {
-      if (isDocsPath(candidate)) {
+      if (isDataModelDocumentationPath(candidate)) {
         if (patch !== null && !configSurfacePatchIsTruncated(patch)) {
           dataModelSurfacesFromPatch(candidate, lines, { docsOnly: true }).forEach((surface) =>
             surfaces.add(surface),
@@ -458,7 +458,7 @@ function dataModelSurfacesFromPatch(
     add("persistent cache schema");
   }
   if (
-    /\b(?:embedding|vector|collection|dimension|metadata|row[_-]?id|document[_-]?id|chunk[_-]?id|similarity[_-]?index)\b/i.test(
+    /\b(?:embedding(?:[_-]?dimension)?|vector(?:[_-]?dimension)?|collection|dimension|metadata|row[_-]?id|document[_-]?id|chunk[_-]?id|similarity[_-]?index)\b/i.test(
       text,
     )
   ) {
@@ -471,14 +471,29 @@ function dataModelLineLooksSemantic(line: string, options: { docsOnly: boolean }
   const trimmed = line.trim();
   if (!trimmed || /^\/\/|^\/\*|^\*|^<!--/.test(trimmed)) return false;
   if (!options.docsOnly) return true;
-  return /\b(?:schema|migration|migrate|upgrade|backfill|database|sqlite|postgres|durable object|storage|cache|serialized|json state|embedding|vector|metadata|doctor|repair)\b/i.test(
-    trimmed,
+  // Markdown lives beside runtime code too. Words such as "session" or
+  // "metadata" describe behavior, not necessarily a changed stored contract.
+  return (
+    /\b(?:CREATE|ALTER|DROP)\s+(?:TABLE|INDEX|VIEW|COLUMN)\b|\bPRAGMA\s+user_version\b/i.test(
+      trimmed,
+    ) ||
+    /^["'`]?(?:schema[_-]?version|cache[_-]?(?:key|version|schema|namespace)|embedding[_-]?dimension|vector[_-]?dimension|row[_-]?id|document[_-]?id|chunk[_-]?id)["'`]?\s*:/i.test(
+      trimmed,
+    ) ||
+    /\b(?:serialized|persisted|storage|database|cache|vector|embedding)\s+(?:data\s+)?(?:format|schema|layout|identity|namespace)\b/i.test(
+      trimmed,
+    )
   );
 }
 
 function isLikelyOpenClawDataModelPath(path: string): boolean {
   if (!path || isDocsPath(path)) return false;
+  if (isMarkdownConfigSurfacePath(path)) return /(?:^|\/)HOOK\.md$/.test(path);
   return Boolean(dataModelPathHint(path)) || /\.(?:sql|sqlite|db|prisma)$/.test(path);
+}
+
+function isDataModelDocumentationPath(path: string): boolean {
+  return isDocsPath(path) || isMarkdownConfigSurfacePath(path);
 }
 
 function dataModelPathHint(path: string): string {

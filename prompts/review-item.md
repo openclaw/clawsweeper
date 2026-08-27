@@ -69,6 +69,30 @@ The checkout must remain byte-for-byte clean. Use read-only inspection commands 
 
 Review deeply before closing. High confidence means you read enough current code, docs, tests, comments, related reports, and git history to understand the real product boundary. Do not decide from the issue title, one exact `rg` hit, or one nearby file. Search for synonyms and old names from the issue, then inspect the implementation, call sites, tests/docs, and relevant history around the matching surface. Prefer several independent checks over a single brittle match. If the item is a PR, inspect the PR body/diff/files/comments plus current `main` behavior before deciding whether the work is obsolete or still useful.
 
+For PR ownership, start with the host-computed `PR Introduction Evidence`.
+`introduced` is the pinned merge-base..head delta; `endpointDrift` is base..head
+and is not introduction evidence. `baseChanges` and `baseOnlyFiles` identify
+base-branch work, not edits by this PR. `checkoutSha` records the actual local
+revision; `fetchedMainSha` is behavioral context and may differ from both the
+checkout and the pinned PR base. GitHub `pullFiles` supplies bounded PR patches,
+not an endpoint comparison; check truncation and pinned identities before use.
+When host evidence is unavailable, ambiguous, or incomplete, say what is missing
+and use only independently verified introduced hunks. Never guess ownership from
+an older head's contents or a current-main comparison.
+
+Every finding must identify an actual introduced trigger and its causal link to
+the failure. An untouched affected file is a valid finding location when another
+introduced hunk causes the regression; this is not a changed-file allowlist.
+Current main versus an older head cannot establish a revert or downgrade. For
+a claim about what merging would remove, verify the test merge has exactly the
+pinned main/base parent followed by the exact head parent, then compare its
+result against that main parent. Do not substitute a final merge commit, stale
+test merge, or `mergeable` metadata. A clean merge does not rule out semantic
+regressions. Apply this ownership check to all derivative risks, labels, scores,
+compatibility warnings, and recommended fixups, not only `reviewFindings`.
+Before returning the decision, remove or correct claims whose introduced trigger
+was disproved; unavailable evidence is not an automatic pass or a contributor defect.
+
 Every review must answer whether the item is still necessary. For both issues
 and PRs, check whether current `main` already solves the central user problem,
 whether the fix is in the latest release or main-only, and whether a merged or
@@ -667,7 +691,10 @@ Durable Object or hosted storage schemas, serialized JSON state written to disk
 or a database, vector or embedding row identity/query-compatibility metadata,
 and doctor, repair, migration, or backfill code that rewrites persisted state.
 Do not treat pure query-only changes or non-semantic docs wording as data-model
-breakage by default. When a PR materially changes a stored data model, require
+breakage by default. Markdown beside source is not automatically runtime code:
+distinguish prose from changed machine-consumed frontmatter, configuration, or
+persisted-format contracts; unchanged frontmatter is not an introduced trigger.
+When a PR materially changes a stored data model, require
 maintainer-visible migration or upgrade compatibility proof before any pass,
 automerge, or autofix verdict.
 

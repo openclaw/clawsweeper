@@ -947,6 +947,7 @@ test("local exact review explains when GitHub item is not open", () => {
   try {
     execFileSync("git", ["init", "--bare", origin], { stdio: "ignore" });
     execFileSync("git", ["init", targetDir], { stdio: "ignore" });
+    execFileSync("git", ["config", "--local", "fetch.prune", "true"], { cwd: targetDir });
     execFileSync("git", ["config", "user.email", "clawsweeper@example.com"], { cwd: targetDir });
     execFileSync("git", ["config", "user.name", "ClawSweeper Test"], { cwd: targetDir });
     writeFileSync(join(targetDir, "README.md"), "base\n");
@@ -1040,6 +1041,7 @@ test("local exact review selects PATH Codex instead of the Desktop app binary", 
   try {
     execFileSync("git", ["init", "--bare", origin], { stdio: "ignore" });
     execFileSync("git", ["init", targetDir], { stdio: "ignore" });
+    execFileSync("git", ["config", "--local", "fetch.prune", "true"], { cwd: targetDir });
     execFileSync("git", ["config", "user.email", "clawsweeper@example.com"], { cwd: targetDir });
     execFileSync("git", ["config", "user.name", "ClawSweeper Test"], { cwd: targetDir });
     writeFileSync(join(targetDir, "README.md"), "base\n");

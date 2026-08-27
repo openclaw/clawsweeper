@@ -108,11 +108,44 @@ merge-risk options, full review comments, labels, evidence, optional rank-up
 moves, the rank legend, workflow notes, and review history.
 
 For OpenClaw PRs, stored-data warnings flag possible persistence changes in
-production source or semantic documentation changes, not setup in test,
-fixture, or example source paths. Renames retain evidence from either production
-path. Missing, empty, or truncated patches on likely production persistence paths,
-and truncated file lists, still produce conservative unknown warnings. The
-warning requests review; it does not prove a persisted contract changed.
+production source or documented storage contracts, not setup in test, fixture,
+or example source paths. Markdown beside source is still documentation: ordinary
+prose mentioning sessions or metadata is not a stored-format change. Explicit
+storage formats, SQL DDL, and structured storage keys (including frontmatter)
+remain evidence. Renames retain evidence from either production path. Missing,
+empty, or truncated patches on likely production persistence paths or hook
+descriptors, and truncated file lists, still produce conservative unknown
+warnings. The warning requests review; it does not prove a persisted contract
+changed. This classification does not change the separate `docs/` exemption for
+contributor behavior proof.
+
+## PR Introduction Evidence
+
+Before model execution, the host assembles bounded local Git evidence for the
+pinned PR base and head. The reviewer receives the actual checkout SHA separately
+from fetched main, the unique merge base, introduced files and patch from
+merge-base to head, base-branch changes, and a separately labeled base-to-head
+endpoint comparison. A file that differs only because main advanced is not
+automatically a PR edit. Findings in untouched files remain valid when an
+introduced hunk elsewhere causes the failure; risks, labels, scores, and fixups
+must use that same ownership boundary.
+
+The existing PR hydration path may fetch up to 256 commits of ancestry per tip
+and the pinned open-PR test merge before restricted review. The evidence reader
+itself cannot fetch objects or run external diff drivers. It bounds each Git read
+to 1 MiB and five seconds, lists to 80 paths, and the introduced patch to 24,000
+characters. Missing blobs, incomplete shallow ancestry, multiple merge bases,
+and truncated evidence are explicit limitations, never inferred ownership or an
+automatic pass.
+
+Test-merge evidence is accepted only for an open, unmerged PR and a local commit
+with exactly the pinned base then head as its two parents. Its result is compared
+with that base parent, which may differ from newly fetched main. Stale test
+merges and final merge commits cannot establish what this merge would change.
+A clean merge does not rule out semantic regressions.
+
+This is reviewer input, not a new persistent decision or repair contract.
+OpenClaw Bay is unaffected: no observer fields, routes, or controls change.
 
 Security defaults to `None.` when there are no concerns. Do not spend public
 space explaining why an uneventful security pass is uneventful.

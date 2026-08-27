@@ -18,6 +18,7 @@ import {
 } from "./clawsweeper-media-proof.js";
 import { DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS } from "./clawsweeper-policy.js";
 import { safeOutputTail, trimMiddle } from "./clawsweeper-text.js";
+import { buildPullRequestReviewEvidence } from "./pr-review-evidence.js";
 import type {
   Decision,
   DecisionNormalizationItem,
@@ -100,7 +101,12 @@ export function createReviewRuntime({
     requireSafeGitBranchName(targetBranch, "target branch");
     run(
       "git",
-      ["fetch", "origin", `${targetBranch}:refs/remotes/origin/${targetBranch}`, "--depth=50"],
+      [
+        "fetch",
+        "origin",
+        `refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
+        "--depth=50",
+      ],
       {
         cwd: openclawDir,
       },
@@ -442,6 +448,18 @@ export function createReviewRuntime({
   ): ReviewPromptBuild {
     const prompt = reviewPromptTemplate();
     const contextJson = contextJsonForPrompt(context);
+    const introductionEvidence =
+      item.kind === "pull_request"
+        ? `\n\n## PR Introduction Evidence\n\n\`\`\`json\n${JSON.stringify(
+            buildPullRequestReviewEvidence({
+              ...(runtimeHints.targetDir ? { targetDir: runtimeHints.targetDir } : {}),
+              context,
+              mainSha: git.mainSha,
+            }),
+            null,
+            2,
+          )}\n\`\`\`\n`
+        : "";
     const schema = reviewDecisionSchemaText();
     const proofScratchDir = runtimeHints.proofScratchDir?.trim();
     const maturityHelperPath = proofScratchDir
@@ -473,7 +491,7 @@ ${additionalPrompt.trim()}
 - Author association: ${item.authorAssociation}
 - Created at: ${item.createdAt}
 - Updated at: ${item.updatedAt}
-- Current main SHA: ${git.mainSha}
+- Fetched target branch SHA (not necessarily the checkout revision): ${git.mainSha}
 - Latest release: ${git.latestRelease?.tagName ?? "unknown"} (${git.latestRelease?.sha ?? "unknown sha"})
 
 ## Runtime Capabilities
@@ -483,6 +501,7 @@ ${additionalPrompt.trim()}
 - The target checkout is read-only for review. Do not modify repository files; use the scratch directory or /tmp for downloaded evidence and generated video stills/contact sheets.
 - A token-light maturity helper is available at ${maturityHelperPath}. For issue maturity labels, first run \`node "$CLAWSWEEPER_PROOF_SCRATCH_DIR/maturity-stable-shortlist.mjs"\` from the target checkout and compare the issue against that shortlist; read the full scorecard or taxonomy only if the shortlist is ambiguous.
 ${mediaProofPrompt}
+${introductionEvidence}
 
 ## GitHub Context
 
@@ -496,7 +515,7 @@ ${extra}
       telemetry: {
         promptChars: text.length,
         staticPromptChars: prompt.length,
-        contextChars: contextJson.length,
+        contextChars: contextJson.length + introductionEvidence.length,
         schemaChars: schema.length,
         additionalPromptChars: additionalPrompt.trim().length,
       },
@@ -985,13 +1004,10 @@ ${extra}
     const outputPath = join(options.workDir, `${options.item.number}.json`);
     const prompt =
       options.prompt ??
-      buildReviewPrompt(
-        options.item,
-        options.context,
-        options.git,
-        options.additionalPrompt,
-        mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
-      ).text;
+      buildReviewPrompt(options.item, options.context, options.git, options.additionalPrompt, {
+        ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
+        targetDir: options.openclawDir,
+      }).text;
     writeFileSync(promptPath, prompt, "utf8");
     const codexEnv = untrustedCodexEnv({
       ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,

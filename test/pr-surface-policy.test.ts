@@ -273,6 +273,74 @@ Corrects missing-tool installation guidance and adds a subprocess regression.
   assert.doesNotMatch(comment, /Persistent data-model change detected|### Stored data model/);
 });
 
+test("bundled hook prose does not become a persistence warning or migration gate", () => {
+  const fixture = JSON.parse(
+    readFileSync(new URL("./fixtures/persistence-classifier-130734.json", import.meta.url), "utf8"),
+  );
+  const detection = dataModelChangeFromPullFilesForTest({ pullFiles: fixture.pullFiles });
+  assert.deepEqual(detection, { change: false, surfaces: [] });
+  const report = `${reportFrontMatter({
+    repository: "openclaw/openclaw",
+    type: "pull_request",
+    number: "130734",
+    url: fixture.pullRequest,
+    decision: "keep_open",
+    close_reason: "none",
+    work_candidate: "none",
+    review_status: "complete",
+    confidence: "high",
+    labels: JSON.stringify(["clawsweeper:automerge"]),
+    pull_head_sha: fixture.headSha,
+    real_behavior_proof_status: "sufficient",
+    real_behavior_proof_needs_contributor_action: "false",
+    data_model_change: String(detection.change),
+    data_model_surfaces: JSON.stringify(detection.surfaces),
+  })}\n\n## Summary\n\nClarifies hook guidance.\n\n## Review Findings\n\nOverall correctness: patch is correct\n\nOverall confidence: 0.9\n\nFull review comments:\n\n- none\n`;
+  assert.doesNotMatch(
+    renderReviewCommentFromReport(report, "none"),
+    /Persistent data-model change detected|### Stored data model/,
+  );
+  const withoutStorageFields = report.replace(/^data_model_(?:change|surfaces):.*\n/gm, "");
+  assert.deepEqual(
+    reviewAutomationMarkersFromReport(report),
+    reviewAutomationMarkersFromReport(withoutStorageFields),
+  );
+  assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+  assert.match(
+    reviewAutomationMarkersFromReport(
+      report.replace("data_model_change: false", "data_model_change: true"),
+    ),
+    /clawsweeper-verdict:needs-human/,
+  );
+});
+
+test("Markdown persistence contracts and structured frontmatter remain detectable", () => {
+  for (const file of [
+    {
+      filename: "src/storage/README.md",
+      patch: "@@\n+The serialized format now includes a revision field.",
+    },
+    {
+      filename: "src/hooks/bundled/session-memory/HOOK.md",
+      patch: "@@ -1,4 +1,4 @@\n ---\n-schema_version: 1\n+schema_version: 2\n ---\n # Hook",
+    },
+    {
+      filename: "docs/storage.md",
+      patch: "@@\n+ALTER TABLE sessions ADD COLUMN revision INTEGER;",
+    },
+    {
+      filename: "src/memory/README.md",
+      patch: '@@\n-  "embeddingDimension": 768,\n+  "embeddingDimension": 1024,',
+    },
+  ]) {
+    assert.equal(
+      dataModelChangeFromPullFilesForTest({ pullFiles: [file] }).change,
+      true,
+      file.filename,
+    );
+  }
+});
+
 for (const { name, file, surfaces, pullFilesTruncated } of [
   {
     name: "colocated test serialization",

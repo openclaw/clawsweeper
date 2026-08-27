@@ -1490,7 +1490,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           context,
           git,
           additionalPrompt,
-          mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
+          { ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof), targetDir: reviewOpenclawDir },
         );
         const snapshotHash = itemSnapshotHash(item, context);
         let decision: Decision;
