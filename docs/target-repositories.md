@@ -25,6 +25,16 @@ repository appears in the dashboard or receives scheduled work. The current
 configured profiles allow `implemented_on_main` for issues and PRs, and some
 profiles additionally allow age-gated `mostly_implemented_on_main` for PRs.
 
+Review guidance belongs to the selected profile's `promptNote` in
+`src/repository-profiles.ts` or `config/target-repositories.json`. The production
+prompt assembler selects it with `repositoryProfileFor(item.repo)`, using the
+normalized exact owner/repository, not the organization, display name, PR body,
+linked repository, or author association. The built-in `openclaw/openclaw`
+profile alone supplies its release-owned `CHANGELOG.md` review restriction.
+`openclaw/clawsweeper`, ClawHub, and generic targets follow their own release-note
+policies; being a non-core target does not grant contributors or workers
+permission to edit release-owned files.
+
 Dashboard targets are configured separately with `TARGET_REPOS` in
 `dashboard/wrangler.toml`. Scheduled target selection comes from
 `target_inventory`, and apply-enabled targets use the dashboard's
