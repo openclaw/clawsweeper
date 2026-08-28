@@ -97,10 +97,11 @@ These facts are separate from PR-authored context. The proof target is a cold
 checkout of the exact reviewed head: reviewer/controller `dist` and other generated
 output do not transfer. The planner must inspect the relevant package scripts and
 import chain, then include any build or code-generation prerequisites that setup
-does not supply before the first dependent command. Prefer an existing script that
-owns this sequencing; an arbitrary test script need not build. Otherwise use an
-explicit fail-fast command chain. The executor does not infer or repair missing
-prerequisites.
+does not supply before the first dependent command. When an existing repository or
+package-manager script owns the required prerequisites, invoke that wrapper and do
+not bypass it by calling its internal script directly. An arbitrary test script
+need not build. When no owning wrapper exists, use an explicit fail-fast command
+chain. The executor does not infer or repair missing prerequisites.
 
 Plans must use assertions the demonstration can satisfy. Browser interactions
 should derive search or filter values from content the page already renders,
@@ -188,7 +189,9 @@ Failed runs publish each command's bounded combined diagnostics under one label.
 Private supervisor files and runner paths never enter published terminal output.
 Each entry or `run` action executes as a separately supervised Bash process in
 the same checkout, so plans should share state through files or one command
-rather than shell-local mutations.
+rather than shell-local mutations. Terminal assertions observe only bytes emitted
+to the terminal; artifact content must be emitted by the entry or a preceding run,
+for example with `cat`, before an `expect_output` step can assert it.
 The terminal `entry` executes automatically before all typed steps. Every `run`
 executes independently, including a first `run` identical to `entry` or a later
 repeated command; the parser and driver do not deduplicate commands. Intentional

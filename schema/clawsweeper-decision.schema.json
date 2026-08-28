@@ -836,7 +836,7 @@
         "entry": {
           "type": "string",
           "pattern": "^[^\\r\\n\\u2028\\u2029]*$",
-          "description": "A single-line URL path for browser proof or command for terminal proof, with no literal CR, LF, U+2028, or U+2029, including leading or trailing line breaks. Terminal entry executes automatically before all steps. For a one-shot proof, put the proof command here followed by stable expect_output steps, or use a safe setup entry followed by exactly one run of the proof command. Each command runs in a separate Bash process in the same checkout; share state through files or combine dependent setup and execution in one command. Use an empty string unless status is recommended."
+          "description": "A single-line URL path for browser proof or command for terminal proof, with no literal CR, LF, U+2028, or U+2029, including leading or trailing line breaks. Terminal entry executes automatically before all steps. For a one-shot proof, put the proof command here followed by stable expect_output steps, or use a safe setup entry followed by exactly one run of the proof command. Each command runs in a separate Bash process in the same checkout; share state through files or combine dependent setup and execution in one command. When a repository or package-manager wrapper owns required prerequisites, invoke it and do not bypass it with an internal script. Use an empty string unless status is recommended."
         },
         "steps": {
           "type": "array",
@@ -917,7 +917,7 @@
                   "command": {
                     "type": "string",
                     "pattern": "^[^\\r\\n\\u2028\\u2029]*\\S[^\\r\\n\\u2028\\u2029]*$",
-                    "description": "A nonblank single-line terminal command with no literal CR, LF, U+2028, or U+2029, including leading or trailing line breaks, not a restatement of entry. Identical commands still execute; include a rerun only when intentional."
+                    "description": "A nonblank single-line terminal command with no literal CR, LF, U+2028, or U+2029, including leading or trailing line breaks, not a restatement of entry. Identical commands still execute; include a rerun only when intentional. When a repository or package-manager wrapper owns required prerequisites, invoke it and do not bypass it with an internal script."
                   }
                 }
               },
@@ -927,7 +927,10 @@
                 "required": ["action", "text"],
                 "properties": {
                   "action": { "type": "string", "const": "expect_output" },
-                  "text": { "type": "string" }
+                  "text": {
+                    "type": "string",
+                    "description": "A stable substring of bytes emitted to the terminal; artifact content must be emitted by entry or a preceding run, for example with cat, before it can be asserted."
+                  }
                 }
               }
             ]

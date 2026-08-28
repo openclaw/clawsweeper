@@ -574,9 +574,10 @@ or combine dependent setup and execution in one command, not shell-local variabl
 or `cd` from an earlier command. Inspect the relevant package scripts and import
 chain against the trusted live-proof execution context below. Supply any remaining
 build or code-generation prerequisites before the first dependent execution.
-Prefer a repository-defined `pnpm run` (or equivalent package-manager) script when
-it actually owns that sequencing; do not assume an arbitrary test script builds.
-Otherwise use an explicit fail-fast chain such as `prerequisite && command`.
+When an existing repository or package-manager script owns the required
+prerequisites, invoke that wrapper and do not bypass it by calling its internal
+script directly. Do not assume an arbitrary test script builds. When no owning
+wrapper exists, use an explicit fail-fast chain such as `prerequisite && command`.
 Emit at most ten
 deterministic, typed `steps`: browser plans may use `goto`, `click`, `fill`,
 `press`, `wait_for`, `wait`, and `expect_text`; terminal plans may use `run`,
@@ -592,7 +593,9 @@ system should run. Never assert the typed command itself. Targets for `click`,
 `text=...` selectors when appropriate, never prose descriptions of state. The
 plan must be demonstrable from the PR head alone without external accounts,
 credentials, or third-party services. Step values must never contain secrets or
-tokens of any kind.
+tokens of any kind. `expect_output` observes only bytes emitted to the terminal;
+artifact content must be emitted by `entry` or a preceding `run` (for example,
+with `cat`) before asserting it.
 
 Every assertion must name something the demonstration can actually satisfy.
 Assert values that the page or command will genuinely produce: for a search

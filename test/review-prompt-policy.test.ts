@@ -733,6 +733,7 @@ test("review prompt classifies Telegram visible proof candidates", () => {
 test("review prompt and schema classify deterministic live-proof plans in field order", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
   const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
+  const docs = readFileSync("docs/live-proof.md", "utf8");
   const liveProofPlan = schema.properties.liveProofPlan;
 
   assert.ok(
@@ -770,8 +771,20 @@ test("review prompt and schema classify deterministic live-proof plans in field 
   assert.match(prompt, /Intentional reruns,[\s\S]*are valid and will execute/);
   assert.match(prompt, /choose `static_text` and verify once/);
   assert.match(
+    prompt,
+    /When an existing repository or package-manager script owns the required\s+prerequisites,[\s\S]*invoke that wrapper and do not bypass it by calling its internal\s+script directly/,
+  );
+  assert.match(
+    prompt,
+    /`expect_output` observes only bytes emitted to the terminal[\s\S]*artifact content must be emitted by `entry` or a preceding `run`[\s\S]*with `cat`/,
+  );
+  assert.match(
     liveProofPlan.properties.entry.description,
     /executes automatically before all steps/,
+  );
+  assert.match(
+    liveProofPlan.properties.entry.description,
+    /repository or package-manager wrapper owns required prerequisites[\s\S]*do not bypass it with an internal script/,
   );
   assert.match(liveProofPlan.properties.steps.description, /nothing is deduplicated/);
   assert.match(liveProofPlan.properties.steps.description, /Intentional reruns/);
@@ -783,6 +796,26 @@ test("review prompt and schema classify deterministic live-proof plans in field 
     (step: { properties: { action: { const: string } } }) => step.properties.action.const === "run",
   );
   assert.match(runStep.properties.command.description, /Identical commands still execute/);
+  assert.match(
+    runStep.properties.command.description,
+    /repository or package-manager wrapper owns required prerequisites[\s\S]*do not bypass it with an internal script/,
+  );
+  const expectOutputStep = liveProofPlan.properties.steps.items.anyOf.find(
+    (step: { properties: { action: { const: string } } }) =>
+      step.properties.action.const === "expect_output",
+  );
+  assert.match(
+    expectOutputStep.properties.text.description,
+    /bytes emitted to the terminal[\s\S]*artifact content must be emitted by entry or a preceding run[\s\S]*with cat/,
+  );
+  assert.match(
+    docs,
+    /When an existing repository or\s+package-manager script owns the required prerequisites,[\s\S]*invoke that wrapper and do\s+not bypass it by calling its internal script directly/,
+  );
+  assert.match(
+    docs,
+    /Terminal assertions observe only bytes emitted\s+to the terminal[\s\S]*artifact content must be emitted by the entry or a preceding run,[\s\S]*with `cat`/,
+  );
 
   assert.deepEqual(liveProofPlan.required, [
     "status",
