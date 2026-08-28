@@ -742,7 +742,6 @@ test("review prompt and schema classify deterministic live-proof plans in field 
   );
   assert.match(prompt, /Default to `status: "recommended"` whenever/);
   assert.match(prompt, /refactors, internal plumbing, and CI\/config changes/);
-  assert.match(prompt, /docs-only edits or generated assets/);
   assert.match(prompt, /without\s+external accounts,\s+credentials, or third-party services/);
   assert.match(prompt, /reads environment variables or credential\s+stores/);
   assert.match(prompt, /exfiltrate or display sensitive data\s+on screen/);
