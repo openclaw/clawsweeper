@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import {
   existsSync,
@@ -454,6 +454,88 @@ test(
       assert.ok(result.output.indexOf("OUT_ONE") < result.output.indexOf("ERR_TWO"));
       assert.ok(result.output.indexOf("ERR_TWO") < result.output.indexOf("IMMEDIATE_FINAL"));
     } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "terminal proof preserves inherited PTY descriptors in a detached Node child",
+  { timeout: 30_000 },
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-detached-stdio-"));
+    const processToken = `clawsweeper-detached-stdio-${process.pid}-${Date.now()}`;
+    try {
+      writeFileSync(
+        join(root, "detached-stdio.mjs"),
+        [
+          'import assert from "node:assert/strict";',
+          'import { spawn } from "node:child_process";',
+          'import { fstatSync, writeFileSync } from "node:fs";',
+          'if (process.argv[3] === "child") {',
+          "  for (const fd of [0, 1, 2]) assert.equal(fstatSync(fd).isCharacterDevice(), true);",
+          "  const terminals = [process.stdin.isTTY, process.stdout.isTTY, process.stderr.isTTY];",
+          "  assert.deepEqual(terminals, [true, true, true]);",
+          '  console.log("DETACHED_CHILD_TTY", ...terminals);',
+          '  console.error("DETACHED_CHILD_STDERR");',
+          "} else {",
+          '  writeFileSync("parent.pid", String(process.pid));',
+          '  const child = spawn(process.execPath, [import.meta.filename, process.argv[2], "child"], { detached: true, stdio: "inherit" });',
+          '  if (child.pid) writeFileSync("child.pid", String(child.pid));',
+          '  child.on("error", (error) => { throw error; });',
+          '  child.on("exit", (code, signal) => {',
+          '    writeFileSync("child-exit.json", JSON.stringify({ code, signal }));',
+          "    if (signal) process.kill(process.pid, signal);",
+          "    else process.exitCode = code ?? 1;",
+          "  });",
+          "}",
+        ].join("\n"),
+      );
+      const result = driveTerminal({
+        plan: {
+          status: "recommended",
+          surface: "terminal",
+          terminalCompletion: "exit_zero",
+          reason: "A detached Node child must retain usable inherited terminal descriptors.",
+          payoff: { kind: "static_text", justification: "Text is sufficient." },
+          entry: `node detached-stdio.mjs ${processToken}`,
+          steps: [
+            { action: "expect_output", text: "DETACHED_CHILD_TTY true true true" },
+            { action: "expect_output", text: "DETACHED_CHILD_STDERR" },
+          ],
+        },
+        checkout: root,
+        rawVideoPath: join(root, "proof.webm"),
+        maxRecordingSeconds: 90,
+        recordMedia: false,
+        runner: mediaProofCommandRunner,
+      });
+
+      assert.equal(result.status, "completed", result.output);
+      assert.equal(
+        result.steps.every((step) => step.satisfied === true),
+        true,
+      );
+      assert.match(result.output, /DETACHED_CHILD_TTY true true true/);
+      assert.match(result.output, /DETACHED_CHILD_STDERR/);
+      assert.deepEqual(JSON.parse(readFileSync(join(root, "child-exit.json"), "utf8")), {
+        code: 0,
+        signal: null,
+      });
+      assert.deepEqual(processesContaining(processToken), []);
+      assert.deepEqual(
+        readdirSync(root).filter((name) => name.startsWith("proof.webm.")),
+        [],
+      );
+    } finally {
+      for (const name of ["child.pid", "parent.pid"]) {
+        const path = join(root, name);
+        if (!existsSync(path)) continue;
+        const pid = Number.parseInt(readFileSync(path, "utf8"), 10);
+        if (processesContaining(processToken).some((line) => line.startsWith(`${pid} `))) {
+          killProcess(pid);
+        }
+      }
       rmSync(root, { force: true, recursive: true });
     }
   },
@@ -1077,7 +1159,7 @@ test(
       assert.equal(result.status, "partial", result.output);
       assert.equal(result.steps[1]?.satisfied, false);
       assert.match(result.output, /SECOND_ONLY/);
-      assert.match(result.output, /before expected output appeared: "STALE_FROM_FIRST"/);
+      assert.match(result.output, /proof-plan assertion mismatch:.*"STALE_FROM_FIRST"/);
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
@@ -1268,10 +1350,16 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 function processesContaining(fragment: string): string[] {
-  return execFileSync("ps", ["-axo", "pid=,args="], { encoding: "utf8" })
+  // Filter before capture so unrelated long command lines cannot overflow the test buffer.
+  const pattern = fragment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const result = spawnSync("pgrep", ["-fl", pattern], { encoding: "utf8" });
+  if (result.error) throw result.error;
+  if (result.status === 1) return [];
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => line.includes(fragment));
+    .filter(Boolean);
 }
 
 function killProcess(pid: number): void {

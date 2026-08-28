@@ -545,9 +545,9 @@ the real system from the PR head and verify observable behavior, not merely to
 run its tests. This includes refactors, internal plumbing, and CI/config changes:
 plan a narrow smoke verification such as “the binary still starts and prints X”
 or “the command still resolves Y” even when the implementation change is not
-user-visible. Reserve `not_applicable` for a change with genuinely nothing to
-run, such as docs-only edits or generated assets in a repository with no
-meaningful runnable surface. Use `surface: "browser"` for browser behavior and
+user-visible. Use `not_applicable` when there is no meaningful runnable surface
+or no meaningful scenario can run reliably within the supplied harness capabilities;
+give the concrete limitation. Use `surface: "browser"` for browser behavior and
 `surface: "terminal"` for terminal behavior. The `entry` must be a URL path for
 browser verification or a command for terminal verification. Keep `entry` and
 every terminal `run.command` on one line: no literal CR, LF, U+2028, or U+2029,
@@ -578,6 +578,17 @@ When an existing repository or package-manager script owns the required
 prerequisites, invoke that wrapper and do not bypass it by calling its internal
 script directly. Do not assume an arbitrary test script builds. When no owning
 wrapper exists, use an explicit fail-fast chain such as `prerequisite && command`.
+Inspect the exact checked-out command, wrapper, and reporter contract before
+choosing output assertions. For finite test commands, prefer a real final summary
+with `exit_zero`; require individual test names only with an explicitly selected
+reporter that emits them. Default reporters may emit slow-test names only when the
+file completes; those names are not guaranteed per-test progress signals. A test
+declaration is not an output contract.
+The trusted `terminalExecutionLimitSeconds` bounds the whole terminal plan,
+including `static_text`. Respect existing program/test budgets; never weaken tests,
+increase timeouts, append a fabricated success echo/sentinel, or add sleeps to
+make proof pass. If the scenario cannot reliably fit, narrow to a real valid
+scenario or use `not_applicable` with the concrete harness-capability reason.
 Emit at most ten
 deterministic, typed `steps`: browser plans may use `goto`, `click`, `fill`,
 `press`, `wait_for`, `wait`, and `expect_text`; terminal plans may use `run`,
@@ -604,6 +615,9 @@ a stable substring of its output such as a header, flag name, or error string,
 not a count, timing, or number that varies per run. If you cannot name a value
 the run will certainly print or render, assert something more stable rather
 than inventing one.
+Missing output after a successful finite exit leaves the proof unverified. Check
+the assertion's command/wrapper/reporter contract before inferring a product defect;
+exit zero never waives a missing assertion.
 
 For dependency/package-version assertions, prefer the package manager's
 machine-readable output when supported. Inspect the target's pinned CLI version

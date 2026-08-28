@@ -254,6 +254,7 @@ function assertLiveProofContext(repo: string) {
     packageManager: "untrusted-package-manager",
     setup: ["untrusted setup"],
     allowInstallScripts: true,
+    terminalExecutionLimitSeconds: 9999,
     checkout: { state: "warm" },
     browserStartup: { onlyForSurface: "terminal", command: "untrusted start" },
   };
@@ -286,6 +287,7 @@ function assertLiveProofContext(repo: string) {
         liveProofSetupCommand(command, liveTest.allowInstallScripts),
       ) ?? [],
     allowInstallScripts: liveTest?.allowInstallScripts ?? false,
+    terminalExecutionLimitSeconds: liveTest?.maxRecordingSeconds ?? null,
     checkout: {
       state: "cold",
       revision: "exact reviewed head",
@@ -330,6 +332,7 @@ test("review prompt reflects disabled, missing, and opted-in live-proof setup wi
     undefined,
     { ...defaultLiveTest, enabled: false },
     { ...defaultLiveTest, setup: [] },
+    { ...defaultLiveTest, maxRecordingSeconds: 17 },
     { ...defaultLiveTest, setup: ["npm ci", "npm run generate"], allowInstallScripts: false },
     { ...defaultLiveTest, setup: ["npm ci", "npm run generate"], allowInstallScripts: true },
   ];

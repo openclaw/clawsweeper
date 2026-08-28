@@ -813,7 +813,7 @@ test("terminal command success cannot waive a missing output expectation", () =>
   assert.equal(result.steps[0]?.satisfied, false);
   assert.match(
     result.steps[0]?.detail ?? "",
-    /exited successfully before expected output appeared/,
+    /proof-plan assertion mismatch: terminal command exited successfully.*verify the command\/wrapper\/reporter contract/,
   );
   assert.match(result.output, /Tests  10 passed \(10\)/);
   assert.doesNotMatch(result.output, /\.command-\d+-\d+\.|printf '%s'|mv -f|\/tmp\//);
@@ -843,6 +843,7 @@ test("terminal command success cannot waive a missing output expectation", () =>
   );
   assert.match(renderLiveVerificationCommentBlock(verification), /\*\*Result:\*\* FAIL/);
   assert.match(renderLiveVerificationCommentBlock(verification), /FAIL `expect_output`/);
+  assert.match(renderLiveVerificationCommentBlock(verification), /proof-plan assertion mismatch/);
 });
 
 test("terminal command timeout remains a failed output expectation", () => {
@@ -1182,26 +1183,96 @@ test("held terminal completion observes output rendered after status publication
   assert.match(result.output, /Ready/);
 });
 
-test("terminal completion uses the configured proof budget beyond thirty seconds", () => {
-  const calls: string[] = [];
-  const result = driveTerminal({
-    plan: {
-      ...recommendedPlan("terminal"),
-      entry: "slow-demo",
-      steps: [{ action: "expect_output", text: "Ready" }],
-    },
-    checkout: "/tmp/checkout",
-    rawVideoPath: "/tmp/live-proof.raw.webm",
-    maxRecordingSeconds: 90,
-    recordMedia: false,
-    runner: terminalLifecycleRunner(calls, {
-      commandCompletionAfterProbe: 35,
-      terminalCaptures: ["Ready\n"],
-    }),
-  });
+test("parsed finite terminal expectations wait for a summary after thirty seconds", async (t) => {
+  for (const form of ["entry", "setup+run", "finite-before-ready"] as const) {
+    await t.test(form, (t) => {
+      let now = 1_000_000;
+      t.mock.method(Date, "now", () => now);
+      const parsed = liveProofPlanParser(
+        {
+          ...recommendedPlan("terminal"),
+          terminalCompletion: form === "finite-before-ready" ? "ready_while_running" : "exit_zero",
+          payoff: { kind: "static_text", justification: "The final summary is sufficient." },
+          entry: form === "setup+run" ? "setup" : "finite-test",
+          steps: [
+            ...(form === "setup+run" ? [{ action: "run", command: "finite-test" }] : []),
+            { action: "expect_output", text: "[test] passed" },
+            { action: "expect_output", text: "Vitest shard" },
+            ...(form === "finite-before-ready"
+              ? [
+                  { action: "run", command: "server" },
+                  { action: "expect_output", text: "Listening" },
+                ]
+              : []),
+          ],
+        },
+        "liveProofPlan",
+      );
+      const plan = reportLiveProofPlanForTest(`## Live Proof
 
-  assert.equal(result.status, "completed");
-  assert.ok(calls.filter((call) => call === "sleep 1").length > 30);
+Status: ${parsed.status}
+Surface: ${parsed.surface}
+Terminal completion: ${parsed.terminalCompletion}
+Reason: ${parsed.reason}
+Payoff: ${parsed.payoff.kind}
+Payoff justification: ${parsed.payoff.justification}
+Entry: ${parsed.entry}
+
+Steps:
+
+${parsed.steps.map((step) => `- ${JSON.stringify(step)}`).join("\n")}
+`);
+      assert.deepEqual(plan, parsed);
+      const calls: string[] = [];
+      const fixtureRunner = terminalLifecycleRunner(calls, {
+        terminalCapturesByCommand: {
+          setup: ["setup complete\n"],
+          "finite-test": [
+            ...Array<string>(35).fill("starting\n"),
+            "starting\n[test] passed 1 Vitest shard in 35s\n",
+          ],
+          server: ["Listening\n"],
+        },
+        keepsRunningCommands: ["server"],
+      });
+      const driven = driveTerminal({
+        plan,
+        checkout: "/tmp/checkout",
+        rawVideoPath: "/tmp/live-proof.raw.webm",
+        maxRecordingSeconds: 90,
+        recordMedia: false,
+        runner: (command, args, options) => {
+          const result = fixtureRunner(command, args, options);
+          if (command === "sleep") now += Number(args[0]) * 1_000;
+          return result;
+        },
+      });
+      const verification = buildLiveVerificationResult({
+        repo: "example/repo",
+        item: 42,
+        headSha: HEAD,
+        plan,
+        driveStatus: driven.status,
+        stepLog: driven.steps,
+        output: driven.output,
+        verifiedAt: "2026-08-27T00:00:00.000Z",
+      });
+      assert.equal(verification.overall_pass, true, JSON.stringify(verification));
+      assert.deepEqual(parseLiveVerificationResult(verification), verification);
+      assert.equal(
+        verification.steps.every((step) => step.status === "completed"),
+        true,
+      );
+      assert.ok(now >= 1_035_000 && now < 1_090_000);
+      const commandCount = form === "entry" ? 1 : 2;
+      assert.equal(
+        calls.filter((call) => call.startsWith("tmux pipe-pane -t ")).length,
+        commandCount,
+      );
+      assert.equal(calls.filter((call) => call === "watchdog-armed").length, commandCount);
+      assert.match(renderLiveVerificationCommentBlock(verification), /\*\*Result:\*\* PASS/);
+    });
+  }
 });
 
 test("terminal pane status corruption fails closed before controller cleanup", () => {
@@ -1231,19 +1302,22 @@ test("terminal pane status corruption fails closed before controller cleanup", (
   );
 });
 
-test("terminal command failure after an observed marker is caught after the recording hold", () => {
+test("finite terminal expectations cannot pass an early summary followed by a nonzero exit", () => {
   const calls: string[] = [];
   const result = driveTerminal({
     plan: {
       ...recommendedPlan("terminal"),
       entry: "demo",
-      steps: [{ action: "expect_output", text: "Ready" }],
+      steps: [
+        { action: "expect_output", text: "Ready" },
+        { action: "expect_output", text: "Ready" },
+      ],
     },
     checkout: "/tmp/checkout",
     rawVideoPath: "/tmp/live-proof.raw.webm",
     maxRecordingSeconds: 90,
     runner: terminalLifecycleRunner(calls, {
-      commandCompletionAfterProbe: 1,
+      commandCompletionAfterProbe: 35,
       commandExitStatus: 7,
       terminalCaptures: ["$ demo\nReady\n", "$ demo\nReady\n"],
     }),
@@ -1252,6 +1326,7 @@ test("terminal command failure after an observed marker is caught after the reco
   assert.equal(result.status, "failed");
   assert.equal(result.steps[0]?.status, "failed");
   assert.equal(result.steps[0]?.satisfied, false);
+  assert.equal(result.steps.length, 1);
   assert.match(result.steps[0]?.detail ?? "", /failed with exit status 7/);
 });
 
@@ -1592,7 +1667,7 @@ test("terminal cleanup requires the exact pane receipt and pane death", () => {
   assert.doesNotMatch(respawn ?? "", /tmux run-shell -b/);
   assert.match(respawn ?? "", /while :; do sleep 3600; done/);
   assert.match(respawn ?? "", /exec 9<"\$8"/);
-  assert.match(respawn ?? "", /\) 9<&9 <\/dev\/tty/);
+  assert.match(respawn ?? "", /\) 9<&9 <"\$tty_path" >"\$tty_path" 2>&1/);
   assert.match(respawn ?? "", /read -r bound_pid bound_tty bound_nonce bound_lease bound_extra/);
   assert.match(respawn ?? "", /v1\|execute/);
   assert.equal(calls.filter((call) => call.startsWith("tmux run-shell -b ")).length, 1);
@@ -2279,11 +2354,12 @@ test("terminal cleanup removes explicit capture and controller temporary files",
   }
 });
 
-test("terminal expect_output times out without matching the echoed command", () => {
+test("ready terminal expect_output times out without matching the echoed command", () => {
   const calls: string[] = [];
   const result = driveTerminal({
     plan: {
       ...recommendedPlan("terminal"),
+      terminalCompletion: "ready_while_running",
       entry: "show expected-token",
       steps: [{ action: "expect_output", text: "expected-token" }],
     },
@@ -2332,7 +2408,7 @@ test("terminal expect_output cannot outlive the overall proof budget", (t) => {
   });
 
   assert.equal(result.status, "failed");
-  assert.match(result.steps[0]?.detail ?? "", /configured time budget/);
+  assert.match(result.steps[0]?.detail ?? "", /terminal command was still running after 2 seconds/);
   assert.equal(calls.filter((call) => call === "sleep 1").length, 2);
 });
 

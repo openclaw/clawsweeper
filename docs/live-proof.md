@@ -93,6 +93,9 @@ HOME, package-manager caches, and temporary files point into the scratch profile
 The production review prompt supplies trusted execution context from the effective
 repository profile, including configured/fallback resolution, enablement, package
 manager, normalized setup commands, install-script policy, and browser-only startup.
+It also supplies `terminalExecutionLimitSeconds` from the existing effective
+`live_test.max_recording_seconds` limit (`profile.liveTest.maxRecordingSeconds`),
+which bounds the whole terminal plan even for `static_text` without recording.
 These facts are separate from PR-authored context. The proof target is a cold
 checkout of the exact reviewed head: reviewer/controller `dist` and other generated
 output do not transfer. The planner must inspect the relevant package scripts and
@@ -138,6 +141,18 @@ zero. Version evidence does not establish runtime exposure, security, or
 compatibility; the incident's Vite/Vitest dependents were development-only.
 No executor, schema v1, lifecycle, or rendering contract changes are needed, so
 OpenClaw Bay is unaffected.
+
+Inspect the exact checked-out command, wrapper, and reporter contract. For finite
+test commands, prefer a real final summary with `exit_zero`; require individual
+test names only when an explicitly selected reporter emits them. Default reporters
+may emit slow-test names only after the file completes, not as per-test progress;
+absence before completion does not establish a test failure. Test declarations
+alone do not establish emitted output. Keep existing program/test budgets intact:
+do not weaken tests, increase timeouts, append fabricated success echoes/sentinels,
+or add sleeps as a workaround. If a meaningful scenario cannot reliably fit the
+supplied terminal limit, narrow to a real valid scenario or use `not_applicable`
+with a concrete harness-capability reason. No runnable surface is also a valid
+`not_applicable` reason.
 
 The [review prompt](../prompts/review-item.md) and decision parser require
 `liveProofPlan.entry` and terminal `run.command` strings to contain no literal
@@ -257,11 +272,21 @@ exit_zero` when the final command must finish successfully, or
 `terminalCompletion: ready_while_running` when the final command must remain
 live after satisfying an output expectation. Non-recorded long-running proofs
 must remain live through a three-second stability hold before publication.
-Every earlier command must exit zero. The supervisor exits with the command's
-status, and tmux's pane lifecycle records whether that supervisor is still
-running or how it exited. Each proof uses a private tmux socket directory. The
+Every earlier command must exit zero. Finite commands wait within the remaining
+terminal budget before their expectations are judged against controller-observed
+output after capture sealing. Multiple expectations reuse that completed capture.
+A successful exit never waives missing output: it remains failed/unverified proof
+with a proof-plan assertion mismatch reason asking to verify the
+command/wrapper/reporter contract,
+not by itself evidence of a product/test failure. Product-defect findings require actual
+evidence. Only the final `ready_while_running` command retains the 30-second
+marker wait and the existing stability and liveness checks. The held supervisor
+records the command's exit status and stays alive through capture sealing and
+controller-owned cleanup. Each proof uses a private tmux socket directory. The
 controller binds the exact pane PID and controlling terminal before opening the
-start gate. The pane process validates that tuple and opens a private lease file
+start gate. Child standard I/O opens that concrete PTY path, not `/dev/tty`, so
+inherited descriptors remain usable when a subprocess starts a detached session.
+The pane process validates that tuple and opens a private lease file
 on reserved descriptor 9, inherited by the held target and its descendants.
 Before opening a second execution gate, the controller starts a cleanup watchdog
 outside the pane process tree through the private tmux server and requires an

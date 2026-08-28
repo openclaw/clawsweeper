@@ -723,7 +723,11 @@ export function driveTerminal(options: {
       failureReason = terminalPrivateErrorMessage(error, privatePaths);
     }
     if (!failed) {
-      for (const step of options.plan.steps as LiveProofTerminalStep[]) {
+      const steps = options.plan.steps as LiveProofTerminalStep[];
+      for (const [index, step] of steps.entries()) {
+        const completion = steps.slice(index + 1).some((later) => later.action === "run")
+          ? "exit_zero"
+          : options.plan.terminalCompletion;
         try {
           const result = runTerminalStep(
             step,
@@ -734,6 +738,7 @@ export function driveTerminal(options: {
             nextCommand,
             expectations,
             terminalDeadline,
+            completion,
           );
           if (result.outputWindow && result.outputWindow !== outputWindow) {
             commandWindows.push(result.outputWindow);
@@ -1030,6 +1035,7 @@ function runTerminalStep(
   nextCommand: () => { files: TerminalCommandFiles; launchMode: TerminalLaunchMode },
   expectations: readonly string[],
   terminalDeadline: number,
+  completion: LiveProofPlan["terminalCompletion"],
 ): TerminalStepResult {
   if (step.action === "run") {
     if (outputWindow) {
@@ -1070,6 +1076,24 @@ function runTerminalStep(
   }
   if (!outputWindow) {
     throw new Error("expected terminal output without a preceding command");
+  }
+  if (completion === "exit_zero") {
+    // Finite reporters may emit only a final summary; readiness's 30-second
+    // window would reject healthy commands before their output can be observed.
+    requireTerminalCommandExitZero(
+      outputWindow,
+      terminalPane,
+      runner,
+      checkout,
+      terminalDeadline,
+      true,
+    );
+    if (!outputWindow.observedExpectations.has(step.text)) {
+      throw new Error(
+        `proof-plan assertion mismatch: terminal command exited successfully but expected output was not observed; verify the command/wrapper/reporter contract: ${JSON.stringify(step.text)}`,
+      );
+    }
+    return { outputWindow, expectationSatisfied: true };
   }
   for (let elapsed = 0; elapsed <= TERMINAL_EXPECT_OUTPUT_TIMEOUT_SECONDS; elapsed += 1) {
     refreshTerminalCommandOutput(outputWindow, runner, checkout, terminalPane);
@@ -1161,7 +1185,9 @@ function runTerminalCommand(
       'builtin printf "%s|%s|%s|%s\\n" "$$" "$tty_path" "$7" "$9" >"$5"',
       'mv -f -- "$5" "$6"',
       'while :; do IFS= read -r execute_gate <"$6" || exit 125; [ "$execute_gate" = "v1|execute|$7|$$|$tty_path|$9" ] && break; sleep 0.05; done',
-      `( /usr/bin/env -u TMUX -u TMUX_PANE -u TMUX_TMPDIR /bin/bash --noprofile --norc "$1"; status=$?; builtin printf "%s\\n" "$status" >"$2"; mv -f -- "$2" "$3" ) ${TERMINAL_LEASE_FD}<&${TERMINAL_LEASE_FD} </dev/tty >/dev/tty 2>&1 &`,
+      // Concrete PTY descriptors survive detached child sessions. Inherited
+      // /dev/tty descriptors lose their controlling terminal on macOS.
+      `( /usr/bin/env -u TMUX -u TMUX_PANE -u TMUX_TMPDIR /bin/bash --noprofile --norc "$1"; status=$?; builtin printf "%s\\n" "$status" >"$2"; mv -f -- "$2" "$3" ) ${TERMINAL_LEASE_FD}<&${TERMINAL_LEASE_FD} <"$tty_path" >"$tty_path" 2>&1 &`,
       "while :; do sleep 3600; done",
     ].join("\n");
     const shellCommand =
