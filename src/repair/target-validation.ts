@@ -435,14 +435,15 @@ export function prepareTargetToolchain(
     } catch (error) {
       setupError = error as Error;
     }
+    let preparedSourceIdentity: ValidationSourceIdentity;
     try {
-      assertValidationSourceIdentity(cwd, sourceIdentity, deadlineAt);
+      preparedSourceIdentity = assertValidationSourceIdentity(cwd, sourceIdentity, deadlineAt);
     } catch (error) {
       if (!setupError || !isValidationIdentityDeadlineError(error)) throw error;
+      throw setupError;
     }
     if (setupError) throw setupError;
     if (preparedPnpmPackageManager) {
-      const preparedSourceIdentity = validationSourceIdentity(cwd, deadlineAt);
       storePreparedTargetPnpmRuntime({
         cwd,
         deadlineAt,
@@ -2748,6 +2749,7 @@ function assertValidationSourceIdentity(
       `target dependency setup mutated checkout identity: ${validationSourceIdentityMismatchFields(actual, expected, { ignoreRuntimeInputs: true }).join(", ")}`,
     );
   }
+  return actual;
 }
 
 function validationCheckoutIdentity(

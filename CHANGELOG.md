@@ -64,6 +64,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Removed redundant pnpm setup identity work by reusing the verified post-install identity without changing deadlines or mutation guards.
 - Guided package-version live proofs toward validated machine-readable output and exact resolution checks instead of guessed terminal formatting, while preserving literal expectations and successful-exit requirements.
 - Preserved empty-step live-proof plans through report rendering and inspection, with explicit JSON empty arrays and strict compatibility for existing solitary `- none` reports.
 - Added schema constraints and explicit prompt guidance for single-line live-proof commands and nonblank run steps while preserving strict parsing.

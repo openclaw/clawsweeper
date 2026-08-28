@@ -4058,55 +4058,7 @@ test(
   "pnpm validation refreshes the prepared executable before every command",
   { skip: process.platform === "win32" },
   () => {
-    const cwd = gitPackageFixture({
-      first: 'node -e ""',
-      second: 'node -e ""',
-    });
-    git(cwd, "add", ".");
-    git(cwd, "commit", "-m", "initial");
-    attachOrigin(cwd);
-
-    const hostBin = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-pnpm-refresh-"));
-    const logPath = path.join(hostBin, "pnpm.log");
-    const maliciousMarker = path.join(hostBin, "malicious-ran");
-    const maliciousSource = `#!/usr/bin/env node
-require("node:fs").writeFileSync(${JSON.stringify(maliciousMarker)}, "ran");
-`;
-    const pnpmSource = `#!/usr/bin/env node
-const fs = require("node:fs");
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(logPath)}, args.join(" ") + "\\n");
-if (args.includes("install")) fs.mkdirSync("node_modules", { recursive: true });
-if (args.includes("first")) {
-  fs.writeFileSync(process.argv[1], ${JSON.stringify(maliciousSource)}, { mode: 0o755 });
-}
-`;
-    writeNodeCommandShim(
-      hostBin,
-      "corepack",
-      `#!/usr/bin/env node
-const fs = require("node:fs");
-const path = require("node:path");
-const args = process.argv.slice(2);
-if (args[0] === "enable") {
-  const destination = args[args.indexOf("--install-directory") + 1];
-  fs.mkdirSync(destination, { recursive: true });
-  fs.writeFileSync(path.join(destination, "pnpm"), ${JSON.stringify(pnpmSource)}, { mode: 0o755 });
-}
-`,
-    );
-    const options = {
-      ...validationOptions("steipete/example", {
-        toolchain: {
-          packageManager: "pnpm",
-          baseValidationCommands: [],
-          changedGate: null,
-        },
-      }),
-      installTargetDeps: true,
-      installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
-      setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
-    };
+    const { cwd, hostBin, logPath, maliciousMarker, options } = pnpmExecutableRefreshFixture();
 
     withCommandOverridesUnset(["corepack", "pnpm"], () =>
       withPathOnlyPrefix(hostBin, () => {
@@ -4126,6 +4078,140 @@ if (args[0] === "enable") {
     ]);
   },
 );
+
+test(
+  "pnpm validation refreshes the prepared executable within the shared setup identity budget",
+  { skip: process.platform === "win32" },
+  (t) => {
+    const { cwd, hostBin, logPath, maliciousMarker, dependencyPath, options } =
+      pnpmExecutableRefreshFixture();
+    const origin = git(cwd, "remote", "get-url", "origin");
+    try {
+      withCommandOverridesUnset(["corepack", "pnpm"], () =>
+        withPathOnlyPrefix(hostBin, () => {
+          assert.equal(fs.existsSync(dependencyPath), false);
+          let elapsedSetupMs = 0;
+          let completedGitCalls = 0;
+          const realSpawnSync = childProcess.spawnSync;
+          const clock = t.mock.method(Date, "now", () => 10_000 + elapsedSetupMs);
+          const spawn = t.mock.method(childProcess, "spawnSync", (command, args, spawnOptions) => {
+            if (path.basename(command).replace(/\.exe$/i, "") !== "git") {
+              return realSpawnSync(command, args, spawnOptions);
+            }
+            assert.ok(
+              spawnOptions.timeout > 0 && spawnOptions.timeout <= FAKE_TOOLCHAIN_TIMEOUT_MS,
+            );
+            // Real Git has its own watchdog; only completed Git calls charge the setup clock.
+            const result = realSpawnSync(command, args, {
+              ...spawnOptions,
+              timeout: FAKE_TOOLCHAIN_TIMEOUT_MS,
+              killSignal: "SIGKILL",
+            });
+            completedGitCalls += 1;
+            elapsedSetupMs += 250;
+            return result;
+          });
+          try {
+            syncBuiltinESMExports();
+            prepareTargetToolchain(cwd, options);
+          } finally {
+            spawn.mock.restore();
+            syncBuiltinESMExports();
+            clock.mock.restore();
+            t.diagnostic(
+              `setup: ${completedGitCalls} completed Git calls, ${elapsedSetupMs}ms charged`,
+            );
+          }
+          assert.ok(elapsedSetupMs > 0 && elapsedSetupMs < FAKE_TOOLCHAIN_TIMEOUT_MS);
+          assert.equal(fs.readFileSync(dependencyPath, "utf8"), "installed\n");
+          assert.deepEqual(
+            runAllowedValidationCommands(["pnpm first", "pnpm second"], cwd, options),
+            ["pnpm first", "pnpm second"],
+          );
+          const invocations = fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/);
+          assert.equal(invocations.filter((line) => line.startsWith("install ")).length, 1);
+          assert.deepEqual(
+            invocations.slice(1).map((line) => line.split(" ").at(-1)),
+            ["first", "second"],
+          );
+          assert.equal(fs.existsSync(maliciousMarker), false);
+
+          // The prepared identity must bind installed ignored inputs, not the pre-install tree.
+          fs.writeFileSync(dependencyPath, "poisoned\n");
+          const logBeforePoisonedValidation = fs.readFileSync(logPath, "utf8");
+          assert.throws(
+            () => runAllowedValidationCommands(["pnpm second"], cwd, options),
+            /prepared target pnpm toolchain is stale/,
+          );
+          assert.equal(fs.readFileSync(logPath, "utf8"), logBeforePoisonedValidation);
+          assert.equal(fs.existsSync(maliciousMarker), false);
+        }),
+      );
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(origin, { recursive: true, force: true });
+      fs.rmSync(hostBin, { recursive: true, force: true });
+    }
+  },
+);
+
+function pnpmExecutableRefreshFixture() {
+  const cwd = gitPackageFixture({
+    first: 'node -e ""',
+    second: 'node -e ""',
+  });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const hostBin = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-pnpm-refresh-"));
+  const logPath = path.join(hostBin, "pnpm.log");
+  const maliciousMarker = path.join(hostBin, "malicious-ran");
+  const dependencyPath = path.join(cwd, "node_modules", "fixture-dependency", "state.js");
+  const maliciousSource = `#!/usr/bin/env node
+require("node:fs").writeFileSync(${JSON.stringify(maliciousMarker)}, "ran");
+`;
+  const pnpmSource = `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, args.join(" ") + "\\n");
+if (args.includes("install")) {
+  fs.mkdirSync("node_modules/fixture-dependency", { recursive: true });
+  fs.writeFileSync("node_modules/fixture-dependency/state.js", "installed\\n");
+}
+if (args.includes("first")) {
+  fs.writeFileSync(process.argv[1], ${JSON.stringify(maliciousSource)}, { mode: 0o755 });
+}
+`;
+  writeNodeCommandShim(
+    hostBin,
+    "corepack",
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args[0] === "enable") {
+  const destination = args[args.indexOf("--install-directory") + 1];
+  fs.mkdirSync(destination, { recursive: true });
+  fs.writeFileSync(path.join(destination, "pnpm"), ${JSON.stringify(pnpmSource)}, { mode: 0o755 });
+}
+`,
+  );
+  const options = {
+    ...validationOptions("steipete/example", {
+      toolchain: {
+        packageManager: "pnpm",
+        baseValidationCommands: [],
+        changedGate: null,
+      },
+    }),
+    installTargetDeps: true,
+    installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+    setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+  };
+
+  return { cwd, hostBin, logPath, maliciousMarker, dependencyPath, options };
+}
 
 test("pnpm setup disables target pnpmfile hooks", { skip: process.platform === "win32" }, () => {
   const cwd = gitPackageFixture({ verify: 'node -e ""' });
@@ -8174,6 +8260,73 @@ fs.writeFileSync("pnpm-lock.yaml", "lockfileVersion: '9.0'\\n");
     !fs.existsSync(lockfilePath),
     "install-owned lockfile must not survive setup when the checkout started without one",
   );
+});
+
+test("target setup preserves post-install identity error precedence", (t) => {
+  const cwd = gitPackageFixture({ check: "node check.js" });
+  const sourcePath = path.join(cwd, "source.txt");
+  fs.writeFileSync(sourcePath, "original\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+
+  try {
+    for (const scenario of [
+      {
+        installFails: true,
+        mutate: true,
+        expire: false,
+        expected: /setup mutated checkout identity/,
+      },
+      { installFails: true, mutate: false, expire: false, expected: /^fixture install failed$/ },
+      { installFails: true, mutate: false, expire: true, expected: /^fixture install failed$/ },
+      {
+        installFails: false,
+        mutate: false,
+        expire: true,
+        expected: /validation identity deadline exhausted/,
+      },
+    ]) {
+      fs.writeFileSync(sourcePath, "original\n");
+      let now = 10_000;
+      let installed = false;
+      withVirtualDeadlineCommands(
+        t,
+        () => now,
+        ({ command, args, contained }) => {
+          if (command === "git") return;
+          if (command === "pnpm") {
+            assert.equal(contained, true);
+            assert.equal(args[0], "install");
+            installed = true;
+            if (scenario.mutate) fs.writeFileSync(sourcePath, "mutated\n");
+            if (scenario.expire) now += FAKE_TOOLCHAIN_TIMEOUT_MS;
+            if (scenario.installFails) return { status: 1, stderr: "fixture install failed" };
+          }
+          return { status: 0 };
+        },
+        () =>
+          assert.throws(
+            () =>
+              prepareTargetToolchain(cwd, {
+                ...validationOptions("steipete/example", {
+                  toolchain: {
+                    packageManager: "pnpm",
+                    baseValidationCommands: [],
+                    changedGate: null,
+                  },
+                }),
+                installTargetDeps: true,
+                installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+                setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+              }),
+            { message: scenario.expected },
+          ),
+      );
+      assert.equal(installed, true);
+    }
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("target setup shares one deadline across probes and installs", (t) => {
