@@ -58,6 +58,16 @@ export class LiveProofArtifactValidationError extends Error {
   override name = "LiveProofArtifactValidationError";
 }
 
+const DETERMINISTIC_INVALID_ARTIFACT_FS_CODES = new Set([
+  "ENOENT",
+  "ENOTDIR",
+  "EISDIR",
+  "ELOOP",
+  "EFBIG",
+  "EOVERFLOW",
+  "ERR_FS_FILE_TOO_LARGE",
+]);
+
 export async function attachLiveProof(
   options: LiveProofAttachOptions,
   dependencies: LiveProofAttachDependencies,
@@ -191,12 +201,24 @@ function validateArtifact<T>(operation: () => T): T {
   try {
     return operation();
   } catch (error) {
-    if (error instanceof MediaProbeExecutionError) throw error;
+    if (error instanceof MediaProbeExecutionError || isRetryableArtifactFsError(error)) throw error;
     throw new LiveProofArtifactValidationError(
       error instanceof Error ? error.message : "live proof artifact validation failed",
       { cause: error },
     );
   }
+}
+
+function isRetryableArtifactFsError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const { code, syscall } = error as NodeJS.ErrnoException;
+  const normalizedCode = typeof code === "string" ? code.trim() : "";
+  return (
+    normalizedCode.length > 0 &&
+    typeof syscall === "string" &&
+    syscall.trim().length > 0 &&
+    !DETERMINISTIC_INVALID_ARTIFACT_FS_CODES.has(normalizedCode)
+  );
 }
 
 export function detachLiveProof(

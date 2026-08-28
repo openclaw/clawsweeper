@@ -25,6 +25,7 @@ import {
   attachReviewLiveProofArtifact,
   attachLiveProof,
   detachLiveProof,
+  LiveProofArtifactValidationError,
   syncDetachedLiveProofComment,
   syncLiveProofComment,
 } from "../dist/live-proof/attach.js";
@@ -3406,6 +3407,107 @@ test("queued publication keeps media probe execution failures retryable", async 
       assert.equal(upserts, 0);
     });
   }
+});
+
+test("queued publication keeps transient artifact filesystem failures retryable", async (t) => {
+  const systemError = (code: string, syscall?: string) =>
+    Object.assign(new Error(`${syscall ?? "operation"} ${code}`), { code, syscall });
+  const scenarios = [
+    { name: "EIO", error: systemError("EIO", "readFile") },
+    { name: "EMFILE", error: systemError("EMFILE", "open") },
+    { name: "ESTALE", error: systemError("ESTALE", "stat") },
+    { name: "missing syscall", error: systemError("EIO"), invalid: true },
+    { name: "deterministic ENOENT", error: systemError("ENOENT", "open"), invalid: true },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const fixture = publicationFixture();
+      const originalReport = readFileSync(fixture.recordPath, "utf8");
+      let uploads = 0;
+      let upserts = 0;
+      const dependencies = attachDependencies({
+        runner: (command, args, options) => {
+          if (command === "aws") uploads += 1;
+          return mediaRunner([])(command, args, options);
+        },
+        fetchPullRequest: async () => {
+          throw new Error("queued publication must not fetch a live head");
+        },
+        upsertReviewComment: () => {
+          upserts += 1;
+          return {};
+        },
+        logs: fixture.logs,
+      });
+      dependencies.reportLiveProofPlan = () => {
+        throw scenario.error;
+      };
+      const publish = () => publishReviewLiveProofArtifacts(fixture.artifactDir, dependencies);
+
+      if (scenario.invalid) {
+        assert.deepEqual(await publish(), { status: "invalid_artifact" });
+      } else {
+        await assert.rejects(publish, (error: unknown) => error === scenario.error);
+      }
+      assert.equal(readFileSync(fixture.recordPath, "utf8"), originalReport);
+      assert.equal(uploads, 0);
+      assert.equal(upserts, 0);
+    });
+  }
+});
+
+test("missing verification remains an invalid artifact at the attachment boundary", async () => {
+  const fixture = attachmentFixture();
+  rmSync(join(fixture.bundleDir, "live-verification.json"));
+
+  await assert.rejects(
+    attachReviewLiveProofArtifact(
+      { bundleDir: fixture.bundleDir, recordPath: fixture.recordPath },
+      attachDependencies({
+        runner: mediaRunner([]),
+        fetchPullRequest: async () => {
+          throw new Error("invalid artifacts must fail before fetching a live head");
+        },
+        upsertReviewComment: () => {
+          throw new Error("invalid artifacts must not publish");
+        },
+        logs: fixture.logs,
+      }),
+    ),
+    LiveProofArtifactValidationError,
+  );
+});
+
+test("missing live proof media remains an invalid publication artifact", async () => {
+  const fixture = publicationFixture();
+  rmSync(join(fixture.bundleDir, "live-proof.mp4"));
+  const originalReport = readFileSync(fixture.recordPath, "utf8");
+  let uploads = 0;
+  let upserts = 0;
+
+  const result = await publishReviewLiveProofArtifacts(
+    fixture.artifactDir,
+    attachDependencies({
+      runner: (command, args, options) => {
+        if (command === "aws") uploads += 1;
+        return mediaRunner([])(command, args, options);
+      },
+      fetchPullRequest: async () => {
+        throw new Error("invalid artifacts must fail before fetching a live head");
+      },
+      upsertReviewComment: () => {
+        upserts += 1;
+        return {};
+      },
+      logs: fixture.logs,
+    }),
+  );
+
+  assert.deepEqual(result, { status: "invalid_artifact" });
+  assert.equal(readFileSync(fixture.recordPath, "utf8"), originalReport);
+  assert.equal(uploads, 0);
+  assert.equal(upserts, 0);
 });
 
 test("live-proof attach publishes the record before syncing its marker-backed comment", async () => {
