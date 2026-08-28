@@ -481,6 +481,26 @@ changed surface.
 
 For PRs, include a dedicated `realBehaviorProof` assessment before any pass, automerge, or repair verdict. External PRs must show that the contributor ran the changed behavior after the fix in a real setup, except when the PR changes only files under `docs/`; docs-only PRs should use `status: "not_applicable"` with `needsContributorAction: false`. Unit tests, mocks, snapshots, lint, typechecks, and CI are supplemental only; they are not real behavior proof by themselves. Treat screenshots, recordings, terminal screenshots, console output, copied live output, linked artifacts, and redacted runtime logs as valid proof, including for non-visual CLI, console, text, or error-message changes. Prefer asking for screenshots or videos when they can show the behavior, including terminal screenshots for text or console changes, while keeping logs and live output acceptable. Remind contributors to redact private information like IP addresses, API keys, phone numbers, non-public endpoints, and other private details before posting evidence. A plain app screenshot is sufficient only for behavior it directly shows. Do not mark screenshot-only proof sufficient for browser runtime, CSP, CORS, `connect-src`, auth callback, network, or security changes when the proof only says no console error, warning, or violation is visible; require console output, a network trace, terminal/live output, logs, a recording with diagnostics, or a linked artifact that actually shows the runtime path. Use your tools and best judgement: inspect the PR body, comments, links, screenshots, videos, logs, terminal output, and changed behavior context; you may download/open GitHub attachment links, generate stills or contact sheets from videos, inspect terminal screenshots and logs, and compare the proof against the PR diff. Use the provided scratch directory for downloaded artifacts and keep the target checkout read-only. Use `status: "sufficient"` only when the evidence convincingly shows after-fix real behavior and an observed improved result. Use `status: "missing"` when proof is absent, `status: "mock_only"` when proof is only tests/mocks/CI, `status: "insufficient"` when the evidence is unrelated, unviewable, too weak, or does not show the changed real behavior after the fix, `status: "override"` when the PR has `proof: override`, and `status: "not_applicable"` for non-PR items, maintainer/bot PRs where the gate does not apply, or PRs that change only files under `docs/`. When proof is missing, mock-only, or insufficient, set `needsContributorAction: true`, make the PR a human-only merge blocker, and do not request ClawSweeper repair markers because automation cannot prove the contributor's setup for them.
 
+Tie the proof assessment to the source and diff: identify the changed production
+owner and behavior, map them to the exercised entrypoint, scenario, and environment,
+then state the observed after-fix result or remaining coverage gap. Record that
+connection in `realBehaviorProof.summary` and the existing evidence entries so
+maintainers can audit it. A command or historical Live Verification PASS establishes
+only that its declared scenario passed; it does not establish semantic sufficiency
+for the PR. Generic help, startup, version output, or exit zero cannot prove unrelated
+runtime or native behavior. Help output is meaningful evidence when the changed
+behavior is help or CLI output. For exec-host cancellation examples, distinguish
+normal write-half-close success from cancellation triggered by explicit caller abort,
+full disconnect, or server shutdown. Relevant observations can include command-tree
+teardown, child PID disappearance, and delayed-sentinel absence after cancellation.
+Select scenarios for the changed path, not a mandatory full-app matrix for every
+native fix. Terminal traces of that real path are valid proof; do not require video
+or unrelated application access. A Developer-ID signature establishes native
+artifact provenance, not behavioral coverage by itself. Preserve independently
+sufficient native before/after evidence even when an unrelated help smoke also
+passed. Tests remain supplemental. Do not invent a new proof plan or execute
+target code to fill a gap.
+
 When the narrowed authority-chain pass leaves a material, plausible authority
 violation unresolved by the diff and available evidence, require allowed and
 nearest-forbidden final-effect proof based on the changed authority surface,

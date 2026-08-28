@@ -86,8 +86,21 @@ an attachment are separate controls. Independently sufficient proof clears stale
 contributor and maintainer proof-status justifications for both attached and
 direct publication, without treating receipt success as proof.
 
+The residual guidance/PASS-scope follow-up extends the recipe to 27 cases. Five
+synthetic cases cover an `ExecHostExecutor.swift` coverage gap with unrelated help,
+relevant changed-help evidence, substantive native terminal observations, and
+independent signed-native linked-artifact/recording attribution. Native scenarios
+distinguish successful normal write-half-close from explicit caller-abort
+cancellation, PID teardown, and delayed-sentinel absence. These are constructed
+classification inputs, not native runs or evidence that the prompt produced the
+right assessment. Every attached case also checks that only the Live Proof
+section changes, a second production CLI publication leaves the report identical,
+and only PASS renders the scenario-scope disclaimer. The original 22 cases and
+their core-fix observations above remain intact; current main already passes
+them before this wording follow-up.
+
 Limits: this is local publication/runtime evidence, not a live GitHub, R2,
-Gateway, queue, or terminal-driver test. It does not judge whether a reviewer's
+Gateway, native, queue, or terminal-driver test. It does not judge whether a reviewer's
 semantic assessment is correct. Bay needs no change: no observer API, lifecycle,
 telemetry, timing, or action contract changes, and its retired-path display
 switch remains presentation-only.

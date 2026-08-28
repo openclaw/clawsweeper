@@ -108,6 +108,22 @@ receipt failure belongs to the maintainer, not the contributor. Identity and
 plan validation, bounded output, historical media publication, and retraction
 remain unchanged. No new execution or assessment lane is introduced.
 
+Reviewers should connect the changed production owner and behavior from the diff
+to the exercised entrypoint, scenario, environment, and observed result or gap in
+the existing proof summary and evidence entries. Generic help, version, startup,
+or exit-zero smoke does not prove unrelated runtime or native behavior; help
+output can prove a changed help/CLI-output contract. For exec-host cancellation,
+distinguish normal write-half-close success from cancellation triggered by
+explicit caller abort, full disconnect, or server shutdown. Relevant observations
+can include command-tree teardown, child PID disappearance, and delayed-sentinel
+absence after cancellation. Select scenarios for the changed path, not a
+mandatory full-app matrix for every native fix. Terminal traces of the real path
+are valid proof; video is not required. Signing establishes provenance, not
+coverage by itself. Independently sufficient native before/after evidence keeps
+its classification alongside an unrelated passing help smoke. The PASS rendering
+reminds readers that only the declared scenario and assertions passed; the
+semantic assessment determines changed-behavior coverage.
+
 ## OpenClaw Bay
 
 OpenClaw Bay remains observer-only. Its default beach and one-hour review-time

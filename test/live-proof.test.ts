@@ -3078,6 +3078,18 @@ test("live verification validation rejects inconsistent or extensible public res
   );
 });
 
+test("passing browser verification explains its scenario scope without changing the receipt", () => {
+  const result = validVerification();
+  const original = structuredClone(result);
+  const rendered = renderLiveVerificationCommentBlock(result);
+  assert.match(rendered, /\*\*Result:\*\* PASS \(completed\)/);
+  assert.match(
+    rendered,
+    /PASS covers only the declared scenario and assertions; the real behavior proof assessment determines whether they cover the PR's changes\./,
+  );
+  assert.deepEqual(result, original);
+});
+
 test("attached live verification requires one report-bound result", () => {
   const plan = recommendedPlan();
   const verification = validVerification(plan);
@@ -3731,6 +3743,7 @@ test("browser verification publishes sanitized step outcomes and never document 
   const rendered = renderLiveVerificationCommentBlock(result);
   assert.match(rendered, /\*\*Entry:\*\* `\/chat`/);
   assert.match(rendered, /\*\*Result:\*\* FAIL \(partial\) — step 2 `click`/);
+  assert.doesNotMatch(rendered, /PASS covers only/);
   assert.match(rendered, /- PASS `goto` `\/chat`/);
   assert.match(rendered, /- FAIL `click`/);
   assert.match(rendered, /locator\.click: Timeout 5000ms exceeded/);

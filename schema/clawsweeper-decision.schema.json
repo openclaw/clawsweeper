@@ -715,11 +715,11 @@
         },
         "summary": {
           "type": "string",
-          "description": "One concise sentence explaining whether the PR body contains after-fix real behavior proof. Do not call screenshot-only proof sufficient for browser runtime, CSP, CORS, network, or security changes when it only claims no console error or violation is visible."
+          "description": "Concise source-aware assessment linking the changed production owner and behavior from the diff to the exercised entrypoint, scenario, environment, and observed after-fix result or coverage gap; use existing evidence entries for supporting detail. Execution PASS alone is not semantic sufficiency: generic help, startup, version output, or exit zero does not prove unrelated runtime or native behavior, though help output can prove changed help/CLI-output behavior. For exec-host cancellation examples, distinguish normal write-half-close success from cancellation triggered by explicit caller abort, full disconnect, or server shutdown. Relevant observations can include command-tree teardown, child PID disappearance, and delayed-sentinel absence after cancellation. Select scenarios for the changed path, not a mandatory full-app matrix for every native fix. Do not call screenshot-only proof sufficient for browser runtime, CSP, CORS, network, or security changes when it only claims no console error or violation is visible."
         },
         "evidenceKind": {
           "type": "string",
-          "description": "Use screenshot only for directly visible UI or flow proof. For browser runtime, CSP, CORS, network, or security proof, prefer terminal, logs, live_output, or linked_artifact unless the media visibly includes the diagnostic output.",
+          "description": "Preserve the kind of the evidence that proves the changed behavior, not the kind of an unrelated passing smoke. Terminal traces of the real production path are valid proof; no video is required. Developer-ID signing establishes native provenance, not coverage by itself; independent sufficient signed-native before/after evidence remains valid alongside unrelated help output. Tests are supplemental. Use screenshot only for directly visible UI or flow proof. For browser runtime, CSP, CORS, network, or security proof, prefer terminal, logs, live_output, or linked_artifact unless the media visibly includes the diagnostic output.",
           "enum": [
             "screenshot",
             "recording",

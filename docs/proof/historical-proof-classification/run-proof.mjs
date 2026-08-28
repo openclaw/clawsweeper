@@ -77,17 +77,24 @@ function run(name, report, receipt, check, previousLabels) {
   }
   // This retained CLI folds local artifacts; it rejects live-head lookup. No media
   // manifest exists, so there is no upload, and this command never syncs comments.
-  const cli = spawnSync(
-    process.execPath,
-    [join(root, "dist/clawsweeper.js"), "live-proof-publish-artifacts", "--artifact-dir", artifact],
-    {
-      cwd: root,
-      env,
-      encoding: "utf8",
-      timeout: 30_000,
-      maxBuffer: 128 * 1024,
-    },
-  );
+  const publish = () =>
+    spawnSync(
+      process.execPath,
+      [
+        join(root, "dist/clawsweeper.js"),
+        "live-proof-publish-artifacts",
+        "--artifact-dir",
+        artifact,
+      ],
+      {
+        cwd: root,
+        env,
+        encoding: "utf8",
+        timeout: 30_000,
+        maxBuffer: 128 * 1024,
+      },
+    );
+  const cli = publish();
   assert.ifError(cli.error);
   assert.equal(cli.signal, null);
   const publication = JSON.parse(cli.stdout);
@@ -99,6 +106,23 @@ function run(name, report, receipt, check, previousLabels) {
   const { comment: _comment, markers: _markers, ...compact } = observed;
   try {
     check({ observed, publication, folded, exitCode: cli.status });
+    if (publication.results?.some((result) => result.outcome === "attached")) {
+      assert.equal(
+        section(folded, "Live Proof", "<attachment>"),
+        section(report, "Live Proof", "<attachment>"),
+        "publication preserves frontmatter, semantic proof, and unrelated sections exactly",
+      );
+      assert.equal(
+        observed.comment.includes("PASS covers only the declared scenario and assertions"),
+        receipt.overall_pass,
+      );
+      const repeated = publish();
+      assert.ifError(repeated.error);
+      assert.equal(repeated.status, 0);
+      assert.deepEqual(JSON.parse(repeated.stdout), publication);
+      assert.equal(readFileSync(record, "utf8"), folded, "repeat publication is idempotent");
+      writeFileSync(join(artifact, "publication-repeat.json"), repeated.stdout);
+    }
     results.push({ name, publication: publication.status, ...compact, passed: true });
   } catch (error) {
     failures.push(name);
@@ -274,6 +298,108 @@ run("direct-no-attachment", independent, null, (result) => {
   assert.deepEqual(result.observed, projection(independent));
 });
 
+// Synthetic semantic assessments and native observations, never target execution.
+const nativeOwner = "apps/macos/Sources/OpenClaw/ExecHostExecutor.swift";
+const nativeBehavior =
+  "Normal write-half-close succeeds; explicit caller abort cancels the command tree.";
+const nativeObservation =
+  "The macOS production socket trace shows normal write-half-close success separately from explicit caller-abort cancellation, parent and child PID disappearance, and delayed-sentinel absence after the deadline; before the fix, the child survived caller abort.";
+const nativePlan = {
+  ...reportLiveProofPlan(base),
+  reason: nativeBehavior,
+  payoff: { kind: "progressive_output", justification: "Synthetic cancellation trace." },
+  entry: "./exec-host-cancellation-probe --socket ./fixture.sock",
+  steps: [
+    { action: "expect_output", text: "normal write-half-close: command succeeded" },
+    { action: "expect_output", text: "caller abort: cancellation acknowledged" },
+    { action: "expect_output", text: "parent PID absent; child PID absent" },
+    { action: "expect_output", text: "delayed sentinel absent after deadline" },
+  ],
+};
+const nativeReceipt = {
+  ...passed,
+  entry: nativePlan.entry,
+  plan_sha256: liveProofPlanSha256(nativePlan),
+  steps: nativePlan.steps.map((step) => ({
+    ...passed.steps[0],
+    detail: "Synthetic native observation, not executed by this recipe.",
+    subject: step.text,
+    assertion: step.text,
+  })),
+  output: nativePlan.steps.map((step) => step.text).join("\n"),
+};
+for (const scenario of [
+  {
+    name: "native-gap-help-pass",
+    owner: nativeOwner,
+    behavior: nativeBehavior,
+    kind: "terminal",
+    sufficient: false,
+    summary: `Synthetic assessment: ${nativeOwner} changes socket cancellation and process lifetime, but help output does not exercise normal write-half-close success, explicit caller abort, child teardown, or the delayed sentinel on macOS.`,
+  },
+  {
+    name: "changed-help-pass",
+    owner: "src/cli/help.ts",
+    behavior: "CLI help output changes.",
+    kind: "terminal",
+    sufficient: true,
+    summary:
+      "Synthetic assessment: src/cli/help.ts changes CLI help; pnpm openclaw --help on the reviewed local build shows the corrected Usage: openclaw [options] [command] output.",
+  },
+  ...["terminal", "linked_artifact", "recording"].map((kind) => ({
+    name: `native-${kind}-pass`,
+    owner: nativeOwner,
+    behavior: nativeBehavior,
+    kind,
+    sufficient: true,
+    summary: `Synthetic assessment: ${nativeOwner} changes socket cancellation. ${nativeObservation}${kind === "terminal" ? "" : " Independent Developer-ID-signed before/after evidence establishes coverage through those observations; signing establishes provenance only, and the unrelated help smoke adds no coverage."}`,
+  })),
+]) {
+  let report = base.replace(/^pull_files:.*$/m, `pull_files: ${JSON.stringify([scenario.owner])}`);
+  report = section(
+    report,
+    "Summary",
+    "Synthetic classification fixture; no target code exists here.",
+  );
+  report = section(report, "What This Changes", scenario.behavior);
+  report = assessment(report, scenario.kind, scenario.summary);
+  report = section(
+    report,
+    "PR Rating",
+    "Overall tier: A\n\nProof tier: A\n\nPatch tier: A\n\nSummary: Synthetic reviewer assessment.\n\nNext rank-up steps:\n\n- none",
+  );
+  if (!scenario.sufficient) {
+    report = report
+      .replace("Status: sufficient", "Status: insufficient")
+      .replace("Needs contributor action: false", "Needs contributor action: true");
+  }
+  const nativeTerminal = scenario.name === "native-terminal-pass";
+  if (nativeTerminal) {
+    report = section(
+      report,
+      "Live Proof",
+      `Status: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: ${nativePlan.reason}\n\nPayoff: ${nativePlan.payoff.kind}\n\nPayoff justification: ${nativePlan.payoff.justification}\n\nEntry: ${nativePlan.entry}\n\nSteps:\n\n${nativePlan.steps.map((step) => `- ${JSON.stringify(step)}`).join("\n")}`,
+    );
+  }
+  run(scenario.name, report, nativeTerminal ? nativeReceipt : passed, (result) => {
+    attached(result);
+    assert.ok(result.observed.comment.includes(scenario.summary), "source-aware summary retained");
+    assert.ok(
+      result.observed.comment.includes(
+        scenario.sufficient
+          ? `Sufficient (${scenario.kind}):`
+          : "Needs stronger real behavior proof before merge:",
+      ),
+      "semantic classification and evidence attribution retained",
+    );
+    assert.equal(result.observed.realBehaviorVerified, scenario.sufficient);
+    assert.equal(result.observed.addsSufficient, scenario.sufficient);
+    assert.equal(result.observed.addsVideo, scenario.kind === "recording");
+    assert.equal(result.observed.contributorProofRequested, !scenario.sufficient);
+    assert.equal(result.observed.mergePass, scenario.sufficient);
+  });
+}
+
 const summary = {
   claim: "Historical execution receipts do not replace reviewer-assessed behavioral proof.",
   runtime: {
@@ -305,7 +431,7 @@ const summary = {
   },
   results,
   limits:
-    "Synthetic historical input; actual local CLI folding and report projections only. No Gateway authorization execution, fresh terminal run, media upload, GitHub call, deployment, or queue mutation.",
+    "Synthetic historical input and native assessments; actual local CLI folding and report projections only. No Gateway or native execution, fresh terminal run, model assessment, media upload, GitHub call, deployment, or queue mutation.",
 };
 writeFileSync(join(out, "result.json"), JSON.stringify(summary, null, 2) + "\n");
 console.log(JSON.stringify(summary, null, 2));

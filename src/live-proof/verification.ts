@@ -403,6 +403,12 @@ export function renderLiveVerificationCommentBlock(result: LiveVerificationResul
     "",
     resultLine,
   ];
+  if (parsed.overall_pass) {
+    lines.push(
+      "",
+      "PASS covers only the declared scenario and assertions; the real behavior proof assessment determines whether they cover the PR's changes.",
+    );
+  }
   if (parsed.surface === "browser") {
     const executed = parsed.steps.filter((step) => step.status !== "not_run");
     if (executed.length) {
