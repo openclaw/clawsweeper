@@ -93,6 +93,21 @@ age out:
 These publication paths consume trusted workflow artifacts; they do not inspect
 a new plan or execute target code.
 
+Historical receipts are diagnostic execution evidence. A passed command or
+assertion does not establish that the changed behavior was exercised. The
+ordinary recorded `realBehaviorProof` assessment owns that judgment, including
+relevant deterministic owner evidence assessed by the reviewer. Attaching a
+receipt cannot manufacture sufficient proof, replace contributor evidence or
+its media attribution, or waive required authority-chain proof. Reviewer patch
+ratings and rank-up advice remain independent; stale receipt-era proof credit
+may only be capped against the recorded behavioral assessment.
+
+Failed or malformed receipts still block merge independently of proof
+exemptions and overrides. When independent behavioral proof is valid, the
+receipt failure belongs to the maintainer, not the contributor. Identity and
+plan validation, bounded output, historical media publication, and retraction
+remain unchanged. No new execution or assessment lane is introduced.
+
 ## OpenClaw Bay
 
 OpenClaw Bay remains observer-only. Its default beach and one-hour review-time

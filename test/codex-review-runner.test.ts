@@ -27,7 +27,9 @@ const trackedCheckoutFingerprint = "8b9382c9009cdc46cb69d59eb0078522d45023b2";
 const fakeCodexSandboxPass = `if (process.argv[2] === "sandbox") {
   process.stdout.write(${JSON.stringify(trackedCheckoutFingerprint)} + "\\n");
   process.exit(0);
-}`;
+}
+// Like the real CLI, consume the prompt before a review result or early exit.
+require("node:fs").readFileSync(0, "utf8");`;
 
 function initTrackedRepo(dir: string, trackedPath = "tracked.txt"): void {
   execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
@@ -415,6 +417,7 @@ if (process.argv[2] === "sandbox") {
     process.exit(0);
   }, 400);
 } else {
+  fs.readFileSync(0, "utf8");
   const outputIndex = process.argv.indexOf("--output-last-message");
   setTimeout(() => {
     fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON);
@@ -1048,8 +1051,6 @@ test("runCodex keeps high reasoning for the final transport retry", () => {
     `#!/usr/bin/env node
 ${fakeCodexSandboxPass}
 const fs = require("node:fs");
-// Consume the prompt like the real Codex CLI so early exits cannot race its stdin writer.
-fs.readFileSync(0, "utf8");
 const cfg = process.argv.find((a) => a.startsWith("model_reasoning_effort="));
 const effort = cfg ? cfg.split("=")[1].replace(/"/g, "") : "";
 const attemptsPath = process.env.CODEX_ATTEMPTS_PATH;

@@ -192,7 +192,9 @@ test("unresolved proof routes contributors and maintainers to distinct owners", 
   );
 });
 
-test("execution-phase attached verification failure is maintainer-owned without erasing proof", () => {
+test("historical receipt failures route to the proof owner without erasing independent proof", () => {
+  let receiptStatus = "failed";
+  let needsContributorAction = false;
   const policy = createLabelPolicy({
     asRecord: (value) => value as Record<string, unknown>,
     frontMatterValue: (_markdown, key) =>
@@ -203,20 +205,12 @@ test("execution-phase attached verification failure is maintainer-owned without 
           : undefined,
     isAutomationReportAuthor: () => false,
     mergeRiskOptionsFromReport: () => [],
-    reportAttachedLiveVerification: () => ({
-      status: "failed",
-      result: {
-        failure: {
-          phase: "execution",
-          reason: "reviewer-side verification environment did not start",
-        },
-      },
-    }),
+    reportAttachedLiveVerification: () => ({ status: receiptStatus }),
     reportOverallCorrectness: () => "patch is correct",
     reportRealBehaviorProof: () => ({
-      status: "sufficient",
+      status: needsContributorAction ? "missing" : "sufficient",
       evidenceKind: "terminal",
-      needsContributorAction: false,
+      needsContributorAction,
       summary: "Contributor-supplied terminal output already proves the changed behavior.",
     }),
     reportReviewFindings: () => [],
@@ -225,12 +219,21 @@ test("execution-phase attached verification failure is maintainer-owned without 
     timestampMs: (value) => (value ? Date.parse(value) : null),
   });
 
-  assert.equal(
-    policy.prStatusLabelKindFromReport("report", { comments: [], timeline: [] }, [
-      "clawsweeper:automerge",
-    ]),
-    "needs_maintainer_proof_decision",
-  );
+  for (receiptStatus of ["absent", "passed", "failed", "malformed"]) {
+    for (needsContributorAction of [false, true]) {
+      assert.equal(
+        policy.prStatusLabelKindFromReport("report", { comments: [], timeline: [] }, [
+          "clawsweeper:automerge",
+        ]),
+        needsContributorAction
+          ? "needs_proof"
+          : receiptStatus === "failed" || receiptStatus === "malformed"
+            ? "needs_maintainer_proof_decision"
+            : "automerge_armed",
+        `${receiptStatus}: contributor action=${needsContributorAction}`,
+      );
+    }
+  }
 });
 
 test("ClawSweeper PR status labels preserve other label families", () => {

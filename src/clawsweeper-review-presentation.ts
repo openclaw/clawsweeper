@@ -656,10 +656,6 @@ export function createReviewPresentation({
     return null;
   }
 
-  function isProofSpecificStatus(kind: PrStatusLabelKind): boolean {
-    return kind === "needs_proof" || kind === "needs_maintainer_proof_decision";
-  }
-
   function activeRepairStatusFromLabels(labels: readonly string[]): PrStatusLabelKind | null {
     for (const kind of ["re_review_loop", "actively_grinding"] as const) {
       const status = PR_STATUS_LABELS.find((candidate) => candidate.kind === kind);
@@ -668,26 +664,16 @@ export function createReviewPresentation({
     return null;
   }
 
+  function isProofSpecificStatus(kind: PrStatusLabelKind): boolean {
+    return kind === "needs_proof" || kind === "needs_maintainer_proof_decision";
+  }
+
   function prStatusLabelKindFromReportLabels(markdown: string): PrStatusLabelKind | null {
     const parsedLabels = frontMatterStringArray(markdown, "labels");
     if (hasRepairLoopPauseLabel(parsedLabels)) return null;
     const attachedVerification = reportAttachedLiveVerification(markdown);
-    const proofResolvedByAttachedVerification = attachedVerification.status === "passed";
-    const effectiveParsedLabels = proofResolvedByAttachedVerification
-      ? parsedLabels.filter((label) => {
-          const status = PR_STATUS_LABELS.find((candidate) => candidate.name === label);
-          return !status || !isProofSpecificStatus(status.kind);
-        })
-      : parsedLabels;
-    const activeRepairStatus = activeRepairStatusFromLabels(effectiveParsedLabels);
+    const activeRepairStatus = activeRepairStatusFromLabels(parsedLabels);
     if (activeRepairStatus) return activeRepairStatus;
-    if (
-      attachedVerification.status === "failed" &&
-      attachedVerification.result.failure?.phase === "execution"
-    ) {
-      return "needs_maintainer_proof_decision";
-    }
-    const fromParsedLabels = prStatusLabelKindFromLabels(effectiveParsedLabels);
     const proof = reportRealBehaviorProof(markdown);
     if (
       proof.status === "missing" ||
@@ -696,6 +682,17 @@ export function createReviewPresentation({
     ) {
       return proof.needsContributorAction ? "needs_proof" : "needs_maintainer_proof_decision";
     }
+    if (attachedVerification.status === "failed" || attachedVerification.status === "malformed") {
+      return "needs_maintainer_proof_decision";
+    }
+    const fromParsedLabels = prStatusLabelKindFromLabels(
+      parsedLabels.filter(
+        (label) =>
+          !PR_STATUS_LABELS.some(
+            (status) => status.name === label && isProofSpecificStatus(status.kind),
+          ),
+      ),
+    );
     if (fromParsedLabels) return fromParsedLabels;
     if (parsedLabels.includes(AUTOMERGE_LABEL)) return "automerge_armed";
     const rawLabels = frontMatterValue(markdown, "labels") ?? "";
@@ -708,9 +705,7 @@ export function createReviewPresentation({
     if (rawLabels.includes(AUTOMERGE_LABEL)) return "automerge_armed";
     return (
       PR_STATUS_LABELS.find(
-        (label) =>
-          rawLabels.includes(label.name) &&
-          !(proofResolvedByAttachedVerification && isProofSpecificStatus(label.kind)),
+        (label) => rawLabels.includes(label.name) && !isProofSpecificStatus(label.kind),
       )?.kind ?? null
     );
   }

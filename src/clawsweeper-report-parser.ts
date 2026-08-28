@@ -544,39 +544,7 @@ export function createReportParser({
   }
 
   function reportRealBehaviorProof(markdown: string): RealBehaviorProof {
-    const attached = reportAttachedLiveVerification(markdown);
-    if (attached.status === "passed") {
-      return {
-        status: "sufficient",
-        summary: `ClawSweeper live verification passed on the reviewed ${attached.result.surface} surface.`,
-        evidenceKind: attached.result.surface === "terminal" ? "terminal" : "live_output",
-        needsContributorAction: false,
-      };
-    }
-    if (attached.status === "failed") {
-      if (attached.result.failure?.phase === "execution") {
-        return recordedRealBehaviorProof(markdown);
-      }
-      return {
-        status: "insufficient",
-        summary: `ClawSweeper live verification failed on the reviewed ${attached.result.surface} surface.`,
-        evidenceKind: attached.result.surface === "terminal" ? "terminal" : "live_output",
-        needsContributorAction: isExternalPullRequestReport(markdown),
-      };
-    }
-    if (attached.status === "malformed") {
-      return {
-        status: "missing",
-        summary:
-          "The attached ClawSweeper live verification result is malformed or does not match this pull request review.",
-        evidenceKind: "none",
-        needsContributorAction: isExternalPullRequestReport(markdown),
-      };
-    }
-    return recordedRealBehaviorProof(markdown);
-  }
-
-  function recordedRealBehaviorProof(markdown: string): RealBehaviorProof {
+    // Historical execution receipts do not assess relevance to the changed behavior.
     const defaultProof = defaultRealBehaviorProof(markdown);
     if (defaultProof.status === "override" || isDocsOnlyPullRequestReport(markdown)) {
       return defaultProof;
@@ -747,7 +715,6 @@ export function createReportParser({
     const patchTierField = frontMatterField(markdown, "pr_rating_patch");
     const overallTierField = frontMatterField(markdown, "pr_rating_overall");
     if (
-      attached.status !== "absent" ||
       [proofTierField, patchTierField, overallTierField].some(
         (field) =>
           field.status === "ambiguous" ||
@@ -789,13 +756,16 @@ export function createReportParser({
         (proofTierValue === "D" || proofTierValue === "F")
       )
     ) {
-      return normalizePrRating({
-        proofTier: proofTierValue as PrRatingTier,
-        patchTier: patchTierValue as PrRatingTier,
-        overallTier: overallTierValue as PrRatingTier,
-        summary,
-        nextSteps,
-      });
+      return normalizePrRating(
+        {
+          proofTier: proofTierValue as PrRatingTier,
+          patchTier: patchTierValue as PrRatingTier,
+          overallTier: overallTierValue as PrRatingTier,
+          summary,
+          nextSteps,
+        },
+        attached.status === "absent" ? undefined : proof,
+      );
     }
     return derivedPrRating({
       isPullRequest: frontMatterValue(markdown, "type") === "pull_request",

@@ -211,7 +211,7 @@ Full review comments:
   }
 });
 
-test("attached verification pass ignores stale proof statuses and preserves current status details", () => {
+test("recorded proof reconciles public proof statuses independently of historical receipts", () => {
   const headSha = "a".repeat(40);
   const plan: LiveProofPlan = {
     status: "recommended",
@@ -253,12 +253,26 @@ Result: ${encodeLiveVerificationReportPayload({
     {
       labels: ["clawsweeper:automerge", "status: 📣 needs proof"],
       stale: "status: 📣 needs proof",
-      expected: "status: 🚀 automerge armed",
+      expected: "status: 📣 needs proof",
+      resolvedExpected: "status: 🚀 automerge armed",
     },
     {
       labels: ["status: needs maintainer proof decision", "status: 👀 ready for maintainer look"],
       stale: "status: needs maintainer proof decision",
-      expected: "status: 👀 ready for maintainer look",
+      expected: "status: 📣 needs proof",
+      resolvedExpected: "status: 👀 ready for maintainer look",
+    },
+    {
+      labels: ["status: 📣 needs proof"],
+      stale: "status: 📣 needs proof",
+      expected: "status: 📣 needs proof",
+      resolvedExpected: null,
+    },
+    {
+      labels: ["status: needs maintainer proof decision"],
+      stale: "status: needs maintainer proof decision",
+      expected: "status: 📣 needs proof",
+      resolvedExpected: null,
     },
     {
       labels: ["status: 🚀 automerge armed", "status: 📣 needs proof", "status: 🔁 re-review loop"],
@@ -277,19 +291,20 @@ Result: ${encodeLiveVerificationReportPayload({
   ];
 
   for (const fixture of cases) {
-    const report = `${reportFrontMatter({
-      type: "pull_request",
-      number: "74510",
-      decision: "keep_open",
-      close_reason: "none",
-      review_status: "complete",
-      confidence: "high",
-      author: "contributor",
-      author_association: "CONTRIBUTOR",
-      labels: JSON.stringify(fixture.labels),
-      work_candidate: "none",
-      pull_head_sha: headSha,
-    })}
+    for (const sufficient of [false, true]) {
+      const report = `${reportFrontMatter({
+        type: "pull_request",
+        number: "74510",
+        decision: "keep_open",
+        close_reason: "none",
+        review_status: "complete",
+        confidence: "high",
+        author: "contributor",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify(fixture.labels),
+        work_candidate: "none",
+        pull_head_sha: headSha,
+      })}
 
 ## Summary
 
@@ -304,10 +319,12 @@ Updates the reviewed implementation.
 Honor the attached verification result and current non-proof status.
 
 ${realBehaviorProofReportSection({
-  status: "missing",
-  evidenceKind: "none",
-  needsContributorAction: true,
-  summary: "The model did not record real behavior proof.",
+  status: sufficient ? "sufficient" : "missing",
+  evidenceKind: sufficient ? "recording" : "none",
+  needsContributorAction: !sufficient,
+  summary: sufficient
+    ? "Reviewer-assessed recording exercises the changed authorization boundary."
+    : "The model did not record real behavior proof.",
 })}
 
 ## Live Proof
@@ -343,14 +360,35 @@ Full review comments:
 - none
 `;
 
-    const comment = renderReviewCommentFromReport(report, "none", {
-      previousLabels: [fixture.stale],
-    });
-    const labelDetails = detailsBody(comment, "Label changes");
-
-    assert.match(labelDetails, new RegExp(`add \`${fixture.expected}\``));
-    assert.match(labelDetails, new RegExp(`remove \`${fixture.stale}\``));
-    assert.doesNotMatch(labelDetails, new RegExp(`add \`${fixture.stale}\``));
+      const expected =
+        sufficient && fixture.resolvedExpected !== undefined
+          ? fixture.resolvedExpected
+          : fixture.expected;
+      for (const attached of [true, false]) {
+        const currentReport = attached ? report : report.replace(attachedVerification, "");
+        const comment = renderReviewCommentFromReport(currentReport, "none", {
+          previousLabels: [fixture.stale],
+        });
+        const labelDetails = detailsBody(comment, "Label changes");
+        // Existing stale labels can be justified without an add line; inspect the selected status.
+        const justifiedStatuses = [...labelDetails.matchAll(/^- `(status: [^`]+)`: /gm)].map(
+          (match) => match[1],
+        );
+        const context = `${fixture.stale}: sufficient=${sufficient}, attached=${attached}`;
+        assert.deepEqual(justifiedStatuses, expected ? [expected] : [], context);
+        if (expected !== fixture.stale) {
+          assert.ok(labelDetails.includes(`remove \`${fixture.stale}\``), context);
+        }
+        assert.equal(/add `proof: sufficient`/.test(labelDetails), sufficient, context);
+        if (!sufficient) {
+          assert.doesNotMatch(
+            reviewAutomationMarkersFromReport(currentReport),
+            /clawsweeper-verdict:pass/,
+            context,
+          );
+        }
+      }
+    }
   }
 });
 

@@ -311,7 +311,8 @@ export function createLabelPolicy({
     const proof = reportRealBehaviorProof(markdown);
     const attached = reportAttachedLiveVerification(markdown);
     const statusProof =
-      attached.status === "failed" && attached.result.failure?.phase === "execution"
+      (attached.status === "failed" || attached.status === "malformed") &&
+      !proofNeedsContributorAction(proof)
         ? { status: "insufficient" as const, needsContributorAction: false }
         : proof;
     return prStatusLabelKind({

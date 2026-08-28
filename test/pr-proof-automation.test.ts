@@ -720,7 +720,7 @@ Full review comments:
   assert.doesNotMatch(markers, /clawsweeper-action:fix-required/);
 });
 
-test("attached verification overrides stale proof policy and exemption metadata", () => {
+test("historical receipts preserve assessed proof, exemptions, patch caps, and merge guards", () => {
   const headSha = "0123456789abcdef0123456789abcdef01234567";
   const itemNumber = 74464;
   const plan: LiveProofPlan = {
@@ -808,12 +808,16 @@ test("attached verification overrides stale proof policy and exemption metadata"
     planEntry = plan.entry,
     pullFiles,
     proof,
+    association = "CONTRIBUTOR",
+    rating = {},
   }: {
     payload: string | null;
     labels?: string[];
     planEntry?: string;
     pullFiles?: string[];
     proof?: Parameters<typeof realBehaviorProofReportSection>[0];
+    association?: string;
+    rating?: Parameters<typeof prRatingReportSection>[0];
   }) => `${reportFrontMatter({
     type: "pull_request",
     number: String(itemNumber),
@@ -822,14 +826,11 @@ test("attached verification overrides stale proof policy and exemption metadata"
     review_status: "complete",
     confidence: "high",
     author: "contributor",
-    author_association: "CONTRIBUTOR",
+    author_association: association,
     labels: JSON.stringify(labels),
     work_candidate: "none",
     pull_head_sha: headSha,
     ...(pullFiles ? { pull_files: JSON.stringify(pullFiles), pull_files_truncated: false } : {}),
-    pr_rating_overall: "S",
-    pr_rating_proof: "S",
-    pr_rating_patch: "S",
   })}
 
 ## Summary
@@ -845,7 +846,7 @@ ${realBehaviorProofReportSection(
   },
 )}
 
-${prRatingReportSection({ overallTier: "S", proofTier: "S", patchTier: "S" })}
+${prRatingReportSection({ overallTier: "S", proofTier: "S", patchTier: "S", ...rating })}
 
 ## Live Proof
 
@@ -882,10 +883,10 @@ Full review comments:
 
   const cases = [
     {
-      name: "passed receipt overrides stale missing proof",
+      name: "passed receipt cannot promote missing proof",
       payload: encodeLiveVerificationReportPayload(passed),
       state: "passed",
-      verdict: "pass",
+      verdict: "needs-human",
       result: "PASS",
     },
     {
@@ -982,13 +983,6 @@ Full review comments:
     } else {
       assert.doesNotMatch(comment, /\*\*Result:\*\*/, scenario.name);
     }
-    if (scenario.state === "failed" || scenario.state === "malformed") {
-      assert.doesNotMatch(
-        comment,
-        /\| \*\*Overall readiness\*\* \| .*challenger crab \*\*\(6\/6\)\*\*/,
-        scenario.name,
-      );
-    }
     if (scenario.expectedStatusLabel) {
       assert.match(
         labelDetails,
@@ -1001,6 +995,100 @@ Full review comments:
       assert.match(labelDetails, /add `proof: sufficient`/, scenario.name);
       assert.doesNotMatch(comment, /Blocked until real behavior proof is added/, scenario.name);
     }
+  }
+
+  const passPayload = encodeLiveVerificationReportPayload(passed);
+  const missingComment = renderReviewCommentFromReport(reportFor({ payload: passPayload }), "none");
+  assert.doesNotMatch(
+    missingComment,
+    /add `proof: sufficient`|\| \*\*Real behavior\*\* \| Verified/,
+  );
+  assert.match(missingComment, /\| \*\*Proof confidence\*\* \| [^|]*\*\*\(1\/6\)\*\*/);
+
+  for (const evidenceKind of ["recording", "linked_artifact", "terminal"] as const) {
+    const proof = {
+      status: "sufficient",
+      evidenceKind,
+      needsContributorAction: false,
+      summary:
+        "Reviewed owner trace exercises the changed authorization boundary and its denied-principal control.",
+    };
+    const rating = {
+      overallTier: "C",
+      proofTier: evidenceKind === "terminal" ? "A" : "S",
+      patchTier: "C",
+      summary: "The reviewer capped patch quality because rollback ownership is still complex.",
+      nextSteps: "- Simplify rollback ownership before raising the patch grade.",
+    };
+    const direct = renderReviewCommentFromReport(
+      reportFor({ payload: null, proof, rating }),
+      "none",
+    );
+    for (const payload of [
+      passPayload,
+      encodeLiveVerificationReportPayload(failed),
+      encodeLiveVerificationReportPayload(executionFailed),
+      "invalid!",
+    ]) {
+      const report = reportFor({ payload, proof, rating });
+      const comment = renderReviewCommentFromReport(report, "none");
+      const labels = detailsBody(comment, "Label changes");
+      assert.ok(comment.includes(proof.summary), evidenceKind);
+      assert.match(labels, /add `proof: sufficient`/, evidenceKind);
+      if (evidenceKind === "recording") assert.match(labels, /add `proof: 🎥 video`/);
+      assert.doesNotMatch(labels, /add `status: 📣 needs proof`/, evidenceKind);
+      for (const axis of ["Proof confidence", "Patch quality", "Overall readiness"]) {
+        const row = new RegExp(`\\| \\*\\*${axis}\\*\\* \\|[^\\n]+`);
+        assert.equal(comment.match(row)?.[0], direct.match(row)?.[0], `${evidenceKind}: ${axis}`);
+      }
+      assert.match(comment, /Simplify rollback ownership before raising the patch grade/);
+      if (payload !== passPayload) {
+        assert.match(labels, /add `status: needs maintainer proof decision`/);
+        assert.doesNotMatch(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+      } else {
+        assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+      }
+    }
+  }
+
+  for (const association of ["CONTRIBUTOR", "MEMBER"]) {
+    const report = reportFor({
+      payload: passPayload,
+      association,
+      proof: {
+        status: "missing",
+        evidenceKind: "none",
+        needsContributorAction: true,
+        summary: "Authority-chain proof required: the forbidden principal has not been exercised.",
+      },
+    });
+    assert.match(
+      reviewAutomationMarkersFromReport(report),
+      /clawsweeper-verdict:needs-human/,
+      association,
+    );
+    assert.doesNotMatch(
+      renderReviewCommentFromReport(report, "none"),
+      /add `proof: sufficient`/,
+      association,
+    );
+  }
+
+  for (const exemption of [
+    { association: "MEMBER" },
+    { pullFiles: ["docs/usage.md"] },
+    { labels: ["clawsweeper:automerge", "proof: override"] },
+  ]) {
+    const direct = reportFor({ payload: null, ...exemption });
+    const attached = reportFor({ payload: passPayload, ...exemption });
+    assert.match(reviewAutomationMarkersFromReport(direct), /clawsweeper-verdict:pass/);
+    assert.match(reviewAutomationMarkersFromReport(attached), /clawsweeper-verdict:pass/);
+    const proofRow = /\| \*\*Real behavior\*\* \|[^\n]+/;
+    assert.equal(
+      renderReviewCommentFromReport(attached, "none").match(proofRow)?.[0],
+      renderReviewCommentFromReport(direct, "none").match(proofRow)?.[0],
+    );
+    assert.doesNotMatch(renderReviewCommentFromReport(attached, "none"), /add `proof: sufficient`/);
   }
 });
 
