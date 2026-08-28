@@ -414,10 +414,7 @@ test("ClawSweeper Telegram proof judgement controls the E2E proof label", () => 
     "proof: telegram-e2e",
   ]);
   assert.deepEqual(
-    telegramVisibleProofLabelsForTest(
-      ["channel: telegram", "proof: telegram-e2e"],
-      "not_needed",
-    ),
+    telegramVisibleProofLabelsForTest(["channel: telegram", "proof: telegram-e2e"], "not_needed"),
     ["channel: telegram"],
   );
 });
