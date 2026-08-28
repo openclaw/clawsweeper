@@ -56,6 +56,33 @@ function withSteps(report: string, payload: string): string {
   return report.replace(/Steps:\n\n[\s\S]*?(?=\n\n## Work Candidate)/, `Steps:\n\n${payload}`);
 }
 
+function reportBoundaryVariants(report: string): [string, string][] {
+  const [prefix, body] = report.split("## Live Proof\n\n");
+  const section = body!.split("\n\n## Work Candidate")[0]!;
+  return ["\n", "\r\n"].flatMap((newline) => {
+    // Keep the existing LF heading grammar; vary the body and attachment line endings.
+    const raw = `${prefix}## Live Proof\n\n${section.replaceAll("\n", newline)}`;
+    return Object.entries({
+      eof: "",
+      "final-newline": newline,
+      "next-section": `${newline}## Work Candidate${newline}${newline}Candidate: none${newline}`,
+    }).map(([ending, suffix]) => [`${JSON.stringify(newline)} ${ending}`, raw + suffix]);
+  });
+}
+
+function attachedVerificationStatus(report: string, plan: LiveProofPlan) {
+  return parseAttachedLiveVerification(
+    report.split("## Live Proof\n\n")[1]!,
+    {
+      repository: "openclaw/clawsweeper",
+      number: "42",
+      type: "pull_request",
+      pullHeadSha: HEAD,
+    },
+    plan,
+  ).status;
+}
+
 function reviewFixture(t: test.TestContext) {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-report-steps-"));
   t.after(() => rmSync(root, { force: true, recursive: true }));
@@ -95,13 +122,28 @@ test("non-executable plans roundtrip through the production renderer and skip re
     const report = renderedReport(plan);
     assert.match(report, /Steps:\n\n\[\]\n\n## Work Candidate/);
     for (const payload of ["[]", "- none", " \t[] \t\n", "\n \t- none \t\n"]) {
-      const persisted = withSteps(report, payload);
-      assert.deepEqual(reportLiveProofPlan(persisted), plan, `${status}: ${payload}`);
-      fixture.write(persisted);
-      assert.deepEqual(fixture.inspect(), EMPTY_INSPECTION);
-      assert.deepEqual(fixture.execute(), EMPTY_INSPECTION);
-      fixture.assertRecordsOnly();
+      for (const [boundary, persisted] of reportBoundaryVariants(withSteps(report, payload))) {
+        assert.deepEqual(
+          reportLiveProofPlan(persisted),
+          plan,
+          `${status}: ${payload}: ${boundary}`,
+        );
+        fixture.write(persisted);
+        assert.deepEqual(fixture.inspect(), EMPTY_INSPECTION);
+        assert.deepEqual(fixture.execute(), EMPTY_INSPECTION);
+        fixture.assertRecordsOnly();
+      }
     }
+  }
+});
+
+test("plan labels retain whitespace tolerance without normalizing attachment lines", () => {
+  const plan = noExecutionPlan("not_applicable");
+  const rendered = renderedReport(plan)
+    .replace("Status:", " \tStatus:")
+    .replace("Steps:\n", " \tSteps: \t\n");
+  for (const [boundary, report] of reportBoundaryVariants(rendered)) {
+    assert.deepEqual(reportLiveProofPlan(report), plan, boundary);
   }
 });
 
@@ -178,6 +220,69 @@ test("malformed or ambiguous Steps payloads reject before review execution", (t)
   }
 });
 
+test("padded attachment markers reject before inspection or execution at raw section boundaries", (t) => {
+  const fixture = reviewFixture(t);
+  const plans: LiveProofPlan[] = [
+    noExecutionPlan("declined_suspicious"),
+    noExecutionPlan("not_applicable"),
+    {
+      ...noExecutionPlan("not_applicable"),
+      status: "recommended",
+      surface: "terminal",
+      terminalCompletion: "exit_zero",
+      entry: "must-never-execute",
+      steps: [{ action: "expect_output", text: "synthetic" }],
+    },
+  ];
+  for (const plan of plans) {
+    for (const marker of [LIVE_VERIFICATION_MARKER, LIVE_PROOF_RECORDING_MARKER]) {
+      for (const whitespace of [" ", "\t", "\u00a0"]) {
+        for (const padded of [whitespace + marker, marker + whitespace]) {
+          for (const trailer of ["", "\nnot-a-step"]) {
+            for (const [boundary, malformed] of reportBoundaryVariants(
+              renderedReport(plan, `\n\n${padded}${trailer}`),
+            )) {
+              const context = `${plan.status}: ${JSON.stringify(padded + trailer)}: ${boundary}`;
+              assert.equal(attachedVerificationStatus(malformed, plan), "absent", context);
+              assert.equal(reportLiveProofPlan(malformed).invalid, true, context);
+              fixture.write(malformed);
+              assert.throws(fixture.inspect, /live proof plan for 42 is invalid/, context);
+              assert.throws(fixture.execute, /live proof plan for 42 is invalid/, context);
+              fixture.assertRecordsOnly();
+            }
+          }
+        }
+      }
+      // A terminal lone CR is not a CRLF line ending and must not become an exact marker.
+      const malformed = reportBoundaryVariants(renderedReport(plan, `\n\n${marker}\r`))[0]![1];
+      assert.equal(attachedVerificationStatus(malformed, plan), "absent");
+      assert.equal(reportLiveProofPlan(malformed).invalid, true);
+      fixture.write(malformed);
+      assert.throws(fixture.inspect, /live proof plan for 42 is invalid/);
+      assert.throws(fixture.execute, /live proof plan for 42 is invalid/);
+      fixture.assertRecordsOnly();
+    }
+  }
+});
+
+test("exact raw markers delimit steps while malformed attachment validation stays separate", () => {
+  const plan = noExecutionPlan("not_applicable");
+  for (const marker of [LIVE_VERIFICATION_MARKER, LIVE_PROOF_RECORDING_MARKER]) {
+    for (const trailer of ["", "\nnot-a-step"]) {
+      for (const [boundary, report] of reportBoundaryVariants(
+        renderedReport(plan, `\n\n${marker}${trailer}`),
+      )) {
+        assert.deepEqual(reportLiveProofPlan(report), plan, boundary);
+        assert.equal(
+          attachedVerificationStatus(report, plan),
+          marker === LIVE_VERIFICATION_MARKER ? "malformed" : "absent",
+          boundary,
+        );
+      }
+    }
+  }
+});
+
 test("recommended plans still reject both empty report formats", (t) => {
   const fixture = reviewFixture(t);
   for (const surface of ["browser", "terminal"] as const) {
@@ -248,24 +353,13 @@ test("nonempty report steps preserve command order and attached verification/rec
     `\n\n${recordingBlock}`,
     `\n\n${verificationBlock}\n\n${recordingBlock}`,
   ]) {
-    const report = renderedReport(plan, suffix);
-    assert.match(report, /Steps:\n\n- \{"action":"run"/);
-    assert.deepEqual(reportLiveProofPlan(report), plan);
-    if (suffix.includes(verificationBlock)) {
-      const section = report.split("## Live Proof\n\n")[1]!.split("\n\n## Work Candidate")[0]!;
-      assert.equal(
-        parseAttachedLiveVerification(
-          section,
-          {
-            repository: "openclaw/clawsweeper",
-            number: "42",
-            type: "pull_request",
-            pullHeadSha: HEAD,
-          },
-          plan,
-        ).status,
-        "passed",
-      );
+    const rendered = renderedReport(plan, suffix);
+    assert.match(rendered, /Steps:\n\n- \{"action":"run"/);
+    for (const [boundary, report] of reportBoundaryVariants(rendered)) {
+      assert.deepEqual(reportLiveProofPlan(report), plan, boundary);
+      if (suffix.includes(verificationBlock)) {
+        assert.equal(attachedVerificationStatus(report, plan), "passed", boundary);
+      }
     }
   }
 });

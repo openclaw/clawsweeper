@@ -170,15 +170,16 @@ export function reportLiveProofPlan(markdown: string): LiveProofPlan {
 }
 
 function reportSectionValue(markdown: string, heading: string): string {
+  // Preserve marker whitespace and never separate a final CRLF pair.
   const match = markdown.match(
-    new RegExp(`(?:^|\\n)## ${heading}\\n\\n([\\s\\S]*?)(?=\\n## |\\n?$)`),
+    new RegExp(`(?:^|\\n)## ${heading}\\n\\n([\\s\\S]*?)(?=\\r?\\n## |$)`),
   );
-  return match?.[1]?.trim() ?? "";
+  return match?.[1] ?? "";
 }
 
 function reportSectionLineValue(section: string, label: string): string | undefined {
   const prefix = `${label}:`;
-  for (const line of section.split("\n")) {
+  for (const line of section.trim().split("\n")) {
     if (!line.startsWith(prefix)) continue;
     const value = line.slice(prefix.length).trim();
     return value || undefined;
@@ -187,12 +188,14 @@ function reportSectionLineValue(section: string, label: string): string | undefi
 }
 
 function reportLiveProofSteps(section: string): unknown[] {
-  const lines = section.split("\n").map((line) => line.trim());
-  // Publication appends these owned blocks after the plan in the same section.
+  const lines = section.split(/\r?\n/);
+  // Match raw attachment lines exactly, as the verification parser does.
   const attachmentStart = lines.findIndex(
     (line) => line === LIVE_VERIFICATION_MARKER || line === LIVE_PROOF_RECORDING_MARKER,
   );
-  const planLines = attachmentStart < 0 ? lines : lines.slice(0, attachmentStart);
+  const planLines = (attachmentStart < 0 ? lines : lines.slice(0, attachmentStart)).map((line) =>
+    line.trim(),
+  );
   const start = planLines.indexOf("Steps:");
   if (start < 0 || planLines.lastIndexOf("Steps:") !== start) {
     throw new Error("live-proof report requires exactly one Steps payload");
