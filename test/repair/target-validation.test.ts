@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import childProcess, { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   assertTargetCheckoutBinding,
@@ -8181,56 +8182,71 @@ test("target setup shares one deadline across probes and installs", (t) => {
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "initial");
 
-  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-setup-deadline-"));
-  const corepackPath = path.join(binDir, "corepack.js");
-  const pnpmPath = path.join(binDir, "pnpm.js");
-  const corepackPhasesPath = path.join(binDir, "corepack-phases");
-  const pnpmMarkerPath = path.join(binDir, "pnpm-ran");
-  fs.writeFileSync(
-    corepackPath,
-    `const fs = require("node:fs");
-fs.appendFileSync(${JSON.stringify(corepackPhasesPath)}, process.argv[2] + "\\n");
-`,
-  );
-  fs.writeFileSync(
-    pnpmPath,
-    `require("node:fs").writeFileSync(${JSON.stringify(pnpmMarkerPath)}, "ran");\n`,
-  );
-
-  const startedAt = Date.now();
-  // Charge each completed Corepack phase 600ms; Git/probe scheduling consumes no fake time.
-  const clock = t.mock.method(Date, "now", () => {
-    const phases = fs.existsSync(corepackPhasesPath)
-      ? fs.readFileSync(corepackPhasesPath, "utf8").trim().split("\n").length
-      : 0;
-    return startedAt + phases * 600;
-  });
   try {
-    assert.throws(
-      () =>
-        withMockCommand("corepack", corepackPath, () =>
-          withMockCommand("pnpm", pnpmPath, () =>
-            prepareTargetToolchain(cwd, {
-              ...validationOptions("steipete/example", {
-                toolchain: {
-                  packageManager: "pnpm",
-                  baseValidationCommands: ["pnpm check"],
-                  changedGate: null,
-                },
+    for (const installBudgetMs of [0, 1]) {
+      let now = 10_000;
+      let chargedIdentity = false;
+      const commands: Array<[string, number]> = [];
+      const identityBudgets: number[] = [];
+      withVirtualDeadlineCommands(
+        t,
+        () => now,
+        ({ command, args, timeoutMs, contained }) => {
+          if (command === "git") {
+            assert.equal(timeoutMs, 11_200 - now);
+            identityBudgets.push(timeoutMs);
+            if (!chargedIdentity && args.includes("ls-files")) {
+              chargedIdentity = true;
+              now += 100;
+            }
+            return;
+          }
+          const phase = command === "node" ? "node setup probe" : `${command} ${args[0]}`;
+          commands.push([phase, timeoutMs]);
+          if (phase === "node setup probe") now += 200;
+          else if (phase === "corepack enable") now += 400;
+          else if (phase === "corepack prepare") now += 500 - installBudgetMs;
+          else {
+            assert.equal(phase, "pnpm install");
+            assert.equal(contained, true);
+            assert.ok(args.includes("--frozen-lockfile"));
+            now += 1;
+            return { status: 1, stderr: "ERR_PNPM_OUTDATED_LOCKFILE" };
+          }
+          return { status: 0 };
+        },
+        () =>
+          assert.throws(
+            () =>
+              prepareTargetToolchain(cwd, {
+                ...validationOptions("steipete/example", {
+                  toolchain: {
+                    packageManager: "pnpm",
+                    baseValidationCommands: ["pnpm check"],
+                    changedGate: null,
+                  },
+                }),
+                installTargetDeps: true,
+                installTimeoutMs: 1200,
+                setupTimeoutMs: 1200,
               }),
-              installTargetDeps: true,
-              installTimeoutMs: 1200,
-              setupTimeoutMs: 1200,
-            }),
+            {
+              message: `target dependency setup deadline exhausted during pnpm install${installBudgetMs ? " fallback" : ""}`,
+            },
           ),
-        ),
-      /target dependency setup deadline exhausted during pnpm install/,
-    );
-    assert.equal(fs.readFileSync(corepackPhasesPath, "utf8"), "enable\nprepare\n");
-    assert.equal(fs.existsSync(pnpmMarkerPath), false);
+      );
+      assert.equal(chargedIdentity, true);
+      assert.deepEqual([...new Set(identityBudgets)], [1200, 1100]);
+      assert.deepEqual(commands, [
+        ["node setup probe", 1100],
+        ["corepack enable", 900],
+        ["corepack prepare", 500],
+        ...(installBudgetMs ? [["pnpm install", 1]] : []),
+      ]);
+      assert.equal(now, 11_200);
+      assert.equal(git(cwd, "status", "--porcelain"), "");
+    }
   } finally {
-    clock.mock.restore();
-    fs.rmSync(binDir, { recursive: true, force: true });
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
@@ -8421,59 +8437,76 @@ if (count === 0) { console.error("transient changed gate failure"); process.exit
 });
 
 test("changed validation shares one timeout with checkout identity proof", (t) => {
-  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-validation-budget-"));
-  const marker = path.join(fixture, "attempts");
   const cwd = gitPackageFixture({ "check:changed": "node check.js" });
   fs.writeFileSync(
     path.join(cwd, "check.js"),
-    `const fs = require("node:fs");
-const count = fs.existsSync(${JSON.stringify(marker)})
-  ? Number(fs.readFileSync(${JSON.stringify(marker)}, "utf8"))
-  : 0;
-fs.writeFileSync(${JSON.stringify(marker)}, String(count + 1));
-console.error("transient changed gate failure");
-process.exit(1);
-`,
+    'throw new Error("transient changed gate failure");\n',
   );
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "initial");
   attachOrigin(cwd);
   const origin = git(cwd, "remote", "get-url", "origin");
-  const validationTimeoutMs = 4_000;
-  const startedAt = Date.now();
-  // Exhaust the shared budget only after the real command runs, not during Git setup.
-  const clock = t.mock.method(
-    Date,
-    "now",
-    () => startedAt + (fs.existsSync(marker) ? validationTimeoutMs : 0),
-  );
   const previousRetries = process.env.CLAWSWEEPER_VALIDATION_RETRIES;
   process.env.CLAWSWEEPER_VALIDATION_RETRIES = "1";
   try {
-    assert.throws(
-      () =>
-        withPackageScriptPnpm(() =>
-          runAllowedValidationCommands(
-            ["pnpm check:changed"],
-            cwd,
-            validationOptions("openclaw/openclaw", { validationTimeoutMs }),
+    // A retry needs 1000ms: identity proof leaves exactly that much, or one ms less.
+    for (const identityCostMs of [900, 901]) {
+      let now = 10_000;
+      const commandBudgets: number[] = [];
+      const proofBudgets: number[] = [];
+      let completedIdentities = 0;
+      withVirtualDeadlineCommands(
+        t,
+        () => now,
+        ({ command, args, timeoutMs, contained }) => {
+          if (command === "git") {
+            if (args.slice(-2).join(" ") === "rev-parse origin/main") {
+              completedIdentities += 1;
+              assert.equal(timeoutMs, 10_000);
+              if (commandBudgets.length > 0) {
+                proofBudgets.push(timeoutMs);
+                now += identityCostMs;
+              }
+            }
+            return;
+          }
+          assert.equal(command, "pnpm");
+          assert.ok(args.includes("check:changed"));
+          assert.equal(contained, true);
+          assert.equal(completedIdentities, commandBudgets.length + 1);
+          commandBudgets.push(timeoutMs);
+          now += 100;
+          return { status: 1, stderr: "transient changed gate failure" };
+        },
+        () =>
+          assert.throws(
+            () =>
+              runAllowedValidationCommands(
+                ["pnpm check:changed"],
+                cwd,
+                validationOptions("openclaw/openclaw", { validationTimeoutMs: 4_000 }),
+              ),
+            (error: Error) => {
+              assert.equal(
+                error.message,
+                `validation command failed (pnpm check:changed): ${identityCostMs === 900 ? "validation command runtime budget exhausted" : "transient changed gate failure"}`,
+              );
+              assert.equal((error.cause as Error).message, "transient changed gate failure");
+              return true;
+            },
           ),
-        ),
-      (error: Error) => {
-        assert.equal(
-          error.message,
-          "validation command failed (pnpm check:changed): validation command runtime budget exhausted",
-        );
-        assert.match(String(error.cause), /transient changed gate failure/);
-        return true;
-      },
-    );
-    assert.equal(fs.readFileSync(marker, "utf8"), "1");
-    assert.equal(git(cwd, "status", "--porcelain"), "");
+      );
+      assert.deepEqual(commandBudgets, identityCostMs === 900 ? [2000, 1000] : [2000]);
+      assert.deepEqual(
+        proofBudgets,
+        commandBudgets.map(() => 10_000),
+      );
+      assert.equal(completedIdentities, commandBudgets.length + 1);
+      assert.equal(now, identityCostMs === 900 ? 12_000 : 11_001);
+      assert.equal(git(cwd, "status", "--porcelain"), "");
+    }
   } finally {
-    clock.mock.restore();
     restoreEnv("CLAWSWEEPER_VALIDATION_RETRIES", previousRetries);
-    fs.rmSync(fixture, { recursive: true, force: true });
     fs.rmSync(cwd, { recursive: true, force: true });
     fs.rmSync(origin, { recursive: true, force: true });
   }
@@ -9024,6 +9057,64 @@ function linuxValidationContainmentAvailable() {
     { stdio: "ignore" },
   );
   return probe.status === 0;
+}
+
+function withVirtualDeadlineCommands(t, now, onCommand, callback) {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-virtual-deadline-"));
+  const scripts = new Map(
+    ["node", "corepack", "pnpm"].map((command) => [path.join(binDir, `${command}.cjs`), command]),
+  );
+  for (const script of scripts.keys()) {
+    fs.writeFileSync(script, 'throw new Error("virtual command escaped test seam");\n');
+  }
+  const realSpawnSync = childProcess.spawnSync;
+  const workerPath = fileURLToPath(
+    new URL("../../dist/repair/contained-command-worker.js", import.meta.url),
+  );
+  const clock = t.mock.method(Date, "now", now);
+  const spawn = t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+    const contained = args[0] === workerPath;
+    const invocation = contained
+      ? JSON.parse(options.input)
+      : { command, args, timeoutMs: options.timeout };
+    const tool = scripts.get(invocation.args[0]);
+    const name = tool ?? path.basename(invocation.command).replace(/\.exe$/i, "");
+    const result = onCommand({
+      command: name,
+      args: tool ? invocation.args.slice(1) : invocation.args,
+      timeoutMs: invocation.timeoutMs,
+      contained,
+    });
+    if (name === "git") {
+      assert.equal(contained, false);
+      assert.equal(result, undefined);
+      // Keep real Git/source-trust checks, but let only the virtual clock charge time.
+      return realSpawnSync(command, args, { ...options, timeout: undefined });
+    }
+    assert.ok(result, `unexpected command: ${name}`);
+    const output = { stdout: "", stderr: "", signal: null, ...result };
+    return {
+      pid: 0,
+      output: [null, output.stdout, output.stderr],
+      ...output,
+      ...(contained
+        ? { status: 0, stderr: "", stdout: JSON.stringify({ ...output, backgroundProcesses: 0 }) }
+        : {}),
+    };
+  });
+  syncBuiltinESMExports();
+  try {
+    return withMockCommand("node", path.join(binDir, "node.cjs"), () =>
+      withMockCommand("corepack", path.join(binDir, "corepack.cjs"), () =>
+        withMockCommand("pnpm", path.join(binDir, "pnpm.cjs"), callback),
+      ),
+    );
+  } finally {
+    spawn.mock.restore();
+    syncBuiltinESMExports();
+    clock.mock.restore();
+    fs.rmSync(binDir, { recursive: true, force: true });
+  }
 }
 
 function withPackageScriptPnpm(callback, { name = "check:changed", file = "check.js" } = {}) {
