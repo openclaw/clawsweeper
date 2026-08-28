@@ -155,6 +155,7 @@ export function createSourceRevisionTools({
       MATURITY_LABEL_NAMES.has(label) ||
       label === "feature: ✨ showcase" ||
       label === GOOD_FIRST_ISSUE_LABEL ||
+      label === "mantis: telegram-visible-proof" ||
       label === "proof: telegram-e2e" ||
       label === "triage: needs-real-behavior-proof"
     );
