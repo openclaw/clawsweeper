@@ -3407,6 +3407,28 @@ test("queued publication keeps media probe execution failures retryable", async 
       assert.equal(upserts, 0);
     });
   }
+
+  const fixture = publicationFixture();
+  const cli = spawnSync(
+    process.execPath,
+    ["dist/clawsweeper.js", "live-proof-publish-artifacts", "--artifact-dir", fixture.artifactDir],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AWS_ACCESS_KEY_ID: "",
+        AWS_SECRET_ACCESS_KEY: "",
+        CLAWSWEEPER_LIVE_PROOF_BASE_URL: "",
+        CLAWSWEEPER_LIVE_PROOF_BUCKET: "",
+        CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: "",
+        PATH: "",
+      },
+    },
+  );
+  assert.equal(cli.status, 1);
+  assert.equal(cli.stderr, "");
+  assert.deepEqual(JSON.parse(cli.stdout), { status: "retryable_failure" });
+  assert.equal(cli.stdout.trim().split("\n").length, 1);
 });
 
 test("queued publication keeps transient artifact filesystem failures retryable", async (t) => {

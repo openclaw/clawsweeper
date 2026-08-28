@@ -2630,9 +2630,14 @@ jobs:
           status=0
           result_json="$(node dist/clawsweeper.js live-proof-publish-artifacts --artifact-dir .artifacts/exact-review-bundle)" || status=$?
           printf '%s\n' "$result_json"
-          result="$(jq -r 'if .status == "invalid_artifact" then .status else "unknown" end' <<<"$result_json" 2>/dev/null || echo unknown)"
+          result="$(jq -r 'if type == "object" and (.status == "published" or .status == "invalid_artifact" or .status == "retryable_failure") then .status else empty end' <<<"$result_json" 2>/dev/null || true)"
+          case "$result:$status" in
+            published:0) exit_status=0 ;;
+            invalid_artifact:1|retryable_failure:1) exit_status=1 ;;
+            *) result=retryable_failure; exit_status=1 ;;
+          esac
           echo "result=$result" >> "$GITHUB_OUTPUT"
-          exit "$status"
+          exit "$exit_status"
 
       - name: Identify legacy tuple-less exact artifact
         id: legacy-exact-artifact
@@ -3215,6 +3220,10 @@ jobs:
             outcome=cancelled
             completion_kind=retryable_failure
             reason_code=workflow_cancelled
+          elif [ "$LIVE_PROOF_RESULT" = "retryable_failure" ]; then
+            outcome=failure
+            completion_kind=retryable_failure
+            reason_code=unknown_failure
           elif [ "$PRIOR_JOB_STATUS" = "success" ]; then
             if [ "$PUBLISH_OUTCOME" = "success" ] && [ "$REQUEUE_LATEST" = "true" ] && [ "$SOURCE_DRIFT_OUTCOME" = "success" ]; then
               outcome=success

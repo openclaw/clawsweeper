@@ -1555,9 +1555,9 @@ async function liveProofPublishArtifactsCommand(args: Args): Promise<void> {
     fetchPullRequest: async () => {
       throw new Error("merged live-proof publication must not perform a live-head lookup");
     },
-  });
+  }).catch(() => ({ status: "retryable_failure" }) as const);
   console.log(JSON.stringify(result));
-  if (result.status === "invalid_artifact") process.exitCode = 1;
+  if (result.status !== "published") process.exitCode = 1;
 }
 
 function liveProofCommentCommand(args: Args): void {
