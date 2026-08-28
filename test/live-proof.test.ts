@@ -2354,7 +2354,9 @@ test("terminal wait steps cannot exceed the overall proof budget", () => {
   assert.equal(calls.includes("sleep 3"), false);
 });
 
-test("terminal recording holds the end state and enforces its minimum before finalizing", () => {
+test("terminal recording holds the end state and enforces its minimum before finalizing", (t) => {
+  // Fake sleeps must not consume real recording time under host load.
+  t.mock.method(Date, "now", () => 1_000_000);
   const calls: string[] = [];
   runTerminalFixture(
     terminalLifecycleRunner(calls, {
