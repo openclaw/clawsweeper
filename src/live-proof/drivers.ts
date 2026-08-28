@@ -1820,12 +1820,13 @@ function terminalPrivateErrorMessage(error: unknown, privatePaths: readonly stri
   return message;
 }
 
+// Assertion captures join soft wraps; the final viewport keeps visual screen rows.
 function captureTerminalPane(
   runner: MediaProofCommandRunner,
   checkout: string,
   target: string,
 ): string {
-  const args = ["capture-pane", "-p", "-t", target, "-S", "-200"];
+  const args = ["capture-pane", "-p", "-J", "-t", target, "-S", "-200"];
   const capture = runner("tmux", args, { cwd: checkout });
   requireSuccess("tmux", args, capture);
   return normalizeTerminalOutput(String(capture.stdout ?? ""));
@@ -1836,7 +1837,7 @@ function captureTerminalHistory(
   checkout: string,
   target: string,
 ): string {
-  const args = ["capture-pane", "-p", "-t", target, "-S", `-${TERMINAL_HISTORY_LINES}`];
+  const args = ["capture-pane", "-p", "-J", "-t", target, "-S", `-${TERMINAL_HISTORY_LINES}`];
   const capture = runner("tmux", args, { cwd: checkout });
   requireSuccess("tmux", args, capture);
   return normalizeTerminalOutput(String(capture.stdout ?? ""));

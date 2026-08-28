@@ -66,6 +66,10 @@ assertion. Historical `ready_while_running` plans retain their bounded marker,
 stability, and liveness checks. Child standard I/O stays bound to the concrete
 PTY path so detached subprocesses can preserve their inherited descriptors.
 
+Retained terminal assertions join only tmux soft wraps, preserving hard newline
+boundaries and whitespace for literal matching. The final visual viewport keeps
+screen rows, including soft wraps.
+
 The retained verifier also preserves the final watchdog cleanup contract for
 historical terminal records: cleanup is bound to the original pane, terminal,
 nonce, and lease, requires an exact zero-survivor receipt after the pane dies,

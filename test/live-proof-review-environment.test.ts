@@ -26,6 +26,10 @@ import { sanitizedLiveProofEnvironment } from "../dist/live-proof/environment.js
 import { parseLiveVerificationResult } from "../dist/live-proof/verification.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 
+const softWrapMarker = "prepares pruned esm output with an actual peerDependencies host";
+// End peerD at the driver's existing 160-column boundary.
+const softWrapLine = " ".repeat(160 - softWrapMarker.indexOf("ependencies")) + softWrapMarker;
+
 test("review live proof composes inherited Go environment settings", () => {
   const profile = join("scratch", "profile");
   const environment = sanitizedLiveProofEnvironment({
@@ -716,7 +720,7 @@ test(
           `while [ ! -s ${pidPath} ]; do sleep 0.01; done`,
           `/bin/ps -o pgid= -p "$$" | /usr/bin/tr -d '[:space:]' >${shellGroupPath}`,
           `/bin/ps -o pgid= -p "$child" | /usr/bin/tr -d '[:space:]' >${childGroupPath}`,
-          "printf 'cleanup-ready\\n'",
+          `printf 'cleanup-ready\\n%s\\n' '${softWrapLine}'`,
           ...(terminalCompletion === "ready_while_running" ? ["while :; do sleep 1; done"] : []),
         ].join("\n");
         const result = driveTerminal({
@@ -730,7 +734,7 @@ test(
                 : "The command remains live after printing its readiness result.",
             payoff: { kind: "static_text", justification: "Text is sufficient." },
             entry,
-            steps: [{ action: "expect_output", text: "cleanup-ready" }],
+            steps: [{ action: "expect_output", text: softWrapMarker }],
           },
           checkout: root,
           rawVideoPath: join(root, `${terminalCompletion}.webm`),
@@ -740,6 +744,8 @@ test(
         });
 
         assert.equal(result.status, "completed", `${terminalCompletion}: ${result.output}`);
+        assert.equal(result.steps[0]?.satisfied, true);
+        assert.match(result.output, /peerD\nependencies host/);
         const backgroundPid = Number.parseInt(readFileSync(join(root, pidPath), "utf8"), 10);
         const shellGroup = readFileSync(join(root, shellGroupPath), "utf8");
         const childGroup = readFileSync(join(root, childGroupPath), "utf8");
@@ -1097,6 +1103,30 @@ test(
 test("terminal proof supervises consecutive commands in the same pane", { timeout: 30_000 }, () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-consecutive-"));
   try {
+    writeFileSync(join(root, "initial.sh"), `printf '%s\\n' '${softWrapLine}'\n`);
+    const runner: MediaProofCommandRunner = (command, args, options = {}) => {
+      if (command === "tmux" && args[0] === "capture-pane" && args.at(-1) === "-200") {
+        const target = args[args.indexOf("-t") + 1]!;
+        const seed = mediaProofCommandRunner(
+          "tmux",
+          [
+            "send-keys",
+            "-t",
+            target,
+            "source ./initial.sh; tmux wait-for -S initial-ready",
+            "Enter",
+          ],
+          options,
+        );
+        assert.equal(seed.status, 0, String(seed.stderr));
+        const ready = mediaProofCommandRunner("tmux", ["wait-for", "initial-ready"], {
+          ...options,
+          timeoutMs: 5_000,
+        });
+        assert.equal(ready.status, 0, String(ready.stderr));
+      }
+      return mediaProofCommandRunner(command, args, options);
+    };
     const result = driveTerminal({
       plan: {
         status: "recommended",
@@ -1104,11 +1134,55 @@ test("terminal proof supervises consecutive commands in the same pane", { timeou
         terminalCompletion: "exit_zero",
         reason: "Each proof command must complete and preserve its own output.",
         payoff: { kind: "static_text", justification: "Text is sufficient." },
-        entry: "printf 'FIRST_OK\\n'",
+        entry: `printf 'FIRST_OK\\n%s\\n' '${softWrapLine}'`,
         steps: [
+          { action: "expect_output", text: softWrapMarker },
           { action: "expect_output", text: "FIRST_OK" },
-          { action: "run", command: "printf 'SECOND_OK\\n'" },
+          { action: "run", command: `printf 'SECOND_OK\\n%s\\n' '${softWrapLine}'` },
+          { action: "expect_output", text: softWrapMarker },
           { action: "expect_output", text: "SECOND_OK" },
+        ],
+      },
+      checkout: root,
+      rawVideoPath: join(root, "proof.webm"),
+      maxRecordingSeconds: 90,
+      recordMedia: false,
+      runner,
+    });
+
+    assert.equal(result.status, "completed", result.output);
+    assert.deepEqual(
+      result.steps.map((step) => step.status),
+      ["completed", "completed", "completed", "completed", "completed"],
+    );
+    for (const index of [0, 3]) {
+      assert.equal(result.steps[index]?.satisfied, true);
+      assert.equal(result.steps[index]?.presentAtStart, true);
+    }
+    assert.match(result.output, /peerD\nependencies host/);
+    assert.equal(result.output.includes(softWrapMarker), false);
+    assert.match(result.output, /SECOND_OK/);
+    assert.doesNotMatch(result.output, /FIRST_OK/);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("terminal proof preserves hard newlines and exact whitespace", { timeout: 30_000 }, () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-hard-lines-"));
+  const hardLineOutput = `${softWrapLine.replace("peerD", "peerD\n")}  \n`;
+  try {
+    const result = driveTerminal({
+      plan: {
+        status: "recommended",
+        surface: "terminal",
+        terminalCompletion: "exit_zero",
+        reason: "Only soft wraps may be joined; hard boundaries and whitespace remain literal.",
+        payoff: { kind: "static_text", justification: "Text is sufficient." },
+        entry: `printf '\\033[32m%s\\033[0m' '${hardLineOutput}'`,
+        steps: [
+          { action: "expect_output", text: hardLineOutput },
+          { action: "expect_output", text: softWrapMarker },
         ],
       },
       checkout: root,
@@ -1118,13 +1192,11 @@ test("terminal proof supervises consecutive commands in the same pane", { timeou
       runner: mediaProofCommandRunner,
     });
 
-    assert.equal(result.status, "completed", result.output);
-    assert.deepEqual(
-      result.steps.map((step) => step.status),
-      ["completed", "completed", "completed"],
-    );
-    assert.match(result.output, /SECOND_OK/);
-    assert.doesNotMatch(result.output, /FIRST_OK/);
+    assert.equal(result.status, "partial", result.output);
+    assert.equal(result.steps[0]?.satisfied, true);
+    assert.equal(result.steps[1]?.satisfied, false);
+    assert.match(result.steps[1]?.detail ?? "", /command exited successfully/);
+    assert.match(result.output, /peerD\nependencies host/);
   } finally {
     rmSync(root, { force: true, recursive: true });
   }
@@ -1143,10 +1215,10 @@ test(
           terminalCompletion: "exit_zero",
           reason: "Each command must satisfy assertions from its own rendered output.",
           payoff: { kind: "static_text", justification: "Text is sufficient." },
-          entry: "printf 'STALE_FROM_FIRST\\n'",
+          entry: `printf '%s\\n' '${softWrapLine}'`,
           steps: [
             { action: "run", command: "printf 'SECOND_ONLY\\n'" },
-            { action: "expect_output", text: "STALE_FROM_FIRST" },
+            { action: "expect_output", text: softWrapMarker },
           ],
         },
         checkout: root,
@@ -1159,7 +1231,8 @@ test(
       assert.equal(result.status, "partial", result.output);
       assert.equal(result.steps[1]?.satisfied, false);
       assert.match(result.output, /SECOND_ONLY/);
-      assert.match(result.output, /proof-plan assertion mismatch:.*"STALE_FROM_FIRST"/);
+      assert.match(result.output, /proof-plan assertion mismatch:/);
+      assert.ok(result.steps[1]?.detail.includes(JSON.stringify(softWrapMarker)));
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
