@@ -9,6 +9,7 @@ import {
 import type { CloseReason, LiveProofPlan, MediaProofCommandRunner } from "../clawsweeper-types.js";
 import type { LiveProofPullRequestState } from "./execute.js";
 import {
+  MediaProbeExecutionError,
   parseLiveProofManifest,
   validateAttachedMedia,
   type LiveProofManifest,
@@ -190,6 +191,7 @@ function validateArtifact<T>(operation: () => T): T {
   try {
     return operation();
   } catch (error) {
+    if (error instanceof MediaProbeExecutionError) throw error;
     throw new LiveProofArtifactValidationError(
       error instanceof Error ? error.message : "live proof artifact validation failed",
       { cause: error },

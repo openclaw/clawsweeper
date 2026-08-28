@@ -44,7 +44,7 @@ import {
   assertLiveProofEnvironmentSanitized,
   sanitizedLiveProofEnvironment,
 } from "../dist/live-proof/environment.js";
-import { parseLiveProofManifest } from "../dist/live-proof/manifest.js";
+import { MediaProbeExecutionError, parseLiveProofManifest } from "../dist/live-proof/manifest.js";
 import { publishReviewLiveProofArtifacts } from "../dist/live-proof/publication-artifacts.js";
 import {
   buildLiveVerificationResult,
@@ -2525,6 +2525,18 @@ test("live-proof skips a demonstrated recording shorter than three seconds", asy
   );
 });
 
+test("live-proof keeps verification when the media probe cannot execute", async () => {
+  const fixture = executeFixture("probe-failed");
+  await fixture.run();
+  assert.equal(existsSync(fixture.verificationPath), true);
+  assert.equal(existsSync(fixture.manifestPath), false);
+  assert.equal(existsSync(fixture.mp4Path), false);
+  assert.match(
+    fixture.logs.join("\n"),
+    /media pipeline failed and was skipped: ffprobe could not execute/,
+  );
+});
+
 test("static-text terminal verification runs directly without recording tools", async () => {
   const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-verification-static-"));
   const outputDir = join(directory, "output");
@@ -3301,6 +3313,99 @@ test("queued publication leaves AWS upload failures retryable", async () => {
       /aws s3 cp failed/.test(error.message),
   );
   assert.equal(readFileSync(fixture.recordPath, "utf8"), originalReport);
+});
+
+test("queued publication keeps media probe execution failures retryable", async (t) => {
+  const executionError = (code: string) =>
+    Object.assign(new Error(`spawn ffprobe ${code}`), { code });
+  const scenarios: Array<{
+    name: string;
+    probe: "mp4" | "poster";
+    result: ReturnType<MediaProofCommandRunner>;
+    expected: "retryable" | "invalid_artifact";
+  }> = [
+    {
+      name: "MP4 ENOENT",
+      probe: "mp4",
+      result: { status: null, error: executionError("ENOENT") },
+      expected: "retryable",
+    },
+    {
+      name: "poster ETIMEDOUT",
+      probe: "poster",
+      result: { status: null, error: executionError("ETIMEDOUT") },
+      expected: "retryable",
+    },
+    {
+      name: "empty stdout",
+      probe: "mp4",
+      result: { status: 0, stdout: "" },
+      expected: "retryable",
+    },
+    {
+      name: "malformed JSON",
+      probe: "mp4",
+      result: { status: 0, stdout: "{" },
+      expected: "retryable",
+    },
+    {
+      name: "non-object JSON",
+      probe: "mp4",
+      result: { status: 0, stdout: "[]" },
+      expected: "retryable",
+    },
+    {
+      name: "poster numeric rejection",
+      probe: "poster",
+      result: { status: 1, stderr: "unsupported image" },
+      expected: "invalid_artifact",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const fixture = publicationFixture();
+      const originalReport = readFileSync(fixture.recordPath, "utf8");
+      let uploads = 0;
+      let upserts = 0;
+      const successfulMediaRunner = mediaRunner([]);
+      const runner: MediaProofCommandRunner = (command, args, options) => {
+        if (command === "aws") {
+          uploads += 1;
+          return { status: 0 };
+        }
+        if (command === "ffprobe") {
+          const probe = String(args.at(-1)).endsWith("poster.jpg") ? "poster" : "mp4";
+          if (probe === scenario.probe) return scenario.result;
+        }
+        return successfulMediaRunner(command, args, options);
+      };
+      const publish = () =>
+        publishReviewLiveProofArtifacts(
+          fixture.artifactDir,
+          attachDependencies({
+            runner,
+            fetchPullRequest: async () => {
+              throw new Error("queued publication must not fetch a live head");
+            },
+            upsertReviewComment: () => {
+              upserts += 1;
+              return {};
+            },
+            logs: fixture.logs,
+          }),
+        );
+
+      if (scenario.expected === "retryable") {
+        await assert.rejects(publish, MediaProbeExecutionError);
+      } else {
+        assert.deepEqual(await publish(), { status: "invalid_artifact" });
+      }
+      assert.equal(readFileSync(fixture.recordPath, "utf8"), originalReport);
+      assert.equal(uploads, 0);
+      assert.equal(upserts, 0);
+    });
+  }
 });
 
 test("live-proof attach publishes the record before syncing its marker-backed comment", async () => {
@@ -4621,7 +4726,13 @@ function terminalCaptureInvocation(args: readonly string[]):
 }
 
 function executeFixture(
-  mode: "failed" | "present-at-start" | "demonstrated-partial" | "no-expectation" | "too-short",
+  mode:
+    | "failed"
+    | "present-at-start"
+    | "demonstrated-partial"
+    | "no-expectation"
+    | "too-short"
+    | "probe-failed",
 ) {
   const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-execute-"));
   const outputDir = join(directory, "output");
@@ -4703,6 +4814,12 @@ function executeFixture(
       };
     }
     if (command === "ffprobe") {
+      if (mode === "probe-failed") {
+        return {
+          status: null,
+          error: Object.assign(new Error("spawn ffprobe ENOENT"), { code: "ENOENT" }),
+        };
+      }
       return {
         status: 0,
         stdout: JSON.stringify({
