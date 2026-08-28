@@ -1650,7 +1650,7 @@ test("terminal cleanup requires the exact pane receipt and pane death", () => {
   );
   assert.match(
     cleanupScript,
-    /if ! holds_lease "\$candidate"; then\s+on_bound_tty "\$candidate" \|\| continue\s+pane_owns_tty \|\| continue\s+fi\s+\/bin\/kill/,
+    /if ! holds_lease "\$candidate"; then\s+on_bound_tty "\$candidate" \|\| exit 0\s+pane_owns_tty \|\| exit 0\s+fi\s+\/bin\/kill/,
   );
   assert.match(cleanupScript, /pane_owns_tty \|\| finish startup error:pane-identity/);
   assert.match(cleanupScript, /elif ! pane_owns_tty; then\s+trigger=pane-death/);
@@ -1716,6 +1716,70 @@ test("terminal cleanup requires the exact pane receipt and pane death", () => {
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("terminal cleanup joins signal workers and retains early failures", () => {
+  let cleanupScript = "";
+  driveTerminal({
+    plan: {
+      ...recommendedPlan("terminal"),
+      entry: "demo",
+      steps: [{ action: "expect_output", text: "Ready" }],
+    },
+    checkout: "/tmp/checkout",
+    rawVideoPath: "/tmp/live-proof.raw.webm",
+    maxRecordingSeconds: 90,
+    recordMedia: false,
+    runner: terminalLifecycleRunner([], {
+      terminalCaptures: ["Ready\n"],
+      inspectCleanupScript: (script) => {
+        cleanupScript = script;
+      },
+    }),
+  });
+  const signalWorkers = cleanupScript.slice(
+    cleanupScript.indexOf("signal_bound_processes()"),
+    cleanupScript.indexOf('[ "$(lease_identity_now)"'),
+  );
+  assert.equal(signalWorkers.match(/\/bin\/kill/g)?.length, 1);
+  for (const fails of [false, true]) {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-signal-workers-"));
+    try {
+      writeFileSync(
+        join(root, "scan"),
+        Array.from({ length: 12 }, (_, index) => `${index + 1}\n`).join(""),
+      );
+      const result = spawnSync(
+        "/bin/bash",
+        [
+          "--noprofile",
+          "--norc",
+          "-c",
+          [
+            'root=$1; fails=$2; scan_file="$root/scan"',
+            'holds_lease() { builtin printf "checked\\n" >>"$root/checked-$1"; }',
+            // Only signal delivery is replaced; execute the generated worker scheduler.
+            'signal_probe() { [ "$2" -ne 12 ] || sleep 0.05; builtin printf "%s\\n" "$1" >>"$root/signal-$2"; if [ "$fails" = yes ] && [ "$2" -eq 1 ]; then return 2; fi; return 0; }',
+            signalWorkers.replace("/bin/kill", "signal_probe"),
+            "signal_bound_processes TERM; code=$?",
+            'for ((index = 1; index <= 12; index += 1)); do [ -s "$root/signal-$index" ] || exit 99; done',
+            'exit "$code"',
+          ].join("\n"),
+          "clawsweeper-signal-workers",
+          root,
+          fails ? "yes" : "no",
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(result.status, fails ? 1 : 0, result.stderr);
+      for (let index = 1; index <= 12; index += 1) {
+        assert.equal(readFileSync(join(root, `checked-${index}`), "utf8"), "checked\n");
+        assert.equal(readFileSync(join(root, `signal-${index}`), "utf8"), "-TERM\n");
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 

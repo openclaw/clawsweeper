@@ -565,14 +565,25 @@ scan_bound_processes() {
   /usr/bin/sort -n -u -o "$scan_file" "$scan_file"
 }
 signal_bound_processes() {
+  local workers=() worker result=0
   while IFS= read -r candidate; do
     case "$candidate" in ""|*[!0-9]*) continue ;; esac
-    if ! holds_lease "$candidate"; then
-      on_bound_tty "$candidate" || continue
-      pane_owns_tty || continue
+    (
+      if ! holds_lease "$candidate"; then
+        on_bound_tty "$candidate" || exit 0
+        pane_owns_tty || exit 0
+      fi
+      /bin/kill "-$1" "$candidate" 2>/dev/null || [ "$?" -eq 1 ]
+    ) &
+    workers+=("$!")
+    # Bound independent Darwin lookups without caching identity across signals.
+    if [ "\${#workers[@]}" -ge 8 ]; then
+      wait "\${workers[0]}" || result=1
+      workers=("\${workers[@]:1}")
     fi
-    /bin/kill "-$1" "$candidate" 2>/dev/null || [ "$?" -eq 1 ] || return $?
   done <"$scan_file"
+  for worker in "\${workers[@]}"; do wait "$worker" || result=1; done
+  return "$result"
 }
 [ "$(lease_identity_now)" = "$lease_identity" ] || finish startup error:lease-identity 0 125
 pane_owns_tty || finish startup error:pane-identity 0 125
@@ -589,11 +600,11 @@ while [ -z "$trigger" ]; do
     sleep 0.05
   fi
 done
-for sweep in 1 2 3; do
-  scan_bound_processes || finish "$trigger" error:scan 0 125
-  signal_bound_processes TERM || finish "$trigger" error:term 0 125
-  sleep 0.05
-done
+# Repeating TERM multiplies Darwin's per-PID lease scans before escalation.
+# Keep the same total grace; the KILL phase rediscovers and verifies survivors.
+scan_bound_processes || finish "$trigger" error:scan 0 125
+signal_bound_processes TERM || finish "$trigger" error:term 0 125
+sleep 0.15
 stable_empty=0
 for ((sweep = 1; sweep <= 100; sweep += 1)); do
   scan_bound_processes || finish "$trigger" error:scan 0 125

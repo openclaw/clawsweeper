@@ -692,10 +692,12 @@ test(
 );
 
 test(
-  "terminal proof cleanup terminates a signal-resistant descendant in a distinct process group",
+  "terminal proof cleanup terminates signal-resistant descendants in distinct process groups",
   { timeout: 60_000 },
   () => {
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-cleanup-"));
+    const processToken = `clawsweeper-proof-child-${process.pid}-${Date.now()}`;
+    const childCount = 16;
     try {
       writeFileSync(
         join(root, "background.mjs"),
@@ -712,14 +714,17 @@ test(
         const pidPath = `${terminalCompletion}.pid`;
         const shellGroupPath = `${terminalCompletion}.shell-pgid`;
         const childGroupPath = `${terminalCompletion}.child-pgid`;
-        const processToken = `clawsweeper-proof-child-${terminalCompletion}-${process.pid}-${Date.now()}`;
         const entry = [
           "set -m",
-          `node background.mjs ${pidPath} ${processToken} >/dev/null 2>&1 &`,
-          "child=$!",
-          `while [ ! -s ${pidPath} ]; do sleep 0.01; done`,
           `/bin/ps -o pgid= -p "$$" | /usr/bin/tr -d '[:space:]' >${shellGroupPath}`,
-          `/bin/ps -o pgid= -p "$child" | /usr/bin/tr -d '[:space:]' >${childGroupPath}`,
+          `for ((index = 0; index < ${childCount}; index += 1)); do`,
+          `  node background.mjs ${pidPath}.$index ${processToken} >/dev/null 2>&1 &`,
+          "done",
+          `for ((index = 0; index < ${childCount}; index += 1)); do`,
+          `  while [ ! -s ${pidPath}.$index ]; do sleep 0.01; done`,
+          `  child=$(<${pidPath}.$index)`,
+          `  /bin/ps -o pgid= -p "$child" >>${childGroupPath}`,
+          "done",
           `printf 'cleanup-ready\\n%s\\n' '${softWrapLine}'`,
           ...(terminalCompletion === "ready_while_running" ? ["while :; do sleep 1; done"] : []),
         ].join("\n");
@@ -746,15 +751,13 @@ test(
         assert.equal(result.status, "completed", `${terminalCompletion}: ${result.output}`);
         assert.equal(result.steps[0]?.satisfied, true);
         assert.match(result.output, /peerD\nependencies host/);
-        const backgroundPid = Number.parseInt(readFileSync(join(root, pidPath), "utf8"), 10);
-        const shellGroup = readFileSync(join(root, shellGroupPath), "utf8");
-        const childGroup = readFileSync(join(root, childGroupPath), "utf8");
-        assert.equal(Number.isSafeInteger(backgroundPid), true);
-        assert.notEqual(
-          childGroup,
-          shellGroup,
-          `${terminalCompletion} did not create a distinct PGID`,
+        const backgroundPids = Array.from({ length: childCount }, (_, index) =>
+          Number.parseInt(readFileSync(join(root, `${pidPath}.${index}`), "utf8"), 10),
         );
+        const shellGroup = readFileSync(join(root, shellGroupPath), "utf8").trim();
+        const childGroups = readFileSync(join(root, childGroupPath), "utf8").trim().split(/\s+/);
+        assert.equal(new Set(childGroups).size, childCount);
+        assert.equal(childGroups.includes(shellGroup), false, terminalCompletion);
         let matches = processesContaining(processToken);
         const deadline = Date.now() + 2_000;
         while (matches.length > 0 && Date.now() < deadline) {
@@ -762,9 +765,15 @@ test(
           matches = processesContaining(processToken);
         }
         assert.deepEqual(matches, []);
-        assert.throws(() => process.kill(backgroundPid, 0), { code: "ESRCH" });
+        for (const pid of backgroundPids) {
+          assert.equal(Number.isSafeInteger(pid), true);
+          assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+        }
       }
     } finally {
+      for (const processLine of processesContaining(processToken)) {
+        killProcess(Number.parseInt(processLine, 10));
+      }
       rmSync(root, { force: true, recursive: true });
     }
   },

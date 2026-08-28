@@ -75,6 +75,13 @@ historical terminal records: cleanup is bound to the original pane, terminal,
 nonce, and lease, requires an exact zero-survivor receipt after the pane dies,
 and fails visibly for missing, stale, replaced, surviving-process, or timeout
 evidence. Target commands do not inherit `TMUX`, `TMUX_PANE`, or `TMUX_TMPDIR`.
+The watchdog sends TERM once with 150 ms total grace, then rediscovers and
+identity-checks survivors for KILL and requires two empty scans. It does not
+repeat the expensive macOS per-process lease checks in additional TERM sweeps.
+Up to eight independent signal workers run together, each revalidating the
+lease or original terminal immediately before signaling. Every worker is joined
+and its failure retained before the next scan. The controller's cleanup budget
+is unchanged.
 
 ## Historical artifact publication
 
