@@ -605,6 +605,36 @@ not a count, timing, or number that varies per run. If you cannot name a value
 the run will certainly print or render, assert something more stable rather
 than inventing one.
 
+For dependency/package-version assertions, prefer the package manager's
+machine-readable output when supported. Inspect the target's pinned CLI version
+and supported schema first; do not guess human formatting such as `name version`
+versus `name@version`. Capture the complete JSON from an independent subprocess's
+stdout, not rendered terminal history or grep. Reject spawn errors, signals,
+nonzero exits, invalid JSON, missing output, and unsupported shapes before
+emitting a stable success marker. For pnpm 11 `why --json`, the top-level array
+contains resolved packages: require a nonempty array and EVERY resolution to
+have the exact requested name and version. Do not traverse `dependents` as
+resolutions or accept one correct version while wrong/mixed versions remain.
+
+Runnable pnpm 11 package-version example (adapt the package/version after
+inspection; these values are illustrative, not repository dependency policy):
+
+<!-- live-proof-pnpm11-package-version-example -->
+```bash
+node -e 'try { const result = require("node:child_process").spawnSync(process.argv[1], process.argv.slice(2), {encoding:"utf8"}); if (result.error || result.signal || result.status !== 0) throw new Error("pnpm why failed: " + (result.error?.message ?? result.signal ?? result.status)); const resolutions = JSON.parse(result.stdout); if (!Array.isArray(resolutions) || resolutions.length === 0 || !resolutions.every(p => p?.name === "postcss" && p?.version === "8.5.26")) throw new Error("unexpected package resolutions"); console.log("verified postcss@8.5.26"); } catch (error) { console.error(error.message); process.exitCode = 1; }' pnpm why postcss --json
+```
+
+Use this single-line command once as `entry` (or one `run` after safe setup),
+followed by `{"action":"expect_output","text":"verified postcss@8.5.26"}`
+and `terminalCompletion: "exit_zero"`; `static_text` is sufficient. The marker
+comes only after every assertion passes; successful proof need not mirror the
+full child output. Never use `|| true`, command exit alone, bare version
+substrings, punctuation normalization, fuzzy matching, or an unconditional/early
+marker. If structured output is unavailable, use only verified exact display
+with package/version boundaries, not guessed formatting. Version proof does
+not establish runtime exposure, security, or compatibility; development-only
+dependents remain development-only evidence.
+
 Judge whether the run has something worth watching, solely to choose its
 presentation. Choose `payoff.kind: "static_text"` when the whole demonstration
 is a short burst of plain text that a reader can understand better in a quoted

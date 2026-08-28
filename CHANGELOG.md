@@ -63,6 +63,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Guided package-version live proofs toward validated machine-readable output and exact resolution checks instead of guessed terminal formatting, while preserving literal expectations and successful-exit requirements.
 - Added schema constraints and explicit prompt guidance for single-line live-proof commands and nonblank run steps while preserving strict parsing.
 - Scoped the `openclaw/openclaw` release-note review restriction to its repository profile so ClawSweeper and other targets follow their own policies without granting release-file edit permission.
 - Routed default apply's bounded source-drift refreshes through exact-event queue intake so full-repository hydration cannot fail before admission.

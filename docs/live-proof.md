@@ -2,12 +2,12 @@
 
 - Status: active
 - Owner: ClawSweeper review and publication maintainers
-- Source of truth: `src/live-proof/`, `.github/workflows/sweep.yml`,
-  `.github/workflows/exact-review-batch-publish.yml`, and repository `live_test`
-  profiles
+- Source of truth: `prompts/review-item.md`, `src/live-proof/`,
+  `.github/workflows/sweep.yml`, `.github/workflows/exact-review-batch-publish.yml`,
+  and repository `live_test` profiles
 - Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
-- Update when: the plan schema, security boundary, execution gates, media
-  limits, storage path, or comment rendering changes
+- Update when: planner assertion guidance, the plan schema, security boundary,
+  execution gates, media limits, storage path, or comment rendering changes
 
 Live proof turns a review-time `liveProofPlan` into deterministic browser or
 terminal execution, with an optional recording when the behavior is worth
@@ -109,6 +109,35 @@ and terminal plans should assert stable output such as a header, flag, or error
 string rather than counts, timings, or run-dependent numbers. When no exact
 value is certain, the planner must choose a more stable assertion instead of
 inventing one.
+
+Package-version assertions should prefer machine-readable package-manager output
+after inspecting the target's pinned CLI version and supported schema. Capture
+the complete JSON from a separate subprocess's stdout, not terminal rendering or
+grep. Reject spawn errors, signals, nonzero exits, invalid/missing JSON, and
+unsupported shapes before emitting a stable marker. pnpm 11 `why --json` returns
+a top-level array of resolutions: it must be nonempty, and every resolution must
+have the exact requested package name and version. Nested `dependents` describe
+the dependency tree, not additional resolutions. One matching resolution must
+not hide wrong or mixed versions.
+
+The [review prompt](../prompts/review-item.md) owns a runnable single-line Node
+example using `spawnSync`, complete `JSON.parse`, and exact name/version checks.
+Run it once as `entry` or one `run` after safe setup, then assert its stable
+marker with the existing literal `expect_output` and `terminalCompletion:
+exit_zero`. Successful proof need not mirror the full child output. Never
+substitute exit success alone, `|| true`, a bare version substring, fuzzy matching,
+punctuation normalization, or a marker emitted before assertions. Without
+structured support, verify exact display and package/version boundaries instead
+of guessing `name version` versus `name@version`.
+
+This avoids the false failure in the
+[Crabline review](https://github.com/openclaw/crabline/pull/281#issuecomment-5447976937):
+`pnpm why postcss` printed `postcss@8.5.26`, but the generated plan expected
+`postcss 8.5.26`. The executor correctly rejected the absent literal despite exit
+zero. Version evidence does not establish runtime exposure, security, or
+compatibility; the incident's Vite/Vitest dependents were development-only.
+No executor, schema v1, lifecycle, or rendering contract changes are needed, so
+OpenClaw Bay is unaffected.
 
 The [review prompt](../prompts/review-item.md) and decision parser require
 `liveProofPlan.entry` and terminal `run.command` strings to contain no literal
