@@ -227,10 +227,10 @@ export const PR_STATUS_LABELS = [
   description: string;
 }[];
 export const PR_STATUS_LABEL_NAMES = new Set<string>(PR_STATUS_LABELS.map((label) => label.name));
-export const TELEGRAM_VISIBLE_PROOF_LABEL = "mantis: telegram-visible-proof";
+export const TELEGRAM_VISIBLE_PROOF_LABEL = "proof: telegram-e2e";
 export const TELEGRAM_VISIBLE_PROOF_LABEL_COLOR = "57606A";
 export const TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION =
-  "Mantis should capture Telegram visible proof.";
+  "This PR needs Telegram Test Server proof with the repository E2E skill.";
 export const PRIORITY_LABELS = [
   {
     priority: 0,
@@ -682,8 +682,6 @@ export const MANTIS_RECOMMENDATION_STATUSES = new Set<MantisRecommendationStatus
 ]);
 export const MANTIS_RECOMMENDATION_SCENARIOS = new Set<MantisRecommendationScenario>([
   "none",
-  "telegram_live",
-  "telegram_desktop_proof",
   "discord_status_reactions",
   "discord_thread_attachment",
   "web_ui_chat_proof",

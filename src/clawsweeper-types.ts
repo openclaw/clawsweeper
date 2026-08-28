@@ -151,8 +151,6 @@ export type LiveProofStep = LiveProofBrowserStep | LiveProofTerminalStep;
 export type MantisRecommendationStatus = "recommended" | "not_recommended";
 export type MantisRecommendationScenario =
   | "none"
-  | "telegram_live"
-  | "telegram_desktop_proof"
   | "discord_status_reactions"
   | "discord_thread_attachment"
   | "web_ui_chat_proof"

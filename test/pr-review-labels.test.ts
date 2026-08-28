@@ -646,7 +646,7 @@ Full review comments:
       "merge-risk: 🚨 compatibility",
       "proof: sufficient",
       "proof: 🎥 video",
-      "mantis: telegram-visible-proof",
+      "proof: telegram-e2e",
       "status: 📣 needs proof",
     ],
   });
@@ -671,7 +671,7 @@ Full review comments:
   );
   assert.match(
     comment,
-    /- remove `mantis: telegram-visible-proof`: Current Telegram visible-proof status is not_needed\./,
+    /- remove `proof: telegram-e2e`: Current Telegram visible-proof status is not_needed\./,
   );
   assert.doesNotMatch(comment, /remove `status: 📣 needs proof`/);
 });
@@ -798,7 +798,7 @@ Full review comments:
       "merge-risk: 🚨 compatibility",
       "proof: sufficient",
       "proof: 🎥 video",
-      "mantis: telegram-visible-proof",
+      "proof: telegram-e2e",
       "status: 📣 needs proof",
     ],
   });
@@ -823,7 +823,7 @@ Full review comments:
   );
   assert.match(
     comment,
-    /- remove `mantis: telegram-visible-proof`: Current Telegram visible-proof status is not_needed\./,
+    /- remove `proof: telegram-e2e`: Current Telegram visible-proof status is not_needed\./,
   );
   assert.doesNotMatch(comment, /remove `status: 📣 needs proof`/);
 });

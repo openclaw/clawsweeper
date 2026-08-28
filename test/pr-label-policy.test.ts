@@ -408,14 +408,14 @@ test("ClawSweeper PR status label scheme exposes workflow states", () => {
   );
 });
 
-test("ClawSweeper Telegram proof judgement controls the Mantis proof label", () => {
+test("ClawSweeper Telegram proof judgement controls the E2E proof label", () => {
   assert.deepEqual(telegramVisibleProofLabelsForTest(["channel: telegram"], "needed"), [
     "channel: telegram",
-    "mantis: telegram-visible-proof",
+    "proof: telegram-e2e",
   ]);
   assert.deepEqual(
     telegramVisibleProofLabelsForTest(
-      ["channel: telegram", "mantis: telegram-visible-proof"],
+      ["channel: telegram", "proof: telegram-e2e"],
       "not_needed",
     ),
     ["channel: telegram"],
@@ -1322,7 +1322,7 @@ test("ClawSweeper issue advisory labels remove stale owned labels and preserve o
         "clawsweeper:human-review",
         "clawsweeper:merge-ready",
         "proof: sufficient",
-        "mantis: telegram-visible-proof",
+        "proof: telegram-e2e",
       ],
       {
         type: "issue",
@@ -1338,7 +1338,7 @@ test("ClawSweeper issue advisory labels remove stale owned labels and preserve o
       "clawsweeper:human-review",
       "clawsweeper:merge-ready",
       "proof: sufficient",
-      "mantis: telegram-visible-proof",
+      "proof: telegram-e2e",
       "issue-rating: 🦀 challenger crab",
       "clawsweeper:current-main-repro",
     ],

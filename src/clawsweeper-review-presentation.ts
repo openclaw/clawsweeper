@@ -772,8 +772,6 @@ export function createReviewPresentation({
 
   function isSupportedMantisScenario(scenario: MantisRecommendationScenario): boolean {
     return (
-      scenario === "telegram_live" ||
-      scenario === "telegram_desktop_proof" ||
       scenario === "discord_status_reactions" ||
       scenario === "discord_thread_attachment" ||
       scenario === "web_ui_chat_proof"
@@ -819,8 +817,8 @@ export function createReviewPresentation({
       ].join("\n");
     }
     const intro = reason
-      ? `${reason} Mantis is currently scoped to Telegram, Discord, and web UI chat proof, so it is not the right proof path for this surface.`
-      : "Mantis is currently scoped to Telegram, Discord, and web UI chat proof, so it is not the right proof path for this surface.";
+      ? `${reason} Mantis is currently scoped to Discord and web UI chat proof, so it is not the right proof path for this surface.`
+      : "Mantis is currently scoped to Discord and web UI chat proof, so it is not the right proof path for this surface.";
     return [
       intro,
       "Use maintainer screenshot/manual proof, browser or Playwright proof, Crabbox where appropriate, or normal local artifact proof instead.",

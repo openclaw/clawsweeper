@@ -706,18 +706,18 @@ test("review prompt classifies Telegram visible proof candidates", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
 
   assert.match(prompt, /telegramVisibleProof/);
-  assert.match(prompt, /telegram-crabbox-e2e-proof/);
+  assert.match(prompt, /telegram-e2e-userbot/);
   assert.match(prompt, /message formatting/);
   assert.match(prompt, /retry\/network reliability only/);
   assert.match(prompt, /shared retry\/ordering work/);
   assert.match(prompt, /A label, title, consumer, or example does not make internal/);
   assert.match(prompt, /`telegramVisibleProof\.status: "not_needed"`/);
   assert.match(prompt, /`mantisRecommendation\.status: "not_recommended"`/);
-  assert.match(prompt, /mantis: telegram-visible-proof/);
+  assert.match(prompt, /proof: telegram-e2e/);
   assert.match(prompt, /mantisRecommendation/);
   assert.match(prompt, /@openclaw-mantis/);
   assert.match(prompt, /ambiguous Mantis\s+account mention/);
-  assert.match(prompt, /Telegram,\s+Discord,\s+or web UI chat behavior/);
+  assert.match(prompt, /Discord or web UI chat behavior/);
   assert.match(prompt, /web_ui_chat_proof/);
   assert.match(prompt, /WinUI/);
   assert.match(prompt, /browser\/Playwright proof/);
@@ -1012,11 +1012,11 @@ test("pull request review comments suggest copy-paste Mantis proof comments", ()
 
 ## Summary
 
-Keep this Telegram PR open for maintainer review.
+Keep this Discord PR open for maintainer review.
 
 ## What This Changes
 
-Fixes Telegram topic stop targeting.
+Fixes Discord status reactions.
 
 ## Real Behavior Proof
 
@@ -1026,17 +1026,17 @@ Evidence kind: none
 
 Needs contributor action: true
 
-Summary: Current proof is test-only for visible Telegram topic behavior.
+Summary: Current proof is test-only for visible Discord reaction behavior.
 
 ## Mantis Recommendation
 
 Status: recommended
 
-Scenario: telegram_desktop_proof
+Scenario: discord_status_reactions
 
-Reason: This changes visible Telegram topic behavior that should be proven in native Telegram Desktop.
+Reason: This changes visible Discord status behavior.
 
-Maintainer comment: @openclaw-mantis telegram desktop proof: verify that /stop targets the active topic and does not affect other topics.
+Maintainer comment: @openclaw-mantis discord status reactions: verify the queued, thinking, and done reactions.
 
 ## Work Candidate
 
@@ -1055,7 +1055,7 @@ Reason: Maintainers should review the proof before merge.
 
   assert.match(comment, /### Mantis proof suggestion/);
   assert.match(comment, /posting this exact PR comment/);
-  assert.match(comment, /```text\n@openclaw-mantis telegram desktop proof:/);
+  assert.match(comment, /```text\n@openclaw-mantis discord status reactions:/);
 });
 
 test("pull request review comments keep Discord and web UI chat Mantis suggestions", () => {
@@ -1185,7 +1185,7 @@ Reason: Maintainers should review the proof before merge.
   assert.doesNotMatch(comment, /### Mantis proof suggestion/);
   assert.doesNotMatch(comment, /@openclaw-mantis visual task/);
   assert.match(comment, /### Proof path suggestion/);
-  assert.match(comment, /Mantis is currently scoped to Telegram, Discord, and web UI chat proof/);
+  assert.match(comment, /Mantis is currently scoped to Discord and web UI chat proof/);
   assert.match(comment, /browser or Playwright proof/);
 });
 
@@ -1208,7 +1208,7 @@ Keep this Telegram PR open for maintainer review.
 
 Status: recommended
 
-Scenario: telegram_desktop_proof
+Scenario: discord_status_reactions
 
 Reason: This changes visible Telegram behavior.
 
@@ -1253,7 +1253,7 @@ Keep this Telegram PR open for maintainer review.
 
 Status: recommended
 
-Scenario: telegram_desktop_proof
+Scenario: discord_status_reactions
 
 Reason: The Telegram behavior still needs live proof and a branch repair.
 
@@ -1298,11 +1298,11 @@ Keep this Telegram PR open for maintainer review.
 
 Status: recommended
 
-Scenario: telegram_desktop_proof
+Scenario: discord_status_reactions
 
-Reason: Native Telegram proof would show the corrected visible behavior.
+Reason: Discord proof would show the corrected visible behavior.
 
-Maintainer comment: @openclaw-mantis telegram desktop proof: verify the fix in Telegram Desktop and capture redacted logs.
+Maintainer comment: @openclaw-mantis discord status reactions: verify the reaction sequence and capture redacted logs.
 
 ## Work Candidate
 
@@ -1320,7 +1320,7 @@ Reason: Maintainers should review the proof before merge.
   );
 
   assert.match(proofComment, /### Mantis proof suggestion/);
-  assert.match(proofComment, /verify the fix in Telegram Desktop/);
+  assert.match(proofComment, /verify the reaction sequence/);
   assert.doesNotMatch(proofComment, /### Proof path suggestion/);
 });
 

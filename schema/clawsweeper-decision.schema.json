@@ -775,7 +775,7 @@
     "telegramVisibleProof": {
       "type": "object",
       "additionalProperties": false,
-      "description": "For Telegram PRs, classify whether the change is user-visible and easy to demonstrate with the telegram-crabbox-e2e-proof skill. Internal retry, ordering, or transport reliability without changed visible chat behavior is not_needed.",
+      "description": "For Telegram PRs, classify whether the change is user-visible and should be demonstrated with the repository telegram-e2e-userbot skill. Internal retry, ordering, or transport reliability without changed visible chat behavior is not_needed.",
       "required": ["status", "summary"],
       "properties": {
         "status": {
@@ -784,7 +784,7 @@
         },
         "summary": {
           "type": "string",
-          "description": "One concise sentence explaining why the PR should or should not receive the mantis: telegram-visible-proof label."
+          "description": "One concise sentence explaining why the PR should or should not receive the proof: telegram-e2e label."
         }
       }
     },
@@ -941,7 +941,7 @@
     "mantisRecommendation": {
       "type": "object",
       "additionalProperties": false,
-      "description": "For PRs, recommend a copy-paste maintainer comment for OpenClaw Mantis only when Telegram, Discord, or web UI chat proof would materially help review. Do not recommend it for internal reliability without changed visible chat behavior. Mantis is proof-only: it may reproduce or inspect those surfaces and return redacted screenshots, transcripts, logs, or interaction results. Do not ask Mantis to edit code, fix CI, update branches, push commits, repair PRs, change labels or comments, close items, or perform other GitHub mutations; those belong to ClawSweeper's deterministic repair, apply, and automerge lanes. Do not claim Mantis has run and do not dispatch any workflow.",
+      "description": "For PRs, recommend a copy-paste maintainer comment for OpenClaw Mantis only when Discord or web UI chat proof would materially help review. Do not recommend it for internal reliability without changed visible chat behavior. Mantis is proof-only: it may reproduce or inspect those surfaces and return redacted screenshots, transcripts, logs, or interaction results. Do not ask Mantis to edit code, fix CI, update branches, push commits, repair PRs, change labels or comments, close items, or perform other GitHub mutations; those belong to ClawSweeper's deterministic repair, apply, and automerge lanes. Do not claim Mantis has run and do not dispatch any workflow.",
       "required": ["status", "scenario", "reason", "maintainerComment"],
       "properties": {
         "status": {
@@ -952,8 +952,6 @@
           "type": "string",
           "enum": [
             "none",
-            "telegram_live",
-            "telegram_desktop_proof",
             "discord_status_reactions",
             "discord_thread_attachment",
             "web_ui_chat_proof"
@@ -965,7 +963,7 @@
         },
         "maintainerComment": {
           "type": "string",
-          "description": "When recommended, a single-line proof-only PR comment starting with @openclaw-mantis that asks Mantis to reproduce or inspect supported Telegram, Discord, or web UI chat behavior and return redacted evidence. Include an explicit proof action such as verify, reproduce, capture, inspect, record, or test; ambiguous requests without proof intent fail closed. Never ask for code edits, CI fixes, branch updates, commits, PR repair, labels, comments, closes, merges, or other GitHub mutations. ClawSweeper validates and renders this mention inside a fenced text block so the public recommendation is directly copyable without starting Mantis workflows. Do not use shorter or ambiguous Mantis account mentions. For not_recommended, use an empty string."
+          "description": "When recommended, a single-line proof-only PR comment starting with @openclaw-mantis that asks Mantis to reproduce or inspect supported Discord or web UI chat behavior and return redacted evidence. Include an explicit proof action such as verify, reproduce, capture, inspect, record, or test; ambiguous requests without proof intent fail closed. Never ask for code edits, CI fixes, branch updates, commits, PR repair, labels, comments, closes, merges, or other GitHub mutations. ClawSweeper validates and renders this mention inside a fenced text block so the public recommendation is directly copyable without starting Mantis workflows. Do not use shorter or ambiguous Mantis account mentions. For not_recommended, use an empty string."
         }
       }
     },

@@ -535,7 +535,7 @@ expressly authorized production-path harnesses. Mocked transport clients and
 isolated unit tests remain `mock_only`; preserve existing browser-runtime, CSP,
 auth, and security safeguards.
 
-For PRs, always fill `telegramVisibleProof`. Use `status: "needed"` only when the PR touches Telegram behavior and the user-visible change can be easily demonstrated by the `telegram-crabbox-e2e-proof` skill, such as message formatting, slash-command output, reply text, attachments, reactions, threading, mentions, or other visible Telegram chat behavior. Use `status: "not_needed"` for non-Telegram PRs and for Telegram changes that are internal-only, test-only, docs-only, logging-only, retry/network reliability only, auth/secret plumbing only, or otherwise not meaningfully visible in a short Telegram Desktop recording. A label, title, consumer, or example does not make internal shared retry/ordering work visible. For that work, set
+For PRs, always fill `telegramVisibleProof`. Use `status: "needed"` only when the PR touches Telegram behavior and the user-visible change can be demonstrated by the repository `telegram-e2e-userbot` skill, such as message formatting, slash-command output, reply text, attachments, reactions, threading, mentions, or other visible Telegram chat behavior. Use `status: "not_needed"` for non-Telegram PRs and for Telegram changes that are internal-only, test-only, docs-only, logging-only, retry/network reliability only, auth/secret plumbing only, or otherwise not meaningfully observable in a short Telegram Test Server run. A label, title, consumer, or example does not make internal shared retry/ordering work visible. For that work, set
 `telegramVisibleProof.status: "not_needed"` and
 `mantisRecommendation.status: "not_recommended"`.
 
@@ -1188,7 +1188,8 @@ the nearest forbidden principal and the final side effect; generic requests for
 more tests or more security review are not enough.
 
 Always fill `telegramVisibleProof` using the changed-behavior classification
-above. It only controls the `mantis: telegram-visible-proof` label.
+above. The `proof: telegram-e2e` label tells the execution worker to use the
+repository `telegram-e2e-userbot` skill.
 
 Always fill `liveProofPlan` using the user-visible behavior and public-recording
 security classification above. This is a read-only demonstration plan; never
@@ -1197,7 +1198,7 @@ execute the PR or claim that a recording exists during review.
 Always fill `mantisRecommendation`. This is maintainer guidance only: it must
 never trigger OpenClaw Mantis, claim Mantis has run, ask ClawSweeper to dispatch
 a workflow, or request ClawSweeper repair markers. Recommend Mantis only for
-Telegram, Discord, or web UI chat behavior that Mantis can currently prove.
+Discord or web UI chat behavior that Mantis can currently prove.
 Mantis is proof-only: it may reproduce or inspect those surfaces and return
 redacted screenshots, transcripts, logs, or interaction results. Never
 recommend Mantis to edit code, fix CI, update a branch, push commits, repair a
@@ -1215,13 +1216,6 @@ PR-rating next step, best solution, or public next step instead of creating a
 Mantis command.
 
 Known Mantis lanes:
-
-- `telegram_live`: Telegram live QA with a redacted transcript visual. Use for
-  bot-to-bot Telegram commands, mention handling, reply delivery, and observable
-  message transcripts.
-- `telegram_desktop_proof`: agentic native Telegram Desktop before/after visual
-  proof. Use for visible Telegram UI behavior, topics, buttons, callbacks,
-  formatting, media, or flows where native UI GIFs are useful.
 - `discord_status_reactions`: before/after Discord queued/thinking/done status
   reaction proof. Use only for status reaction behavior.
 - `discord_thread_attachment`: before/after Discord thread reply filePath
@@ -1243,10 +1237,8 @@ without proof intent fail closed. Do not use any shorter or ambiguous Mantis
 account mention.
 ClawSweeper validates the account mention and renders it in a fenced text block
 so maintainers can copy the exact PR comment without accidentally starting a
-Mantis workflow from the ClawSweeper review comment. Example:
-`@openclaw-mantis telegram desktop proof: verify that /stop targets the active
-topic and does not affect other topics.` Keep it short enough to paste into a
-PR comment.
+Mantis workflow from the ClawSweeper review comment. Keep it short enough to
+paste into a PR comment.
 
 Always fill `triagePriority`. ClawSweeper syncs this value to one of the GitHub
 labels `P0`, `P1`, `P2`, or `P3` so maintainers can find issues and pull requests
