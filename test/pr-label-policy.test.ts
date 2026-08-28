@@ -417,6 +417,62 @@ test("ClawSweeper Telegram proof judgement controls the E2E proof label", () => 
     telegramVisibleProofLabelsForTest(["channel: telegram", "proof: telegram-e2e"], "not_needed"),
     ["channel: telegram"],
   );
+  assert.deepEqual(
+    telegramVisibleProofLabelsForTest(
+      ["channel: telegram", "mantis: telegram-visible-proof"],
+      "needed",
+    ),
+    ["channel: telegram", "proof: telegram-e2e"],
+  );
+  assert.deepEqual(
+    telegramVisibleProofLabelsForTest(
+      ["channel: telegram", "mantis: telegram-visible-proof"],
+      "not_needed",
+    ),
+    ["channel: telegram"],
+  );
+});
+
+test("ClawSweeper replaces the legacy Telegram proof label during synchronization", () => {
+  const commands: string[][] = [];
+  const labels = createLabelSynchronization({
+    ghObservedMutationCommand: ({ args }: { args: string[] }) => {
+      commands.push(args);
+      return "";
+    },
+    hasNormalizedLabel: (current: readonly string[], label: string) =>
+      current.some((candidate) => candidate.toLowerCase() === label.toLowerCase()),
+    normalizeLabelName: (label: string) => label.toLowerCase(),
+    protectedLabels: () => [],
+    isBulkFilerExemptAuthorAssociation: () => false,
+    isBulkFilerExemptRepositoryPermission: () => false,
+    frontMatterValue: () => undefined,
+    frontMatterStringArray: () => [],
+    reportSecurityReview: () => ({ status: "not_applicable", evidence: [] }),
+    reviewSectionValue: () => "",
+    labelPolicy: {},
+  } as never);
+
+  labels.syncTelegramVisibleProofLabel({
+    number: 42,
+    labels: ["channel: telegram", "mantis: telegram-visible-proof"],
+    proof: { status: "needed" },
+    dryRun: false,
+  });
+
+  assert.deepEqual(commands, [
+    [
+      "label",
+      "create",
+      "proof: telegram-e2e",
+      "--color",
+      "57606A",
+      "--description",
+      "This PR needs Telegram Test Server proof with the repository E2E skill.",
+    ],
+    ["issue", "edit", "42", "--add-label", "proof: telegram-e2e"],
+    ["issue", "edit", "42", "--remove-label", "mantis: telegram-visible-proof"],
+  ]);
 });
 
 test("ClawSweeper priority label scheme exposes P0 through P3 labels", () => {

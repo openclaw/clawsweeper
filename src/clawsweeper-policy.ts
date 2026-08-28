@@ -227,6 +227,7 @@ export const PR_STATUS_LABELS = [
   description: string;
 }[];
 export const PR_STATUS_LABEL_NAMES = new Set<string>(PR_STATUS_LABELS.map((label) => label.name));
+export const LEGACY_TELEGRAM_VISIBLE_PROOF_LABEL = "mantis: telegram-visible-proof";
 export const TELEGRAM_VISIBLE_PROOF_LABEL = "proof: telegram-e2e";
 export const TELEGRAM_VISIBLE_PROOF_LABEL_COLOR = "57606A";
 export const TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION =
