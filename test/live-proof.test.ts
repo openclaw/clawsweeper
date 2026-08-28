@@ -17,6 +17,7 @@ import YAML from "yaml";
 
 import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
 import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
+import { mediaProofSpawnDetail } from "../dist/clawsweeper-media-proof.js";
 import { LIVE_VERIFICATION_MARKER, REVIEW_SECTIONS } from "../dist/clawsweeper-policy.js";
 import type { LiveProofPlan, MediaProofCommandRunner } from "../dist/clawsweeper-types.js";
 import type { RepositoryProfile } from "../dist/repository-profiles.js";
@@ -1545,7 +1546,8 @@ test("terminal cleanup requires the exact pane receipt and pane death", () => {
   });
 
   assert.equal(result.status, "completed");
-  assert.match(cleanupScript, /\/usr\/sbin\/lsof -t -- "\$lease_path"/);
+  assert.match(cleanupScript, /\/usr\/sbin\/lsof -t -X -- "\$lease_path"/);
+  assert.match(cleanupScript, /\/usr\/sbin\/lsof -t -X -a -p "\$1" -- "\$lease_path"/);
   assert.match(cleanupScript, /stat -Lc '%d:%i' -- \/proc\/"\$1"\/fd\/9/);
   assert.match(
     cleanupScript,
@@ -1563,7 +1565,7 @@ test("terminal cleanup requires the exact pane receipt and pane death", () => {
   );
   assert.match(
     cleanupScript,
-    /tty_pids\(\) \{\s+pane_owns_tty \|\| return 0\s+\/bin\/ps -axo pid=,tty=/,
+    /tty_pids\(\) \{\s+pane_owns_tty \|\| return 0\s+\/bin\/ps -t "\$tty_name" -o pid=,tty=/,
   );
   assert.match(
     cleanupScript,
@@ -1596,6 +1598,48 @@ test("terminal cleanup requires the exact pane receipt and pane death", () => {
     calls.some((call) => call.startsWith("/bin/kill ") || call.startsWith("/bin/ps ")),
     false,
   );
+
+  const leaseQueries = cleanupScript.slice(
+    cleanupScript.indexOf('if [ "$(/usr/bin/uname -s)" = Darwin ]; then'),
+    cleanupScript.indexOf("on_bound_tty()"),
+  );
+  assert.ok(leaseQueries);
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-lease-queries-"));
+  const lease = join(root, "lease");
+  writeFileSync(lease, "");
+  try {
+    for (const [descriptors, expected] of [
+      ['exec 9<"$lease_path"', "yes"],
+      ['exec 9<"$lease_path"; exec 8<&9; exec 9<&-', process.platform === "darwin" ? "yes" : "no"],
+      ['exec 9<"$lease_path"; exec 9<&-', "no"],
+      ['exec 9<"$2"', "no"],
+    ]) {
+      const query = spawnSync(
+        "/bin/bash",
+        [
+          "--noprofile",
+          "--norc",
+          "-c",
+          [
+            "lease_path=$1",
+            leaseQueries,
+            "lease_identity=$(lease_identity_now)",
+            descriptors,
+            'if holds_lease "$$"; then echo yes; else echo no; fi',
+            'if lease_pids | /usr/bin/grep -qx "$$"; then echo yes; else echo no; fi',
+          ].join("\n"),
+          "clawsweeper-lease-query",
+          lease,
+          root,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(query.status, 0, query.stderr);
+      assert.equal(query.stdout, `${expected}\n${expected}\n`, descriptors);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("terminal rejects a malformed pane readiness acknowledgement", () => {
@@ -2592,59 +2636,111 @@ test("an unobserved terminal marker fails verification and cannot produce record
   );
 });
 
-test("execution setup failures still produce a failed verification result", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-verification-failure-"));
-  const outputDir = join(directory, "output");
-  const planPath = join(directory, "plan.json");
-  const plan = recommendedPlan("browser");
-  writeFileSync(planPath, JSON.stringify(plan), "utf8");
-
-  await executeLiveProof(
+test("execution setup failures preserve bounded streams in verification and rendered reasons", async (t) => {
+  for (const scenario of [
     {
-      repo: "example/repo",
-      item: 42,
-      outputDir,
-      planPath,
-      checkoutPath: directory,
+      name: "stderr only",
+      result: { status: 1, stderr: "setup exploded" },
+      evidence: ["setup exploded"],
     },
     {
-      env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
-      runner: (command, args) => {
-        if (command === "git") return { status: 0, stdout: `${HEAD}\n` };
-        if (command === "sh" && String(args[1]).startsWith("command -v pnpm")) {
-          return { status: 0 };
+      name: "stdout cause after stderr notice",
+      result: {
+        status: 1,
+        stderr: "tool download notice\r\ncontinuing",
+        stdout: "manifest missing\nworker setup failed",
+      },
+      evidence: ["manifest missing", "tool download notice", "continuing", "worker setup failed"],
+    },
+    {
+      name: "long streams and unsafe markup",
+      result: {
+        status: 1,
+        stderr: `notice ${"n".repeat(2_000)} notice end`,
+        stdout: `manifest missing ${"x".repeat(2_000)} worker setup failed\u2028\u2029\`</details> <!-- clawsweeper-review -->`,
+      },
+      evidence: ["manifest missing", "notice", "notice end", "worker setup failed"],
+    },
+    {
+      name: "stdout only",
+      result: { status: 1, stderr: " \n", stdout: "manifest missing" },
+      evidence: ["manifest missing"],
+    },
+    {
+      name: "spawn error",
+      result: { status: null, error: new Error("tool unavailable") },
+      evidence: ["tool unavailable"],
+    },
+    { name: "no output", result: { status: 1 }, evidence: ["command failed without output"] },
+  ]) {
+    for (const surface of ["browser", "terminal"] as const) {
+      await t.test(`${scenario.name}: ${surface}`, async () => {
+        const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-verification-failure-"));
+        try {
+          const outputDir = join(directory, "output");
+          const planPath = join(directory, "plan.json");
+          const plan = recommendedPlan(surface);
+          writeFileSync(planPath, JSON.stringify(plan), "utf8");
+
+          await executeLiveProof(
+            {
+              repo: "example/repo",
+              item: 42,
+              outputDir,
+              planPath,
+              checkoutPath: directory,
+            },
+            {
+              env: { CLAWSWEEPER_LIVE_PROOF_ENABLED: "1" },
+              runner: (command, args) => {
+                if (command === "git") return { status: 0, stdout: `${HEAD}\n` };
+                if (command === "sh" && String(args[1]).startsWith("command -v pnpm")) {
+                  return { status: 0 };
+                }
+                return scenario.result;
+              },
+              repositoryProfileFor: () => ({
+                ...profile(),
+                liveTest: { ...profile().liveTest!, setup: ["pnpm install"] },
+              }),
+              reportLiveProofPlan: () => plan,
+              parseLiveProofPlan: () => plan,
+              fetchPullRequest: async () => {
+                throw new Error("local checkout must not fetch the pull request");
+              },
+              now: () => new Date("2026-08-17T12:00:00.000Z"),
+              log: () => undefined,
+            },
+          );
+
+          const verification = parseLiveVerificationResult(
+            JSON.parse(readFileSync(join(outputDir, "live-verification.json"), "utf8")) as unknown,
+          );
+          assert.equal(verification.overall_pass, false);
+          assert.equal(verification.drive_status, "failed");
+          const detail = mediaProofSpawnDetail(scenario.result);
+          assert.ok(detail.length <= 1_000);
+          assert.equal(verification.failure?.phase, "execution");
+          const reason = verification.failure?.reason ?? "";
+          assert.ok(reason.length <= 1_000);
+          assert.match(reason, /^sh -lc pnpm install --ignore-scripts failed:/);
+          const rendered = renderLiveVerificationCommentBlock(verification);
+          assert.match(rendered, /FAIL \(failed\) — execution before step 1/);
+          for (const evidence of scenario.evidence) {
+            assert.ok(reason.includes(evidence), `reason missing ${evidence}: ${reason}`);
+            assert.ok(rendered.includes(evidence), `comment missing ${evidence}`);
+            if (surface === "terminal") assert.ok(verification.output.includes(evidence));
+          }
+          assert.doesNotMatch(detail, /[\r\n\u2028\u2029]/);
+          if (surface === "browser") assert.equal(verification.output, "");
+          assert.doesNotMatch(rendered, /<\/details>|<!-- clawsweeper-review/);
+          assert.equal(existsSync(join(outputDir, "live-proof-manifest.json")), false);
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
         }
-        return { status: 1, stderr: "setup exploded" };
-      },
-      repositoryProfileFor: () => ({
-        ...profile(),
-        liveTest: { ...profile().liveTest!, setup: ["pnpm install"] },
-      }),
-      reportLiveProofPlan: () => plan,
-      parseLiveProofPlan: () => plan,
-      fetchPullRequest: async () => {
-        throw new Error("local checkout must not fetch the pull request");
-      },
-      now: () => new Date("2026-08-17T12:00:00.000Z"),
-      log: () => undefined,
-    },
-  );
-
-  const verification = parseLiveVerificationResult(
-    JSON.parse(readFileSync(join(outputDir, "live-verification.json"), "utf8")) as unknown,
-  );
-  assert.equal(verification.overall_pass, false);
-  assert.equal(verification.drive_status, "failed");
-  assert.equal(verification.output, "");
-  assert.deepEqual(verification.failure, {
-    phase: "execution",
-    reason: "sh -lc pnpm install --ignore-scripts failed: setup exploded",
-  });
-  assert.match(
-    renderLiveVerificationCommentBlock(verification),
-    /FAIL \(failed\) — execution before step 1 `expect_text`: `sh -lc pnpm install --ignore-scripts failed: setup exploded`/,
-  );
-  assert.equal(existsSync(join(outputDir, "live-proof-manifest.json")), false);
+      });
+    }
+  }
 });
 
 test("browser readiness timeout publishes the last 40 sanitized server log lines", async () => {

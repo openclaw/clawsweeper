@@ -543,8 +543,10 @@ case "$pane_pid" in ""|*[!0-9]*) finish startup error:pane-pid 0 125 ;; esac
 case "$lease_identity" in *[!0-9:]*|:*|*:|*:*:*|"") finish startup error:lease-identity 0 125 ;; *:*) ;; *) finish startup error:lease-identity 0 125 ;; esac
 if [ "$(/usr/bin/uname -s)" = Darwin ]; then
   lease_identity_now() { /usr/bin/stat -f '%d:%i' -- "$lease_path" 2>/dev/null; }
-  lease_pids() { /usr/sbin/lsof -t -- "$lease_path" 2>/dev/null; status=$?; [ "$status" -le 1 ]; }
-  holds_lease() { /usr/sbin/lsof -t -a -p "$1" -- "$lease_path" 2>/dev/null | /usr/bin/grep -qx "$1"; }
+  # The lease is an inherited open file, not a mapped image or working directory.
+  # Darwin -X skips those expensive scans without excluding duplicated descriptors.
+  lease_pids() { /usr/sbin/lsof -t -X -- "$lease_path" 2>/dev/null; status=$?; [ "$status" -le 1 ]; }
+  holds_lease() { /usr/sbin/lsof -t -X -a -p "$1" -- "$lease_path" 2>/dev/null | /usr/bin/grep -qx "$1"; }
 else
   lease_identity_now() { /usr/bin/stat -Lc '%d:%i' -- "$lease_path" 2>/dev/null; }
   holds_lease() { [ "$(/usr/bin/stat -Lc '%d:%i' -- /proc/"$1"/fd/${TERMINAL_LEASE_FD} 2>/dev/null)" = "$lease_identity" ]; }
@@ -554,7 +556,7 @@ on_bound_tty() { [ "$(/bin/ps -o tty= -p "$1" 2>/dev/null | /usr/bin/tr -d '[:sp
 pane_owns_tty() { holds_lease "$pane_pid" && on_bound_tty "$pane_pid"; }
 tty_pids() {
   pane_owns_tty || return 0
-  /bin/ps -axo pid=,tty= | /usr/bin/awk -v tty="$tty_name" '$2 == tty { print $1 }'
+  /bin/ps -t "$tty_name" -o pid=,tty= | /usr/bin/awk -v tty="$tty_name" '$2 == tty { print $1 }'
 }
 scan_bound_processes() {
   : >"$scan_file"

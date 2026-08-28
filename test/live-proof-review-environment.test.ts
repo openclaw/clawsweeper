@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 import type { LiveProofPlan, MediaProofCommandRunner } from "../dist/clawsweeper-types.js";
@@ -24,6 +24,7 @@ import {
 } from "../dist/live-proof/review-artifacts.js";
 import { sanitizedLiveProofEnvironment } from "../dist/live-proof/environment.js";
 import { parseLiveVerificationResult } from "../dist/live-proof/verification.js";
+import { repositoryProfileFor } from "../dist/repository-profiles.js";
 
 test("review live proof composes inherited Go environment settings", () => {
   const profile = join("scratch", "profile");
@@ -769,7 +770,7 @@ test(
 
 test(
   "terminal proof cleanup ignores an unrelated process holding a checkout directory descriptor",
-  { skip: process.platform !== "linux", timeout: 60_000 },
+  { timeout: 60_000 },
   async () => {
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-directory-fd-"));
     const helperPath = join(root, "directory-holder.mjs");
@@ -1079,6 +1080,185 @@ test(
       assert.match(result.output, /before expected output appeared: "STALE_FROM_FIRST"/);
     } finally {
       rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "Crabbox profile bootstraps a trusted synthetic Go-root/nested npm fixture through the review child",
+  { timeout: 60_000 },
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-nested-npm-"));
+    const target = join(root, "target");
+    const records = join(root, "records");
+    const output = join(root, "output");
+    const repo = "openclaw/crabbox";
+    const dependency = { name: "fixture-dependency", version: "1.0.0", main: "index.cjs" };
+    const worker = {
+      name: "synthetic-worker",
+      version: "1.0.0",
+      private: true,
+      scripts: {
+        preinstall: "node ../hook.cjs",
+        postinstall: "node ../hook.cjs",
+        test: "node ../verify.cjs worker",
+      },
+      dependencies: { "fixture-dependency": "file:../dependency" },
+    };
+    const lock = JSON.stringify({
+      name: worker.name,
+      version: worker.version,
+      lockfileVersion: 3,
+      requires: true,
+      packages: {
+        "": {
+          name: worker.name,
+          version: worker.version,
+          hasInstallScript: true,
+          dependencies: worker.dependencies,
+        },
+        "../dependency": { version: dependency.version },
+        "node_modules/fixture-dependency": { resolved: "../dependency", link: true },
+      },
+    });
+    // Only trusted synthetic code runs here, not Crabbox source, tests, or services.
+    const files = {
+      "go.mod": "module example.invalid/synthetic-fixture\n\ngo 1.24\n",
+      ".node-version": "24\n",
+      "fixture-head.txt": "reviewed fixture",
+      "hook.cjs":
+        "require('node:fs').writeFileSync(require('node:path').join(__dirname, 'install-script-ran'), 'hook ran');\n",
+      "dependency/package.json": JSON.stringify(dependency),
+      "dependency/index.cjs": "module.exports = 'installed local dependency';\n",
+      "worker/package.json": JSON.stringify(worker),
+      "worker/package-lock.json": lock,
+      "worker/.npmrc": "offline=true\naudit=false\nfund=false\nupdate-notifier=false\n",
+      "verify.cjs": `
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const root = __dirname;
+const mode = process.argv[2];
+assert.equal(fs.realpathSync(process.cwd()), path.join(root, ...(mode === 'worker' ? ['worker'] : [])));
+assert.equal(fs.existsSync(path.join(root, 'package.json')), false);
+assert.equal(fs.existsSync(path.join(root, 'go.mod')), true);
+assert.equal(fs.readFileSync(path.join(root, 'fixture-head.txt'), 'utf8'), 'reviewed fixture');
+assert.equal(fs.existsSync(path.join(root, 'install-script-ran')), false);
+for (const name of ['OPENAI_API_KEY', 'GH_TOKEN', 'AWS_SECRET_ACCESS_KEY', 'CLAWSWEEPER_R2_TOKEN', 'DATABASE_PASSWORD', 'PACKAGE_KEY']) {
+  assert.equal(process.env[name], undefined, name);
+}
+const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+assert.equal(fs.readFileSync(path.join(root, 'worker/package-lock.json'), 'utf8'), git('show', 'HEAD:worker/package-lock.json'));
+assert.equal(require(path.join(root, 'worker/node_modules/fixture-dependency')), 'installed local dependency');
+assert.equal(fs.realpathSync(process.env.HOME), path.join(path.dirname(root), 'profile'));
+assert.equal(process.env.npm_config_cache, path.join(process.env.HOME, 'npm-cache'));
+if (mode === 'worker') assert.equal(fs.realpathSync(process.env.INIT_CWD), root);
+console.log('synthetic ' + mode + ' checks passed head=' + git('rev-parse', 'HEAD'));
+process.exit(process.argv.includes('fail') ? 7 : 0);
+`,
+    };
+    try {
+      for (const [name, content] of Object.entries(files)) {
+        const path = join(target, name);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, content);
+      }
+      mkdirSync(records);
+      git(target, "init", "-b", "main");
+      git(target, "config", "user.name", "ClawSweeper Test");
+      git(target, "config", "user.email", "test@example.com");
+      git(target, "add", ".");
+      git(
+        target,
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "synthetic fixture",
+      );
+      const head = git(target, "rev-parse", "HEAD").trim();
+      writeFileSync(join(target, "fixture-head.txt"), "unreviewed checkout must not execute");
+      assert.equal(existsSync(join(target, "worker", "node_modules")), false);
+      for (const fails of [false, true]) {
+        const item = fails ? 43 : 42;
+        const plan: LiveProofPlan = {
+          status: "recommended",
+          surface: "terminal",
+          terminalCompletion: "exit_zero",
+          reason: "Verify trusted synthetic nested npm setup.",
+          payoff: { kind: "static_text", justification: "No recording needed." },
+          entry: `node verify.cjs root && npm test --prefix worker -- ${fails ? "fail" : "pass"}`,
+          steps: [{ action: "expect_output", text: "synthetic worker checks passed" }],
+        };
+        writeFileSync(
+          join(records, `${item}.md`),
+          `---\nnumber: ${item}\nrepository: ${repo}\ntype: pull_request\npull_head_sha: ${head}\n---\n\n## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: ${plan.reason}\n\nPayoff: static_text\n\nPayoff justification: ${plan.payoff.justification}\n\nEntry: ${plan.entry}\n\nSteps:\n\n- ${JSON.stringify(plan.steps[0])}\n\n## Work Candidate\n\nCandidate: none\n`,
+        );
+        const logs: string[] = [];
+        const inspection = executeReviewLiveProofs(
+          {
+            checkoutPath: target,
+            entrypoint: resolve("dist/clawsweeper.js"),
+            itemNumbers: [item],
+            outputRoot: output,
+            recordsDir: records,
+            repo,
+          },
+          {
+            env: {
+              ...process.env,
+              OPENAI_API_KEY: "must-not-cross",
+              GH_TOKEN: "must-not-cross",
+              AWS_SECRET_ACCESS_KEY: "must-not-cross",
+              CLAWSWEEPER_R2_TOKEN: "must-not-cross",
+              DATABASE_PASSWORD: "must-not-cross",
+              PACKAGE_KEY: "must-not-cross",
+            },
+            frontMatterValue: (markdown, key) =>
+              new RegExp(`^${key}:\\s*(.*)$`, "m").exec(markdown)?.[1]?.trim(),
+            reportLiveProofPlan: () => plan,
+            repositoryProfileFor,
+            log: (message) => logs.push(message),
+          },
+        );
+        const verification = parseLiveVerificationResult(
+          JSON.parse(
+            readFileSync(join(output, String(item), "live-verification.json"), "utf8"),
+          ) as unknown,
+        );
+        assert.deepEqual(inspection.candidates, [item]);
+        assert.equal(verification.head_sha, head);
+        assert.equal(verification.repo, repo);
+        assert.equal(verification.overall_pass, !fails, JSON.stringify(verification));
+        assert.equal(verification.drive_status, fails ? "failed" : "completed");
+        assert.ok(
+          verification.output.includes(`synthetic root checks passed head=${head}`),
+          verification.output,
+        );
+        assert.ok(
+          verification.output.includes(`synthetic worker checks passed head=${head}`),
+          verification.output,
+        );
+        if (fails) assert.match(verification.failure?.reason ?? "", /failed with exit status 7:/);
+        assert.equal(existsSync(join(output, String(item), "live-proof-manifest.json")), false);
+        assert.match(logs.join("\n"), /execution=unsandboxed credentials=0/);
+        assert.equal(
+          (JSON.stringify(verification) + logs.join("\n")).includes("must-not-cross"),
+          false,
+        );
+        console.log(`[live-proof synthetic nested npm] ${JSON.stringify(verification)}`);
+      }
+      assert.equal(existsSync(join(target, "worker", "node_modules")), false);
+      assert.equal(readFileSync(join(target, "worker", "package-lock.json"), "utf8"), lock);
+      assert.equal(
+        readFileSync(join(target, "fixture-head.txt"), "utf8"),
+        "unreviewed checkout must not execute",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   },
 );

@@ -32,6 +32,14 @@ available before target setup. Installer failures become a failed
 path; they do not fail the review itself. Reviews that do not verify never probe
 or install a target package manager.
 
+The selected repository profile also owns `live_test.setup`. Setup commands run
+from the exact-head target root, not the ClawSweeper checkout or a discovered
+package directory. Nested packages therefore need explicit target-native
+commands: Crabbox uses `npm ci --prefix worker`, which becomes
+`npm ci --ignore-scripts --prefix worker` under the default install-script policy.
+An owner fallback cannot describe every repository's package layout; configure
+the target profile rather than assuming OpenClaw's root pnpm setup applies.
+
 ## Review-job execution
 
 After the review command returns, the job inspects the produced reports before
@@ -133,9 +141,14 @@ dev server could bind its port without publishing an unbounded target log.
 
 Every drive writes `live-verification.json` with the exact reviewed head, entry,
 typed steps and outcomes, bounded terminal output, and overall pass/fail result.
-A setup or drive failure still publishes verification and no media. Media is
-eligible only when an expectation was absent initially and satisfied after the
-plan acted, and the recording passes the three-second floor. Eligible recordings
+A setup or drive failure still publishes verification and no media. Command
+failure summaries retain evidence from both stderr and stdout, sharing a
+1,000-character budget across nonempty streams and any spawn error. Summaries
+are flattened to one line so an informational stderr notice cannot hide a
+stdout failure in the human-readable reason. Existing output bounds and
+publication sanitization still apply. Media is eligible only when an expectation
+was absent initially and satisfied after the plan acted, and the recording passes
+the three-second floor. Eligible recordings
 are capped at 90 seconds and 50 MB, transcoded to H.264 MP4, probed, and paired
 with `poster.jpg` plus a metadata-only manifest.
 
@@ -212,8 +225,12 @@ already-armed watchdog. Pane death triggers the same watchdog independently. It
 TERM-sweeps, then repeatedly KILL-sweeps processes still holding the lease plus
 bound-terminal members only while the original pane still owns both its lease
 and bound terminal. Lease-holder discovery remains active after pane death.
-Darwin finds lease holders with the stock `lsof`; Linux inspects `/proc` for
-reserved inherited descriptor 9. Cleanup succeeds only when an exact
+Darwin finds lease holders with stock `lsof -X`, restricting discovery to open
+descriptors and fileports rather than mapped images or working directories;
+duplicated lease descriptors remain discoverable. Linux inspects `/proc` for
+reserved inherited descriptor 9. Terminal membership queries select the bound
+TTY directly. These queries avoid unrelated host work without changing the
+cleanup budget or identity guards. Cleanup succeeds only when an exact
 zero-survivor receipt matches the bound identity and the original pane is dead.
 Missing, malformed, stale, replaced, surviving-process, or timeout evidence
 fails visibly. Target commands do not inherit `TMUX`, `TMUX_PANE`, or

@@ -35,6 +35,13 @@ profile alone supplies its release-owned `CHANGELOG.md` review restriction.
 policies; being a non-core target does not grant contributors or workers
 permission to edit release-owned files.
 
+Toolchain and setup ownership is also per repository. The explicit
+`openclaw/crabbox` profile selects npm and installs its nested worker package
+with `npm ci --prefix worker` from the target root. It retains the generic
+OpenClaw fallback's close rules, empty validation commands, and absent changed
+gate; selecting target-native setup does not broaden apply policy or inherit
+the core OpenClaw policy.
+
 Dashboard targets are configured separately with `TARGET_REPOS` in
 `dashboard/wrangler.toml`. Scheduled target selection comes from
 `target_inventory`, and apply-enabled targets use the dashboard's
