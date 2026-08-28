@@ -218,7 +218,7 @@ for (const scenario of [
       assert.match(result.output, /postcss@8\.5\.26/);
       assert.match(
         result.steps[0]?.detail ?? "",
-        /exited successfully before expected output appeared/,
+        /proof-plan assertion mismatch: terminal command exited successfully.*verify the command\/wrapper\/reporter contract/,
       );
     } else {
       assert.match(result.output, /pnpm why failed: 7/);

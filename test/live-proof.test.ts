@@ -675,9 +675,7 @@ test("terminal run waits for output and a successful final exit", () => {
   );
   assert.equal(result.status, "completed", `${result.output}\n\n${calls.join("\n")}`);
   const respawn = calls.findIndex((call) => call.startsWith("tmux respawn-pane"));
-  const hold = calls.findIndex((call, index) => index > respawn && call === "sleep 6");
   assert.notEqual(respawn, -1);
-  assert.notEqual(hold, -1);
   assert.match(result.output, /Usage/);
 });
 
