@@ -5376,6 +5376,57 @@ test("triage writes and reprojects aggregate-only fresh cache bodies", async () 
   }
 });
 
+test("PR proof triage keeps legacy Telegram labels visible during migration", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const queries: string[] = [];
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/labels")) {
+      return jsonResponse([
+        { name: "mantis: telegram-visible-proof", color: "57606A" },
+        { name: "proof: telegram-e2e", color: "57606A" },
+      ]);
+    }
+    if (url.pathname === "/search/issues") {
+      const query = url.searchParams.get("q") ?? "";
+      queries.push(query);
+      return jsonResponse({
+        total_count:
+          query.includes("mantis: telegram-visible-proof") && query.includes("proof: telegram-e2e")
+            ? 1
+            : 0,
+        items: [],
+      });
+    }
+    throw new Error(`unexpected synthetic request: ${url.pathname}`);
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/pr-proof-triage"),
+      { TARGET_REPOS: "synthetic/target", TRIAGE_CACHE_TTL_SECONDS: "0" },
+      { waitUntil: () => undefined },
+    );
+    const snapshot = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(snapshot.counts["telegram-proof"], 1);
+    assert.ok(
+      queries.some(
+        (query) =>
+          query.includes("mantis: telegram-visible-proof") && query.includes("proof: telegram-e2e"),
+      ),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
 test("triage routes reproject raw legacy fresh caches", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;

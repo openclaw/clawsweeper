@@ -493,6 +493,7 @@ const PR_PROOF_LABEL_NAMES = [
   "triage: mock-only-proof",
   "proof: sufficient",
   "proof: override",
+  "mantis: telegram-visible-proof",
   "proof: telegram-e2e",
 ];
 const TRIAGE_VIEWS = [
@@ -587,7 +588,7 @@ const PR_PROOF_VIEWS = [
     id: "telegram-proof",
     title: "Telegram proof",
     description: "PRs that need Telegram Test Server proof with the repository E2E skill.",
-    allLabels: ["proof: telegram-e2e"],
+    anyLabels: ["mantis: telegram-visible-proof", "proof: telegram-e2e"],
     itemLimit: 100,
   },
   {
@@ -7434,7 +7435,9 @@ function proofStateFromLabels(labels) {
   if (has("proof: sufficient")) return "Sufficient";
   if (has("triage: mock-only-proof")) return "Mock-only proof";
   if (has("triage: needs-real-behavior-proof")) return "Needs proof";
-  if (has("proof: telegram-e2e")) return "Telegram proof";
+  if (has("mantis: telegram-visible-proof") || has("proof: telegram-e2e")) {
+    return "Telegram proof";
+  }
   return "";
 }
 

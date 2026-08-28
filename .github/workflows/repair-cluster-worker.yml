@@ -663,6 +663,8 @@ jobs:
           GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
           CLAWSWEEPER_AUTOMERGE_SESSION_ID: ${{ inputs.automerge_session_id }}
+          # OpenClaw agents intentionally use the CI-only Test Server lease capability directly.
+          # Keep free-form repository skill access; do not replace it with a fixed proof runner.
           OPENCLAW_QA_CONVEX_SITE_URL: ${{ steps.target.outputs.target_slug == 'openclaw-openclaw' && secrets.OPENCLAW_QA_CONVEX_SITE_URL || '' }}
           OPENCLAW_QA_CONVEX_SECRET_CI: ${{ steps.target.outputs.target_slug == 'openclaw-openclaw' && secrets.OPENCLAW_QA_CONVEX_SECRET_CI || '' }}
         run: pnpm run repair:execute-fix -- "$CLUSTER_JOB_PATH" --latest --defer-publication
