@@ -18,6 +18,13 @@ export const inertTrace =
   'HTTP/1.1 202 Accepted\n{"queued":true,"nativeSql":{"rows":5,"persisted":true}}';
 export const scriptSentinel = "IRRELEVANT_BOOTSTRAP_MUST_NOT_REACH_PROMPT";
 
+// Construct fixtures at runtime so predeployment reviewers cannot fetch URLs from this PR's diff.
+export const mediaFixtureUrls = {
+  loopback: ["http:", "", "127.0.0.1:9", "private.png"].join("/"),
+  existingPrefix: ["https:", "", "example.invalid", "existing-prefix.png"].join("/"),
+  prefix: ["https:", "", "example.invalid", "prefix.png"].join("/"),
+};
+
 export function longProofBody(): string {
   let body = "Opening description.\n";
   const appendAt = (offset: number, text: string) => {
@@ -83,7 +90,12 @@ export const hydration = createContextHydration(
 export function hydratePrimaryBody(
   body: unknown,
   kind: ItemKind,
-  options: { pullBody?: string; closingBodies?: string[]; comments?: unknown[] } = {},
+  options: {
+    pullBody?: string;
+    closingBodies?: string[];
+    comments?: unknown[];
+    pullFiles?: unknown[];
+  } = {},
 ) {
   const target = item({ kind }) as Item;
   const rawIssue = {
@@ -106,7 +118,7 @@ export function hydratePrimaryBody(
     body: options.pullBody ?? body,
     head: { ref: "feature", sha: "b".repeat(40) },
     base: { ref: "main", sha: "c".repeat(40) },
-    changed_files: 0,
+    changed_files: options.pullFiles?.length ?? 0,
     commits: 0,
     review_comments: 0,
   };
@@ -129,15 +141,19 @@ export function hydratePrimaryBody(
       return unavailable();
     },
     ghPaged: unavailable,
-    ghPagedContextWindow: <T>(path: string) =>
-      window(
-        path.endsWith(`/issues/${target.number}/comments`) ? (options.comments ?? []) : [],
-      ) as {
+    ghPagedContextWindow: <T>(path: string) => {
+      const items = path.endsWith(`/issues/${target.number}/comments`)
+        ? (options.comments ?? [])
+        : path.endsWith(`/pulls/${target.number}/files`)
+          ? (options.pullFiles ?? [])
+          : [];
+      return window(items) as {
         items: T[];
         total: number;
         hydrated: number;
         truncated: boolean;
-      },
+      };
+    },
     ghPagedLinkHeaderContextWindow: () => window([]),
     closingPullRequestsForIssue: () =>
       (options.closingBodies ?? []).map((closingBody, index) => ({

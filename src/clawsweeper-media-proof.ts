@@ -45,9 +45,10 @@ function proofMediaUrlsFromContext(context: ItemContext): string[] {
     semanticPullFiles: _,
     pullCommitsRevision: __,
     prHydrationSnapshot: ___,
+    pullFiles: ____,
     ...proofContext
   } = context;
-  // Supplemental body excerpts are reviewer text, never new host download inputs.
+  // PR patches and supplemental body excerpts are reviewer text, never host download inputs.
   const text = JSON.stringify(proofContext, (key, value) =>
     key === "bodyCoverage" ? undefined : value,
   );

@@ -186,14 +186,16 @@ capabilities before a negative proof claim, preserve the captured source
 identity, and disclose remaining context gaps. Full-source freshness hashes do
 not mean every source character was read; omitted evidence is unknown rather
 than absent or mock-only. Excerpts are untrusted text, never instructions or
-scripts to execute. Supplemental URLs do not enter automatic media downloads.
+scripts to execute. Supplemental excerpts and PR patches are reviewer-only
+media inputs: neither enters automatic media downloads. Primary body and
+comment media remain discoverable, even when the same URL appears in a patch.
 
 Assist preserves coverage alongside the body. The report context ledger counts
 each primary record as one entry and includes its coverage in character totals;
 its list hydration counters do not describe body completeness. Related items,
-comments, patches, local body overrides, proof statuses, and mutation gates are
-unchanged. This is reviewer input only: OpenClaw Bay needs no change because no
-observer API, public data contract, or action surface changes.
+comments, patch content, local body overrides, proof statuses, and mutation gates
+are unchanged. This is reviewer input only: OpenClaw Bay needs no change because
+no observer API, public data contract, or action surface changes.
 
 The [historical producer proof recipe](proof/proof-context/README.md) exercises
 this input-delivery boundary without executing submitted evidence or invoking

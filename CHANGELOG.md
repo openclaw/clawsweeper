@@ -19,7 +19,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
-- Reviewer input now retains bounded late proof/trace excerpts with explicit body coverage, without increasing the body budget, adding media fetches, or weakening proof requirements; OpenClaw Bay is unaffected.
+- Reviewer input now retains bounded late proof/trace excerpts with explicit body coverage and treats PR patches as reviewer-only media inputs, without increasing the body budget, adding media fetches, or weakening proof requirements; OpenClaw Bay is unaffected.
 - PR reviews now separate introduced changes from main-only drift, verify test-merge parents, and avoid stored-data warnings for ordinary Markdown prose beside source.
 - Review and repair fetches preserve the target branch ref when Git pruning is enabled.
 - Default close-mode apply runs now requeue up to five exact re-reviews for records whose close was blocked by source drift or an unverified-checkout review, so stale backlog records converge to closeable instead of being skipped by every cursor sweep.
