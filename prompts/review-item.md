@@ -579,10 +579,12 @@ prerequisites, invoke that wrapper and do not bypass it by calling its internal
 script directly. Do not assume an arbitrary test script builds. When no owning
 wrapper exists, use an explicit fail-fast chain such as `prerequisite && command`.
 Inspect the exact checked-out command, wrapper, and reporter contract before
-choosing output assertions. For finite test commands, prefer a real final summary
-with `exit_zero`; require individual test names only with an explicitly selected
-reporter that emits them. Default reporters may emit slow-test names only when the
-file completes; those names are not guaranteed per-test progress signals. A test
+choosing output assertions. Terminal stdio is a real PTY, so reporter defaults can
+differ from redirected logs; inspect wrappers that pipe their own child output.
+For finite test commands, prefer a real final summary with `exit_zero`. Explicitly
+select an emitting reporter for individual test names or format-specific assertions;
+otherwise use format-independent output text. Default reporters may emit slow-test
+names only when the file completes; those names are not guaranteed per-test progress signals. A test
 declaration is not an output contract.
 The trusted `terminalExecutionLimitSeconds` bounds the whole terminal plan,
 including `static_text`. Respect existing program/test budgets; never weaken tests,

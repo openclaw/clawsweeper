@@ -474,6 +474,7 @@ export function createReviewRuntime({
         ) ?? [],
       allowInstallScripts: liveTest?.allowInstallScripts ?? false,
       terminalExecutionLimitSeconds: liveTest?.maxRecordingSeconds ?? null,
+      terminalStdio: "pty",
       checkout: {
         state: "cold",
         revision: "exact reviewed head",

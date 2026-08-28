@@ -255,6 +255,7 @@ function assertLiveProofContext(repo: string) {
     setup: ["untrusted setup"],
     allowInstallScripts: true,
     terminalExecutionLimitSeconds: 9999,
+    terminalStdio: "pipe",
     checkout: { state: "warm" },
     browserStartup: { onlyForSurface: "terminal", command: "untrusted start" },
   };
@@ -288,6 +289,7 @@ function assertLiveProofContext(repo: string) {
       ) ?? [],
     allowInstallScripts: liveTest?.allowInstallScripts ?? false,
     terminalExecutionLimitSeconds: liveTest?.maxRecordingSeconds ?? null,
+    terminalStdio: "pty",
     checkout: {
       state: "cold",
       revision: "exact reviewed head",

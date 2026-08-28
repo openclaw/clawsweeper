@@ -96,7 +96,10 @@ manager, normalized setup commands, install-script policy, and browser-only star
 It also supplies `terminalExecutionLimitSeconds` from the existing effective
 `live_test.max_recording_seconds` limit (`profile.liveTest.maxRecordingSeconds`),
 which bounds the whole terminal plan even for `static_text` without recording.
-These facts are separate from PR-authored context. The proof target is a cold
+The trusted `terminalStdio: "pty"` fact identifies real terminal standard I/O:
+reporter defaults may differ from redirected logs, and wrappers may pipe their
+own child output. Select a reporter for format-specific assertions or use
+format-independent text. These facts are separate from PR-authored context. The proof target is a cold
 checkout of the exact reviewed head: reviewer/controller `dist` and other generated
 output do not transfer. The planner must inspect the relevant package scripts and
 import chain, then include any build or code-generation prerequisites that setup
