@@ -45,6 +45,7 @@ import {
   sanitizedLiveProofEnvironment,
 } from "../dist/live-proof/environment.js";
 import { parseLiveProofManifest } from "../dist/live-proof/manifest.js";
+import { publishReviewLiveProofArtifacts } from "../dist/live-proof/publication-artifacts.js";
 import {
   buildLiveVerificationResult,
   encodeLiveVerificationReportPayload,
@@ -3232,6 +3233,76 @@ test("merged publication trusts the review-bound head without a GitHub lookup", 
   assert.equal(commands.filter((command) => command.startsWith("aws ")).length, 2);
 });
 
+test("queued publication classifies legacy verification as an invalid artifact before mutation", async () => {
+  const fixture = publicationFixture();
+  const verificationPath = join(fixture.bundleDir, "live-verification.json");
+  const { plan_sha256: _planSha256, ...legacyVerification } = JSON.parse(
+    readFileSync(verificationPath, "utf8"),
+  );
+  writeFileSync(verificationPath, JSON.stringify(legacyVerification), "utf8");
+  const originalReport = readFileSync(fixture.recordPath, "utf8");
+  const commands: string[] = [];
+  let upserts = 0;
+
+  const result = await publishReviewLiveProofArtifacts(
+    fixture.artifactDir,
+    attachDependencies({
+      runner: mediaRunner(commands),
+      fetchPullRequest: async () => {
+        throw new Error("queued publication must not fetch a live head");
+      },
+      upsertReviewComment: () => {
+        upserts += 1;
+        return {};
+      },
+      logs: fixture.logs,
+    }),
+  );
+
+  assert.deepEqual(result, { status: "invalid_artifact" });
+  assert.equal(commands.length, 0);
+  assert.equal(upserts, 0);
+  assert.equal(readFileSync(fixture.recordPath, "utf8"), originalReport);
+
+  const cli = spawnSync(
+    process.execPath,
+    ["dist/clawsweeper.js", "live-proof-publish-artifacts", "--artifact-dir", fixture.artifactDir],
+    { encoding: "utf8" },
+  );
+  assert.equal(cli.status, 1);
+  assert.equal(cli.stderr, "");
+  assert.deepEqual(JSON.parse(cli.stdout), { status: "invalid_artifact" });
+  assert.equal(cli.stdout.trim().split("\n").length, 1);
+});
+
+test("queued publication leaves AWS upload failures retryable", async () => {
+  const fixture = publicationFixture();
+  const originalReport = readFileSync(fixture.recordPath, "utf8");
+  const successfulMediaRunner = mediaRunner([]);
+
+  await assert.rejects(
+    publishReviewLiveProofArtifacts(
+      fixture.artifactDir,
+      attachDependencies({
+        runner: (command, args) =>
+          command === "aws"
+            ? { status: 1, stderr: "temporary upload failure" }
+            : successfulMediaRunner(command, args),
+        fetchPullRequest: async () => {
+          throw new Error("queued publication must not fetch a live head");
+        },
+        upsertReviewComment: () => ({}),
+        logs: fixture.logs,
+      }),
+    ),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.name !== "LiveProofArtifactValidationError" &&
+      /aws s3 cp failed/.test(error.message),
+  );
+  assert.equal(readFileSync(fixture.recordPath, "utf8"), originalReport);
+});
+
 test("live-proof attach publishes the record before syncing its marker-backed comment", async () => {
   const fixture = attachmentFixture();
   const commands: string[] = [];
@@ -4041,6 +4112,21 @@ Candidate: none
     "utf8",
   );
   return { bundleDir, recordPath, logs };
+}
+
+function publicationFixture() {
+  const fixture = attachmentFixture();
+  const artifactDir = dirname(fixture.recordPath);
+  const bundleDir = join(artifactDir, "live-proof", "42");
+  const recordPath = join(artifactDir, "review", "42.md");
+  mkdirSync(bundleDir, { recursive: true });
+  mkdirSync(dirname(recordPath), { recursive: true });
+  for (const filename of readdirSync(fixture.bundleDir)) {
+    renameSync(join(fixture.bundleDir, filename), join(bundleDir, filename));
+  }
+  renameSync(fixture.recordPath, recordPath);
+  rmSync(fixture.bundleDir, { recursive: true });
+  return { ...fixture, artifactDir, bundleDir, recordPath };
 }
 
 function recordedAttachmentFixture() {

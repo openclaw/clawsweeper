@@ -2617,18 +2617,26 @@ jobs:
           sudo apt-get install --yes ffmpeg
 
       - name: Fold exact live proof into the review artifact
+        id: fold-exact-live-proof
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
+        continue-on-error: true
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_SECRET_ACCESS_KEY }}
           CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT }}
           CLAWSWEEPER_LIVE_PROOF_BUCKET: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BUCKET }}
           CLAWSWEEPER_LIVE_PROOF_BASE_URL: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BASE_URL }}
-        run: node dist/clawsweeper.js live-proof-publish-artifacts --artifact-dir .artifacts/exact-review-bundle
+        run: |
+          status=0
+          result_json="$(node dist/clawsweeper.js live-proof-publish-artifacts --artifact-dir .artifacts/exact-review-bundle)" || status=$?
+          printf '%s\n' "$result_json"
+          result="$(jq -r 'if .status == "invalid_artifact" then .status else "unknown" end' <<<"$result_json" 2>/dev/null || echo unknown)"
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          exit "$status"
 
       - name: Identify legacy tuple-less exact artifact
         id: legacy-exact-artifact
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.fold-exact-live-proof.outcome == 'success' }}
         env:
           REPORT_PATH: .artifacts/exact-review-bundle/review/${{ steps.publication-context.outputs.item_number }}.md
         run: |
@@ -2654,7 +2662,7 @@ jobs:
           NODE
 
       - name: Stage validated exact review artifact
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.fold-exact-live-proof.outcome == 'success' }}
         run: |
           set -euo pipefail
           mkdir -p artifacts/event
@@ -2664,7 +2672,7 @@ jobs:
           fi
 
       - name: Create target write token
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.fold-exact-live-proof.outcome == 'success' }}
         id: target-write-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -2680,7 +2688,7 @@ jobs:
           permission-statuses: read
 
       - uses: ./.github/actions/setup-state
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.fold-exact-live-proof.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: setup-state
         with:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -2692,7 +2700,7 @@ jobs:
           hydrate-state-blobs: "false"
 
       - name: Publish event result and apply safe close
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.fold-exact-live-proof.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: publish-event-result
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
@@ -3136,6 +3144,7 @@ jobs:
           FAILURE_KIND: ${{ steps.publish-event-result.outputs.failure_kind }}
           DOWNLOAD_OUTCOME: ${{ steps.download-exact-review-bundle.outcome }}
           VALIDATE_OUTCOME: ${{ steps.validate-exact-review-bundle.outcome }}
+          LIVE_PROOF_RESULT: ${{ steps.fold-exact-live-proof.outputs.result }}
           PUBLISH_COMPLETION_KIND: ${{ steps.publish-event-result.outputs.completion_kind }}
           PUBLISH_REASON_CODE: ${{ steps.publish-event-result.outputs.reason_code }}
           PUBLISH_RETRY_AT: ${{ steps.publish-event-result.outputs.retry_at }}
@@ -3194,6 +3203,10 @@ jobs:
             completion_kind=retryable_failure
             reason_code=review_lease_active
             retry_at="$PUBLISH_RETRY_AT"
+          elif [ "$LIVE_PROOF_RESULT" = "invalid_artifact" ]; then
+            outcome=success
+            completion_kind=refresh_required
+            reason_code=invalid_artifact
           elif [ "$LEGACY_TUPLELESS" = "true" ] && [ "$SOURCE_DRIFT_OUTCOME" = "success" ]; then
             outcome=success
             completion_kind=superseded

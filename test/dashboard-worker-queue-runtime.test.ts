@@ -8542,6 +8542,41 @@ test("exact-review publication refreshes an artifact after its third unavailable
   assert.equal(stats.lanes.publication.flow.last_15_minutes.causes.attribution_complete, true);
 });
 
+test("exact-review publication refreshes a deterministic invalid artifact immediately", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(7833, "78330");
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" });
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "success",
+        completion_kind: "refresh_required",
+        reason_code: "invalid_artifact",
+      }),
+    }),
+  );
+
+  assert.deepEqual(await response.json(), { ok: true, requeued: false });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: { sourceAction: string; publication?: unknown } }>;
+  };
+  assert.equal(state.items[item.key], undefined);
+  assert.equal(
+    state.items["openclaw/openclaw#7833"].decision.sourceAction,
+    "artifact_retention_recovery",
+  );
+  assert.equal(state.items["openclaw/openclaw#7833"].decision.publication, undefined);
+});
+
 test("exact-review publication completes a close-coverage deferral without refreshing", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewPublicationItem(7831, "78310");
