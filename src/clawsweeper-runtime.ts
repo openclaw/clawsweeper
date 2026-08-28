@@ -1500,6 +1500,7 @@ const liveProofAttachDependencies = {
   renderReviewCommentFromReport: reportOrchestration.renderReviewCommentFromReport,
   markedReviewCommentBody: reviewCommentWorkflow.markedReviewCommentBody,
   upsertReviewComment: reviewCommentWorkflow.upsertReviewComment,
+  selectTarget: (repo: string) => setTargetRepo(repo),
 };
 
 const liveProofCommands = createLiveProofCommands({
@@ -1512,12 +1513,6 @@ const liveProofCommands = createLiveProofCommands({
 const liveProofCommand = liveProofCommands.liveProofCommand;
 
 async function liveProofAttachCommand(args: Args): Promise<void> {
-  const recordPath = stringArg(args.record, "");
-  if (recordPath) {
-    const markdown = readFileSync(resolve(recordPath), "utf8");
-    const repo = frontMatterValue(markdown, "repository");
-    if (repo) setTargetRepo(repo);
-  }
   await liveProofCommands.liveProofAttachCommand(args);
 }
 
@@ -1554,17 +1549,15 @@ function liveProofReviewCommand(args: Args): void {
 async function liveProofPublishArtifactsCommand(args: Args): Promise<void> {
   const artifactDir = stringArg(args.artifact_dir, "").trim();
   if (!artifactDir) throw new Error("live-proof-publish-artifacts requires --artifact-dir");
-  const results = await publishReviewLiveProofArtifacts(
-    artifactDir,
-    {
-      ...liveProofAttachDependencies,
-      fetchPullRequest: async () => {
-        throw new Error("merged live-proof publication must not perform a live-head lookup");
-      },
+  const result = await publishReviewLiveProofArtifacts(artifactDir, {
+    ...liveProofAttachDependencies,
+    log: () => {},
+    fetchPullRequest: async () => {
+      throw new Error("merged live-proof publication must not perform a live-head lookup");
     },
-    (repo) => setTargetRepo(repo),
-  );
-  console.log(JSON.stringify({ results }));
+  }).catch(() => ({ status: "retryable_failure" }) as const);
+  console.log(JSON.stringify(result));
+  if (result.status !== "published") process.exitCode = 1;
 }
 
 function liveProofCommentCommand(args: Args): void {

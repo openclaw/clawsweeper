@@ -149,6 +149,22 @@ source strings are distinct from literal newlines in the decoded command.
 Browser entries remain URL paths; nonrecommended plans use an empty entry and
 no steps.
 
+Persisted reports encode empty steps as `Steps:` followed by a blank line and
+the bare JSON array `[]`. Nonempty steps remain one JSON object per Markdown
+bullet. The renderer/report-parser boundary retains the **legacy-empty-list-v1**
+contract for already-produced reports: a solitary `- none` also means no steps.
+Only surrounding payload whitespace is ignored; case variants, quoted sentinels,
+list-wrapped arrays, mixed or duplicated empty markers, missing payloads, and
+malformed or extra step text fail closed. Exactly one `Steps:` payload is
+required. It ends at the next report section or an exact standalone
+`<!-- clawsweeper-live-verification -->` or
+`<!-- clawsweeper-live-proof-recording -->` attachment marker. Markers must match
+raw lines exactly (LF or CRLF); leading or trailing whitespace is not ignored,
+including at the section or report end. Those production suffixes are not steps;
+attached verification keeps its separate validation.
+Both empty formats still pass through decision validation, so a `recommended`
+plan with no steps remains invalid and inspection rejects it before execution.
+
 The [decision schema](../schema/clawsweeper-decision.schema.json) constrains
 these strings with ordinary anchored character classes, not regex lookaround
 (which the structured-output provider rejects). The parser remains the final

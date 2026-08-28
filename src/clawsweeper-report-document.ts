@@ -307,7 +307,9 @@ export function createReportDocumentRendering(
       "",
       "Steps:",
       "",
-      markdownList(decision.liveProofPlan.steps.map((step) => JSON.stringify(step))),
+      decision.liveProofPlan.steps.length
+        ? markdownList(decision.liveProofPlan.steps.map((step) => JSON.stringify(step)))
+        : "[]",
     ].join("\n");
   }
 

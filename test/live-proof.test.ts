@@ -25,6 +25,7 @@ import {
   attachReviewLiveProofArtifact,
   attachLiveProof,
   detachLiveProof,
+  LiveProofArtifactValidationError,
   syncDetachedLiveProofComment,
   syncLiveProofComment,
 } from "../dist/live-proof/attach.js";
@@ -44,7 +45,8 @@ import {
   assertLiveProofEnvironmentSanitized,
   sanitizedLiveProofEnvironment,
 } from "../dist/live-proof/environment.js";
-import { parseLiveProofManifest } from "../dist/live-proof/manifest.js";
+import { MediaProbeExecutionError, parseLiveProofManifest } from "../dist/live-proof/manifest.js";
+import { publishReviewLiveProofArtifacts } from "../dist/live-proof/publication-artifacts.js";
 import {
   buildLiveVerificationResult,
   encodeLiveVerificationReportPayload,
@@ -2526,6 +2528,18 @@ test("live-proof skips a demonstrated recording shorter than three seconds", asy
   );
 });
 
+test("live-proof keeps verification when the media probe cannot execute", async () => {
+  const fixture = executeFixture("probe-failed");
+  await fixture.run();
+  assert.equal(existsSync(fixture.verificationPath), true);
+  assert.equal(existsSync(fixture.manifestPath), false);
+  assert.equal(existsSync(fixture.mp4Path), false);
+  assert.match(
+    fixture.logs.join("\n"),
+    /media pipeline failed and was skipped: ffprobe could not execute/,
+  );
+});
+
 test("static-text terminal verification runs directly without recording tools", async () => {
   const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-verification-static-"));
   const outputDir = join(directory, "output");
@@ -3232,6 +3246,292 @@ test("merged publication trusts the review-bound head without a GitHub lookup", 
 
   assert.equal(outcome, "attached");
   assert.equal(commands.filter((command) => command.startsWith("aws ")).length, 2);
+});
+
+test("queued publication classifies legacy verification as an invalid artifact before mutation", async () => {
+  const fixture = publicationFixture();
+  const verificationPath = join(fixture.bundleDir, "live-verification.json");
+  const { plan_sha256: _planSha256, ...legacyVerification } = JSON.parse(
+    readFileSync(verificationPath, "utf8"),
+  );
+  writeFileSync(verificationPath, JSON.stringify(legacyVerification), "utf8");
+  const originalReport = readFileSync(fixture.recordPath, "utf8");
+  const commands: string[] = [];
+  let upserts = 0;
+
+  const result = await publishReviewLiveProofArtifacts(
+    fixture.artifactDir,
+    attachDependencies({
+      runner: mediaRunner(commands),
+      fetchPullRequest: async () => {
+        throw new Error("queued publication must not fetch a live head");
+      },
+      upsertReviewComment: () => {
+        upserts += 1;
+        return {};
+      },
+      logs: fixture.logs,
+    }),
+  );
+
+  assert.deepEqual(result, { status: "invalid_artifact" });
+  assert.equal(commands.length, 0);
+  assert.equal(upserts, 0);
+  assert.equal(readFileSync(fixture.recordPath, "utf8"), originalReport);
+
+  const cli = spawnSync(
+    process.execPath,
+    ["dist/clawsweeper.js", "live-proof-publish-artifacts", "--artifact-dir", fixture.artifactDir],
+    { encoding: "utf8" },
+  );
+  assert.equal(cli.status, 1);
+  assert.equal(cli.stderr, "");
+  assert.deepEqual(JSON.parse(cli.stdout), { status: "invalid_artifact" });
+  assert.equal(cli.stdout.trim().split("\n").length, 1);
+});
+
+test("queued publication leaves AWS upload failures retryable", async () => {
+  const fixture = publicationFixture();
+  const originalReport = readFileSync(fixture.recordPath, "utf8");
+  const successfulMediaRunner = mediaRunner([]);
+
+  await assert.rejects(
+    publishReviewLiveProofArtifacts(
+      fixture.artifactDir,
+      attachDependencies({
+        runner: (command, args) =>
+          command === "aws"
+            ? { status: 1, stderr: "temporary upload failure" }
+            : successfulMediaRunner(command, args),
+        fetchPullRequest: async () => {
+          throw new Error("queued publication must not fetch a live head");
+        },
+        upsertReviewComment: () => ({}),
+        logs: fixture.logs,
+      }),
+    ),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.name !== "LiveProofArtifactValidationError" &&
+      /aws s3 cp failed/.test(error.message),
+  );
+  assert.equal(readFileSync(fixture.recordPath, "utf8"), originalReport);
+});
+
+test("queued publication keeps media probe execution failures retryable", async (t) => {
+  const executionError = (code: string) =>
+    Object.assign(new Error(`spawn ffprobe ${code}`), { code });
+  const scenarios: Array<{
+    name: string;
+    probe: "mp4" | "poster";
+    result: ReturnType<MediaProofCommandRunner>;
+    expected: "retryable" | "invalid_artifact";
+  }> = [
+    {
+      name: "MP4 ENOENT",
+      probe: "mp4",
+      result: { status: null, error: executionError("ENOENT") },
+      expected: "retryable",
+    },
+    {
+      name: "poster ETIMEDOUT",
+      probe: "poster",
+      result: { status: null, error: executionError("ETIMEDOUT") },
+      expected: "retryable",
+    },
+    {
+      name: "empty stdout",
+      probe: "mp4",
+      result: { status: 0, stdout: "" },
+      expected: "retryable",
+    },
+    {
+      name: "malformed JSON",
+      probe: "mp4",
+      result: { status: 0, stdout: "{" },
+      expected: "retryable",
+    },
+    {
+      name: "non-object JSON",
+      probe: "mp4",
+      result: { status: 0, stdout: "[]" },
+      expected: "retryable",
+    },
+    {
+      name: "poster numeric rejection",
+      probe: "poster",
+      result: { status: 1, stderr: "unsupported image" },
+      expected: "invalid_artifact",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const fixture = publicationFixture();
+      const originalReport = readFileSync(fixture.recordPath, "utf8");
+      let uploads = 0;
+      let upserts = 0;
+      const successfulMediaRunner = mediaRunner([]);
+      const runner: MediaProofCommandRunner = (command, args, options) => {
+        if (command === "aws") {
+          uploads += 1;
+          return { status: 0 };
+        }
+        if (command === "ffprobe") {
+          const probe = String(args.at(-1)).endsWith("poster.jpg") ? "poster" : "mp4";
+          if (probe === scenario.probe) return scenario.result;
+        }
+        return successfulMediaRunner(command, args, options);
+      };
+      const publish = () =>
+        publishReviewLiveProofArtifacts(
+          fixture.artifactDir,
+          attachDependencies({
+            runner,
+            fetchPullRequest: async () => {
+              throw new Error("queued publication must not fetch a live head");
+            },
+            upsertReviewComment: () => {
+              upserts += 1;
+              return {};
+            },
+            logs: fixture.logs,
+          }),
+        );
+
+      if (scenario.expected === "retryable") {
+        await assert.rejects(publish, MediaProbeExecutionError);
+      } else {
+        assert.deepEqual(await publish(), { status: "invalid_artifact" });
+      }
+      assert.equal(readFileSync(fixture.recordPath, "utf8"), originalReport);
+      assert.equal(uploads, 0);
+      assert.equal(upserts, 0);
+    });
+  }
+
+  const fixture = publicationFixture();
+  const cli = spawnSync(
+    process.execPath,
+    ["dist/clawsweeper.js", "live-proof-publish-artifacts", "--artifact-dir", fixture.artifactDir],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AWS_ACCESS_KEY_ID: "",
+        AWS_SECRET_ACCESS_KEY: "",
+        CLAWSWEEPER_LIVE_PROOF_BASE_URL: "",
+        CLAWSWEEPER_LIVE_PROOF_BUCKET: "",
+        CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: "",
+        PATH: "",
+      },
+    },
+  );
+  assert.equal(cli.status, 1);
+  assert.equal(cli.stderr, "");
+  assert.deepEqual(JSON.parse(cli.stdout), { status: "retryable_failure" });
+  assert.equal(cli.stdout.trim().split("\n").length, 1);
+});
+
+test("queued publication keeps transient artifact filesystem failures retryable", async (t) => {
+  const systemError = (code: string, syscall?: string) =>
+    Object.assign(new Error(`${syscall ?? "operation"} ${code}`), { code, syscall });
+  const scenarios = [
+    { name: "EIO", error: systemError("EIO", "readFile") },
+    { name: "EMFILE", error: systemError("EMFILE", "open") },
+    { name: "ESTALE", error: systemError("ESTALE", "stat") },
+    { name: "missing syscall", error: systemError("EIO"), invalid: true },
+    { name: "deterministic ENOENT", error: systemError("ENOENT", "open"), invalid: true },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const fixture = publicationFixture();
+      const originalReport = readFileSync(fixture.recordPath, "utf8");
+      let uploads = 0;
+      let upserts = 0;
+      const dependencies = attachDependencies({
+        runner: (command, args, options) => {
+          if (command === "aws") uploads += 1;
+          return mediaRunner([])(command, args, options);
+        },
+        fetchPullRequest: async () => {
+          throw new Error("queued publication must not fetch a live head");
+        },
+        upsertReviewComment: () => {
+          upserts += 1;
+          return {};
+        },
+        logs: fixture.logs,
+      });
+      dependencies.reportLiveProofPlan = () => {
+        throw scenario.error;
+      };
+      const publish = () => publishReviewLiveProofArtifacts(fixture.artifactDir, dependencies);
+
+      if (scenario.invalid) {
+        assert.deepEqual(await publish(), { status: "invalid_artifact" });
+      } else {
+        await assert.rejects(publish, (error: unknown) => error === scenario.error);
+      }
+      assert.equal(readFileSync(fixture.recordPath, "utf8"), originalReport);
+      assert.equal(uploads, 0);
+      assert.equal(upserts, 0);
+    });
+  }
+});
+
+test("missing verification remains an invalid artifact at the attachment boundary", async () => {
+  const fixture = attachmentFixture();
+  rmSync(join(fixture.bundleDir, "live-verification.json"));
+
+  await assert.rejects(
+    attachReviewLiveProofArtifact(
+      { bundleDir: fixture.bundleDir, recordPath: fixture.recordPath },
+      attachDependencies({
+        runner: mediaRunner([]),
+        fetchPullRequest: async () => {
+          throw new Error("invalid artifacts must fail before fetching a live head");
+        },
+        upsertReviewComment: () => {
+          throw new Error("invalid artifacts must not publish");
+        },
+        logs: fixture.logs,
+      }),
+    ),
+    LiveProofArtifactValidationError,
+  );
+});
+
+test("missing live proof media remains an invalid publication artifact", async () => {
+  const fixture = publicationFixture();
+  rmSync(join(fixture.bundleDir, "live-proof.mp4"));
+  const originalReport = readFileSync(fixture.recordPath, "utf8");
+  let uploads = 0;
+  let upserts = 0;
+
+  const result = await publishReviewLiveProofArtifacts(
+    fixture.artifactDir,
+    attachDependencies({
+      runner: (command, args, options) => {
+        if (command === "aws") uploads += 1;
+        return mediaRunner([])(command, args, options);
+      },
+      fetchPullRequest: async () => {
+        throw new Error("invalid artifacts must fail before fetching a live head");
+      },
+      upsertReviewComment: () => {
+        upserts += 1;
+        return {};
+      },
+      logs: fixture.logs,
+    }),
+  );
+
+  assert.deepEqual(result, { status: "invalid_artifact" });
+  assert.equal(readFileSync(fixture.recordPath, "utf8"), originalReport);
+  assert.equal(uploads, 0);
+  assert.equal(upserts, 0);
 });
 
 test("live-proof attach publishes the record before syncing its marker-backed comment", async () => {
@@ -4045,6 +4345,21 @@ Candidate: none
   return { bundleDir, recordPath, logs };
 }
 
+function publicationFixture() {
+  const fixture = attachmentFixture();
+  const artifactDir = dirname(fixture.recordPath);
+  const bundleDir = join(artifactDir, "live-proof", "42");
+  const recordPath = join(artifactDir, "review", "42.md");
+  mkdirSync(bundleDir, { recursive: true });
+  mkdirSync(dirname(recordPath), { recursive: true });
+  for (const filename of readdirSync(fixture.bundleDir)) {
+    renameSync(join(fixture.bundleDir, filename), join(bundleDir, filename));
+  }
+  renameSync(fixture.recordPath, recordPath);
+  rmSync(fixture.bundleDir, { recursive: true });
+  return { ...fixture, artifactDir, bundleDir, recordPath };
+}
+
 function recordedAttachmentFixture() {
   const fixture = attachmentFixture();
   const report = readFileSync(fixture.recordPath, "utf8");
@@ -4537,7 +4852,13 @@ function terminalCaptureInvocation(args: readonly string[]):
 }
 
 function executeFixture(
-  mode: "failed" | "present-at-start" | "demonstrated-partial" | "no-expectation" | "too-short",
+  mode:
+    | "failed"
+    | "present-at-start"
+    | "demonstrated-partial"
+    | "no-expectation"
+    | "too-short"
+    | "probe-failed",
 ) {
   const directory = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-execute-"));
   const outputDir = join(directory, "output");
@@ -4619,6 +4940,12 @@ function executeFixture(
       };
     }
     if (command === "ffprobe") {
+      if (mode === "probe-failed") {
+        return {
+          status: null,
+          error: Object.assign(new Error("spawn ffprobe ENOENT"), { code: "ENOENT" }),
+        };
+      }
       return {
         status: 0,
         stdout: JSON.stringify({

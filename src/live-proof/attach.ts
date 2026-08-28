@@ -9,6 +9,7 @@ import {
 import type { CloseReason, LiveProofPlan, MediaProofCommandRunner } from "../clawsweeper-types.js";
 import type { LiveProofPullRequestState } from "./execute.js";
 import {
+  MediaProbeExecutionError,
   parseLiveProofManifest,
   validateAttachedMedia,
   type LiveProofManifest,
@@ -47,10 +48,25 @@ export interface LiveProofAttachDependencies {
   renderReviewCommentFromReport: (markdown: string, closeReason: CloseReason) => string;
   markedReviewCommentBody: (number: number, body: string) => string;
   upsertReviewComment: (number: number, body: string) => Record<string, unknown> | undefined;
+  selectTarget?: (repo: string) => void;
   log?: (message: string) => void;
 }
 
 export type LiveProofAttachResult = "attached" | "detached" | "unchanged" | "skipped" | "dry-run";
+
+export class LiveProofArtifactValidationError extends Error {
+  override name = "LiveProofArtifactValidationError";
+}
+
+const DETERMINISTIC_INVALID_ARTIFACT_FS_CODES = new Set([
+  "ENOENT",
+  "ENOTDIR",
+  "EISDIR",
+  "ELOOP",
+  "EFBIG",
+  "EOVERFLOW",
+  "ERR_FS_FILE_TOO_LARGE",
+]);
 
 export async function attachLiveProof(
   options: LiveProofAttachOptions,
@@ -76,24 +92,28 @@ async function attachLiveProofInternal(
   const log = dependencies.log ?? console.log;
   const bundleDir = resolve(options.bundleDir);
   const recordPath = resolve(options.recordPath);
-  const verification = parseLiveVerificationResult(
-    JSON.parse(readFileSync(join(bundleDir, "live-verification.json"), "utf8")) as unknown,
-  );
-  const report = readFileSync(recordPath, "utf8");
-  validateReportIdentity(report, verification, dependencies.frontMatterValue);
-  validateLiveVerificationReportPlan(verification, dependencies.reportLiveProofPlan(report));
-  const manifestPath = join(bundleDir, "live-proof-manifest.json");
-  const manifest = existsSync(manifestPath)
-    ? parseLiveProofManifest(JSON.parse(readFileSync(manifestPath, "utf8")) as unknown)
-    : undefined;
-  const mp4Path = join(bundleDir, "live-proof.mp4");
-  const posterPath = join(bundleDir, "poster.jpg");
-  if (manifest) {
-    validateManifestMatchesVerification(manifest, verification);
-    validateAttachedMedia({ manifest, mp4Path, posterPath, runner });
-  } else if (existsSync(mp4Path) || existsSync(posterPath)) {
-    throw new Error("live proof media is present without a manifest");
-  }
+  const { verification, report, manifest, mp4Path, posterPath } = validateArtifact(() => {
+    const verification = parseLiveVerificationResult(
+      JSON.parse(readFileSync(join(bundleDir, "live-verification.json"), "utf8")) as unknown,
+    );
+    const report = readFileSync(recordPath, "utf8");
+    validateReportIdentity(report, verification, dependencies.frontMatterValue);
+    validateLiveVerificationReportPlan(verification, dependencies.reportLiveProofPlan(report));
+    const manifestPath = join(bundleDir, "live-proof-manifest.json");
+    const manifest = existsSync(manifestPath)
+      ? parseLiveProofManifest(JSON.parse(readFileSync(manifestPath, "utf8")) as unknown)
+      : undefined;
+    const mp4Path = join(bundleDir, "live-proof.mp4");
+    const posterPath = join(bundleDir, "poster.jpg");
+    if (manifest) {
+      validateManifestMatchesVerification(manifest, verification);
+      validateAttachedMedia({ manifest, mp4Path, posterPath, runner });
+    } else if (existsSync(mp4Path) || existsSync(posterPath)) {
+      throw new Error("live proof media is present without a manifest");
+    }
+    return { verification, report, manifest, mp4Path, posterPath };
+  });
+  dependencies.selectTarget?.(verification.repo);
 
   const reportHead = dependencies.frontMatterValue(report, "pull_head_sha")?.toLowerCase() ?? "";
   let liveHead: string;
@@ -175,6 +195,30 @@ async function attachLiveProofInternal(
     `[live-proof-attach] prepared ${verification.surface} verification${manifest ? " with media" : " without media"} for ${verification.repo}#${verification.item} at ${verification.head_sha}`,
   );
   return "attached";
+}
+
+function validateArtifact<T>(operation: () => T): T {
+  try {
+    return operation();
+  } catch (error) {
+    if (error instanceof MediaProbeExecutionError || isRetryableArtifactFsError(error)) throw error;
+    throw new LiveProofArtifactValidationError(
+      error instanceof Error ? error.message : "live proof artifact validation failed",
+      { cause: error },
+    );
+  }
+}
+
+function isRetryableArtifactFsError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const { code, syscall } = error as NodeJS.ErrnoException;
+  const normalizedCode = typeof code === "string" ? code.trim() : "";
+  return (
+    normalizedCode.length > 0 &&
+    typeof syscall === "string" &&
+    syscall.trim().length > 0 &&
+    !DETERMINISTIC_INVALID_ARTIFACT_FS_CODES.has(normalizedCode)
+  );
 }
 
 export function detachLiveProof(

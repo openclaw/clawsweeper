@@ -12,6 +12,7 @@ import {
   IMPLEMENTATION_COMPLEXITIES,
   IMPACT_LABEL_NAMES,
   LIVE_PROOF_RECORDING_MARKER,
+  LIVE_VERIFICATION_MARKER,
   MANTIS_RECOMMENDATION_SCENARIOS,
   MANTIS_RECOMMENDATION_STATUSES,
   MATURITY_LABEL_NAMES,
@@ -129,7 +130,6 @@ const parseRecordedLiveProofPlan = createDecisionParser({
 
 export function reportLiveProofPlan(markdown: string): LiveProofPlan {
   const section = reportSectionValue(markdown, LIVE_PROOF_SECTION_HEADING);
-  const rawSteps = reportSectionList(section, "Steps");
   const status = reportSectionLineValue(section, "Status");
   const surface = reportSectionLineValue(section, "Surface");
   const terminalCompletion =
@@ -147,7 +147,7 @@ export function reportLiveProofPlan(markdown: string): LiveProofPlan {
           justification: reportSectionLineValue(section, "Payoff justification"),
         },
         entry: reportSectionLineValue(section, "Entry") ?? "",
-        steps: rawSteps.map((step) => JSON.parse(step) as unknown),
+        steps: reportLiveProofSteps(section),
       },
       "report.liveProofPlan",
     );
@@ -170,15 +170,16 @@ export function reportLiveProofPlan(markdown: string): LiveProofPlan {
 }
 
 function reportSectionValue(markdown: string, heading: string): string {
+  // Preserve marker whitespace and never separate a final CRLF pair.
   const match = markdown.match(
-    new RegExp(`(?:^|\\n)## ${heading}\\n\\n([\\s\\S]*?)(?=\\n## |\\n?$)`),
+    new RegExp(`(?:^|\\n)## ${heading}\\n\\n([\\s\\S]*?)(?=\\r?\\n## |$)`),
   );
-  return match?.[1]?.trim() ?? "";
+  return match?.[1] ?? "";
 }
 
 function reportSectionLineValue(section: string, label: string): string | undefined {
   const prefix = `${label}:`;
-  for (const line of section.split("\n")) {
+  for (const line of section.trim().split("\n")) {
     if (!line.startsWith(prefix)) continue;
     const value = line.slice(prefix.length).trim();
     return value || undefined;
@@ -186,20 +187,27 @@ function reportSectionLineValue(section: string, label: string): string | undefi
   return undefined;
 }
 
-function reportSectionList(section: string, label: string): string[] {
-  const lines = section.split("\n");
-  const start = lines.findIndex((line) => line.trim() === `${label}:`);
-  if (start === -1) return [];
-  const values: string[] = [];
-  for (let index = start + 1; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (/^[A-Z][A-Za-z -]+:/.test(line)) break;
-    const trimmed = line.trimStart();
-    if (!trimmed.startsWith("- ")) continue;
-    const item = trimmed.slice(2).trim();
-    if (item) values.push(item);
+function reportLiveProofSteps(section: string): unknown[] {
+  const lines = section.split(/\r?\n/);
+  // Match raw attachment lines exactly, as the verification parser does.
+  const attachmentStart = lines.findIndex(
+    (line) => line === LIVE_VERIFICATION_MARKER || line === LIVE_PROOF_RECORDING_MARKER,
+  );
+  const planLines = (attachmentStart < 0 ? lines : lines.slice(0, attachmentStart)).map((line) =>
+    line.trim(),
+  );
+  const start = planLines.indexOf("Steps:");
+  if (start < 0 || planLines.lastIndexOf("Steps:") !== start) {
+    throw new Error("live-proof report requires exactly one Steps payload");
   }
-  return values;
+  const payload = planLines.slice(start + 1).filter(Boolean);
+  // legacy-empty-list-v1: already-produced reports used a solitary "- none".
+  if (payload.length === 1 && (payload[0] === "[]" || payload[0] === "- none")) return [];
+  if (!payload.length) throw new Error("live-proof report is missing its Steps payload");
+  return payload.map((line) => {
+    if (!line.startsWith("- ")) throw new Error("live-proof report step must be a JSON list item");
+    return JSON.parse(line.slice(2)) as unknown;
+  });
 }
 
 function neutralizeLiveProofText(value: string): string {

@@ -29,6 +29,10 @@ export interface ProbedMedia {
   height: number;
 }
 
+export class MediaProbeExecutionError extends Error {
+  override name = "MediaProbeExecutionError";
+}
+
 const MANIFEST_KEYS = new Set([
   "schema_version",
   "repo",
@@ -110,16 +114,31 @@ export function parseLiveProofManifest(value: unknown): LiveProofManifest {
 
 export function probeMedia(path: string, runner: MediaProofCommandRunner): ProbedMedia {
   const result = ffprobeMedia(path, runner);
+  if (result.error || result.status === null) {
+    throw new MediaProbeExecutionError(
+      `ffprobe could not execute for ${path}: ${mediaProofSpawnDetail(result)}`,
+      { cause: result.error },
+    );
+  }
   if (result.status !== 0) {
     throw new Error(`ffprobe failed for ${path}: ${mediaProofSpawnDetail(result)}`);
   }
+  const stdout = String(result.stdout ?? "");
+  if (!stdout.trim()) {
+    throw new MediaProbeExecutionError(`ffprobe returned no output for ${path}`);
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(String(result.stdout ?? "{}"));
+    parsed = JSON.parse(stdout);
   } catch (error) {
-    throw new Error(`ffprobe returned invalid JSON for ${path}`, { cause: error });
+    throw new MediaProbeExecutionError(`ffprobe returned invalid JSON for ${path}`, {
+      cause: error,
+    });
   }
-  const root = requireRecord(parsed, `ffprobe output for ${path}`);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new MediaProbeExecutionError(`ffprobe returned a non-object JSON value for ${path}`);
+  }
+  const root = parsed as Record<string, unknown>;
   const streams = Array.isArray(root.streams) ? root.streams : [];
   const video = streams
     .map((stream) => (stream && typeof stream === "object" ? stream : null))

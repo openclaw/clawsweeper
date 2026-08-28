@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -1331,6 +1331,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
 
   const download = step(publisher, "Download exact review artifact bundle");
   const validate = step(publisher, "Validate exact review artifact bundle");
+  const foldLiveProof = step(publisher, "Fold exact live proof into the review artifact");
   const legacyArtifact = step(publisher, "Identify legacy tuple-less exact artifact");
   const targetWriteStep = step(publisher, "Create target write token");
   const stateSetup = publisher.steps.find((candidate) => candidate.uses?.endsWith("/setup-state"));
@@ -1356,12 +1357,96 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(validate.run ?? "", /repair:exact-review-bundle validate/);
   assert.match(validate.if ?? "", /direct_lifecycle_recovery != 'true'/);
   assert.equal(validate["continue-on-error"], true);
+  assert.equal(foldLiveProof.id, "fold-exact-live-proof");
+  assert.equal(foldLiveProof["continue-on-error"], true);
+  assert.match(foldLiveProof.run ?? "", /jq -r/);
+  assert.match(foldLiveProof.run ?? "", /\.status == "invalid_artifact"/);
+  assert.match(foldLiveProof.run ?? "", /GITHUB_OUTPUT/);
+  const foldFixtureRoot = mkdtempSync(`${tmpPrefix}exact-live-proof-fold-`);
+  const fakeBin = join(foldFixtureRoot, "bin");
+  mkdirSync(fakeBin);
+  const fakeNode = join(fakeBin, "node");
+  writeFileSync(
+    fakeNode,
+    '#!/bin/sh\nprintf \'%s\\n\' "$FAKE_NODE_STDOUT"\nexit "${FAKE_NODE_STATUS:-0}"\n',
+    "utf8",
+  );
+  chmodSync(fakeNode, 0o755);
+  try {
+    for (const [index, scenario] of [
+      {
+        name: "published success",
+        stdout: '{"status":"published","results":[]}',
+        commandStatus: 0,
+        expectedStatus: 0,
+        expectedResult: "published",
+      },
+      {
+        name: "invalid artifact",
+        stdout: '{"status":"invalid_artifact"}',
+        commandStatus: 1,
+        expectedStatus: 1,
+        expectedResult: "invalid_artifact",
+      },
+      {
+        name: "retryable failure",
+        stdout: '{"status":"retryable_failure"}',
+        commandStatus: 1,
+        expectedStatus: 1,
+        expectedResult: "retryable_failure",
+      },
+      {
+        name: "nonzero junk",
+        stdout: "not-json",
+        commandStatus: 1,
+        expectedStatus: 1,
+        expectedResult: "retryable_failure",
+      },
+      {
+        name: "zero-exit junk",
+        stdout: "not-json",
+        commandStatus: 0,
+        expectedStatus: 1,
+        expectedResult: "retryable_failure",
+      },
+    ].entries()) {
+      const outputPath = join(foldFixtureRoot, `github-output-${index}`);
+      const execution = spawnSync("bash", ["-c", foldLiveProof.run ?? ""], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          FAKE_NODE_STATUS: String(scenario.commandStatus),
+          FAKE_NODE_STDOUT: scenario.stdout,
+          GITHUB_OUTPUT: outputPath,
+          PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+        },
+      });
+      assert.equal(execution.status, scenario.expectedStatus, scenario.name);
+      assert.equal(
+        readFileSync(outputPath, "utf8").trim(),
+        `result=${scenario.expectedResult}`,
+        scenario.name,
+      );
+    }
+  } finally {
+    rmSync(foldFixtureRoot, { recursive: true, force: true });
+  }
   assert.match(legacyArtifact.run ?? "", /review_lease_owner/);
   assert.match(legacyArtifact.run ?? "", /review_lease_comment_id/);
   assert.doesNotMatch(create.run ?? "", /repair:exact-review-bundle -- create/);
   assert.doesNotMatch(validate.run ?? "", /repair:exact-review-bundle -- validate/);
   assert.ok(publisher.steps.indexOf(validate) < publisher.steps.indexOf(targetWriteStep));
   assert.ok(publisher.steps.indexOf(validate) < publisher.steps.indexOf(stateSetup));
+  for (const guardedStep of [
+    legacyArtifact,
+    step(publisher, "Stage validated exact review artifact"),
+    targetWriteStep,
+    stateSetup,
+    step(publisher, "Publish event result and apply safe close"),
+  ]) {
+    assert.match(guardedStep.if ?? "", /fold-exact-live-proof\.outcome == 'success'/);
+    assert.doesNotMatch(guardedStep.if ?? "", /validate-exact-review-bundle/);
+  }
   assert.match(stateSetup.if ?? "", /legacy-exact-artifact\.outputs\.legacy_tupleless != 'true'/);
   assert.match(stateSetup.if ?? "", /direct_lifecycle_recovery != 'true'/);
 
@@ -1453,6 +1538,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.doesNotMatch(publishResult.env?.FAILURE_KIND ?? "", /publication-pressure/);
   assert.match(publishResult.env?.DOWNLOAD_OUTCOME ?? "", /download-exact-review-bundle/);
   assert.match(publishResult.env?.VALIDATE_OUTCOME ?? "", /validate-exact-review-bundle/);
+  assert.match(publishResult.env?.LIVE_PROOF_RESULT ?? "", /fold-exact-live-proof/);
   assert.match(publishResult.env?.PUBLISH_COMPLETION_KIND ?? "", /publish-event-result/);
   assert.match(publishResult.env?.PUBLISH_RETRY_AT ?? "", /publish-event-result/);
   assert.match(publishResult.env?.DIRECT_RECOVERY_OUTCOME ?? "", /replay-direct-lifecycle/);
@@ -1479,6 +1565,73 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.match(publishResult.run ?? "", /reason_code=artifact_unavailable/);
   assert.match(publishResult.run ?? "", /reason_code=invalid_artifact/);
+  assert.match(
+    publishResult.run ?? "",
+    /LIVE_PROOF_RESULT.*invalid_artifact[\s\S]*completion_kind=refresh_required[\s\S]*reason_code=invalid_artifact/,
+  );
+  const runPublicationResult = (liveProofResult: string) => {
+    const publicationResultRoot = mkdtempSync(`${tmpPrefix}live-proof-result-`);
+    const publicationResultOutput = join(publicationResultRoot, "github-output");
+    try {
+      execFileSync("bash", ["-c", publishResult.run ?? ""], {
+        env: {
+          ...process.env,
+          PRIOR_JOB_STATUS: "failure",
+          PUBLISH_OUTCOME: "",
+          TERMINAL_NOOP: "",
+          TERMINAL_MISSING: "",
+          TERMINAL_CLOSED: "",
+          GUARDED_OPEN: "",
+          POLICY_NOOP: "",
+          REQUEUE_LATEST: "",
+          LEGACY_TUPLELESS: "",
+          SOURCE_DRIFT_OUTCOME: "",
+          DEFERRED_ROUTE_OUTCOME: "",
+          FAILURE_KIND: "",
+          DOWNLOAD_OUTCOME: "success",
+          VALIDATE_OUTCOME: "success",
+          LIVE_PROOF_RESULT: liveProofResult,
+          PUBLISH_COMPLETION_KIND: "",
+          PUBLISH_REASON_CODE: "",
+          PUBLISH_RETRY_AT: "",
+          ERROR_FINGERPRINT: "",
+          STATE_WRITER_JSON: "",
+          DIRECT_RECOVERY_OUTCOME: "",
+          DIRECT_RECOVERY_COMPLETION_KIND: "",
+          DIRECT_RECOVERY_REASON_CODE: "",
+          DIRECT_RECOVERY_REQUEUE_LATEST: "",
+          DIRECT_RECOVERY_DIRECT_REQUEUE: "",
+          REVIEW_ONLY: "false",
+          GITHUB_OUTPUT: publicationResultOutput,
+        },
+      });
+      return Object.fromEntries(
+        readFileSync(publicationResultOutput, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => {
+            const separator = line.indexOf("=");
+            return [line.slice(0, separator), line.slice(separator + 1)];
+          }),
+      );
+    } finally {
+      rmSync(publicationResultRoot, { recursive: true, force: true });
+    }
+  };
+  assert.deepEqual(runPublicationResult("invalid_artifact"), {
+    outcome: "success",
+    completion_kind: "refresh_required",
+    reason_code: "invalid_artifact",
+    requeue_latest: "",
+    direct_requeue: "false",
+  });
+  assert.deepEqual(runPublicationResult("retryable_failure"), {
+    outcome: "failure",
+    completion_kind: "retryable_failure",
+    reason_code: "unknown_failure",
+    requeue_latest: "",
+    direct_requeue: "false",
+  });
   assert.doesNotMatch(publishResult.run ?? "", /LIVE_TERMINAL_NOOP/);
   assert.match(publishComplete.run ?? "", /internal\/exact-review\/complete/);
   assert.match(publishComplete.env?.FAILURE_KIND ?? "", /exact-review-publication-result/);

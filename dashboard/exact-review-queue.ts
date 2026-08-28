@@ -11271,7 +11271,12 @@ function exactReviewPublicationCompletion(
     ]),
     // Accept the pre-deployment tuple while an old publisher can still finish.
     // New publishers use deferred/close_coverage_deferred instead.
-    refresh_required: new Set(["artifact_unavailable", "artifact_expired", "close_coverage_retry"]),
+    refresh_required: new Set([
+      "artifact_unavailable",
+      "artifact_expired",
+      "close_coverage_retry",
+      "invalid_artifact",
+    ]),
     deferred: new Set(["close_coverage_deferred"]),
     permanent_failure: new Set([
       "invalid_artifact",
