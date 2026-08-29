@@ -83,6 +83,13 @@ lease or original terminal immediately before signaling. Every worker is joined
 and its failure retained before the next scan. The controller's cleanup budget
 is unchanged.
 
+Process exit and PTY closure are separate tmux observations; cleanup waits for
+both rather than rejecting their intermediate states. If the original pane
+wrapper dies, its exit signal remains the failure reason even when watchdog
+cleanup produces a later child status. An already-dead pane is removed only
+after its identity and zero-survivor cleanup are verified, allowing tmux to
+close the capture pipe. The capture helper must still confirm clean EOF.
+
 ## Historical artifact publication
 
 Existing and already-queued proof-bearing artifacts remain supported while they

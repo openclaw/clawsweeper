@@ -787,6 +787,7 @@ test(
     let backgroundPid: number | undefined;
     let processToken = "";
     const pidPath = "wrapper-death.pid";
+    const releasePath = join(root, "release-wrapper-death");
     try {
       const shellGroupPath = "wrapper-death.shell-pgid";
       const childGroupPath = "wrapper-death.child-pgid";
@@ -796,9 +797,9 @@ test(
         [
           'import { writeFileSync } from "node:fs";',
           "const [pidPath] = process.argv.slice(2);",
-          "writeFileSync(pidPath, String(process.pid));",
           'process.on("SIGHUP", () => {});',
           'process.on("SIGTERM", () => {});',
+          "writeFileSync(pidPath, String(process.pid));",
           "setInterval(() => {}, 1_000);",
         ].join("\n"),
       );
@@ -811,11 +812,52 @@ test(
         `/bin/ps -o pgid= -p "$child" | /usr/bin/tr -d '[:space:]' >${childGroupPath}`,
         'pane_wrapper=$(/bin/ps -o ppid= -p "$PPID" | /usr/bin/tr -d "[:space:]")',
         'case "$pane_wrapper" in ""|*[!0-9]*) exit 125 ;; esac',
+        'printf "%s\\n" "$pane_wrapper" >wrapper-death.wrapper-pid',
         "printf 'wrapper-death-ready\\n'",
-        "sleep 1",
+        "while [ ! -e release-wrapper-death ]; do sleep 0.01; done",
         '/bin/kill -KILL "$pane_wrapper"',
         "while :; do sleep 1; done",
       ].join("\n");
+      let observedDeath = false;
+      const runner: MediaProofCommandRunner = (command, args, options = {}) => {
+        const result = mediaProofCommandRunner(command, args, options);
+        if (
+          !observedDeath &&
+          command === "tmux" &&
+          args[0] === "capture-pane" &&
+          String(result.stdout ?? "").includes("wrapper-death-ready")
+        ) {
+          const pane = args[args.indexOf("-t") + 1]!;
+          const stateArgs = [
+            "display-message",
+            "-p",
+            "-t",
+            pane,
+            "#{pane_pid}|#{pane_dead_signal}",
+          ];
+          const before = mediaProofCommandRunner("tmux", stateArgs, options);
+          assert.equal(before.status, 0, String(before.stderr));
+          const wrapperPid = readFileSync(join(root, "wrapper-death.wrapper-pid"), "utf8").trim();
+          assert.equal(String(before.stdout).trim(), `${wrapperPid}|`);
+          writeFileSync(releasePath, "release\n");
+          const deadline = Date.now() + 5_000;
+          do {
+            const state = mediaProofCommandRunner("tmux", stateArgs, options);
+            assert.equal(state.status, 0, String(state.stderr));
+            if (String(state.stdout).trim().toUpperCase() === `${wrapperPid}|KILL`) {
+              observedDeath = true;
+              break;
+            }
+            execFileSync("sleep", ["0.01"]);
+          } while (Date.now() < deadline);
+          assert.equal(
+            observedDeath,
+            true,
+            "target must kill the original pane before finalization",
+          );
+        }
+        return result;
+      };
       const result = driveTerminal({
         plan: {
           status: "recommended",
@@ -830,12 +872,14 @@ test(
         rawVideoPath: join(root, "proof.webm"),
         maxRecordingSeconds: 90,
         recordMedia: false,
-        runner: mediaProofCommandRunner,
+        runner,
       });
 
+      assert.equal(observedDeath, true, result.output);
       assert.equal(result.status, "failed", result.output);
       assert.match(result.output, /terminated by a signal with exit status 137/);
       assert.doesNotMatch(result.output, /cleanup failure/);
+      assert.doesNotMatch(result.output, /terminal capture helper/);
       backgroundPid = Number.parseInt(readFileSync(join(root, pidPath), "utf8"), 10);
       assert.notEqual(
         readFileSync(join(root, childGroupPath), "utf8"),

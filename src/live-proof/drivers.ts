@@ -455,7 +455,8 @@ class TerminalCommandExecutionError extends Error {
 
 type TerminalPaneState =
   | { status: "running"; pid: number; tty: string }
-  | { status: "exited"; pid: number; tty: string; exitStatus: number };
+  | { status: "exiting"; pid: number; tty: string }
+  | { status: "exited"; pid: number; tty: string; exitStatus: number; drained: boolean };
 
 function generateTerminalCaptureScript(): string {
   return `import {
@@ -1123,7 +1124,7 @@ function runTerminalStep(
       );
     }
     const state = readTerminalCommandState(outputWindow, runner, checkout, terminalPane);
-    if (state?.status === "exited") {
+    if (state && state.status !== "running") {
       throw new Error("held terminal command exited before recording its completion status");
     }
     if (elapsed < TERMINAL_EXPECT_OUTPUT_TIMEOUT_SECONDS) {
@@ -1259,7 +1260,7 @@ function runTerminalCommand(
         refreshTerminalCommandOutput(window, runner, checkout, terminalPane);
         return window;
       }
-      if (state?.status === "exited") {
+      if (state && state.status !== "running") {
         throw new Error("terminal command exited before clearing its pane");
       }
     } catch (error) {
@@ -1304,7 +1305,7 @@ function armTerminalCleanupWatchdog(
   requireSuccess("tmux", cleanupArgs, runner("tmux", cleanupArgs, { cwd: checkout }));
   for (let elapsed = 0; elapsed <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10; elapsed += 1) {
     const state = readTerminalCommandState(window, runner, checkout, terminalPane);
-    if (state?.status === "exited") {
+    if (state && state.status !== "running") {
       throw new Error("terminal pane exited before its cleanup watchdog armed");
     }
     const receipt = readBoundedTerminalFile(window.files.cleanupResult, 512);
@@ -1375,13 +1376,20 @@ function validateFinalTerminalCommand(
     throw new Error("ready_while_running terminal proof requires a satisfied output expectation");
   }
   refreshTerminalCommandOutput(window, runner, checkout, terminalPane);
+  const state = readTerminalCommandState(window, runner, checkout, terminalPane);
+  // A watchdog can record the child's cleanup signal after the pane owner dies.
+  // Preserve the original wrapper failure rather than that secondary status.
+  if (state?.status === "exited") {
+    throw new Error(
+      `ready_while_running terminal command exited after satisfying its expectation: ${terminalCommandFailure(window, state.exitStatus).message}`,
+    );
+  }
   const status = readHeldTerminalStatus(window);
   if (status !== undefined) {
     throw new Error(
       `ready_while_running terminal command exited after satisfying its expectation: ${terminalCommandFailure(window, status).message}`,
     );
   }
-  const state = readTerminalCommandState(window, runner, checkout, terminalPane);
   if (state?.status === "running") {
     if (cutover) {
       try {
@@ -1396,13 +1404,7 @@ function validateFinalTerminalCommand(
         }
         throw error;
       }
-      window.finalViewport = captureTerminalViewport(runner, checkout, terminalPane);
-      const sealedStatus = readHeldTerminalStatus(window);
-      if (sealedStatus !== undefined) {
-        throw new Error(
-          `ready_while_running terminal command exited after satisfying its expectation: ${terminalCommandFailure(window, sealedStatus).message}`,
-        );
-      }
+      window.finalViewport ??= captureTerminalViewport(runner, checkout, terminalPane);
       const sealedState = readTerminalCommandState(window, runner, checkout, terminalPane);
       if (sealedState?.status === "exited") {
         throw new Error(
@@ -1412,13 +1414,14 @@ function validateFinalTerminalCommand(
       if (sealedState?.status !== "running") {
         throw new Error("ready_while_running terminal command has no authoritative process state");
       }
+      const sealedStatus = readHeldTerminalStatus(window);
+      if (sealedStatus !== undefined) {
+        throw new Error(
+          `ready_while_running terminal command exited after satisfying its expectation: ${terminalCommandFailure(window, sealedStatus).message}`,
+        );
+      }
     }
     return;
-  }
-  if (state?.status === "exited") {
-    throw new Error(
-      `ready_while_running terminal command exited after satisfying its expectation: ${terminalCommandFailure(window, state.exitStatus).message}`,
-    );
   }
   throw new Error("ready_while_running terminal command has no authoritative process state");
 }
@@ -1452,7 +1455,7 @@ function requireTerminalCommandExitZero(
       return;
     }
     const state = readTerminalCommandState(window, runner, checkout, terminalPane);
-    if (state?.status === "exited") {
+    if (state && state.status !== "running") {
       throw new Error("held terminal command exited before recording its completion status");
     }
     if (elapsed < timeoutSeconds) pollTerminalSleep(runner, terminalDeadline);
@@ -1467,7 +1470,7 @@ function requireTerminalCommandExitZero(
     return;
   }
   const state = readTerminalCommandState(window, runner, checkout, terminalPane);
-  if (state?.status === "exited") {
+  if (state && state.status !== "running") {
     throw new Error("held terminal command exited before recording its completion status");
   }
   throw new Error(
@@ -1562,7 +1565,13 @@ function closeTerminalCapture(
   const result = runner("tmux", args, { cwd: checkout });
   if (result.status !== 0) {
     const state = readTerminalCommandState(window, runner, checkout, terminalPane);
-    if (state?.status !== "exited") requireSuccess("tmux", args, result);
+    if (!state || state.status === "running") requireSuccess("tmux", args, result);
+    // tmux refuses pipe-pane on an exited pane without closing its pipe.
+    // Verify original-pane death and the watchdog receipt before removing it;
+    // pane destruction then delivers real EOF to the capture helper.
+    cleanupTerminalWindow(window, terminalPane, runner, checkout);
+    const removeArgs = ["kill-pane", "-t", terminalPane];
+    requireSuccess("tmux", removeArgs, runner("tmux", removeArgs, { cwd: checkout }));
   }
   window.captureOpen = false;
   for (let elapsed = 0; elapsed <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS * 10; elapsed += 1) {
@@ -1709,10 +1718,6 @@ function cleanupTerminalWindow(
 ): void {
   if (window.paneCleaned) return;
   const identity = terminalCleanupIdentity(window);
-  if (window.captureOpen) {
-    refreshTerminalCommandOutput(window, runner, checkout, terminalPane);
-    closeTerminalCapture(window, runner, checkout, terminalPane);
-  }
   const state = readTerminalPaneState(runner, checkout, terminalPane);
   if (!state) throw new Error("terminal pane disappeared before controller cleanup");
   assertTerminalPaneIdentity(window, state);
@@ -1744,7 +1749,8 @@ function cleanupTerminalWindow(
       throw new Error("terminal pane disappeared before cleanup completion was observed");
     }
     assertTerminalPaneIdentity(window, releasedState);
-    if (releasedState.status === "exited" && cleanupAcknowledged) {
+    if (releasedState.status === "exited" && releasedState.drained && cleanupAcknowledged) {
+      window.frozenExit ??= releasedState;
       window.paneCleaned = true;
       return;
     }
@@ -1804,17 +1810,18 @@ function readTerminalPaneState(
   const pid = Number.parseInt(match[1]!, 10);
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("terminal pane status is malformed");
   const tty = match[2]!;
-  if (match[3] === "0") {
-    if (match[4] || match[5]) throw new Error("terminal pane status is malformed");
-    return { status: "running", pid, tty };
-  }
+  const drained = match[3] === "1";
   const status = match[4]!;
   const signal = match[5]!;
+  // PTY closure and waitpid status arrive independently (in either order).
+  if (!status && !signal) return { status: drained ? "exiting" : "running", pid, tty };
   if (/^\d+$/.test(status) && !signal) {
     const exitStatus = Number.parseInt(status, 10);
-    if (exitStatus >= 0 && exitStatus <= 255) return { status: "exited", pid, tty, exitStatus };
+    if (exitStatus >= 0 && exitStatus <= 255) {
+      return { status: "exited", pid, tty, exitStatus, drained };
+    }
   } else if (!status && signal) {
-    return { status: "exited", pid, tty, exitStatus: terminalSignalExitStatus(signal) };
+    return { status: "exited", pid, tty, exitStatus: terminalSignalExitStatus(signal), drained };
   }
   throw new Error("terminal pane status is malformed");
 }

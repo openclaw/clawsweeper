@@ -1300,6 +1300,107 @@ test("terminal pane status corruption fails closed before controller cleanup", (
   );
 });
 
+test("terminal cleanup waits for both tmux process status and PTY closure", () => {
+  // tmux publishes waitpid status and closes the PTY in separate callbacks.
+  for (const transition of ["0||KILL", "0|0|", "1||"]) {
+    const calls: string[] = [];
+    const fixtureRunner = terminalLifecycleRunner(calls, { terminalCaptures: ["Ready\n"] });
+    let transitional = false;
+    let polled = false;
+    const finalState = transition === "0||KILL" ? "1||KILL" : "1|0|";
+    const result = driveTerminal({
+      plan: { ...recommendedPlan("terminal"), entry: "demo", steps: [] },
+      checkout: "/tmp/checkout",
+      rawVideoPath: "/tmp/live-proof.raw.webm",
+      maxRecordingSeconds: 90,
+      recordMedia: false,
+      runner: (tool, args, options) => {
+        const result = fixtureRunner(tool, args, options);
+        if (transitional && tool === "sleep" && args[0] === "0.1") polled = true;
+        if (
+          tool === "tmux" &&
+          args[0] === "display-message" &&
+          String(result.stdout).endsWith("|1|0|\n")
+        ) {
+          const state = transitional ? finalState : transition;
+          transitional = true;
+          return { ...result, stdout: String(result.stdout).replace(/1\|0\|\n$/, `${state}\n`) };
+        }
+        return result;
+      },
+    });
+    assert.equal(result.status, "completed", result.output);
+    assert.equal(transitional, true, transition);
+    assert.equal(polled, true, "a cleanup receipt alone must not waive the final pane state");
+  }
+});
+
+test("terminal wrapper death owns failure status and seals capture after verified cleanup", () => {
+  for (const childStatus of [143, undefined]) {
+    const calls: string[] = [];
+    const fixtureRunner = terminalLifecycleRunner(calls, {
+      commandKeepsRunning: true,
+      terminalCaptures: ["Ready\n"],
+    });
+    let invocation: ReturnType<typeof terminalCommandInvocation>;
+    let cleanup: TerminalCleanupInvocation | undefined;
+    let dead = false;
+    let removed = false;
+    const result = driveTerminal({
+      plan: {
+        ...recommendedPlan("terminal"),
+        terminalCompletion: "ready_while_running",
+        entry: "demo-server",
+        steps: [{ action: "expect_output", text: "Ready" }],
+      },
+      checkout: "/tmp/checkout",
+      rawVideoPath: "/tmp/live-proof.raw.webm",
+      maxRecordingSeconds: 90,
+      recordMedia: false,
+      runner: (tool, args, options) => {
+        if (tool === "tmux" && args[0] === "respawn-pane")
+          invocation = terminalCommandInvocation(args);
+        if (tool === "tmux" && args[0] === "run-shell") cleanup = terminalCleanupInvocation(args);
+        if (tool === "sleep" && args[0] === "3") {
+          dead = true;
+          assert.ok(invocation);
+          if (childStatus !== undefined) writeFileSync(invocation.status, `${childStatus}\n`);
+        }
+        if (dead && tool === "tmux" && args[0] === "pipe-pane" && !args.includes("-O")) {
+          return { status: 1, stderr: "target pane has exited" };
+        }
+        if (tool === "tmux" && args[0] === "kill-pane") {
+          assert.equal(dead, true);
+          assert.ok(cleanup);
+          assert.match(readFileSync(cleanup.result, "utf8"), /\|controller\|ok\|0\n$/);
+          removed = true;
+          // Destroying the pane closes tmux's pipe; only then can its reader see EOF.
+          return fixtureRunner("tmux", ["pipe-pane", ...args.slice(1)], options);
+        }
+        const result = fixtureRunner(tool, args, options);
+        if (
+          dead &&
+          tool === "tmux" &&
+          args[0] === "display-message" &&
+          String(result.stdout).includes("/dev/")
+        ) {
+          assert.equal(removed, false, "the original pane must be verified before it is removed");
+          return {
+            ...result,
+            stdout: String(result.stdout).replace(/\|[01]\|[^|]*\|[^|]*\n$/, "|1||KILL\n"),
+          };
+        }
+        return result;
+      },
+    });
+    assert.equal(result.status, "failed", result.output);
+    assert.match(result.output, /terminated by a signal with exit status 137/);
+    assert.doesNotMatch(result.output, /terminal capture helper|cleanup failure/);
+    assert.match(result.output, /\[command 1 combined output\]\nReady/);
+    assert.equal(removed, true);
+  }
+});
+
 test("finite terminal expectations cannot pass an early summary followed by a nonzero exit", () => {
   const calls: string[] = [];
   const result = driveTerminal({
