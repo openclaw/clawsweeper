@@ -16,6 +16,8 @@ export type AgentRunner = "codex" | "openclaw";
 export interface RunAgentProcessOptions {
   label: string;
   prompt: string;
+  // Generated diagnostic copy only; never an original input or requested export.
+  diagnosticPromptPath?: string;
   scanSource: AgentScanSource;
   model: string;
   reasoningEffort?: string;
@@ -37,6 +39,7 @@ export function agentRunner(env: NodeJS.ProcessEnv = process.env): AgentRunner {
 }
 
 export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessResult {
+  if (options.diagnosticPromptPath) rmSync(options.diagnosticPromptPath, { force: true });
   const runner = agentRunner(options.env);
   if (runner === "openclaw") openclawModel(options.env);
   const startedAt = Date.now();
@@ -51,8 +54,14 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     timeoutMs: options.timeoutMs,
     ...(schemaPath ? { schemaPath } : {}),
   });
+  if (options.diagnosticPromptPath) {
+    writeFileSync(options.diagnosticPromptPath, options.prompt, { mode: 0o600, flag: "wx" });
+  }
   options = { ...options, timeoutMs: options.timeoutMs - (Date.now() - startedAt) };
-  if (options.timeoutMs <= 0) throw new AgentInputScanError("deadline");
+  if (options.timeoutMs <= 0) {
+    if (options.diagnosticPromptPath) rmSync(options.diagnosticPromptPath, { force: true });
+    throw new AgentInputScanError("deadline");
+  }
   if (runner === "codex") {
     return runCodexProcess({
       args: codexAgentArgs(options),

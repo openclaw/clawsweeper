@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -75,14 +76,17 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
     { mode: 0o600 },
   );
   const output = join(root, "decision.json");
+  const diagnosticPromptPath = join(root, "review.prompt.md");
+  const prompt =
+    "Review the synthetic change in value.txt. Read that file and return its UUID as marker with status clean in the required JSON object. Do not run nested reviewers or network tools.";
   const run = () =>
     runAgentProcess({
       label: "hosted-scan-smoke",
       cwd,
       model: "internal",
       reasoningEffort: "low",
-      prompt:
-        "Review the synthetic change in value.txt. Read that file and return its UUID as marker with status clean in the required JSON object. Do not run nested reviewers or network tools.",
+      prompt,
+      diagnosticPromptPath,
       scanSource: { kind: "committed", baseSha, headSha },
       timeoutMs: 180_000,
       env: { ...codexEnv(), CODEX_BIN: wrapper },
@@ -123,6 +127,7 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
     // Prompt-only negatives reach the executable boundary without requiring Git
     // on the deliberately scanner-free PATH. No negative ever has live inference.
     writeFileSync(output, '{"status":"clean"}');
+    writeFileSync(diagnosticPromptPath, "Stale synthetic rejected input.", { mode: 0o644 });
     assert.throws(
       () =>
         runAgentProcess({
@@ -130,6 +135,7 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
           cwd,
           model: "internal",
           prompt: "Harmless refusal fixture.",
+          diagnosticPromptPath,
           scanSource: { kind: "prompt" },
           timeoutMs: 30_000,
           env: { ...codexEnv(), CODEX_BIN: wrapper },
@@ -139,6 +145,7 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
     );
     assert.equal(existsSync(calls), false);
     assert.equal(existsSync(output), false);
+    assert.equal(existsSync(diagnosticPromptPath), false);
     assertCheckout();
   }
   process.env.PATH = originalPath;
@@ -160,6 +167,12 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
   const decision = { status: "clean", marker };
   assertCheckout();
   assert.equal(readFileSync(calls, "utf8"), "1");
+  assert.ok(
+    readFileSync(diagnosticPromptPath, "utf8") === prompt,
+    "Admitted prompt diagnostic did not match; contents withheld.",
+  );
+  const diagnosticPromptMode = statSync(diagnosticPromptPath).mode & 0o777;
+  assert.equal(diagnosticPromptMode, 0o600);
   writeFileSync(
     artifact,
     JSON.stringify(
@@ -176,6 +189,8 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
         headSha,
         refusalProviderStarts: 0,
         cleanProviderStarts: 1,
+        refusalPromptArtifacts: 0,
+        diagnosticPromptMode: `0${diagnosticPromptMode.toString(8)}`,
         decision,
         model: "configured model (redacted)",
         limits:

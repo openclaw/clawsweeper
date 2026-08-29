@@ -460,67 +460,79 @@ test("PR close coverage proof prompt requires concrete coverage proof", () => {
   assert.doesNotMatch(prompt, /patchSignature/);
 });
 
-test(
-  "PR close coverage proof model run leaves no scratch files in the proof tree",
-  { skip: process.platform === "win32" },
-  (t) => {
-    useFakeScanner(t);
-    const root = mkdtempSync(join(tmpdir(), "clawsweeper-proof-scratch-test-"));
-    try {
-      const workDir = join(root, "pr-close-coverage-proof");
-      const binDir = join(root, "bin");
-      mkdirSync(binDir, { recursive: true });
-      const fakeCodex = join(binDir, "codex");
-      writeFileSync(
-        fakeCodex,
-        [
-          "#!/bin/sh",
-          'out=""',
-          'prev=""',
-          'for a in "$@"; do',
-          '  if [ "$prev" = "--output-last-message" ]; then out="$a"; fi',
-          '  prev="$a"',
-          "done",
-          "cat > /dev/null",
-          "cat > \"$out\" <<'JSON'",
-          JSON.stringify(concreteCoverageProof),
-          "JSON",
-          "exit 0",
-        ].join("\n"),
-      );
-      chmodSync(fakeCodex, 0o755);
-      const schemaPath = join(root, "schema.json");
-      writeFileSync(schemaPath, "{}\n");
-      const previousCodexBin = process.env.CODEX_BIN;
-      process.env.CODEX_BIN = fakeCodex;
+for (const admission of ["clean", "finding"])
+  test(
+    `PR close coverage proof ${admission} leaves no prompt copies in the proof tree`,
+    { skip: process.platform === "win32" },
+    (t) => {
+      const root = mkdtempSync(join(tmpdir(), "clawsweeper-proof-scratch-test-"));
       try {
-        const proof = runPrCloseCoverageProofModel({
-          source: proofPullRequest(95982),
-          covering: proofPullRequest(111523),
-          markdown: "Report markdown.",
-          relationshipSignalSnippets: [],
-          runtime: {
-            model: "gpt-test",
-            reasoningEffort: "low",
-            sandboxMode: "read-only",
-            serviceTier: "",
-            timeoutMs: 30_000,
-            workDir,
-            rootDir: root,
-            schemaPath,
-            promptTemplate: "Prove close coverage.",
-          },
-        });
-        assert.equal(proof.decision, "covered");
+        const workDir = join(root, "pr-close-coverage-proof");
+        mkdirSync(workDir);
+        const promptPath = join(workDir, "95982-111523.prompt.md");
+        writeFileSync(promptPath, "stale unscanned prompt");
+        useFakeScanner(
+          t,
+          `
+assert.equal(fs.existsSync(${JSON.stringify(promptPath)}), false);
+${admission === "finding" ? "process.exit(183);" : ""}
+`,
+        );
+        const binDir = join(root, "bin");
+        mkdirSync(binDir, { recursive: true });
+        const fakeCodex = join(binDir, "codex");
+        writeFileSync(
+          fakeCodex,
+          [
+            "#!/bin/sh",
+            'out=""',
+            'prev=""',
+            'for a in "$@"; do',
+            '  if [ "$prev" = "--output-last-message" ]; then out="$a"; fi',
+            '  prev="$a"',
+            "done",
+            "cat > /dev/null",
+            "cat > \"$out\" <<'JSON'",
+            JSON.stringify(concreteCoverageProof),
+            "JSON",
+            "exit 0",
+          ].join("\n"),
+        );
+        chmodSync(fakeCodex, 0o755);
+        const schemaPath = join(root, "schema.json");
+        writeFileSync(schemaPath, "{}\n");
+        const previousCodexBin = process.env.CODEX_BIN;
+        process.env.CODEX_BIN = fakeCodex;
+        try {
+          const run = () =>
+            runPrCloseCoverageProofModel({
+              source: proofPullRequest(95982),
+              covering: proofPullRequest(111523),
+              markdown: "Report markdown.",
+              relationshipSignalSnippets: [],
+              runtime: {
+                model: "gpt-test",
+                reasoningEffort: "low",
+                sandboxMode: "read-only",
+                serviceTier: "",
+                timeoutMs: 30_000,
+                workDir,
+                rootDir: root,
+                schemaPath,
+                promptTemplate: "Prove close coverage.",
+              },
+            });
+          if (admission === "finding") assert.throws(run, /Agent input scan refused: findings/);
+          else assert.equal(run().decision, "covered");
+        } finally {
+          if (previousCodexBin === undefined) delete process.env.CODEX_BIN;
+          else process.env.CODEX_BIN = previousCodexBin;
+        }
+        // The workDir is uploaded verbatim as the close-coverage proof artifact;
+        // its validator only admits N-M.proof.json and manifest.json.
+        assert.deepEqual(readdirSync(workDir), []);
       } finally {
-        if (previousCodexBin === undefined) delete process.env.CODEX_BIN;
-        else process.env.CODEX_BIN = previousCodexBin;
+        rmSync(root, { recursive: true, force: true });
       }
-      // The workDir is uploaded verbatim as the close-coverage proof artifact;
-      // its validator only admits N-M.proof.json and manifest.json.
-      assert.deepEqual(readdirSync(workDir), []);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  },
-);
+    },
+  );

@@ -38,6 +38,7 @@ function fixture(t: test.TestContext) {
     return git("rev-parse", "HEAD");
   };
   const calls = join(root, "provider-calls");
+  const diagnosticPromptPath = join(root, "diagnostic.prompt.md");
   const binary = join(root, "codex");
   writeFileSync(
     binary,
@@ -48,13 +49,14 @@ function fixture(t: test.TestContext) {
     runAgentProcess({
       label: "scan-fixture",
       prompt: "Review the change.",
+      diagnosticPromptPath,
       scanSource: source,
       model: "internal",
       cwd,
       env: { ...process.env, CODEX_BIN: binary },
       timeoutMs: 30_000,
     });
-  return { root, cwd, git, commit, calls, run };
+  return { root, cwd, git, commit, calls, diagnosticPromptPath, run };
 }
 
 for (const scenario of ["deletion", "multiline", "past-display-limits", "comment-only"]) {
@@ -62,9 +64,11 @@ for (const scenario of ["deletion", "multiline", "past-display-limits", "comment
     const f = fixture(t);
     const receipt = join(f.root, "scan-root");
     const needle = "scan-fixture-sensitive\nsecond-sensitive-line";
+    writeFileSync(f.diagnosticPromptPath, needle);
     useFakeScanner(
       t,
-      `fs.writeFileSync(${JSON.stringify(receipt)}, path.dirname(inputDir));
+      `assert.equal(fs.existsSync(${JSON.stringify(f.diagnosticPromptPath)}), false);
+fs.writeFileSync(${JSON.stringify(receipt)}, path.dirname(inputDir));
 if (inputs.some(({bytes}) => bytes.includes(${JSON.stringify(needle)}))) {
   process.stdout.write(JSON.stringify({Raw: 'must-not-escape'})); process.exit(183);
 }`,
@@ -88,6 +92,7 @@ if (inputs.some(({bytes}) => bytes.includes(${JSON.stringify(needle)}))) {
       },
     );
     assert.equal(existsSync(f.calls), false);
+    assert.equal(existsSync(f.diagnosticPromptPath), false);
     assert.equal(existsSync(readFileSync(receipt, "utf8")), false);
   });
 }
@@ -302,15 +307,29 @@ test("host normalization queries never execute filter or fsmonitor callbacks", (
   assert.equal(existsSync(f.calls), false);
 });
 
-for (const failure of ["signal", "deadline", "oversize"]) {
+for (const failure of [
+  "signal",
+  "deadline",
+  "oversize",
+  "missing",
+  "error",
+  "finding",
+  "unexpected-output",
+]) {
   test(`scan ${failure} refuses without provider invocation and cleans private staging`, (t) => {
     const f = fixture(t);
     const receipt = join(f.root, "temporary-root");
-    useFakeScanner(
+    const bin = useFakeScanner(
       t,
-      `fs.writeFileSync(${JSON.stringify(receipt)}, path.dirname(inputDir));
-${failure === "signal" ? "process.kill(process.pid, 'SIGTERM');" : failure === "deadline" ? "setTimeout(() => {}, 60000);" : ""}`,
+      `assert.equal(fs.existsSync(${JSON.stringify(f.diagnosticPromptPath)}), false);
+fs.writeFileSync(${JSON.stringify(receipt)}, path.dirname(inputDir));
+${failure === "signal" ? "process.kill(process.pid, 'SIGTERM');" : failure === "deadline" ? "setTimeout(() => {}, 60000);" : failure === "error" ? "process.exit(42);" : failure === "finding" ? 'process.stdout.write(\'{"Raw":"synthetic-sensitive-value"}\'); process.exit(183);' : failure === "unexpected-output" ? 'process.stdout.write(\'{"Raw":"synthetic-sensitive-value"}\');' : ""}`,
     );
+    if (failure === "missing") {
+      rmSync(join(bin, "trufflehog"));
+      process.env.PATH = bin;
+    }
+    writeFileSync(f.diagnosticPromptPath, "stale-sensitive-diagnostic");
     const schema = join(f.root, "schema");
     writeFileSync(schema, "");
     if (failure === "oversize") truncateSync(schema, 256 * 1024 * 1024 + 1);
@@ -319,22 +338,35 @@ ${failure === "signal" ? "process.kill(process.pid, 'SIGTERM');" : failure === "
         runAgentProcess({
           label: "refusal",
           cwd: f.cwd,
-          prompt: "Review.",
+          prompt: "Review.\r\nsynthetic-sensitive-value\n",
+          diagnosticPromptPath: f.diagnosticPromptPath,
           model: "internal",
           scanSource: { kind: "prompt" },
           env: { ...process.env, CODEX_BIN: join(f.root, "codex") },
           codexExtraArgs: ["--output-schema", schema],
           timeoutMs: failure === "deadline" ? 2000 : 30_000,
         }),
-      new RegExp(
-        failure === "signal"
-          ? "scanner_failed"
-          : failure === "oversize"
-            ? "staging_limit"
-            : "deadline",
-      ),
+      (error) => {
+        assert.ok(error instanceof AgentInputScanError);
+        assert.equal(
+          error.reason,
+          failure === "signal" || failure === "error"
+            ? "scanner_failed"
+            : failure === "oversize"
+              ? "staging_limit"
+              : failure === "missing"
+                ? "scanner_unavailable"
+                : failure === "deadline"
+                  ? "deadline"
+                  : "findings",
+        );
+        assert.doesNotMatch(String(error), /synthetic-sensitive-value/);
+        return true;
+      },
     );
     assert.equal(existsSync(f.calls), false);
+    assert.equal(existsSync(f.diagnosticPromptPath), false);
+    assert.equal(existsSync(schema), true, "original schema input must survive refusal");
     if (existsSync(receipt)) assert.equal(existsSync(readFileSync(receipt, "utf8")), false);
   });
 }

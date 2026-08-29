@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -103,11 +103,24 @@ test("agent runner preserves ordered repair-worker Codex arguments", () => {
 });
 
 test("runAgentProcess delegates the default path to Codex with unchanged argv and stdin", (t) => {
-  useFakeScanner(t);
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-agent-runner-test-"));
   const binary = join(root, "fake-codex");
   const argsPath = join(root, "args.json");
   const promptPath = join(root, "prompt.txt");
+  const diagnosticPromptPath = join(root, "diagnostic.prompt.md");
+  const schemaPath = join(root, "schema.json");
+  const prompt = "prompt over stdin\r\n🦞 exact bytes\n";
+  const schema = '{"type":"object","description":"exact schema bytes"}\n';
+  writeFileSync(schemaPath, schema);
+  writeFileSync(diagnosticPromptPath, "stale prompt", { mode: 0o644 });
+  useFakeScanner(
+    t,
+    `
+assert.equal(fs.existsSync(${JSON.stringify(diagnosticPromptPath)}), false);
+assert.equal(inputs.find(({name}) => name === 'prompt').bytes.toString(), ${JSON.stringify(prompt)});
+assert.equal(inputs.find(({name}) => name === 'schema').bytes.toString(), ${JSON.stringify(schema)});
+`,
+  );
   writeFileSync(
     binary,
     `#!/usr/bin/env node
@@ -122,7 +135,8 @@ process.stdout.write("ok");
     const result = runAgentProcess({
       label: "default-codex",
       scanSource: { kind: "prompt" },
-      prompt: "prompt over stdin",
+      prompt,
+      diagnosticPromptPath,
       model: "internal",
       reasoningEffort: "low",
       cwd: root,
@@ -133,7 +147,7 @@ process.stdout.write("ok");
         AGENT_RUNNER_PROMPT_PATH: promptPath,
       },
       timeoutMs: 10_000,
-      codexExtraArgs: ["--sandbox", "read-only", "-"],
+      codexExtraArgs: ["--sandbox", "read-only", "--output-schema", schemaPath, "-"],
     });
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(readFileSync(argsPath, "utf8")), [
@@ -142,9 +156,14 @@ process.stdout.write("ok");
       'model_reasoning_effort="low"',
       "--sandbox",
       "read-only",
+      "--output-schema",
+      schemaPath,
       "-",
     ]);
-    assert.equal(readFileSync(promptPath, "utf8"), "prompt over stdin");
+    assert.equal(readFileSync(promptPath, "utf8"), prompt);
+    assert.equal(readFileSync(diagnosticPromptPath, "utf8"), prompt);
+    assert.equal(statSync(diagnosticPromptPath).mode & 0o777, 0o600);
+    assert.equal(readFileSync(schemaPath, "utf8"), schema);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -4,6 +4,7 @@ import {
   existsSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -1004,6 +1005,8 @@ ${extra}
   }): Decision {
     const startedAt = Date.now();
     ensureDir(options.workDir);
+    const promptPath = join(options.workDir, `${options.item.number}.prompt.md`);
+    rmSync(promptPath, { force: true });
     const proofScratchDir =
       options.proofScratchDir ??
       join(options.workDir, "proof-scratch", String(options.item.number));
@@ -1012,7 +1015,6 @@ ${extra}
     const preparedMediaProof = options.prompt
       ? { manifestPath: null, summaryPath: null, artifacts: [] }
       : prepareMediaProofArtifacts(options.context, proofScratchDir);
-    const promptPath = join(options.workDir, `${options.item.number}.prompt.md`);
     const outputPath = join(options.workDir, `${options.item.number}.json`);
     if (existsSync(outputPath)) unlinkSync(outputPath);
     const prompt =
@@ -1021,7 +1023,6 @@ ${extra}
         ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
         targetDir: options.openclawDir,
       }).text;
-    writeFileSync(promptPath, prompt, "utf8");
     const codexEnv = untrustedCodexEnv({
       ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
       preserveCodexAuth: options.preserveCodexAuth,
@@ -1084,6 +1085,7 @@ ${extra}
         }
         const result = runAgentProcess({
           scanSource,
+          diagnosticPromptPath: promptPath,
           label: `review-${options.item.number}-attempt-${attempt}`,
           prompt,
           model: options.model,

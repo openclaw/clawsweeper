@@ -45,7 +45,7 @@ function initTrackedRepo(dir: string, trackedPath = "tracked.txt"): void {
 }
 
 for (const scanner of ["missing", "error", "finding", "unexpected-output"]) {
-  test(`review scan ${scanner} refuses before any provider call and retires stale output`, () => {
+  test(`review scan ${scanner} refuses before any provider call and retires stale artifacts`, () => {
     const root = mkdtempSync(tmpPrefix);
     const openclawDir = join(root, "target");
     const workDir = join(root, "work");
@@ -54,7 +54,9 @@ for (const scanner of ["missing", "error", "finding", "unexpected-output"]) {
     for (const dir of [openclawDir, workDir, binDir]) mkdirSync(dir);
     initTrackedRepo(openclawDir);
     const outputPath = join(workDir, "42.json");
+    const promptPath = join(workDir, "42.prompt.md");
     writeFileSync(outputPath, JSON.stringify(closeDecision()));
+    writeFileSync(promptPath, "stale-unscanned-prompt");
     writeFileSync(
       join(binDir, "codex"),
       `#!${process.execPath}
@@ -89,7 +91,7 @@ fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1]
             serviceTier: "",
             timeoutMs: 10_000,
             workDir,
-            prompt: "Return a review decision.",
+            prompt: "Return a review decision.\nfixture-sensitive-value\nsecond line",
           }),
         (error: Error) => {
           assert.match(error.message, /Agent input scan refused/);
@@ -99,6 +101,7 @@ fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1]
       );
       assert.equal(existsSync(calls), false);
       assert.equal(existsSync(outputPath), false);
+      assert.equal(existsSync(promptPath), false, "refused prompt must not survive admission");
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;
@@ -202,6 +205,9 @@ process.exit(1);
     assert.equal(decision.decision, "keep_open");
     assert.equal(decision.summary, "Keep open for maintainer follow-up.");
     assert.equal(decision.localCheckoutAccess, "verified");
+    const promptPath = join(workDir, "83393.prompt.md");
+    assert.equal(readFileSync(promptPath, "utf8"), "Return a review decision.");
+    assert.equal(statSync(promptPath).mode & 0o777, 0o600);
   } finally {
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
@@ -552,12 +558,14 @@ process.stdout.write(JSON.stringify({ payloads: [{ text }], meta: { stopReason: 
   );
   chmodSync(openclawPath, 0o755);
   const previous = {
+    PATH: process.env.PATH,
     CLAWSWEEPER_RUNNER: process.env.CLAWSWEEPER_RUNNER,
     CLAWSWEEPER_OPENCLAW_BIN: process.env.CLAWSWEEPER_OPENCLAW_BIN,
     CLAWSWEEPER_OPENCLAW_MODEL: process.env.CLAWSWEEPER_OPENCLAW_MODEL,
     CODEX_BIN: process.env.CODEX_BIN,
     OPENCLAW_TEST_INVOCATIONS_PATH: process.env.OPENCLAW_TEST_INVOCATIONS_PATH,
   };
+  process.env.PATH = `${join(root, "bin")}${delimiter}${process.env.PATH ?? ""}`;
   process.env.CLAWSWEEPER_RUNNER = "openclaw";
   process.env.CLAWSWEEPER_OPENCLAW_BIN = openclawPath;
   process.env.CLAWSWEEPER_OPENCLAW_MODEL = "openai/gpt-5";
@@ -633,12 +641,14 @@ if (count > 0) {
   );
   chmodSync(openclawPath, 0o755);
   const previous = {
+    PATH: process.env.PATH,
     CLAWSWEEPER_RUNNER: process.env.CLAWSWEEPER_RUNNER,
     CLAWSWEEPER_OPENCLAW_BIN: process.env.CLAWSWEEPER_OPENCLAW_BIN,
     CLAWSWEEPER_OPENCLAW_MODEL: process.env.CLAWSWEEPER_OPENCLAW_MODEL,
     CODEX_BIN: process.env.CODEX_BIN,
     OPENCLAW_TEST_INVOCATIONS_PATH: process.env.OPENCLAW_TEST_INVOCATIONS_PATH,
   };
+  process.env.PATH = `${join(root, "bin")}${delimiter}${process.env.PATH ?? ""}`;
   process.env.CLAWSWEEPER_RUNNER = "openclaw";
   process.env.CLAWSWEEPER_OPENCLAW_BIN = openclawPath;
   process.env.CLAWSWEEPER_OPENCLAW_MODEL = "openai/gpt-5";

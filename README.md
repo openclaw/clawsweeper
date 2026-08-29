@@ -551,13 +551,20 @@ canonical Git and raw working bytes in scan coverage. The host never starts a ta
 Hosted Codex and OpenClaw setup share the checksum-pinned TruffleHog 3.97.1
 installer in `.github/actions/setup-review-tools/install.sh`. It supports Linux
 amd64 and fails on unsupported platforms. Local operators must install a trusted
-TruffleHog executable on the host `PATH`, outside both checkouts; workers never
+[TruffleHog executable](https://github.com/trufflesecurity/trufflehog#installation)
+on the host `PATH`, outside both checkouts; workers never
 install dependencies themselves. Missing tools, findings, scan errors, source
 drift, incomplete ancestry/objects, changed gitlinks, and LFS pointers refuse the
 review. The scan stages at most 256 MiB in private external temporary files and
 uses the remaining review deadline; it never silently truncates or bypasses.
 Diagnostics omit scanner output and source values. Restore prerequisites or
 remove sensitive input before retrying a refusal.
+
+Generated review and repair prompt diagnostics retire the previous attempt's
+copy before admission and persist only successfully scanned exact prompt bytes
+with owner-only access. Commit review, assist, and close-coverage proof do not
+retain unused prompt copies. Original inputs and explicitly requested prompt
+exports (`repair:render` or worker `--dry-run`) remain operator-owned outputs.
 
 This admission boundary is not universal provider-egress scanning. Automatically
 loaded project docs, resumed/steered history, later tool results, and unchanged

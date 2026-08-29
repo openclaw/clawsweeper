@@ -85,6 +85,7 @@ if ((mode === "execute" || mode === "autonomous") && !dryRun) {
 
 const runDir = makeRunDir(job, mode);
 const promptPath = path.join(runDir, "prompt.md");
+fs.rmSync(promptPath, { force: true });
 const resultPath = path.join(runDir, "result.json");
 const transcriptPath = path.join(runDir, "codex.jsonl");
 const promptContext: Record<string, string> = {};
@@ -146,9 +147,9 @@ if (!dryRun) {
 
 const prompt = renderPrompt(job, mode, promptContext);
 
-fs.writeFileSync(promptPath, prompt);
-
 if (dryRun) {
+  // Explicit render/export contract; no model attempt or diagnostic copy.
+  fs.writeFileSync(promptPath, prompt, { mode: 0o600, flag: "wx" });
   const dryResult = {
     status: "planned",
     repo: job.frontmatter.repo,
@@ -265,6 +266,7 @@ function spawnAgentWithHeartbeat({
     return Promise.resolve(
       runAgentProcess({
         scanSource: { kind: "prompt" },
+        diagnosticPromptPath: promptPath,
         label: String(label),
         prompt: String(prompt),
         model: String(requestedModel),

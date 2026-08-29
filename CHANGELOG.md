@@ -64,6 +64,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Prevented rejected model inputs from surviving in generated prompt artifacts; retained diagnostics now follow admission with owner-only access, and unused prompt copies are no longer written.
+- Provisioned pinned TruffleHog for hosted reviews and enforced complete host-owned input scans before native review or cache reuse, preserving read-only workers, proxy authentication, and redacted fail-closed errors.
 - Removed redundant pnpm setup identity work by reusing the verified post-install identity without changing deadlines or mutation guards.
 - Guided package-version live proofs toward validated machine-readable output and exact resolution checks instead of guessed terminal formatting, while preserving literal expectations and successful-exit requirements.
 - Preserved empty-step live-proof plans through report rendering and inspection, with explicit JSON empty arrays and strict compatibility for existing solitary `- none` reports.

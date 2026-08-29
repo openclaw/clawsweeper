@@ -27,6 +27,7 @@ import {
 import { runText, UserFacingCommandError } from "../dist/command.js";
 import { reviewStructuralPullStateDigest } from "../dist/review-structural-cache.js";
 import { mockGhBinEnv, workPlanCandidateReport } from "./helpers.ts";
+import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
 const CLI = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
 
@@ -1064,6 +1065,7 @@ test("local exact review selects PATH Codex instead of the Desktop app binary", 
     }).trim();
 
     mkdirSync(binDir);
+    writeFakeScanner(binDir);
     const ghPath = join(binDir, "gh.js");
     writeFileSync(
       ghPath,
