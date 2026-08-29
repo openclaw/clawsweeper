@@ -691,6 +691,9 @@ test("review prompt classifies Telegram visible proof candidates", () => {
 
   assert.match(prompt, /telegramVisibleProof/);
   assert.match(prompt, /telegram-e2e-userbot/);
+  assert.match(prompt, /whether or not the repository/);
+  assert.match(prompt, /exercise the exact changed behavior/);
+  assert.match(prompt, /extend its harness or recipes/);
   assert.match(prompt, /message formatting/);
   assert.match(prompt, /retry\/network reliability only/);
   assert.match(prompt, /shared retry\/ordering work/);

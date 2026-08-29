@@ -555,7 +555,7 @@ expressly authorized production-path harnesses. Mocked transport clients and
 isolated unit tests remain `mock_only`; preserve existing browser-runtime, CSP,
 auth, and security safeguards.
 
-For PRs, always fill `telegramVisibleProof`. Use `status: "needed"` only when the PR touches Telegram behavior and the user-visible change can be demonstrated by the repository `telegram-e2e-userbot` skill, such as message formatting, slash-command output, reply text, attachments, reactions, threading, mentions, or other visible Telegram chat behavior. Use `status: "not_needed"` for non-Telegram PRs and for Telegram changes that are internal-only, test-only, docs-only, logging-only, retry/network reliability only, auth/secret plumbing only, or otherwise not meaningfully observable in a short Telegram Test Server run. A label, title, consumer, or example does not make internal shared retry/ordering work visible. For that work, set
+For PRs, always fill `telegramVisibleProof`. Use `status: "needed"` only when the PR changes user-visible Telegram behavior that Telegram's Test Server can observe, whether or not the repository `telegram-e2e-userbot` skill already covers that API path. Examples include message formatting, slash-command output, reply text, attachments, reactions, threading, mentions, and other visible Telegram chat behavior. Use `status: "not_needed"` for non-Telegram PRs and for Telegram changes that are internal-only, test-only, docs-only, logging-only, retry/network reliability only, auth/secret plumbing only, or otherwise not meaningfully observable in a short Telegram Test Server run. A label, title, consumer, or example does not make internal shared retry/ordering work visible. For that work, set
 `telegramVisibleProof.status: "not_needed"` and
 `mantisRecommendation.status: "not_recommended"`.
 
@@ -1075,7 +1075,8 @@ more tests or more security review are not enough.
 
 Always fill `telegramVisibleProof` using the changed-behavior classification
 above. The `proof: telegram-e2e` label tells the execution worker to use the
-repository `telegram-e2e-userbot` skill.
+repository `telegram-e2e-userbot` skill, exercise the exact changed behavior,
+and extend its harness or recipes when the current coverage cannot expose it.
 
 Always fill `liveProofPlan` with the fixed retired compatibility shape specified
 above. Do not derive commands, steps, or another demonstration plan from the
