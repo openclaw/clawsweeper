@@ -844,7 +844,9 @@ test(
           do {
             const state = mediaProofCommandRunner("tmux", stateArgs, options);
             assert.equal(state.status, 0, String(state.stderr));
-            if (String(state.stdout).trim().toUpperCase() === `${wrapperPid}|KILL`) {
+            // tmux builds can report numeric signals or platform signal names.
+            const paneStatus = String(state.stdout).trim().toUpperCase();
+            if (paneStatus === `${wrapperPid}|KILL` || paneStatus === `${wrapperPid}|9`) {
               observedDeath = true;
               break;
             }
