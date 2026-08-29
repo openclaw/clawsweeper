@@ -170,6 +170,33 @@ still read as `Codex review: passed.` in the durable review comment.
 Issues use `**Next step**` instead of the PR-specific `**Next step before
 merge**` heading. Non-PR comments are never repair triggers.
 
+## History Attribution
+
+The public related-people section separates routing judgment from Git facts.
+Reviewers may propose up to five source-line history pointers, identifying the
+recorded checkout's path/line, a commit, and either its author or committer.
+ClawSweeper verifies the actual line change against every parent recorded in
+`git cat-file commit`, using the same reader for structured regression provenance.
+Blame boundary markers, graph-truncated parents, or root-style display alone do
+not prove introduction. Configured blame revision exclusions are cleared so they
+cannot substitute an older line version. Whole-commit rename metadata identifies
+exact file moves as carried forward; inexact rename mappings remain unknown.
+Other unchanged lines are carried forward; missing objects, quoted blame paths,
+oversized reads, or expired verification budgets remain unknown.
+Reads reuse the trusted local Git boundary, share a five-second budget per
+verification set, and never fetch history or invoke target callbacks. Replacement
+refs and legacy grafts are disabled. Parent records must follow the tree record
+consecutively; identities, porcelain metadata, and diff hunks split only on LF,
+never embedded CR or Unicode line separators.
+
+Public actor names and roles come from raw commit metadata, not reviewer prose.
+Author, committer, PR author, and merger remain separate; line history does not
+establish feature responsibility. Other candidates retain only a low-confidence
+routing suggestion. Host projections carry `raw_parent_line_v1` in the existing
+report representation; older unmarked attribution cannot regain verified status
+when comments are rendered. Stored reports and live comments are not rewritten by
+this reader change. OpenClaw Bay needs no change: no observer API or controls change.
+
 ## Primary Body Coverage
 
 Hosted primary issue and PR bodies up to 12,000 UTF-16 units remain intact.

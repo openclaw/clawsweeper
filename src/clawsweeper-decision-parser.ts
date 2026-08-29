@@ -396,7 +396,27 @@ export function createDecisionParser({
   function parseLikelyOwner(value: unknown, path: string): LikelyOwner {
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, LIKELY_OWNER_SCHEMA_KEYS, path);
+    let history: LikelyOwner["history"];
+    if (record.history !== undefined && record.history !== null) {
+      const source = requireRecord(record.history, `${path}.history`);
+      rejectUnexpectedKeys(
+        source,
+        new Set(["commitSha", "sourcePath", "sourceLine", "actor"]),
+        `${path}.history`,
+      );
+      history = {
+        commitSha: requireSingleLineString(source.commitSha, `${path}.history.commitSha`),
+        sourcePath: requireSingleLineString(source.sourcePath, `${path}.history.sourcePath`),
+        sourceLine: requireInteger(source.sourceLine, `${path}.history.sourceLine`),
+        actor: requireEnum(
+          source.actor,
+          new Set(["author", "committer"] as const),
+          `${path}.history.actor`,
+        ),
+      };
+    }
     return {
+      ...(record.history === undefined ? {} : { history: history ?? null }),
       person: requireReportText(record.person, `${path}.person`),
       role: requireReportText(record.role, `${path}.role`),
       reason: requireReportText(record.reason, `${path}.reason`),

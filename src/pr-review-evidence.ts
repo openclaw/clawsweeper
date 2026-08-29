@@ -64,7 +64,7 @@ export interface ReviewGitReadOptions {
   configuration?: "normalization";
 }
 
-// Read raw objects without target callbacks, replacement objects, or lazy network fetches.
+// Read raw objects without target callbacks, replacement objects, grafts, or lazy fetches.
 export function readReviewGit(
   targetDir: string | undefined,
   args: string[],
@@ -117,6 +117,8 @@ export function readReviewGit(
         GIT_NO_LAZY_FETCH: "1",
         GIT_OPTIONAL_LOCKS: "0",
         GIT_NO_REPLACE_OBJECTS: "1",
+        // Legacy graft files alter ancestry independently of replacement refs.
+        GIT_GRAFT_FILE: devNull,
         GIT_TERMINAL_PROMPT: "0",
         GIT_LFS_SKIP_SMUDGE: "1",
       },
@@ -126,6 +128,26 @@ export function readReviewGit(
     },
   );
   return result.error || result.signal || result.status !== 0 ? null : result.stdout;
+}
+
+// Git consumes LF-delimited parent records only immediately after the tree.
+// CRs in identities and later parent-looking headers are not ancestry.
+export function reviewCommitParents(raw: string): string[] | null {
+  let end = raw.indexOf("\n");
+  if (!raw.startsWith("tree ") || end < 0 || end >= raw.length - 1) return null;
+  const tree = objectId(raw.slice(5, end).toLowerCase());
+  if (!tree) return null;
+  const parents: string[] = [];
+  let offset = end + 1;
+  while (raw.startsWith("parent ", offset)) {
+    end = raw.indexOf("\n", offset);
+    if (end < 0 || end >= raw.length - 1) return null;
+    const parent = objectId(raw.slice(offset + 7, end).toLowerCase());
+    if (!parent || parent.length !== tree.length) return null;
+    parents.push(parent);
+    offset = end + 1;
+  }
+  return parents;
 }
 
 function git(
@@ -248,12 +270,8 @@ export function buildPullRequestReviewEvidence(options: {
     testMerge.reason = "Not an open unmerged PR; a final merge commit is not a test merge.";
   } else if (testMerge.sha) {
     const commit = git(targetDir, ["cat-file", "commit", testMerge.sha]);
-    if (commit !== null) {
-      const parents = commit
-        .split("\n\n", 1)[0]!
-        .split("\n")
-        .filter((line) => line.startsWith("parent "))
-        .map((line) => line.slice(7));
+    const parents = commit === null ? null : reviewCommitParents(commit);
+    if (parents) {
       testMerge.parents = parents;
       if (parents.length !== 2 || parents[0] !== baseSha || parents[1] !== headSha) {
         testMerge.status = "stale";

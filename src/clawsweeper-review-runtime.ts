@@ -21,6 +21,7 @@ import {
 import { DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS } from "./clawsweeper-policy.js";
 import { safeOutputTail, trimMiddle } from "./clawsweeper-text.js";
 import { buildPullRequestReviewEvidence } from "./pr-review-evidence.js";
+import { verifyLikelyOwnerHistory } from "./clawsweeper-regression-provenance.js";
 import type {
   Decision,
   DecisionNormalizationItem,
@@ -1140,7 +1141,16 @@ ${extra}
                 );
               }
             }
-            return { ...decision, localCheckoutAccess: "verified" };
+            return {
+              ...verifyLikelyOwnerHistory(decision, {
+                checkoutDir: options.openclawDir,
+                reviewedCommitShas: [
+                  options.git.mainSha,
+                  stringOrUndefined(asRecord(pull.head).sha),
+                ],
+              }),
+              localCheckoutAccess: "verified",
+            };
           } catch (error) {
             failureDetail = `Codex review failed for #${options.item.number} with exit ${
               result.status ?? "unknown"

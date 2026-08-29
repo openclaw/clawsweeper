@@ -4,6 +4,7 @@ import {
   normalizeRealBehaviorProof,
 } from "./clawsweeper-rating.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
+import { publicLikelyOwner } from "./clawsweeper-regression-provenance.js";
 import {
   AGENTS_POLICY_STATUSES,
   AUTHORITY_CHAIN_PROOF_MARKER,
@@ -315,6 +316,10 @@ export function createReportParser({
         continue;
       }
       if (!current) continue;
+      if (line === "  - attribution source: raw_parent_line_v1") {
+        current.attributionSource = "raw_parent_line_v1";
+        continue;
+      }
       const reason = line.match(/^\s+- reason: (.*)$/);
       if (reason?.[1]) {
         current.reason = reason[1];
@@ -340,7 +345,7 @@ export function createReportParser({
       if (confidence?.[1]) current.confidence = confidence[1] as Confidence;
     }
     if (current) owners.push(current);
-    return owners;
+    return owners.map(publicLikelyOwner);
   }
 
   function reportOverallCorrectness(markdown: string): OverallCorrectness {

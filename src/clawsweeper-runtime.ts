@@ -846,7 +846,6 @@ const regressionProvenanceVerifier = createRegressionProvenanceVerifier({
       "-H",
       "Accept: application/vnd.github.v3.diff",
     ]),
-  runGit: (args, options) => run("git", args, options),
 });
 
 function verifyRegressionProvenance(

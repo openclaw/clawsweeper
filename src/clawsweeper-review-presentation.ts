@@ -1,4 +1,5 @@
 import { hasShinyProof, themedRatingName } from "./clawsweeper-rating.js";
+import { publicLikelyOwner } from "./clawsweeper-regression-provenance.js";
 import { MERGE_READY_LABEL, PR_STATUS_LABELS } from "./clawsweeper-policy.js";
 import {
   AUTOMERGE_LABEL,
@@ -168,6 +169,7 @@ export function createReviewPresentation({
   }
 
   function likelyOwnerLine(owner: LikelyOwner): string {
+    owner = publicLikelyOwner(owner);
     const person = owner.person.trim() || "unknown";
     const role = publicLikelyOwnerRole(owner.role);
     const reason = sentence(owner.reason.trim() || "Related by repository history.");

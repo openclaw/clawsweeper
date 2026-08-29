@@ -889,6 +889,7 @@ export const LIKELY_OWNER_SCHEMA_KEYS = new Set([
   "commits",
   "files",
   "confidence",
+  "history",
 ]);
 export const REVIEW_SECTIONS = {
   summary: "Summary",
