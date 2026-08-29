@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFakeScanner } from "../../agent-input-scan-helpers.ts";
 import {
   AUTOMERGE_E2E_FIXTURES,
   createCiRegressionFixture,
@@ -1254,9 +1255,15 @@ function assertFixturePostRepair(fixture, repairedHead) {
   );
 }
 
-function createCommandBin(root) {
+export function createCommandBin(root) {
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin);
+  // Generate outside the target and candidate runtime: scanner trust rejects repo symlinks.
+  writeFakeScanner(
+    bin,
+    `fs.writeFileSync(path.join(__dirname, 'scanned-prompt.sha256'),
+  require('node:crypto').createHash('sha256').update(fs.readFileSync(path.join(inputDir, 'prompt'))).digest('hex'));`,
+  );
   for (const [name, source] of [
     ["gh", "fake-gh.mjs"],
     ["codex", "fake-codex.mjs"],

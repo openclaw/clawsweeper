@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -9,6 +11,19 @@ const schemaPath = optionValue("--output-schema");
 const prompt = fs.readFileSync(0, "utf8");
 
 if (!outputPath) fail("fake Codex requires --output-last-message");
+
+const scanReceipt = path.join(
+  path.dirname(process.env.CLAWSWEEPER_E2E_GITHUB_STATE),
+  "bin",
+  "scanned-prompt.sha256",
+);
+assert.ok(fs.existsSync(scanReceipt), "fake Codex requires an input scan before execution");
+assert.equal(
+  fs.readFileSync(scanReceipt, "utf8"),
+  createHash("sha256").update(prompt).digest("hex"),
+  "fake Codex requires a scan of the current prompt",
+);
+fs.unlinkSync(scanReceipt);
 
 fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 if (schemaPath && path.basename(schemaPath) === "codex-review.schema.json") {
