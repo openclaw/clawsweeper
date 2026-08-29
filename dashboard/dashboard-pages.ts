@@ -1753,7 +1753,7 @@ a.pill:hover { color: var(--claw); text-decoration: none; }
     <div class="capacity-rail" id="capacity-rail"></div>
     <div id="execution-alert" aria-live="polite"></div>
     <div class="exact-review-head">
-      <h3 class="overview-section-title">Exact Review</h3>
+      <div><h3 class="overview-section-title">Exact Review</h3><span class="muted" id="exact-review-history-contract">History coverage unavailable.</span></div>
       <div class="trend-ranges" id="trend-ranges" aria-label="Exact Review backlog history range">
         <button class="trend-range active" type="button" data-trend-range="6h">6 hours</button>
         <button class="trend-range" type="button" data-trend-range="24h">24 hours</button>
@@ -1947,7 +1947,7 @@ const STATUS_CONTAINER_FIELDS = new Set([
   "recent_durable_publication_events", "collection", "review", "publication", "handoff_health",
   "phases", "pending", "dispatching", "leased", "pressure", "scheduled_feed", "bay_projection", "activity", "queue_stages", "live_stages", "stages",
   "active_stages", "window", "direct", "batch", "counts", "buckets", "provenance",
-  "backoff_reasons", "parked_reasons", "recovery_reasons", "errors"
+  "backoff_reasons", "parked_reasons", "recovery_reasons", "errors", "freshness"
 ]);
 const STATUS_BOOLEAN_FIELDS = new Set([
   "active_census_complete", "complete", "cursor_required", "is_codex_worker",
@@ -1956,7 +1956,7 @@ const STATUS_BOOLEAN_FIELDS = new Set([
 ]);
 const STATUS_TEXT_FIELDS = new Set([
   "conclusion", "mode", "outcome", "reason", "sample_kind", "severity", "source", "stage", "state",
-  "status", "terminal_outcome", "work_kind", "errors"
+  "status", "terminal_outcome", "work_kind", "errors", "cache_state"
 ]);
 const STATUS_TEXT_VALUES = new Set([
   "active", "apply", "applying", "arriving", "all_clear", "amber", "assist", "automerge",
@@ -1971,7 +1971,8 @@ const STATUS_TEXT_VALUES = new Set([
   "superseded", "fallback", "retryable", "permanent", "saturated", "malformed", "mixed",
   "observed", "queue_empty", "claim_stalled", "dispatcher_blocked", "dispatcher_paused",
   "claim_delayed", "handoff_current", "handoff_unknown", "capacity_unavailable", "capacity_available",
-  "no_ready_backlog", "no_admissible_backlog", "dispatcher_inactive", "capacity_full_with_backlog"
+  "no_ready_backlog", "no_admissible_backlog", "dispatcher_inactive", "capacity_full_with_backlog",
+  "fresh", "miss"
 ]);
 const STATUS_TIME_FIELDS = new Set([
   "at", "completed_at", "generated_at", "observed_at", "oldest_at", "oldest_pending_at",
@@ -2001,7 +2002,7 @@ const STATUS_NUMBER_FIELDS = new Set([
   "worker_budget", "worker_detail_fallbacks", "worker_detail_runs", "waiting", "window_minutes",
   "window_hours", "wedged_rerun_runs", "zombie_queued_runs", "apply_ready_count", "attention_count",
   "automerge_command_to_merge_ms", "average_duration_ms", "average_ms", "candidate_count",
-  "completed_attempts", "duration_ms", "elapsed_ms", "error_count", "estimated_full_cycle_minutes",
+  "completed_attempts", "duration_ms", "elapsed_ms", "age_ms", "error_count", "estimated_full_cycle_minutes",
   "failure_rate_percent", "generated_count", "longest_duration_ms", "maximum_age_ms", "median_ms",
   "oldest_age_seconds", "oldest_dispatching_age_seconds", "oldest_leased_age_seconds",
   "oldest_pending_age_seconds", "omitted_count", "ready_pending", "admissible_pending",
@@ -2199,7 +2200,8 @@ function dashboardStatusSnapshot(value) {
     },
     dashboard_health: source.dashboard_health || { conclusion: "needs_attention", severity: "amber" },
     exact_review_queue: exactReviewQueue,
-    recent_durable_publication_events: source.recent_durable_publication_events ?? null
+    recent_durable_publication_events: source.recent_durable_publication_events ?? null,
+    freshness: source.freshness || { state: "unavailable", cache_state: "miss", generated_at: null, age_ms: null, maximum_age_ms: 60000 }
   };
 }
 let lastData = null;
@@ -2217,6 +2219,7 @@ let activeHealthRange = "6h";
 let activeApplyRange = "24h";
 let healthHistoryLoadedAt = 0;
 let healthHistorySamples = [];
+let healthHistoryContract = unavailableDashboardHealthHistoryContract();
 let applyObservabilityRequestGeneration = 0;
 let lastApplyObservability = null;
 let lastReviewCoverage = null;
@@ -2762,6 +2765,76 @@ function dashboardHealthHistorySample(value) {
   }
   return hasOperational || result.exact_review || result.state_writer ? result : null;
 }
+function unavailableDashboardHealthHistoryContract() {
+  return {
+    coverage: { state: "unavailable", expected_slots: null, observed_slots: null, usable_slots: null, failed_slots: null, missing_slots: null, coverage_percent: null, largest_gap_slots: null, largest_gap_ms: null, window_started_at: null, window_ended_at: null },
+    freshness: { state: "unavailable", latest_sample_at: null, age_ms: null, maximum_age_ms: 720000 }
+  };
+}
+function dashboardHealthHistoryContract(source, rangeMs) {
+  const coverage = dashboardObservabilityObject(source.coverage);
+  const freshness = dashboardObservabilityObject(source.freshness);
+  const generatedAt = dashboardObservabilityTimestamp(source.generated_at);
+  if (
+    source.generated_at === null &&
+    coverage?.state === "unavailable" &&
+    freshness?.state === "unavailable"
+  )
+    return unavailableDashboardHealthHistoryContract();
+  if (!coverage && !freshness && !generatedAt) return unavailableDashboardHealthHistoryContract();
+  const expected = dashboardObservabilityCount(coverage?.expected_slots);
+  const observed = dashboardObservabilityCount(coverage?.observed_slots);
+  const usable = dashboardObservabilityCount(coverage?.usable_slots);
+  const failed = dashboardObservabilityCount(coverage?.failed_slots);
+  const missing = dashboardObservabilityCount(coverage?.missing_slots);
+  const largestGap = dashboardObservabilityCount(coverage?.largest_gap_slots);
+  const largestGapMs = dashboardObservabilityCount(coverage?.largest_gap_ms);
+  const coveragePercent =
+    typeof coverage?.coverage_percent === "number" &&
+    Number.isFinite(coverage.coverage_percent) &&
+    coverage.coverage_percent >= 0 && coverage.coverage_percent <= 100
+      ? coverage.coverage_percent
+      : null;
+  const expectedCoveragePercent =
+    expected === 0 || usable === null ? null : Math.round((usable / expected) * 10_000) / 100;
+  const windowStartedAt = dashboardObservabilityTimestamp(coverage?.window_started_at);
+  const windowEndedAt = dashboardObservabilityTimestamp(coverage?.window_ended_at);
+  const windowStartedMs = windowStartedAt ? Date.parse(windowStartedAt) : NaN;
+  const windowEndedMs = windowEndedAt ? Date.parse(windowEndedAt) : NaN;
+  const expectedFromWindow =
+    Number.isFinite(windowStartedMs) && Number.isFinite(windowEndedMs)
+      ? Math.floor(windowEndedMs / DASHBOARD_HEALTH_HISTORY_SAMPLE_MS) -
+        Math.ceil(windowStartedMs / DASHBOARD_HEALTH_HISTORY_SAMPLE_MS) +
+        1
+      : null;
+  const latestSampleAt = freshness?.latest_sample_at === null
+    ? null
+    : dashboardObservabilityTimestamp(freshness?.latest_sample_at);
+  const ageMs = freshness?.age_ms === null ? null : dashboardObservabilityCount(freshness?.age_ms);
+  const maximumAgeMs = dashboardObservabilityCount(freshness?.maximum_age_ms);
+  if (
+    !coverage || !freshness || !generatedAt ||
+    !["complete", "partial", "unavailable"].includes(coverage.state) ||
+    !["fresh", "stale", "unavailable"].includes(freshness.state) ||
+    windowEndedMs - windowStartedMs !== rangeMs || expected !== expectedFromWindow ||
+    observed === null || usable === null || failed === null || missing === null ||
+    usable + failed !== observed || observed + missing !== expected ||
+    largestGap === null || largestGapMs !== largestGap * DASHBOARD_HEALTH_HISTORY_SAMPLE_MS ||
+    coveragePercent === undefined || coveragePercent === null || coveragePercent !== expectedCoveragePercent ||
+    (coverage.state === "unavailable") !== (usable === 0) ||
+    (coverage.state === "complete") !== (usable === expected) ||
+    !windowStartedAt || !windowEndedAt ||
+    maximumAgeMs !== 720000 ||
+    (latestSampleAt === null) !== (freshness.latest_sample_at === null) ||
+    (ageMs === null) !== (freshness.age_ms === null) ||
+    (freshness.state === "unavailable") !== (latestSampleAt === null)
+  ) return null;
+  return {
+    generated_at: generatedAt,
+    coverage: { state: coverage.state, expected_slots: expected, observed_slots: observed, usable_slots: usable, failed_slots: failed, missing_slots: missing, coverage_percent: coveragePercent, largest_gap_slots: largestGap, largest_gap_ms: largestGapMs, window_started_at: windowStartedAt, window_ended_at: windowEndedAt },
+    freshness: { state: freshness.state, latest_sample_at: latestSampleAt, age_ms: ageMs, maximum_age_ms: maximumAgeMs }
+  };
+}
 function dashboardHealthHistorySnapshot(value, requestedRange) {
   const source = dashboardObservabilityObject(value);
   const rangeMs = DASHBOARD_HEALTH_HISTORY_RANGE_MS[requestedRange];
@@ -2789,10 +2862,15 @@ function dashboardHealthHistorySnapshot(value, requestedRange) {
     slots.add(slot);
     samples.push(sample);
   }
+  const contract = dashboardHealthHistoryContract(source, rangeMs);
+  if (!contract) return null;
   return {
     schema_version: 1,
     range: requestedRange,
     retention_days: DASHBOARD_HEALTH_HISTORY_RETENTION_DAYS,
+    generated_at: contract.generated_at || null,
+    coverage: contract.coverage,
+    freshness: contract.freshness,
     samples
   };
 }
@@ -3228,11 +3306,19 @@ async function loadHealthHistory(range, force) {
     if (requestedRange !== activeHealthRange) return;
     if (!payload) throw new Error("invalid health history");
     healthHistorySamples = payload.samples;
+    healthHistoryContract = { coverage: payload.coverage, freshness: payload.freshness };
     healthHistoryLoadedAt = Date.now();
   } catch {
     if (requestedRange !== activeHealthRange) return;
     healthHistorySamples = [];
+    healthHistoryContract = unavailableDashboardHealthHistoryContract();
   }
+  const contractNode = document.getElementById("exact-review-history-contract");
+  const coverage = healthHistoryContract.coverage || {};
+  const freshness = healthHistoryContract.freshness || {};
+  if (contractNode) contractNode.textContent = coverage.state === "unavailable"
+    ? "History coverage unavailable."
+    : "History " + coverage.usable_slots + " / " + coverage.expected_slots + " usable slots · " + coverage.state + " · " + freshness.state + (coverage.failed_slots ? " · " + coverage.failed_slots + " failed polls" : "") + (coverage.largest_gap_slots ? " · largest gap " + coverage.largest_gap_slots + " slots" : "");
   renderExactReviewLanes(lastData?.exact_review_queue);
   renderStateWriter(lastData?.exact_review_queue);
 }
@@ -3972,11 +4058,28 @@ function renderDashboard(data, note) {
     fmt.format(workerCount) + " claw worker" + (workerCount === 1 ? "" : "s") + " sweeping " +
     fmt.format(repoCount) + " " + (repoCount === 1 ? "repository" : "repositories");
   document.getElementById("subtitle").textContent = "Identity-safe public status";
-  document.getElementById("updated").textContent = "Updated " + since(data.generated_at) + (note ? " \u00b7 " + note : "");
+  const freshnessCopy = data.freshness?.state === "stale"
+    ? " · stale snapshot"
+    : data.freshness?.state === "unavailable"
+      ? " · freshness unavailable"
+      : "";
+  document.getElementById("updated").textContent = "Updated " + since(data.generated_at) + freshnessCopy + (note ? " \u00b7 " + note : "");
   const fleet = data.fleet;
+  const attempts = typeof data.health?.attempts === "number" ? data.health.attempts : NaN;
+  const failedAttempts = typeof data.health?.failed_attempts === "number" ? data.health.failed_attempts : NaN;
+  const errorRate = typeof data.health?.error_rate_percent === "number" ? data.health.error_rate_percent : NaN;
+  const attemptsKnown = Number.isSafeInteger(attempts) && attempts > 0;
+  const failedAttemptsKnown = Number.isSafeInteger(failedAttempts) && failedAttempts >= 0 && attemptsKnown && failedAttempts <= attempts;
+  const expectedErrorRate = failedAttemptsKnown ? Math.round((failedAttempts / attempts) * 1000) / 10 : NaN;
+  const errorRateKnown = failedAttemptsKnown && errorRate === expectedErrorRate;
+  const errorRateAvailability = !attemptsKnown
+    ? "denominator unavailable"
+    : !failedAttemptsKnown
+      ? "numerator unavailable"
+      : "rate unavailable or inconsistent";
   document.getElementById("metrics").innerHTML = [
     metric("Codex Workers", fmt.format(fleet.active_codex_jobs), "Codex budget " + fleet.worker_budget, fleet.budget_used_percent, "var(--green)"),
-    metric("Error Rate", (data.health?.error_rate_percent || 0) + "%", fmt.format(data.health?.failed_attempts || 0) + " failed / " + fmt.format(data.health?.attempts || 0) + " attempts", Math.min(100, data.health?.error_rate_percent || 0), data.health?.failed_attempts ? "var(--red)" : "var(--green)"),
+    metric("Error Rate", errorRateKnown ? errorRate + "%" : "n/a", (failedAttemptsKnown ? fmt.format(failedAttempts) : "n/a") + " failed / " + (attemptsKnown ? fmt.format(attempts) : "n/a") + " attempts" + (errorRateKnown ? "" : " · " + errorRateAvailability), errorRateKnown ? Math.min(100, errorRate) : 0, errorRateKnown && failedAttempts > 0 ? "var(--red)" : errorRateKnown ? "var(--green)" : "var(--muted)"),
     metric("Recovery Rate", data.health?.recovery_rate_percent == null ? "n/a" : data.health.recovery_rate_percent + "%", fmt.format(data.health?.unresolved_failures || 0) + " unresolved", data.health?.recovery_rate_percent == null ? 100 : data.health.recovery_rate_percent, data.health?.unresolved_failures ? "var(--amber)" : "var(--green)"),
     metric("Codex Capacity", fleet.budget_used_percent + "%", "Codex slot utilization", fleet.budget_used_percent, "var(--green)")
   ].join("");

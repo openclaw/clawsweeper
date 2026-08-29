@@ -7,6 +7,7 @@ import worker, {
   composePublicBayActivityForTest,
   publicBayActiveTargetsForTest,
   publicExactReviewQueueProjection,
+  publicStatusFreshness,
   publicStatusProjection as strictPublicStatusProjection,
   publicWorkerLegacyBatchPathForTest,
 } from "../dashboard/worker.ts";
@@ -1103,6 +1104,20 @@ test("public status marks invalid roots and timestamp channels incomplete", () =
   }
 });
 
+test("public status freshness rejects a future generated timestamp", () => {
+  const now = Date.parse(STATUS_NOW);
+  assert.deepEqual(
+    publicStatusFreshness({ generated_at: new Date(now + 1).toISOString() }, "fresh", 60_000, now),
+    {
+      state: "unavailable",
+      cache_state: "fresh",
+      generated_at: null,
+      age_ms: null,
+      maximum_age_ms: 60_000,
+    },
+  );
+});
+
 test("public status filters a legacy cached body before it can be served", async () => {
   const originalCaches = globalThis.caches;
   const entries = new Map<string, Response>();
@@ -1236,6 +1251,32 @@ test("public status filters a legacy cached body before it can be served", async
     entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/stale");
     await globalThis.caches.default.put(
       new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh"),
+      new Response(
+        JSON.stringify({
+          schema_version: 1,
+          generated_at: new Date().toISOString(),
+          fleet: { active_codex_jobs: 1 },
+        }),
+      ),
+    );
+    const rejectedResponse = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      {},
+    );
+    assert.deepEqual(await rejectedResponse.json(), {
+      ...UNAVAILABLE_PUBLIC_STATUS,
+      freshness: {
+        state: "unavailable",
+        cache_state: "fresh",
+        generated_at: null,
+        age_ms: null,
+        maximum_age_ms: 60_000,
+      },
+    });
+
+    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh");
+    await globalThis.caches.default.put(
+      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh"),
       new Response('{"schema_version":1,"generated_at":', {
         headers: { "x-private-marker": "synthetic-malformed-header" },
       }),
@@ -1244,7 +1285,16 @@ test("public status filters a legacy cached body before it can be served", async
       new Request("https://clawsweeper.openclaw.ai/api/status"),
       {},
     );
-    assert.deepEqual(await malformedResponse.json(), UNAVAILABLE_PUBLIC_STATUS);
+    assert.deepEqual(await malformedResponse.json(), {
+      ...UNAVAILABLE_PUBLIC_STATUS,
+      freshness: {
+        state: "unavailable",
+        cache_state: "fresh",
+        generated_at: null,
+        age_ms: null,
+        maximum_age_ms: 60_000,
+      },
+    });
     assert.equal(malformedResponse.headers.get("x-private-marker"), null);
   } finally {
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });

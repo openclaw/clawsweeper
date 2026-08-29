@@ -647,6 +647,9 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /data-trend-range="6h"/);
   assert.match(html, /<details class="execution-alert">/);
   assert.match(html, /Error Rate/);
+  assert.match(html, /denominator unavailable/);
+  assert.match(html, /numerator unavailable/);
+  assert.match(html, /rate unavailable or inconsistent/);
   assert.match(html, /Recovery Rate/);
   assert.match(html, /Capacity/);
   assert.match(html, /Only jobs that execute Codex count against this budget/);
@@ -3747,6 +3750,9 @@ test("dashboard serves stale status while coalescing one background refresh", as
     assert.equal(firstStatus.pipeline[0].id, undefined);
     assert.equal(firstStatus.exact_review_queue.pending, 1);
     assert.equal(firstStatus.exact_review_queue.handoff_health.status, "stalled");
+    assert.equal(firstStatus.freshness.state, "stale");
+    assert.equal(firstStatus.freshness.cache_state, "stale");
+    assert.equal(firstStatus.freshness.maximum_age_ms, 20_000);
     assert.equal(secondStatus.exact_review_queue.handoff_health.status, "stalled");
     assert.equal(queueReads, 0);
     assert.equal(waitUntilPromises.length, 2);
@@ -3760,6 +3766,8 @@ test("dashboard serves stale status while coalescing one background refresh", as
     assert.equal(refreshed.headers.get("x-clawsweeper-cache"), "fresh");
     const refreshedStatus = await refreshed.json();
     assert.deepEqual(refreshedStatus.pipeline, []);
+    assert.equal(refreshedStatus.freshness.state, "fresh");
+    assert.equal(refreshedStatus.freshness.cache_state, "fresh");
     assert.equal(refreshedStatus.exact_review_queue.pending, 7);
     assert.equal(refreshedStatus.exact_review_queue.handoff_health.status, "healthy");
     assert.equal(queueReads, 3);

@@ -290,6 +290,171 @@ test("Bay lifecycle metrics include every durable ingress source and only final 
   );
 });
 
+test("Bay telemetry reconciliation compares the public aggregate with canonical lifecycle facts without returning identities", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const startedAt = Date.now();
+  const now = startedAt + 5 * 60_000;
+  const publicScope = new Set(["openclaw/openclaw"]);
+  telemetry.syncBayRepositoryScope(publicScope, startedAt);
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#14300",
+    fenceKey: "private-fence-csw-143",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "private-delivery-csw-143",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: startedAt + 30_000,
+    observedAt: startedAt + 30_000,
+  });
+  lifecycle.recordGithubEffect({
+    ...identity,
+    commentId: 143_001,
+    digest: createHash("sha256").update("private-digest-csw-143").digest("hex"),
+    observedAt: startedAt + 210_000,
+  });
+  const completed = lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: startedAt + 210_000,
+  });
+  assert.equal(telemetry.syncBayLifecycle(completed), true);
+
+  const matching = telemetry.reconcileBaySnapshot(now, publicScope);
+  assert.deepEqual(matching.collection, { state: "complete" });
+  assert.equal(matching.comparison?.event_sets_match, true);
+  assert.equal(matching.comparison?.public_snapshot_matches_aggregate, true);
+  assert.deepEqual(matching.comparison?.canonical.normal_direct, {
+    average_ms: 180_000,
+    median_ms: 180_000,
+    samples: 1,
+  });
+  const publicText = JSON.stringify(matching);
+  for (const privateValue of [
+    identity.canonicalTargetKey,
+    identity.fenceKey,
+    "private-delivery-csw-143",
+    "private-digest-csw-143",
+  ]) {
+    assert.doesNotMatch(
+      publicText,
+      new RegExp(privateValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+  }
+
+  storage.sql.exec(
+    `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+        SET completed_at = completed_at + 1000
+      WHERE canonical_target_key = ?`,
+    identity.canonicalTargetKey,
+  );
+  const mismatched = telemetry.reconcileBaySnapshot(now, publicScope);
+  assert.equal(mismatched.comparison?.event_sets_match, false);
+  assert.equal(mismatched.comparison?.mismatched_events, 1);
+  assert.equal(mismatched.comparison?.missing_events, 0);
+  assert.equal(mismatched.comparison?.unexpected_events, 0);
+});
+
+test("Bay telemetry reconciliation pages recent lifecycle candidates without capping on active rows", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const startedAt = Date.now();
+  const now = startedAt + 5 * 60_000;
+  const scope = new Set(["openclaw/openclaw"]);
+  telemetry.syncBayRepositoryScope(scope, startedAt);
+  for (let index = 0; index < 600; index += 1) {
+    lifecycle.recordAdmission({
+      canonicalTargetKey: `openclaw/openclaw#${20_000 + index}`,
+      fenceKey: `openclaw/openclaw#${20_000 + index}@exact:1`,
+      revision: 1,
+      deliveryId: `csw-143-active:${index}`,
+      sourceAction: "opened",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: startedAt + index,
+      observedAt: startedAt + index,
+    });
+  }
+  const completedIdentity = {
+    canonicalTargetKey: "openclaw/openclaw#20599",
+    fenceKey: "openclaw/openclaw#20599@exact:1",
+    revision: 1,
+  };
+  recordBayFinalReceipt(lifecycle, completedIdentity, startedAt + 120_000);
+  assert.equal(
+    telemetry.syncBayLifecycle(
+      lifecycle.recordTerminalDisposition({
+        ...completedIdentity,
+        kind: "review_completed_routed",
+        observedAt: startedAt + 120_000,
+      }),
+    ),
+    true,
+  );
+
+  const reconciliation = telemetry.reconcileBaySnapshot(now, scope);
+  assert.deepEqual(reconciliation.collection, { state: "complete" });
+  assert.equal(reconciliation.window?.candidates_scanned, 600);
+  assert.equal(reconciliation.comparison?.canonical_events, 1);
+  assert.equal(reconciliation.comparison?.aggregate_events, 1);
+  assert.equal(reconciliation.comparison?.event_sets_match, true);
+});
+
+test("Bay telemetry reconciliation ignores a completed review retracted by a later requeue", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  const scope = new Set(["openclaw/openclaw"]);
+  telemetry.syncBayRepositoryScope(scope, now - 60_000);
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9143",
+    fenceKey: "openclaw/openclaw#9143@exact:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "csw-143-requeue",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now - 30_000,
+    observedAt: now - 30_000,
+  });
+  recordBayFinalReceipt(lifecycle, identity, now - 1_000);
+  assert.equal(
+    telemetry.syncBayLifecycle(
+      lifecycle.recordTerminalDisposition({
+        ...identity,
+        kind: "review_completed_routed",
+        observedAt: now - 1_000,
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    telemetry.syncBayLifecycle(
+      lifecycle.recordTerminalDisposition({ ...identity, kind: "requeue", observedAt: now }),
+    ),
+    true,
+  );
+
+  const reconciliation = telemetry.reconcileBaySnapshot(now, scope);
+  assert.deepEqual(reconciliation.collection, { state: "complete" });
+  assert.equal(reconciliation.comparison?.canonical_events, 0);
+  assert.equal(reconciliation.comparison?.aggregate_events, 0);
+  assert.equal(reconciliation.comparison?.event_sets_match, true);
+});
+
 test("Bay lifecycle excludes the retired batch path from normal review timing by default", () => {
   const storage = new MemoryDurableStorage();
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
@@ -5884,14 +6049,14 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.doesNotMatch(body, /function bayRecentPublicationEvents/);
   assert.match(body, /id="durable-lifecycle-kanban"/);
   assert.match(body, /Durable lifecycle Kanban/);
-  assert.doesNotMatch(body, /Live activity/i);
-  assert.doesNotMatch(body, /live-activity/);
+  assert.match(body, /Queue and live activity/i);
+  assert.match(body, /does not establish that durable lifecycle history is available or complete/i);
   assert.doesNotMatch(body, /fetch\("\/api\/live-activity-bay"/);
   assert.match(body, /function durableSnapshot/);
   assert.match(body, /fetch\("\/api\/durable-lifecycle-bay"/);
   assert.match(body, /durableLifecycleLoading/);
   assert.match(body, /if\(state\.durableLifecycleLoading\)return/);
-  assert.match(body, /bounded sample of verified public GitHub references/);
+  assert.match(body, /Canonical lifecycle projection only/);
   assert.match(body, /Internal revisions and workflow details remain withheld/);
   assert.match(body, /Empty complete lifecycle snapshot/);
   assert.match(
@@ -6137,6 +6302,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     healthRange: "6h",
     healthHistory: [] as unknown[],
     healthHistoryByRange: {} as Record<string, unknown[]>,
+    healthHistoryContractByRange: {} as Record<string, unknown>,
     healthHistoryLoadedAt: {} as Record<string, number>,
     healthHistoryLoading: {} as Record<string, boolean>,
     previewSource: false,
@@ -6335,6 +6501,8 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /Have you been in this lane long\?/);
   assert.match(body, /The final journey time is still being verified\./);
   assert.match(body, /verified final receipt/);
+  assert.match(body, /<main class="beach" id="beach" aria-labelledby="queue-live-activity-title">/);
+  assert.doesNotMatch(body, /<section[^>]+aria-labelledby="queue-live-activity-title"/);
   assert.match(body, /chatSequence:0/);
   assert.doesNotMatch(body, /Things are moving|30m end to end/);
   const chatScript = [...body.matchAll(/<script>\n([\s\S]*?)\n<\/script>/g)].at(-1)?.[1];
