@@ -107,6 +107,47 @@ function trustedExecutable(name: string, cwd: string, lexicalCwd: string): strin
   throw new AgentInputScanError("scanner_unavailable");
 }
 
+function trustedScanner(cwd: string, lexicalCwd: string, timeoutMs: number): string {
+  try {
+    return trustedExecutable("trufflehog", cwd, lexicalCwd);
+  } catch (error) {
+    if (!(error instanceof AgentInputScanError) || error.reason !== "scanner_unavailable")
+      throw error;
+  }
+  const installer = join(hostRoot, "scripts", "setup-review-tools.mjs");
+  const result = spawnSync(process.execPath, [installer, "--timeout-ms", String(timeoutMs)], {
+    encoding: "utf8",
+    env: {
+      SystemRoot: process.env.SystemRoot,
+      HOME: process.env.HOME,
+      USERPROFILE: process.env.USERPROFILE,
+      LOCALAPPDATA: process.env.LOCALAPPDATA,
+      CLAWSWEEPER_REVIEW_TOOLS_DIR: process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR,
+    },
+    timeout: timeoutMs,
+    maxBuffer: 4096,
+    windowsHide: true,
+  });
+  const path = result.status === 0 ? result.stdout.trim() : "";
+  if (!path || !isAbsolute(path) || path.includes("\0"))
+    throw new AgentInputScanError("scanner_unavailable");
+  let actual: string;
+  try {
+    actual = realpathSync(path);
+    const stat = lstatSync(actual);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("unsafe scanner cache entry");
+  } catch {
+    throw new AgentInputScanError("scanner_unavailable");
+  }
+  if (
+    [cwd, resolve(lexicalCwd), hostRoot, realpathSync(hostRoot)].some((root) =>
+      within(root, actual),
+    )
+  )
+    throw new AgentInputScanError("unsafe_path");
+  return actual;
+}
+
 export function scanAgentInput(options: {
   cwd: string;
   prompt: string;
@@ -126,7 +167,7 @@ export function scanAgentInput(options: {
   let classified: ReturnType<typeof classifyReviewedFixtureScan>;
   try {
     const cwd = realpathSync(options.cwd);
-    const scanner = trustedExecutable("trufflehog", cwd, options.cwd);
+    const scanner = trustedScanner(cwd, options.cwd, remaining());
     root = mkdtempSync(join(realpathSync(tmpdir()), "clawsweeper-input-scan-"));
     if (within(cwd, root) || within(realpathSync(hostRoot), root))
       throw new AgentInputScanError("unsafe_path");

@@ -554,11 +554,12 @@ bytes of the validated checkout. Clean text-converted checkouts retain both
 canonical Git and raw working bytes in scan coverage. The host never starts a target-bundled autoreview helper or second reviewer.
 
 Hosted Codex and OpenClaw setup share the checksum-pinned TruffleHog 3.97.1
-installer in `.github/actions/setup-review-tools/install.sh`. It supports Linux
-amd64 and fails on unsupported platforms. Local operators must install a trusted
-[TruffleHog executable](https://github.com/trufflesecurity/trufflehog#installation)
-on the host `PATH`, outside both checkouts; workers never
-install dependencies themselves. Missing tools, unclassified findings, scan errors, source
+installer in `.github/actions/setup-review-tools/install.sh`. For local review,
+ClawSweeper first uses a trusted host executable outside both checkouts; when it
+is absent, it bootstraps the exact checksum-pinned release asset into a
+user-owned cache outside both checkouts. The local bootstrap accepts no URL or
+version override, verifies the download and cached executable, and runs a clean
+environment version check before scanning. Missing tools, unclassified findings, scan errors, source
 drift, incomplete ancestry/objects, changed gitlinks, and LFS pointers refuse the
 review. The scan stages at most 256 MiB in private external temporary files and
 uses the remaining review deadline; it never silently truncates or bypasses.
