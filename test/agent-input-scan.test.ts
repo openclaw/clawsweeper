@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   copyFileSync,
@@ -22,7 +23,7 @@ import {
 } from "../dist/repair/target-validation.js";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 
-function fixture(t: test.TestContext) {
+function fixture(t: test.TestContext, prompt = "Review the change.") {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-input-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const cwd = join(root, "target");
@@ -48,7 +49,7 @@ function fixture(t: test.TestContext) {
   const run = (source: Parameters<typeof scanAgentInput>[0]["source"]) =>
     runAgentProcess({
       label: "scan-fixture",
-      prompt: "Review the change.",
+      prompt,
       diagnosticPromptPath,
       scanSource: source,
       model: "internal",
@@ -423,3 +424,125 @@ test("repair scan binds raw bytes even when normalization leaves the same canoni
   );
   assert.equal(existsSync(f.calls), false);
 });
+
+for (const scenario of [
+  "reviewed fixture",
+  "HTML duplicate",
+  "changed raw",
+  "changed full URI",
+  "verified",
+  "mixed findings",
+  "wrong source",
+  "wrong line",
+  "other file",
+  "prompt",
+  "decoded only",
+  "missing completion",
+  "detector error",
+  "wrong count",
+  "wrong version",
+  "duplicate completion",
+  "malformed stderr",
+  "malformed output",
+  "unexpected successful output",
+  "source drift",
+]) {
+  test(`reviewed synthetic fixture admission: ${scenario}`, (t) => {
+    const notices: unknown[][] = [];
+    t.mock.method(console, "error", (...args: unknown[]) => notices.push(args));
+    // Read the existing malformed-configuration fixture without reproducing its
+    // credential-shaped bytes in another source file or assertion diagnostic.
+    const existing = readFileSync(
+      new URL("./action-ledger-runtime.test.ts", import.meta.url),
+      "utf8",
+    );
+    const uri = [...existing.matchAll(/"([^"\n]+)"/g)]
+      .map((match) => match[1]!)
+      .find(
+        (value) =>
+          createHash("sha256").update(value).digest("hex") ===
+          "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e",
+      );
+    assert.ok(uri, "reviewed synthetic fixture is present");
+    const f = fixture(t, scenario === "prompt" ? uri : undefined);
+    const file = scenario === "other file" ? "other.test.ts" : "test/action-ledger-runtime.test.ts";
+    mkdirSync(join(f.cwd, "test"));
+    const value = scenario === "decoded only" ? uri.replace(":", "&#58;") : uri;
+    const contents = "// context\n".repeat(40) + JSON.stringify(value) + "\n";
+    writeFileSync(join(f.cwd, file), "// before\n" + contents);
+    const baseSha = f.commit();
+    writeFileSync(join(f.cwd, file), "// after\n" + contents);
+    const headSha = f.commit();
+    useFakeScanner(
+      t,
+      String.raw`
+const uri = ${JSON.stringify(uri)};
+const scenario = ${JSON.stringify(scenario)};
+const parsed = new URL(uri);
+const findings = inputs.filter(({name}) => /^[a-f0-9]{40}$/.test(name) || (scenario === 'prompt' && name === 'prompt')).map(({name}) => ({
+  SourceType: 15, DetectorType: 17, DetectorName: 'URI', DecoderName: 'PLAIN', Verified: false,
+  VerificationError: 'synthetic verification error', Raw: uri, RawV2: uri,
+  SourceMetadata: {Data: {Filesystem: {file: path.join(inputDir, name), line: name === 'prompt' ? 1 : 42}}},
+  SecretParts: {host: parsed.host, username: parsed.username, password: parsed.password},
+  ExtraData: null, StructuredData: null,
+}));
+if (scenario === 'HTML duplicate') findings.push({...findings[0], DecoderName: 'HTML'});
+if (scenario === 'changed raw') findings[0].Raw += 'changed';
+if (scenario === 'changed full URI') findings[0].RawV2 += '/changed';
+if (scenario === 'verified') findings[0].Verified = true;
+if (scenario === 'mixed findings') findings.push({...findings[0], Raw: 'unreviewed', RawV2: 'unreviewed'});
+if (scenario === 'wrong source') findings[0].SourceMetadata.Data.Filesystem.file = path.join(inputDir, 'prompt');
+if (scenario === 'wrong line') findings[0].SourceMetadata.Data.Filesystem.line++;
+if (scenario === 'source drift') fs.appendFileSync(${JSON.stringify(join(f.cwd, file))}, '// drift');
+process.stdout.write(findings.map(value => JSON.stringify(value)).join('\n') + '\n');
+if (scenario === 'malformed output') process.stdout.write('{');
+if (scenario === 'detector error') process.stderr.write(JSON.stringify({level:'error', logger:'trufflehog', msg:'error finding results in chunk'}) + '\n');
+const completion = JSON.stringify({
+  level:'info-0', logger:'trufflehog', msg:'finished scanning', trufflehog_version:scenario === 'wrong version' ? 'changed' : '3.97.1',
+  chunks:2, bytes:1000, verified_secrets:0, unverified_secrets:findings.length + (scenario === 'wrong count' ? 1 : 0),
+}) + '\n';
+if (scenario !== 'missing completion') process.stderr.write(completion);
+if (scenario === 'duplicate completion') process.stderr.write(completion);
+if (scenario === 'malformed stderr') process.stderr.write('{');
+process.exit(scenario === 'unexpected successful output' ? 0 : 183);
+`,
+    );
+    const run = () => f.run({ kind: "committed", baseSha, headSha });
+    if (scenario === "reviewed fixture" || scenario === "HTML duplicate") {
+      assert.equal(run().status, 0);
+      assert.equal(readFileSync(f.calls, "utf8"), "called");
+      assert.equal(notices.length, 1);
+      assert.equal(
+        JSON.stringify(notices).includes(uri),
+        false,
+        "audit never exposes finding bytes",
+      );
+      const notice = JSON.parse(String(notices[0]![0]));
+      assert.equal(notice.event, "agent_input_scan_classified");
+      assert.equal(notice.source, file);
+      assert.equal(notice.detector, "URI");
+      assert.match(notice.notice, /classified as non-sensitive/);
+      assert.equal(
+        notice.findings.reduce(
+          (sum: number, finding: { occurrences: number }) => sum + finding.occurrences,
+          0,
+        ),
+        scenario === "HTML duplicate" ? 3 : 2,
+      );
+      for (const finding of notice.findings) {
+        assert.match(finding.blob, /^[a-f0-9]{40}$/);
+        assert.equal(finding.line, 42);
+      }
+    } else {
+      assert.throws(run, (error) => {
+        assert.ok(error instanceof AgentInputScanError);
+        assert.equal(error.reason, scenario === "source drift" ? "source_drift" : "findings");
+        assert.equal(String(error).includes(uri), false, "finding bytes stay private");
+        return true;
+      });
+      assert.equal(existsSync(f.calls), false);
+      assert.equal(existsSync(f.diagnosticPromptPath), false);
+      assert.deepEqual(notices, []);
+    }
+  });
+}

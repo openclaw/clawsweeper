@@ -553,12 +553,24 @@ installer in `.github/actions/setup-review-tools/install.sh`. It supports Linux
 amd64 and fails on unsupported platforms. Local operators must install a trusted
 [TruffleHog executable](https://github.com/trufflesecurity/trufflehog#installation)
 on the host `PATH`, outside both checkouts; workers never
-install dependencies themselves. Missing tools, findings, scan errors, source
+install dependencies themselves. Missing tools, unclassified findings, scan errors, source
 drift, incomplete ancestry/objects, changed gitlinks, and LFS pointers refuse the
 review. The scan stages at most 256 MiB in private external temporary files and
 uses the remaining review deadline; it never silently truncates or bypasses.
 Diagnostics omit scanner output and source values. Restore prerequisites or
 remove sensitive input before retrying a refusal.
+
+The host classifies one reviewed synthetic malformed-configuration URI in
+`test/action-ledger-runtime.test.ts` as non-sensitive after a complete scan.
+Its policy binds the exact full finding bytes, detector contract, and literal
+line in a host-staged Git blob. It does not trust checkout ignore rules or
+domain patterns. Prompt, schema, diff, additional-input, and encoded-only
+occurrences remain blocking, as do other findings and incomplete scans.
+The classification is pinned to TruffleHog 3.97.1's output contract; scanner
+upgrades require requalification. See `src/agent-input-scan-fixtures.ts`.
+Every accepted classification emits a host-side structured stderr notice with
+the fixture digest, source blob, line, decoder, and occurrence count. Raw values
+and verification diagnostics never appear in that audit notice.
 
 Generated review and repair prompt diagnostics retire the previous attempt's
 copy before admission and persist only successfully scanned exact prompt bytes

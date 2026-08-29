@@ -19,6 +19,10 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readReviewGit, reviewMergeBase, type ReviewGitReadOptions } from "./pr-review-evidence.js";
+import {
+  classifyReviewedFixtureScan,
+  REVIEWED_FIXTURE_SOURCE,
+} from "./agent-input-scan-fixtures.js";
 
 export type AgentScanSource =
   | { kind: "prompt" }
@@ -111,6 +115,7 @@ export function scanAgentInput(options: {
   };
   let root: string | undefined;
   let failure: AgentInputScanError | undefined;
+  let classified: ReturnType<typeof classifyReviewedFixtureScan>;
   try {
     const cwd = realpathSync(options.cwd);
     const scanner = trustedExecutable("trufflehog", cwd, options.cwd);
@@ -119,6 +124,7 @@ export function scanAgentInput(options: {
       throw new AgentInputScanError("unsafe_path");
     const inputDir = join(root, "input");
     mkdirSync(inputDir, { mode: 0o700 });
+    const reviewedFixtureBlobs = new Map<string, Buffer>();
     let staged = 0;
     let ordinal = 0;
     const stage = (bytes: Buffer, name = String(ordinal++)) => {
@@ -332,6 +338,7 @@ export function scanAgentInput(options: {
       }
       assertCurrent();
       const blobs = new Set<string>();
+      const fixtureBlobs = new Set<string>();
       const endpoints =
         source.kind === "snapshot"
           ? [mergeBase.sha, source.headSha, source.indexTreeSha, source.treeSha]
@@ -377,6 +384,7 @@ export function scanAgentInput(options: {
               throw new AgentInputScanError("unsupported_content");
             if (!OBJECT_ID.test(oid!)) throw new AgentInputScanError("incomplete_source");
             blobs.add(oid!);
+            if (path === REVIEWED_FIXTURE_SOURCE && mode === "100644") fixtureBlobs.add(oid!);
           }
         }
         stage(git([...args, "--patch", "--binary", "--full-index", "--"]));
@@ -397,6 +405,7 @@ export function scanAgentInput(options: {
           throw new AgentInputScanError("unsupported_content");
         // OID names preserve multiline bytes and make symlinks ordinary scan files.
         stage(bytes, oid);
+        if (fixtureBlobs.has(oid)) reviewedFixtureBlobs.set(join(inputDir, oid), bytes);
       }
     }
     const result = spawnSync(
@@ -425,11 +434,19 @@ export function scanAgentInput(options: {
         maxBuffer: 1024 * 1024,
       },
     );
-    if (result.status === 183 || result.stdout?.length) throw new AgentInputScanError("findings");
     if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")
       throw new AgentInputScanError("deadline");
-    if (result.error || result.signal || result.status !== 0)
+    if (result.error || result.signal || (result.status !== 0 && result.status !== 183))
       throw new AgentInputScanError("scanner_failed");
+    if (result.status === 183 || result.stdout?.length) {
+      if (result.status === 183)
+        classified = classifyReviewedFixtureScan(
+          result.stdout,
+          result.stderr,
+          reviewedFixtureBlobs,
+        );
+      if (!classified) throw new AgentInputScanError("findings");
+    }
     remaining();
     assertCurrent();
     remaining();
@@ -447,4 +464,14 @@ export function scanAgentInput(options: {
     }
   }
   if (failure) throw failure;
+  // Emit from the host after cleanup: successful callers can discard provider
+  // stderr, but this classification must remain visible without exposing values.
+  if (classified)
+    console.error(
+      JSON.stringify({
+        event: "agent_input_scan_classified",
+        notice: "Reviewed synthetic fixture findings classified as non-sensitive.",
+        ...classified,
+      }),
+    );
 }
