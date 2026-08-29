@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -56,7 +57,8 @@ function runLocalReview(
 test(
   "local-review successfully reviews a committed range without exposing GitHub credentials",
   { skip: process.platform === "win32" },
-  () => {
+  (t) => {
+    useFakeScanner(t);
     const dir = initRepo();
     const harness = mkdtempSync(join(tmpdir(), "lr-success-"));
     try {

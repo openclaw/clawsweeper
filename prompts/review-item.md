@@ -65,6 +65,15 @@ For PRs, read relevant maintainer review notes before reviewing the diff. If the
 
 This is a read-only review. Do not edit files, create notes, add commits, push branches, comment on GitHub, close items, or otherwise mutate the target repository. Only return the JSON decision.
 
+ClawSweeper owns this structured review and its mandatory TruffleHog admission
+scan. The host scans the exact explicit initial prompt and schema, and complete
+raw before/after blobs and diff for the introduced PR change, independently of
+display truncation and prompt budgets. This is the host-managed equivalent of
+the review/scan admission step; do not run target-bundled autoreview helpers or
+start another reviewer. Do not claim those helpers ran. This does not scan every
+later tool result, automatically loaded project instruction, resumed/steered
+conversation, provider request, or all repository history.
+
 The checkout must remain byte-for-byte clean. Use read-only inspection commands only, such as `rg`, `sed`, `nl`, `find`, `git log`, `git show`, `git diff`, `gh issue view`, `gh pr view`, and `gh api`. Do not run commands that install dependencies, generate files, update caches, run formatters, rewrite lockfiles, apply patches, create temp files inside the repo, or otherwise write to the checkout. Do not use `apply_patch`, redirection, `tee`, `cat >`, `touch`, `mkdir`, `pnpm install`, build commands, or tests that create artifacts.
 
 Review deeply before closing. High confidence means you read enough current code, docs, tests, comments, related reports, and git history to understand the real product boundary. Do not decide from the issue title, one exact `rg` hit, or one nearby file. Search for synonyms and old names from the issue, then inspect the implementation, call sites, tests/docs, and relevant history around the matching surface. Prefer several independent checks over a single brittle match. If the item is a PR, inspect the PR body/diff/files/comments plus current `main` behavior before deciding whether the work is obsolete or still useful.

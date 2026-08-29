@@ -1,6 +1,6 @@
 import { randomInt } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { codexModelArgs, redactInternalCodexModel } from "./codex-env.js";
 import {
@@ -9,12 +9,14 @@ import {
   type CodexProcessResult,
 } from "./codex-process.js";
 import { runOpenclawProcess } from "./openclaw-process.js";
+import { AgentInputScanError, scanAgentInput, type AgentScanSource } from "./agent-input-scan.js";
 
 export type AgentRunner = "codex" | "openclaw";
 
 export interface RunAgentProcessOptions {
   label: string;
   prompt: string;
+  scanSource: AgentScanSource;
   model: string;
   reasoningEffort?: string;
   cwd: string;
@@ -35,7 +37,23 @@ export function agentRunner(env: NodeJS.ProcessEnv = process.env): AgentRunner {
 }
 
 export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessResult {
-  if (agentRunner(options.env) === "codex") {
+  const runner = agentRunner(options.env);
+  if (runner === "openclaw") openclawModel(options.env);
+  const startedAt = Date.now();
+  const outputPath = codexOutputLastMessagePath(options.codexExtraArgs);
+  if (outputPath) rmSync(outputPath, { force: true });
+  const schemaIndex = options.codexExtraArgs?.lastIndexOf("--output-schema") ?? -1;
+  const schemaPath = schemaIndex >= 0 ? options.codexExtraArgs?.[schemaIndex + 1] : undefined;
+  scanAgentInput({
+    cwd: options.cwd,
+    prompt: options.prompt,
+    source: options.scanSource,
+    timeoutMs: options.timeoutMs,
+    ...(schemaPath ? { schemaPath } : {}),
+  });
+  options = { ...options, timeoutMs: options.timeoutMs - (Date.now() - startedAt) };
+  if (options.timeoutMs <= 0) throw new AgentInputScanError("deadline");
+  if (runner === "codex") {
     return runCodexProcess({
       args: codexAgentArgs(options),
       cwd: options.cwd,
@@ -67,7 +85,6 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     ...(options.stderrPath ? { stderrPath: options.stderrPath } : {}),
   });
   const result = redactOpenclawFailure(rawResult, model);
-  const outputPath = codexOutputLastMessagePath(options.codexExtraArgs);
   if (!result.error && result.status === 0 && outputPath) {
     writeFileSync(outputPath, result.stdout, "utf8");
   }
@@ -81,7 +98,16 @@ export function runAgentCheckoutInspection(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
+  scanSource: AgentScanSource;
+  initialPrompt: string;
+  schemaPath?: string;
 }): CodexProcessResult {
+  const deadlineAt = Date.now() + options.timeoutMs;
+  const remainingMs = () => {
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) throw new AgentInputScanError("deadline");
+    return remaining;
+  };
   const env = { ...options.env, GIT_OPTIONAL_LOCKS: "0" };
   // Large repositories list tens of thousands of tracked paths (openclaw/openclaw
   // exceeds 3 MB); the 1 MB spawnSync default returns ENOBUFS and fails inspection.
@@ -89,7 +115,7 @@ export function runAgentCheckoutInspection(options: {
     cwd: options.cwd,
     encoding: "utf8",
     env,
-    timeout: options.timeoutMs,
+    timeout: Math.min(remainingMs(), 30_000),
     maxBuffer: 64 * 1024 * 1024,
   });
   if (trackedFiles.error || trackedFiles.status !== 0) return spawnResult(trackedFiles);
@@ -109,29 +135,45 @@ export function runAgentCheckoutInspection(options: {
         new Error("Checkout inspection could not select a tracked text line."),
       );
     }
+    const prompt = [
+      "Use the read tool to inspect the workspace-relative file below.",
+      `Path: ${JSON.stringify(challenge.path)}`,
+      `Return exactly line ${challenge.lineNumber} with surrounding whitespace removed.`,
+      "Do not add quotes, code fences, or commentary.",
+    ].join("\n");
+    scanAgentInput({
+      cwd: options.cwd,
+      prompt: options.initialPrompt,
+      source: options.scanSource,
+      timeoutMs: remainingMs(),
+      ...(options.schemaPath ? { schemaPath: options.schemaPath } : {}),
+      additionalBytes: [Buffer.from(prompt), readFileSync(join(options.cwd, challenge.path))],
+    });
     return runOpenclawProcess({
       label: "checkout-inspection",
-      prompt: [
-        "Use the read tool to inspect the workspace-relative file below.",
-        `Path: ${JSON.stringify(challenge.path)}`,
-        `Return exactly line ${challenge.lineNumber} with surrounding whitespace removed.`,
-        "Do not add quotes, code fences, or commentary.",
-      ].join("\n"),
+      prompt,
       model: openclawModel(env),
       cwd: options.cwd,
       env,
-      timeoutMs: options.timeoutMs,
+      timeoutMs: Math.min(remainingMs(), 30_000),
       checkoutInspection: { expectedText: challenge.text, expectedPath: challenge.path },
     });
   }
+  scanAgentInput({
+    cwd: options.cwd,
+    prompt: options.initialPrompt,
+    source: options.scanSource,
+    timeoutMs: remainingMs(),
+    ...(options.schemaPath ? { schemaPath: options.schemaPath } : {}),
+  });
   let fingerprintPath = "";
   let fingerprint = "";
   for (const candidate of orderedCandidates) {
-    const hashed = spawnSync("git", ["hash-object", "--", candidate], {
+    const hashed = spawnSync("git", ["hash-object", "--no-filters", "--", candidate], {
       cwd: options.cwd,
       encoding: "utf8",
       env,
-      timeout: options.timeoutMs,
+      timeout: Math.min(remainingMs(), 30_000),
     });
     const value = (hashed.stdout ?? "").trim();
     if (!hashed.error && hashed.status === 0 && /^[0-9a-f]{40,64}$/.test(value)) {
@@ -160,13 +202,14 @@ export function runAgentCheckoutInspection(options: {
         "--",
         "git",
         "hash-object",
+        "--no-filters",
         "--",
         fingerprintPath,
       ],
       cwd: options.cwd,
       env,
       input: "",
-      timeoutMs: options.timeoutMs,
+      timeoutMs: Math.min(remainingMs(), 30_000),
     }),
     fingerprint,
   );

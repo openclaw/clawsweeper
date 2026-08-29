@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { parse as parseYaml } from "yaml";
 
 import {
   applyDecisionPriority,
@@ -2369,7 +2370,9 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
   assert.match(openclawAction, /openclaw-version:[\s\S]*default: "2026\.7\.2"/);
   assert.match(openclawAction, /openclaw@\$\{\{ inputs\['openclaw-version'\] \}\}/);
   assert.doesNotMatch(openclawAction, /@latest/);
-  assert.equal(openclawAction.match(/env\.CLAWSWEEPER_RUNNER == 'openclaw'/g)?.length, 4);
+  for (const step of parseYaml(openclawAction).runs.steps) {
+    assert.match(step.if ?? "", /env\.CLAWSWEEPER_RUNNER == 'openclaw'/);
+  }
   // Source builds bridge unreleased OpenClaw features and must stay pinned to
   // an exact SHA, gated to the openclaw runner, and off by default.
   assert.match(openclawAction, /openclaw-source-ref:[\s\S]*default: ""/);

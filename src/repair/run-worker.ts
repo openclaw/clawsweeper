@@ -264,6 +264,7 @@ function spawnAgentWithHeartbeat({
     const appServer = codexAppServerProcessOptionsFromEnv(String(label));
     return Promise.resolve(
       runAgentProcess({
+        scanSource: { kind: "prompt" },
         label: String(label),
         prompt: String(prompt),
         model: String(requestedModel),

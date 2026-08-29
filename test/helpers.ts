@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
 import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
@@ -987,6 +988,7 @@ export function withMockCodexProof(
   const originalCodexBin = process.env.CODEX_BIN;
   const binDir = join(root, "bin");
   mkdirSync(binDir, { recursive: true });
+  writeFakeScanner(binDir);
   const codexPath = join(binDir, "codex");
   const script =
     result.type === "decision"

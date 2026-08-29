@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 
 import {
   buildPrCloseCoverageProofPrompt,
@@ -462,7 +463,8 @@ test("PR close coverage proof prompt requires concrete coverage proof", () => {
 test(
   "PR close coverage proof model run leaves no scratch files in the proof tree",
   { skip: process.platform === "win32" },
-  () => {
+  (t) => {
+    useFakeScanner(t);
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-proof-scratch-test-"));
     try {
       const workDir = join(root, "pr-close-coverage-proof");

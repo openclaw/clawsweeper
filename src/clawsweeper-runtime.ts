@@ -676,6 +676,7 @@ function fetchReviewStructuralRecord(options: {
   git: GitInfo;
   reviewPolicy: string;
   reviewModel: string;
+  onPullIdentity?: (identity: { baseSha: string; headSha: string }) => void;
 }): ReviewStructuralRecord | null {
   if (!options.git.releaseStateComplete) return null;
   const [owner, name] = options.item.repo.split("/");
@@ -704,6 +705,10 @@ function fetchReviewStructuralRecord(options: {
     const pullChecks = pullChecksContext(options.item.number, headSha);
     if (!completePullChecksContext(pullChecks)) return null;
     pullChecksDigest = sha256(stableJson(reviewPullChecksDigestParts(pullChecks)));
+    options.onPullIdentity?.({
+      baseSha: stringOrUndefined(asRecord(pull).baseRefOid)?.trim().toLowerCase() ?? "",
+      headSha,
+    });
   }
   return reviewStructuralRecordFromGraphql({
     response,

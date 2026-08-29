@@ -256,6 +256,7 @@ export function createAssistWorkflow({
     const emptyGitHubConfigDir = join(options.workDir, ".gh-empty");
     ensureDir(emptyGitHubConfigDir);
     const result = runAgentProcess({
+      scanSource: { kind: "prompt" },
       label: `assist-${options.item.number}`,
       prompt,
       model: options.model,

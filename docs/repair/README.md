@@ -79,6 +79,15 @@ The default workflow is proposal-first. It does not comment or close unless a jo
 
 ## State Boundaries
 
+Before internal review, the host scans the explicit prompt/schema and complete
+introduced before/after source bytes from the actual validated dirty checkout.
+The index and raw worktree snapshots stay alive through admission, including
+staged bytes that differ from the working file. Drift, scanner failures, and findings stop the run as infrastructure
+refusals; they never enter the review-fix or JSON-repair paths. No target-bundled
+autoreview helper or second reviewer is started. See the
+[safety model](../../README.md#safety-model) for the trusted scanner prerequisite,
+staging/deadline limits, and the distinction from later tool/history scanning.
+
 `jobs/` and `results/` are durable operational state in
 `openclaw/clawsweeper-state`, not generated source in this repo. They may
 contain historical run text and audit evidence. Active code, prompts, workflows,

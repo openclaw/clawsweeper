@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTION_EVENT_REASON_CODES, ACTION_EVENT_STATUSES } from "./action-ledger.js";
+import { AgentInputScanError } from "./agent-input-scan.js";
 import type { Args } from "./clawsweeper-args.js";
 import {
   isBulkFilerExemptRepositoryPermission as isVerifiedMaintainerRepositoryPermission,
@@ -359,6 +360,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         let pullRequestReviewTreeSha: string | null = null;
         let pullRequestReviewTreeFailure: Error | null = null;
         let cachePreflightState: "not_run" | "passed" | "failed" = "not_run";
+        let structuralScanIdentity: { baseSha: string; headSha: string } | null = null;
         const preparePullRequestReviewTree = (headSha: string): boolean => {
           if (item.kind !== "pull_request") return true;
           if (pullRequestReviewTreeDir && pullRequestReviewTreeSha === headSha) return true;
@@ -396,12 +398,21 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           }
           return true;
         };
-        const cachePreflightPasses = (headSha: string | null): boolean => {
+        const cachePreflightPasses = (headSha: string | null, context?: ItemContext): boolean => {
           if (cachePreflightState !== "not_run") return cachePreflightState === "passed";
           if (item.kind === "pull_request" && (!headSha || !preparePullRequestReviewTree(headSha))) {
             cachePreflightState = "failed";
           } else {
+            const baseSha = context
+              ? asRecord(asRecord(context.pullRequest).base).sha
+              : structuralScanIdentity?.headSha === headSha ? structuralScanIdentity.baseSha : "";
             const inspection = runReviewCheckoutInspection({
+              // Structural reuse has no model payload. Hydrated reuse scans the
+              // current context too; AST-equivalent comments still require raw scanning.
+              initialPrompt: JSON.stringify(context ?? item),
+              scanSource: item.kind === "pull_request"
+                ? { kind: "committed", baseSha: typeof baseSha === "string" ? baseSha : "", headSha: headSha ?? "" }
+                : { kind: "prompt" },
               itemNumber: item.number,
               openclawDir: reviewOpenclawDir,
               preserveCodexAuth: localOnly,
@@ -681,6 +692,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               try {
                 git = loadReviewGitInfo();
                 revalidatedStructuralRecord = fetchReviewStructuralRecord({
+                  onPullIdentity: (identity) => { structuralScanIdentity = identity; },
                   item,
                   git,
                   reviewPolicy,
@@ -1193,6 +1205,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           semanticDecision?.hit &&
           !cachePreflightPasses(
             item.kind === "pull_request" ? pullHeadShaFromContext(context) : null,
+            context,
           )
         ) {
           semanticDecision = null;
@@ -1418,6 +1431,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           contentCacheHit &&
           cachePreflightPasses(
             item.kind === "pull_request" ? pullHeadShaFromContext(context) : null,
+            context,
           )
         ) {
           structuralRecord = refreshStructuralRecordForVerdict();
@@ -1533,6 +1547,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             ...(localRange ? { extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG] } : {}),
           });
         } catch (error) {
+          if (error instanceof AgentInputScanError) throw error;
           codexFailures += 1;
           codexFailed = true;
           codexFailureRetryable = codexReviewFailureRetryable(error);

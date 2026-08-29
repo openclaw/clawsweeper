@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { devNull } from "node:os";
 import type { ItemContext } from "./clawsweeper-types.js";
 
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
@@ -54,33 +55,97 @@ function objectId(value: unknown): string | null {
   return typeof value === "string" && OBJECT_ID.test(value) ? value : null;
 }
 
-// This host-side reader never invokes a diff driver or lazily fetches target objects.
-function git(targetDir: string | undefined, args: string[]): string | null {
+export interface ReviewGitReadOptions {
+  executable?: string;
+  objectEnv?: NodeJS.ProcessEnv;
+  deadlineAt?: number;
+  maxBytes?: number;
+  input?: Buffer;
+  configuration?: "normalization";
+}
+
+// Read raw objects without target callbacks, replacement objects, or lazy network fetches.
+export function readReviewGit(
+  targetDir: string | undefined,
+  args: string[],
+  options: ReviewGitReadOptions = {},
+): Buffer | null {
   if (!targetDir) return null;
-  const result = spawnSync("git", ["-c", "protocol.allow=never", ...args], {
-    cwd: targetDir,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      GIT_NO_LAZY_FETCH: "1",
-      GIT_OPTIONAL_LOCKS: "0",
-      GIT_NO_REPLACE_OBJECTS: "1",
+  const normalizationQuery = options.configuration === "normalization";
+  const readsNormalization =
+    args[0] === "check-attr" ||
+    (args[0] === "config" &&
+      args.includes("--get") &&
+      ["core.autocrlf", "core.eol", "core.symlinks"].includes(args.at(-1) ?? ""));
+  if (normalizationQuery && !readsNormalization) return null;
+  const timeout = (options.deadlineAt ?? Date.now() + 5_000) - Date.now();
+  if (timeout <= 0) return null;
+  const result = spawnSync(
+    options.executable ?? "git",
+    [
+      "-c",
+      "protocol.allow=never",
+      "-c",
+      "core.fsmonitor=false",
+      "-c",
+      "core.hooksPath=" + devNull,
+      "-c",
+      "diff.external=",
+      ...args,
+    ],
+    {
+      cwd: targetDir,
+      ...(options.input ? { input: options.input } : {}),
+      env: {
+        PATH: process.env.PATH,
+        SystemRoot: process.env.SystemRoot,
+        ...options.objectEnv,
+        // Configuration/attribute queries do not execute filters. Honor the
+        // host settings that produced a clean checkout, but never inherit them
+        // for object reads or canonicalization where callbacks could execute.
+        ...(normalizationQuery
+          ? {
+              HOME: process.env.HOME,
+              USERPROFILE: process.env.USERPROFILE,
+              XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+            }
+          : {
+              GIT_CONFIG_NOSYSTEM: "1",
+              GIT_CONFIG_GLOBAL: devNull,
+              GIT_ATTR_NOSYSTEM: "1",
+            }),
+        GIT_NO_LAZY_FETCH: "1",
+        GIT_OPTIONAL_LOCKS: "0",
+        GIT_NO_REPLACE_OBJECTS: "1",
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_LFS_SKIP_SMUDGE: "1",
+      },
+      maxBuffer: options.maxBytes ?? 1024 * 1024,
+      timeout,
+      killSignal: "SIGKILL",
     },
-    maxBuffer: 1024 * 1024,
-    timeout: 5_000,
-  });
-  return result.error || result.status !== 0 ? null : result.stdout;
+  );
+  return result.error || result.signal || result.status !== 0 ? null : result.stdout;
+}
+
+function git(
+  targetDir: string | undefined,
+  args: string[],
+  options?: ReviewGitReadOptions,
+): string | null {
+  return readReviewGit(targetDir, args, options)?.toString("utf8") ?? null;
 }
 
 export function reviewMergeBase(
   targetDir: string | undefined,
   baseSha: string | null,
   headSha: string | null,
+  options?: ReviewGitReadOptions,
 ): MergeBase {
   const unavailable = (reason: string): MergeBase => ({ status: "unavailable", sha: null, reason });
   if (!baseSha || !headSha || !objectId(baseSha) || !objectId(headSha))
     return unavailable("Missing pinned base or head identity.");
-  const output = git(targetDir, ["merge-base", "--all", baseSha, headSha]);
+  const output = git(targetDir, ["merge-base", "--all", baseSha, headSha], options);
   if (!output?.trim())
     return unavailable(
       "No merge base available in bounded local history; ancestry may be shallow or unrelated.",
@@ -94,14 +159,18 @@ export function reviewMergeBase(
     };
   const sha = objectId(bases[0]);
   if (!sha) return unavailable("Invalid merge-base identity.");
-  const shallowPath = git(targetDir, ["rev-parse", "--git-path", "shallow"])?.trim();
+  const shallowPath = git(targetDir, ["rev-parse", "--git-path", "shallow"], options)?.trim();
   if (!shallowPath || !targetDir)
     return unavailable("Could not inspect local ancestry boundaries.");
   try {
     const path = resolve(targetDir, shallowPath);
     if (existsSync(path)) {
       const shallow = new Set(readFileSync(path, "utf8").trim().split("\n"));
-      const introducedHistory = git(targetDir, ["rev-list", baseSha, headSha, "--not", sha]);
+      const introducedHistory = git(
+        targetDir,
+        ["rev-list", baseSha, headSha, "--not", sha],
+        options,
+      );
       if (
         introducedHistory === null ||
         introducedHistory

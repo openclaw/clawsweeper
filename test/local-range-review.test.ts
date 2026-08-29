@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -313,7 +314,8 @@ test("review rejects --item-number combined with --local-range", () => {
   }
 });
 
-test("--local-range defaults to the current checkout and isolates gh config in artifacts", () => {
+test("--local-range defaults to the current checkout and isolates gh config in artifacts", (t) => {
+  useFakeScanner(t);
   const dir = initRepo();
   const codexDir = mkdtempSync(join(tmpdir(), "lrr-default-codex-"));
   const fakeCodex = join(codexDir, "fake-codex.sh");
@@ -384,7 +386,8 @@ test("--local-range defaults to the current checkout and isolates gh config in a
   }
 });
 
-test("--local-range does not host-download proof video URLs from the body", async () => {
+test("--local-range does not host-download proof video URLs from the body", async (t) => {
+  useFakeScanner(t);
   const hits: string[] = [];
   const server = createServer((req, res) => {
     hits.push(req.url ?? "");
@@ -460,7 +463,8 @@ test("--local-range does not host-download proof video URLs from the body", asyn
   }
 });
 
-test("--local-range carries hosted-shaped review history across related local iterations", () => {
+test("--local-range carries hosted-shaped review history across related local iterations", (t) => {
+  useFakeScanner(t);
   const dir = initRepo();
   const harness = mkdtempSync(join(tmpdir(), "lrr-history-"));
   const fakeCodexScript = join(harness, "fake-codex.mjs");

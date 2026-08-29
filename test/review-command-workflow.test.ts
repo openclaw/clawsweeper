@@ -1,9 +1,24 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { useFakeScanner } from "./agent-input-scan-helpers.ts";
+import { runAgentCheckoutInspection, runAgentProcess } from "../dist/agent-runner.js";
+import { createReviewActionLedger } from "../dist/clawsweeper-review-ledger.js";
+import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
+import { createReviewSemanticRecord } from "../dist/review-semantic-cache.js";
+import { AgentInputScanError } from "../dist/agent-input-scan.js";
 
 import { parseArgs } from "../dist/clawsweeper-args.js";
 import {
@@ -13,6 +28,7 @@ import {
 } from "../dist/clawsweeper-review-command-workflow.js";
 import {
   isSuppliedReviewStartLease,
+  reviewLeaseStillMatchesContext,
   suppliedReviewStartLeaseFromArgs,
 } from "../dist/clawsweeper-review-lease.js";
 import { PUBLIC_CODEX_MODEL } from "../dist/codex-env.js";
@@ -41,11 +57,14 @@ function replaceFrontMatterValue(markdown: string, key: string, value: string): 
     : markdown.replace(/^---\n/, `---\n${line}\n`);
 }
 
-function structuralRecord(activityUpdatedAt: string) {
+function structuralRecord(
+  activityUpdatedAt: string,
+  pull: ReviewStructuralSnapshot["pull"] = null,
+) {
   const snapshot: ReviewStructuralSnapshot = {
     repo: REPO,
     number: ITEM_NUMBER,
-    kind: "issue",
+    kind: pull ? "pull_request" : "issue",
     nodeId: "I_scheduled_cache_proof",
     author: "contributor",
     authorAssociation: "CONTRIBUTOR",
@@ -64,7 +83,7 @@ function structuralRecord(activityUpdatedAt: string) {
     targetHeadSha: "a".repeat(40),
     latestReleaseTag: "v1.0.0",
     latestReleaseSha: "a".repeat(40),
-    pull: null,
+    pull,
   };
   const record = createReviewStructuralRecord(snapshot, {
     reviewPolicy: POLICY,
@@ -130,234 +149,436 @@ test("cache preflight promotes legacy carried reports to runner-owned provenance
   assert.match(promoted, /^local_checkout_access_source: runner_preflight_v1$/m);
 });
 
-test("scheduled delivery serves an unchanged item from the structural cache", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-scheduled-cache-"));
-  const artifactDir = join(root, "artifacts");
-  const itemsDir = join(root, "items");
-  const priorRecord = structuralRecord(PRIOR_ACTIVITY_AT);
-  const currentRecord = structuralRecord(RESERVED_AT);
-  const item = {
-    repo: REPO,
-    number: ITEM_NUMBER,
-    kind: "issue" as const,
-    title: "Scheduled cache proof",
-    url: `https://github.com/${REPO}/issues/${ITEM_NUMBER}`,
-    createdAt: "2026-08-01T00:00:00Z",
-    updatedAt: PRIOR_ACTIVITY_AT,
-    author: "contributor",
-    authorAssociation: "CONTRIBUTOR",
-    labels: ["bug"],
-  };
-  const leaseComment = {
-    id: LEASE_COMMENT_ID,
-    created_at: RESERVED_AT,
-    updated_at: RESERVED_AT,
-  };
-  const priorMarkdown = "---\ndecision: keep_open\nreview_status: complete\n---\nCached review\n";
-  let hydrationCalls = 0;
-  let generationCalls = 0;
-  let startCommentCalls = 0;
-  let structuralFetches = 0;
-  let cachedCompletions = 0;
-  let checkoutInspectionCalls = 0;
-  let activeReviewMutationRunner = null;
+for (const scenario of [
+  "structural-clean",
+  "structural-refusal",
+  "content-refusal",
+  "semantic-refusal",
+  "fresh-refusal",
+]) {
+  test(`scheduled ${scenario} preserves admission and terminal ledger classification`, (t) => {
+    const refuseScan = scenario !== "structural-clean";
+    const fresh = scenario === "fresh-refusal";
+    const hydrated = fresh || scenario === "content-refusal" || scenario === "semantic-refusal";
+    const semantic = scenario === "semantic-refusal";
+    if (refuseScan)
+      useFakeScanner(
+        t,
+        semantic
+          ? "if (inputs.some(({bytes}) => bytes.includes('sensitive-comment-marker'))) process.exit(183);"
+          : "process.exit(183);",
+      );
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "clawsweeper-scheduled-cache-")));
+    const artifactDir = join(root, "artifacts");
+    const itemsDir = join(root, "items");
+    const target = join(root, "target");
+    mkdirSync(target);
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: target, encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("config", "user.name", "Cache fixture");
+    git("config", "user.email", "cache@example.invalid");
+    git("config", "commit.gpgsign", "false");
+    writeFileSync(join(target, "value.ts"), "const value = 1;\n");
+    git("add", ".");
+    git("commit", "-qm", "base");
+    const baseSha = git("rev-parse", "HEAD");
+    writeFileSync(join(target, "value.ts"), "const value = 2; // sensitive-comment-marker\n");
+    git("add", ".");
+    git("commit", "-qm", "change");
+    const headSha = git("rev-parse", "HEAD");
+    const pull = semantic
+      ? {
+          headSha,
+          baseSha,
+          draft: false,
+          mergeable: "MERGEABLE",
+          mergeStateStatus: "CLEAN",
+          additions: 1,
+          deletions: 1,
+          changedFiles: 1,
+          commitCount: 1,
+          checksDigest: digest("checks"),
+          reviews: [],
+          reviewsTruncated: false,
+          reviewThreads: [],
+          reviewThreadsTruncated: false,
+        }
+      : null;
+    const priorRecord = structuralRecord(PRIOR_ACTIVITY_AT, pull);
+    const currentRecord = structuralRecord(RESERVED_AT, pull);
+    const fixtureGit = { mainSha: "a".repeat(40), releaseStateComplete: true, latestRelease: null };
+    const patch = "@@ -1 +1 @@\n-const value = 1;\n+const value = 2; // sensitive-comment-marker";
+    const context = {
+      issue: { updatedAt: RESERVED_AT },
+      sourceRevision: priorRecord.sourceRevision,
+      comments: [],
+      timeline: [],
+      timelineRevision: "timeline",
+      structuralItemStateDigest: currentRecord.itemStateDigest,
+      previousClawSweeperReview: { verdictDigest: digest("previous") },
+      ...(semantic
+        ? {
+            pullRequest: {
+              head: { sha: headSha },
+              base: { sha: baseSha },
+              draft: false,
+              mergeable: "MERGEABLE",
+              mergeableState: "CLEAN",
+              additions: 1,
+              deletions: 1,
+              changedFiles: 1,
+            },
+            pullFiles: [
+              {
+                filename: "value.ts",
+                status: "modified",
+                additions: 1,
+                deletions: 1,
+                patch,
+                baseMode: "100644",
+                headMode: "100644",
+                baseType: "blob",
+                headType: "blob",
+                treeModesComplete: true,
+              },
+            ],
+            pullCommits: [],
+            pullCommitsRevision: digest("commits"),
+            pullReviewComments: [],
+            pullReviewCommentsRevision: "reviews",
+            pullChecks: {
+              complete: true,
+              checkRuns: [],
+              statuses: [],
+              checkRunsTruncated: false,
+              statusesTruncated: false,
+            },
+            counts: {
+              comments: 0,
+              commentsTruncated: false,
+              timeline: 0,
+              timelineTruncated: false,
+              pullFiles: 1,
+              pullFilesHydrated: 1,
+              pullFilesTruncated: false,
+              pullCommits: 1,
+              pullCommitsHydrated: 1,
+              pullCommitsTruncated: false,
+              pullReviewComments: 0,
+              pullReviewCommentsTruncated: false,
+            },
+          }
+        : {}),
+    };
+    const item = {
+      repo: REPO,
+      number: ITEM_NUMBER,
+      kind: semantic ? ("pull_request" as const) : ("issue" as const),
+      title: "Scheduled cache proof",
+      url: `https://github.com/${REPO}/issues/${ITEM_NUMBER}`,
+      createdAt: "2026-08-01T00:00:00Z",
+      updatedAt: PRIOR_ACTIVITY_AT,
+      author: "contributor",
+      authorAssociation: "CONTRIBUTOR",
+      labels: ["bug"],
+    };
+    const leaseComment = {
+      id: LEASE_COMMENT_ID,
+      created_at: RESERVED_AT,
+      updated_at: RESERVED_AT,
+    };
+    const priorMarkdown = "---\ndecision: keep_open\nreview_status: complete\n---\nCached review\n";
+    let hydrationCalls = 0;
+    let generationCalls = 0;
+    let startCommentCalls = 0;
+    let structuralFetches = 0;
+    let cachedCompletions = 0;
+    let checkoutInspectionCalls = 0;
+    let activeReviewMutationRunner = null;
 
-  const ledgerItem = {
-    item,
-    index: 0,
-    started: true,
-    startedAtMs: Date.now(),
-    startEventId: null,
-    lastEventId: null,
-    logPublication: false,
-    mutationAttemptCount: 0,
-    mutationObserved: false,
-    uncertainMutationObserved: false,
-    terminal: false,
-  };
-  const ledger = {
-    operationIdentity: {
-      repository: REPO,
-      reviewPolicy: POLICY,
-      shardIndex: 0,
-      shardCount: 1,
-      candidateSnapshots: [],
-    },
-    batchStartEventId: null,
-    items: new Map([[`${REPO}#${ITEM_NUMBER}`, ledgerItem]]),
-    nextPhaseSeq: 1,
-    mutationObserved: false,
-    uncertainMutationObserved: false,
-    startedAtMs: Date.now(),
-    terminal: false,
-  };
-
-  const dependencies = {
-    get activeReviewMutationRunner() {
-      return activeReviewMutationRunner;
-    },
-    set activeReviewMutationRunner(value: unknown) {
-      activeReviewMutationRunner = value;
-    },
-    actionLedgerFailureDisposition: () => ({
-      status: "failed",
-      reasonCode: "failed",
-      completionReason: "failed",
-    }),
-    actionLedgerItemKey: (value: { repo: string; number: number }) =>
-      `${value.repo}#${value.number}`,
-    asRecord: (value: unknown) => value as Record<string, unknown>,
-    bulkFilerPolicyInvalidatesCachedReview: () => false,
-    bulkFilerRepositoryPermission: () => null,
-    buildLocalRangeReview: () => {
-      throw new Error("local range must not run");
-    },
-    collectItemContext: () => {
-      hydrationCalls += 1;
-      throw new Error("scheduled structural cache hit must not hydrate");
-    },
-    commentId: (comment: Record<string, unknown> | undefined) =>
-      typeof comment?.id === "number" ? comment.id : null,
-    DEFAULT_PLAN_BATCH_SIZE: 3,
-    defaultItemsDir: () => itemsDir,
-    defaultLocalRangeArtifactDir: () => artifactDir,
-    defaultReviewArtifactDir: () => artifactDir,
-    deleteOwnedDedicatedReviewStartLease: () => {
-      throw new Error("the workflow-supplied lease is externally owned");
-    },
-    detectBulkFiler: () => ({ context: null, labelPending: false, labelApplied: false }),
-    ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
-    existingReview: () => ({
-      path: join(itemsDir, `${ITEM_NUMBER}.md`),
-      markdown: priorMarkdown,
-      reviewedAt: PRIOR_ACTIVITY_AT,
-      itemUpdatedAt: PRIOR_ACTIVITY_AT,
-      automationItemUpdatedAt: undefined,
-      reviewCommentSyncedAt: "2026-08-07T10:01:00Z",
-      labelsSyncedAt: "2026-08-07T10:02:00Z",
-      decision: "keep_open",
-      reviewStatus: "complete",
-      reviewPolicy: POLICY,
-      reviewModel: PUBLIC_CODEX_MODEL,
-      itemSourceRevision: priorRecord.sourceRevision,
-      contentDigest: digest("content"),
-      lastFullReviewAt: new Date(Date.now() - 60_000).toISOString(),
-      lastFullReviewDecision: "keep_open",
-      structuralRecord: priorRecord,
-      semanticRecord: null,
-    }),
-    fetchReviewStructuralRecord: () => {
-      structuralFetches += 1;
-      return currentRecord;
-    },
-    finishReviewActionLedger: () => undefined,
-    finishReviewActionLedgerItem: (options: { completionReason?: string }) => {
-      if (options.completionReason === "structural_cache") cachedCompletions += 1;
-      return null;
-    },
-    freshDedicatedReviewStartLeases: (options: { headSha: string }) => {
-      assert.equal(options.headSha, priorRecord.sourceRevision);
-      return [
-        {
-          comment: leaseComment,
-          startedAt: RESERVED_AT,
-          expiresAt: "2026-08-07T11:05:00Z",
-          owner: LEASE_OWNER,
-          commentId: LEASE_COMMENT_ID,
-        },
-      ];
-    },
-    frontMatterValue: () => undefined,
-    gitInfo: () => ({
-      mainSha: "a".repeat(40),
-      releaseStateComplete: true,
-      latestRelease: null,
-    }),
-    isBulkFilerExemptAuthorAssociation: () => false,
-    isBulkFilerExemptRepositoryPermission: () => false,
-    issueReviewCommentState: () => ({
-      comments: [leaseComment],
-      reviewComment: undefined,
-      leaseComment,
-      leaseComments: [leaseComment],
-      dedicatedLeaseComment: leaseComment,
-      dedicatedLeaseComments: [leaseComment],
-    }),
-    isSuppliedReviewStartLease,
-    liveClawSweeperReviewDigest: () => "same-review",
-    localExactReviewItem: () => false,
-    makeTreeReadOnly: () => [],
-    postReviewStartStatusComment: () => {
-      startCommentCalls += 1;
-      throw new Error("scheduled delivery must not post a second lease");
-    },
-    previousClawSweeperReviewDigestFromReport: () => "same-review",
-    replaceFrontMatterValue,
-    repoFromArgs: () => ({ owner: "openclaw", repo: "openclaw" }),
-    reportFileName: () => `${ITEM_NUMBER}.md`,
-    reportReviewFindings: () => [],
-    resolveReviewCheckout: () => ({ openclawDir: root }),
-    restoreTreeModes: () => undefined,
-    reviewCodexForcedLoginMethod: () => "chatgpt",
-    reviewMutationRunner: () => null,
-    reviewPolicyHash: () => POLICY,
-    runReviewCheckoutInspection: () => {
-      checkoutInspectionCalls += 1;
-      return { status: 0, signal: null, stdout: "", stderr: "" };
-    },
-    runCodex: () => {
-      generationCalls += 1;
-      throw new Error("scheduled structural cache hit must not generate a review");
-    },
-    selectCandidates: () => ({ candidates: [{ ...item }], scannedPages: 1 }),
-    startReviewActionLedger: () => ledger,
-    startReviewActionLedgerItem: () => null,
-    suppliedReviewStartLeaseFromArgs,
-    targetRepo: () => REPO,
-    updateBulkFilerDetectedFrontMatter: (markdown: string) => markdown,
-    updateReviewStructuralFrontMatter: (markdown: string) => markdown,
-  } as never;
-
-  try {
-    const { reviewCommand } = createReviewCommandWorkflow(dependencies);
-    reviewCommand(
-      parseArgs([
-        "--target-repo",
-        REPO,
-        "--artifact-dir",
-        artifactDir,
-        "--items-dir",
-        itemsDir,
-        "--item-numbers",
-        String(ITEM_NUMBER),
-        "--readonly-openclaw",
-        "--skip-start-comment",
-        "--review-lease-owner",
-        LEASE_OWNER,
-        "--review-lease-comment-id",
-        String(LEASE_COMMENT_ID),
-        "--review-source-action",
-        "scheduled_normal_backfill",
-      ]),
+    const oldEnv = process.env;
+    process.env = {
+      ...oldEnv,
+      CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+      CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: "2026-08-28",
+      CLAWSWEEPER_ACTION_LEDGER_DISABLED: "0",
+      CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "",
+      GITHUB_REPOSITORY: REPO,
+      GITHUB_WORKFLOW: "fixture",
+      GITHUB_WORKFLOW_REF: "",
+      GITHUB_RUN_ID: "100",
+      GITHUB_RUN_ATTEMPT: "1",
+      GITHUB_JOB: "review",
+      GITHUB_SHA: headSha,
+    };
+    t.after(() => {
+      process.env = oldEnv;
+    });
+    const ledgerOwner = createReviewActionLedger({
+      root,
+      targetRepo: () => REPO,
+      repoRelativePath: () => `records/openclaw-openclaw/items/${ITEM_NUMBER}.md`,
+      sha256: digest,
+      isRuntimeBudgetError: () => false,
+    });
+    const priorSemantic = semantic
+      ? createReviewSemanticRecord({
+          item,
+          context: {
+            ...context,
+            pullFiles: context.pullFiles!.map((file) => ({
+              ...file,
+              patch: patch.replace(" // sensitive-comment-marker", ""),
+            })),
+          },
+          git: fixtureGit,
+          structuralContextRevision: currentRecord.contextRevision,
+          reviewPolicy: POLICY,
+          reviewModel: PUBLIC_CODEX_MODEL,
+        })
+      : null;
+    if (priorSemantic) {
+      const current = createReviewSemanticRecord({
+        item,
+        context,
+        git: fixtureGit,
+        structuralContextRevision: currentRecord.contextRevision,
+        reviewPolicy: POLICY,
+        reviewModel: PUBLIC_CODEX_MODEL,
+      });
+      assert.equal(current.eligible, true, current.eligibilityReason);
+      assert.equal(current.codeDigest, priorSemantic.codeDigest);
+      assert.notEqual(current.exactDigest, priorSemantic.exactDigest);
+    }
+    const providerCalls = join(root, "provider-calls");
+    const provider = join(root, "codex");
+    writeFileSync(
+      provider,
+      `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(providerCalls)}, 'called'); process.exit(86);`,
+      { mode: 0o700 },
     );
 
-    assert.equal(hydrationCalls, 0);
-    assert.equal(generationCalls, 0);
-    assert.equal(startCommentCalls, 0);
-    assert.equal(structuralFetches, 2);
-    assert.equal(cachedCompletions, 1);
-    assert.equal(checkoutInspectionCalls, 1);
-    const carriedReportPath = join(artifactDir, `${ITEM_NUMBER}.md`);
-    assert.equal(existsSync(carriedReportPath), true);
-    const carriedReport = readFileSync(carriedReportPath, "utf8");
-    assert.match(carriedReport, /^local_checkout_access: verified$/m);
-    assert.match(carriedReport, /^local_checkout_access_source: runner_preflight_v1$/m);
-    const metrics = JSON.parse(
-      readFileSync(join(artifactDir, "review-cache-metrics.json"), "utf8"),
-    );
-    assert.equal(metrics.structural_cache_hits, 1);
-    assert.equal(metrics.hydrations, 0);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+    const dependencies = {
+      get activeReviewMutationRunner() {
+        return activeReviewMutationRunner;
+      },
+      set activeReviewMutationRunner(value: unknown) {
+        activeReviewMutationRunner = value;
+      },
+      ...ledgerOwner,
+      CodexReviewError: class extends Error {},
+      actionLedgerItemKey: (value: { repo: string; number: number }) =>
+        `${value.repo}#${value.number}`,
+      asRecord: (value: unknown) =>
+        value && typeof value === "object" ? (value as Record<string, unknown>) : {},
+      bulkFilerPolicyInvalidatesCachedReview: () => false,
+      bulkFilerRepositoryPermission: () => null,
+      buildLocalRangeReview: () => {
+        throw new Error("local range must not run");
+      },
+      collectItemContext: () => {
+        hydrationCalls += 1;
+        if (!hydrated) throw new Error("scheduled structural cache hit must not hydrate");
+        return context;
+      },
+      commentId: (comment: Record<string, unknown> | undefined) =>
+        typeof comment?.id === "number" ? comment.id : null,
+      DEFAULT_PLAN_BATCH_SIZE: 3,
+      defaultItemsDir: () => itemsDir,
+      defaultLocalRangeArtifactDir: () => artifactDir,
+      defaultReviewArtifactDir: () => artifactDir,
+      deleteOwnedDedicatedReviewStartLease: () => {
+        throw new Error("the workflow-supplied lease is externally owned");
+      },
+      detectBulkFiler: () => ({ context: null, labelPending: false, labelApplied: false }),
+      ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
+      existingReview: () => ({
+        path: join(itemsDir, `${ITEM_NUMBER}.md`),
+        markdown: priorMarkdown,
+        reviewedAt: PRIOR_ACTIVITY_AT,
+        itemUpdatedAt: PRIOR_ACTIVITY_AT,
+        automationItemUpdatedAt: undefined,
+        reviewCommentSyncedAt: "2026-08-07T10:01:00Z",
+        labelsSyncedAt: "2026-08-07T10:02:00Z",
+        decision: "keep_open",
+        reviewStatus: "complete",
+        reviewPolicy: POLICY,
+        reviewModel: PUBLIC_CODEX_MODEL,
+        itemSourceRevision: priorRecord.sourceRevision,
+        contentDigest: fresh ? digest("old-content") : digest("content"),
+        lastFullReviewAt: new Date(Date.now() - 60_000).toISOString(),
+        lastFullReviewDecision: "keep_open",
+        structuralRecord: hydrated ? null : priorRecord,
+        semanticRecord: priorSemantic,
+      }),
+      fetchReviewStructuralRecord: () => {
+        structuralFetches += 1;
+        return currentRecord;
+      },
+      finishReviewActionLedgerItem: (options: { completionReason?: string }) => {
+        if (options.completionReason?.endsWith("_cache")) cachedCompletions += 1;
+        return ledgerOwner.finishReviewActionLedgerItem(options);
+      },
+      freshDedicatedReviewStartLeases: (options: { headSha: string }) => {
+        assert.equal(options.headSha, semantic ? headSha : priorRecord.sourceRevision);
+        return [
+          {
+            comment: leaseComment,
+            startedAt: RESERVED_AT,
+            expiresAt: "2026-08-07T11:05:00Z",
+            owner: LEASE_OWNER,
+            commentId: LEASE_COMMENT_ID,
+          },
+        ];
+      },
+      frontMatterValue: (_markdown: string, key: string) =>
+        key === "review_activity_cursor" ? `v2:0:${digest("activity")}` : undefined,
+      gitInfo: () => ({
+        mainSha: "a".repeat(40),
+        releaseStateComplete: true,
+        latestRelease: null,
+      }),
+      isBulkFilerExemptAuthorAssociation: () => false,
+      isBulkFilerExemptRepositoryPermission: () => false,
+      issueReviewCommentState: () => ({
+        comments: [leaseComment],
+        reviewComment: undefined,
+        leaseComment,
+        leaseComments: [leaseComment],
+        dedicatedLeaseComment: leaseComment,
+        dedicatedLeaseComments: [leaseComment],
+      }),
+      isSuppliedReviewStartLease,
+      reviewLeaseStillMatchesContext,
+      liveClawSweeperReviewDigest: () => digest("previous"),
+      stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
+      itemContentDigest: () => (semantic ? digest("different-content") : digest("content")),
+      extractLatestClawSweeperReview: () => context.previousClawSweeperReview,
+      fetchIssueReviewComments: () => [],
+      pullHeadShaFromContext: (value) => value.pullRequest?.head.sha ?? null,
+      reviewStructuralPullStateFromContext: () => pull,
+      materializePullRequestReviewTree: ({ worktreeDir }) => {
+        mkdirSync(worktreeDir, { recursive: true });
+        git("clone", "-q", target, worktreeDir);
+        return true;
+      },
+      removePullRequestReviewTree: () => true,
+      localExactReviewItem: () => false,
+      makeTreeReadOnly: () => [],
+      postReviewStartStatusComment: () => {
+        startCommentCalls += 1;
+        throw new Error("scheduled delivery must not post a second lease");
+      },
+      previousClawSweeperReviewDigestFromReport: () => digest("previous"),
+      replaceFrontMatterValue,
+      repoFromArgs: () => ({ owner: "openclaw", repo: "openclaw" }),
+      reportFileName: () => `${ITEM_NUMBER}.md`,
+      reportReviewFindings: () => [],
+      resolveReviewCheckout: () => ({ openclawDir: target }),
+      restoreTreeModes: () => undefined,
+      reviewCodexForcedLoginMethod: () => "chatgpt",
+      reviewMutationRunner: () => null,
+      reviewPolicyHash: () => POLICY,
+      runReviewCheckoutInspection: (options) => {
+        checkoutInspectionCalls += 1;
+        if (refuseScan)
+          return runAgentCheckoutInspection({
+            cwd: options.openclawDir,
+            env: { ...process.env, CODEX_BIN: provider },
+            scanSource: options.scanSource,
+            initialPrompt: options.initialPrompt,
+            timeoutMs: options.timeoutMs,
+          });
+        return { status: 0, signal: null, stdout: "", stderr: "" };
+      },
+      prepareMediaProofArtifacts: () => ({ manifestPath: null, summaryPath: null, artifacts: [] }),
+      buildReviewPrompt: () => ({ text: "Review the current item." }),
+      itemSnapshotHash: () => digest("snapshot"),
+      codexReviewFailureRetryable: () => false,
+      codexFailureDecision: () => {
+        throw new Error("scan refusal must not become a decision");
+      },
+      runCodex: () => {
+        generationCalls += 1;
+        if (fresh)
+          return runAgentProcess({
+            label: "fresh-review",
+            cwd: target,
+            prompt: "Review the current item.",
+            scanSource: { kind: "prompt" },
+            model: "internal",
+            env: { ...process.env, CODEX_BIN: provider },
+            timeoutMs: 30_000,
+          });
+        throw new Error("scheduled structural cache hit must not generate a review");
+      },
+      selectCandidates: () => ({ candidates: [{ ...item }], scannedPages: 1 }),
+      suppliedReviewStartLeaseFromArgs,
+      targetRepo: () => REPO,
+      updateBulkFilerDetectedFrontMatter: (markdown: string) => markdown,
+      updateReviewStructuralFrontMatter: (markdown: string) => markdown,
+    } as never;
+
+    try {
+      const { reviewCommand } = createReviewCommandWorkflow(dependencies);
+      const execute = () =>
+        reviewCommand(
+          parseArgs([
+            "--target-repo",
+            REPO,
+            "--artifact-dir",
+            artifactDir,
+            "--items-dir",
+            itemsDir,
+            "--item-numbers",
+            String(ITEM_NUMBER),
+            "--readonly-openclaw",
+            "--skip-start-comment",
+            "--review-lease-owner",
+            LEASE_OWNER,
+            "--review-lease-comment-id",
+            String(LEASE_COMMENT_ID),
+            "--review-source-action",
+            "scheduled_normal_backfill",
+          ]),
+        );
+
+      if (refuseScan) {
+        assert.throws(execute, AgentInputScanError);
+        assert.equal(checkoutInspectionCalls, fresh ? 0 : 1);
+        assert.equal(hydrationCalls, hydrated ? 1 : 0);
+        assert.equal(existsSync(providerCalls), false);
+        const terminal = readAllSpooledActionEvents(root).filter(
+          (event) => event.action.status === "failed",
+        );
+        assert.equal(terminal.length, 3);
+        assert.ok(terminal.every((event) => event.action.retryable === false));
+        assert.equal(cachedCompletions, 0);
+        assert.equal(generationCalls, fresh ? 1 : 0);
+        assert.equal(existsSync(join(artifactDir, `${ITEM_NUMBER}.md`)), false);
+        return;
+      }
+      execute();
+
+      assert.equal(hydrationCalls, 0);
+      assert.equal(generationCalls, 0);
+      assert.equal(startCommentCalls, 0);
+      assert.equal(structuralFetches, 2);
+      assert.equal(cachedCompletions, 1);
+      assert.equal(checkoutInspectionCalls, 1);
+      const carriedReportPath = join(artifactDir, `${ITEM_NUMBER}.md`);
+      assert.equal(existsSync(carriedReportPath), true);
+      const carriedReport = readFileSync(carriedReportPath, "utf8");
+      assert.match(carriedReport, /^local_checkout_access: verified$/m);
+      assert.match(carriedReport, /^local_checkout_access_source: runner_preflight_v1$/m);
+      const metrics = JSON.parse(
+        readFileSync(join(artifactDir, "review-cache-metrics.json"), "utf8"),
+      );
+      assert.equal(metrics.structural_cache_hits, 1);
+      assert.equal(metrics.hydrations, 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}

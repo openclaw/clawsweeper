@@ -1,6 +1,7 @@
 import type { ActionEvent } from "./action-ledger.js";
 import type { ActionEventReasonCode, ActionEventStatus } from "./action-ledger.js";
 import type { Args } from "./clawsweeper-args.js";
+import type { AgentScanSource } from "./agent-input-scan.js";
 import type {
   AcquiredReviewStartLease,
   Action,
@@ -150,6 +151,7 @@ export interface CreateReviewCommandWorkflowDependencies {
   ) => PreviousClawSweeperReview | null;
   fetchIssueReviewComments: (number: number) => Record<string, unknown>[];
   fetchReviewStructuralRecord: (options: {
+    onPullIdentity?: (identity: { baseSha: string; headSha: string }) => void;
     item: Item;
     git: GitInfo;
     reviewPolicy: string;
@@ -312,6 +314,8 @@ export interface CreateReviewCommandWorkflowDependencies {
   }) => string;
   reviewStructuralPullStateFromContext: (context: ItemContext) => ReviewStructuralPullState | null;
   runReviewCheckoutInspection: (options: {
+    scanSource: AgentScanSource;
+    initialPrompt: string;
     itemNumber: number;
     openclawDir: string;
     preserveCodexAuth?: boolean;

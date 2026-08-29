@@ -20,6 +20,13 @@ review engine in `src/commit-sweeper.ts`, used two ways:
 
 ## Usage
 
+Install a trusted TruffleHog executable on the host `PATH`, outside the source
+checkout and ClawSweeper checkout, before running either review command. Hosted
+setup pins version 3.97.1; local workers do not provision it. The mandatory scan
+covers the explicit initial payload and complete introduced before/after source
+bytes, independently of prompt truncation. See the [safety model](../README.md#safety-model)
+for refused inputs, the 256 MiB staging cap, deadline, and coverage limits.
+
 ```text
 pnpm run build
 pnpm local-review -- --base main

@@ -540,6 +540,37 @@ its final month). The local, GitHub-isolated review engine survives as
 
 ### Safety Model
 
+Native reviews require host-owned TruffleHog admission before any model-backed
+checkout inspection or review. The host scans the explicit initial prompt and
+schema plus complete raw before/after blobs and the full introduced diff. Scan
+coverage is independent of the 80-path/24K-character display evidence limits.
+Repair reviews scan the committed, staged, unstaged, and applicable untracked
+bytes of the validated checkout. Clean text-converted checkouts retain both
+canonical Git and raw working bytes in scan coverage. The host never starts a target-bundled autoreview helper or second reviewer.
+
+Hosted Codex and OpenClaw setup share the checksum-pinned TruffleHog 3.97.1
+installer in `.github/actions/setup-review-tools/install.sh`. It supports Linux
+amd64 and fails on unsupported platforms. Local operators must install a trusted
+TruffleHog executable on the host `PATH`, outside both checkouts; workers never
+install dependencies themselves. Missing tools, findings, scan errors, source
+drift, incomplete ancestry/objects, changed gitlinks, and LFS pointers refuse the
+review. The scan stages at most 256 MiB in private external temporary files and
+uses the remaining review deadline; it never silently truncates or bypasses.
+Diagnostics omit scanner output and source values. Restore prerequisites or
+remove sensitive input before retrying a refusal.
+
+This admission boundary is not universal provider-egress scanning. Automatically
+loaded project docs, resumed/steered history, later tool results, and unchanged
+repository history are outside its scope. Planning, assist, and close-coverage
+calls scan their explicit prompt/schema; they do not attest a source review.
+No dashboard projection or observer API changes; OpenClaw Bay is unaffected.
+
+Maintainers can run the dispatch-only `Hosted native review scan smoke` job in
+`ci.yml`. It uses the existing `OPENAI_API_KEY` and `CLAWSWEEPER_MODEL` secrets
+only during host setup, with no App mutation token. The proof artifact records
+zero provider starts on refusal, one clean native structured run, exact fixture
+and runner identities, and coverage limits without exposing the configured model.
+
 - Review and repair base fetches use fully qualified branch refspecs so inherited
   `fetch.prune` or `remote.origin.prune` settings do not delete the requested
   tracking ref. Validation uses the same repair fetch helper; no host Git

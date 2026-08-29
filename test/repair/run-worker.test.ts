@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { writeFakeScanner } from "../agent-input-scan-helpers.ts";
 
 const repoRoot = process.cwd();
 
@@ -42,6 +43,7 @@ test("run-worker starts Codex in the target checkout when one is available", () 
   const jobPath = path.join(tmp, `${jobName}.md`);
 
   fs.mkdirSync(fakeBin, { recursive: true });
+  writeFakeScanner(fakeBin);
   fs.mkdirSync(targetCheckout, { recursive: true });
   fs.writeFileSync(path.join(targetCheckout, "target-marker.txt"), "target\n");
   const ghPath = path.join(fakeBin, "gh.mjs");

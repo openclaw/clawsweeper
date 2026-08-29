@@ -297,6 +297,7 @@ export function runPrCloseCoverageProofModel(options: {
     codexConfig.unshift(`service_tier="${options.runtime.serviceTier}"`);
   }
   const result = runAgentProcess({
+    scanSource: { kind: "prompt" },
     label: `pr-close-coverage-${options.source.number}-${options.covering.number}`,
     prompt,
     model: options.runtime.model,

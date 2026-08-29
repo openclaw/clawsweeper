@@ -289,6 +289,7 @@ function runCodex(options: {
   ];
   if (options.serviceTier) codexConfig.unshift(`service_tier="${options.serviceTier}"`);
   const result = runAgentProcess({
+    scanSource: { kind: "committed", baseSha: options.baseSha, headSha: options.sha },
     label: `commit-review-${options.sha}`,
     prompt: readFileSync(promptPath, "utf8"),
     model: options.model,
