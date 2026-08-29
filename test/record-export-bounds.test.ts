@@ -289,6 +289,9 @@ test("signed record export bounds reconstruction work and source bytes while pag
     const cursor = nextCursor;
     storage.sql.resetQueryHistory();
     const page = await exportPage(env, cursor);
+    const candidateQueries = storage.sql.queriesMatching(/SELECT export\.repo_slug/);
+    assert.equal(candidateQueries.length, 1);
+    assert.equal(candidateQueries[0]?.bindings.at(-1), EXPECTED_RECORD_WORK_BUDGET);
     const reconstructed = reconstructedRecords(storage, recordsByIdentity);
     const reconstructedBytes = reconstructed.reduce((sum, record) => sum + record.byteLength, 0);
     assert.ok(reconstructed.length <= EXPECTED_RECORD_WORK_BUDGET);
@@ -326,6 +329,60 @@ test("signed record export bounds reconstruction work and source bytes while pag
   behaviorProof.expectedManifest = manifest(fixtures);
   behaviorProof.materializedManifest = manifest(received);
   behaviorProof.manifestParity = true;
+});
+
+test("signed record export does not advertise an empty page at the record boundary", async () => {
+  const { env, storage } = await exportHarness();
+  for (let index = 1; index <= EXPECTED_RECORD_WORK_BUDGET; index += 1) {
+    seedFixtureRecord(
+      storage,
+      fixtureRecord({
+        source: "canonical",
+        section: "items",
+        id: String(index),
+        content: `record-${index}:`.padEnd(1024, String(index % 10)),
+        storeRevision: index,
+      }),
+    );
+  }
+
+  for (let index = EXPECTED_RECORD_WORK_BUDGET + 1; index <= 150; index += 1) {
+    seedFixtureRecord(
+      storage,
+      fixtureRecord({
+        source: "canonical",
+        section: "closed",
+        id: String(index),
+        content: `closed-${index}:`.padEnd(1024, String(index % 10)),
+        storeRevision: index,
+      }),
+    );
+  }
+
+  const page = await exportPage(env, 0, ["items"]);
+
+  assert.equal(page.records.length, EXPECTED_RECORD_WORK_BUDGET);
+  assert.equal(page.nextCursor, null);
+  const candidateQueries = storage.sql.queriesMatching(/SELECT export\.repo_slug/);
+  assert.equal(candidateQueries.length, 1);
+  assert.equal(candidateQueries[0]?.bindings.at(-1), EXPECTED_RECORD_WORK_BUDGET);
+  assert.equal(
+    storage.sql.queriesMatching(/SELECT 1\s+FROM exact_review_record_export_index/).length,
+    1,
+  );
+  const plan = Array.from(
+    storage.sql.exec(
+      `EXPLAIN QUERY PLAN
+       SELECT 1 FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+        WHERE repo_slug = ? AND section IN (?) AND store_revision > ?
+        LIMIT 1`,
+      REPO_SLUG,
+      "items",
+      EXPECTED_RECORD_WORK_BUDGET,
+    ),
+    (row) => String(row.detail),
+  ).join("\n");
+  assert.match(plan, /exact_review_record_export_by_repo_section_revision/);
 });
 
 test("signed record export preserves historical backfill items and canonical tombstones", async () => {
