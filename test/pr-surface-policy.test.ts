@@ -11,6 +11,165 @@ import {
   sqliteSchemaChangeFromPullFilesForTest,
 } from "../dist/clawsweeper.js";
 import { reportFrontMatter } from "./helpers.ts";
+import { hydratePrimaryBody } from "./primary-body-fixture.ts";
+
+function persistenceReport(detection: { change: boolean; surfaces: string[] }, headSha: string) {
+  return `${reportFrontMatter({
+    repository: "openclaw/openclaw",
+    type: "pull_request",
+    number: "132718",
+    decision: "keep_open",
+    close_reason: "none",
+    work_candidate: "none",
+    review_status: "complete",
+    confidence: "high",
+    labels: JSON.stringify(["clawsweeper:automerge"]),
+    pull_head_sha: headSha,
+    real_behavior_proof_status: "sufficient",
+    real_behavior_proof_needs_contributor_action: "false",
+    data_model_change: String(detection.change),
+    data_model_surfaces: JSON.stringify(detection.surfaces),
+  })}\n\n## Summary\n\nReview completed.\n\n## Review Findings\n\nOverall correctness: patch is correct\n\nOverall confidence: 0.9\n\nFull review comments:\n\n- none\n`;
+}
+
+for (const normalized of [false, true]) {
+  test(`pane-local diagnostics create no stored-data warning or migration gate (${normalized ? "production-normalized" : "full"} patch)`, () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL("./fixtures/persistence-classifier-132718.json", import.meta.url),
+        "utf8",
+      ),
+    );
+    const pullFiles = normalized
+      ? hydratePrimaryBody("", "pull_request", { pullFiles: fixture.pullFiles }).context.pullFiles
+      : fixture.pullFiles;
+    if (normalized) {
+      assert.ok(pullFiles.some((file) => /\[truncated \d+ chars\]$/.test(file.patch)));
+    }
+    const detection = dataModelChangeFromPullFilesForTest({ pullFiles });
+    const report = persistenceReport(detection, fixture.headSha);
+    // Check the contributor-visible consequence before the classification detail.
+    assert.doesNotMatch(
+      renderReviewCommentFromReport(report, "none"),
+      /Persistent data-model change detected|### Stored data model|Confirm migration/,
+    );
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+    assert.doesNotMatch(reviewAutomationMarkersFromReport(report), /needs-human|fix-required/);
+    assert.deepEqual(detection, { change: false, surfaces: [] });
+  });
+}
+
+test("runtime state names and typed parameters alone do not establish stored data", () => {
+  const patch =
+    "@@\n+function show(\n+  state: ViewState,\n+  session: string,\n+) { return state; }";
+  for (const filename of ["ui/src/state.ts", "src/runtime/session.ts", "ui/src/history/merge.ts"]) {
+    for (const evidence of [patch, `${patch}\n\n[truncated 90 chars]`, undefined]) {
+      const detection = dataModelChangeFromPullFilesForTest({
+        pullFiles: [{ filename, previous_filename: "ui/src/session-view.ts", patch: evidence }],
+      });
+      assert.deepEqual(detection, { change: false, surfaces: [] }, filename);
+    }
+  }
+});
+
+test("storage evidence still warns and gates browser, runtime, and schema changes", () => {
+  const cases = [
+    {
+      filename: "ui/src/state.ts",
+      patch:
+        '@@\n+const owners = new WeakMap<object, string>();\n+// Display ownership only.\n+localStorage.setItem("preferences", JSON.stringify(value));',
+      surface: "serialized state",
+    },
+    {
+      filename: "ui/src/history.ts",
+      patch: '@@\n-sessionStorage.setItem("history", value);',
+      surface: "serialized state",
+    },
+    {
+      filename: "ui/src/session.ts",
+      patch: '@@\n+indexedDB.open("sessions", 2);',
+      surface: "serialized state",
+    },
+    {
+      filename: "ui/src/preferences.ts",
+      patch:
+        '@@ -1,3 +1,3 @@\n localStorage.setItem("preferences", JSON.stringify({\n-  theme: "dark",\n+  theme: "system",\n }));\n@@ -40,3 +40,4 @@\n function show(\n   title: string,\n+  subtitle: string,\n ) {',
+      surface: "serialized state",
+    },
+    {
+      filename: "src/runtime/snapshot.ts",
+      patch: '@@\n await state.storage.put("snapshot", {\n+  revision: nextRevision,\n });',
+      surface: "durable storage schema",
+    },
+    {
+      filename: "src/gateway/protocol/schema/session.ts",
+      patch: "@@\n-  schemaVersion: 1,\n+  schemaVersion: 2,",
+      surface: "database schema",
+    },
+    {
+      filename: "src/gateway/protocol/schema/session.ts",
+      patch: "@@\n+  migrate(session);",
+      surface: "migration/backfill/repair",
+    },
+    {
+      filename: "src/db/migrations/002.sql",
+      patch: "@@\n+ALTER TABLE sessions ADD COLUMN revision INTEGER;",
+      surface: "database schema",
+    },
+    {
+      filename: "src/runtime/database.ts",
+      patch: "@@\n CREATE TABLE sessions (\n+  revision INTEGER,\n );",
+      surface: "database schema",
+    },
+    {
+      filename: "src/db/schema.ts",
+      patch: '@@\n+const revision = integer("revision").notNull();',
+      surface: "database schema",
+    },
+    {
+      filename: "src/persistence/session.ts",
+      patch: "@@\n+export type Session = { lastModel?: string };",
+      surface: "serialized state",
+    },
+  ];
+  for (const { surface, ...file } of cases) {
+    const pullFiles = hydratePrimaryBody("", "pull_request", { pullFiles: [file] }).context
+      .pullFiles;
+    const detection = dataModelChangeFromPullFilesForTest({ pullFiles });
+    assert.ok(detection.surfaces.includes(`${surface}: ${file.filename}`), file.filename);
+    if (file.patch.includes("TABLE")) {
+      assert.equal(sqliteSchemaChangeFromPullFilesForTest({ pullFiles }).change, true);
+    }
+    const report = persistenceReport(detection, "a".repeat(40));
+    assert.match(renderReviewCommentFromReport(report, "none"), /Confirm migration/);
+    const markers = reviewAutomationMarkersFromReport(report);
+    assert.match(markers, /clawsweeper-verdict:needs-human/);
+    assert.doesNotMatch(markers, /clawsweeper-verdict:pass|clawsweeper-action:fix-required/);
+  }
+});
+
+test("strong persistence evidence remains unknown when production normalization loses content", () => {
+  for (const file of [
+    { filename: "ui/src/persistence/preferences.ts" },
+    { filename: "src/gateway/protocol/schema/session.ts" },
+    { filename: "ui/src/display.ts", previous_filename: "ui/src/storage/state.ts" },
+    { filename: "ui/src/storage/state.ts", previous_filename: "ui/src/display.ts" },
+    { filename: "ui/src/display.ts", patch: '@@\n localStorage.getItem("preferences");\n' },
+  ]) {
+    const patch = `${file.patch ?? "@@\n"}${" // retained context\n".repeat(110)}+  revision: 2,`;
+    const pullFiles = hydratePrimaryBody("", "pull_request", { pullFiles: [{ ...file, patch }] })
+      .context.pullFiles;
+    const detection = dataModelChangeFromPullFilesForTest({ pullFiles });
+    assert.ok(
+      detection.surfaces.some((surface) => surface.startsWith("unknown-data-model-change:")),
+      file.filename,
+    );
+    assert.match(
+      reviewAutomationMarkersFromReport(persistenceReport(detection, "a".repeat(40))),
+      /clawsweeper-verdict:needs-human/,
+    );
+  }
+});
 
 test("config surface reports force human review instead of automerge pass", () => {
   const report = `${reportFrontMatter({
@@ -130,17 +289,18 @@ test("config surface detector ignores non-semantic docs wording", () => {
   assert.deepEqual(detection, { change: false, keys: [] });
 });
 
-test("config surface detector finds removed schema keys", () => {
+test("config surface detector finds added and removed schema keys", () => {
   const detection = configSurfaceChangeFromPullFilesForTest({
     pullFiles: [
       {
         filename: "src/config/zod-schema.ts",
-        patch: "@@\n-  legacyModelProvider: z.string().optional(),",
+        patch:
+          "@@\n-  legacyModelProvider: z.string().optional(),\n+  historyLimit: z.number().optional(),",
       },
     ],
   });
 
-  assert.deepEqual(detection, { change: true, keys: ["legacyModelProvider"] });
+  assert.deepEqual(detection, { change: true, keys: ["historyLimit", "legacyModelProvider"] });
 });
 
 test("config surface detector finds schema assembly changes", () => {
@@ -352,6 +512,33 @@ test("Markdown persistence contracts and structured frontmatter remain detectabl
 
 for (const { name, file, surfaces, pullFilesTruncated } of [
   {
+    name: "plain form-validation schema fields",
+    file: { filename: "ui/src/forms/schema.ts", patch: "@@\n+  fieldLabel: z.string()," },
+    surfaces: [],
+  },
+  {
+    name: "ordinary protocol fields without persistence evidence",
+    file: {
+      filename: "src/gateway/protocol/schema/session.ts",
+      patch: "@@\n+  runId: Type.Optional(Type.String()),",
+    },
+    surfaces: [],
+  },
+  {
+    name: "protocol schema with a missing patch",
+    file: { filename: "src/gateway/protocol/schema/session.ts" },
+    surfaces: ["unknown-data-model-change: src/gateway/protocol/schema/session.ts"],
+  },
+  {
+    name: "unchanged storage beside a separate hunk with typed display parameters",
+    file: {
+      filename: "ui/src/preferences.ts",
+      patch:
+        '@@ -1,4 +1,4 @@\n function savePreferences(value: string) {\n   localStorage.setItem("preferences", value);\n-  refresh();\n+  refresh(true);\n }\n@@ -40,3 +40,4 @@\n function show(\n   title: string,\n+  subtitle: string,\n ) {',
+    },
+    surfaces: [],
+  },
+  {
     name: "colocated test serialization",
     file: { filename: "src/cache/store.test.ts", patch: '@@\n+writeFile("fixture.json", "{}");' },
     surfaces: [],
@@ -376,8 +563,8 @@ for (const { name, file, surfaces, pullFilesTruncated } of [
   },
   {
     name: "test to production rename with a missing patch",
-    file: { filename: "src/state.ts", previous_filename: "fixtures/state.ts" },
-    surfaces: ["unknown-data-model-change: src/state.ts"],
+    file: { filename: "src/persistence/state.ts", previous_filename: "fixtures/state.ts" },
+    surfaces: ["unknown-data-model-change: src/persistence/state.ts"],
   },
   {
     name: "production to test rename with serialization removed",
@@ -390,8 +577,8 @@ for (const { name, file, surfaces, pullFilesTruncated } of [
   },
   {
     name: "production to fixture rename with a missing patch",
-    file: { filename: "fixtures/state.ts", previous_filename: "src/state.ts" },
-    surfaces: ["unknown-data-model-change: src/state.ts"],
+    file: { filename: "fixtures/state.ts", previous_filename: "src/persistence/state.ts" },
+    surfaces: ["unknown-data-model-change: src/persistence/state.ts"],
   },
   {
     name: "truncated file list containing only test setup",
@@ -635,7 +822,8 @@ test("data model detector flags path-hinted persisted field declarations", () =>
       },
       {
         filename: "src/state/session-state.ts",
-        patch: "@@\n+  lastModel?: string;",
+        patch:
+          "@@\n const value = JSON.parse(readFile(statePath));\n const state = value as {\n+  lastModel?: string;\n };",
       },
       {
         filename: "src/cache/schema.ts",

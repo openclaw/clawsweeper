@@ -64,6 +64,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Stopped treating pane-local runtime state as stored data while retaining warnings for explicit persistence changes and incomplete storage patches.
 - Corrected retained terminal-proof cleanup for independent process-exit and PTY-close events, preserving the original wrapper failure and draining dead-pane capture only after verified cleanup.
 - Prevented rejected model inputs from surviving in generated prompt artifacts; retained diagnostics now follow admission with owner-only access, and unused prompt copies are no longer written.
 - Provisioned pinned TruffleHog for hosted reviews and enforced complete host-owned input scans before native review or cache reuse, preserving read-only workers, proxy authentication, and redacted fail-closed errors.

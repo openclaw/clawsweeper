@@ -113,11 +113,18 @@ or example source paths. Markdown beside source is still documentation: ordinary
 prose mentioning sessions or metadata is not a stored-format change. Explicit
 storage formats, SQL DDL, and structured storage keys (including frontmatter)
 remain evidence. Renames retain evidence from either production path. Missing,
-empty, or truncated patches on likely production persistence paths or hook
+empty, or truncated patches on explicit production persistence paths or hook
 descriptors, and truncated file lists, still produce conservative unknown
-warnings. The warning requests review; it does not prove a persisted contract
-changed. This classification does not change the separate `docs/` exemption for
-contributor behavior proof.
+warnings. Generic `state`, `session`, and `history` path names and typed runtime
+parameters alone do not establish persistence, including when their patches are
+truncated. Explicit serialization, browser storage (local/session storage and
+IndexedDB), durable storage, and schema/migration evidence remain eligible in
+UI code too. Unchanged storage context in the same diff hunk can establish the
+boundary for changed stored fields; an in-memory map or display-only comment
+never vetoes that evidence. Ordinary validation fields in a `schema` file alone
+do not establish persisted database columns. The warning requests review; it
+does not prove a persisted contract changed. This classification does not change
+the separate `docs/` exemption for contributor behavior proof.
 
 ## PR Introduction Evidence
 
