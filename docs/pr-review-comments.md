@@ -126,7 +126,9 @@ or checklist.
 
 For OpenClaw PRs, stored-data warnings flag possible persistence changes in
 production source or documented storage contracts, not setup in test, fixture,
-or example source paths. Markdown beside source is still documentation: ordinary
+or example source paths. Colocated `*.test-support.*` files are test code too,
+even when their guards or setup mention metadata, serialization, or SQL.
+Markdown beside source is still documentation: ordinary
 prose mentioning sessions or metadata is not a stored-format change. Explicit
 storage formats, SQL DDL, and structured storage keys (including frontmatter)
 remain evidence. Renames retain evidence from either production path. Missing,

@@ -212,7 +212,7 @@ function isProductionSourcePath(path: string): boolean {
     return false;
   }
   const basename = segments.at(-1) ?? "";
-  return ![".spec.", ".test."].some((marker) => {
+  return ![".spec.", ".test.", ".test-support."].some((marker) => {
     const markerIndex = basename.indexOf(marker);
     return markerIndex >= 0 && markerIndex + marker.length < basename.length;
   });
