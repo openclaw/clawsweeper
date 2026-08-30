@@ -22,7 +22,9 @@ import {
   buildLocalRangeReviewForTest,
   renderReviewCommentFromReport,
 } from "../dist/clawsweeper.js";
-import { buildPullRequestReviewEvidence } from "../dist/pr-review-evidence.js";
+import { buildPullRequestReviewEvidence, readReviewGit } from "../dist/pr-review-evidence.js";
+import { createLocalRangeReviewer } from "../dist/clawsweeper-local-review.js";
+import { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "../dist/command.js";
 import { changelogReviewDecision, reviewFinding } from "./helpers.ts";
 
 const CLI = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
@@ -228,79 +230,273 @@ test("buildLocalRangeReview yields no pullFiles for a commit that changes nothin
   }
 });
 
+// Simulated external metadata failures; all other commands still execute real Git.
+function writeMetadataGit(harness: string): string {
+  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  const modeFile = join(harness, "mode.txt");
+  const script = join(harness, "git.mjs");
+  writeFileSync(
+    script,
+    `import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+const args = process.argv.slice(2);
+const result = spawnSync(${JSON.stringify(realGit)}, args, { encoding: "utf8", env: process.env });
+if (result.status !== 0) process.exit(result.status ?? 1);
+let output = result.stdout;
+const mode = readFileSync(${JSON.stringify(modeFile)}, "utf8");
+if (mode === "slow-metadata" && (args.includes("--name-status") || args.includes("--numstat"))) {
+  await new Promise(resolve => setTimeout(resolve, 5500));
+}
+if (args.includes("--numstat")) {
+  if (mode === "failed") process.exit(1);
+  // Well-framed, otherwise valid decimal counts: only the capture bound makes this unavailable.
+  if (mode === "oversized") output = "0".repeat(2 * 1024 * 1024) + output;
+  if (mode === "missing-nul") output = output.slice(0, -1);
+  if (mode === "mismatched") output = output.replace("file.txt", "other.txt");
+  if (mode === "empty") output = "";
+  if (mode === "missing-record") output = output.slice(0, output.indexOf("\\0") + 1);
+  if (mode === "duplicate") output += output;
+  if (mode === "extra-record") output += "1\\t1\\textra.txt\\0";
+  if (mode === "late-malformed") output += "broken\\0";
+  if (mode === "invalid-utf8") output = Buffer.concat([Buffer.from(output), Buffer.from([255, 0])]);
+  if (mode === "invalid-count") output = "bad\\t1\\tfile.txt\\0";
+  if (mode === "mixed-binary") output = "-\\t1\\tfile.txt\\0";
+  if (mode === "unsafe-count") output = "9007199254740992\\t1\\tfile.txt\\0";
+  if (mode === "incomplete-rename") output = "1\\t1\\t\\0old.txt\\0";
+  if (mode === "wrong-rename") output = "1\\t1\\t\\0wrong.txt\\0file.txt\\0" + "1\\t0\\tsecond.txt\\0";
+  if (mode === "large-names") process.exit(1);
+}
+if (args.includes("--name-status")) {
+  if (mode === "failed-name") process.exit(1);
+  if (mode === "incomplete-name") output = "R100\\0old.txt\\0";
+  if (mode === "missing-name-nul") output = output.slice(0, -1);
+  if (mode === "duplicate-name") output += output;
+  if (mode === "invalid-name-status") output = "invalid\\0file.txt\\0";
+  if (mode === "invalid-name-utf8") output = Buffer.from([77, 0, 255, 0]);
+  if (mode === "large-names") {
+    output = Array.from({ length: 2048 }, (_, i) => "M\\0" + "x".repeat(1024) + i + "\\0").join("");
+  }
+}
+process.stdout.write(output);
+`,
+  );
+  writeFileSync(join(harness, "git"), `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`, {
+    mode: 0o755,
+  });
+  return modeFile;
+}
+
 test(
-  "local-range Git statistics fail closed on failed, oversized, or malformed reads",
-  {
-    skip: process.platform === "win32" ? "POSIX Git process wrapper" : false,
-  },
-  () => {
+  "local-range tolerates simulated unavailable numstat but refuses invalid required file lists",
+  { skip: process.platform === "win32" ? "POSIX Git process wrapper" : false },
+  (t) => {
+    useFakeScanner(t);
     const dir = initRepo();
     const harness = mkdtempSync(join(tmpdir(), "lrr-git-framing-"));
     const originalPath = process.env.PATH;
-    const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
     try {
       writeFileSync(join(dir, "file.txt"), "before\n");
       git(dir, "add", ".");
       git(dir, "commit", "-qm", "base");
       git(dir, "branch", "base-ref");
       writeFileSync(join(dir, "file.txt"), "after\n");
+      writeFileSync(join(dir, "second.txt"), "second\n");
       git(dir, "add", ".");
       git(dir, "commit", "-qm", "change");
-      const modeFile = join(harness, "mode.txt");
-      const script = join(harness, "git.mjs");
-      writeFileSync(
-        script,
-        `import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-const args = process.argv.slice(2);
-const result = spawnSync(${JSON.stringify(realGit)}, args, { encoding: "utf8", env: process.env });
-if (result.status !== 0) process.exit(result.status ?? 1);
-let output = result.stdout;
-if (args.includes("--numstat")) {
-  const mode = readFileSync(${JSON.stringify(modeFile)}, "utf8");
-  if (mode === "failed") process.exit(1);
-  if (mode === "oversized") output = "x".repeat(2 * 1024 * 1024);
-  if (mode === "missing-nul") output = output.slice(0, -1);
-  if (mode === "mismatched") output = "1\\t1\\tother.txt\\0";
-  if (mode === "missing-record") output = "";
-  if (mode === "duplicate") output += output;
-  if (mode === "invalid-count") output = "bad\\t1\\tfile.txt\\0";
-  if (mode === "mixed-binary") output = "-\\t1\\tfile.txt\\0";
-  if (mode === "unsafe-count") output = "9007199254740992\\t1\\tfile.txt\\0";
-  if (mode === "incomplete-rename") output = "1\\t1\\t\\0old.txt\\0";
-}
-if (args.includes("--name-status") && readFileSync(${JSON.stringify(modeFile)}, "utf8") === "incomplete-name") {
-  output = "R100\\0old.txt\\0";
-}
-process.stdout.write(output);
-`,
-      );
-      writeFileSync(
-        join(harness, "git"),
-        `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`,
-        { mode: 0o755 },
-      );
+      const modeFile = writeMetadataGit(harness);
+      const fakeCodex = writeLocalReviewCodex(harness);
+      const decisionPath = join(harness, "decision.json");
+      writeFileSync(decisionPath, JSON.stringify(changelogReviewDecision()));
       process.env.PATH = `${harness}${delimiter}${originalPath}`;
+      const runReview = (mode: string) =>
+        spawnSync(
+          process.execPath,
+          [
+            CLI,
+            "review",
+            "--local-range",
+            "--base",
+            "base-ref",
+            "--target-repo",
+            "openclaw/openclaw",
+            "--target-dir",
+            dir,
+            "--artifact-dir",
+            join(harness, mode),
+            "--codex-timeout-ms",
+            "60000",
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: "1",
+              CODEX_BIN: fakeCodex,
+              LOCAL_REVIEW_CAPTURE: join(harness, "captures.json"),
+              LOCAL_REVIEW_DECISION: decisionPath,
+              LOCAL_REVIEW_FAIL: "0",
+            },
+            timeout: 60000,
+          },
+        );
+      const expected = [
+        { filename: "file.txt", status: "M", additions: null, deletions: null },
+        { filename: "second.txt", status: "A", additions: null, deletions: null },
+      ];
+      const assertCompletedReview = (mode: string) => {
+        // Actual CLI/report/reload/renderer with fake Codex, scanner, and faulty numstat.
+        const result = runReview(mode);
+        assert.equal(
+          result.status,
+          0,
+          `${mode}: ${result.error ?? ""}${result.stderr}${result.stdout}`,
+        );
+        const report = readFileSync(join(harness, mode, "0.md"), "utf8");
+        const stored = report.match(/^pr_surface_files: (.*)$/m);
+        assert.ok(stored);
+        assert.deepEqual(
+          JSON.parse(stored[1]!),
+          expected.map(({ filename, additions, deletions }) => ({
+            path: filename,
+            additions,
+            deletions,
+          })),
+        );
+        assert.match(report, /^pr_surface_files_truncated: false$/m);
+        const comment = renderReviewCommentFromReport(report, "none");
+        assert.match(comment, /PR surface statistics unavailable: complete line counts/);
+        assert.doesNotMatch(comment, /\| \*\*Total\*\* \|/);
+      };
       for (const mode of [
         "failed",
         "oversized",
         "missing-nul",
         "mismatched",
+        "empty",
         "missing-record",
         "duplicate",
+        "extra-record",
+        "late-malformed",
+        "invalid-utf8",
         "invalid-count",
         "mixed-binary",
         "unsafe-count",
         "incomplete-rename",
+        "wrong-rename",
+      ]) {
+        writeFileSync(modeFile, mode);
+        const review = buildLocalRangeReviewForTest(dir, "openclaw/openclaw", "base-ref");
+        for (const files of [review.context.pullFiles, review.context.semanticPullFiles]) {
+          assert.deepEqual(
+            files.map(({ filename, status, additions, deletions }) => ({
+              filename,
+              status,
+              additions,
+              deletions,
+            })),
+            expected,
+            mode,
+          );
+          assert.match(files[0].patch, /-before\n\+after/, mode);
+          assert.match(files[1].patch, /\+second/, mode);
+        }
+        assert.equal(review.context.counts.pullFiles, 2, mode);
+        assert.equal(review.context.counts.pullFilesHydrated, 2, mode);
+        assert.equal(review.context.counts.pullFilesTruncated, false, mode);
+        if (["failed", "oversized", "late-malformed"].includes(mode)) {
+          assertCompletedReview(mode);
+        }
+      }
+      // One slow CLI scenario: required names survive 5.5s; optional numstat still times out.
+      writeFileSync(modeFile, "slow-metadata");
+      assertCompletedReview("slow-metadata");
+      t.diagnostic(
+        "5.5-second required enumeration completed; optional numstat timed out to null counts",
+      );
+      for (const mode of [
+        "failed-name",
         "incomplete-name",
+        "missing-name-nul",
+        "duplicate-name",
+        "invalid-name-status",
+        "invalid-name-utf8",
       ]) {
         writeFileSync(modeFile, mode);
         assert.throws(
           () => buildLocalRangeReviewForTest(dir, "openclaw/openclaw", "base-ref"),
-          /Could not read complete local-range Git file statistics/,
+          /Could not read complete local-range Git file list/,
           mode,
         );
+        if (mode === "failed-name") {
+          const result = runReview(mode);
+          assert.notEqual(result.status, 0);
+          assert.match(
+            result.stderr + result.stdout,
+            /Could not read complete local-range Git file list/,
+          );
+          assert.equal(existsSync(join(harness, mode, "0.md")), false);
+        }
       }
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      rmSync(harness, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "required local-range enumeration retains the runtime capture budget beyond 1 MiB",
+  { skip: process.platform === "win32" ? "POSIX Git process wrapper" : false },
+  () => {
+    const dir = initRepo();
+    const harness = mkdtempSync(join(tmpdir(), "lrr-git-budget-"));
+    const originalPath = process.env.PATH;
+    try {
+      git(dir, "commit", "-qm", "base", "--allow-empty");
+      git(dir, "branch", "base-ref");
+      git(dir, "commit", "-qm", "head", "--allow-empty");
+      const modeFile = writeMetadataGit(harness);
+      writeFileSync(modeFile, "large-names");
+      process.env.PATH = `${harness}${delimiter}${originalPath}`;
+      assert.equal(SWEEPER_COMMAND_MAX_BUFFER_BYTES, 128 * 1024 * 1024);
+      // Synthetic >2 MiB enumeration; existing factory dependencies avoid per-path Git processes.
+      // This proves capture compatibility, not a native Git tree or scanner acceptance.
+      let patches = 0;
+      let identities = 0;
+      const build = createLocalRangeReviewer({
+        run: (command, args, options) => {
+          if (args.includes("diff")) {
+            patches++;
+            return "";
+          }
+          return runText(command, args, options);
+        },
+        pullCommitContentRevision: () => "fixture-commit-revision",
+        reviewCommentContentRevision: () => "fixture-comment-revision",
+        pullFileTreeIdentity: () => {
+          identities++;
+          return {};
+        },
+      });
+      const review = build(dir, "openclaw/openclaw", "base-ref");
+      for (const files of [review.context.pullFiles, review.context.semanticPullFiles]) {
+        assert.equal(files.length, 2048);
+        assert.deepEqual(
+          files.map(({ filename }) => filename),
+          Array.from({ length: 2048 }, (_, i) => "x".repeat(1024) + i),
+        );
+        assert.ok(files.every((file) => file.additions === null && file.deletions === null));
+      }
+      assert.equal(patches, 2048);
+      assert.equal(identities, 2048);
+      assert.equal(review.context.counts.pullFilesTruncated, false);
+      assert.equal(
+        readReviewGit(dir, ["diff", "--name-status", "-z", "base-ref..HEAD", "--"]),
+        null,
+        "the generic raw Git reader must keep its 1 MiB default",
+      );
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;

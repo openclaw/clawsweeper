@@ -61,7 +61,8 @@ function objectId(value: unknown): string | null {
 export interface ReviewGitReadOptions {
   executable?: string;
   objectEnv?: NodeJS.ProcessEnv;
-  deadlineAt?: number;
+  // Omitted uses the five-second read deadline; null explicitly disables it.
+  deadlineAt?: number | null;
   maxBytes?: number;
   input?: Buffer;
   configuration?: "normalization";
@@ -81,8 +82,11 @@ export function readReviewGit(
       args.includes("--get") &&
       ["core.autocrlf", "core.eol", "core.symlinks"].includes(args.at(-1) ?? ""));
   if (normalizationQuery && !readsNormalization) return null;
-  const timeout = (options.deadlineAt ?? Date.now() + 5_000) - Date.now();
-  if (timeout <= 0) return null;
+  const timeout =
+    options.deadlineAt === null
+      ? undefined
+      : (options.deadlineAt ?? Date.now() + 5_000) - Date.now();
+  if (timeout !== undefined && timeout <= 0) return null;
   const result = spawnSync(
     options.executable ?? "git",
     [

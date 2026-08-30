@@ -7,7 +7,7 @@ import { flushWorkflowActionEvents } from "./action-ledger-runtime.js";
 import { boolArg, itemNumbersArg, parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
 import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-dispatch.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
-import { runText } from "./command.js";
+import { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "./command.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
 import {
   DEFAULT_TARGET_REPO,
@@ -312,7 +312,7 @@ function run(
   return runText(command, args, {
     cwd: options.cwd ?? ROOT,
     env: options.env,
-    maxBuffer: 128 * 1024 * 1024,
+    maxBuffer: SWEEPER_COMMAND_MAX_BUFFER_BYTES,
     stdio: ["ignore", "pipe", "pipe"],
     timeoutMs: options.timeoutMs,
     trim: "both",

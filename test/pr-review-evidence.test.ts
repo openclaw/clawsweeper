@@ -27,3 +27,28 @@ test("readReviewGit keeps raw reads isolated with a Git-compatible null device",
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test(
+  "readReviewGit enforces explicit deadlines and supports an explicit no-deadline read",
+  { skip: process.platform === "win32" ? "POSIX executable fixture" : false },
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-git-deadline-"));
+    const executable = join(root, "delayed-git");
+    try {
+      writeFileSync(
+        executable,
+        `#!${process.execPath}\nsetTimeout(() => process.stdout.write("ready\\n"), 250);\n`,
+        { mode: 0o755 },
+      );
+      assert.equal(readReviewGit(root, [], { executable, deadlineAt: Date.now() - 1 }), null);
+      assert.equal(readReviewGit(root, [], { executable, deadlineAt: Date.now() + 50 }), null);
+      assert.equal(readReviewGit(root, [], { executable })?.toString("utf8"), "ready\n");
+      assert.equal(
+        readReviewGit(root, [], { executable, deadlineAt: null })?.toString("utf8"),
+        "ready\n",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { UserFacingCommandError } from "./command.js";
+import { SWEEPER_COMMAND_MAX_BUFFER_BYTES, UserFacingCommandError } from "./command.js";
 import { commitMetadata, dirtyWorktree } from "./commit-sweeper.js";
-import { readReviewGit } from "./pr-review-evidence.js";
+import { readReviewGit, type ReviewGitReadOptions } from "./pr-review-evidence.js";
 import { truncateText } from "./clawsweeper-text.js";
 import type { Item, ItemContext } from "./clawsweeper-types.js";
 
@@ -19,72 +19,89 @@ interface LocalRangeReviewDependencies {
 
 function localRangeFiles(targetDir: string, diffArgs: string[]) {
   const invalid = () =>
-    new UserFacingCommandError("Could not read complete local-range Git file statistics.");
-  function fields(format: string): string[] {
-    const raw = readReviewGit(targetDir, [...diffArgs, format, "-z", "--"]);
-    if (raw === null) throw invalid();
+    new UserFacingCommandError("Could not read complete local-range Git file list.");
+  function fields(format: string, options: ReviewGitReadOptions = {}): string[] | null {
+    const raw = readReviewGit(targetDir, [...diffArgs, format, "-z", "--"], options);
+    if (raw === null) return null;
     const text = raw.toString("utf8");
     // Refuse lossy path decoding and incomplete reads rather than join different identities.
     if (!Buffer.from(text, "utf8").equals(raw) || (text && !text.endsWith("\0"))) {
-      throw invalid();
+      return null;
     }
     return text ? text.slice(0, -1).split("\0") : [];
   }
-  const names = fields("--name-status");
+  // Required enumeration retains runtime run()'s capture budget and absence of a deadline.
+  const names = fields("--name-status", {
+    maxBytes: SWEEPER_COMMAND_MAX_BUFFER_BYTES,
+    deadlineAt: null,
+  });
+  if (names === null) throw invalid();
   const files: Array<{ filename: string; previous_filename?: string; status: string }> = [];
+  const filenames = new Set<string>();
   for (let index = 0; index < names.length;) {
     const status = names[index++];
     if (!status || !/^(?:[ADMTUXB]|[RC](?:100|0[0-9]{2}))$/.test(status)) throw invalid();
     const first = names[index++];
     const renamed = /^[RC]/.test(status);
     const filename = renamed ? names[index++] : first;
-    if (!first || !filename) throw invalid();
+    if (!first || !filename || filenames.has(filename)) throw invalid();
+    filenames.add(filename);
     files.push({ filename, ...(renamed ? { previous_filename: first } : {}), status });
   }
   const identity = (filename: string, previous?: string) => JSON.stringify([previous, filename]);
-  const statistics = new Map<string, { additions: number | null; deletions: number | null }>();
-  const counts = fields("--numstat");
-  for (let index = 0; index < counts.length;) {
-    const record = counts[index++];
-    if (!record) throw invalid();
-    const firstTab = record.indexOf("\t");
-    const secondTab = record.indexOf("\t", firstTab + 1);
-    if (firstTab < 1 || secondTab <= firstTab + 1) throw invalid();
-    const added = record.slice(0, firstTab);
-    const removed = record.slice(firstTab + 1, secondTab);
-    let filename = record.slice(secondTab + 1);
-    let previous: string | undefined;
-    // Rename/copy numstat records frame old and new paths separately after an empty path.
-    if (!filename) {
-      previous = counts[index++];
-      filename = counts[index++] ?? "";
-      if (!previous) throw invalid();
+  function readStatistics() {
+    const statistics = new Map<string, { additions: number | null; deletions: number | null }>();
+    const counts = fields("--numstat");
+    if (counts === null) return null;
+    for (let index = 0; index < counts.length;) {
+      const record = counts[index++];
+      if (!record) return null;
+      const firstTab = record.indexOf("\t");
+      const secondTab = record.indexOf("\t", firstTab + 1);
+      if (firstTab < 1 || secondTab <= firstTab + 1) return null;
+      const added = record.slice(0, firstTab);
+      const removed = record.slice(firstTab + 1, secondTab);
+      let filename = record.slice(secondTab + 1);
+      let previous: string | undefined;
+      // Rename/copy numstat records frame old and new paths separately after an empty path.
+      if (!filename) {
+        previous = counts[index++];
+        filename = counts[index++] ?? "";
+        if (!previous) return null;
+      }
+      if (!filename) return null;
+      const binary = added === "-" && removed === "-";
+      if (
+        !binary &&
+        (![added, removed].every((value) => /^[0-9]+$/.test(value)) ||
+          ![added, removed].every((value) => Number.isSafeInteger(Number(value))))
+      ) {
+        return null;
+      }
+      const key = identity(filename, previous);
+      if (statistics.has(key)) return null;
+      statistics.set(key, {
+        additions: binary ? null : Number(added),
+        deletions: binary ? null : Number(removed),
+      });
     }
-    if (!filename) throw invalid();
-    const binary = added === "-" && removed === "-";
     if (
-      !binary &&
-      (![added, removed].every((value) => /^[0-9]+$/.test(value)) ||
-        ![added, removed].every((value) => Number.isSafeInteger(Number(value))))
+      statistics.size !== files.length ||
+      files.some((file) => !statistics.has(identity(file.filename, file.previous_filename)))
     ) {
-      throw invalid();
+      return null;
     }
-    const key = identity(filename, previous);
-    if (statistics.has(key)) throw invalid();
-    statistics.set(key, {
-      additions: binary ? null : Number(added),
-      deletions: binary ? null : Number(removed),
-    });
+    return statistics;
   }
-  const result = files.map((file) => {
-    const key = identity(file.filename, file.previous_filename);
-    const stats = statistics.get(key);
-    if (!stats) throw invalid();
-    statistics.delete(key);
-    return { ...file, ...stats };
-  });
-  if (statistics.size) throw invalid();
-  return result;
+  // Optional bounded metadata is all-or-nothing; never publish a partially validated map.
+  const statistics = readStatistics();
+  return files.map((file) => ({
+    ...file,
+    ...(statistics?.get(identity(file.filename, file.previous_filename)) ?? {
+      additions: null,
+      deletions: null,
+    }),
+  }));
 }
 
 export function createLocalRangeReviewer({
