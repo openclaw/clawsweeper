@@ -76,6 +76,18 @@ function fixture(t: test.TestContext, prompt = "Review the change.") {
   return { root, cwd, git, commit, calls, diagnosticPromptPath, run };
 }
 
+function disableManagedScanner(t: test.TestContext) {
+  const previous = process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
+  // A relative cache root is rejected before download. These tests exercise the
+  // fail-closed branch where no trusted host scanner and no usable managed
+  // cache are available, while keeping checkout-controlled executables inert.
+  process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = "relative-managed-scanner-cache";
+  t.after(() => {
+    if (previous === undefined) delete process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
+    else process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = previous;
+  });
+}
+
 for (const scenario of ["deletion", "multiline", "past-display-limits", "comment-only"]) {
   test(`raw admission catches ${scenario} input before dispatch`, (t) => {
     const f = fixture(t);
@@ -207,6 +219,7 @@ test("OpenClaw inspection cannot launch a provider on scan refusal", (t) => {
 
 test("checkout-controlled scanner is never executed", (t) => {
   const f = fixture(t);
+  disableManagedScanner(t);
   const previousPath = process.env.PATH;
   process.env.PATH = f.cwd;
   t.after(() => {
@@ -224,6 +237,7 @@ test("checkout-controlled scanner is never executed", (t) => {
 for (const location of ["bin", "..tools", "..tools-copy"]) {
   test(`checkout scanner trust rejects ${location} even with an external symlink`, (t) => {
     const f = fixture(t);
+    disableManagedScanner(t);
     const bin = join(f.cwd, location);
     mkdirSync(bin);
     if (location === "..tools-copy") copyFileSync("/usr/bin/true", join(bin, "trufflehog"));
@@ -345,6 +359,7 @@ ${failure === "signal" ? "process.kill(process.pid, 'SIGTERM');" : failure === "
     if (failure === "missing") {
       rmSync(join(bin, "trufflehog"));
       process.env.PATH = bin;
+      disableManagedScanner(t);
     }
     writeFileSync(f.diagnosticPromptPath, "stale-sensitive-diagnostic");
     const schema = join(f.root, "schema");
