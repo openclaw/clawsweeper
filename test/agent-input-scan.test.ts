@@ -457,7 +457,13 @@ for (const scenario of [
   "PLAIN duplicate",
   "HTML duplicate",
   "shared approved path OIDs",
-  "shared endpoint OID",
+  "shared approved and unapproved path OIDs",
+  "shared endpoint OID 644 to 755",
+  "shared endpoint OID 755 to 644",
+  "executable head snapshot",
+  "executable index snapshot",
+  "executable worktree snapshot",
+  "repeated regular snapshot OID",
   "canonical autoreview path",
   "vendored autoreview path",
   "both autoreview paths",
@@ -520,17 +526,19 @@ for (const scenario of [
     const files =
       scenario === "shared approved path OIDs"
         ? [...autoreviewSources, ledgerSource]
-        : scenario === "both autoreview paths"
-          ? autoreviewSources
-          : [
-              scenario === "canonical autoreview path"
-                ? autoreviewSources[0]!
-                : scenario === "vendored autoreview path"
-                  ? autoreviewSources[1]!
-                  : scenario === "other file"
-                    ? "other.test.ts"
-                    : ledgerSource,
-            ];
+        : scenario === "shared approved and unapproved path OIDs"
+          ? [ledgerSource, "other.test.ts"]
+          : scenario === "both autoreview paths"
+            ? autoreviewSources
+            : [
+                scenario === "canonical autoreview path"
+                  ? autoreviewSources[0]!
+                  : scenario === "vendored autoreview path"
+                    ? autoreviewSources[1]!
+                    : scenario === "other file"
+                      ? "other.test.ts"
+                      : ledgerSource,
+              ];
     const value = scenario === "decoded only" ? uri.replace(":", "&#58;") : uri;
     const contents = "// context\n".repeat(40) + JSON.stringify(value) + "\n";
     for (const file of files) {
@@ -539,14 +547,40 @@ for (const scenario of [
         join(f.cwd, file),
         scenario === "diff" ? "// before\n" : "// before\n" + contents,
       );
-      if (scenario === "executable source") chmodSync(join(f.cwd, file), 0o755);
+      if (scenario === "executable source" || scenario === "shared endpoint OID 755 to 644")
+        chmodSync(join(f.cwd, file), 0o755);
     }
     const baseSha = f.commit();
     for (const file of files) {
-      if (scenario === "shared endpoint OID") chmodSync(join(f.cwd, file), 0o755);
+      if (scenario === "shared endpoint OID 644 to 755" || scenario === "executable head snapshot")
+        chmodSync(join(f.cwd, file), 0o755);
+      else if (scenario === "shared endpoint OID 755 to 644") chmodSync(join(f.cwd, file), 0o644);
       else writeFileSync(join(f.cwd, file), "// after\n" + contents);
     }
     const headSha = f.commit();
+    const modeOnly =
+      scenario.startsWith("shared endpoint OID") || scenario === "executable head snapshot";
+    if (modeOnly) {
+      assert.equal(
+        f.git("rev-parse", `${baseSha}:${ledgerSource}`),
+        f.git("rev-parse", `${headSha}:${ledgerSource}`),
+      );
+      assert.equal(f.git("diff", baseSha, headSha, "--", ledgerSource).includes(uri), false);
+    }
+    if (scenario === "executable head snapshot") {
+      chmodSync(join(f.cwd, ledgerSource), 0o644);
+      f.git("add", "--", ledgerSource);
+    } else if (scenario === "executable index snapshot") {
+      chmodSync(join(f.cwd, ledgerSource), 0o755);
+      f.git("add", "--", ledgerSource);
+      chmodSync(join(f.cwd, ledgerSource), 0o644);
+    } else if (scenario === "executable worktree snapshot") {
+      chmodSync(join(f.cwd, ledgerSource), 0o755);
+    } else if (scenario === "repeated regular snapshot OID") {
+      writeFileSync(join(f.cwd, ledgerSource), "// before\n" + contents);
+      f.git("add", "--", ledgerSource);
+      writeFileSync(join(f.cwd, ledgerSource), "// after\n" + contents);
+    }
     const receipt = join(f.root, "scan-root");
     const schemaPath = join(f.root, "schema.json");
     if (scenario === "schema") writeFileSync(schemaPath, uri);
@@ -558,7 +592,7 @@ const scenario = ${JSON.stringify(scenario)};
 fs.writeFileSync(${JSON.stringify(receipt)}, path.dirname(inputDir));
 const parsed = new URL(uri);
 const blobs = inputs.filter(({name}) => /^[a-f0-9]{40}$/.test(name));
-assert.equal(blobs.length, scenario === 'shared endpoint OID' ? 1 : 2);
+assert.equal(blobs.length, ${modeOnly ? 1 : 2});
 const findings = inputs.filter(({name, bytes}) =>
   (/^[a-f0-9]{40}$/.test(name) && (scenario !== 'diff' || bytes.includes(uri))) ||
   (scenario === 'prompt' && name === 'prompt') ||
@@ -607,6 +641,13 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
 `,
     );
     const run = () => {
+      if (scenario.includes("snapshot")) {
+        const expected = captureTargetCheckoutBinding(f.cwd);
+        return withTargetReviewSnapshot(
+          { cwd: f.cwd, baseSha, expected, timeoutMs: 30_000 },
+          f.run,
+        );
+      }
       const source = { kind: "committed" as const, baseSha, headSha };
       if (scenario === "schema" || scenario === "additional") {
         scanAgentInput({
@@ -625,8 +666,7 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
         "reviewed fixture",
         "PLAIN duplicate",
         "HTML duplicate",
-        "shared approved path OIDs",
-        "shared endpoint OID",
+        "repeated regular snapshot OID",
       ].includes(scenario)
     ) {
       assert.equal(run().status, 0);
@@ -651,12 +691,9 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
           (sum: number, finding: { occurrences: number }) => sum + finding.occurrences,
           0,
         ),
-        scenario === "shared endpoint OID" ? 1 : scenario.endsWith("duplicate") ? 3 : 2,
+        scenario.endsWith("duplicate") ? 3 : 2,
       );
-      assert.equal(
-        notice.findings.length,
-        scenario === "shared endpoint OID" ? 1 : scenario === "HTML duplicate" ? 3 : 2,
-      );
+      assert.equal(notice.findings.length, scenario === "HTML duplicate" ? 3 : 2);
       for (const finding of notice.findings) {
         assert.match(finding.blob, /^[a-f0-9]{40}$/);
         assert.equal(finding.line, 42);

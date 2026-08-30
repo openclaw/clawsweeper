@@ -21,7 +21,6 @@ import { fileURLToPath } from "node:url";
 import { readReviewGit, reviewMergeBase, type ReviewGitReadOptions } from "./pr-review-evidence.js";
 import {
   classifyReviewedFixtureScan,
-  reviewedFixtureForSource,
   type ReviewedFixtureBlob,
 } from "./agent-input-scan-fixtures.js";
 
@@ -338,8 +337,7 @@ export function scanAgentInput(options: {
         };
       }
       assertCurrent();
-      const blobs = new Set<string>();
-      const fixtureSources = new Map<string, Set<string>>();
+      const blobs = new Map<string, { source: string; mode: string }[]>();
       const endpoints =
         source.kind === "snapshot"
           ? [mergeBase.sha, source.headSha, source.indexTreeSha, source.treeSha]
@@ -384,13 +382,10 @@ export function scanAgentInput(options: {
             if (!["100644", "100755", "120000"].includes(mode!))
               throw new AgentInputScanError("unsupported_content");
             if (!OBJECT_ID.test(oid!)) throw new AgentInputScanError("incomplete_source");
-            blobs.add(oid!);
-            const fixture = reviewedFixtureForSource(path, mode!);
-            if (fixture) {
-              const sources = fixtureSources.get(oid!) ?? new Set<string>();
-              sources.add(fixture.source);
-              fixtureSources.set(oid!, sources);
-            }
+            // An OID identifies bytes, not each scanned endpoint's path/mode eligibility.
+            const references = blobs.get(oid!) ?? [];
+            references.push({ source: path, mode: mode! });
+            blobs.set(oid!, references);
           }
         }
         stage(git([...args, "--patch", "--binary", "--full-index", "--"]));
@@ -398,7 +393,7 @@ export function scanAgentInput(options: {
       // Only live committed checkouts need normalized raw files staged here;
       // snapshot objects were already captured and fenced before preparation.
       if (source.kind === "committed") assertCurrent();
-      for (const oid of blobs) {
+      for (const [oid, references] of blobs) {
         const size = Number(git(["cat-file", "-s", oid], 100).toString().trim());
         if (!Number.isSafeInteger(size) || size < 0)
           throw new AgentInputScanError("incomplete_source");
@@ -411,8 +406,7 @@ export function scanAgentInput(options: {
           throw new AgentInputScanError("unsupported_content");
         // OID names preserve multiline bytes and make symlinks ordinary scan files.
         stage(bytes, oid);
-        const sources = fixtureSources.get(oid);
-        if (sources) reviewedFixtureBlobs.set(join(inputDir, oid), { bytes, sources });
+        reviewedFixtureBlobs.set(join(inputDir, oid), { bytes, references });
       }
     }
     const result = spawnSync(

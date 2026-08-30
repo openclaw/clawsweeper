@@ -567,7 +567,10 @@ or its [vendored OpenClaw copy](https://github.com/openclaw/openclaw/blob/136eab
 as non-sensitive after a complete scan. Static host policy associates each
 exact full-URI SHA-256 with only its approved source paths, requiring a literal
 at the reported line of a host-staged Git blob from mode `100644`.
-Deduplicated blobs retain the approved paths that established their eligibility.
+Deduplicated blobs retain every scanned logical endpoint's path and Git mode,
+including mode-only transitions and shared-path aliases. Every captured reference
+must qualify under the same digest's exact path and mode `100644` policy before
+any source is eligible for classification or an audit notice.
 The policy does not trust checkout ignore rules, domain patterns, fixture words,
 test names, or unchanged-line inference; no nearby fixture is implicitly approved.
 Findings attributed to prompt, schema, diff, additional-input, other-path, or

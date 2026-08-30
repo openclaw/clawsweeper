@@ -28,7 +28,7 @@ export function reviewedFixtureForSource(source: string, mode: string) {
 
 export interface ReviewedFixtureBlob {
   bytes: Buffer;
-  sources: ReadonlySet<string>;
+  references: readonly { source: string; mode: string }[];
 }
 
 interface ClassifiedFinding {
@@ -120,10 +120,13 @@ export function classifyReviewedFixtureScan(
       if (!fixture) return undefined;
       const source = object(object(object(finding.SourceMetadata).Data).Filesystem);
       const staged = typeof source.file === "string" ? sourceBlobs.get(source.file) : undefined;
-      const sources = fixture.sources.filter((path) => staged?.sources.has(path));
       if (
         !staged ||
-        !sources.length ||
+        !staged.references.length ||
+        staged.references.some(
+          ({ source, mode }) =>
+            reviewedFixtureForSource(source, mode)?.fixtureSha256 !== fixture.fixtureSha256,
+        ) ||
         typeof source.line !== "number" ||
         !Number.isSafeInteger(source.line) ||
         source.line <= 0
@@ -146,6 +149,7 @@ export function classifyReviewedFixtureScan(
         return undefined;
       const blob = basename(source.file as string);
       const key = `${blob}:${source.line}:${finding.DecoderName}`;
+      const sources = new Set(staged.references.map(({ source }) => source));
       for (const path of sources) {
         const groupKey = `${digest}:${path}`;
         const group = classified.get(groupKey) ?? {
