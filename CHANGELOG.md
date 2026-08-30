@@ -64,6 +64,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Recover hosted PR reviews that refused `incomplete_source` by fetching reviewed-head history before the bounded base/head fallback, preserving merge-base verification and secret-scanning gates. Thanks @masatohoshino. ([#1308](https://github.com/openclaw/clawsweeper/pull/1308))
 - Stopped treating pane-local runtime state as stored data while retaining warnings for explicit persistence changes and incomplete storage patches.
 - Corrected retained terminal-proof cleanup for independent process-exit and PTY-close events, preserving the original wrapper failure and draining dead-pane capture only after verified cleanup.
 - Prevented rejected model inputs from surviving in generated prompt artifacts; retained diagnostics now follow admission with owner-only access, and unused prompt copies are no longer written.
