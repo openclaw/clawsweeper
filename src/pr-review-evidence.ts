@@ -7,6 +7,9 @@ import type { ItemContext } from "./clawsweeper-types.js";
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const MAX_FILES = 80;
 const MAX_PATCH_CHARS = 24_000;
+// Git for Windows accepts the DOS device spelling but rejects Node's `\\\\.\\nul`
+// spelling when it is supplied through GIT_CONFIG_GLOBAL.
+const gitNullDevice = process.platform === "win32" ? "NUL" : devNull;
 
 type MergeBase =
   | { status: "verified"; sha: string }
@@ -88,7 +91,7 @@ export function readReviewGit(
       "-c",
       "core.fsmonitor=false",
       "-c",
-      "core.hooksPath=" + devNull,
+      "core.hooksPath=" + gitNullDevice,
       "-c",
       "diff.external=",
       ...args,
@@ -111,14 +114,14 @@ export function readReviewGit(
             }
           : {
               GIT_CONFIG_NOSYSTEM: "1",
-              GIT_CONFIG_GLOBAL: devNull,
+              GIT_CONFIG_GLOBAL: gitNullDevice,
               GIT_ATTR_NOSYSTEM: "1",
             }),
         GIT_NO_LAZY_FETCH: "1",
         GIT_OPTIONAL_LOCKS: "0",
         GIT_NO_REPLACE_OBJECTS: "1",
         // Legacy graft files alter ancestry independently of replacement refs.
-        GIT_GRAFT_FILE: devNull,
+        GIT_GRAFT_FILE: gitNullDevice,
         GIT_TERMINAL_PROMPT: "0",
         GIT_LFS_SKIP_SMUDGE: "1",
       },
