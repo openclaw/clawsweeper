@@ -60,6 +60,29 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+async function boundedResponseBytes(response: Response): Promise<Buffer> {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > MAX_ARCHIVE_BYTES)
+    throw new Error("Trusted scanner download exceeds the archive limit.");
+  if (!response.body) throw new Error("Trusted scanner download has no body.");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_ARCHIVE_BYTES)
+        throw new Error("Trusted scanner download exceeds the archive limit.");
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, size);
+}
+
 function tarString(bytes: Buffer): string {
   const end = bytes.indexOf(0);
   return bytes.subarray(0, end === -1 ? bytes.length : end).toString("utf8");
@@ -186,7 +209,7 @@ export async function ensureManagedTruffleHog(options: {
       signal: AbortSignal.timeout(Math.max(1, options.timeoutMs)),
     });
     if (!response.ok) throw new Error("Trusted scanner download failed.");
-    archive = Buffer.from(await response.arrayBuffer());
+    archive = await boundedResponseBytes(response);
     if (
       archive.length === 0 ||
       archive.length > MAX_ARCHIVE_BYTES ||

@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
 
 import {
   extractTarExecutable,
+  ensureManagedTruffleHog,
   reviewToolCacheRoot,
   reviewToolArtifact,
   TRUFFLEHOG_VERSION,
@@ -55,4 +58,22 @@ test("review-tool bootstrap extracts only the exact regular executable", () => {
   tampered[0] ^= 0xff;
   assert.throws(() => extractTarExecutable(tampered, "trufflehog.exe"), /decompressed/);
   assert.equal(createHash("sha256").update(executable).digest("hex").length, 64);
+});
+
+test("review-tool bootstrap rejects an oversized response before reading its body", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-tools-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const response = new Response("unread", {
+    headers: { "content-length": String(256 * 1024 * 1024 + 1) },
+  });
+  await assert.rejects(
+    ensureManagedTruffleHog({
+      timeoutMs: 30_000,
+      env: { CLAWSWEEPER_REVIEW_TOOLS_DIR: root },
+      fetchImpl: async () => response,
+      runtimePlatform: "linux",
+      runtimeArch: "x64",
+    }),
+    /exceeds the archive limit/,
+  );
 });
