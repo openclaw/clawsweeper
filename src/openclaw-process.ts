@@ -416,6 +416,7 @@ const OPENCLAW_CHILD_ENV_ALLOWLIST = [
   "ZAI_API_KEY",
   "DEEPSEEK_API_KEY",
   "MISTRAL_API_KEY",
+  "ORCAROUTER_API_KEY",
 ] as const;
 
 function pickEnv(env: NodeJS.ProcessEnv, names: readonly string[]): NodeJS.ProcessEnv {
@@ -464,6 +465,19 @@ const BUILTIN_PROVIDERS = {
     apiKey: "${ZAI_API_KEY}",
     api: "openai-completions",
     models: [{ id: "glm-5.2", name: "GLM-5.2", contextWindow: 1000000, maxTokens: 131072 }],
+  },
+  // OrcaRouter is an OpenAI-compatible gateway that auto-routes each request to
+  // a fitting upstream model; the `orcarouter/auto` virtual model picks the
+  // upstream on every call. Validated live 2026-08-30: chat/completions returns
+  // 200 with tool calls and maxTokens up to 131072. Catalog ids keep the
+  // `orcarouter/` prefix, so the ref is `orcarouter/orcarouter/auto`.
+  orcarouter: {
+    baseUrl: "https://api.orcarouter.ai/v1",
+    apiKey: "${ORCAROUTER_API_KEY}",
+    api: "openai-completions",
+    models: [
+      { id: "orcarouter/auto", name: "OrcaRouter Auto", contextWindow: 128000, maxTokens: 131072 },
+    ],
   },
 } as const;
 

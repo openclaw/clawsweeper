@@ -29,6 +29,7 @@ const record = {
     CLAWSWEEPER_APP_PRIVATE_KEY: process.env.CLAWSWEEPER_APP_PRIVATE_KEY ?? null,
     KIMI_API_KEY: process.env.KIMI_API_KEY ?? null,
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? null,
+    ORCAROUTER_API_KEY: process.env.ORCAROUTER_API_KEY ?? null,
   },
 };
 fs.writeFileSync(process.env.OPENCLAW_TEST_RECORD, JSON.stringify(record));
@@ -560,6 +561,7 @@ test("OpenClaw subprocess env strips workflow credentials and keeps provider key
         CLAWSWEEPER_WEBHOOK_SECRET: "workflow-webhook",
         CLAWSWEEPER_APP_PRIVATE_KEY: "workflow-app",
         KIMI_API_KEY: "provider-kimi",
+        ORCAROUTER_API_KEY: "provider-orcarouter",
       },
       timeoutMs: 60_000,
     });
@@ -570,6 +572,7 @@ test("OpenClaw subprocess env strips workflow credentials and keeps provider key
     assert.equal(record.env.CLAWSWEEPER_WEBHOOK_SECRET, null);
     assert.equal(record.env.CLAWSWEEPER_APP_PRIVATE_KEY, null);
     assert.equal(record.env.KIMI_API_KEY, "provider-kimi");
+    assert.equal(record.env.ORCAROUTER_API_KEY, "provider-orcarouter");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -641,6 +644,49 @@ test("OpenClaw zai models get built-in Coding Plan endpoint defaults", () => {
           apiKey: "${ZAI_API_KEY}",
           api: "openai-completions",
           models: [{ id: "glm-5.2", name: "GLM-5.2", contextWindow: 1000000, maxTokens: 131072 }],
+        },
+      },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("OpenClaw orcarouter models get built-in gateway defaults", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-test-"));
+  const recordPath = join(root, "record.json");
+  const binary = fakeOpenclaw(root);
+  try {
+    const result = runOpenclawProcess({
+      label: "orcarouter-defaults",
+      prompt: "hi",
+      model: "orcarouter/orcarouter/auto",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: binary,
+        CLAWSWEEPER_OPENCLAW_MODEL: "orcarouter/orcarouter/auto",
+        OPENCLAW_TEST_RECORD: recordPath,
+      },
+      timeoutMs: 60_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const record = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.deepEqual(record.config.models, {
+      mode: "merge",
+      providers: {
+        orcarouter: {
+          baseUrl: "https://api.orcarouter.ai/v1",
+          apiKey: "${ORCAROUTER_API_KEY}",
+          api: "openai-completions",
+          models: [
+            {
+              id: "orcarouter/auto",
+              name: "OrcaRouter Auto",
+              contextWindow: 128000,
+              maxTokens: 131072,
+            },
+          ],
         },
       },
     });
