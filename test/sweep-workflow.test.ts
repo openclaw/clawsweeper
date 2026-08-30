@@ -6558,6 +6558,16 @@ test("batch publication reconciles only reviewed tuples before canonical writes"
 test("explicit-item planning hydrates exactly the items selected for review", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
   const steps = workflow.jobs.plan.steps;
+  const setup = steps.findIndex((step: { uses?: string }) => step.uses?.endsWith("/setup-pnpm"));
+  const parser = steps.findIndex((step: { id?: string }) => step.id === "requested-items");
+  const hydration = steps.findIndex((step: { uses?: string }) =>
+    step.uses?.endsWith("/setup-state"),
+  );
+  assert.ok(setup >= 0 && setup < parser && parser < hydration);
+  assert.equal(
+    YAML.parse(readText(".github/actions/setup-pnpm/action.yml")).inputs["node-version"].default,
+    "24",
+  );
   const requested = steps.find((step: { id?: string }) => step.id === "requested-items");
   const hydrate = steps.find((step: { uses?: string }) => step.uses?.endsWith("/setup-state"));
   const select = steps.find((step: { id?: string }) => step.id === "select");

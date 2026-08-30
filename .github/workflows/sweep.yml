@@ -3758,6 +3758,11 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
+      - uses: ./clawsweeper/.github/actions/setup-pnpm
+        with:
+          working-directory: clawsweeper
+          build-script: build:all
+
       - name: Resolve requested review items
         id: requested-items
         working-directory: clawsweeper
@@ -3783,11 +3788,6 @@ jobs:
           token: ${{ steps.state-token.outputs.token }}
           worktree-path: clawsweeper
           fetch-depth: 1
-
-      - uses: ./clawsweeper/.github/actions/setup-pnpm
-        with:
-          working-directory: clawsweeper
-          build-script: build:all
 
       - name: Publish planning-started status
         if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) }}
