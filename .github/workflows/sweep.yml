@@ -3766,6 +3766,10 @@ jobs:
           ITEM_NUMBERS: ${{ github.event.inputs.item_numbers || github.event.client_payload.item_number || '' }}
         run: |
           item_numbers="$(node --input-type=module -e "import { itemNumbersArg } from './src/clawsweeper-args.ts'; console.log(itemNumbersArg(process.env.ITEM_NUMBERS, process.env.ITEM_NUMBER).join(','))")"
+          if [ -z "$item_numbers" ] && [ -n "$ITEM_NUMBER$ITEM_NUMBERS" ]; then
+            echo "Explicit review selection contains no valid item numbers." >&2
+            exit 2
+          fi
           echo "item_numbers=$item_numbers" >> "$GITHUB_OUTPUT"
 
       - uses: ./clawsweeper/.github/actions/setup-state

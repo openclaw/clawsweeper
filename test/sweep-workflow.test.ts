@@ -6545,6 +6545,18 @@ test("explicit-item planning hydrates exactly the items selected for review", ()
       });
       assert.equal(readFileSync(output, "utf8").trim(), `item_numbers=${expected}`);
     }
+    const invalid = spawnSync("bash", ["-e", "-c", requested.run], {
+      env: {
+        ...process.env,
+        ITEM_NUMBER: "",
+        ITEM_NUMBERS: "none",
+        GITHUB_OUTPUT: join(root, "invalid"),
+      },
+      encoding: "utf8",
+    });
+    assert.equal(invalid.status, 2);
+    assert.match(invalid.stderr, /no valid item numbers/);
+    assert.equal(existsSync(join(root, "invalid")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
