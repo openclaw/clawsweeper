@@ -5141,14 +5141,7 @@ test("sweep target tokens fall back when an org app installation is missing", ()
     const blocks = stepBlocks(name);
     assert.ok(blocks.length > 0, `missing workflow step: ${name}`);
     for (const block of blocks) {
-      if (
-        name === "Create target write token" &&
-        block.includes("needs.plan.outputs.target_repo_owner")
-      ) {
-        assert.doesNotMatch(block, /continue-on-error: true/);
-      } else {
-        assert.match(block, /continue-on-error: true/);
-      }
+      assert.match(block, /continue-on-error: true/);
     }
   }
   assert.match(
@@ -6516,6 +6509,37 @@ test("sweep issue and PR event reviews and target fanout avoid storm amplificati
   assert.match(fanoutBlock, /--publish-url "\$REVIEW_COVERAGE_URL"/);
   assert.match(fanoutBlock, /target-fanout -- coverage --window-days 7/);
   assert.match(fanoutBlock, /GITHUB_STEP_SUMMARY/);
+});
+
+test("batch publication accepts empty artifacts and isolates comment credentials", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs.publish.steps;
+  const find = (id: string) => steps.find((step: { id?: string }) => step.id === id);
+  const resolveItems = find("reviewed-items");
+  assert.equal(find("target-write-token")["continue-on-error"], true);
+  assert.equal(
+    find("setup-publish-state").if,
+    "${{ steps.reviewed-items.outputs.item_numbers != '' }}",
+  );
+  assert.doesNotMatch(find("commit-review-records").if, /target-write-token/);
+  assert.match(find("sync-selected-review-comments").if, /target-write-token.outputs.token != ''/);
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const artifacts = join(root, "artifacts");
+    const output = join(root, "output");
+    mkdirSync(artifacts);
+    writeFileSync(join(artifacts, "metrics.json"), "{}");
+    const run = resolveItems.run.replace(
+      "--artifact-dir artifacts",
+      '--artifact-dir "$TEST_ARTIFACT_DIR"',
+    );
+    execFileSync("bash", ["-e", "-c", run], {
+      env: { ...process.env, TEST_ARTIFACT_DIR: artifacts, GITHUB_OUTPUT: output },
+    });
+    assert.equal(readFileSync(output, "utf8").trim(), "item_numbers=");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("batch publication reconciles only reviewed tuples before canonical writes", () => {

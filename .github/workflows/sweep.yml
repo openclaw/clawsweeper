@@ -4577,6 +4577,7 @@ jobs:
 
       - name: Create target write token
         id: target-write-token
+        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
@@ -4610,11 +4611,11 @@ jobs:
         id: reviewed-items
         run: |
           item_numbers="$(pnpm run --silent workflow -- artifact-item-numbers --artifact-dir artifacts)"
-          test -n "$item_numbers"
           echo "item_numbers=$item_numbers" >> "$GITHUB_OUTPUT"
 
       - uses: ./.github/actions/setup-state
         id: setup-publish-state
+        if: ${{ steps.reviewed-items.outputs.item_numbers != '' }}
         with:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
