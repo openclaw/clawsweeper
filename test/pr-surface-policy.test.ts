@@ -32,31 +32,35 @@ function persistenceReport(detection: { change: boolean; surfaces: string[] }, h
   })}\n\n## Summary\n\nReview completed.\n\n## Review Findings\n\nOverall correctness: patch is correct\n\nOverall confidence: 0.9\n\nFull review comments:\n\n- none\n`;
 }
 
-for (const normalized of [false, true]) {
-  test(`pane-local diagnostics create no stored-data warning or migration gate (${normalized ? "production-normalized" : "full"} patch)`, () => {
-    const fixture = JSON.parse(
-      readFileSync(
-        new URL("./fixtures/persistence-classifier-132718.json", import.meta.url),
-        "utf8",
-      ),
-    );
-    const pullFiles = normalized
-      ? hydratePrimaryBody("", "pull_request", { pullFiles: fixture.pullFiles }).context.pullFiles
-      : fixture.pullFiles;
-    if (normalized) {
-      assert.ok(pullFiles.some((file) => /\[truncated \d+ chars\]$/.test(file.patch)));
-    }
-    const detection = dataModelChangeFromPullFilesForTest({ pullFiles });
-    const report = persistenceReport(detection, fixture.headSha);
-    // Check the contributor-visible consequence before the classification detail.
-    assert.doesNotMatch(
-      renderReviewCommentFromReport(report, "none"),
-      /Persistent data-model change detected|### Stored data model|Confirm migration/,
-    );
-    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
-    assert.doesNotMatch(reviewAutomationMarkersFromReport(report), /needs-human|fix-required/);
-    assert.deepEqual(detection, { change: false, surfaces: [] });
-  });
+for (const [name, fixturePath] of [
+  ["pane-local diagnostics", "./fixtures/persistence-classifier-132718.json"],
+  ["test-support workspace guard", "./fixtures/persistence-classifier-133209.json"],
+]) {
+  for (const normalized of [false, true]) {
+    test(`${name} creates no stored-data warning or migration gate (${normalized ? "production-normalized" : "full"} patch)`, () => {
+      const fixture = JSON.parse(readFileSync(new URL(fixturePath, import.meta.url), "utf8"));
+      const pullFiles = normalized
+        ? hydratePrimaryBody("", "pull_request", { pullFiles: fixture.pullFiles }).context.pullFiles
+        : fixture.pullFiles;
+      if (normalized) {
+        assert.ok(pullFiles.some((file) => /\[truncated \d+ chars\]$/.test(file.patch)));
+      }
+      const detection = dataModelChangeFromPullFilesForTest({ pullFiles });
+      const report = persistenceReport(detection, fixture.headSha);
+      // Check the contributor-visible consequence before the classification detail.
+      assert.doesNotMatch(
+        renderReviewCommentFromReport(report, "none"),
+        /Persistent data-model change detected|### Stored data model|Confirm migration/,
+      );
+      assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+      assert.doesNotMatch(reviewAutomationMarkersFromReport(report), /needs-human|fix-required/);
+      assert.deepEqual(detection, { change: false, surfaces: [] });
+      assert.deepEqual(sqliteSchemaChangeFromPullFilesForTest({ pullFiles }), {
+        change: false,
+        files: [],
+      });
+    });
+  }
 }
 
 test("runtime state names and typed parameters alone do not establish stored data", () => {
@@ -130,6 +134,21 @@ test("storage evidence still warns and gates browser, runtime, and schema change
       filename: "src/persistence/session.ts",
       patch: "@@\n+export type Session = { lastModel?: string };",
       surface: "serialized state",
+    },
+    {
+      filename: "src/memory/vector-store.ts",
+      patch: "@@\n-  embeddingDimension: 768,\n+  embeddingDimension: 1024,",
+      surface: "vector/embedding metadata",
+    },
+    {
+      filename: "src/db/schema.sql",
+      patch: "@@\n+CREATE INDEX sessions_updated ON sessions(updated_at);",
+      surface: "database schema",
+    },
+    {
+      filename: "src/cache/store.ts",
+      patch: "@@\n-  ttl: 86400,\n+  ttl: 3600,",
+      surface: "persistent cache schema",
     },
   ];
   for (const { surface, ...file } of cases) {
@@ -549,6 +568,42 @@ for (const { name, file, surfaces, pullFilesTruncated } of [
     surfaces: [],
   },
   {
+    name: "test support with a missing persistence patch",
+    file: { filename: "src/cache/store.test-support.ts" },
+    surfaces: [],
+  },
+  {
+    name: "test support with a truncated schema patch",
+    file: {
+      filename: "src/db/schema.test-support.ts",
+      patch: "@@\n+CREATE TABLE fixture (id TEXT);\n\n[truncated 90 chars]",
+    },
+    surfaces: [],
+  },
+  {
+    name: "test support to production rename with a missing patch",
+    file: {
+      filename: "src/persistence/state.ts",
+      previous_filename: "src/persistence/state.test-support.ts",
+    },
+    surfaces: ["unknown-data-model-change: src/persistence/state.ts"],
+  },
+  {
+    name: "production to test support rename with stored data removed",
+    file: {
+      filename: "src/runtime/io.test-support.ts",
+      previous_filename: "src/runtime/io.ts",
+      patch: "@@\n-await writeFile(target, JSON.stringify(value));",
+    },
+    surfaces: ["serialized state: src/runtime/io.ts"],
+  },
+  {
+    name: "truncated file list containing only test support",
+    file: { filename: "src/cache/store.test-support.ts", patch: "@@\n+const metadata = {};" },
+    pullFilesTruncated: true,
+    surfaces: ["unknown-truncated-pull-files"],
+  },
+  {
     name: "fixture with a truncated patch",
     file: {
       filename: "fixtures/schema.sql",
@@ -650,6 +705,10 @@ test("data model detector finds production persistence and semantic docs changes
         filename: "src/memory/vector-store.test.ts",
         patch: '@@\n+writeFile("fixture.json", JSON.stringify(value));',
       },
+      {
+        filename: "src/memory/vector-store.test-support.ts",
+        patch: '@@\n+writeFile("fixture.json", JSON.stringify({ embeddingDimension: 1024 }));',
+      },
     ],
   });
 
@@ -711,6 +770,10 @@ test("SQLite schema detector finds production table changes and ignores non-sche
         patch: "@@\n+  db.exec('CREATE TABLE fixture_rows (id TEXT PRIMARY KEY)');",
       },
       {
+        filename: "src/memory/manager-db.test-support.ts",
+        patch: "@@\n+  db.exec('CREATE TABLE fixture_rows (id TEXT PRIMARY KEY)');",
+      },
+      {
         filename: "docs/storage.md",
         patch: "@@\n+CREATE TABLE example_rows (id TEXT PRIMARY KEY);",
       },
@@ -733,6 +796,11 @@ test("production path classification preserves test segment and basename boundar
     ["examples/schema.sql", false],
     ["src/cache/store.spec.ts", false],
     ["src/cache/store.TEST.TS", false],
+    ["src/cache/store.test-support.ts", false],
+    ["src/cache/store.TEST-SUPPORT.TS", false],
+    ["src/cache/store.test-supported.ts", true],
+    ["src/cache/store.test-support.", true],
+    ["src/store.test-support.ts/schema.sql", true],
     ["src/spec/schema.sql", true],
     ["src/test-fixtures/schema.sql", true],
     ["src/cache/store.spec.", true],
