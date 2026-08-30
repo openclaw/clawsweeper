@@ -6518,6 +6518,38 @@ test("sweep issue and PR event reviews and target fanout avoid storm amplificati
   assert.match(fanoutBlock, /GITHUB_STEP_SUMMARY/);
 });
 
+test("explicit-item planning hydrates exactly the items selected for review", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs.plan.steps;
+  const requested = steps.find((step: { id?: string }) => step.id === "requested-items");
+  const hydrate = steps.find((step: { uses?: string }) => step.uses?.endsWith("/setup-state"));
+  const select = steps.find((step: { id?: string }) => step.id === "select");
+  assert.equal(
+    hydrate.with["records-item-number"],
+    "${{ steps.requested-items.outputs.item_numbers }}",
+  );
+  assert.equal(select.env.ITEM_NUMBERS, hydrate.with["records-item-number"]);
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    for (const [single, multiple, expected] of [
+      ["", "", ""],
+      ["133034", "", "133034"],
+      ["", "133035,133034,133035", "133034,133035"],
+      ["133034", "133035", "133034,133035"],
+      ["133034", "router-receipt-123", "133034"],
+    ]) {
+      const output = join(root, "output");
+      writeFileSync(output, "");
+      execFileSync("bash", ["-e", "-c", requested.run], {
+        env: { ...process.env, ITEM_NUMBER: single, ITEM_NUMBERS: multiple, GITHUB_OUTPUT: output },
+      });
+      assert.equal(readFileSync(output, "utf8").trim(), `item_numbers=${expected}`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("setup-state defaults to an auth-safe shallow checkout", () => {
   const action = readText(".github/actions/setup-state/action.yml");
   assert.doesNotMatch(action, /CLAWSWEEPER_STATE_REPOSITORY=/);

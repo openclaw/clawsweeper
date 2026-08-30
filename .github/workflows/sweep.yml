@@ -3758,12 +3758,23 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
+      - name: Resolve requested review items
+        id: requested-items
+        working-directory: clawsweeper
+        env:
+          ITEM_NUMBER: ${{ github.event.inputs.item_number || '' }}
+          ITEM_NUMBERS: ${{ github.event.inputs.item_numbers || github.event.client_payload.item_number || '' }}
+        run: |
+          item_numbers="$(node --input-type=module -e "import { itemNumbersArg } from './src/clawsweeper-args.ts'; console.log(itemNumbersArg(process.env.ITEM_NUMBERS, process.env.ITEM_NUMBER).join(','))")"
+          echo "item_numbers=$item_numbers" >> "$GITHUB_OUTPUT"
+
       - uses: ./clawsweeper/.github/actions/setup-state
         with:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           records-repo-slugs: ${{ steps.target.outputs.target_slug }}
+          records-item-number: ${{ steps.requested-items.outputs.item_numbers }}
           hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
           worktree-path: clawsweeper
@@ -4055,10 +4066,7 @@ jobs:
           SHARD_COUNT: ${{ steps.mode.outputs.shard_count }}
           BATCH_SIZE: ${{ steps.mode.outputs.batch_size }}
           HOT_INTAKE: ${{ steps.mode.outputs.hot_intake }}
-          ITEM_NUMBER: ${{ github.event.inputs.item_number || '' }}
-          # A router fallback carries its receipt key in item_numbers because GitHub caps this
-          # workflow at 25 inputs; item_number remains the exact review target in that case.
-          ITEM_NUMBERS: ${{ (github.event.inputs.item_number != '' && startsWith(github.event.inputs.item_numbers, 'router-') && github.event.inputs.item_number) || github.event.inputs.item_numbers || github.event.client_payload.item_number || '' }}
+          ITEM_NUMBERS: ${{ steps.requested-items.outputs.item_numbers }}
           MAX_PAGES: ${{ steps.mode.outputs.max_pages }}
           MIN_ACTIVE_SHARDS: ${{ steps.mode.outputs.min_active_shards }}
           MIN_BACKFILL_REVIEW_AGE_MINUTES: ${{ steps.mode.outputs.min_backfill_review_age_minutes }}
@@ -4067,9 +4075,6 @@ jobs:
         run: |
           set -euo pipefail
           item_arg=()
-          if [ -n "$ITEM_NUMBER" ]; then
-            item_arg=(--item-number "$ITEM_NUMBER")
-          fi
           if [ -n "$ITEM_NUMBERS" ]; then
             item_arg+=("--item-numbers" "$ITEM_NUMBERS")
           fi

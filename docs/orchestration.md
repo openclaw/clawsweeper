@@ -58,6 +58,8 @@ artifacts, then publishes those records and synchronizes their comments in the
 same job. It does not download the repository-wide snapshot, pull source Git
 history, reconcile unrelated records, or dispatch another comment-sync run.
 Scheduled comment synchronization remains a recovery path.
+Explicit-item planning uses the same requested item set for focused hydration
+and selection. Repository-wide planning still loads the repository snapshot.
 
 ## What Should Stay Thin
 
