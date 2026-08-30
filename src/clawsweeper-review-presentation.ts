@@ -6,7 +6,7 @@ import {
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
 } from "./repair/exact-review-guard-labels.js";
-import type { AttachedLiveVerification } from "./live-proof/verification.js";
+import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import type {
   Evidence,
   LikelyOwner,
@@ -16,7 +16,6 @@ import type {
   PrRatingTier,
   PrStatusLabelKind,
   PublicPriority,
-  RealBehaviorProof,
   ReviewFinding,
   SecurityConcern,
   SecurityReview,
@@ -35,9 +34,8 @@ interface ReviewPresentationDependencies {
   linkedSha: (sha: string) => string;
   markdownLink: (label: string, url: string) => string;
   publicTableCell: (value: string) => string;
-  reportAttachedLiveVerification: (markdown: string) => AttachedLiveVerification;
   reportEvidence: (markdown: string) => Evidence[];
-  reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
+  reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
   securityConcernLocation: (concern: SecurityConcern) => string;
   splitFileAndLine: (file: string) => { file: string; line?: number };
 }
@@ -54,9 +52,8 @@ export function createReviewPresentation({
   linkedSha,
   markdownLink,
   publicTableCell,
-  reportAttachedLiveVerification,
   reportEvidence,
-  reportRealBehaviorProof,
+  reportRealBehaviorProofPolicy,
   securityConcernLocation,
   splitFileAndLine,
 }: ReviewPresentationDependencies) {
@@ -406,8 +403,16 @@ export function createReviewPresentation({
     return `${body} ${realBehaviorProofReReviewGuidance()}`;
   }
 
-  function publicRealBehaviorProofLine(proof: RealBehaviorProof): string {
+  function publicHistoricalVerificationBlockerLine(): string {
+    return "A historical verification receipt failed or is malformed. A maintainer must resolve that verification blocker before merge; independently assessed contributor proof remains valid.";
+  }
+
+  function publicRealBehaviorProofLine(policy: RealBehaviorProofPolicy): string {
+    const proof = policy.assessment;
     const summary = sentence(proof.summary);
+    if (policy.proofBlocksMerge && proof.status === "not_applicable") {
+      return `Required by policy: the recorded not-applicable assessment does not satisfy the current PR proof policy. Put relevant after-change evidence in the main PR body, then request a fresh review with \`@clawsweeper re-review\`.${summary ? ` Recorded reviewer context: ${summary}` : ""}`;
+    }
     switch (proof.status) {
       case "sufficient":
         return `Sufficient (${proof.evidenceKind}): ${summary}`;
@@ -450,15 +455,22 @@ export function createReviewPresentation({
     ].join("\n");
   }
 
-  function publicMergeReadinessResult(rating: PrRating, proof: RealBehaviorProof): string {
+  function publicMergeReadinessResult(rating: PrRating, policy: RealBehaviorProofPolicy): string {
+    const proof = policy.assessment;
+    if (policy.proofBlocksMerge) {
+      if (proof.status === "mock_only")
+        return "blocked until real behavior proof from a real setup is added.";
+      if (proof.status === "insufficient")
+        return "blocked until stronger real behavior proof is added.";
+      return "blocked until real behavior proof is added.";
+    }
+    if (policy.verificationBlocksMerge)
+      return "blocked until a maintainer resolves historical verification.";
     if (rating.overallTier === "NA") return "needs maintainer review before merge.";
     switch (proof.status) {
       case "missing":
-        return "blocked until real behavior proof is added.";
       case "mock_only":
-        return "blocked until real behavior proof from a real setup is added.";
       case "insufficient":
-        return "blocked until stronger real behavior proof is added.";
       case "sufficient":
       case "override":
         if (rating.patchTier === "F" || rating.patchTier === "D") {
@@ -510,16 +522,20 @@ export function createReviewPresentation({
 
   function publicReviewScoresBlock(
     rating: PrRating,
-    proof: RealBehaviorProof,
+    policy: RealBehaviorProofPolicy,
     findings: readonly ReviewFinding[],
     securityReview: SecurityReview,
   ): string {
-    const shiny = hasShinyProof(proof) ? " ✨ media proof bonus" : "";
-    const overallMeaning =
+    const shiny = hasShinyProof(policy.assessment) ? " ✨ media proof bonus" : "";
+    let overallMeaning =
       sentence(rating.summary) ||
       "Overall readiness follows the weaker of proof and patch quality.";
-    const proofMeaning =
-      publicRealBehaviorProofLine(proof) || "Real behavior proof does not apply to this change.";
+    let proofMeaning =
+      publicRealBehaviorProofLine(policy) || "Real behavior proof does not apply to this change.";
+    if (policy.proofBlocksMerge && policy.assessment.status === "not_applicable") {
+      overallMeaning = `Recorded reviewer rating: ${overallMeaning} Real behavior proof remains required by host policy.`;
+      proofMeaning = `Recorded reviewer rating; ${proofMeaning}`;
+    }
     const patchMeaning =
       securityReview.status === "needs_attention" || securityReview.concerns.length > 0
         ? "Security review found an item that needs attention."
@@ -539,21 +555,24 @@ export function createReviewPresentation({
   }
 
   function publicVerificationBlock(
-    proof: RealBehaviorProof,
+    policy: RealBehaviorProofPolicy,
     evidence: readonly Evidence[],
     findings: readonly ReviewFinding[],
     securityReview: SecurityReview,
   ): string {
+    const proof = policy.assessment;
     const proofResult =
-      proof.status === "sufficient"
-        ? "Verified"
-        : proof.status === "override"
-          ? "Overridden"
-          : proof.status === "not_applicable"
-            ? "Not applicable"
-            : "Needs proof";
+      policy.proofBlocksMerge && proof.status === "not_applicable"
+        ? "Required by policy"
+        : proof.status === "sufficient"
+          ? "Verified"
+          : proof.status === "override"
+            ? "Overridden"
+            : proof.status === "not_applicable"
+              ? "Not applicable"
+              : "Needs proof";
     const proofEvidence =
-      publicRealBehaviorProofLine(proof) || "Real behavior proof does not apply to this change.";
+      publicRealBehaviorProofLine(policy) || "Real behavior proof does not apply to this change.";
     const evidenceResult =
       evidence.length === 0
         ? "None listed"
@@ -598,6 +617,11 @@ export function createReviewPresentation({
       "| Check | Result | Evidence |",
       "|---|---|---|",
       `| **Real behavior** | ${proofResult} | ${publicTableCell(proofEvidence)} |`,
+      ...(policy.verificationBlocksMerge
+        ? [
+            `| **Historical verification** | Needs maintainer review | ${publicTableCell(publicHistoricalVerificationBlockerLine())} |`,
+          ]
+        : []),
       `| **Evidence reviewed** | ${evidenceResult} | ${evidenceSummary} |`,
       `| **Findings** | ${findingResult} | ${findingEvidence} |`,
       `| **Security** | ${securityNeedsAttention ? "Needs attention" : "None"} | ${securityEvidence} |`,
@@ -606,14 +630,14 @@ export function createReviewPresentation({
 
   function publicMergeReadinessBlock(
     rating: PrRating,
-    proof: RealBehaviorProof,
+    policy: RealBehaviorProofPolicy,
     priority: TriagePriority,
     bottomLine: string,
     remainingItemCount: number,
     decisionNeeded: boolean,
     reviewedHeadSha: string,
   ): string {
-    const result = publicStatusText(publicMergeReadinessResult(rating, proof)).replace(/\.$/, "");
+    const result = publicStatusText(publicMergeReadinessResult(rating, policy)).replace(/\.$/, "");
     const icon = /^blocked\b/i.test(result)
       ? "⛔"
       : /^ready\b/i.test(result) && remainingItemCount === 0 && !decisionNeeded
@@ -673,20 +697,12 @@ export function createReviewPresentation({
   function prStatusLabelKindFromReportLabels(markdown: string): PrStatusLabelKind | null {
     const parsedLabels = frontMatterStringArray(markdown, "labels");
     if (hasRepairLoopPauseLabel(parsedLabels)) return null;
-    const attachedVerification = reportAttachedLiveVerification(markdown);
     const activeRepairStatus = activeRepairStatusFromLabels(parsedLabels);
     if (activeRepairStatus) return activeRepairStatus;
-    const proof = reportRealBehaviorProof(markdown);
-    if (
-      proof.status === "missing" ||
-      proof.status === "mock_only" ||
-      proof.status === "insufficient"
-    ) {
-      return proof.needsContributorAction ? "needs_proof" : "needs_maintainer_proof_decision";
-    }
-    if (attachedVerification.status === "failed" || attachedVerification.status === "malformed") {
-      return "needs_maintainer_proof_decision";
-    }
+    const policy = reportRealBehaviorProofPolicy(markdown);
+    if (policy.needsContributorAction) return "needs_proof";
+    if (policy.blocksMerge) return "needs_maintainer_proof_decision";
+    if (frontMatterValue(markdown, "review_status") === "failed") return null;
     const fromParsedLabels = prStatusLabelKindFromLabels(
       parsedLabels.filter(
         (label) =>
@@ -834,6 +850,7 @@ export function createReviewPresentation({
     prStatusLabelKindFromReportLabels,
     priorityLabel,
     publicFailedReviewReadinessBlock,
+    publicHistoricalVerificationBlockerLine,
     publicLikelyOwnerRole,
     publicMantisRecommendationBlock,
     publicMergeReadinessBlock,

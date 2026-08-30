@@ -18,6 +18,165 @@ import {
   reportFrontMatter,
 } from "./helpers.ts";
 
+for (const proofStatus of ["missing", "not_applicable"] as const) {
+  test(`failed ${proofStatus} reports do not retain positive public status labels`, () => {
+    const oldStatuses = ["status: 🚀 automerge armed", "status: 👀 ready for maintainer look"];
+    for (const malformedReceipt of [false, true]) {
+      for (const extraLabels of [
+        [],
+        ["clawsweeper:automerge"],
+        ["status: 🔁 re-review loop"],
+        ["status: 🛠️ actively grinding"],
+        ["clawsweeper:human-review"],
+      ]) {
+        const report = `${reportFrontMatter({
+          type: "pull_request",
+          number: "74466",
+          review_status: "failed",
+          author: "contributor",
+          author_association: "CONTRIBUTOR",
+          labels: JSON.stringify([...oldStatuses, ...extraLabels]),
+        })}
+${realBehaviorProofReportSection({
+  status: proofStatus,
+  evidenceKind: proofStatus === "missing" ? "none" : "not_applicable",
+  needsContributorAction: proofStatus === "missing",
+  summary: "Retained proof assessment from an incomplete review.",
+})}
+## Review Findings
+
+Overall correctness: patch is correct
+
+Full review comments:
+
+- none
+
+${malformedReceipt ? `## Live Proof\n\n${LIVE_VERIFICATION_MARKER}\nResult: invalid!` : ""}
+`;
+        const comment = renderReviewCommentFromReport(report, "none");
+        assert.match(comment, /## Merge readiness\n\nNot assessed\./);
+        assert.doesNotMatch(
+          comment,
+          /\*\*Add real behavior proof\*\*|add `status: 📣 needs proof`/,
+        );
+        const details = detailsBody(comment, "Label changes");
+        for (const oldStatus of oldStatuses) {
+          assert.ok(details.includes(`remove \`${oldStatus}\``), oldStatus);
+          assert.ok(!details.includes(`add \`${oldStatus}\``), oldStatus);
+        }
+        const workflowStatus = extraLabels.find((label) => label.startsWith("status:"));
+        if (workflowStatus) assert.ok(!details.includes(`remove \`${workflowStatus}\``));
+        assert.equal(
+          details.includes("add `status: needs maintainer proof decision`"),
+          malformedReceipt && !workflowStatus && !extraLabels.includes("clawsweeper:human-review"),
+        );
+        const markers = reviewAutomationMarkersFromReport(report);
+        assert.match(
+          markers,
+          new RegExp(`live_verification=${malformedReceipt ? "malformed" : "absent"}`),
+        );
+        assert.match(markers, /clawsweeper-verdict:needs-human/);
+        assert.doesNotMatch(markers, /clawsweeper-verdict:pass|clawsweeper-action:fix-required/);
+        assert.ok(comment.includes(markers));
+      }
+    }
+  });
+}
+
+test("report proof requirements preserve workflow precedence and contributor ownership", () => {
+  for (const fixture of [
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["clawsweeper:automerge"],
+      expected: "status: 📣 needs proof",
+    },
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["status: 📣 needs proof"],
+      expected: "status: 📣 needs proof",
+    },
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["status: 🔁 re-review loop"],
+      expected: "status: 🔁 re-review loop",
+    },
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["status: 🛠️ actively grinding"],
+      expected: "status: 🛠️ actively grinding",
+    },
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["clawsweeper:human-review"],
+      expected: null,
+    },
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["clawsweeper:manual-only"],
+      expected: null,
+    },
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["clawsweeper:merge-ready"],
+      expected: null,
+    },
+    {
+      status: "missing",
+      action: false,
+      labels: [],
+      expected: "status: needs maintainer proof decision",
+    },
+    {
+      status: "mock_only",
+      action: false,
+      labels: [],
+      expected: "status: needs maintainer proof decision",
+    },
+    {
+      status: "insufficient",
+      action: false,
+      labels: [],
+      expected: "status: needs maintainer proof decision",
+    },
+  ]) {
+    const report = `${reportFrontMatter({
+      type: "pull_request",
+      review_status: "complete",
+      author_association: "CONTRIBUTOR",
+      author: "contributor",
+      labels: JSON.stringify(fixture.labels),
+      pull_files: '["src/runtime.ts"]',
+      pull_files_truncated: false,
+    })}
+${realBehaviorProofReportSection({
+  status: fixture.status,
+  evidenceKind: fixture.status === "not_applicable" ? "not_applicable" : "none",
+  needsContributorAction: fixture.action,
+  summary: "Recorded assessment for the changed path.",
+})}`;
+    const comment = renderReviewCommentFromReport(report, "none");
+    const labels = detailsBody(comment, "Label changes");
+    assert.deepEqual(
+      [...labels.matchAll(/^- `(status: [^`]+)`: /gm)].map((match) => match[1]),
+      fixture.expected ? [fixture.expected] : [],
+      JSON.stringify(fixture),
+    );
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:needs-human/);
+    assert.match(comment, /Blocked until .*real behavior proof/i);
+    if (fixture.status !== "not_applicable") {
+      assert.doesNotMatch(comment, /\*\*Add real behavior proof\*\*/);
+      assert.match(comment, /\*\*Resolve real behavior proof assessment\*\*/);
+    }
+  }
+});
+
 test("sufficient real behavior proof allows automerge pass markers", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",

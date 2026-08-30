@@ -1,6 +1,5 @@
 import { hasDataModelUpgradeProof } from "./clawsweeper-change-detection.js";
 import { createLabelSynchronization } from "./clawsweeper-label-sync.js";
-import { AUTHORITY_CHAIN_PROOF_MARKER, PROOF_OVERRIDE_LABEL } from "./clawsweeper-policy.js";
 import type {
   CloseReason,
   Evidence,
@@ -35,8 +34,6 @@ export function createReportOrchestrationFoundation(
     isBulkFilerExemptAuthorAssociation,
     isBulkFilerExemptRepositoryPermission,
     isDigitsOnly,
-    isDocsOnlyPullRequestReport,
-    isExternalPullRequestReport,
     labelPolicy,
     markdownLink,
     markdownRepository,
@@ -45,8 +42,7 @@ export function createReportOrchestrationFoundation(
     publicReviewTextDiffers,
     publicTableCell,
     repoUrlFor,
-    reportAttachedLiveVerification,
-    reportRealBehaviorProof,
+    reportRealBehaviorProofPolicy,
     reportSecurityReview,
     reviewSectionValue,
     sentence,
@@ -461,25 +457,7 @@ export function createReportOrchestrationFoundation(
   } = labelSynchronization;
 
   function realBehaviorProofBlocksMerge(markdown: string): boolean {
-    const attached = reportAttachedLiveVerification(markdown);
-    if (attached.status === "failed" || attached.status === "malformed") return true;
-    if (frontMatterValue(markdown, "review_status") === "failed") return false;
-    if (frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL)) return false;
-    if (isDocsOnlyPullRequestReport(markdown)) return false;
-    const proof = reportRealBehaviorProof(markdown);
-    const authorityChainProofRequired = reviewSectionValue(markdown, "realBehaviorProof")
-      .split("\n")
-      .some((line) => line.trimStart().startsWith(`Summary: ${AUTHORITY_CHAIN_PROOF_MARKER}`));
-    if (!isExternalPullRequestReport(markdown) && !authorityChainProofRequired) {
-      return false;
-    }
-    return (
-      proof.needsContributorAction ||
-      proof.status === "missing" ||
-      proof.status === "mock_only" ||
-      proof.status === "insufficient" ||
-      (proof.status !== "sufficient" && proof.status !== "override")
-    );
+    return reportRealBehaviorProofPolicy(markdown).blocksMerge;
   }
 
   function normalizedLabelSet(labels: readonly string[]): Set<string> {

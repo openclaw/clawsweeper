@@ -64,6 +64,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Aligned PR proof comments and status labels with the existing host requirement when a reviewer records proof as not applicable, while preserving recorded assessments and merge gates.
 - Classified the explicitly approved autoreview fixture only by its exact full-URI digest and canonical or vendored source path, enforcing the same digest/path/mode policy at every scanned endpoint for all reviewed fixtures while preserving scanner gates and value-free audits.
 - Stopped treating pane-local runtime state as stored data while retaining warnings for explicit persistence changes and incomplete storage patches.
 - Corrected retained terminal-proof cleanup for independent process-exit and PTY-close events, preserving the original wrapper failure and draining dead-pane capture only after verified cleanup.

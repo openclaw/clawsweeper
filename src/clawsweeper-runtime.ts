@@ -67,6 +67,7 @@ import {
   unsponsoredFeatureAgeSkipReason,
 } from "./clawsweeper-item-policy.js";
 import { createLabelPolicy } from "./clawsweeper-label-policy.js";
+import { createRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import { createLiveProofCommands } from "./live-proof/commands.js";
 import { publishReviewLiveProofArtifacts } from "./live-proof/publication-artifacts.js";
 import { executeReviewLiveProofs, inspectReviewLiveProofs } from "./live-proof/review-artifacts.js";
@@ -503,14 +504,21 @@ const {
   reportPrRating,
 } = reportParser;
 
+const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
+  ...recordMetadata,
+  isDocsOnlyPullRequestReport,
+  isExternalPullRequestReport,
+  reportAttachedLiveVerification,
+  reportRealBehaviorProof,
+});
+
 const labelPolicy = createLabelPolicy({
   asRecord,
   frontMatterValue,
   isAutomationReportAuthor,
   mergeRiskOptionsFromReport,
-  reportAttachedLiveVerification,
   reportOverallCorrectness,
-  reportRealBehaviorProof,
+  reportRealBehaviorProofPolicy,
   reportReviewFindings,
   reportSecurityReview,
   stringOrUndefined,
@@ -900,15 +908,15 @@ const reviewPresentation = createReviewPresentation({
   linkedSha,
   markdownLink,
   publicTableCell: (...args) => publicTableCell(...args),
-  reportAttachedLiveVerification,
   reportEvidence,
-  reportRealBehaviorProof,
+  reportRealBehaviorProofPolicy,
   securityConcernLocation,
   splitFileAndLine,
 });
 const { isSupportedMantisScenario, sentence, validMantisMaintainerComment } = reviewPresentation;
 
 const reportOrchestration = createReportOrchestration({
+  reportRealBehaviorProofPolicy,
   agentsPolicyStatusLine: (...args) => agentsPolicyStatusLine(...args),
   asRecord,
   ...reviewPresentation,

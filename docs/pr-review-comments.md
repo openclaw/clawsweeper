@@ -107,6 +107,23 @@ review metrics, stored-data warnings, root-cause clusters, proof suggestions,
 merge-risk options, full review comments, labels, evidence, optional rank-up
 moves, the rank legend, workflow notes, and review history.
 
+The recorded reviewer proof assessment and the host's existing proof requirement
+are separate. An applicable external PR assessed as `not_applicable` still needs
+proof: the verdict, readiness, verification, checklist, and status label explain
+that the assessment does not satisfy current policy. Put relevant after-change
+evidence in the main PR body, then request a fresh review. This includes root
+`README.md` changes; the existing docs exemption requires a complete, nonempty
+file list entirely under `docs/`. Recorded proof fields, summaries, ratings, and
+rating labels remain unchanged; the comment identifies reviewer context without
+presenting it as a host exemption.
+
+Failed or malformed historical verification receipts remain separate,
+maintainer-owned blockers. They do not erase independently sufficient contributor
+proof or turn an exempt change into a contributor proof request. These projections
+do not change merge, repair, or close eligibility. OpenClaw Bay needs no code or
+schema change because its observer projection does not consume this assessment
+or checklist.
+
 For OpenClaw PRs, stored-data warnings flag possible persistence changes in
 production source or documented storage contracts, not setup in test, fixture,
 or example source paths. Markdown beside source is still documentation: ordinary
