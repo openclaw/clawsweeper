@@ -50,6 +50,7 @@ export function buildFixPrompt({
     "- address review-bot concerns named in the artifact;",
     "- resolve actionable human review comments, bot comments, and requested changes named in the artifact;",
     "- fix relevant failing CI/check output named in the artifact; do not leave known changed-surface CI failures for a later pass;",
+    "- Telegram-visible behavior: when the changed behavior is observable on Telegram's Test Server, after base sync read and use `.agents/skills/telegram-e2e-userbot/SKILL.md` to exercise the exact changed behavior; extend its harness or recipes when needed;",
     isAutomergeRepair ? renderAutomergeRepairGuidance() : "",
     renderChangelogRule(fixArtifact),
     "- prepare the PR so it can pass the ClawSweeper Repair merge_preflight gate;",

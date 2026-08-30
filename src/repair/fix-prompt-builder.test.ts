@@ -112,6 +112,26 @@ test("fix prompt makes Codex own the validation loop", () => {
   assert.match(prompt, /do not report validation as passed unless it passed after your last edit/);
 });
 
+test("fix prompt routes applicable Telegram behavior through the repository skill", () => {
+  const prompt = promptFor({
+    summary: "Repair a Telegram-visible reply regression.",
+    affected_surfaces: ["extensions/telegram"],
+    likely_files: ["extensions/telegram/src/bot-message.ts"],
+    changelog_required: false,
+  });
+
+  assert.match(
+    prompt,
+    /Telegram-visible behavior: when the changed behavior is observable on Telegram's Test Server/,
+  );
+  assert.match(
+    prompt,
+    /after base sync read and use `.agents\/skills\/telegram-e2e-userbot\/SKILL.md`/,
+  );
+  assert.match(prompt, /exercise the exact changed behavior/);
+  assert.match(prompt, /extend its harness or recipes when needed/);
+});
+
 test("automerge fix prompt makes Codex own PR repair, rebase, and CI discovery", () => {
   const prompt = buildFixPrompt({
     fixArtifact: {
