@@ -393,6 +393,30 @@ test("restricted PR review can inspect changed blobs from a genuine blobless clo
   }
 });
 
+test("persisted snapshot null previous filenames still hydrate missing blobs", () => {
+  const fixture = partialCloneFixture();
+  try {
+    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+    assert.equal(objectExistsOffline(fixture.target, fixture.changedBlobSha), false);
+    const result = hydratePullRequestReviewBlobs({
+      targetDir: fixture.target,
+      baseSha: fixture.baseSha,
+      headSha: fixture.headSha,
+      resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
+      files: [
+        { filename: "added.txt", previous_filename: null, status: "added" },
+        { filename: "changed.txt", previous_filename: null, status: "modified" },
+        { filename: "removed.txt", previous_filename: null, status: "removed" },
+      ],
+    });
+    assert.deepEqual(result, { hydrated: true, blobs: 4 });
+    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), true);
+    assert.equal(objectExistsOffline(fixture.target, fixture.changedBlobSha), true);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("restricted review materializes the exact pull request head before model execution", () => {
   const fixture = partialCloneFixture({ prefetchHead: false });
   const reviewTree = join(fixture.root, "review-tree");

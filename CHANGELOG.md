@@ -19,6 +19,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Hydrate review blobs from cached PR snapshots that store an absent previous filename as `null`, preventing repeat reviews from refusing otherwise available source.
+
 - Preserve Codex keep-open verdicts during publication instead of treating related PR links as independent supersession decisions.
 
 - Let Codex own transport recovery within one review process; the durable queue owns fresh attempts. Batch publication now loads only reviewed item tuples and syncs their comments directly, removing full-repository hydration, source Git pulls, and a second comment-sync dispatch.

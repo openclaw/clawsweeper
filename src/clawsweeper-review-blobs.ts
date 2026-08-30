@@ -250,7 +250,7 @@ export function hydratePullRequestReviewBlobs({
     const filename = safeReviewPath(file.filename);
     if (!filename) return { hydrated: false, blobs: 0 };
     const previous =
-      file.previous_filename === undefined ? filename : safeReviewPath(file.previous_filename);
+      file.previous_filename == null ? filename : safeReviewPath(file.previous_filename);
     if (!previous) return { hydrated: false, blobs: 0 };
     const status = typeof file.status === "string" ? file.status.toLowerCase() : "";
     if (status !== "added" && status !== "a") basePaths.add(previous);
