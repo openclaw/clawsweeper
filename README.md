@@ -195,6 +195,11 @@ Issues with an open PR that references them using GitHub closing syntax such as
 that high-confidence PR candidate earlier in the same apply run.
 Open issue/PR pairs from the same author stay open together unless the paired
 item is already resolved or a maintainer explicitly asks to close one side.
+Related PR links do not promote a completed keep-open review into a close
+proposal. Codex owns that supersession decision; comment publication preserves
+the verdict. Independent no-diff, stale-PR, and author-budget policies still
+apply.
+
 PR-to-PR duplicate/superseded closes also require a safe canonical target:
 ClawSweeper refuses to close one PR as replaced by another PR that is closed
 unmerged, missing positive real behavior proof, F-rated, already proposed for
