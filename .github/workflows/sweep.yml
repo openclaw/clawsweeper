@@ -4771,14 +4771,19 @@ jobs:
         env:
           CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/review-canonical-baseline
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
           GH_TOKEN: ${{ github.token }}
-          HOT_INTAKE: ${{ needs.plan.outputs.hot_intake }}
+          ITEM_NUMBERS: ${{ steps.reviewed-items.outputs.item_numbers }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
         run: |
           target_slug="$TARGET_REPO"
           target_slug="${target_slug//\//-}"
+          pnpm run reconcile -- \
+            --target-repo "$TARGET_REPO" \
+            --item-numbers "$ITEM_NUMBERS" \
+            --only-item-numbers \
+            --skip-closed-at \
+            --canonical-record-baseline-dir "$CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR"
           pnpm run repair:publish-main -- \
             --message "chore: update sweep records" \
             --path "records/${target_slug}" \

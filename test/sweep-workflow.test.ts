@@ -6518,6 +6518,19 @@ test("sweep issue and PR event reviews and target fanout avoid storm amplificati
   assert.match(fanoutBlock, /GITHUB_STEP_SUMMARY/);
 });
 
+test("batch publication reconciles only reviewed tuples before canonical writes", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const publish = workflow.jobs.publish.steps.find(
+    (step: { id?: string }) => step.id === "commit-review-records",
+  );
+  assert.equal(publish.env.ITEM_NUMBERS, "${{ steps.reviewed-items.outputs.item_numbers }}");
+  assert.match(publish.run, /--item-numbers "\$ITEM_NUMBERS"/);
+  assert.match(publish.run, /--only-item-numbers/);
+  assert.ok(
+    publish.run.indexOf("pnpm run reconcile") < publish.run.indexOf("pnpm run repair:publish-main"),
+  );
+});
+
 test("explicit-item planning hydrates exactly the items selected for review", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
   const steps = workflow.jobs.plan.steps;

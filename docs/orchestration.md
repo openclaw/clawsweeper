@@ -54,8 +54,8 @@ own any fresh review attempt. The repair lane's review/fix iteration budget is
 separate from transport recovery.
 
 A batch publisher hydrates only the complete record tuples named by its review
-artifacts, then publishes those records and synchronizes their comments in the
-same job. It does not download the repository-wide snapshot, pull source Git
+artifacts, reconciles those selected tuples against current GitHub state, then
+publishes the records and synchronizes their comments in the same job. It does not download the repository-wide snapshot, pull source Git
 history, reconcile unrelated records, or dispatch another comment-sync run.
 Scheduled comment synchronization remains a recovery path.
 Explicit-item planning uses the same requested item set for focused hydration
