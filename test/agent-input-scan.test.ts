@@ -21,6 +21,7 @@ import {
   AgentInputScanError,
   INCOMPLETE_AGENT_INPUT_SOURCE_EXIT_CODE,
   agentInputScanFailureExitCode,
+  managedScannerCacheRoot,
   scanAgentInput,
 } from "../dist/agent-input-scan.js";
 import { reviewedFixtureForSource } from "../dist/agent-input-scan-fixtures.js";
@@ -233,6 +234,54 @@ test("checkout-controlled scanner is never executed", (t) => {
   assert.throws(() => f.run({ kind: "prompt" }), /scanner_unavailable/);
   assert.equal(existsSync(f.calls), false);
 });
+
+test("managed scanner cache roots inside either checkout refuse before bootstrap writes", (t) => {
+  const f = fixture(t);
+  for (const root of [
+    join(f.cwd, "managed-scanner-cache"),
+    join(process.cwd(), `.managed-scanner-cache-${Date.now()}`),
+  ]) {
+    assert.throws(
+      () => managedScannerCacheRoot({ CLAWSWEEPER_REVIEW_TOOLS_DIR: root }, f.cwd, f.cwd),
+      /unsafe_path/,
+    );
+    assert.equal(existsSync(root), false, "rejected cache roots must not be created");
+  }
+});
+
+test(
+  "managed scanner cache symlinks refuse before bootstrap writes",
+  { skip: process.platform === "win32" },
+  (t) => {
+    const f = fixture(t);
+    const cacheRoot = join(f.root, "managed-scanner-cache-link");
+    const target = join(f.cwd, "managed-scanner-cache");
+    symlinkSync(target, cacheRoot);
+    assert.throws(
+      () => managedScannerCacheRoot({ CLAWSWEEPER_REVIEW_TOOLS_DIR: cacheRoot }, f.cwd, f.cwd),
+      /unsafe_path/,
+    );
+    assert.equal(existsSync(target), false, "rejected cache symlinks must not create their target");
+  },
+);
+
+test(
+  "managed scanner cache may sit below an external symlinked ancestor",
+  { skip: process.platform === "win32" },
+  (t) => {
+    const f = fixture(t);
+    const external = join(f.root, "external-cache-parent");
+    const alias = join(f.root, "external-cache-alias");
+    mkdirSync(external);
+    symlinkSync(external, alias);
+    const cacheRoot = join(alias, "managed-scanner-cache");
+    assert.equal(
+      managedScannerCacheRoot({ CLAWSWEEPER_REVIEW_TOOLS_DIR: cacheRoot }, f.cwd, f.cwd),
+      cacheRoot,
+    );
+    assert.equal(existsSync(cacheRoot), false, "validation must not create an external cache");
+  },
+);
 
 for (const location of ["bin", "..tools", "..tools-copy"]) {
   test(`checkout scanner trust rejects ${location} even with an external symlink`, (t) => {

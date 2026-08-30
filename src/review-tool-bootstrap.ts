@@ -109,7 +109,7 @@ export function reviewToolArtifact(
   return ARTIFACTS[`${runtimePlatform}-${runtimeArch}`];
 }
 
-function cacheRoot(env: NodeJS.ProcessEnv): string {
+export function reviewToolCacheRoot(env: NodeJS.ProcessEnv): string {
   const configured = env.CLAWSWEEPER_REVIEW_TOOLS_DIR?.trim();
   if (configured) {
     if (!isAbsolute(configured)) throw new Error("CLAWSWEEPER_REVIEW_TOOLS_DIR must be absolute.");
@@ -173,7 +173,7 @@ export async function ensureManagedTruffleHog(options: {
   );
   if (!artifact)
     throw new Error("No checksum-pinned trusted scanner is available for this platform.");
-  const root = cacheRoot(env);
+  const root = reviewToolCacheRoot(env);
   const cacheDir = join(root, "trufflehog", `v${TRUFFLEHOG_VERSION}`, artifact.platform);
   const archivePath = join(cacheDir, "archive.tar.gz");
   const binary = join(cacheDir, artifact.executable);

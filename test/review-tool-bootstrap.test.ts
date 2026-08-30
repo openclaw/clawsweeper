@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { resolve } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
 
 import {
   extractTarExecutable,
+  reviewToolCacheRoot,
   reviewToolArtifact,
   TRUFFLEHOG_VERSION,
 } from "../dist/review-tool-bootstrap.js";
@@ -27,6 +29,15 @@ test("review-tool bootstrap pins the official Windows archive", () => {
     url: `https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_windows_amd64.tar.gz`,
     sha256: "dc1759892a41d64ee0d46cd5d4391dad7f916f54257154aa1b0732f9c50901b2",
   });
+});
+
+test("review-tool bootstrap requires an absolute configured cache root", () => {
+  const absolute = resolve("review-tools");
+  assert.equal(reviewToolCacheRoot({ CLAWSWEEPER_REVIEW_TOOLS_DIR: absolute }), absolute);
+  assert.throws(
+    () => reviewToolCacheRoot({ CLAWSWEEPER_REVIEW_TOOLS_DIR: "relative-review-tools" }),
+    /must be absolute/,
+  );
 });
 
 test("review-tool bootstrap extracts only the exact regular executable", () => {

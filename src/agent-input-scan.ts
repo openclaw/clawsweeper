@@ -16,8 +16,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { reviewToolCacheRoot } from "./review-tool-bootstrap.js";
 import { readReviewGit, reviewMergeBase, type ReviewGitReadOptions } from "./pr-review-evidence.js";
 import {
   classifyReviewedFixtureScan,
@@ -107,6 +108,62 @@ function trustedExecutable(name: string, cwd: string, lexicalCwd: string): strin
   throw new AgentInputScanError("scanner_unavailable");
 }
 
+function realpathWithMissingTail(path: string): string {
+  const tail: string[] = [];
+  const seenLinks = new Set<string>();
+  let current = path;
+  for (;;) {
+    try {
+      if (lstatSync(current).isSymbolicLink()) {
+        if (seenLinks.has(current)) throw new Error("Scanner cache symlink cycle.");
+        seenLinks.add(current);
+        // A cache below an external alias such as macOS /tmp is safe when its
+        // canonical location is outside the checkouts. Resolve the link and
+        // let the caller apply that canonical boundary check.
+        current = resolve(dirname(current), readlinkSync(current));
+        continue;
+      }
+      return resolve(realpathSync(current), ...tail);
+    } catch (error) {
+      if (error instanceof AgentInputScanError) throw error;
+      const parent = dirname(current);
+      if (parent === current)
+        throw new Error("Could not resolve scanner cache location.", { cause: error });
+      tail.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+export function managedScannerCacheRoot(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  lexicalCwd: string,
+): string {
+  let root: string;
+  try {
+    root = reviewToolCacheRoot(env);
+  } catch (error) {
+    if (error instanceof AgentInputScanError) throw error;
+    throw new AgentInputScanError("scanner_unavailable");
+  }
+  const protectedRoots = [cwd, resolve(lexicalCwd), hostRoot, realpathSync(hostRoot)];
+  let resolvedRoot: string;
+  try {
+    resolvedRoot = realpathWithMissingTail(root);
+  } catch (error) {
+    if (error instanceof AgentInputScanError) throw error;
+    throw new AgentInputScanError("scanner_unavailable");
+  }
+  if (
+    protectedRoots.some(
+      (protectedRoot) => within(protectedRoot, root) || within(protectedRoot, resolvedRoot),
+    )
+  )
+    throw new AgentInputScanError("unsafe_path");
+  return root;
+}
+
 function trustedScanner(cwd: string, lexicalCwd: string, timeoutMs: number): string {
   try {
     return trustedExecutable("trufflehog", cwd, lexicalCwd);
@@ -114,6 +171,7 @@ function trustedScanner(cwd: string, lexicalCwd: string, timeoutMs: number): str
     if (!(error instanceof AgentInputScanError) || error.reason !== "scanner_unavailable")
       throw error;
   }
+  const cacheRoot = managedScannerCacheRoot(process.env, cwd, lexicalCwd);
   const installer = join(hostRoot, "scripts", "setup-review-tools.mjs");
   const result = spawnSync(process.execPath, [installer, "--timeout-ms", String(timeoutMs)], {
     encoding: "utf8",
@@ -122,7 +180,9 @@ function trustedScanner(cwd: string, lexicalCwd: string, timeoutMs: number): str
       HOME: process.env.HOME,
       USERPROFILE: process.env.USERPROFILE,
       LOCALAPPDATA: process.env.LOCALAPPDATA,
-      CLAWSWEEPER_REVIEW_TOOLS_DIR: process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR,
+      // The child receives only the parent-validated absolute location, so it
+      // cannot create a managed cache inside either checkout before refusal.
+      CLAWSWEEPER_REVIEW_TOOLS_DIR: cacheRoot,
     },
     timeout: timeoutMs,
     maxBuffer: 4096,
