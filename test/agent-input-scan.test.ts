@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   copyFileSync,
   mkdirSync,
@@ -13,10 +14,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { runAgentProcess, runAgentCheckoutInspection } from "../dist/agent-runner.js";
 import { AgentInputScanError, scanAgentInput } from "../dist/agent-input-scan.js";
+import { reviewedFixtureForSource } from "../dist/agent-input-scan-fixtures.js";
 import {
   captureTargetCheckoutBinding,
   withTargetReviewSnapshot,
@@ -425,23 +427,73 @@ test("repair scan binds raw bytes even when normalization leaves the same canoni
   assert.equal(existsSync(f.calls), false);
 });
 
+const ledgerSource = "test/action-ledger-runtime.test.ts";
+const autoreviewSources = [
+  "skills/autoreview/tests/test_autoreview_hardening.py",
+  ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
+];
+
+test("reviewed fixture registry binds exact digests to exact regular-file source paths", () => {
+  for (const [source, digest] of [
+    [ledgerSource, "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e"],
+    ...autoreviewSources.map((source) => [
+      source,
+      "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83",
+    ]),
+  ]) {
+    assert.deepEqual(reviewedFixtureForSource(source!, "100644"), {
+      fixtureSha256: digest,
+      source,
+    });
+    for (const mode of ["100755", "120000", "160000", "000000", "644"])
+      assert.equal(reviewedFixtureForSource(source!, mode), undefined);
+    for (const alias of [`./${source}`, `other/${source}`, `${source}.bak`, source!.toUpperCase()])
+      assert.equal(reviewedFixtureForSource(alias, "100644"), undefined);
+  }
+});
+
 for (const scenario of [
   "reviewed fixture",
+  "PLAIN duplicate",
   "HTML duplicate",
+  "shared approved path OIDs",
+  "shared endpoint OID",
+  "canonical autoreview path",
+  "vendored autoreview path",
+  "both autoreview paths",
+  "executable source",
   "changed raw",
   "changed full URI",
+  "changed matching raw values",
   "verified",
   "mixed findings",
+  "unapproved first",
   "wrong source",
   "wrong line",
   "other file",
   "prompt",
+  "schema",
+  "additional",
+  "diff",
   "decoded only",
+  "wrong detector",
+  "wrong source type",
+  "wrong decoder",
+  "missing verification error",
+  "unexpected extra data",
+  "unexpected structured data",
+  "wrong secret parts",
   "missing completion",
   "detector error",
+  "info error",
+  "info errors",
   "wrong count",
+  "verified count",
   "wrong version",
   "duplicate completion",
+  "trailing log",
+  "unterminated output",
+  "unterminated stderr",
   "malformed stderr",
   "malformed output",
   "unexpected successful output",
@@ -465,50 +517,118 @@ for (const scenario of [
       );
     assert.ok(uri, "reviewed synthetic fixture is present");
     const f = fixture(t, scenario === "prompt" ? uri : undefined);
-    const file = scenario === "other file" ? "other.test.ts" : "test/action-ledger-runtime.test.ts";
-    mkdirSync(join(f.cwd, "test"));
+    const files =
+      scenario === "shared approved path OIDs"
+        ? [...autoreviewSources, ledgerSource]
+        : scenario === "both autoreview paths"
+          ? autoreviewSources
+          : [
+              scenario === "canonical autoreview path"
+                ? autoreviewSources[0]!
+                : scenario === "vendored autoreview path"
+                  ? autoreviewSources[1]!
+                  : scenario === "other file"
+                    ? "other.test.ts"
+                    : ledgerSource,
+            ];
     const value = scenario === "decoded only" ? uri.replace(":", "&#58;") : uri;
     const contents = "// context\n".repeat(40) + JSON.stringify(value) + "\n";
-    writeFileSync(join(f.cwd, file), "// before\n" + contents);
+    for (const file of files) {
+      mkdirSync(dirname(join(f.cwd, file)), { recursive: true });
+      writeFileSync(
+        join(f.cwd, file),
+        scenario === "diff" ? "// before\n" : "// before\n" + contents,
+      );
+      if (scenario === "executable source") chmodSync(join(f.cwd, file), 0o755);
+    }
     const baseSha = f.commit();
-    writeFileSync(join(f.cwd, file), "// after\n" + contents);
+    for (const file of files) {
+      if (scenario === "shared endpoint OID") chmodSync(join(f.cwd, file), 0o755);
+      else writeFileSync(join(f.cwd, file), "// after\n" + contents);
+    }
     const headSha = f.commit();
+    const receipt = join(f.root, "scan-root");
+    const schemaPath = join(f.root, "schema.json");
+    if (scenario === "schema") writeFileSync(schemaPath, uri);
     useFakeScanner(
       t,
       String.raw`
 const uri = ${JSON.stringify(uri)};
 const scenario = ${JSON.stringify(scenario)};
+fs.writeFileSync(${JSON.stringify(receipt)}, path.dirname(inputDir));
 const parsed = new URL(uri);
-const findings = inputs.filter(({name}) => /^[a-f0-9]{40}$/.test(name) || (scenario === 'prompt' && name === 'prompt')).map(({name}) => ({
+const blobs = inputs.filter(({name}) => /^[a-f0-9]{40}$/.test(name));
+assert.equal(blobs.length, scenario === 'shared endpoint OID' ? 1 : 2);
+const findings = inputs.filter(({name, bytes}) =>
+  (/^[a-f0-9]{40}$/.test(name) && (scenario !== 'diff' || bytes.includes(uri))) ||
+  (scenario === 'prompt' && name === 'prompt') ||
+  (scenario === 'schema' && name === 'schema') ||
+  (scenario === 'additional' && name === '0') ||
+  (scenario === 'diff' && /^\d+$/.test(name) && bytes.includes(uri))
+).map(({name, bytes}) => ({
   SourceType: 15, DetectorType: 17, DetectorName: 'URI', DecoderName: 'PLAIN', Verified: false,
   VerificationError: 'synthetic verification error', Raw: uri, RawV2: uri,
-  SourceMetadata: {Data: {Filesystem: {file: path.join(inputDir, name), line: name === 'prompt' ? 1 : 42}}},
+  SourceMetadata: {Data: {Filesystem: {file: path.join(inputDir, name), line: /^[a-f0-9]{40}$/.test(name) ? 42 : bytes.toString().split('\n').findIndex(line => line.includes(uri)) + 1}}},
   SecretParts: {host: parsed.host, username: parsed.username, password: parsed.password},
   ExtraData: null, StructuredData: null,
 }));
+if (scenario === 'PLAIN duplicate') findings.push({...findings[0]});
 if (scenario === 'HTML duplicate') findings.push({...findings[0], DecoderName: 'HTML'});
 if (scenario === 'changed raw') findings[0].Raw += 'changed';
 if (scenario === 'changed full URI') findings[0].RawV2 += '/changed';
+if (scenario === 'changed matching raw values') findings[0].Raw = findings[0].RawV2 = uri + '/changed';
 if (scenario === 'verified') findings[0].Verified = true;
 if (scenario === 'mixed findings') findings.push({...findings[0], Raw: 'unreviewed', RawV2: 'unreviewed'});
+if (scenario === 'unapproved first') findings.unshift({...findings[0], Raw: 'unreviewed', RawV2: 'unreviewed'});
 if (scenario === 'wrong source') findings[0].SourceMetadata.Data.Filesystem.file = path.join(inputDir, 'prompt');
 if (scenario === 'wrong line') findings[0].SourceMetadata.Data.Filesystem.line++;
-if (scenario === 'source drift') fs.appendFileSync(${JSON.stringify(join(f.cwd, file))}, '// drift');
-process.stdout.write(findings.map(value => JSON.stringify(value)).join('\n') + '\n');
+if (scenario === 'wrong detector') findings[0].DetectorType = 18;
+if (scenario === 'wrong source type') findings[0].SourceType = 16;
+if (scenario === 'wrong decoder') findings[0].DecoderName = 'BASE64';
+if (scenario === 'missing verification error') findings[0].VerificationError = '';
+if (scenario === 'unexpected extra data') findings[0].ExtraData = {};
+if (scenario === 'unexpected structured data') findings[0].StructuredData = {};
+if (scenario === 'wrong secret parts') findings[0].SecretParts.host = 'mismatch';
+if (scenario === 'source drift') fs.appendFileSync(${JSON.stringify(join(f.cwd, files[0]!))}, '// drift');
+process.stdout.write(findings.map(value => JSON.stringify(value)).join('\n') + (scenario === 'unterminated output' ? '' : '\n'));
 if (scenario === 'malformed output') process.stdout.write('{');
 if (scenario === 'detector error') process.stderr.write(JSON.stringify({level:'error', logger:'trufflehog', msg:'error finding results in chunk'}) + '\n');
+if (scenario === 'info error') process.stderr.write(JSON.stringify({level:'info-0', logger:'trufflehog', msg:'detector failed', error:'synthetic'}) + '\n');
+if (scenario === 'info errors') process.stderr.write(JSON.stringify({level:'info-0', logger:'trufflehog', msg:'detector failed', errors:[]}) + '\n');
 const completion = JSON.stringify({
   level:'info-0', logger:'trufflehog', msg:'finished scanning', trufflehog_version:scenario === 'wrong version' ? 'changed' : '3.97.1',
-  chunks:2, bytes:1000, verified_secrets:0, unverified_secrets:findings.length + (scenario === 'wrong count' ? 1 : 0),
-}) + '\n';
+  chunks:2, bytes:1000, verified_secrets:scenario === 'verified count' ? 1 : 0, unverified_secrets:findings.length + (scenario === 'wrong count' ? 1 : 0),
+}) + (scenario === 'unterminated stderr' ? '' : '\n');
 if (scenario !== 'missing completion') process.stderr.write(completion);
 if (scenario === 'duplicate completion') process.stderr.write(completion);
+if (scenario === 'trailing log') process.stderr.write(JSON.stringify({level:'info-0', logger:'trufflehog', msg:'trailing'}) + '\n');
 if (scenario === 'malformed stderr') process.stderr.write('{');
 process.exit(scenario === 'unexpected successful output' ? 0 : 183);
 `,
     );
-    const run = () => f.run({ kind: "committed", baseSha, headSha });
-    if (scenario === "reviewed fixture" || scenario === "HTML duplicate") {
+    const run = () => {
+      const source = { kind: "committed" as const, baseSha, headSha };
+      if (scenario === "schema" || scenario === "additional") {
+        scanAgentInput({
+          cwd: f.cwd,
+          prompt: "Review the change.",
+          source,
+          timeoutMs: 30_000,
+          ...(scenario === "schema" ? { schemaPath } : { additionalBytes: [Buffer.from(uri)] }),
+        });
+        return { status: 0 };
+      }
+      return f.run(source);
+    };
+    if (
+      [
+        "reviewed fixture",
+        "PLAIN duplicate",
+        "HTML duplicate",
+        "shared approved path OIDs",
+        "shared endpoint OID",
+      ].includes(scenario)
+    ) {
       assert.equal(run().status, 0);
       assert.equal(readFileSync(f.calls, "utf8"), "called");
       assert.equal(notices.length, 1);
@@ -519,7 +639,11 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
       );
       const notice = JSON.parse(String(notices[0]![0]));
       assert.equal(notice.event, "agent_input_scan_classified");
-      assert.equal(notice.source, file);
+      assert.equal(notice.source, ledgerSource);
+      assert.equal(
+        notice.fixtureSha256,
+        reviewedFixtureForSource(ledgerSource, "100644")!.fixtureSha256,
+      );
       assert.equal(notice.detector, "URI");
       assert.match(notice.notice, /classified as non-sensitive/);
       assert.equal(
@@ -527,7 +651,11 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
           (sum: number, finding: { occurrences: number }) => sum + finding.occurrences,
           0,
         ),
-        scenario === "HTML duplicate" ? 3 : 2,
+        scenario === "shared endpoint OID" ? 1 : scenario.endsWith("duplicate") ? 3 : 2,
+      );
+      assert.equal(
+        notice.findings.length,
+        scenario === "shared endpoint OID" ? 1 : scenario === "HTML duplicate" ? 3 : 2,
       );
       for (const finding of notice.findings) {
         assert.match(finding.blob, /^[a-f0-9]{40}$/);
@@ -544,5 +672,6 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
       assert.equal(existsSync(f.diagnosticPromptPath), false);
       assert.deepEqual(notices, []);
     }
+    assert.equal(existsSync(readFileSync(receipt, "utf8")), false, "private staging is removed");
   });
 }

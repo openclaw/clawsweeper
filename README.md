@@ -560,17 +560,30 @@ uses the remaining review deadline; it never silently truncates or bypasses.
 Diagnostics omit scanner output and source values. Restore prerequisites or
 remove sensitive input before retrying a refusal.
 
-The host classifies one reviewed synthetic malformed-configuration URI in
-`test/action-ledger-runtime.test.ts` as non-sensitive after a complete scan.
-Its policy binds the exact full finding bytes, detector contract, and literal
-line in a host-staged Git blob. It does not trust checkout ignore rules or
-domain patterns. Prompt, schema, diff, additional-input, and encoded-only
-occurrences remain blocking, as do other findings and incomplete scans.
+The host classifies the reviewed synthetic malformed-configuration URI in
+`test/action-ledger-runtime.test.ts` and the explicitly approved autoreview
+negative-test URI in the [canonical autoreview test](https://github.com/openclaw/agent-skills/blob/a8466c1d860588a083610fe41fd277c1d88b14e0/skills/autoreview/tests/test_autoreview_hardening.py)
+or its [vendored OpenClaw copy](https://github.com/openclaw/openclaw/blob/136eab023035dd5943818f791d3c3db7d92e4491/.agents/skills/autoreview/tests/test_autoreview_hardening.py)
+as non-sensitive after a complete scan. Static host policy associates each
+exact full-URI SHA-256 with only its approved source paths, requiring a literal
+at the reported line of a host-staged Git blob from mode `100644`.
+Deduplicated blobs retain the approved paths that established their eligibility.
+The policy does not trust checkout ignore rules, domain patterns, fixture words,
+test names, or unchanged-line inference; no nearby fixture is implicitly approved.
+Findings attributed to prompt, schema, diff, additional-input, other-path, or
+encoded-only occurrences remain blocking, as do other findings, verified findings,
+and incomplete scans. Unverified findings alone never qualify: every finding must
+match the exact bytes, source association, and strict detector contract. This
+classification does not expand TruffleHog's detection coverage.
 The classification is pinned to TruffleHog 3.97.1's output contract; scanner
 upgrades require requalification. See `src/agent-input-scan-fixtures.ts`.
-Every accepted classification emits a host-side structured stderr notice with
-the fixture digest, source blob, line, decoder, and occurrence count. Raw values
-and verification diagnostics never appear in that audit notice.
+After successful cleanup and final source fences, each accepted fixture/source
+pair emits a host-side structured stderr notice with `event`, `fixtureSha256`,
+`source`, `detector`, and `findings` entries containing `blob`, `line`, `decoder`,
+and `occurrences`. Counts are per source: a shared blob can appear in both source
+notices and those counts must not be summed across sources. A refused or drifted
+scan emits no success notice. Raw values and verification diagnostics never
+appear in that audit notice.
 
 Generated review and repair prompt diagnostics retire the previous attempt's
 copy before admission and persist only successfully scanned exact prompt bytes

@@ -64,6 +64,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Classified the explicitly approved autoreview fixture only by its exact full-URI digest and canonical or vendored source path, preserving all scanner gates and value-free audits.
 - Stopped treating pane-local runtime state as stored data while retaining warnings for explicit persistence changes and incomplete storage patches.
 - Corrected retained terminal-proof cleanup for independent process-exit and PTY-close events, preserving the original wrapper failure and draining dead-pane capture only after verified cleanup.
 - Prevented rejected model inputs from surviving in generated prompt artifacts; retained diagnostics now follow admission with owner-only access, and unused prompt copies are no longer written.

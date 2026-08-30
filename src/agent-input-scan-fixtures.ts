@@ -1,10 +1,35 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 
-// Maintainer-reviewed malformed-config fixture introduced by d68b1861172120fc.
 // This is host policy, never an allowlist loaded from the reviewed checkout.
-export const REVIEWED_FIXTURE_SOURCE = "test/action-ledger-runtime.test.ts";
-const FIXTURE_SHA256 = "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e";
+const REVIEWED_FIXTURES = [
+  {
+    // Maintainer-reviewed malformed-config fixture introduced by d68b1861172120fc.
+    fixtureSha256: "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e",
+    sources: ["test/action-ledger-runtime.test.ts"],
+  },
+  {
+    // Explicitly approved autoreview negative-test fixture, including its vendored path.
+    fixtureSha256: "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83",
+    sources: [
+      "skills/autoreview/tests/test_autoreview_hardening.py",
+      ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
+    ],
+  },
+] as const;
+
+export function reviewedFixtureForSource(source: string, mode: string) {
+  const fixture =
+    mode === "100644"
+      ? REVIEWED_FIXTURES.find((entry) => entry.sources.some((path) => path === source))
+      : undefined;
+  return fixture ? { fixtureSha256: fixture.fixtureSha256, source } : undefined;
+}
+
+export interface ReviewedFixtureBlob {
+  bytes: Buffer;
+  sources: ReadonlySet<string>;
+}
 
 interface ClassifiedFinding {
   blob: string;
@@ -29,13 +54,13 @@ function records(bytes: Buffer): Record<string, unknown>[] {
     .map((line) => object(JSON.parse(line)));
 }
 
-/** Classify only complete native scans whose every finding is the reviewed fixture. */
+/** Classify only complete native scans whose every finding matches host fixture policy. */
 export function classifyReviewedFixtureScan(
   stdout: Buffer,
   stderr: Buffer,
-  sourceBlobs: ReadonlyMap<string, Buffer>,
+  sourceBlobs: ReadonlyMap<string, ReviewedFixtureBlob>,
 ):
-  | { fixtureSha256: string; source: string; detector: string; findings: ClassifiedFinding[] }
+  | { fixtureSha256: string; source: string; detector: string; findings: ClassifiedFinding[] }[]
   | undefined {
   try {
     const findings = records(stdout);
@@ -70,7 +95,10 @@ export function classifyReviewedFixtureScan(
     )
       return undefined;
 
-    const classified = new Map<string, ClassifiedFinding>();
+    const classified = new Map<
+      string,
+      { fixtureSha256: string; source: string; findings: Map<string, ClassifiedFinding> }
+    >();
     for (const finding of findings) {
       if (
         finding.DetectorType !== 17 ||
@@ -83,21 +111,25 @@ export function classifyReviewedFixtureScan(
         typeof finding.Raw !== "string" ||
         // URI Raw omits the path; RawV2 must match the complete reviewed value.
         finding.RawV2 !== finding.Raw ||
-        createHash("sha256").update(finding.Raw).digest("hex") !== FIXTURE_SHA256 ||
         finding.ExtraData !== null ||
         finding.StructuredData !== null
       )
         return undefined;
+      const digest = createHash("sha256").update(finding.Raw).digest("hex");
+      const fixture = REVIEWED_FIXTURES.find((entry) => entry.fixtureSha256 === digest);
+      if (!fixture) return undefined;
       const source = object(object(object(finding.SourceMetadata).Data).Filesystem);
-      const bytes = typeof source.file === "string" ? sourceBlobs.get(source.file) : undefined;
+      const staged = typeof source.file === "string" ? sourceBlobs.get(source.file) : undefined;
+      const sources = fixture.sources.filter((path) => staged?.sources.has(path));
       if (
-        !bytes ||
+        !staged ||
+        !sources.length ||
         typeof source.line !== "number" ||
         !Number.isSafeInteger(source.line) ||
         source.line <= 0
       )
         return undefined;
-      const line = new TextDecoder("utf-8", { fatal: true }).decode(bytes).split("\n")[
+      const line = new TextDecoder("utf-8", { fatal: true }).decode(staged.bytes).split("\n")[
         source.line - 1
       ];
       // HTML may rediscover an unchanged literal. Encoded-only occurrences,
@@ -114,22 +146,33 @@ export function classifyReviewedFixtureScan(
         return undefined;
       const blob = basename(source.file as string);
       const key = `${blob}:${source.line}:${finding.DecoderName}`;
-      const previous = classified.get(key);
-      classified.set(key, {
-        blob,
-        line: source.line,
-        decoder: finding.DecoderName,
-        occurrences: (previous?.occurrences ?? 0) + 1,
-      });
+      for (const path of sources) {
+        const groupKey = `${digest}:${path}`;
+        const group = classified.get(groupKey) ?? {
+          fixtureSha256: digest,
+          source: path,
+          findings: new Map<string, ClassifiedFinding>(),
+        };
+        const previous = group.findings.get(key);
+        group.findings.set(key, {
+          blob,
+          line: source.line,
+          decoder: finding.DecoderName,
+          occurrences: (previous?.occurrences ?? 0) + 1,
+        });
+        classified.set(groupKey, group);
+      }
     }
-    return {
-      fixtureSha256: FIXTURE_SHA256,
-      source: REVIEWED_FIXTURE_SOURCE,
-      detector: "URI",
-      findings: [...classified.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([, value]) => value),
-    };
+    return [...classified.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, group]) => ({
+        fixtureSha256: group.fixtureSha256,
+        source: group.source,
+        detector: "URI",
+        findings: [...group.findings.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([, value]) => value),
+      }));
   } catch {
     // Scanner output includes credential-shaped bytes; never expose parse errors.
     return undefined;
