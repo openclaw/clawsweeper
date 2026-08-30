@@ -325,7 +325,7 @@ const gitHubRuntime = createGitHubRuntime({
   targetRepo,
 });
 export const { untrustedCodexEnvForTest } = gitHubRuntime;
-const { GitHubRuntimeBudgetError, sleepMs, untrustedCodexEnv } = gitHubRuntime;
+const { GitHubRuntimeBudgetError, untrustedCodexEnv } = gitHubRuntime;
 
 const githubExecution = createGitHubExecution({
   ROOT,
@@ -754,7 +754,6 @@ const reviewRuntime = createReviewRuntime({
   targetRepo,
   evidenceEntry,
   run,
-  sleepMs,
   untrustedCodexEnv,
   ghJson,
   asRecord,
@@ -764,7 +763,6 @@ const reviewRuntime = createReviewRuntime({
   stringOrUndefined,
 });
 export const {
-  combinedCodexReviewRetryableForTest,
   codexFailureDecisionForTest,
   codexFailureLogKindForTest,
   codexReviewFailureRetryableForTest,

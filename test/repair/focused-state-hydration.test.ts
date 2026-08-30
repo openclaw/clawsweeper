@@ -7,13 +7,91 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { hydrateState } from "../../scripts/hydrate-state.ts";
-import { materializeWorkerRecord } from "../../scripts/worker-records.ts";
+import { materializeWorkerItems } from "../../scripts/worker-records.ts";
 
 const repoSlug = "openclaw-openclaw";
 const itemNumber = 111745;
 const webhookSecret = "single-record-test-secret";
 
-test("single-issue hydration fetches one authenticated Worker record without snapshots", async () => {
+test("focused batch hydration ignores unavailable snapshots and preserves complete item tuples", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-batch-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const contents = new Map([
+    ["items/101", "open review\n"],
+    ["plans/101", "open review plan\n"],
+    ["decision-packets/101", '{"decision":"keep_open"}\n'],
+    ["closed/102", "closed review\n"],
+  ]);
+  const requests: string[] = [];
+  const result = await hydrateState(
+    [
+      "--worktree",
+      root,
+      "--skip-git-state",
+      "--skip-state-blobs",
+      "--records-item-number",
+      "102,101,102",
+    ],
+    { CLAWSWEEPER_RECORDS_SECRET: webhookSecret, CLAWSWEEPER_RECORDS_REPO_SLUGS: repoSlug },
+    (async (url: RequestInfo | URL) => {
+      const pathname = new URL(String(url)).pathname;
+      requests.push(pathname);
+      if (!pathname.startsWith(`/internal/state/records/${repoSlug}/`)) {
+        return Response.json({ error: "exact_review_queue_unavailable" }, { status: 500 });
+      }
+      const key = pathname.split("/").slice(-2).join("/");
+      const content = contents.get(key);
+      return content === undefined
+        ? Response.json({ error: "record_not_found" }, { status: 404 })
+        : Response.json({
+            content,
+            digest: createHash("sha256").update(content).digest("hex"),
+            revision: 42,
+          });
+    }) as typeof fetch,
+  );
+  assert.equal(requests.length, 8);
+  assert.equal(result.worker[repoSlug]?.recordCount, 4);
+  assert.deepEqual(result.worker[repoSlug]?.coverageTrackedItemIds, [101]);
+  for (const [key, content] of contents) {
+    const extension = key.startsWith("decision-packets/") ? "json" : "md";
+    assert.equal(
+      readFileSync(join(root, "records", repoSlug, `${key}.${extension}`), "utf8"),
+      content,
+    );
+  }
+});
+
+test("focused batch hydration leaves existing records intact when a later item fails", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-batch-failed-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const preservedPath = join(root, "records", repoSlug, "items", "101.md");
+  mkdirSync(join(root, "records", repoSlug, "items"), { recursive: true });
+  writeFileSync(preservedPath, "prior review\n");
+  await assert.rejects(
+    materializeWorkerItems({
+      worktreeRoot: root,
+      baseUrl: "https://worker.example.test",
+      webhookSecret,
+      repoSlug,
+      itemNumbers: [101, 102],
+      fetch: (async (url: RequestInfo | URL) => {
+        if (String(url).endsWith("/102"))
+          return Response.json({ error: "unauthorized" }, { status: 403 });
+        const content = "replacement review\n";
+        return Response.json({
+          content,
+          digest: createHash("sha256").update(content).digest("hex"),
+          revision: 42,
+        });
+      }) as typeof fetch,
+    }),
+    /unauthorized/,
+  );
+  assert.equal(readFileSync(preservedPath, "utf8"), "prior review\n");
+});
+
+test("focused hydration fetches authenticated item tuples without snapshots", async () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-state-"));
   const stateRoot = join(root, "state");
   const worktreeRoot = join(root, "worktree");
@@ -26,6 +104,8 @@ test("single-issue hydration fetches one authenticated Worker record without sna
   const requests: Array<{ url: string; init?: RequestInit }> = [];
   const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit) => {
     requests.push({ url: String(url), init });
+    if (!String(url).includes("/items/"))
+      return Response.json({ error: "record_not_found" }, { status: 404 });
     return Response.json({
       content,
       digest: createHash("sha256").update(content).digest("hex"),
@@ -52,7 +132,7 @@ test("single-issue hydration fetches one authenticated Worker record without sna
     fetchImpl as typeof fetch,
   );
 
-  assert.equal(requests.length, 1);
+  assert.equal(requests.length, 4);
   assert.equal(
     requests[0]?.url,
     `https://worker.example.test/internal/state/records/${repoSlug}/items/${itemNumber}`,
@@ -134,7 +214,7 @@ test("single-issue hydration preserves valid issue jobs with no open canonical r
     }) as typeof fetch,
   );
 
-  assert.equal(reads, 1);
+  assert.equal(reads, 4);
   assert.throws(() => readFileSync(stalePath));
   assert.deepEqual(result.worker[repoSlug]?.coverageTrackedItemIds, []);
   assert.equal(result.worker[repoSlug]?.recordCount, 0);
@@ -143,12 +223,12 @@ test("single-issue hydration preserves valid issue jobs with no open canonical r
 test("single-issue hydration refuses unrelated Worker authorization failures", async () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-denied-"));
   await assert.rejects(
-    materializeWorkerRecord({
+    materializeWorkerItems({
       worktreeRoot: root,
       baseUrl: "https://worker.example.test",
       webhookSecret,
       repoSlug,
-      itemNumber,
+      itemNumbers: [itemNumber],
       fetch: (async () =>
         Response.json({ error: "unauthorized" }, { status: 404 })) as typeof fetch,
     }),
@@ -189,7 +269,9 @@ test("single-issue hydration retries malformed successful edge responses", async
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-edge-"));
   const content = "current canonical report\n";
   let reads = 0;
-  const fetchImpl = async () => {
+  const fetchImpl = async (url: RequestInfo | URL) => {
+    if (!String(url).includes("/items/"))
+      return Response.json({ error: "record_not_found" }, { status: 404 });
     reads += 1;
     return reads === 1
       ? new Response("", { status: 200 })
@@ -200,12 +282,12 @@ test("single-issue hydration retries malformed successful edge responses", async
         });
   };
 
-  await materializeWorkerRecord({
+  await materializeWorkerItems({
     worktreeRoot: root,
     baseUrl: "https://worker.example.test",
     webhookSecret,
     repoSlug,
-    itemNumber,
+    itemNumbers: [itemNumber],
     fetch: fetchImpl as typeof fetch,
   });
   assert.equal(reads, 2);
@@ -227,13 +309,15 @@ test("single-issue hydration retries malformed Worker record envelopes", async (
   ]) {
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-envelope-"));
     let reads = 0;
-    await materializeWorkerRecord({
+    await materializeWorkerItems({
       worktreeRoot: root,
       baseUrl: "https://worker.example.test",
       webhookSecret,
       repoSlug,
-      itemNumber,
-      fetch: (async () => {
+      itemNumbers: [itemNumber],
+      fetch: (async (url: RequestInfo | URL) => {
+        if (!String(url).includes("/items/"))
+          return Response.json({ error: "record_not_found" }, { status: 404 });
         reads += 1;
         return Response.json(reads === 1 ? malformed : { content, digest, revision: 11 });
       }) as typeof fetch,
@@ -250,12 +334,12 @@ test("single-issue hydration bounds repeated malformed Worker record envelopes",
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-envelope-failure-"));
   let reads = 0;
   await assert.rejects(
-    materializeWorkerRecord({
+    materializeWorkerItems({
       worktreeRoot: root,
       baseUrl: "https://worker.example.test",
       webhookSecret,
       repoSlug,
-      itemNumber,
+      itemNumbers: [itemNumber],
       fetch: (async () => {
         reads += 1;
         return Response.json({});
@@ -285,12 +369,12 @@ test("failed staged record installation restores the existing canonical record t
   syncBuiltinESMExports();
   try {
     await assert.rejects(
-      materializeWorkerRecord({
+      materializeWorkerItems({
         worktreeRoot: root,
         baseUrl: "https://worker.example.test",
         webhookSecret,
         repoSlug,
-        itemNumber,
+        itemNumbers: [itemNumber],
         fetch: (async () =>
           Response.json({
             content,

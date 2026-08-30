@@ -19,6 +19,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Let Codex own transport recovery within one review process; the durable queue owns fresh attempts. Batch publication now loads only reviewed item tuples and syncs their comments directly, removing full-repository hydration, source Git pulls, and a second comment-sync dispatch.
+
 - Proof-review guidance now maps changed source behavior to exercised scenarios and observed results, and historical Live Verification PASS comments clarify their declared scenario and assertion scope.
 - Reviewer input now retains bounded late proof/trace excerpts with explicit body coverage and treats PR patches as reviewer-only media inputs, without increasing the body budget, adding media fetches, or weakening proof requirements; OpenClaw Bay is unaffected.
 - PR reviews now separate introduced changes from main-only drift, verify test-merge parents, and avoid stored-data warnings for ordinary Markdown prose beside source.
@@ -63,6 +65,8 @@ checkpoint, and status-only commits are intentionally omitted.
 - Generated live-proof plans now receive the effective cold-checkout setup contract and guidance to supply missing build or code-generation prerequisites before dependent commands.
 
 ### Fixed
+
+- Stopped retrying unchanged PR revisions after an incomplete-source scan refusal while preserving newer queued revisions. Thanks @sallyom. (#1311)
 
 - Aligned PR proof comments and status labels with the existing host requirement when a reviewer records proof as not applicable, while preserving recorded assessments and merge gates.
 - Classified the explicitly approved autoreview fixture only by its exact full-URI digest and canonical or vendored source path, enforcing the same digest/path/mode policy at every scanned endpoint for all reviewed fixtures while preserving scanner gates and value-free audits.

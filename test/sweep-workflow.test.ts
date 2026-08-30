@@ -326,24 +326,10 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
   ]) {
     assert.equal(step("publish", name)["continue-on-error"], true, `${name} must fail open`);
   }
-  const artifactSync = step("publish", "Sync before applying artifacts");
-  assert.match(artifactSync.if ?? "", /setup-publish-state\.outcome == 'success'/);
-  assert.match(artifactSync.if ?? "", /setup-publish-pnpm\.outcome == 'success'/);
-  assert.match(artifactSync.if ?? "", /download-review-artifacts\.outcome == 'success'/);
-  assert.doesNotMatch(artifactSync.if ?? "", /action-ledger/);
-  assert.match(
-    artifactSync.run ?? "",
-    /no such ref was fetched\|couldn.t find remote ref/,
-    "a vanished reviewed branch must complete publication as a superseded no-op",
-  );
-  assert.match(artifactSync.run ?? "", /superseded=true/);
   const artifactApply = step("publish", "Apply review artifacts");
-  assert.match(artifactApply.if ?? "", /sync-review-artifacts\.outcome == 'success'/);
-  assert.match(
-    artifactApply.if ?? "",
-    /sync-review-artifacts\.outputs\.superseded != 'true'/,
-    "superseded sync must skip artifact application",
-  );
+  assert.match(artifactApply.if ?? "", /setup-publish-state\.outcome == 'success'/);
+  assert.match(artifactApply.if ?? "", /download-review-artifacts\.outcome == 'success'/);
+  assert.doesNotMatch(artifactApply.if ?? "", /action-ledger/);
   assert.match(artifactApply.run ?? "", /review_batch_succeeded=/);
   assert.match(artifactApply.run ?? "", /artifacts_applied=true/);
   const artifactLedger = step("publish", "Publish review artifact action ledger");
@@ -357,7 +343,6 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
     "Dispatch high-confidence bug implementation candidates",
     "Dispatch vision-fit implementation candidates",
     "Backfill viable open issue implementation candidates",
-    "Dispatch background review comment sync",
     "Sync selected review comments",
   ]) {
     const condition = step("publish", name).if ?? "";
@@ -2376,7 +2361,6 @@ test("every sweep tuple mutator hands publish-main a captured canonical baseline
     commitReview,
     /CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: \.artifacts\/review-canonical-baseline/,
   );
-  assert.match(commitReview, /--canonical-record-baseline-dir/);
 
   const selectedComments = stepBlock("Sync selected review comments");
   assert.ok(
@@ -5157,7 +5141,14 @@ test("sweep target tokens fall back when an org app installation is missing", ()
     const blocks = stepBlocks(name);
     assert.ok(blocks.length > 0, `missing workflow step: ${name}`);
     for (const block of blocks) {
-      assert.match(block, /continue-on-error: true/);
+      if (
+        name === "Create target write token" &&
+        block.includes("needs.plan.outputs.target_repo_owner")
+      ) {
+        assert.doesNotMatch(block, /continue-on-error: true/);
+      } else {
+        assert.match(block, /continue-on-error: true/);
+      }
     }
   }
   assert.match(
@@ -5169,16 +5160,6 @@ test("sweep target tokens fall back when an org app installation is missing", ()
     /CLAWSWEEPER_PROOF_INSPECTION_TOKEN: \$\{\{ steps\.codex-inspection-token\.outputs\.token \}\}/,
   );
   assert.doesNotMatch(workflow, /CLAWSWEEPER_PROOF_INSPECTION_TOKEN:.*\|\| github\.token/);
-  assert.ok(
-    workflow.includes(
-      "if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.hot_intake != 'true'",
-    ),
-  );
-  assert.ok(
-    workflow.includes(
-      "if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch'",
-    ),
-  );
   assert.ok(
     workflow.includes(
       "if: ${{ always() && !cancelled() && steps.sync-selected-review-comments.outputs.sync_succeeded == 'true' && steps.target-write-token.outputs.token != '' && github.event.inputs.apply_after_review == 'true' }}",
@@ -5580,9 +5561,6 @@ test("sweep workflow coalesces durable issue and PR comment sync batches", () =>
     applyHelper,
     /if \[ "\$\{scheduled_comment_sync:-false\}" = "true" \]; then\s+apply_kind="all"\s+comment_sync_min_age_days=0\s+fi/,
   );
-  const backgroundSyncStart = workflow.indexOf("- name: Dispatch background review comment sync");
-  const selectedSyncStart = workflow.indexOf("- name: Sync selected review comments");
-  const backgroundSync = workflow.slice(backgroundSyncStart, selectedSyncStart);
   const cursorPreselectStart = workflow.indexOf("- name: Reconcile before apply preselect");
   const cursorApplyStart = workflow.indexOf(
     "- name: Apply unchanged proposed decisions with checkpoints",
@@ -5590,11 +5568,6 @@ test("sweep workflow coalesces durable issue and PR comment sync batches", () =>
   );
   const cursorPreselect = workflow.slice(cursorPreselectStart, cursorApplyStart);
   const cursorExecution = workflow.slice(cursorApplyStart);
-  assert.match(backgroundSync, /-f apply_item_numbers=__cursor__/);
-  assert.match(backgroundSync, /-f apply_kind=all/);
-  assert.match(backgroundSync, /-f apply_min_age_days=0/);
-  assert.match(backgroundSync, /-f apply_comment_sync_min_age_days=0/);
-  assert.doesNotMatch(backgroundSync, /-f apply_item_numbers="\$item_numbers"/);
   assert.match(
     cursorPreselect,
     /if: \$\{\{ .*github\.event\.inputs\.apply_sync_comments_only == 'true' \|\| github\.event\.inputs\.apply_item_numbers == '__cursor__'.*\}\}/,
@@ -5667,7 +5640,7 @@ test("target hot sweep dispatches honor shard cap payload", () => {
   assert.match(modeBlock, /shard_count="\$hot_intake_shards"/);
 });
 
-test("review publication routes hot intake once without changing other producers", () => {
+test("batch publication updates the durable comment once across replay", () => {
   type PublishStep = { name?: string; if?: string; run?: string };
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
     jobs: Record<string, { steps: PublishStep[] }>;
@@ -5678,75 +5651,7 @@ test("review publication routes hot intake once without changing other producers
     assert.ok(value, name);
     return value;
   };
-  const background = step("Dispatch background review comment sync");
   const selected = step("Sync selected review comments");
-
-  assert.equal(
-    background.if,
-    "${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.hot_intake != 'true' && (github.event_name != 'repository_dispatch' || github.event.action == 'clawsweeper_target_sweep') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) }}",
-  );
-  assert.equal(
-    selected.if,
-    "${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep') || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '' || needs.plan.outputs.hot_intake == 'true') }}",
-  );
-
-  type RouteInput = {
-    event: "workflow_dispatch" | "repository_dispatch" | "schedule";
-    action?: string;
-    hot: boolean;
-    itemNumber?: string;
-    itemNumbers?: string;
-  };
-  const routes = ({ event, action = "", hot, itemNumber = "", itemNumbers = "" }: RouteInput) => ({
-    background:
-      !hot &&
-      (event !== "repository_dispatch" || action === "clawsweeper_target_sweep") &&
-      (event !== "workflow_dispatch" || (itemNumber === "" && itemNumbers === "")),
-    selected:
-      (event === "repository_dispatch" && action !== "clawsweeper_target_sweep") ||
-      itemNumber !== "" ||
-      itemNumbers !== "" ||
-      hot,
-  });
-  const scenarios: Array<[string, RouteInput, "background" | "selected"]> = [
-    ["broad hot workflow dispatch", { event: "workflow_dispatch", hot: true }, "selected"],
-    ["normal workflow dispatch", { event: "workflow_dispatch", hot: false }, "background"],
-    [
-      "explicit item workflow dispatch",
-      { event: "workflow_dispatch", hot: false, itemNumber: "125204" },
-      "selected",
-    ],
-    [
-      "explicit items workflow dispatch",
-      { event: "workflow_dispatch", hot: false, itemNumbers: "125204,125205" },
-      "selected",
-    ],
-    [
-      "hot target repository dispatch",
-      { event: "repository_dispatch", action: "clawsweeper_target_sweep", hot: true },
-      "selected",
-    ],
-    [
-      "normal target repository dispatch",
-      { event: "repository_dispatch", action: "clawsweeper_target_sweep", hot: false },
-      "background",
-    ],
-    [
-      "exact repository dispatch",
-      { event: "repository_dispatch", action: "clawsweeper_exact_review", hot: false },
-      "selected",
-    ],
-    ["scheduled background review", { event: "schedule", hot: false }, "background"],
-  ];
-  for (const [name, input, expected] of scenarios) {
-    const result = routes(input);
-    assert.equal(result[expected], true, `${name}: expected ${expected}`);
-    assert.equal(
-      Number(result.background) + Number(result.selected),
-      1,
-      `${name}: exactly one terminal-publication route`,
-    );
-  }
 
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -5862,9 +5767,6 @@ if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
   process.exit(1);
 }
 `;
-    const broadHotRoute = routes({ event: "workflow_dispatch", hot: true });
-    assert.equal(broadHotRoute.selected, true);
-    assert.equal(broadHotRoute.background, false);
     withMockGh(root, ghMock, () => {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         runApplyDecisionsForTest({

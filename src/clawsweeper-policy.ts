@@ -82,7 +82,6 @@ export const DEFAULT_REASONING_EFFORT = "high";
 // "gpt 5.6 sol high fast"). Latency-only; excluded from review-policy hashing.
 export const DEFAULT_SERVICE_TIER = "fast";
 export const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
-export const DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS = 120_000;
 export const REVIEW_POLICY_VERSION = "2026-08-28-policy-v25";
 export const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
 export const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";

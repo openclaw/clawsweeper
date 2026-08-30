@@ -46,6 +46,19 @@ the caller does not pass `--max-live-workers` or set
 `CLAWSWEEPER_MAX_LIVE_WORKERS`. Workflows may still pass an explicit cap when
 they intentionally want a narrower lane.
 
+## Review execution and publication
+
+Each review starts one Codex process. Codex owns request and stream recovery;
+ClawSweeper preserves the final error classification and lets the durable queue
+own any fresh review attempt. The repair lane's review/fix iteration budget is
+separate from transport recovery.
+
+A batch publisher hydrates only the complete record tuples named by its review
+artifacts, then publishes those records and synchronizes their comments in the
+same job. It does not download the repository-wide snapshot, pull source Git
+history, reconcile unrelated records, or dispatch another comment-sync run.
+Scheduled comment synchronization remains a recovery path.
+
 ## What Should Stay Thin
 
 GitHub workflows should do only setup, credential minting, script execution,

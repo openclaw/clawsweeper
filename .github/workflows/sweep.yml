@@ -4568,7 +4568,6 @@ jobs:
 
       - name: Create target write token
         id: target-write-token
-        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
@@ -4586,16 +4585,6 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
-      - uses: ./.github/actions/setup-state
-        id: setup-publish-state
-        with:
-          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          records-repo-slugs: ${{ needs.plan.outputs.target_slug }}
-          hydrate-state-blobs: "false"
-          token: ${{ steps.state-token.outputs.token }}
-
       - uses: ./.github/actions/setup-pnpm
         id: setup-publish-pnpm
         with:
@@ -4607,6 +4596,24 @@ jobs:
           pattern: review-shard-*
           path: artifacts
           merge-multiple: true
+
+      - name: Resolve reviewed item numbers
+        id: reviewed-items
+        run: |
+          item_numbers="$(pnpm run --silent workflow -- artifact-item-numbers --artifact-dir artifacts)"
+          test -n "$item_numbers"
+          echo "item_numbers=$item_numbers" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/setup-state
+        id: setup-publish-state
+        with:
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ needs.plan.outputs.target_slug }}
+          records-item-number: ${{ steps.reviewed-items.outputs.item_numbers }}
+          hydrate-state-blobs: "false"
+          token: ${{ steps.state-token.outputs.token }}
 
       - uses: actions/download-artifact@v8
         id: download-review-metrics
@@ -4675,26 +4682,9 @@ jobs:
           node dist/clawsweeper.js publish-action-event-paths \
             --paths-file .artifacts/action-ledger-paths.txt
 
-      - name: Sync before applying artifacts
-        id: sync-review-artifacts
-        if: ${{ always() && !cancelled() && steps.setup-publish-state.outcome == 'success' && steps.setup-publish-pnpm.outcome == 'success' && steps.download-review-artifacts.outcome == 'success' }}
-        run: |
-          if ! pull_output="$(git pull --rebase --autostash 2>&1)"; then
-            printf '%s\n' "$pull_output" >&2
-            # A reviewed PR head branch can vanish mid-review (force-push or
-            # deletion). The newer head triggers its own review event, so this
-            # publication completes as a superseded no-op instead of failing.
-            if grep -qiE "no such ref was fetched|couldn.t find remote ref" <<<"$pull_output"; then
-              echo "::notice::The reviewed branch disappeared upstream; the newer head owns its own review. Skipping artifact publication as a superseded no-op."
-              echo "superseded=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            exit 1
-          fi
-
       - name: Apply review artifacts
         id: apply-review-artifacts
-        if: ${{ always() && !cancelled() && steps.sync-review-artifacts.outcome == 'success' && steps.sync-review-artifacts.outputs.superseded != 'true' }}
+        if: ${{ always() && !cancelled() && steps.setup-publish-state.outcome == 'success' && steps.download-review-artifacts.outcome == 'success' }}
         env:
           CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/review-canonical-baseline
           GH_TOKEN: ${{ github.token }}
@@ -4718,7 +4708,7 @@ jobs:
             review_batch_succeeded=true
           fi
           echo "review_batch_succeeded=$review_batch_succeeded" >> "$GITHUB_OUTPUT"
-          publish_detail="Merged ${reviewed_count} review artifacts for run ${{ github.run_id }}. Captured ${metric_count} shard metrics; ${non_success_metric_count} shards reported non-success review status. Folder reconciliation moved tracked files to match current GitHub open/closed state."
+          publish_detail="Merged ${reviewed_count} review artifacts for run ${{ github.run_id }}. Captured ${metric_count} shard metrics; ${non_success_metric_count} shards reported non-success review status. Only reviewed item tuples were hydrated and published."
           if [ "$HOT_INTAKE" = "true" ] && [ -z "$EXACT_ITEM" ]; then
             apply_artifacts_args+=(--max-pages "$MAX_PAGES" --skip-reconcile)
             publish_state="Hot intake publish complete"
@@ -4780,14 +4770,6 @@ jobs:
         run: |
           target_slug="$TARGET_REPO"
           target_slug="${target_slug//\//-}"
-          if [ "$HOT_INTAKE" = "true" ] && [ -z "$EXACT_ITEM" ]; then
-            echo "Skipping full reconcile for broad hot-intake publish."
-          else
-            pnpm run reconcile -- \
-              --target-repo "$TARGET_REPO" \
-              --skip-closed-at \
-              --canonical-record-baseline-dir "$CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR"
-          fi
           pnpm run repair:publish-main -- \
             --message "chore: update sweep records" \
             --path "records/${target_slug}" \
@@ -4914,39 +4896,9 @@ jobs:
               -f report_url="$report_url"
           done < /tmp/viable-implementation-candidates.tsv
 
-      - name: Dispatch background review comment sync
-        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.hot_intake != 'true' && (github.event_name != 'repository_dispatch' || github.event.action == 'clawsweeper_target_sweep') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
-        run: |
-          set -euo pipefail
-          item_numbers="$(pnpm run --silent workflow -- artifact-item-numbers --artifact-dir artifacts)"
-          if [ -z "$item_numbers" ]; then
-            echo "No review artifacts to sync comments for."
-            exit 0
-          fi
-          for attempt in 1 2 3; do
-            if gh workflow run sweep.yml \
-              --ref main \
-              -f target_repo="$TARGET_REPO" \
-              -f apply_existing=true \
-              -f apply_sync_comments_only=true \
-              -f apply_item_numbers=__cursor__ \
-              -f apply_kind=all \
-              -f apply_limit=40 \
-              -f apply_min_age_days=0 \
-              -f apply_comment_sync_min_age_days=0; then
-              echo "Dispatched coalesced durable comment sync for item numbers: $item_numbers"
-              exit 0
-            fi
-            sleep "$((attempt * 10))"
-          done
-          echo "::warning::Unable to dispatch background comment sync after three attempts; apply/comment-sync backstops can pick it up later."
-
       - name: Sync selected review comments
         id: sync-selected-review-comments
-        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep') || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '' || needs.plan.outputs.hot_intake == 'true') }}
+        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' }}
         timeout-minutes: 15
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
@@ -4966,7 +4918,6 @@ jobs:
             echo "No review artifacts to sync comments for."
             exit 0
           fi
-          git pull --rebase --autostash
           set +e
           timeout --kill-after=30s 840s pnpm run apply-decisions -- \
             --target-repo "$TARGET_REPO" \
@@ -4977,7 +4928,7 @@ jobs:
             --limit 0 \
             --processed-limit 1000 \
             --max-runtime-ms 720000 \
-            --comment-sync-min-age-days 7 \
+            --comment-sync-min-age-days 0 \
             --progress-every 25
           selected_comment_exit_code=$?
           set -e

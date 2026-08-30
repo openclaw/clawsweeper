@@ -10,7 +10,6 @@ import {
   applyPhaseSequenceForTest,
   applyRuntimeBudgetYieldResultsForTest,
   classifyGitHubDispatchResultForTest,
-  combinedCodexReviewRetryableForTest,
   codexReviewFailureRetryableForTest,
   heldReviewStartStatusCommentResultForTest,
   isGitHubLabelAlreadyExistsErrorForTest,
@@ -784,8 +783,6 @@ test("runtime yields bind the active item and terminal Codex failures preserve r
   );
   assert.equal(codexReviewFailureRetryableForTest(false), false);
   assert.equal(codexReviewFailureRetryableForTest(true), true);
-  assert.equal(combinedCodexReviewRetryableForTest(true, false), false);
-  assert.equal(combinedCodexReviewRetryableForTest(false, true), true);
 });
 
 test("blocked exact close publication discards staged labels before writing the report", () => {
