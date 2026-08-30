@@ -32,6 +32,7 @@ test("OpenClaw PR surface stats aggregate rows and totals", () => {
     { path: "protocol-generated/json/frame.json", additions: 3, deletions: 0 },
     { path: "fixtures/sample.txt", additions: 2, deletions: 1 },
   ]);
+  assert.ok(stats);
 
   assert.deepEqual(
     stats.map(({ label, files, additions, deletions, net }) => ({
@@ -70,10 +71,60 @@ test("OpenClaw PR surface summary omits zero buckets but table keeps them", () =
   const stats = buildOpenClawPrSurfaceStats([
     { path: "src/runtime.ts", additions: 3, deletions: 1 },
   ]);
+  assert.ok(stats);
 
   assert.equal(renderOpenClawPrSurfaceSummary(stats), "Source +2. Total +2 across 1 file.");
 
   const table = renderOpenClawPrSurfaceTable(stats);
   assert.match(table, /\| Tests \| 0 \| 0 \| 0 \| 0 \|/);
   assert.match(table, /\| Other \| 0 \| 0 \| 0 \| 0 \|/);
+});
+
+test("OpenClaw PR surface never aggregates unknown or invalid counts as verified zero", () => {
+  for (const value of [
+    null,
+    undefined,
+    "0",
+    "3",
+    "",
+    false,
+    {},
+    [],
+    -1,
+    0.5,
+    NaN,
+    Infinity,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    for (const field of ["additions", "deletions"]) {
+      assert.equal(
+        buildOpenClawPrSurfaceStats([
+          { path: "src/known.ts", additions: 5, deletions: 1 },
+          { path: "src/unknown.ts", additions: 0, deletions: 0, [field]: value },
+        ]),
+        null,
+        `${field}: ${String(value)}`,
+      );
+    }
+  }
+  assert.equal(
+    buildOpenClawPrSurfaceStats([
+      { path: "src/a.ts", additions: Number.MAX_SAFE_INTEGER, deletions: 0 },
+      { path: "docs/b.md", additions: 1, deletions: 0 },
+    ]),
+    null,
+    "even valid per-file counts must not produce an unsafe aggregate",
+  );
+});
+
+test("OpenClaw PR surface retains verified zero line changes", () => {
+  const stats = buildOpenClawPrSurfaceStats([
+    { path: "src/renamed.ts", additions: 0, deletions: 0 },
+  ]);
+  assert.ok(stats);
+  assert.equal(renderOpenClawPrSurfaceSummary(stats), "Source 0. Total 0 across 1 file.");
+  assert.match(
+    renderOpenClawPrSurfaceTable(stats),
+    /\| \*\*Total\*\* \| \*\*1\*\* \| \*\*0\*\* \| \*\*0\*\* \| \*\*0\*\* \|/,
+  );
 });

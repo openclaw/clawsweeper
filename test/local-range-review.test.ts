@@ -5,7 +5,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
+  renameSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -13,10 +15,14 @@ import {
 } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildLocalRangeReviewForTest } from "../dist/clawsweeper.js";
+import {
+  buildLocalRangeReviewForTest,
+  renderReviewCommentFromReport,
+} from "../dist/clawsweeper.js";
+import { buildPullRequestReviewEvidence } from "../dist/pr-review-evidence.js";
 import { changelogReviewDecision, reviewFinding } from "./helpers.ts";
 
 const CLI = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
@@ -222,6 +228,88 @@ test("buildLocalRangeReview yields no pullFiles for a commit that changes nothin
   }
 });
 
+test(
+  "local-range Git statistics fail closed on failed, oversized, or malformed reads",
+  {
+    skip: process.platform === "win32" ? "POSIX Git process wrapper" : false,
+  },
+  () => {
+    const dir = initRepo();
+    const harness = mkdtempSync(join(tmpdir(), "lrr-git-framing-"));
+    const originalPath = process.env.PATH;
+    const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+    try {
+      writeFileSync(join(dir, "file.txt"), "before\n");
+      git(dir, "add", ".");
+      git(dir, "commit", "-qm", "base");
+      git(dir, "branch", "base-ref");
+      writeFileSync(join(dir, "file.txt"), "after\n");
+      git(dir, "add", ".");
+      git(dir, "commit", "-qm", "change");
+      const modeFile = join(harness, "mode.txt");
+      const script = join(harness, "git.mjs");
+      writeFileSync(
+        script,
+        `import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+const args = process.argv.slice(2);
+const result = spawnSync(${JSON.stringify(realGit)}, args, { encoding: "utf8", env: process.env });
+if (result.status !== 0) process.exit(result.status ?? 1);
+let output = result.stdout;
+if (args.includes("--numstat")) {
+  const mode = readFileSync(${JSON.stringify(modeFile)}, "utf8");
+  if (mode === "failed") process.exit(1);
+  if (mode === "oversized") output = "x".repeat(2 * 1024 * 1024);
+  if (mode === "missing-nul") output = output.slice(0, -1);
+  if (mode === "mismatched") output = "1\\t1\\tother.txt\\0";
+  if (mode === "missing-record") output = "";
+  if (mode === "duplicate") output += output;
+  if (mode === "invalid-count") output = "bad\\t1\\tfile.txt\\0";
+  if (mode === "mixed-binary") output = "-\\t1\\tfile.txt\\0";
+  if (mode === "unsafe-count") output = "9007199254740992\\t1\\tfile.txt\\0";
+  if (mode === "incomplete-rename") output = "1\\t1\\t\\0old.txt\\0";
+}
+if (args.includes("--name-status") && readFileSync(${JSON.stringify(modeFile)}, "utf8") === "incomplete-name") {
+  output = "R100\\0old.txt\\0";
+}
+process.stdout.write(output);
+`,
+      );
+      writeFileSync(
+        join(harness, "git"),
+        `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`,
+        { mode: 0o755 },
+      );
+      process.env.PATH = `${harness}${delimiter}${originalPath}`;
+      for (const mode of [
+        "failed",
+        "oversized",
+        "missing-nul",
+        "mismatched",
+        "missing-record",
+        "duplicate",
+        "invalid-count",
+        "mixed-binary",
+        "unsafe-count",
+        "incomplete-rename",
+        "incomplete-name",
+      ]) {
+        writeFileSync(modeFile, mode);
+        assert.throws(
+          () => buildLocalRangeReviewForTest(dir, "openclaw/openclaw", "base-ref"),
+          /Could not read complete local-range Git file statistics/,
+          mode,
+        );
+      }
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      rmSync(harness, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("buildLocalRangeReview handles renamed files (new path, non-empty patch, no tab leak)", () => {
   const dir = initRepo();
   try {
@@ -270,6 +358,100 @@ test("buildLocalRangeReview refuses a dirty working tree (committed-range contra
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("buildLocalRangeReview distinguishes binary counts, real zeros, and edited copies", () => {
+  const dir = initRepo();
+  try {
+    git(dir, "config", "core.filemode", "false");
+    git(dir, "config", "diff.renames", "copies");
+    writeFileSync(join(dir, "old.txt"), "pure rename\n");
+    writeFileSync(join(dir, "mode.sh"), "echo mode\n");
+    writeFileSync(join(dir, "binary.dat"), "\0before\n");
+    const original = Array.from({ length: 20 }, (_, i) => `copy source line ${i}\n`).join("");
+    writeFileSync(join(dir, "source.txt"), original);
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "base");
+    git(dir, "branch", "base-ref");
+    renameSync(join(dir, "old.txt"), join(dir, "renamed.txt"));
+    writeFileSync(join(dir, "source.txt"), `${original}source append\n`);
+    writeFileSync(
+      join(dir, "copy.txt"),
+      original.replace("copy source line 19", "edited copy line"),
+    );
+    writeFileSync(join(dir, "binary.dat"), "\0after\n");
+    git(dir, "add", "-A");
+    git(dir, "update-index", "--chmod=+x", "mode.sh");
+    git(dir, "commit", "-qm", "rename, copy, mode, and binary");
+
+    const review = buildLocalRangeReviewForTest(dir, "openclaw/openclaw", "base-ref");
+    for (const files of [review.context.pullFiles, review.context.semanticPullFiles]) {
+      const byName = (filename: string) => files.find((file) => file.filename === filename);
+      assert.deepEqual(
+        files.map(({ filename, additions, deletions }) => ({ filename, additions, deletions })),
+        [
+          { filename: "binary.dat", additions: null, deletions: null },
+          { filename: "copy.txt", additions: 1, deletions: 1 },
+          { filename: "mode.sh", additions: 0, deletions: 0 },
+          { filename: "renamed.txt", additions: 0, deletions: 0 },
+          { filename: "source.txt", additions: 1, deletions: 0 },
+        ],
+      );
+      assert.equal(byName("renamed.txt").status, "R100");
+      assert.equal(byName("renamed.txt").previous_filename, "old.txt");
+      assert.match(byName("mode.sh").patch, /old mode 100644\nnew mode 100755/);
+      assert.match(byName("copy.txt").status, /^C/);
+      assert.equal(byName("copy.txt").previous_filename, "source.txt");
+      assert.match(byName("copy.txt").patch, /copy from source.txt/);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test(
+  "local-range producer preserves NUL-framed special paths without executing target helpers",
+  {
+    skip: process.platform === "win32" ? "Windows cannot represent these Git paths" : false,
+  },
+  () => {
+    const dir = initRepo();
+    try {
+      git(dir, "config", "diff.renames", "true");
+      const old = " old\tname\n.txt ";
+      const renamed = " new\nname\t.txt ";
+      const added = " added\tfile\n.txt ";
+      writeFileSync(join(dir, old), "first\nsecond\nthird\nfourth\nfifth\n");
+      git(dir, "add", "-A");
+      git(dir, "commit", "-qm", "base");
+      git(dir, "branch", "base-ref");
+      renameSync(join(dir, old), join(dir, renamed));
+      writeFileSync(join(dir, renamed), "first\nsecond\nthird\nfourth\nchanged\n");
+      writeFileSync(join(dir, added), "new file\n");
+      git(dir, "add", "-A");
+      git(dir, "commit", "-qm", "special paths");
+      const review = buildLocalRangeReviewForTest(dir, "openclaw/openclaw", "base-ref");
+      for (const files of [review.context.pullFiles, review.context.semanticPullFiles]) {
+        assert.deepEqual(
+          files.map(({ filename, previous_filename, additions, deletions }) => ({
+            filename,
+            previous_filename,
+            additions,
+            deletions,
+          })),
+          [
+            { filename: added, previous_filename: undefined, additions: 1, deletions: 0 },
+            { filename: renamed, previous_filename: old, additions: 1, deletions: 1 },
+          ],
+        );
+        assert.match(files[0].patch, /\+new file/);
+        assert.match(files[1].patch, /-fifth\n\+changed/);
+      }
+      // This is producer-only coverage; the native scanner still rejects control-character paths.
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("buildLocalRangeReview throws when HEAD has no commits beyond base", () => {
   const dir = initRepo();
@@ -463,37 +645,10 @@ test("--local-range does not host-download proof video URLs from the body", asyn
   }
 });
 
-test("--local-range carries hosted-shaped review history across related local iterations", (t) => {
-  useFakeScanner(t);
-  const dir = initRepo();
-  const harness = mkdtempSync(join(tmpdir(), "lrr-history-"));
+function writeLocalReviewCodex(harness: string, priorFindingTitle = ""): string {
   const fakeCodexScript = join(harness, "fake-codex.mjs");
   const fakeCodex =
     process.platform === "win32" ? join(harness, "fake-codex.cmd") : join(harness, "fake-codex");
-  const capturePath = join(harness, "captures.json");
-  const decisionPath = join(harness, "decision.json");
-  const priorFindingTitle = "Preserve earlier local finding";
-  writeFileSync(
-    decisionPath,
-    JSON.stringify(
-      changelogReviewDecision({
-        summary: "The deterministic local review found one history-sensitive defect.",
-        bestSolution: "Preserve earlier local review context on the next iteration.",
-        reviewFindings: [
-          reviewFinding({
-            title: priorFindingTitle,
-            body: "A follow-up local review must see this earlier finding.",
-            file: "feature.txt",
-            lineStart: 1,
-            lineEnd: 1,
-          }),
-        ],
-        workReason: "Preserve earlier local review context.",
-        workPrompt: "Carry the previous local review into the follow-up prompt.",
-        workLikelyFiles: ["feature.txt"],
-      }),
-    ),
-  );
   writeFileSync(
     fakeCodexScript,
     `import { spawnSync } from "node:child_process";
@@ -535,6 +690,207 @@ process.stdout.write(JSON.stringify({ type: "turn.completed", usage: { input_tok
       mode: 0o755,
     });
   }
+  return fakeCodex;
+}
+
+test("--local-range persists whole-range Git statistics beyond every display evidence cap", (t) => {
+  useFakeScanner(t);
+  const dir = initRepo();
+  const harness = mkdtempSync(join(tmpdir(), "lrr-stats-"));
+  const fakeCodex = writeLocalReviewCodex(harness);
+  const decisionPath = join(harness, "decision.json");
+  writeFileSync(decisionPath, JSON.stringify(changelogReviewDecision()));
+  const put = (path: string, text: string) => {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), text);
+  };
+  const commit = (message: string) => {
+    git(dir, "add", "-A");
+    git(dir, "commit", "-qm", message);
+  };
+  const runReview = (name: string) => {
+    const output = join(harness, name);
+    const result = spawnSync(
+      process.execPath,
+      [
+        CLI,
+        "review",
+        "--local-range",
+        "--base",
+        "base-ref",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--target-dir",
+        dir,
+        "--artifact-dir",
+        output,
+        "--codex-timeout-ms",
+        "60000",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: "1",
+          CODEX_BIN: fakeCodex,
+          LOCAL_REVIEW_CAPTURE: join(harness, "captures.json"),
+          LOCAL_REVIEW_DECISION: decisionPath,
+          LOCAL_REVIEW_FAIL: "0",
+        },
+        timeout: 60000,
+      },
+    );
+    assert.equal(result.status, 0, `${result.error ?? ""}${result.stderr}${result.stdout}`);
+    return readFileSync(join(output, "0.md"), "utf8");
+  };
+  const storedFiles = (report: string) => {
+    const field = report.match(/^pr_surface_files: (.*)$/m);
+    assert.ok(field);
+    return JSON.parse(field[1]!);
+  };
+  try {
+    git(dir, "config", "core.autocrlf", "false");
+    git(dir, "config", "diff.renames", "true");
+    put("src/early.ts", "original\n");
+    put("src/reversed.ts", "unchanged at endpoints\n");
+    const oldLines = Array.from({ length: 10 }, (_, i) => `rename line ${i}\n`).join("");
+    put("src/old.ts", oldLines);
+    put("tests/removed.test.ts", "remove one\nremove two\nremove three\n");
+    commit("base");
+    git(dir, "branch", "base-ref");
+    put("src/early.ts", "original\nearlier only\nstill present\n");
+    put("src/reversed.ts", "temporary churn\nmore temporary churn\n");
+    commit("earlier change and temporary churn");
+
+    put("src/reversed.ts", "unchanged at endpoints\n");
+    renameSync(join(dir, "src/old.ts"), join(dir, "src/renamed.ts"));
+    put("src/renamed.ts", oldLines.replace("rename line 9", "edited final line"));
+    put(
+      "src/large.ts",
+      Array.from({ length: 6000 }, (_, i) => `// ${i} ${"x".repeat(100)}\n`).join(""),
+    );
+    rmSync(join(dir, "tests/removed.test.ts"));
+    put("tests/added.test.ts", "test one\ntest two\n");
+    put(".github/workflows/check.yml", "name: fixture\n");
+    const expected = [
+      { path: ".github/workflows/check.yml", additions: 1, deletions: 0 },
+      ...Array.from({ length: 81 }, (_, i) => {
+        const path = `docs/file-${String(i).padStart(2, "0")}.md`;
+        put(path, `Guide ${i}\n`);
+        return { path, additions: 1, deletions: 0 };
+      }),
+      { path: "src/early.ts", additions: 2, deletions: 0 },
+      { path: "src/large.ts", additions: 6000, deletions: 0 },
+      { path: "src/renamed.ts", additions: 1, deletions: 1 },
+      { path: "tests/added.test.ts", additions: 2, deletions: 0 },
+      { path: "tests/removed.test.ts", additions: 0, deletions: 3 },
+    ];
+    commit("later changes and reversal");
+
+    // Independent fixture arithmetic: 6000 + 81 + 2 + 1 + 2 + 1 additions; 1 + 3 deletions.
+    assert.match(
+      git(dir, "diff", "--shortstat", "base-ref", "HEAD"),
+      /87 files changed, 6087 insertions\(\+\), 4 deletions\(-\)/,
+    );
+    const review = buildLocalRangeReviewForTest(dir, "openclaw/openclaw", "base-ref");
+    for (const entries of [review.context.pullFiles, review.context.semanticPullFiles]) {
+      const files = entries as Array<Record<string, unknown>>;
+      assert.deepEqual(
+        files.map(({ filename: path, additions, deletions }) => ({ path, additions, deletions })),
+        expected,
+      );
+      const renamed = files.find((file) => file.filename === "src/renamed.ts")!;
+      assert.match(String(renamed.status), /^R/);
+      assert.equal(renamed.previous_filename, "src/old.ts");
+      assert.match(String(renamed.patch), /rename from src\/old.ts/);
+      assert.match(String(renamed.patch), /-rename line 9\n\+edited final line/);
+      assert.equal(files.find((file) => file.filename === "src/early.ts")?.status, "M");
+      assert.equal(files.find((file) => file.filename === "src/large.ts")?.status, "A");
+      assert.equal(files.find((file) => file.filename === "tests/removed.test.ts")?.status, "D");
+      assert.ok(!files.some((file) => file.filename === "src/reversed.ts"));
+    }
+    const promptLarge = review.context.pullFiles.find((file) => file.filename === "src/large.ts");
+    const semanticLarge = review.context.semanticPullFiles.find(
+      (file) => file.filename === "src/large.ts",
+    );
+    assert.match(promptLarge.patch, /\[truncated \d+ chars\]$/);
+    assert.match(semanticLarge.patch, /\[truncated \d+ chars\]$/);
+    assert.ok(promptLarge.patch.length < 8100);
+    assert.ok(semanticLarge.patch.length > 512_000);
+    assert.equal(review.context.counts.pullFiles, 87);
+    assert.equal(review.context.counts.pullFilesTruncated, false);
+    const evidence = buildPullRequestReviewEvidence({
+      targetDir: dir,
+      context: review.context,
+      mainSha: review.baseSha,
+    });
+    assert.equal(evidence.introduced.files.length, 80);
+    assert.equal(evidence.introduced.filesComplete, false);
+    assert.equal(evidence.introduced.patch?.length, 24000);
+    assert.equal(evidence.introduced.patchComplete, false);
+
+    const report = runReview("numeric");
+    assert.deepEqual(storedFiles(report), expected);
+    assert.match(report, /^pr_surface_files_truncated: false$/m);
+    const comment = renderReviewCommentFromReport(report, "none");
+    const total = "| **Total** | **87** | **6087** | **4** | **+6083** |";
+    assert.ok(comment.includes(total));
+    assert.ok(comment.includes("| Source | 3 | 6003 | 1 | +6002 |"));
+    assert.ok(comment.includes("| Tests | 2 | 2 | 3 | -1 |"));
+    assert.match(comment, /Total \+6083 across 87 files/);
+    const historyPath = resolve(
+      dir,
+      git(dir, "rev-parse", "--git-path", "clawsweeper/reviews"),
+      `local-range-review-history-openclaw-openclaw-${review.baseSha}.md`,
+    );
+    assert.ok(readFileSync(historyPath, "utf8").includes(total));
+
+    put("binary.dat", "\0binary payload\n");
+    commit("binary line counts are unknown");
+    const binaryReport = runReview("binary");
+    assert.deepEqual(
+      storedFiles(binaryReport).find((file) => file.path === "binary.dat"),
+      { path: "binary.dat", additions: null, deletions: null },
+    );
+    const binaryComment = renderReviewCommentFromReport(binaryReport, "none");
+    assert.match(binaryComment, /PR surface statistics unavailable: complete line counts/);
+    assert.doesNotMatch(binaryComment, /\| \*\*Total\*\* \|/);
+    assert.equal(git(dir, "status", "--porcelain"), "");
+  } finally {
+    rmSync(harness, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("--local-range carries hosted-shaped review history across related local iterations", (t) => {
+  useFakeScanner(t);
+  const dir = initRepo();
+  const harness = mkdtempSync(join(tmpdir(), "lrr-history-"));
+  const capturePath = join(harness, "captures.json");
+  const decisionPath = join(harness, "decision.json");
+  const priorFindingTitle = "Preserve earlier local finding";
+  writeFileSync(
+    decisionPath,
+    JSON.stringify(
+      changelogReviewDecision({
+        summary: "The deterministic local review found one history-sensitive defect.",
+        bestSolution: "Preserve earlier local review context on the next iteration.",
+        reviewFindings: [
+          reviewFinding({
+            title: priorFindingTitle,
+            body: "A follow-up local review must see this earlier finding.",
+            file: "feature.txt",
+            lineStart: 1,
+            lineEnd: 1,
+          }),
+        ],
+        workReason: "Preserve earlier local review context.",
+        workPrompt: "Carry the previous local review into the follow-up prompt.",
+        workLikelyFiles: ["feature.txt"],
+      }),
+    ),
+  );
+  const fakeCodex = writeLocalReviewCodex(harness, priorFindingTitle);
 
   function runReview(artifactDir: string, base = "base-ref", shouldFail = false): void {
     const result = spawnSync(

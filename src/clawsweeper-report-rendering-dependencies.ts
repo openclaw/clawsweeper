@@ -118,7 +118,7 @@ export interface CreateReportRenderingDependencies {
   neutralizeOwnedSectionSpoofing: (value: string) => string;
   normalizePublicReviewText: (value: string) => string;
   priorityLabel: (priority: ReviewFinding["priority"]) => string;
-  prSurfaceFilesFromContext: (context: ItemContext) => PrSurfaceFile[];
+  prSurfaceFilesFromContext: (context: ItemContext) => PrSurfaceFile[] | null;
   publicFailedReviewReadinessBlock: (markdown: string) => string;
   publicHistoricalVerificationBlockerLine: () => string;
   publicLikelyOwnerRole: (role: string) => string;

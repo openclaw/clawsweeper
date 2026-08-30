@@ -43,6 +43,17 @@ forbids other review-time network lookups. Repositories without a configured
 profile are rejected (no foreign-profile fallback). It never writes to GitHub;
 the local Markdown report is the only output.
 
+For `review --local-range`, per-file line counts come from complete Git numstat
+metadata for the resolved merge-base-to-HEAD range, independently of bounded
+review patches and introduction evidence. NUL-framed paths preserve rename and
+copy identities. Unreadable, malformed, or over-limit metadata fails the review;
+binary line counts remain unknown, while a pure rename or mode-only change can
+have verified zero counts. Reports preserve unknown counts as JSON nulls. The
+OpenClaw PR surface renders numeric totals only for a complete file list with
+known counts for every file; otherwise it explains why statistics are unavailable.
+Historical reports are unchanged. OpenClaw Bay needs no update because its
+observer data, routes, and controls do not consume these file statistics.
+
 ## Related Files
 
 - `src/commit-sweeper.ts`: local review engine and `local-review` CLI

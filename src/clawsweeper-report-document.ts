@@ -732,8 +732,8 @@ data_model_change: ${dataModelChange.change}
 data_model_surfaces: ${jsonFrontMatterValue(dataModelChange.surfaces)}
 sqlite_schema_change: ${sqliteSchemaChange.change}
 sqlite_schema_files: ${jsonFrontMatterValue(sqliteSchemaChange.files)}
-pr_surface_files: ${jsonFrontMatterValue(prSurfaceFiles)}
-pr_surface_files_truncated: ${pullFilesTruncated}
+pr_surface_files: ${jsonFrontMatterValue(prSurfaceFiles ?? [])}
+pr_surface_files_truncated: ${prSurfaceFiles === null}
 item_category: ${options.decision.itemCategory}
 reproduction_status: ${options.decision.reproductionStatus}
 reproduction_confidence: ${options.decision.reproductionConfidence}
