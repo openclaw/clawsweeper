@@ -139,6 +139,25 @@ signals. Do not include email addresses in `likelyOwners`, `person`, reasons,
 summaries, or public comments. Prefer GitHub handles from PR/commit metadata;
 otherwise use a display name without the `<email>` part.
 
+Blame identifies last modification, not feature introduction. `^SHA`, porcelain
+`boundary`, revision limits, or missing parent objects leave introduction unknown.
+`--root`/`blame.showRoot` can hide those markers; `git show --root` and graph-based
+`%P` can misrepresent a shallow commit as a root. Inspect `git cat-file commit
+<sha>` and compare the exact source line against the raw recorded parents. An
+unchanged line is carried forward, not introduced. Keep code author, committer,
+PR author, reviewer, and merger separate; one role never proves another.
+
+For at most five `likelyOwners`, supply `history` only for a concrete source-line
+change: full `commitSha`, `sourcePath` and `sourceLine` at the recorded review
+checkout, and `actor: author` or `committer`. A PR-head coordinate locates prior
+merged history; branch-only commits do not establish historical routing ownership.
+Use `history: null` for independent CODEOWNERS, review-context, or domain candidates. The host verifies Git facts and
+projects public actor names/roles itself; unverified history becomes unknown,
+and other candidates remain low-confidence routing suggestions without historical
+claims. Your free-form role/reason stays in the raw decision artifact, not the
+public related-people section. Do not move unsupported introduction claims into
+summaries, evidence prose, decision-owner reasons, or other public fields.
+
 For potential regressions, use the non-blaming `regressionAssessment` field.
 Set it to `null`, or choose `suspected` with one or more directly observed
 supporting evidence kinds, or `probable` with at least two. The only allowed
@@ -156,8 +175,9 @@ repository-relative source path plus positive line. The source path and line
 must identify the current target checkout's recorded review revision: current
 main, or the exact PR head in a local PR checkout. Never point at an arbitrary
 or unrecorded revision. Set it to `null` unless the candidate is direct and
-specific. The runtime independently validates the PR metadata and blames the
-exact line; only that result publishes a confirmed predecessor link. If the
+specific. The runtime independently validates PR metadata and the exact blamed
+line's patch against raw recorded parents; only that result publishes a verified
+predecessor link, not semantic responsibility for a regression. If the
 trail is incomplete or ambiguous, keep the assessment generic and do not name
 an automatically attributed predecessor PR.
 

@@ -287,6 +287,7 @@ export type ExactReviewReviewRecoveryReason =
   | "workflow_cancelled"
   | "workflow_failed";
 type ExactReviewRetryKind = "coordination" | "throttle";
+type ExactReviewFailureReason = "incomplete_source";
 type ExactReviewPublicationFailureKind = "github_rate_limit" | "github_transient";
 type ExactReviewDispatchFailureClass =
   | "permanent_rejection"
@@ -2031,6 +2032,18 @@ export class ExactReviewQueue {
       }
       const outcome = exactReviewCompletionOutcome(body.outcome, "success");
       if (!outcome) return json({ error: "invalid_outcome" }, 400);
+      const reviewFailureReason =
+        body.review_failure_reason === undefined
+          ? undefined
+          : body.review_failure_reason === "incomplete_source"
+            ? (body.review_failure_reason as ExactReviewFailureReason)
+            : null;
+      if (body.review_failure_reason !== undefined && !reviewFailureReason) {
+        return json({ error: "invalid_review_failure_reason" }, 400);
+      }
+      if (reviewFailureReason && outcome !== "failure") {
+        return json({ error: "review_failure_reason_without_failure" }, 400);
+      }
       const failureKind =
         body.failure_kind === undefined
           ? undefined
@@ -2128,6 +2141,9 @@ export class ExactReviewQueue {
       if (retryKind && requestedRetryAt === null) {
         return json({ error: "retry_kind_without_retry_at" }, 400);
       }
+      if (reviewFailureReason && retryKind) {
+        return json({ error: "review_failure_reason_with_retry" }, 400);
+      }
       const state = this.readStateSync();
       const item = tupleCompletion ? state.items[itemKey] : exactReviewItemForLease(state, leaseId);
       if (
@@ -2181,6 +2197,9 @@ export class ExactReviewQueue {
       }
       if (retryKind && publicationItem) {
         return json({ error: "retry_kind_outside_regular_review" }, 400);
+      }
+      if (reviewFailureReason && publicationItem) {
+        return json({ error: "review_failure_reason_for_publication" }, 400);
       }
       const leasedDirectLifecycle = item.leaseDecision?.publication?.directLifecycle;
       const directLifecycleLeasePublication =
@@ -2293,9 +2312,10 @@ export class ExactReviewQueue {
                 requestedRetryAt ?? undefined,
                 requeueLatest,
                 retryKind,
+                reviewFailureReason,
                 this.random,
               ),
-              retried: outcome !== "success",
+              retried: outcome !== "success" && reviewFailureReason === undefined,
               refreshed: false,
               deadLetter: undefined,
             };
@@ -3513,6 +3533,7 @@ export class ExactReviewQueue {
               run.outcome,
               0,
               false,
+              undefined,
               undefined,
               this.random,
             );
@@ -12071,9 +12092,10 @@ function finishExactReviewQueueItem(
   requestedRetryAt = 0,
   requeueLatest = false,
   retryKind?: ExactReviewRetryKind,
+  reviewFailureReason?: ExactReviewFailureReason,
   random: () => number = Math.random,
 ) {
-  const retryingFailure = outcome !== "success";
+  const retryingFailure = outcome !== "success" && reviewFailureReason === undefined;
   const hasNewerRevision = item.revision > Number(item.leaseRevision || 0);
   if (
     !exactReviewQueueIsPublication(item) &&

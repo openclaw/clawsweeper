@@ -87,9 +87,15 @@ export function dataModelChangeFromContext(repo: string, context: ItemContext): 
     // Scope each rename side before unknown handling, retaining semantic docs
     // while excluding CI definitions that cannot define an OpenClaw data model.
     const candidates = [path, previousPath].filter(isDataModelCandidatePath);
-    const likelyPath = candidates.find(isLikelyOpenClawDataModelPath) ?? "";
     const patch = typeof file.patch === "string" ? file.patch : null;
     const lines = patch === null ? [] : changedPatchLines(patch);
+    const storageContext = dataModelStorageContext(patch ?? "");
+    const likelyPath =
+      candidates.find(
+        (candidate) =>
+          isLikelyOpenClawDataModelPath(candidate) ||
+          (!isDataModelDocumentationPath(candidate) && storageContext.length > 0),
+      ) ?? "";
 
     if (
       likelyPath &&
@@ -107,8 +113,8 @@ export function dataModelChangeFromContext(repo: string, context: ItemContext): 
         }
         continue;
       }
-      dataModelSurfacesFromPatch(candidate, lines, { docsOnly: false }).forEach((surface) =>
-        surfaces.add(surface),
+      dataModelSurfacesFromPatch(candidate, lines, { docsOnly: false, patch: patch ?? "" }).forEach(
+        (surface) => surfaces.add(surface),
       );
     }
   }
@@ -206,7 +212,7 @@ function isProductionSourcePath(path: string): boolean {
     return false;
   }
   const basename = segments.at(-1) ?? "";
-  return ![".spec.", ".test."].some((marker) => {
+  return ![".spec.", ".test.", ".test-support."].some((marker) => {
     const markerIndex = basename.indexOf(marker);
     return markerIndex >= 0 && markerIndex + marker.length < basename.length;
   });
@@ -421,7 +427,7 @@ export function hasDataModelUpgradeProof(text: string): boolean {
 function dataModelSurfacesFromPatch(
   path: string,
   lines: readonly string[],
-  options: { docsOnly: boolean },
+  options: { docsOnly: boolean; patch?: string },
 ): string[] {
   const text = lines.filter((line) => dataModelLineLooksSemantic(line, options)).join("\n");
   if (!text) return [];
@@ -431,6 +437,15 @@ function dataModelSurfacesFromPatch(
   const pathHint = dataModelPathHint(path);
   if (pathHint && dataModelTextMatchesPathHint(text, pathHint)) add(pathHint);
   if (pathHint && dataModelTextLooksLikePersistedShapeField(text, pathHint)) add(pathHint);
+  // Storage context establishes changed fields only within the same hunk.
+  for (const hunk of (options.patch ?? "").split(/^@@.*$/m)) {
+    const changedText = changedPatchLines(hunk)
+      .filter((line) => dataModelLineLooksSemantic(line, options))
+      .join("\n");
+    for (const surface of dataModelStorageContext(hunk)) {
+      if (dataModelTextLooksLikePersistedShapeField(changedText, surface)) add(surface);
+    }
+  }
   if (
     /\b(?:CREATE|ALTER|DROP)\s+(?:TABLE|INDEX|VIEW|COLUMN)\b|\bADD\s+COLUMN\b|\bPRAGMA\s+user_version\b|\bschema[_-]?version\b/i.test(
       text,
@@ -448,11 +463,7 @@ function dataModelSurfacesFromPatch(
   ) {
     add("durable storage schema");
   }
-  if (
-    /\b(?:JSON\.(?:parse|stringify)|readFile|writeFile|localStorage|sessionStorage|workspaceState|globalState|serialized|persisted?|statePath)\b/i.test(
-      text,
-    )
-  ) {
+  if (dataModelTextHasSerialization(text)) {
     add("serialized state");
   }
   if (
@@ -470,6 +481,32 @@ function dataModelSurfacesFromPatch(
     add("vector/embedding metadata");
   }
   return [...surfaces];
+}
+
+function dataModelTextHasSerialization(text: string): boolean {
+  return /\b(?:JSON\.(?:parse|stringify)|readFile|writeFile|localStorage|sessionStorage|indexedDB|IDBObjectStore|workspaceState|globalState|serialized|persisted?|statePath)\b/i.test(
+    text,
+  );
+}
+
+function dataModelStorageContext(patch: string): string[] {
+  // Retain nearby storage evidence when only the stored fields change. Hunk
+  // headers and comments cannot establish a persistence boundary on their own.
+  const text = patch
+    .split("\n")
+    .filter((line) => /^[ +-]/.test(line) && !/^(?:\+\+\+|---)/.test(line))
+    .map((line) => line.slice(1).trim())
+    .filter((line) => dataModelLineLooksSemantic(line, { docsOnly: false }))
+    .join("\n");
+  const surfaces: string[] = [];
+  if (dataModelTextHasSerialization(text)) surfaces.push("serialized state");
+  if (/\b(?:DurableObject|state\.storage|storage\.(?:get|put|delete|list))\b/i.test(text)) {
+    surfaces.push("durable storage schema");
+  }
+  if (/\b(?:CREATE|ALTER)\s+(?:VIRTUAL\s+)?TABLE\b|\bsqliteTable\s*\(/i.test(text)) {
+    surfaces.push("database schema");
+  }
+  return surfaces;
 }
 
 function dataModelLineLooksSemantic(line: string, options: { docsOnly: boolean }): boolean {
@@ -512,11 +549,7 @@ function dataModelPathHint(path: string): string {
   if (/(^|\/)(?:cache|caches)(?:\/|[-_.])|cache[-_.]schema/i.test(path)) {
     return "persistent cache schema";
   }
-  if (
-    /(^|\/)(?:state|sessions?|history|persistence)(?:\/|[-_.])|(?:serialized|persisted?)[-_.]?(?:state|json)/i.test(
-      path,
-    )
-  ) {
+  if (/(^|\/)persistence(?:\/|[-_.])|(?:serialized|persisted?)[-_.]?(?:state|json)/i.test(path)) {
     return "serialized state";
   }
   if (
@@ -574,6 +607,7 @@ function dataModelTextMatchesPathHint(text: string, pathHint: string): boolean {
 function dataModelTextLooksLikePersistedShapeField(text: string, pathHint: string): boolean {
   if (pathHint === "database schema") {
     return (
+      text.split("\n").some(sqliteSchemaDeclarationLine) ||
       /\b[$A-Z_a-z][$\w]*\??\s*:\s*(?:bigint|blob|boolean|bool|datetime|integer|int|jsonb?|numeric|real|serial|sqliteTable|text|timestamp|uuid|varchar)\s*\(/i.test(
         text,
       ) ||
@@ -583,7 +617,7 @@ function dataModelTextLooksLikePersistedShapeField(text: string, pathHint: strin
     );
   }
 
-  return /\b[$A-Z_a-z][$\w]*\??\s*:\s*(?:Array|Map|ReadonlyArray|Record|Set|boolean|number|string|unknown|[$A-Z_a-z][$\w]*)(?:\b|[<[\]])/i.test(
+  return /(?:^|[{};,]\s*)(?:readonly\s+)?(?:["'][^"']+["']|[$A-Z_a-z][$\w]*)\??\s*:\s*\S/m.test(
     text,
   );
 }

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -46,9 +46,9 @@ import {
 } from "../dist/action-ledger-files.js";
 
 function tempRoot(): string {
-  return fs.realpathSync.native(
-    fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-runtime-")),
-  );
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-runtime-"));
+  after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return fs.realpathSync.native(root);
 }
 
 function trustedChildRoot(root: string, name: string): string {
@@ -2924,46 +2924,54 @@ test("CrabFleet projection admission is fair across spool roots", async () => {
   const firstWaveResolvers: Array<(response: Response) => void> = [];
   const startOrder: string[] = [];
   let saturatedStarted = 0;
+  let releaseFirstWave = false;
   const saturatedFetch = (() => {
     saturatedStarted += 1;
     startOrder.push("saturated");
-    if (saturatedStarted <= CRABFLEET_PROJECTION_LIMITS.maxConcurrent) {
+    if (saturatedStarted <= CRABFLEET_PROJECTION_LIMITS.maxConcurrent && !releaseFirstWave) {
       return new Promise<Response>((resolve) => firstWaveResolvers.push(resolve));
     }
     return Promise.resolve(new Response(null, { status: 204 }));
   }) as typeof fetch;
   const saturatedTotal =
     CRABFLEET_PROJECTION_LIMITS.maxConcurrent + CRABFLEET_PROJECTION_LIMITS.maxQueued;
-  for (let index = 0; index < saturatedTotal; index += 1) {
-    assert.ok(recordReviewNumber(saturatedRoot, 100 + index, env, saturatedFetch));
-  }
-  assert.ok(
-    recordReviewNumber(independentRoot, 999, env, (async () => {
-      startOrder.push("independent");
-      return new Response(null, { status: 204 });
-    }) as typeof fetch),
-  );
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(startOrder, Array(CRABFLEET_PROJECTION_LIMITS.maxConcurrent).fill("saturated"));
-
-  firstWaveResolvers.shift()!(new Response(null, { status: 204 }));
-  const fairnessDeadline = Date.now() + 500;
-  while (!startOrder.includes("independent")) {
-    if (Date.now() >= fairnessDeadline) {
-      throw new Error("independent root did not receive the next projection slot");
+  try {
+    for (let index = 0; index < saturatedTotal; index += 1) {
+      assert.ok(recordReviewNumber(saturatedRoot, 100 + index, env, saturatedFetch));
     }
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.deepEqual(startOrder.slice(0, 5), [
-    "saturated",
-    "saturated",
-    "saturated",
-    "saturated",
-    "independent",
-  ]);
+    assert.ok(
+      recordReviewNumber(independentRoot, 999, env, (async () => {
+        startOrder.push("independent");
+        return new Response(null, { status: 204 });
+      }) as typeof fetch),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(
+      startOrder,
+      Array(CRABFLEET_PROJECTION_LIMITS.maxConcurrent).fill("saturated"),
+    );
 
-  for (const resolve of firstWaveResolvers) resolve(new Response(null, { status: 204 }));
-  await flushPendingCrabFleetPosts();
+    firstWaveResolvers.shift()!(new Response(null, { status: 204 }));
+    const fairnessDeadline = Date.now() + 500;
+    while (!startOrder.includes("independent")) {
+      if (Date.now() >= fairnessDeadline) {
+        throw new Error("independent root did not receive the next projection slot");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.deepEqual(startOrder.slice(0, 5), [
+      "saturated",
+      "saturated",
+      "saturated",
+      "saturated",
+      "independent",
+    ]);
+  } finally {
+    // Release held slots on failure so later tests do not inherit a starved pool.
+    releaseFirstWave = true;
+    for (const resolve of firstWaveResolvers) resolve(new Response(null, { status: 204 }));
+    await flushPendingCrabFleetPosts();
+  }
   assert.equal(startOrder.filter((entry) => entry === "saturated").length, saturatedTotal);
 });
 

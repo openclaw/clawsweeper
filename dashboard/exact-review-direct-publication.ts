@@ -355,6 +355,11 @@ export class ExactReviewDirectPublicationStore {
          (repo_slug, store_revision, section, record_id)`,
     );
     this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_record_export_by_repo_section_revision
+         ON ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+         (repo_slug, section, store_revision)`,
+    );
+    this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_RECORD_BACKFILL_TABLE} (
          repo_slug TEXT NOT NULL,
          section TEXT NOT NULL CHECK (
@@ -814,6 +819,9 @@ export class ExactReviewDirectPublicationStore {
     maxRecords: number;
   }): { records: RecordExportEntry[]; nextCursor: number | null; watermark: number } {
     const placeholders = options.sections.map(() => "?").join(", ");
+    // The preflight joins source metadata before reconstruction. It must not
+    // scan more candidates than the reconstruction bound can ever consume.
+    const rowLimit = Math.min(options.limit, options.maxRecords);
     const rows = Array.from(
       this.storage.sql.exec(
         `SELECT export.repo_slug, export.section, export.record_id, export.digest,
@@ -849,7 +857,7 @@ export class ExactReviewDirectPublicationStore {
         ...options.sections,
         options.sinceRevision,
         options.cursor,
-        options.limit,
+        rowLimit,
       ),
     );
     const selectedRows: Record<string, unknown>[] = [];
@@ -874,12 +882,28 @@ export class ExactReviewDirectPublicationStore {
     }
     const watermark = this.currentExportRevisionSync();
     const lastRevision = records.at(-1)?.storeRevision ?? null;
+    const hasMore =
+      lastRevision !== null && records.length === rows.length && rows.length === rowLimit
+        ? Array.from(
+            this.storage.sql.exec(
+              `SELECT 1
+                 FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
+                WHERE export.repo_slug = ?
+                  AND export.section IN (${placeholders})
+                  AND export.store_revision > ?
+                  AND export.store_revision > ?
+                LIMIT 1`,
+              options.repoSlug,
+              ...options.sections,
+              options.sinceRevision,
+              lastRevision,
+            ),
+          ).length > 0
+        : false;
     return {
       records,
       nextCursor:
-        lastRevision !== null && (records.length < rows.length || rows.length === options.limit)
-          ? lastRevision
-          : null,
+        lastRevision !== null && (records.length < rows.length || hasMore) ? lastRevision : null,
       watermark,
     };
   }

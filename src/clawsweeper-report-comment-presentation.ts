@@ -58,7 +58,6 @@ export function createReportCommentPresentation(
     publicSummaryBody,
     publicVerificationBlock,
     pullHeadShaFromReport,
-    realBehaviorProofBlocksMerge,
     renderCloseCommentFromReport,
     renderDataModelWarningFromReport,
     renderSqliteSchemaWarningFromReport,
@@ -73,7 +72,7 @@ export function createReportCommentPresentation(
     reportOverallConfidenceScore,
     reportOverallCorrectness,
     reportPrRating,
-    reportRealBehaviorProof,
+    reportRealBehaviorProofPolicy,
     reportReviewFindings,
     reportRootCauseCluster,
     reportSecurityReview,
@@ -111,7 +110,7 @@ export function createReportCommentPresentation(
     const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
     const reviewFindings = reportReviewFindings(markdown);
     const securityReview = reportSecurityReview(markdown);
-    const realBehaviorProof = reportRealBehaviorProof(markdown);
+    const proofPolicy = reportRealBehaviorProofPolicy(markdown);
     const prRating = reportPrRating(markdown);
     const liveProofRecordingBlock = reportLiveProofRecordingBlock(markdown);
     const mantisRecommendation = reportMantisRecommendation(markdown);
@@ -158,7 +157,7 @@ export function createReportCommentPresentation(
     const isRepairCandidate = workCandidate === "queue_fix_pr";
     const isRepairLoopPass = isPullRequest && Boolean(repairLoopPassModeFromReport(markdown));
     const hasRealBehaviorProofBlocker =
-      isPullRequest && !reviewFailed && realBehaviorProofBlocksMerge(markdown);
+      isPullRequest && !reviewFailed && proofPolicy.proofBlocksMerge;
     const summaryLine =
       neutralizeOwnedSectionSpoofing(sentence(summary)) || "_No summary provided._";
     const changeSummaryLine =
@@ -187,15 +186,17 @@ export function createReportCommentPresentation(
       ? "ClawSweeper review: did not complete due to Codex infrastructure failure."
       : hasRealBehaviorProofBlocker
         ? "Codex review: needs real behavior proof before merge."
-        : isRepairLoopPass
-          ? "Codex review: passed."
-          : isPullRequest && isRepairCandidate
-            ? "Codex review: needs changes before merge."
-            : hasReviewFindings
-              ? "Codex review: found issues before merge."
-              : isPullRequest
-                ? "Codex review: needs maintainer review before merge."
-                : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.";
+        : isPullRequest && proofPolicy.verificationBlocksMerge
+          ? "Codex review: needs historical verification review before merge."
+          : isRepairLoopPass
+            ? "Codex review: passed."
+            : isPullRequest && isRepairCandidate
+              ? "Codex review: needs changes before merge."
+              : hasReviewFindings
+                ? "Codex review: found issues before merge."
+                : isPullRequest
+                  ? "Codex review: needs maintainer review before merge."
+                  : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.";
     const lines = [`${verdictLine}${reviewFreshnessText(markdown)}`, ""];
     const prSurface = renderOpenClawPrSurfaceFromReport(markdown);
     const dataModelWarning = renderDataModelWarningFromReport(markdown);
@@ -311,8 +312,7 @@ export function createReportCommentPresentation(
         !reviewFailed && (prRating.patchTier === "F" || prRating.patchTier === "D");
       const beforeMergeItems = publicBeforeMergeItems({
         reviewFailed,
-        proof: realBehaviorProof,
-        proofBlocked: hasRealBehaviorProofBlocker,
+        proofPolicy,
         findings: reviewFindings,
         securityReview,
         risks,
@@ -334,7 +334,7 @@ export function createReportCommentPresentation(
           ? publicFailedReviewReadinessBlock(markdown)
           : publicMergeReadinessBlock(
               prRating,
-              realBehaviorProof,
+              proofPolicy,
               triagePriority,
               summaryLine,
               // An outstanding maintainer decision is remaining work even though it
@@ -348,17 +348,12 @@ export function createReportCommentPresentation(
         appendHeadingSection(
           lines,
           "Review scores",
-          publicReviewScoresBlock(prRating, realBehaviorProof, reviewFindings, securityReview),
+          publicReviewScoresBlock(prRating, proofPolicy, reviewFindings, securityReview),
         );
         appendHeadingSection(
           lines,
           "Verification",
-          publicVerificationBlock(
-            realBehaviorProof,
-            allEvidenceEntries,
-            reviewFindings,
-            securityReview,
-          ),
+          publicVerificationBlock(proofPolicy, allEvidenceEntries, reviewFindings, securityReview),
         );
       }
       if (liveProofRecordingBlock) {

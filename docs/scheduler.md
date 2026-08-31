@@ -74,6 +74,12 @@ Manual exact-item `workflow_dispatch` reviews use an exact-item concurrency
 group with the same single-pending policy, so newer revisions replace stale
 pending work instead of building a duplicate queue. Durable exact-review leases
 use lease-scoped workflow groups and remain owned by the Worker admission lane.
+If a successful exact-review run loses its completion callback, reconciliation
+uses the accepted or deduplicated direct-publication receipt to preserve an
+owed source-drift review. A superseded receipt or a newer queued revision does
+not create another review. Queue-completion failures remain visible separately
+from Codex or content failures.
+
 Recoverable parked reviews use the nominal 5/10/20-minute retry ladder, but
 each item persists a schedule-time uniform jitter of 0.75-1.5x for every rung.
 After the third automatic recovery, operator-only HMAC-signed routes provide a

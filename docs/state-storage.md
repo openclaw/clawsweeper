@@ -19,7 +19,10 @@ operational paths that have not migrated yet.
 | `notifications/**`                                                                    | `clawsweeper-state` `state` branch            | Retained until its own migration   |
 | `apply-report.json`, `repair-apply-report.json`                                       | `clawsweeper-state` `state` branch            | Retained until their own migration |
 
-`setup-state` always hydrates records from the Worker and ledger/assets from R2.
+`setup-state` hydrates records from the Worker and, when requested, ledger/assets
+from R2. Exact and batch review publishers pass the reviewed item numbers to
+read only their open/closed reports, plans, and decision packets. Those focused
+reads do not depend on repository-wide snapshots or journal exports.
 Jobs that need operational Git state receive a sparse checkout containing only
 the retained paths above. Canonical-only lanes set `hydrate-git-state: "false"`
 and never mint or use a state-repository token.

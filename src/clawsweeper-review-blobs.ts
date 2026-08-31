@@ -93,6 +93,30 @@ export function ensurePullRequestReviewHead({
   );
 }
 
+const REVIEW_HISTORY_DEPTH = 256;
+
+function deepenReviewHistory(targetDir: string, revisions: readonly string[]): void {
+  spawnSync(
+    "git",
+    [
+      "fetch",
+      "--filter=blob:none",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "--recurse-submodules=no",
+      `--depth=${REVIEW_HISTORY_DEPTH}`,
+      "origin",
+      ...revisions,
+    ],
+    {
+      cwd: targetDir,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      stdio: "ignore",
+      timeout: 30_000,
+    },
+  );
+}
+
 export function hydratePullRequestReviewHistory(options: {
   targetDir: string;
   baseSha: string;
@@ -111,26 +135,18 @@ export function hydratePullRequestReviewHistory(options: {
   if (reviewMergeBase(targetDir, baseSha, headSha).status === "unavailable") {
     // Existing tree hydration may have fetched only the PR tip. Bound history, not
     // the reviewed identity; failure remains explicit in the local evidence reader.
-    spawnSync(
-      "git",
-      [
-        "fetch",
-        "--filter=blob:none",
-        "--no-tags",
-        "--no-write-fetch-head",
-        "--recurse-submodules=no",
-        "--depth=256",
-        "origin",
-        baseSha,
-        headSha,
-      ],
-      {
-        cwd: targetDir,
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-        stdio: "ignore",
-        timeout: 30_000,
-      },
-    );
+    //
+    // Deepen the reviewed head on its own first. A depth-limited fetch re-bounds the
+    // ancestry of every revision it names, so naming the pinned base here as well
+    // truncates a base branch whose history the checkout already had -- the very
+    // ancestry a merge base is found in. Only deepen the base when the head alone did
+    // not establish one, which is the case where the base is itself shallow.
+    deepenReviewHistory(targetDir, [headSha]);
+    if (reviewMergeBase(targetDir, baseSha, headSha).status === "unavailable") {
+      // Unchanged fallback: the same fetch this function has always issued, for the case
+      // where the base is itself shallow and has to be deepened to reach an ancestor.
+      deepenReviewHistory(targetDir, [baseSha, headSha]);
+    }
   }
   if (testMergeSha && GIT_OBJECT_ID.test(testMergeSha)) {
     ensureReviewTreeCommit({
@@ -234,7 +250,7 @@ export function hydratePullRequestReviewBlobs({
     const filename = safeReviewPath(file.filename);
     if (!filename) return { hydrated: false, blobs: 0 };
     const previous =
-      file.previous_filename === undefined ? filename : safeReviewPath(file.previous_filename);
+      file.previous_filename == null ? filename : safeReviewPath(file.previous_filename);
     if (!previous) return { hydrated: false, blobs: 0 };
     const status = typeof file.status === "string" ? file.status.toLowerCase() : "";
     if (status !== "added" && status !== "a") basePaths.add(previous);

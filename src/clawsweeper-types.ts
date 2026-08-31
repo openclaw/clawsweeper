@@ -355,6 +355,13 @@ export interface Evidence {
   sha: string | null;
 }
 
+export interface LikelyOwnerHistory {
+  commitSha: string;
+  sourcePath: string;
+  sourceLine: number;
+  actor: "author" | "committer";
+}
+
 export interface LikelyOwner {
   person: string;
   role: string;
@@ -362,6 +369,9 @@ export interface LikelyOwner {
   commits: string[];
   files: string[];
   confidence: Confidence;
+  history?: LikelyOwnerHistory | null;
+  /** Host-owned projection; never accepted from model output. */
+  attributionSource?: "raw_parent_line_v1";
 }
 
 export interface ReviewFinding {
@@ -475,6 +485,7 @@ export interface RegressionProvenanceCandidate {
 }
 
 export interface VerifiedRegressionProvenance extends RegressionProvenanceCandidate {
+  verificationSource: "raw_parent_line_v1";
   evidenceType: "blame_to_merge_commit";
   mergedAt: string;
   reviewedCommitSha: string;
@@ -483,6 +494,7 @@ export interface VerifiedRegressionProvenance extends RegressionProvenanceCandid
 }
 
 export interface SuspectedRegressionProvenance {
+  verificationSource: "raw_parent_line_v1";
   evidenceType: "source_line" | "rewrite_equivalent";
   sourceCommitSha: string;
   sourceAuthor: string;

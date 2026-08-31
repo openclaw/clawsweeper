@@ -340,51 +340,21 @@ export async function materializeWorkerRecords(options: {
   return { recordsRoot, manifestPath, repositories };
 }
 
-export async function materializeWorkerRecord(options: {
+export async function materializeWorkerItems(options: {
   worktreeRoot: string;
   baseUrl: string;
   webhookSecret: string;
   repoSlug: string;
-  itemNumber: number;
+  itemNumbers: readonly number[];
   fetch?: typeof globalThis.fetch;
 }) {
   validateRepoSlug(options.repoSlug);
-  if (!Number.isSafeInteger(options.itemNumber) || options.itemNumber < 1) {
-    throw new Error("Worker record item number must be a positive safe integer");
-  }
-
-  let record: unknown = null;
-  try {
-    record = await signedGet<unknown>({
-      baseUrl: options.baseUrl,
-      path: `/internal/state/records/${options.repoSlug}/items/${options.itemNumber}`,
-      webhookSecret: options.webhookSecret,
-      fetch: options.fetch,
-    });
-  } catch (error) {
-    if (
-      !(error instanceof WorkerRecordRequestError) ||
-      error.status !== 404 ||
-      error.code !== "record_not_found"
-    ) {
-      throw error;
-    }
-  }
+  const itemNumbers = [...new Set(options.itemNumbers)].sort((a, b) => a - b);
   if (
-    record !== null &&
-    (typeof record !== "object" ||
-      typeof (record as { content?: unknown }).content !== "string" ||
-      typeof (record as { digest?: unknown }).digest !== "string" ||
-      !Number.isSafeInteger((record as { revision?: unknown }).revision) ||
-      Number((record as { revision?: unknown }).revision) < 1)
+    !itemNumbers.length ||
+    itemNumbers.some((number) => !Number.isSafeInteger(number) || number < 1)
   ) {
-    throw new Error("Worker returned an invalid single-record envelope");
-  }
-  const { content, digest, revision } = record
-    ? (record as { content: string; digest: string; revision: number })
-    : { content: null, digest: null, revision: 0 };
-  if (content !== null && createHash("sha256").update(content).digest("hex") !== digest) {
-    throw new Error("Worker single-record digest does not match its content");
+    throw new Error("Worker record item numbers must be positive safe integers");
   }
 
   mkdirSync(options.worktreeRoot, { recursive: true });
@@ -392,17 +362,45 @@ export async function materializeWorkerRecord(options: {
   const stagingRoot = mkdtempSync(path.join(options.worktreeRoot, ".worker-records-stage-"));
   const stagedRecordsRoot = path.join(stagingRoot, "records");
   const previousRecordsRoot = path.join(stagingRoot, "previous-records");
-  const itemPath = path.join(
-    stagedRecordsRoot,
-    options.repoSlug,
-    "items",
-    `${options.itemNumber}.md`,
-  );
+  const records: Array<{ section: string; id: number; content: string; revision: number }> = [];
   let replacementInstalled = false;
   let previousRecordsMoved = false;
   try {
-    mkdirSync(path.dirname(itemPath), { recursive: true });
-    if (content !== null) writeFileSync(itemPath, content, "utf8");
+    for (const id of itemNumbers) {
+      for (const section of ["items", "closed", "plans", "decision-packets"] as const) {
+        let record: { content: string; digest: string; revision: number };
+        try {
+          record = await signedGet({
+            baseUrl: options.baseUrl,
+            path: `/internal/state/records/${options.repoSlug}/${section}/${id}`,
+            webhookSecret: options.webhookSecret,
+            fetch: options.fetch,
+          });
+        } catch (error) {
+          if (
+            error instanceof WorkerRecordRequestError &&
+            error.status === 404 &&
+            error.code === "record_not_found"
+          )
+            continue;
+          throw error;
+        }
+        if (createHash("sha256").update(record.content).digest("hex") !== record.digest) {
+          throw new Error("Worker record digest does not match its content");
+        }
+        const extension = section === "decision-packets" ? "json" : "md";
+        const recordPath = path.join(
+          stagedRecordsRoot,
+          options.repoSlug,
+          section,
+          `${id}.${extension}`,
+        );
+        mkdirSync(path.dirname(recordPath), { recursive: true });
+        writeFileSync(recordPath, record.content, "utf8");
+        records.push({ section, id, content: record.content, revision: record.revision });
+      }
+    }
+    mkdirSync(stagedRecordsRoot, { recursive: true });
     if (existsSync(recordsRoot)) {
       renameSync(recordsRoot, previousRecordsRoot);
       previousRecordsMoved = true;
@@ -421,20 +419,20 @@ export async function materializeWorkerRecord(options: {
   }
   const repositories = {
     [options.repoSlug]: {
-      revision,
+      revision: Math.max(0, ...records.map((record) => record.revision)),
       snapshotRevision: 0,
       snapshotBytes: 0,
       snapshotCache: "direct" as const,
-      deltaRecords: content === null ? 0 : 1,
-      recordCount: content === null ? 0 : 1,
-      coverageTrackedItemIds: content === null ? [] : [options.itemNumber],
+      deltaRecords: records.length,
+      recordCount: records.length,
+      coverageTrackedItemIds: records
+        .filter((record) => record.section === "items")
+        .map((record) => record.id),
     },
   };
   const manifestPath = writeWorkerRecordsManifest(options.worktreeRoot, repositories);
   console.error(
-    content === null
-      ? `[worker-records] no open canonical record for repo=${options.repoSlug} item=${options.itemNumber}; continuing with empty focused records`
-      : `[worker-records] direct record hydrated repo=${options.repoSlug} item=${options.itemNumber} revision=${revision}`,
+    `[worker-records] focused tuples hydrated repo=${options.repoSlug} items=${itemNumbers.length} records=${records.length}`,
   );
   return { recordsRoot, manifestPath, repositories };
 }

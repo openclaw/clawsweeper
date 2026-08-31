@@ -4459,19 +4459,7 @@ test("canonical commit records and tuples export with one monotonic revision", a
     )
   ).json();
   assert.equal(pageTwo.records.length, 1);
-  assert.equal(pageTwo.nextCursor, 2);
-  const terminalPage = await (
-    await worker.fetch(
-      signedStateAppendRequest(
-        exportPath,
-        { ...pageOnePayload, cursor: pageTwo.nextCursor },
-        secret,
-      ),
-      env,
-    )
-  ).json();
-  assert.deepEqual(terminalPage.records, []);
-  assert.equal(terminalPage.nextCursor, null);
+  assert.equal(pageTwo.nextCursor, null);
   assert.deepEqual(pageTwo.records[0], {
     section: "items",
     id: "711",

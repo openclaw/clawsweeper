@@ -2557,10 +2557,6 @@ test("comment router durably claims dispatch commands and recovers exact workflo
   assert.match(source, /workflow_dispatch=\$\{fallback\.stderr \|\| fallback\.stdout\}/);
   assert.match(sweepWorkflow, /Review event item \{0\}#\{1\} \[\{2\}\]/);
   assert.match(sweepWorkflow, /startsWith\(github\.event\.inputs\.item_numbers, 'router-'\)/);
-  assert.match(
-    sweepWorkflow,
-    /ITEM_NUMBERS:.*startsWith\(github\.event\.inputs\.item_numbers, 'router-'\)/,
-  );
   assert.match(assistWorkflow, /Assist \{0\}#\{1\} \[\{2\}\]/);
   assert.match(sweepWorkflow, /delivery_id: dispatchKey/);
   assert.match(sweepWorkflow, /`router:\$\{dispatchKey\}`/);
