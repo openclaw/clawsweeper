@@ -147,7 +147,7 @@ test("automatic bug backfill runs independently of queue-fed scheduled sweeps", 
   const checkout = workflow.jobs.backfill!.steps.find((step) =>
     step.uses?.startsWith("actions/checkout@"),
   );
-  assert.equal(checkout?.uses, "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0");
+  assert.equal(checkout?.uses, "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1");
   assert.equal(checkout?.with?.["persist-credentials"], false);
   const state = workflow.jobs.backfill!.steps.find((step) => step.uses?.endsWith("/setup-state"));
   assert.equal(state?.with?.["coordinator-class"], "cluster_intake");
