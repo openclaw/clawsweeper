@@ -48,12 +48,16 @@ $acl = Get-Acl -LiteralPath $target
 $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
 if ($check -eq 'private' -and $owner -ne $currentSid) { exit 21 }
 if ($check -ne 'private' -and -not $allowed.Contains($owner)) { exit 21 }
-$dangerous = [int64]([Security.AccessControl.FileSystemRights]::Write -bor
-  [Security.AccessControl.FileSystemRights]::Modify -bor
+$dangerous = [int64]([Security.AccessControl.FileSystemRights]::CreateFiles -bor
+  [Security.AccessControl.FileSystemRights]::CreateDirectories -bor
+  [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+  [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
   [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+  [Security.AccessControl.FileSystemRights]::Delete -bor
   [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
   [Security.AccessControl.FileSystemRights]::TakeOwnership)
 $replaceChild = [int64]([Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+  [Security.AccessControl.FileSystemRights]::Delete -bor
   [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
   [Security.AccessControl.FileSystemRights]::TakeOwnership)
 $mask = if ($check -eq 'ancestor') { $replaceChild } else { $dangerous }
