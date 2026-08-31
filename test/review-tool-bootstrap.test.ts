@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -76,4 +76,58 @@ test("review-tool bootstrap rejects an oversized response before reading its bod
     }),
     /exceeds the archive limit/,
   );
+});
+
+test("review-tool bootstrap refuses symlinked managed-cache directories before download", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-tools-"));
+  const target = mkdtempSync(join(tmpdir(), "clawsweeper-review-tools-target-"));
+  t.after(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(target, { recursive: true, force: true });
+  });
+  mkdirSync(root, { recursive: true });
+  symlinkSync(target, join(root, "trufflehog"), process.platform === "win32" ? "junction" : "dir");
+  let fetched = false;
+  await assert.rejects(
+    ensureManagedTruffleHog({
+      timeoutMs: 30_000,
+      env: { CLAWSWEEPER_REVIEW_TOOLS_DIR: root },
+      fetchImpl: async () => {
+        fetched = true;
+        return new Response("unreachable");
+      },
+      runtimePlatform: "linux",
+      runtimeArch: "x64",
+    }),
+    /unsafe directory entry/,
+  );
+  assert.equal(fetched, false);
+  assert.deepEqual(readdirSync(target), []);
+});
+
+test("review-tool bootstrap refuses a symlinked cache root before download", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "clawsweeper-review-tools-base-"));
+  const target = mkdtempSync(join(tmpdir(), "clawsweeper-review-tools-target-"));
+  t.after(() => {
+    rmSync(base, { recursive: true, force: true });
+    rmSync(target, { recursive: true, force: true });
+  });
+  const root = join(base, "cache");
+  symlinkSync(target, root, process.platform === "win32" ? "junction" : "dir");
+  let fetched = false;
+  await assert.rejects(
+    ensureManagedTruffleHog({
+      timeoutMs: 30_000,
+      env: { CLAWSWEEPER_REVIEW_TOOLS_DIR: root },
+      fetchImpl: async () => {
+        fetched = true;
+        return new Response("unreachable");
+      },
+      runtimePlatform: "linux",
+      runtimeArch: "x64",
+    }),
+    /unsafe directory entry/,
+  );
+  assert.equal(fetched, false);
+  assert.deepEqual(readdirSync(target), []);
 });

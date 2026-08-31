@@ -161,6 +161,37 @@ function cachedBinaryMatches(path: string, expected: Buffer): boolean {
   }
 }
 
+function assertSafeCacheDirectory(path: string): void {
+  const stat = lstatSync(path);
+  if (!stat.isDirectory() || stat.isSymbolicLink())
+    throw new Error("Trusted scanner cache has an unsafe directory entry.");
+}
+
+function ensureSafeCacheDirectory(path: string, recursive: boolean): void {
+  try {
+    assertSafeCacheDirectory(path);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    try {
+      mkdirSync(path, { recursive, mode: 0o700 });
+    } catch (createError) {
+      if ((createError as NodeJS.ErrnoException).code !== "EEXIST") throw createError;
+    }
+  }
+  assertSafeCacheDirectory(path);
+}
+
+function ensureManagedCacheDirectory(root: string, segments: readonly string[]): string {
+  ensureSafeCacheDirectory(root, true);
+  let current = root;
+  for (const segment of segments) {
+    current = join(current, segment);
+    ensureSafeCacheDirectory(current, false);
+  }
+  return current;
+}
+
 function assertVersion(path: string): void {
   const result = spawnSync(path, ["--version"], {
     encoding: "utf8",
@@ -197,7 +228,11 @@ export async function ensureManagedTruffleHog(options: {
   if (!artifact)
     throw new Error("No checksum-pinned trusted scanner is available for this platform.");
   const root = reviewToolCacheRoot(env);
-  const cacheDir = join(root, "trufflehog", `v${TRUFFLEHOG_VERSION}`, artifact.platform);
+  const cacheDir = ensureManagedCacheDirectory(root, [
+    "trufflehog",
+    `v${TRUFFLEHOG_VERSION}`,
+    artifact.platform,
+  ]);
   const archivePath = join(cacheDir, "archive.tar.gz");
   const binary = join(cacheDir, artifact.executable);
   let archive: Buffer;
@@ -216,7 +251,6 @@ export async function ensureManagedTruffleHog(options: {
       sha256(archive) !== artifact.sha256
     )
       throw new Error("Trusted scanner download checksum did not match.");
-    mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
     const temporaryArchive = `${archivePath}.${randomUUID()}.tmp`;
     try {
       writeFileSync(temporaryArchive, archive, { mode: 0o600, flag: "wx" });
@@ -230,7 +264,6 @@ export async function ensureManagedTruffleHog(options: {
   if (executable.length === 0 || executable.length > MAX_ARCHIVE_BYTES)
     throw new Error("Trusted scanner executable is invalid.");
   if (!cachedBinaryMatches(binary, executable)) {
-    mkdirSync(dirname(binary), { recursive: true, mode: 0o700 });
     const temporary = `${binary}.${randomUUID()}.tmp`;
     try {
       writeFileSync(temporary, executable, { mode: 0o700, flag: "wx" });
