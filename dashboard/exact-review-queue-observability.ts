@@ -72,6 +72,7 @@ const EXACT_REVIEW_QUEUE_ENDPOINTS = new Map<string, string>([
   ["/state-writer/heartbeat", "state_writer_heartbeat"],
   ["/state-writer/release", "state_writer_release"],
   ["/stats", "stats"],
+  ["/telemetry-reconciliation", "telemetry_reconciliation"],
   ["/terminal-finalization/attempt", "terminal_finalization_attempt"],
   ["/terminal-finalization/retry", "terminal_finalization_retry"],
   ["/terminal-finalization/skip", "terminal_finalization_skip"],

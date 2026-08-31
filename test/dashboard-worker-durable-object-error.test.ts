@@ -133,6 +133,10 @@ test("exact-review endpoint templates never retain dynamic record coordinates", 
     exactReviewQueueEndpointTemplate("/publication-batches/heartbeat"),
     "publication_batches_heartbeat",
   );
+  assert.equal(
+    exactReviewQueueEndpointTemplate("/telemetry-reconciliation?public_repo=openclaw%2Fopenclaw"),
+    "telemetry_reconciliation",
+  );
 });
 
 test("exact-review Worker retains only platform flags from rejected Durable Object calls", async () => {
