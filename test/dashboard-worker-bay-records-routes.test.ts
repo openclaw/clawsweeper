@@ -361,6 +361,60 @@ test("Bay telemetry reconciliation compares the public aggregate with canonical 
   assert.equal(mismatched.comparison?.unexpected_events, 0);
 });
 
+test("Bay telemetry reconciliation fails closed while lifecycle telemetry recovery is pending", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    {
+      storage,
+      blockConcurrencyWhile: async (callback: () => Promise<void>) => callback(),
+    },
+    { PUBLIC_BAY_REPOS: "openclaw/openclaw" },
+  );
+  const endpoint =
+    "https://clawsweeper-exact-review-queue/telemetry-reconciliation?public_repo=openclaw%2Fopenclaw";
+  const before = await queue.fetch(new Request(endpoint, { method: "POST", body: "{}" }));
+  assert.equal(before.status, 200);
+  assert.deepEqual((await before.json()).exact_review_telemetry_reconciliation.collection, {
+    state: "complete",
+  });
+
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const now = Date.now();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9144",
+    fenceKey: "openclaw/openclaw#9144@exact:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "csw-143-pending-recovery",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now - 1_000,
+    observedAt: now - 1_000,
+  });
+  recordBayFinalReceipt(lifecycle, identity, now);
+  lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: now,
+  });
+  assert.equal(lifecycle.hasBayTelemetryPending(), true);
+
+  const response = await queue.fetch(new Request(endpoint, { method: "POST", body: "{}" }));
+  assert.equal(response.status, 200);
+  const reconciliation = (await response.json()).exact_review_telemetry_reconciliation;
+  assert.equal(reconciliation.version, 1);
+  assert.equal(reconciliation.source, "canonical-lifecycle-projection-v1");
+  assert.equal(typeof reconciliation.generated_at, "string");
+  assert.deepEqual(reconciliation.scope, { repository_count: 1 });
+  assert.deepEqual(reconciliation.collection, { state: "unknown", reason: "unavailable" });
+  assert.equal(reconciliation.window, null);
+  assert.equal(reconciliation.comparison, null);
+});
+
 test("Bay telemetry reconciliation pages recent lifecycle candidates without capping on active rows", () => {
   const storage = new MemoryDurableStorage();
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);

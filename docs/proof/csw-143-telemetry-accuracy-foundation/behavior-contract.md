@@ -25,7 +25,8 @@ records. Populate completed, incomplete, and empty observations through the same
 and Durable Object routes used by production. Request the protected reconciliation with a
 valid operator signature and repeat it without valid authorization. Exercise a fresh
 complete public snapshot, a stale or partial snapshot, usable and failed exact-review
-history polls, an empty history, and an Overview sample with zero attempts.
+history polls, an empty history, an Overview sample with zero attempts, and a lifecycle
+projection whose Bay telemetry materialization is pending.
 
 ## Command and environment
 
@@ -46,6 +47,8 @@ read production Durable Objects, or mutate GitHub.
   freshness fields.
 - Empty or incomplete inputs remain `null`/unavailable rather than becoming a synthetic
   zero or a false complete state.
+- Reconciliation remains unavailable while either durable lifecycle-to-telemetry recovery
+  source is pending, matching the public Bay aggregate boundary.
 - Overview renders an unavailable error rate for zero attempts.
 - Bay labels the durable lifecycle projection separately from independent queue and live
   activity when lifecycle inventory is unavailable.
@@ -66,6 +69,8 @@ credentials or lifecycle rows.
 - Supply `failed = 0` and `attempts = 0` and require `n/a`, not `0%`.
 - Make durable lifecycle inventory unavailable while retaining queue/live activity and
   require both states to remain independently visible.
+- Leave a completed lifecycle projection pending telemetry materialization and require the
+  protected reconciliation to return an unavailable collection with no comparison.
 
 ## Limits
 

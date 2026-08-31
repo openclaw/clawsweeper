@@ -884,17 +884,19 @@ export class ExactReviewQueue {
       const validPublicRepositories =
         publicRepositories.length <= 32 &&
         publicRepositories.every((value) => /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(value));
+      const publicRepositoryScope = validPublicRepositories ? new Set(publicRepositories) : null;
+      const recoveryPending = this.bayTelemetryRecoveryPendingSync();
       return json({
-        exact_review_telemetry_reconciliation: validPublicRepositories
+        exact_review_telemetry_reconciliation: publicRepositoryScope && !recoveryPending
           ? this.lifecycleTelemetryStore.reconcileBaySnapshot(
               Date.now(),
-              new Set(publicRepositories),
+              publicRepositoryScope,
             )
           : {
               version: 1,
               source: "canonical-lifecycle-projection-v1",
               generated_at: new Date().toISOString(),
-              scope: { repository_count: 0 },
+              scope: { repository_count: publicRepositoryScope?.size ?? 0 },
               collection: { state: "unknown", reason: "unavailable" },
               window: null,
               comparison: null,
