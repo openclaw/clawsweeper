@@ -98,7 +98,7 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: steps.core-budget.outputs.skip != 'true'
         with:
           node-version: "24"
@@ -110,12 +110,12 @@ jobs:
           set -euo pipefail
           corepack enable
           for attempt in 1 2 3; do
-            if corepack prepare "pnpm@11.10.0" --activate; then
+            if corepack prepare "pnpm@11.24.0" --activate; then
               exit 0
             fi
             sleep "$((attempt * 10))"
           done
-          corepack prepare "pnpm@11.10.0" --activate
+          corepack prepare "pnpm@11.24.0" --activate
 
       - name: Resolve pnpm store
         id: pnpm-store
@@ -127,9 +127,9 @@ jobs:
         if: steps.core-budget.outputs.skip != 'true'
         with:
           path: ${{ steps.pnpm-store.outputs.path }}
-          key: ${{ runner.os }}-pnpm-11.10.0-${{ hashFiles('pnpm-lock.yaml') }}
+          key: ${{ runner.os }}-pnpm-11.24.0-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: |
-            ${{ runner.os }}-pnpm-11.10.0-
+            ${{ runner.os }}-pnpm-11.24.0-
             ${{ runner.os }}-pnpm-
 
       - name: Install dependencies

@@ -13,7 +13,7 @@ export const OPENCLAW_SHAPED_CONTRACT = Object.freeze({
 
 export function createTargetFixture(
   root,
-  { fixture = "tiny", dependencySetupMutation = false, packageManager = "pnpm@11.10.0" } = {},
+  { fixture = "tiny", dependencySetupMutation = false, packageManager = "pnpm@11.24.0" } = {},
 ) {
   assertFixture(fixture);
   return fixture === "openclaw-shaped"

@@ -41,7 +41,7 @@ test("repair planning and execution use a Node runtime accepted by current OpenC
     const setup = workflow.jobs?.[jobName]?.steps?.find(
       (step) => step.uses === "./.github/actions/setup-pnpm",
     );
-    assert.equal(setup?.with?.["node-version"], "24.18.1", `${jobName} runtime`);
+    assert.equal(setup?.with?.["node-version"], "24.20.0", `${jobName} runtime`);
   }
 });
 

@@ -30,8 +30,8 @@ test("dead-letter workflow is manual, serialized, and bounded to safe actions", 
   });
   assert.equal(workflow.jobs.operate.environment, "exact-review-operator");
   assert.doesNotMatch(workflowSource, /dead-letters\/replay/);
-  assert.match(workflowSource, /actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/);
-  assert.match(workflowSource, /actions\/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e/);
+  assert.match(workflowSource, /actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/);
+  assert.match(workflowSource, /actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020/);
   assert.match(workflowSource, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/);
   const uploadStep = workflow.jobs.operate.steps.find(
     (step) => step.name === "Upload sanitized inventory",

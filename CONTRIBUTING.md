@@ -31,7 +31,7 @@ pnpm run build
 pnpm run check
 ```
 
-Corepack reads the pinned `pnpm@11.10.0` version from `package.json`; do not
+Corepack reads the pinned `pnpm@11.24.0` version from `package.json`; do not
 replace it with an unpinned global pnpm command in canonical examples.
 
 Workflow-intake fixtures require Bash 4+ for `mapfile`. macOS `/bin/bash` 3.2 is

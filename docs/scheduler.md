@@ -443,7 +443,7 @@ GitHub is still expanding jobs. Scheduled feeds use one planner shard because
 the Durable Object, not the matrix, owns review concurrency.
 
 Planning is also the runtime build point for manual matrix review. The plan job installs
-with pinned Node 24 and `pnpm@11.10.0`, builds `dist/` once, and uploads that
+with pinned Node 24 and `pnpm@11.24.0`, builds `dist/` once, and uploads that
 runtime artifact. Review shards download the built `dist/` and run
 `node dist/clawsweeper.js review` directly instead of running a per-shard pnpm
 install and build. Scheduled queue feeds skip this artifact because each exact

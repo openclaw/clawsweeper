@@ -116,7 +116,7 @@ jobs:
           hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
 
@@ -126,12 +126,12 @@ jobs:
           set -euo pipefail
           corepack enable
           for attempt in 1 2 3; do
-            if corepack prepare "pnpm@11.10.0" --activate; then
+            if corepack prepare "pnpm@11.24.0" --activate; then
               exit 0
             fi
             sleep "$((attempt * 10))"
           done
-          corepack prepare "pnpm@11.10.0" --activate
+          corepack prepare "pnpm@11.24.0" --activate
 
       # This workflow_run job executes trusted main-branch code only; artifacts
       # from worker runs are downloaded as data and handled by repair publishers.
@@ -145,9 +145,9 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: ${{ steps.pnpm-store.outputs.path }}
-          key: ${{ runner.os }}-pnpm-11.10.0-${{ hashFiles('pnpm-lock.yaml') }}
+          key: ${{ runner.os }}-pnpm-11.24.0-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: |
-            ${{ runner.os }}-pnpm-11.10.0-
+            ${{ runner.os }}-pnpm-11.24.0-
             ${{ runner.os }}-pnpm-
 
       # This workflow_run job executes trusted main-branch code only; artifacts
