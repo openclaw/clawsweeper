@@ -17,6 +17,7 @@ import {
   isoAgo,
   jsonResponse,
 } from "./dashboard-worker-harness.ts";
+import { publicHealthHistoryContract } from "../dashboard/worker.ts";
 
 test("public durable publication event endpoint returns bounded aggregate-only window data", async () => {
   const storage = new MemoryDurableStorage();
@@ -137,6 +138,8 @@ test("public telemetry routes contain malformed and rejecting durable reads", as
             complete: false,
             queue_stages: null,
             live_stages: null,
+            queue_legacy_batch_stages: null,
+            live_legacy_batch_stages: null,
             total: null,
           },
         });
@@ -533,6 +536,47 @@ test("operator lifecycle audit inventory is signed, redacted, paginated, snapsho
     state: "unknown",
     reason: "stale",
   });
+});
+
+test("operator telemetry reconciliation is signed and returns aggregate-only scope results", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    {
+      storage,
+      blockConcurrencyWhile: async (callback: () => Promise<void>) => callback(),
+    },
+    { PUBLIC_BAY_REPOS: "openclaw/openclaw" },
+  );
+  const env = {
+    EXACT_REVIEW_OPERATOR_SECRET: "operator-secret",
+    PUBLIC_BAY_REPOS: "openclaw/openclaw",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const endpoint = "https://clawsweeper.openclaw.ai/internal/exact-review/telemetry-reconciliation";
+  const unsigned = await worker.fetch(new Request(endpoint, { method: "POST", body: "{}" }), env);
+  assert.equal(unsigned.status, 401);
+  const body = "{}";
+  const response = await worker.fetch(
+    new Request(endpoint, {
+      method: "POST",
+      headers: {
+        "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", "operator-secret")
+          .update(body)
+          .digest("hex")}`,
+      },
+      body,
+    }),
+    env,
+  );
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  const reconciliation = payload.exact_review_telemetry_reconciliation;
+  assert.deepEqual(reconciliation.collection, { state: "complete" });
+  assert.deepEqual(reconciliation.scope, { repository_count: 1 });
+  assert.equal(reconciliation.comparison.event_sets_match, true);
+  assert.equal(reconciliation.comparison.canonical_events, 0);
+  assert.equal(JSON.stringify(payload).includes("openclaw/openclaw"), false);
+  assert.equal(JSON.stringify(payload).includes("records"), false);
 });
 
 test("durable lifecycle Bay provisions only its indexed reader before ordinary queue initialization", async () => {
@@ -1490,7 +1534,7 @@ test("dashboard durable status store persists, expires, and prepends events", as
   assert.equal(storage.has("cold-expired"), false);
 });
 
-test("dashboard reuses a current Bay snapshot from the shared status store", async () => {
+test("dashboard reuses a current Bay snapshot from the matching shared status scope", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
   Object.defineProperty(globalThis, "caches", {
@@ -1499,7 +1543,7 @@ test("dashboard reuses a current Bay snapshot from the shared status store", asy
   });
   const statusStore = new MemoryKv();
   await statusStore.put(
-    "snapshot",
+    "snapshot:bay-scope:v1:openclaw%2Fopenclaw",
     JSON.stringify({
       schema_version: 1,
       generated_at: new Date().toISOString(),
@@ -1508,7 +1552,15 @@ test("dashboard reuses a current Bay snapshot from the shared status store", asy
       automatic_work: [],
       diagnostics: { errors: [], error_count: 0 },
       bay: {
-        timings: { sample_kind: "completed_review_journeys" },
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
+        },
       },
       pipeline: [{ id: "shared-snapshot", arbitrary_count: 41, arbitrary_boolean: true }],
       fleet: {
@@ -1531,6 +1583,7 @@ test("dashboard reuses a current Bay snapshot from the shared status store", asy
       {
         CACHE_TTL_SECONDS: "60",
         STATUS_STORE: statusStore,
+        PUBLIC_BAY_REPOS: "openclaw/openclaw",
       },
       { waitUntil: () => undefined },
     );
@@ -1542,11 +1595,174 @@ test("dashboard reuses a current Bay snapshot from the shared status store", asy
     assert.deepEqual(status.fleet, { active_codex_jobs: 1 });
     assert.equal(status.arbitrary_namespace, undefined);
     assert.equal(status.bay.timings.sample_kind, "completed_review_journeys");
+    assert.equal(status.bay.timings.source, "durable_exact_review_lifecycles");
     assert.equal(networkRequests, 0);
-    const persisted = String(await statusStore.get("snapshot"));
+    const persisted = String(await statusStore.get("snapshot:bay-scope:v1:openclaw%2Fopenclaw"));
     assert.equal(persisted.includes("arbitrary_count"), false);
     assert.equal(persisted.includes("arbitrary_boolean"), false);
     assert.equal(persisted.includes("arbitrary_namespace"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("dashboard rejects a current Bay snapshot from a different public scope", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  const statusStore = new MemoryKv();
+  await statusStore.put(
+    "snapshot:bay-scope:v1:openclaw%2Fopenclaw",
+    JSON.stringify({
+      schema_version: 1,
+      generated_at: new Date().toISOString(),
+      health: {},
+      workers: [],
+      automatic_work: [],
+      diagnostics: { errors: [], error_count: 0 },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
+        },
+      },
+      pipeline: [],
+      fleet: { active_codex_jobs: 41 },
+    }),
+  );
+  let networkRequests = 0;
+  globalThis.fetch = async () => {
+    networkRequests += 1;
+    throw new Error("scope mismatch must rebuild instead of returning the stored snapshot");
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      {
+        CACHE_TTL_SECONDS: "60",
+        STATUS_STORE: statusStore,
+        PUBLIC_BAY_REPOS: "openclaw/clawsweeper",
+      },
+      { waitUntil: () => undefined },
+    );
+    const status = await response.json();
+    assert.equal(response.status, 200);
+    assert.ok(networkRequests > 0);
+    assert.notEqual(status.fleet.active_codex_jobs, 41);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("dashboard isolates fresh edge caches by public Bay scope", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const cache = new MemoryCache();
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: cache },
+  });
+  await cache.put(
+    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/openclaw%2Fopenclaw/fresh"),
+    jsonResponse({
+      schema_version: 1,
+      generated_at: new Date().toISOString(),
+      health: {},
+      workers: [],
+      automatic_work: [],
+      diagnostics: { errors: [], error_count: 0 },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
+        },
+      },
+      pipeline: [],
+      fleet: { active_codex_jobs: 41 },
+    }),
+  );
+  let networkRequests = 0;
+  globalThis.fetch = async () => {
+    networkRequests += 1;
+    throw new Error("scope mismatch must bypass the old edge cache");
+  };
+
+  try {
+    const response = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/api/status"), {
+      PUBLIC_BAY_REPOS: "openclaw/clawsweeper",
+    });
+    const status = await response.json();
+    assert.equal(response.status, 200);
+    assert.ok(networkRequests > 0);
+    assert.notEqual(status.fleet.active_codex_jobs, 41);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("dashboard refreshes a durable snapshot that predates the legacy timing aggregate", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  const statusStore = new MemoryKv();
+  await statusStore.put(
+    "snapshot",
+    JSON.stringify({
+      schema_version: 1,
+      generated_at: new Date().toISOString(),
+      health: {},
+      workers: [],
+      automatic_work: [],
+      pipeline: [{ id: "legacy-shared-snapshot" }],
+      diagnostics: { errors: [], error_count: 0 },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
+        },
+      },
+      fleet: { active_codex_jobs: 1 },
+    }),
+  );
+  let networkRequests = 0;
+  globalThis.fetch = async () => {
+    networkRequests += 1;
+    throw new Error("fresh collection is intentionally unavailable");
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      { CACHE_TTL_SECONDS: "60", STATUS_STORE: statusStore },
+      { waitUntil: () => undefined },
+    );
+    const status = await response.json();
+    assert.equal(response.status, 200);
+    assert.ok(networkRequests > 0);
+    assert.equal(status.bay.timings.sample_kind, "completed_review_journeys");
+    assert.equal(status.bay.timings.source, "durable_exact_review_lifecycles");
+    assert.deepEqual(status.pipeline, []);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -1568,7 +1784,13 @@ test("dashboard rewrites a malformed durable root to a fixed incomplete snapshot
     JSON.stringify({
       schema_version: 1,
       generated_at: new Date().toISOString(),
-      bay: { timings: { sample_kind: "completed_review_journeys" } },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
+        },
+      },
       nested: { marker },
     }),
   );
@@ -1587,11 +1809,11 @@ test("dashboard rewrites a malformed durable root to a fixed incomplete snapshot
     assert.equal(body.public_projection_complete, false);
     assert.equal(body.diagnostics.error_count, 1);
     assert.equal(JSON.stringify(body).includes(marker), false);
-    const persisted = String(await statusStore.get("snapshot"));
+    const persisted = String(await statusStore.get("snapshot:bay-scope:v1:_"));
     assert.equal(persisted.includes(marker), false);
     assert.equal(JSON.parse(persisted).public_projection_complete, false);
     assert.equal(
-      await cache.match(new Request("https://clawsweeper.openclaw.ai/api/status-cache/v4/fresh")),
+      await cache.match(new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh")),
       undefined,
     );
   } finally {
@@ -1633,7 +1855,13 @@ test("dashboard rejects malformed, undated, stale, and future durable snapshots"
     JSON.stringify({
       schema_version: 1,
       generated_at: new Date(now).toISOString(),
-      bay: { timings: { sample_kind: "completed_review_journeys" } },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
+        },
+      },
     }),
   );
   const first = await readCachedSnapshot({ STATUS_STORE: validStore }, 60);
@@ -1694,6 +1922,41 @@ test("dashboard health history persists five-minute samples and serves a bounded
   assert.equal(sixHourHistory.samples.length, 1);
   assert.equal(sixHourHistory.samples[0].queued, 14);
   assert.equal(sixHourHistory.samples[0].exact_review.review.pending, 317);
+  assert.equal(sixHourHistory.coverage.state, "partial");
+  const sixHourExpectedSlots =
+    Math.floor(Date.parse(sixHourHistory.coverage.window_ended_at) / (5 * 60_000)) -
+    Math.ceil(Date.parse(sixHourHistory.coverage.window_started_at) / (5 * 60_000)) +
+    1;
+  assert.equal(sixHourHistory.coverage.expected_slots, sixHourExpectedSlots);
+  assert.equal(sixHourHistory.coverage.observed_slots, 1);
+  assert.equal(sixHourHistory.coverage.usable_slots, 1);
+  assert.equal(sixHourHistory.coverage.failed_slots, 0);
+  assert.equal(sixHourHistory.coverage.missing_slots, sixHourExpectedSlots - 1);
+  assert.ok(sixHourHistory.coverage.largest_gap_slots > 0);
+  assert.equal(sixHourHistory.freshness.state, "fresh");
+  assert.equal(sixHourHistory.freshness.maximum_age_ms, 12 * 60_000);
+
+  const emptyResponse = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/health-history?range=6h"),
+    { STATUS_STORE: new MemoryKv() },
+  );
+  const emptyHistory = await emptyResponse.json();
+  assert.equal(emptyHistory.coverage.state, "unavailable");
+  const emptyExpectedSlots =
+    Math.floor(Date.parse(emptyHistory.coverage.window_ended_at) / (5 * 60_000)) -
+    Math.ceil(Date.parse(emptyHistory.coverage.window_started_at) / (5 * 60_000)) +
+    1;
+  assert.equal(emptyHistory.coverage.expected_slots, emptyExpectedSlots);
+  assert.equal(emptyHistory.coverage.observed_slots, 0);
+  assert.equal(emptyHistory.coverage.usable_slots, 0);
+  assert.equal(emptyHistory.coverage.failed_slots, 0);
+  assert.equal(emptyHistory.coverage.missing_slots, emptyExpectedSlots);
+  assert.deepEqual(emptyHistory.freshness, {
+    state: "unavailable",
+    latest_sample_at: null,
+    age_ms: null,
+    maximum_age_ms: 12 * 60_000,
+  });
 
   for (const [query, expectedRange] of [
     ["24h", "24h"],
@@ -1708,6 +1971,74 @@ test("dashboard health history persists five-minute samples and serves a bounded
     assert.equal(history.range, expectedRange);
     assert.equal(history.samples.length, 2);
   }
+});
+
+test("health history coverage aligns scheduled slots with an off-boundary query window", () => {
+  const interval = 5 * 60_000;
+  const rangeMs = 6 * 60 * 60_000;
+  const now = Date.UTC(2026, 7, 29, 22, 16, 0);
+  const firstSlot = Math.ceil((now - rangeMs) / interval);
+  const lastSlot = Math.floor(now / interval);
+  const samples = Array.from({ length: lastSlot - firstSlot + 1 }, (_, index) => ({
+    at: new Date((firstSlot + index) * interval).toISOString(),
+    exact_review: { collection_ok: true },
+  }));
+
+  const contract = publicHealthHistoryContract("6h", samples, now);
+  assert.equal(contract.coverage.state, "complete");
+  assert.equal(contract.coverage.expected_slots, 72);
+  assert.equal(contract.coverage.observed_slots, 72);
+  assert.equal(contract.coverage.usable_slots, 72);
+  assert.equal(contract.coverage.failed_slots, 0);
+  assert.equal(contract.coverage.missing_slots, 0);
+  assert.equal(contract.coverage.window_started_at, new Date(now - rangeMs).toISOString());
+  assert.equal(contract.coverage.window_ended_at, new Date(now).toISOString());
+});
+
+test("health history coverage separates failed exact-review polls from usable telemetry", () => {
+  const interval = 5 * 60_000;
+  const rangeMs = 6 * 60 * 60_000;
+  const now = Date.UTC(2026, 7, 29, 22, 16, 0);
+  const firstSlot = Math.ceil((now - rangeMs) / interval);
+  const lastSlot = Math.floor(now / interval);
+  const samples = Array.from({ length: lastSlot - firstSlot + 1 }, (_, index) => ({
+    at: new Date((firstSlot + index) * interval).toISOString(),
+    exact_review: { collection_ok: index < 2 },
+  }));
+
+  const contract = publicHealthHistoryContract("6h", samples, now);
+  assert.equal(contract.coverage.state, "partial");
+  assert.equal(contract.coverage.observed_slots, 72);
+  assert.equal(contract.coverage.usable_slots, 2);
+  assert.equal(contract.coverage.failed_slots, 70);
+  assert.equal(contract.coverage.missing_slots, 0);
+  assert.equal(contract.coverage.coverage_percent, 2.78);
+  assert.equal(contract.coverage.largest_gap_slots, 70);
+  assert.equal(contract.freshness.state, "stale");
+  assert.equal(contract.freshness.latest_sample_at, samples[1].at);
+
+  const unavailable = publicHealthHistoryContract(
+    "6h",
+    samples.map((sample) => ({ ...sample, exact_review: { collection_ok: false } })),
+    now,
+  );
+  assert.equal(unavailable.coverage.state, "unavailable");
+  assert.equal(unavailable.coverage.observed_slots, 72);
+  assert.equal(unavailable.coverage.usable_slots, 0);
+  assert.equal(unavailable.coverage.failed_slots, 72);
+  assert.equal(unavailable.freshness.state, "unavailable");
+  assert.equal(unavailable.freshness.latest_sample_at, null);
+
+  const legacyOnly = publicHealthHistoryContract(
+    "6h",
+    samples.map(({ at }) => ({ at, status: "healthy", collection_ok: true })),
+    now,
+  );
+  assert.equal(legacyOnly.coverage.state, "unavailable");
+  assert.equal(legacyOnly.coverage.observed_slots, 0);
+  assert.equal(legacyOnly.coverage.usable_slots, 0);
+  assert.equal(legacyOnly.coverage.failed_slots, 0);
+  assert.equal(legacyOnly.coverage.missing_slots, 72);
 });
 
 test("dashboard health history deduplicates and caps malformed legacy cardinality", async () => {
@@ -1867,14 +2198,24 @@ test("optional exact-review telemetry failures do not freeze an idle status snap
   });
   const statusStore = new MemoryKv();
   await statusStore.put(
-    "snapshot",
+    "snapshot:bay-scope:v1:_",
     JSON.stringify({
       schema_version: 1,
       generated_at: new Date().toISOString(),
       health: {},
       workers: [],
       automatic_work: [],
-      bay: { timings: { sample_kind: "completed_review_journeys" } },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
+        },
+      },
       pipeline: [],
       recent: {},
       fleet: { active_workflow_runs: 0 },
@@ -1945,14 +2286,24 @@ test("optional queue status failures remain bounded in public and persisted snap
   });
   const statusStore = new MemoryKv();
   await statusStore.put(
-    "snapshot",
+    "snapshot:bay-scope:v1:_",
     JSON.stringify({
       schema_version: 1,
       generated_at: new Date().toISOString(),
       health: {},
       workers: [],
       automatic_work: [],
-      bay: { timings: { sample_kind: "completed_review_journeys" } },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
+        },
+      },
       pipeline: [],
       recent: {},
       fleet: { active_workflow_runs: 0 },
@@ -1996,7 +2347,7 @@ test("optional queue status failures remain bounded in public and persisted snap
     assert.equal(status.diagnostics.exact_review_queue_error, undefined);
     assert.equal(JSON.stringify(status).includes(rejectionMarker), false);
 
-    const persisted = await statusStore.get("snapshot");
+    const persisted = await statusStore.get("snapshot:bay-scope:v1:_");
     assert.ok(persisted);
     const persistedSnapshot = JSON.parse(persisted);
     assert.equal(persistedSnapshot.exact_review_queue, null);
@@ -2062,6 +2413,7 @@ test("optional queue status failure retains the last complete public Bay queue s
       item_number: 125_204,
       stage: "arriving",
       source: "queue",
+      legacy_batch_path: false,
     },
   ]);
   const emptyActivityStages = Object.fromEntries(
@@ -2085,7 +2437,7 @@ test("optional queue status failure retains the last complete public Bay queue s
 
   const statusStore = new MemoryKv();
   await statusStore.put(
-    "snapshot",
+    "snapshot:bay-scope:v1:openclaw%2Fopenclaw",
     JSON.stringify({
       schema_version: 1,
       generated_at: new Date().toISOString(),
@@ -2095,7 +2447,15 @@ test("optional queue status failure retains the last complete public Bay queue s
       automatic_work: [],
       bay: {
         active_census_complete: false,
-        timings: { sample_kind: "completed_review_journeys" },
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
+        },
       },
       pipeline: [],
       recent: {},
@@ -2138,19 +2498,22 @@ test("optional queue status failure retains the last complete public Bay queue s
         item_number: 125_204,
         stage: "arriving",
         source: "queue",
+        legacy_batch_path: false,
       },
     ]);
     assert.deepEqual(status.exact_review_queue.bay_projection.activity, {
       complete: false,
       queue_stages: null,
       live_stages: null,
+      queue_legacy_batch_stages: null,
+      live_legacy_batch_stages: null,
       total: null,
     });
     assert.equal(status.dashboard_health.conclusion, "needs_attention");
     assert.equal(status.dashboard_health.severity, "amber");
     assert.equal(JSON.stringify(status).includes(rejectionMarker), false);
 
-    const persisted = await statusStore.get("snapshot");
+    const persisted = await statusStore.get("snapshot:bay-scope:v1:openclaw%2Fopenclaw");
     assert.ok(persisted);
     const persistedSnapshot = JSON.parse(persisted);
     assert.deepEqual(
@@ -2185,7 +2548,7 @@ test("optional queue status failure retains the last complete public Bay queue s
       value: { default: new MemoryCache() },
     });
     await statusStore.put(
-      "snapshot",
+      "snapshot:bay-scope:v1:openclaw%2Fopenclaw",
       JSON.stringify({
         ...JSON.parse(persisted),
         generated_at: new Date(Date.now() - 61_000).toISOString(),
@@ -2205,6 +2568,8 @@ test("optional queue status failure retains the last complete public Bay queue s
       complete: false,
       queue_stages: null,
       live_stages: null,
+      queue_legacy_batch_stages: null,
+      live_legacy_batch_stages: null,
       total: null,
     });
 
@@ -2217,7 +2582,7 @@ test("optional queue status failure retains the last complete public Bay queue s
     stalePriorExactReviewQueue.generated_at = staleQueueGeneratedAt;
     stalePriorExactReviewQueue.handoff_health.observed_at = staleQueueGeneratedAt;
     await statusStore.put(
-      "snapshot",
+      "snapshot:bay-scope:v1:openclaw%2Fopenclaw",
       JSON.stringify({
         ...JSON.parse(persisted),
         generated_at: new Date().toISOString(),

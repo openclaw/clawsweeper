@@ -63,6 +63,30 @@ export function createCloseDecisionWorkflow({
     );
   }
 
+  function verifiedImplementationPullRequestBlockReason(
+    item: Partial<Pick<Item, "repo" | "number">>,
+    decision: Decision,
+  ): string | null {
+    const pull = decision.fixedPullRequest;
+    const repo = item.repo ?? targetRepo();
+    if (!pull || pull.confidence !== "high") {
+      return "implemented-on-main close requires a GitHub-verified fixing pull request";
+    }
+    if (pull.repo !== repo) {
+      return "implemented-on-main fixing pull request must be in the reviewed repository";
+    }
+    if (item.number === pull.number) {
+      return "implemented-on-main fixing pull request cannot be the pull request being closed";
+    }
+    if (!pull.mergedAt || !pull.source.startsWith("GitHub ")) {
+      return "implemented-on-main fixing pull request must be GitHub-verified and merged";
+    }
+    if (pull.url !== `https://github.com/${repo}/pull/${pull.number}`) {
+      return "implemented-on-main fixing pull request URL does not match its GitHub identity";
+    }
+    return null;
+  }
+
   function canClose(decision: Decision): boolean {
     return (
       decision.decision === "close" &&
@@ -413,6 +437,19 @@ export function createCloseDecisionWorkflow({
         actionTaken: "skipped_invalid_decision",
         reason: `${decision.closeReason} requires evidence with file and sha`,
       };
+    }
+    if (item.kind === "pull_request" && isImplementationCloseReason(decision.closeReason)) {
+      const implementationPullRequestBlock = verifiedImplementationPullRequestBlockReason(
+        item,
+        decision,
+      );
+      if (implementationPullRequestBlock) {
+        return {
+          ok: false,
+          actionTaken: "skipped_invalid_decision",
+          reason: implementationPullRequestBlock,
+        };
+      }
     }
     if (isImplementationCloseReason(decision.closeReason) && !decision.fixedSha?.trim()) {
       return {

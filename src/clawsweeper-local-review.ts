@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { UserFacingCommandError } from "./command.js";
+import { SWEEPER_COMMAND_MAX_BUFFER_BYTES, UserFacingCommandError } from "./command.js";
 import { commitMetadata, dirtyWorktree } from "./commit-sweeper.js";
+import { readReviewGit, type ReviewGitReadOptions } from "./pr-review-evidence.js";
 import { truncateText } from "./clawsweeper-text.js";
 import type { Item, ItemContext } from "./clawsweeper-types.js";
 
@@ -14,6 +15,93 @@ interface LocalRangeReviewDependencies {
     headSha: string;
   }) => Record<string, unknown>;
   reviewCommentContentRevision: (entries: readonly unknown[]) => string;
+}
+
+function localRangeFiles(targetDir: string, diffArgs: string[]) {
+  const invalid = () =>
+    new UserFacingCommandError("Could not read complete local-range Git file list.");
+  function fields(format: string, options: ReviewGitReadOptions = {}): string[] | null {
+    const raw = readReviewGit(targetDir, [...diffArgs, format, "-z", "--"], options);
+    if (raw === null) return null;
+    const text = raw.toString("utf8");
+    // Refuse lossy path decoding and incomplete reads rather than join different identities.
+    if (!Buffer.from(text, "utf8").equals(raw) || (text && !text.endsWith("\0"))) {
+      return null;
+    }
+    return text ? text.slice(0, -1).split("\0") : [];
+  }
+  // Required enumeration retains runtime run()'s capture budget and absence of a deadline.
+  const names = fields("--name-status", {
+    maxBytes: SWEEPER_COMMAND_MAX_BUFFER_BYTES,
+    deadlineAt: null,
+  });
+  if (names === null) throw invalid();
+  const files: Array<{ filename: string; previous_filename?: string; status: string }> = [];
+  const filenames = new Set<string>();
+  for (let index = 0; index < names.length;) {
+    const status = names[index++];
+    if (!status || !/^(?:[ADMTUXB]|[RC](?:100|0[0-9]{2}))$/.test(status)) throw invalid();
+    const first = names[index++];
+    const renamed = /^[RC]/.test(status);
+    const filename = renamed ? names[index++] : first;
+    if (!first || !filename || filenames.has(filename)) throw invalid();
+    filenames.add(filename);
+    files.push({ filename, ...(renamed ? { previous_filename: first } : {}), status });
+  }
+  const identity = (filename: string, previous?: string) => JSON.stringify([previous, filename]);
+  function readStatistics() {
+    const statistics = new Map<string, { additions: number | null; deletions: number | null }>();
+    const counts = fields("--numstat");
+    if (counts === null) return null;
+    for (let index = 0; index < counts.length;) {
+      const record = counts[index++];
+      if (!record) return null;
+      const firstTab = record.indexOf("\t");
+      const secondTab = record.indexOf("\t", firstTab + 1);
+      if (firstTab < 1 || secondTab <= firstTab + 1) return null;
+      const added = record.slice(0, firstTab);
+      const removed = record.slice(firstTab + 1, secondTab);
+      let filename = record.slice(secondTab + 1);
+      let previous: string | undefined;
+      // Rename/copy numstat records frame old and new paths separately after an empty path.
+      if (!filename) {
+        previous = counts[index++];
+        filename = counts[index++] ?? "";
+        if (!previous) return null;
+      }
+      if (!filename) return null;
+      const binary = added === "-" && removed === "-";
+      if (
+        !binary &&
+        (![added, removed].every((value) => /^[0-9]+$/.test(value)) ||
+          ![added, removed].every((value) => Number.isSafeInteger(Number(value))))
+      ) {
+        return null;
+      }
+      const key = identity(filename, previous);
+      if (statistics.has(key)) return null;
+      statistics.set(key, {
+        additions: binary ? null : Number(added),
+        deletions: binary ? null : Number(removed),
+      });
+    }
+    if (
+      statistics.size !== files.length ||
+      files.some((file) => !statistics.has(identity(file.filename, file.previous_filename)))
+    ) {
+      return null;
+    }
+    return statistics;
+  }
+  // Optional bounded metadata is all-or-nothing; never publish a partially validated map.
+  const statistics = readStatistics();
+  return files.map((file) => ({
+    ...file,
+    ...(statistics?.get(identity(file.filename, file.previous_filename)) ?? {
+      additions: null,
+      deletions: null,
+    }),
+  }));
 }
 
 export function createLocalRangeReviewer({
@@ -83,41 +171,23 @@ export function createLocalRangeReviewer({
     if (!localCommitRevision) {
       throw new UserFacingCommandError("Could not fingerprint local range commit messages.");
     }
-    const nameStatus = run("git", ["diff", "--name-status", `${baseSha}..${headSha}`], {
-      cwd: targetDir,
-    }).trim();
+    const diffArgs = ["diff", "--no-ext-diff", "--no-textconv", `${baseSha}..${headSha}`];
+    const rangeFiles = localRangeFiles(targetDir, diffArgs);
     const semanticPullFiles: unknown[] = [];
-    const pullFiles = nameStatus
-      ? nameStatus.split("\n").map((line) => {
-          // name-status rows are tab-separated: "A\tfile", "M\tfile", or for rename/copy
-          // "R100\told\tnew". The reviewable path is always the LAST field (the new path);
-          // the status is the first. Splitting on the first tab only would feed the literal
-          // "old\tnew" to `git diff -- <path>` and yield an empty patch for renames/copies.
-          const parts = line.split("\t");
-          const status = parts[0] ?? line;
-          const filename = parts[parts.length - 1] ?? line;
-          const previousFilename = parts.length > 2 ? parts[parts.length - 2] : undefined;
-          const patch = run("git", ["diff", `${baseSha}..${headSha}`, "--", filename], {
-            cwd: targetDir,
-          });
-          const file = {
-            filename,
-            ...(previousFilename ? { previous_filename: previousFilename } : {}),
-            status,
-            patch: truncateText(patch, 512 * 1024),
-          };
-          semanticPullFiles.push({
-            ...file,
-            ...pullFileTreeIdentity({ file, targetDir, baseSha, headSha }),
-          });
-          return {
-            filename,
-            ...(previousFilename ? { previous_filename: previousFilename } : {}),
-            status,
-            patch: truncateText(patch, 8000),
-          };
-        })
-      : [];
+    const pullFiles = rangeFiles.map((metadata) => {
+      const paths = metadata.previous_filename
+        ? [metadata.previous_filename, metadata.filename]
+        : [metadata.filename];
+      const patch = run("git", ["--literal-pathspecs", ...diffArgs, "--", ...paths], {
+        cwd: targetDir,
+      });
+      const file = { ...metadata, patch: truncateText(patch, 512 * 1024) };
+      semanticPullFiles.push({
+        ...file,
+        ...pullFileTreeIdentity({ file, targetDir, baseSha, headSha }),
+      });
+      return { ...metadata, patch: truncateText(patch, 8000) };
+    });
     const item: Item = {
       repo,
       number: 0,

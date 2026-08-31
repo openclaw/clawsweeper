@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 
 import { runAgentProcess } from "../dist/agent-runner.js";
 import { parseOpenclawJsonEnvelope, runOpenclawProcess } from "../dist/openclaw-process.js";
@@ -427,13 +428,15 @@ test("OpenClaw invalid JSON fails closed with a bounded stderr tail", () => {
   }
 });
 
-test("OpenClaw runner writes the normalized last message and notes ignored steering", () => {
+test("OpenClaw runner writes the normalized last message and notes ignored steering", (t) => {
+  useFakeScanner(t);
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-test-"));
   const binary = fakeOpenclaw(root);
   const outputPath = join(root, "last-message.txt");
   try {
     const result = runAgentProcess({
       label: "steerable-openclaw",
+      scanSource: { kind: "prompt" },
       prompt: "prompt",
       model: "internal",
       reasoningEffort: "medium",

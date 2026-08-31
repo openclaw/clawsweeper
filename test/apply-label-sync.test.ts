@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
   contextHasNonAutomationActivityAfterForTest,
+  implementedOnMainCloseProvenanceBlock,
   isExactEventSourceRevisionChange,
   itemSourceRevisionSha256ForTest,
   renderReviewStartStatusComment,
@@ -25,6 +27,39 @@ import {
   workPlanCandidateReport,
 } from "./helpers.ts";
 
+test("apply-time implementation provenance keeps incomplete PR closeout metadata open", () => {
+  const incomplete = `repository: openclaw/openclaw
+fixed_pr_url: unknown
+fixed_pr_number: unknown
+fixed_pr_confidence: unknown
+fixed_pr_source: unknown
+fixed_pr_merged_at: unknown`;
+  assert.equal(
+    implementedOnMainCloseProvenanceBlock(
+      incomplete,
+      "pull_request",
+      118679,
+      "implemented_on_main",
+    ),
+    "implemented-on-main close requires a GitHub-verified, same-repository merged fixing pull request",
+  );
+
+  const verified = `repository: openclaw/openclaw
+fixed_pr_url: https://github.com/openclaw/openclaw/pull/456
+fixed_pr_number: 456
+fixed_pr_confidence: high
+fixed_pr_source: GitHub linked-issue closing PR reference
+fixed_pr_merged_at: 2026-08-18T12:00:00Z`;
+  assert.equal(
+    implementedOnMainCloseProvenanceBlock(verified, "pull_request", 118679, "implemented_on_main"),
+    null,
+  );
+  assert.equal(
+    implementedOnMainCloseProvenanceBlock(verified, "pull_request", 456, "implemented_on_main"),
+    "implemented-on-main close requires a GitHub-verified, same-repository merged fixing pull request",
+  );
+});
+
 test("same-item comment payloads never overwrite an earlier pending mutation", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -43,6 +78,66 @@ test("same-item comment payloads never overwrite an earlier pending mutation", (
     assert.deepEqual(JSON.parse(readFileSync(secondPayload, "utf8")), { body: secondBody });
     assert.equal(readFileSync(firstPayload.replace(/\.json$/, ".md"), "utf8"), firstBody);
     assert.equal(readFileSync(secondPayload.replace(/\.json$/, ".md"), "utf8"), secondBody);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("closeout receipts ignore spoofed markers after posting the owned receipt", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const comments: Record<string, unknown>[] = [
+      {
+        id: 1,
+        user: { login: "contributor" },
+        body: "<!-- clawsweeper-close-applied item=321 -->",
+      },
+    ];
+    let mutationCount = 0;
+    const publication = createReviewCommentPublication({
+      root,
+      targetRepo: () => "openclaw/clawsweeper",
+      ghPaged: () => comments,
+      asRecord: (value: unknown) => value as Record<string, unknown>,
+      ensureDir: (directory: string) => mkdirSync(directory, { recursive: true }),
+      sha256: () => "body-digest",
+      ghObservedMutationCommand: ({ args }) => {
+        mutationCount += 1;
+        const input = args[args.indexOf("--input") + 1];
+        const body = JSON.parse(readFileSync(input!, "utf8")).body as string;
+        comments.push({ id: 2, user: { login: "clawsweeper[bot]" }, body });
+        return JSON.stringify({ id: 2 });
+      },
+      frontMatterValue: () => undefined,
+      replaceFrontMatterValue: (markdown: string) => markdown,
+      sectionValue: () => "",
+      timestampMs: () => null,
+      sentence: (value: string) => value,
+      normalizedLabelSet: () => new Set<string>(),
+      sectionLineValue: () => undefined,
+      markdownLink: (label: string, url: string) => `[${label}](${url})`,
+      closeAppliedCommentMarker: (number: number) =>
+        `<!-- clawsweeper-close-applied item=${number} -->`,
+      commentId: (comment: Record<string, unknown> | undefined) =>
+        typeof comment?.id === "number" ? comment.id : null,
+      canPatchReviewComment: (comment: Record<string, unknown> | undefined) =>
+        (comment?.user as { login?: unknown } | undefined)?.login === "clawsweeper[bot]",
+    } as Parameters<typeof createReviewCommentPublication>[0]);
+    const options = {
+      number: 321,
+      closeReason: "implemented_on_main" as const,
+      markdown: "",
+      itemUrl: "https://github.com/openclaw/clawsweeper/pull/321",
+      dryRun: false,
+    };
+    comments[0]!.body = publication.renderCloseAppliedComment(options);
+
+    assert.equal(publication.ensureCloseAppliedComment(options), "posted close-applied comment");
+    assert.equal(
+      publication.ensureCloseAppliedComment(options),
+      "matching ClawSweeper close-applied comment already exists",
+    );
+    assert.equal(mutationCount, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -374,7 +469,7 @@ const logPath = ${JSON.stringify(logPath)};
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
-const path = args[1] || "";
+const path = args[1] === "-i" ? args[2] || "" : args[1] || "";
 if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
   console.log(JSON.stringify({
     number: ${number},
@@ -425,7 +520,6 @@ if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
         extraArgs: ["--sync-comments-only", "--item-numbers", String(number)],
       });
     });
-
     const calls = readFileSync(logPath, "utf8")
       .trim()
       .split("\n")
@@ -498,7 +592,7 @@ const logPath = ${JSON.stringify(logPath)};
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
-const path = args[1] || "";
+const path = args[1] === "-i" ? args[2] || "" : args[1] || "";
 if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
   console.log(JSON.stringify({
     number: ${number},
@@ -547,7 +641,6 @@ if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
         extraArgs: ["--sync-comments-only", "--item-numbers", String(number)],
       });
     });
-
     const calls = readFileSync(logPath, "utf8")
       .trim()
       .split("\n")
@@ -947,6 +1040,7 @@ if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && ar
         labelIndex > commentIndex &&
         placeholderCleanupIndex > labelIndex &&
         closeIndex > placeholderCleanupIndex,
+      JSON.stringify({ commands, report: JSON.parse(readFileSync(reportPath, "utf8")) }),
     );
     const isGuardRead = (args: string[]): boolean =>
       args[0] === "api" &&
@@ -1223,72 +1317,78 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
   }
 });
 
-test("issue apply CAS blocks a newer durable review tuple published after preflight", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    const logPath = join(root, "gh.log");
-    const commentReadCountPath = join(root, "comment-read-count");
-    const number = 74490;
-    const reviewedAt = "2026-05-01T00:00:00Z";
-    const newerReviewedAt = "2026-05-01T00:10:00Z";
-    const issue = {
-      number,
-      title: "Do not apply a stale issue review",
-      body: "Issue body remains unchanged while a newer exact review publishes.",
-      html_url: `https://github.com/openclaw/clawsweeper/issues/${number}`,
-      created_at: "2026-04-01T00:00:00Z",
-      updated_at: reviewedAt,
-      closed_at: null,
-      state: "open",
-      locked: false,
-      active_lock_reason: null,
-      author_association: "CONTRIBUTOR",
-      user: { login: "reporter" },
-      labels: [],
-      comments: 1,
-      pull_request: null,
-    };
-    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+for (const scenario of [
+  { name: "verified newer", lease: "9200", owner: "new-review-owner", verified: true },
+  { name: "equal lease", lease: "9100", owner: "new-review-owner", verified: false },
+  { name: "unknown owner", lease: "9200", owner: "unknown", verified: false },
+  { name: "unsafe lease", lease: "9007199254740992", owner: "new-review-owner", verified: false },
+]) {
+  test(`issue apply CAS and publisher preserve ${scenario.name} tuple evidence`, () => {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "items");
+      const closedDir = join(root, "closed");
+      const plansDir = join(root, "plans");
+      const reportPath = join(root, "apply-report.json");
+      const logPath = join(root, "gh.log");
+      const commentReadCountPath = join(root, "comment-read-count");
+      const number = 74490;
+      const reviewedAt = "2026-05-01T00:00:00Z";
+      const newerReviewedAt = "2026-05-01T00:10:00Z";
+      const issue = {
+        number,
+        title: "Do not apply a stale issue review",
+        body: "Issue body remains unchanged while a newer exact review publishes.",
+        html_url: `https://github.com/openclaw/clawsweeper/issues/${number}`,
+        created_at: "2026-04-01T00:00:00Z",
+        updated_at: reviewedAt,
+        closed_at: null,
+        state: "open",
+        locked: false,
+        active_lock_reason: null,
+        author_association: "CONTRIBUTOR",
+        user: { login: "reporter" },
+        labels: [],
+        comments: 1,
+        pull_request: null,
+      };
+      const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+      mkdirSync(itemsDir, { recursive: true });
+      mkdirSync(plansDir, { recursive: true });
 
-    const oldReport = workPlanCandidateReport({
-      number,
-      title: issue.title,
-      reviewed_at: reviewedAt,
-      item_updated_at: reviewedAt,
-      item_snapshot_hash: "reviewed-snapshot",
-      item_source_revision: sourceRevision,
-      review_lease_owner: "old-review-owner",
-      review_lease_comment_id: "9100",
-      labels: JSON.stringify([]),
-    });
-    const oldSynced = reportWithSyncedReviewComment(oldReport, number);
-    writeFileSync(join(itemsDir, `${number}.md`), oldSynced.report, "utf8");
+      const oldReport = workPlanCandidateReport({
+        number,
+        title: issue.title,
+        reviewed_at: reviewedAt,
+        item_updated_at: reviewedAt,
+        item_snapshot_hash: "reviewed-snapshot",
+        item_source_revision: sourceRevision,
+        review_lease_owner: "old-review-owner",
+        review_lease_comment_id: "9100",
+        labels: JSON.stringify([]),
+      });
+      const oldSynced = reportWithSyncedReviewComment(oldReport, number);
+      writeFileSync(join(itemsDir, `${number}.md`), oldSynced.report, "utf8");
 
-    const newerReport = workPlanCandidateReport({
-      number,
-      title: issue.title,
-      reviewed_at: newerReviewedAt,
-      item_updated_at: reviewedAt,
-      item_snapshot_hash: "newer-snapshot",
-      item_source_revision: sourceRevision,
-      review_lease_owner: "new-review-owner",
-      review_lease_comment_id: "9200",
-      labels: JSON.stringify([]),
-    });
-    const newerComment = reportWithSyncedReviewComment(newerReport, number).comment;
-    const oldLiveComment = [
-      "Codex review: stale body that would be patched without the final apply CAS.",
-      "",
-      `<!-- clawsweeper-review item=${number} -->`,
-    ].join("\n");
+      const newerReport = workPlanCandidateReport({
+        number,
+        title: issue.title,
+        reviewed_at: newerReviewedAt,
+        item_updated_at: reviewedAt,
+        item_snapshot_hash: "newer-snapshot",
+        item_source_revision: sourceRevision,
+        review_lease_owner: scenario.owner,
+        review_lease_comment_id: scenario.lease,
+        labels: JSON.stringify([]),
+      });
+      const newerComment = reportWithSyncedReviewComment(newerReport, number).comment;
+      const oldLiveComment = [
+        "Codex review: stale body that would be patched without the final apply CAS.",
+        "",
+        `<!-- clawsweeper-review item=${number} -->`,
+      ].join("\n");
 
-    const ghMock = `
+      const ghMock = `
 const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("fs");
 const logPath = ${JSON.stringify(logPath)};
 const countPath = ${JSON.stringify(commentReadCountPath)};
@@ -1334,39 +1434,82 @@ if (args[0] === "api" && args[1] === "-i" && new RegExp("/issues/${number}/timel
   process.exit(1);
 }
 `;
-    withMockGh(root, ghMock, () => {
-      runApplyDecisionsForTest({
-        itemsDir,
-        closedDir,
-        plansDir,
-        reportPath,
-        extraArgs: ["--item-numbers", String(number), "--comment-sync-min-age-days", "0"],
+      withMockGh(root, ghMock, () => {
+        runApplyDecisionsForTest({
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--item-numbers",
+            String(number),
+            "--comment-sync-min-age-days",
+            "0",
+            "--event-apply-proof",
+            "--exact-event-publication",
+          ],
+        });
+        const workRoot = join(root, "publication");
+        const artifacts = join(workRoot, "artifacts/event");
+        const output = join(workRoot, "github-output");
+        const batch = join(workRoot, "batch.json");
+        mkdirSync(artifacts, { recursive: true });
+        writeFileSync(join(artifacts, `${number}.md`), oldSynced.report);
+        const result = spawnSync(
+          process.execPath,
+          [resolve("dist/repair/publish-event-result.js")],
+          {
+            cwd: workRoot,
+            encoding: "utf8",
+            timeout: 30_000,
+            env: {
+              ...process.env,
+              CLAWSWEEPER_CODE_ROOT: process.cwd(),
+              EXACT_REVIEW_WORK_ROOT: workRoot,
+              EXACT_EVENT_PUBLICATION: "true",
+              REVIEW_ONLY: "true",
+              TARGET_REPO: "openclaw/clawsweeper",
+              ITEM_NUMBER: String(number),
+              EXACT_REVIEW_BATCH_MUTATION_OUTPUT: batch,
+              GITHUB_OUTPUT: output,
+            },
+          },
+        );
+        assert.equal(result.status, scenario.verified ? 0 : 1, result.stdout + result.stderr);
+        const disposition = JSON.parse(readFileSync(batch, "utf8"));
+        assert.equal(disposition.kind, scenario.verified ? "superseded" : "permanent_failure");
+        assert.equal(disposition.plan, undefined);
+        if (scenario.verified) {
+          assert.deepEqual(disposition.disposition, { requeueLatestExpected: false });
+          assert.match(readFileSync(output, "utf8"), /^completion_kind=superseded$/m);
+          assert.match(readFileSync(output, "utf8"), /^reason_code=remote_newer_tuple$/m);
+        }
       });
-    });
 
-    const calls = readFileSync(logPath, "utf8")
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as string[]);
-    assert.ok(Number(readFileSync(commentReadCountPath, "utf8")) >= 6);
-    assert.equal(
-      calls.some((args) => args[0] === "external-mutation"),
-      false,
-    );
-    assert.equal(existsSync(join(closedDir, `${number}.md`)), false);
-    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
-      {
-        number,
-        action: "skipped_stale_review_comment_sync",
-        reason:
-          "live durable review tuple is newer than the local report: comment lease=9200, report lease=9100",
-      },
-    ]);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+      const calls = readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as string[]);
+      assert.ok(Number(readFileSync(commentReadCountPath, "utf8")) >= 6);
+      assert.equal(
+        calls.some((args) => args[0] === "external-mutation"),
+        false,
+      );
+      assert.equal(existsSync(join(closedDir, `${number}.md`)), false);
+      assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+        {
+          number,
+          action: "skipped_stale_review_comment_sync",
+          reason: `live durable review tuple is newer than the local report: comment lease=${scenario.lease}, report lease=9100`,
+          ...(scenario.verified ? { newerReviewTupleVerified: true } : {}),
+        },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("issue apply rejects a stable live source revision that differs from the report", () => {
   const root = mkdtempSync(tmpPrefix);
@@ -1697,7 +1840,7 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
   console.error("unexpected gh args", JSON.stringify(args));
   process.exit(1);
 }
-`;
+      `;
       withMockGh(root, ghMock, () => {
         runApplyDecisionsForTest({
           itemsDir,
@@ -1813,7 +1956,7 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   console.error("unexpected gh args", JSON.stringify(args));
   process.exit(1);
 }
-`;
+      `;
     withMockGh(root, ghMock, () => {
       runApplyDecisionsForTest({
         itemsDir,
@@ -3583,6 +3726,12 @@ const path = args[1] || "";
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   const timeline = Array.from({ length: 100 }, (_, index) => ({ id: index + 1 }));
   console.log('HTTP/2 200\\nlink: <https://api.github.com/repos/openclaw/clawsweeper/issues/321/timeline?per_page=100&page=2>; rel="last"\\n\\n' + JSON.stringify(timeline));
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/456\\/timeline(?:\\?|$)/.test(args[2] || "")) {
+  console.log("HTTP/2 200\\n\\n[]");
+} else if (args[0] === "api" && args[1] === "graphql") {
+  console.log(JSON.stringify({ data: { repository: { issue: { state: "CLOSED", timelineItems: { nodes: [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, repository: { nameWithOwner: "openclaw/clawsweeper" } } }] } } } } }));
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[{
     id: 9321,
@@ -3664,73 +3813,382 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   }
 });
 
-test("apply-decisions posts an explicit close-time note before closing PR proposals", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    const logPath = join(root, "gh.log");
-    const postedBodiesPath = join(root, "posted-bodies.jsonl");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
-    const closeReport = `${workPlanCandidateReport({
-      type: "pull_request",
-      decision: "close",
-      action_taken: "proposed_close",
-      close_reason: "implemented_on_main",
-      confidence: "high",
-      item_snapshot_hash: "reviewed-snapshot",
-      item_updated_at: "2026-05-01T00:00:00Z",
-      reproduction_status: "reproduced",
-      reproduction_confidence: "high",
-      fixed_pr_url: "https://github.com/openclaw/clawsweeper/pull/900",
-      fixed_pr_number: "900",
-      fixed_sha: "1234567890abcdef1234567890abcdef12345678",
-      fixed_at: "2026-05-01T02:00:00Z",
-    })}\n\n## Evidence\n\n- **main fix:** git show confirms current main has the replacement implementation and it is not in the latest release yet\n  - file: [src/clawsweeper.ts](https://github.com/openclaw/clawsweeper/blob/1234567890abcdef1234567890abcdef12345678/src/clawsweeper.ts)\n  - sha: [1234567890ab](https://github.com/openclaw/clawsweeper/commit/1234567890abcdef1234567890abcdef12345678)\n\n## Close Comment\n\nClosing this PR because the fix is already on main.\n`;
-    const synced = reportWithSyncedReviewComment(closeReport, 321, "implemented_on_main");
-    writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");
+test("apply-decisions verifies provenance after a closeout note and before closing PR proposals", () => {
+  for (const scenario of [
+    "normal",
+    "multiple_linked_issues",
+    "mismatched_canonical",
+    "mismatched_canonical_repository",
+    "missing_canonical_merge",
+    "paired_keep_open",
+    "paired_review_stale",
+    "paired_source_change_during_closeout",
+    "paired_metadata_change_during_closeout",
+    "paired_bot_activity_during_closeout",
+    "paired_self_timestamp_settles_late",
+    "paired_fresh_owned_review_comment",
+    "paired_durable_review_mismatch",
+    "paired_locked_closeout_cleanup",
+    "paired_provenance_revoked_before_close",
+    "paired_provenance_retargeted_before_close",
+    "paired_human_activity_during_lease",
+  ] as const) {
+    const lifecycleDrift = scenario === "lifecycle_drift";
+    const multipleLinkedIssues = scenario === "multiple_linked_issues";
+    const mismatchedCanonical = scenario === "mismatched_canonical";
+    const mismatchedCanonicalRepository = scenario === "mismatched_canonical_repository";
+    const missingCanonicalMerge = scenario === "missing_canonical_merge";
+    const pairedKeepOpen = scenario === "paired_keep_open";
+    const pairedReviewStale = scenario === "paired_review_stale";
+    const pairedSourceChangeDuringCloseout = scenario === "paired_source_change_during_closeout";
+    const pairedMetadataChangeDuringCloseout =
+      scenario === "paired_metadata_change_during_closeout";
+    const pairedBotActivityDuringCloseout = scenario === "paired_bot_activity_during_closeout";
+    const pairedSelfTimestampSettlesLate = scenario === "paired_self_timestamp_settles_late";
+    const pairedFreshOwnedReviewComment = scenario === "paired_fresh_owned_review_comment";
+    const pairedDurableReviewMismatch = scenario === "paired_durable_review_mismatch";
+    const pairedLockedCloseoutCleanup = scenario === "paired_locked_closeout_cleanup";
+    const pairedProvenanceRevokedBeforeClose =
+      scenario === "paired_provenance_revoked_before_close";
+    const pairedProvenanceRetargetedBeforeClose =
+      scenario === "paired_provenance_retargeted_before_close";
+    const pairedHumanActivityDuringLease = scenario === "paired_human_activity_during_lease";
+    const lockedCloseoutComment = scenario === "locked_closeout_comment";
+    const betweenFreshnessAndCloseoutHumanActivity =
+      scenario === "between_freshness_and_closeout_human_activity";
+    const postCloseoutHumanActivity = scenario === "post_closeout_human_activity";
+    const postCloseoutPrReviewActivity = scenario === "post_closeout_pr_review_activity";
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "items");
+      const closedDir = join(root, "closed");
+      const plansDir = join(root, "plans");
+      const reportPath = join(root, "apply-report.json");
+      const logPath = join(root, "gh.log");
+      const postedBodiesPath = join(root, "posted-bodies.jsonl");
+      const prCommentPath = join(root, "pr-review-comment");
+      const linkedIssueCommentPath = join(root, "linked-issue-review-comment");
+      mkdirSync(itemsDir, { recursive: true });
+      mkdirSync(plansDir, { recursive: true });
+      const reviewedSourceRevision = itemSourceRevisionSha256ForTest(
+        {
+          title: "Render work plans",
+          labels: ["maintainer"],
+        },
+        [[]],
+      );
+      const closeReport = `${workPlanCandidateReport({
+        type: "pull_request",
+        decision: "close",
+        action_taken: "proposed_close",
+        close_reason: "implemented_on_main",
+        confidence: "high",
+        item_snapshot_hash: "reviewed-snapshot",
+        item_updated_at: "2026-05-01T00:00:00Z",
+        item_source_revision: reviewedSourceRevision,
+        pull_head_sha: "head-sha",
+        reproduction_status: "reproduced",
+        reproduction_confidence: "high",
+        fixed_pr_url: mismatchedCanonicalRepository
+          ? "https://github.com/openclaw/other-repository/pull/900"
+          : `https://github.com/openclaw/clawsweeper/pull/${mismatchedCanonical ? "901" : "900"}`,
+        fixed_pr_number: mismatchedCanonical ? "901" : "900",
+        fixed_pr_confidence: "high",
+        fixed_pr_source: "GitHub verified implementation landing",
+        fixed_pr_merged_at: "2026-05-01T02:00:00Z",
+        fixed_sha: "1234567890abcdef1234567890abcdef12345678",
+        fixed_at: "2026-05-01T02:00:00Z",
+      })}\n\n## Evidence\n\n- **main fix:** git show confirms current main has the replacement implementation and it is not in the latest release yet\n  - file: [src/clawsweeper.ts](https://github.com/openclaw/clawsweeper/blob/1234567890abcdef1234567890abcdef12345678/src/clawsweeper.ts)\n  - sha: [1234567890ab](https://github.com/openclaw/clawsweeper/commit/1234567890abcdef1234567890abcdef12345678)\n\n## Close Comment\n\nClosing this PR because the fix is already on main.\n`;
+      const synced = reportWithSyncedReviewComment(closeReport, 321, "implemented_on_main");
+      const linkedIssueReport = implementedCloseReport({
+        repository: "openclaw/clawsweeper",
+        number: 456,
+        type: "issue",
+        item_updated_at: pairedReviewStale ? "2026-05-01T00:00:00Z" : "2026-05-02T00:00:00Z",
+        fixed_pr_url: "https://github.com/openclaw/clawsweeper/pull/900",
+        fixed_pr_number: "900",
+        fixed_pr_confidence: "high",
+        fixed_pr_source: "GitHub verified implementation landing",
+        fixed_pr_merged_at: missingCanonicalMerge ? "unknown" : "2026-05-01T02:00:00Z",
+      }).replaceAll("openclaw/openclaw", "openclaw/clawsweeper");
+      const linkedIssueSynced = reportWithSyncedReviewComment(
+        pairedKeepOpen
+          ? linkedIssueReport.replace(/^decision: close$/m, "decision: keep_open")
+          : linkedIssueReport,
+        456,
+        "implemented_on_main",
+      );
+      writeFileSync(join(itemsDir, "321.md"), synced.report, "utf8");
+      if (!multipleLinkedIssues) {
+        writeFileSync(join(itemsDir, "456.md"), linkedIssueSynced.report, "utf8");
+        writeFileSync(
+          linkedIssueCommentPath,
+          pairedDurableReviewMismatch
+            ? `${linkedIssueSynced.comment}\n\nNewer contradictory bot verdict.`
+            : linkedIssueSynced.comment,
+          "utf8",
+        );
+      }
+      writeFileSync(prCommentPath, synced.comment, "utf8");
 
-    const ghMock = `
-const { appendFileSync, readFileSync } = require("fs");
+      const ghMock = `
+const { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } = require("fs");
 const logPath = ${JSON.stringify(logPath)};
 const postedBodiesPath = ${JSON.stringify(postedBodiesPath)};
+const graphqlStatePath = ${JSON.stringify(join(root, "graphql-reads"))};
+const closeoutPostedPath = ${JSON.stringify(join(root, "closeout-posted"))};
+const betweenFreshnessAndCloseoutHumanActivityPath = ${JSON.stringify(
+        join(root, "between-freshness-and-closeout-human-activity"),
+      )};
+const issueReadsAfterCloseoutPath = ${JSON.stringify(join(root, "issue-reads-after-closeout"))};
+const pairedIssueCloseoutPostedPath = ${JSON.stringify(join(root, "paired-issue-closeout-posted"))};
+const pairedIssueBotActivityPath = ${JSON.stringify(join(root, "paired-issue-bot-activity"))};
+const pairedIssueHumanActivityPath = ${JSON.stringify(join(root, "paired-issue-human-activity"))};
+const pairedIssueReadsAfterCloseoutPath = ${JSON.stringify(join(root, "paired-issue-reads-after-closeout"))};
+const pairedIssueLeasePath = ${JSON.stringify(join(root, "paired-issue-lease"))};
+const pairedIssueLeaseWritesPath = ${JSON.stringify(join(root, "paired-issue-lease-writes"))};
+const prCommentPath = ${JSON.stringify(prCommentPath)};
+const linkedIssueCommentPath = ${JSON.stringify(linkedIssueCommentPath)};
 const comment = ${JSON.stringify(synced.comment)};
+const linkedIssueComment = ${JSON.stringify(linkedIssueSynced.comment)};
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args[1] || "";
+const lifecycleDrift = ${lifecycleDrift};
+const multipleLinkedIssues = ${multipleLinkedIssues};
+const lockedCloseoutComment = ${lockedCloseoutComment};
+const betweenFreshnessAndCloseoutHumanActivity = ${betweenFreshnessAndCloseoutHumanActivity};
+const postCloseoutHumanActivity = ${postCloseoutHumanActivity};
+const postCloseoutPrReviewActivity = ${postCloseoutPrReviewActivity};
+const pairedSourceChangeDuringCloseout = ${pairedSourceChangeDuringCloseout};
+const pairedMetadataChangeDuringCloseout = ${pairedMetadataChangeDuringCloseout};
+const pairedBotActivityDuringCloseout = ${pairedBotActivityDuringCloseout};
+const pairedSelfTimestampSettlesLate = ${pairedSelfTimestampSettlesLate};
+const pairedFreshOwnedReviewComment = ${pairedFreshOwnedReviewComment};
+const pairedDurableReviewMismatch = ${pairedDurableReviewMismatch};
+const pairedLockedCloseoutCleanup = ${pairedLockedCloseoutCleanup};
+const pairedProvenanceRevokedBeforeClose = ${pairedProvenanceRevokedBeforeClose};
+const pairedProvenanceRetargetedBeforeClose = ${pairedProvenanceRetargetedBeforeClose};
+const pairedHumanActivityDuringLease = ${pairedHumanActivityDuringLease};
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
+  const timeline = existsSync(betweenFreshnessAndCloseoutHumanActivityPath)
+    ? [{
+        id: 9323,
+        event: "commented",
+        created_at: readFileSync(betweenFreshnessAndCloseoutHumanActivityPath, "utf8"),
+        actor: { login: "contributor" }
+  }]
+    : [];
+  console.log("HTTP/2 200\\n\\n" + JSON.stringify(timeline));
+} else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/456\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   console.log("HTTP/2 200\\n\\n[]");
-} else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+} else if (args[0] === "issue" && args[1] === "view") {
+  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
+} else if (args[0] === "api" && args[1] === "graphql") {
+  const graphqlReads = existsSync(graphqlStatePath) ? Number(readFileSync(graphqlStatePath, "utf8")) : 0;
+  writeFileSync(graphqlStatePath, String(graphqlReads + 1), "utf8");
+  const closingReferenceQuery = args.some((argument) => argument.includes("closingIssuesReferences"));
+  const currentState = closingReferenceQuery || lifecycleDrift ? "OPEN" : "CLOSED";
+  const closingReferenceNodes = closingReferenceQuery
+    ? pairedProvenanceRevokedBeforeClose && existsSync(pairedIssueLeasePath)
+      ? []
+      : [{
+          number:
+            pairedProvenanceRetargetedBeforeClose &&
+            existsSync(pairedIssueLeaseWritesPath) &&
+            Number(readFileSync(pairedIssueLeaseWritesPath, "utf8")) >= 2 &&
+            existsSync(pairedIssueLeasePath)
+              ? 457
+              : 456,
+          state: "OPEN",
+          repository: { nameWithOwner: "openclaw/clawsweeper" }
+        }]
+    : [];
+  const timelineNodes = lifecycleDrift
+    ? []
+    : [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, url: "https://github.com/openclaw/clawsweeper/pull/900", mergedAt: "2026-05-01T02:00:00Z", repository: { nameWithOwner: "openclaw/clawsweeper" } } }];
+  const repository = closingReferenceQuery
+    ? { pullRequest: { closingIssuesReferences: { nodes: closingReferenceNodes } } }
+    : { issue: { state: currentState, timelineItems: { nodes: timelineNodes } } };
+  console.log(JSON.stringify({ data: { repository } }));
+} else if (args[0] === "api" && /\\/commits\\/head-sha\\/(?:check-runs|status)(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify({ check_runs: [] }));
+} else if (args[0] === "api" && /^search\\/issues\\?/.test(path)) {
+  console.log(JSON.stringify({ items: [] }));
+} else if (args[0] === "api" && /\\/issues\\/456\\/comments(?:\\?|$)/.test(path)) {
   if (args.includes("--method") && args.includes("POST")) {
     const input = args[args.indexOf("--input") + 1];
     const payload = JSON.parse(readFileSync(input, "utf8"));
+    if (payload.body.includes("clawsweeper-review-lease item=456")) {
+      const leaseWrites = existsSync(pairedIssueLeaseWritesPath)
+        ? Number(readFileSync(pairedIssueLeaseWritesPath, "utf8"))
+        : 0;
+      writeFileSync(pairedIssueLeaseWritesPath, String(leaseWrites + 1), "utf8");
+      if (
+        pairedHumanActivityDuringLease &&
+        existsSync(pairedIssueCloseoutPostedPath) &&
+        !existsSync(pairedIssueHumanActivityPath)
+      ) {
+        writeFileSync(pairedIssueHumanActivityPath, new Date(Date.now() + 60_000).toISOString());
+      }
+      writeFileSync(pairedIssueLeasePath, payload.body, "utf8");
+      console.log(JSON.stringify({ id: 9460, html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9460" }));
+      process.exit(0);
+    }
+    if (pairedLockedCloseoutCleanup) {
+      console.error("gh: conversation is locked (HTTP 403)");
+      process.exit(1);
+    }
     appendFileSync(postedBodiesPath, JSON.stringify(payload.body) + "\\n");
+    writeFileSync(linkedIssueCommentPath, payload.body, "utf8");
+    if (
+      pairedSourceChangeDuringCloseout ||
+      pairedMetadataChangeDuringCloseout ||
+      pairedBotActivityDuringCloseout ||
+      pairedProvenanceRetargetedBeforeClose ||
+      pairedHumanActivityDuringLease ||
+      (pairedSelfTimestampSettlesLate && payload.body.includes("clawsweeper-close-applied"))
+    ) writeFileSync(pairedIssueCloseoutPostedPath, "true");
+    if (pairedBotActivityDuringCloseout) writeFileSync(pairedIssueBotActivityPath, new Date(Date.now() + 60_000).toISOString());
+    console.log(JSON.stringify({ id: 9456, html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9456" }));
+  } else {
+    const comments = [{
+      id: 9456,
+      html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9456",
+      created_at: pairedFreshOwnedReviewComment ? new Date().toISOString() : "2026-05-01T01:00:00Z",
+      updated_at: pairedFreshOwnedReviewComment ? new Date().toISOString() : "2026-05-01T01:00:00Z",
+      user: { login: "clawsweeper[bot]" },
+      body: readFileSync(linkedIssueCommentPath, "utf8")
+    }];
+    if (pairedFreshOwnedReviewComment) {
+      comments.push({
+        id: 9455,
+        html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9455",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        user: { login: "clawsweeper[bot]" },
+        body: linkedIssueComment
+      });
+    }
+    if (existsSync(pairedIssueBotActivityPath)) {
+      comments.push({
+        id: 9457,
+        html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9457",
+        created_at: readFileSync(pairedIssueBotActivityPath, "utf8"),
+        updated_at: readFileSync(pairedIssueBotActivityPath, "utf8"),
+        user: { login: "third-party[bot]", type: "Bot" },
+        body: "Automated follow-up."
+      });
+    }
+    if (existsSync(pairedIssueHumanActivityPath)) {
+      comments.push({
+        id: 9458,
+        html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9458",
+        created_at: readFileSync(pairedIssueHumanActivityPath, "utf8"),
+        updated_at: readFileSync(pairedIssueHumanActivityPath, "utf8"),
+        user: { login: "contributor", type: "User" },
+        body: "Please keep this issue open."
+      });
+    }
+    if (existsSync(pairedIssueLeasePath)) {
+      comments.push({
+        id: 9460,
+        html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9460",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        user: { login: "clawsweeper[bot]" },
+        body: readFileSync(pairedIssueLeasePath, "utf8")
+      });
+    }
+    console.log(JSON.stringify([comments]));
+  }
+} else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
+  if (args.includes("--method") && args.includes("POST")) {
+    if (lockedCloseoutComment) {
+      console.error("gh: conversation is locked (HTTP 403)");
+      process.exit(1);
+    }
+    const input = args[args.indexOf("--input") + 1];
+    const payload = JSON.parse(readFileSync(input, "utf8"));
+    appendFileSync(postedBodiesPath, JSON.stringify(payload.body) + "\\n");
+    writeFileSync(prCommentPath, payload.body, "utf8");
+    writeFileSync(closeoutPostedPath, "true");
+    if (betweenFreshnessAndCloseoutHumanActivity) {
+      writeFileSync(
+        betweenFreshnessAndCloseoutHumanActivityPath,
+        new Date(Date.now() + 60_000).toISOString(),
+      );
+    }
     console.log(JSON.stringify({ id: 9322, html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9322" }));
   } else {
-    console.log(JSON.stringify([[{
+    const comments = [{
       id: 9321,
       html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9321",
       created_at: "2026-05-01T01:00:00Z",
       updated_at: "2026-05-01T01:00:00Z",
       user: { login: "clawsweeper[bot]" },
-      body: comment
-    }]]));
+      body: readFileSync(prCommentPath, "utf8")
+    }];
+    if (existsSync(betweenFreshnessAndCloseoutHumanActivityPath)) {
+      comments.push({
+        id: 9323,
+        html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9323",
+        created_at: readFileSync(betweenFreshnessAndCloseoutHumanActivityPath, "utf8"),
+        updated_at: readFileSync(betweenFreshnessAndCloseoutHumanActivityPath, "utf8"),
+        user: { login: "contributor" },
+        body: "Please keep this PR open."
+      });
+    }
+    console.log(JSON.stringify([comments]));
   }
+} else if (args[0] === "api" && /\\/issues\\/comments\\/9456$/.test(path) && args.includes("PATCH")) {
+  const input = args[args.indexOf("--input") + 1];
+  const payload = JSON.parse(readFileSync(input, "utf8"));
+  appendFileSync(postedBodiesPath, JSON.stringify(payload.body) + "\\n");
+  writeFileSync(
+    linkedIssueCommentPath,
+    pairedDurableReviewMismatch ? payload.body + "\\n\\nNewer contradictory bot verdict." : payload.body,
+    "utf8"
+  );
+  console.log(JSON.stringify({ id: 9456, html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9456" }));
+} else if (args[0] === "api" && /\\/issues\\/comments\\/9460$/.test(path) && args.includes("DELETE")) {
+  if (pairedLockedCloseoutCleanup) {
+    console.error("gh: conversation is locked (HTTP 403)");
+    process.exit(1);
+  }
+  if (existsSync(pairedIssueLeasePath)) unlinkSync(pairedIssueLeasePath);
+  console.log("");
 } else if (args[0] === "api" && /\\/issues\\/comments\\/9321$/.test(path)) {
+  const input = args[args.indexOf("--input") + 1];
+  const payload = JSON.parse(readFileSync(input, "utf8"));
+  appendFileSync(postedBodiesPath, JSON.stringify(payload.body) + "\\n");
+  writeFileSync(prCommentPath, payload.body, "utf8");
   console.log(JSON.stringify({ id: 9321, html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9321" }));
 } else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  const issueReadsAfterCloseout = existsSync(closeoutPostedPath)
+    ? (existsSync(issueReadsAfterCloseoutPath)
+        ? Number(readFileSync(issueReadsAfterCloseoutPath, "utf8") || "0")
+        : 0) + 1
+    : 0;
+  if (existsSync(closeoutPostedPath)) {
+    writeFileSync(issueReadsAfterCloseoutPath, String(issueReadsAfterCloseout));
+  }
+  const humanActivityLanded =
+    (postCloseoutHumanActivity && issueReadsAfterCloseout >= 2) ||
+    existsSync(betweenFreshnessAndCloseoutHumanActivityPath);
   console.log(JSON.stringify({
     number: 321,
     title: "Render work plans",
     html_url: "https://github.com/openclaw/clawsweeper/pull/321",
     created_at: "2026-05-01T00:00:00Z",
-    updated_at: "2026-05-01T00:00:00Z",
+    updated_at: humanActivityLanded
+      ? "2026-05-01T03:00:00Z"
+      : existsSync(closeoutPostedPath)
+        ? "2026-05-01T02:30:00Z"
+        : "2026-05-01T00:00:00Z",
     closed_at: null,
     state: "open",
     locked: false,
@@ -3741,6 +4199,55 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     comments: 1,
     pull_request: { url: "https://api.github.com/repos/openclaw/clawsweeper/pulls/321" }
   }));
+} else if (args[0] === "api" && /\\/issues\\/456$/.test(path)) {
+  const pairedIssueReadsAfterCloseout = existsSync(pairedIssueCloseoutPostedPath)
+    ? (existsSync(pairedIssueReadsAfterCloseoutPath)
+        ? Number(readFileSync(pairedIssueReadsAfterCloseoutPath, "utf8") || "0")
+        : 0) + 1
+    : 0;
+  if (existsSync(pairedIssueCloseoutPostedPath)) {
+    writeFileSync(pairedIssueReadsAfterCloseoutPath, String(pairedIssueReadsAfterCloseout));
+  }
+  console.log(JSON.stringify({
+    number: 456,
+    title: pairedSourceChangeDuringCloseout && existsSync(pairedIssueCloseoutPostedPath)
+      ? "Render work plans with contributor changes"
+      : "Render work plans",
+    html_url: "https://github.com/openclaw/clawsweeper/issues/456",
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: pairedSelfTimestampSettlesLate && pairedIssueReadsAfterCloseout >= 4
+      ? "2026-05-02T00:00:01Z"
+      : "2026-05-02T00:00:00Z",
+    closed_at: null,
+    state: "open",
+    locked: false,
+    active_lock_reason: null,
+    author_association: "CONTRIBUTOR",
+    user: { login: "issue-reporter" },
+    labels: [],
+    milestone: pairedMetadataChangeDuringCloseout && existsSync(pairedIssueCloseoutPostedPath)
+      ? { number: 1, title: "maintainer follow-up" }
+      : null,
+    body: "The tracked implementation gap.",
+    comments: 0,
+    pull_request: null
+  }));
+} else if (args[0] === "api" && path === "repos/openclaw/clawsweeper") {
+  console.log(JSON.stringify({ default_branch: "main" }));
+} else if (args[0] === "api" && /\\/compare\\/fixed-sha\\.\\.\\.main$/.test(path)) {
+  console.log(JSON.stringify({ status: "ahead" }));
+} else if (args[0] === "api" && /\\/pulls\\/900$/.test(path)) {
+  console.log(JSON.stringify({
+    number: 900,
+    title: "fix: rendered work plans",
+    html_url: "https://github.com/openclaw/clawsweeper/pull/900",
+    state: "closed",
+    merged: true,
+    merged_at: "2026-05-01T02:00:00Z",
+    merge_commit_sha: "fixed-sha",
+    head: { sha: "fixed-head" },
+    base: { ref: "main" }
+  }));
 } else if (args[0] === "api" && /\\/pulls\\/321$/.test(path)) {
   console.log(JSON.stringify({
     number: 321,
@@ -3749,13 +4256,31 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     changed_files: 0,
     commits: 0,
     review_comments: 0,
+    body: multipleLinkedIssues
+      ? "Fixes #456\\nCloses #457"
+      : pairedProvenanceRetargetedBeforeClose &&
+          existsSync(pairedIssueLeaseWritesPath) &&
+          Number(readFileSync(pairedIssueLeaseWritesPath, "utf8")) >= 2 &&
+          existsSync(pairedIssueLeasePath)
+        ? "Fixes #457"
+        : "Fixes #456",
     head: { sha: "head-sha", ref: "branch", repo: { full_name: "fork/clawsweeper" } },
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/clawsweeper" } },
     user: { login: "reporter" }
   }));
+} else if (args[0] === "api" && /\\/pulls\\/321\\/reviews(?:\\?|$)/.test(path)) {
+  console.log(JSON.stringify(
+    postCloseoutPrReviewActivity && existsSync(closeoutPostedPath)
+      ? [{ id: 7701, user: { login: "maintainer" }, state: "COMMENTED", submitted_at: "2026-08-20T00:00:00Z" }]
+      : []
+  ));
 } else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "pr" && args[1] === "close" && args[2] === "321") {
+  console.log("");
+} else if (args[0] === "api" && path === "repos/openclaw/clawsweeper/issues/456" && args.includes("PATCH")) {
+  console.log("");
+} else if (args[0] === "issue" && args[1] === "close" && args[2] === "456") {
   console.log("");
 } else if (args[0] === "issue" && args[1] === "edit") {
   console.log("");
@@ -3766,56 +4291,330 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   process.exit(1);
 }
 `;
-    withMockGh(root, ghMock, () => {
-      runApplyDecisionsForTest({
-        itemsDir,
-        closedDir,
-        plansDir,
-        reportPath,
-        extraArgs: ["--apply-kind", "all", "--processed-limit", "2"],
+      withMockGh(root, ghMock, () => {
+        runApplyDecisionsForTest({
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: ["--apply-kind", "all", "--processed-limit", "3"],
+        });
+        if (
+          scenario === "normal" ||
+          pairedSelfTimestampSettlesLate ||
+          pairedFreshOwnedReviewComment ||
+          pairedLockedCloseoutCleanup ||
+          pairedProvenanceRevokedBeforeClose ||
+          pairedProvenanceRetargetedBeforeClose ||
+          pairedHumanActivityDuringLease
+        ) {
+          runApplyDecisionsForTest({
+            itemsDir,
+            closedDir,
+            plansDir,
+            reportPath,
+            extraArgs: ["--apply-kind", "all", "--processed-limit", "3"],
+          });
+        }
       });
-    });
-
-    const calls = readFileSync(logPath, "utf8")
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as string[]);
-    const postIndex = calls.findIndex(
-      (args) =>
-        args[0] === "api" &&
-        (args[1] ?? "").endsWith("/issues/321/comments") &&
-        args.includes("POST"),
-    );
-    const closeIndex = calls.findIndex(
-      (args) => args[0] === "pr" && args[1] === "close" && args[2] === "321",
-    );
-    assert.ok(postIndex >= 0);
-    assert.ok(closeIndex > postIndex);
-    const postedBodies = readFileSync(postedBodiesPath, "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as string);
-    assert.equal(postedBodies.length, 1);
-    assert.match(postedBodies[0], /ClawSweeper applied the proposed close for this PR/);
-    assert.match(postedBodies[0], /Close reason: already implemented on main/);
-    assert.match(postedBodies[0], /durable ClawSweeper review/);
-    assert.match(postedBodies[0], /clawsweeper-close-applied item=321/);
-    assert.ok(existsSync(join(closedDir, "321.md")));
-    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
-      {
-        number: 321,
-        action: "review_comment_synced",
-        reason: "updated durable Codex review comment",
-      },
-      {
-        number: 321,
-        action: "closed",
-        reason: "already implemented on main; posted close-applied comment",
-      },
-    ]);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+      const calls = readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as string[]);
+      const postIndex = calls.findIndex(
+        (args) =>
+          args[0] === "api" &&
+          (args[1] ?? "").endsWith("/issues/321/comments") &&
+          args.includes("POST"),
+      );
+      const closeIndex = calls.findIndex(
+        (args) => args[0] === "pr" && args[1] === "close" && args[2] === "321",
+      );
+      const pairedIssueCloseIndex = calls.findIndex(
+        (args) =>
+          args[0] === "api" &&
+          args[1] === "repos/openclaw/clawsweeper/issues/456" &&
+          args.includes("PATCH"),
+      );
+      const pairedIssueLeaseDeleteIndex = calls.findIndex(
+        (args) =>
+          args[0] === "api" &&
+          (args[1] ?? "").endsWith("/issues/comments/9460") &&
+          args.includes("DELETE"),
+      );
+      const graphqlIndices = calls
+        .map((args, index) => (args[0] === "api" && args[1] === "graphql" ? index : -1))
+        .filter((index) => index >= 0);
+      if (lockedCloseoutComment) {
+        assert.equal(closeIndex, -1);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "skipped_locked_conversation" &&
+              entry.reason === "conversation was locked while recording closeout evidence",
+          ),
+          true,
+        );
+        continue;
+      }
+      if (pairedLockedCloseoutCleanup) {
+        assert.ok(pairedIssueLeaseDeleteIndex >= 0);
+        assert.equal(pairedIssueCloseIndex, -1);
+        assert.equal(closeIndex, -1);
+        assert.equal(existsSync(join(closedDir, "456.md")), false);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "skipped_locked_conversation" &&
+              entry.reason ===
+                "linked issue conversation was locked while recording closeout evidence",
+          ),
+          true,
+          JSON.stringify(report),
+        );
+        continue;
+      }
+      if (pairedDurableReviewMismatch) {
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(pairedIssueCloseIndex, -1, JSON.stringify(report));
+        assert.equal(closeIndex, -1);
+        assert.equal(existsSync(join(closedDir, "456.md")), false);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "kept_open" &&
+              entry.reason ===
+                "implemented-on-main paired closeout requires an exact current durable review comment for the linked issue report",
+          ),
+          true,
+          JSON.stringify(report),
+        );
+        continue;
+      }
+      if (multipleLinkedIssues) {
+        assert.equal(closeIndex, -1);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "kept_open" && entry.reason.includes("exactly one explicit"),
+          ),
+          true,
+        );
+        continue;
+      }
+      if (
+        mismatchedCanonical ||
+        mismatchedCanonicalRepository ||
+        missingCanonicalMerge ||
+        pairedKeepOpen ||
+        pairedReviewStale ||
+        pairedSourceChangeDuringCloseout ||
+        pairedMetadataChangeDuringCloseout ||
+        pairedBotActivityDuringCloseout
+      ) {
+        assert.equal(closeIndex, -1);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some((entry) => entry.action === "kept_open"),
+          true,
+        );
+        continue;
+      }
+      if (pairedProvenanceRevokedBeforeClose) {
+        assert.ok(graphqlIndices.length >= 2);
+        assert.equal(pairedIssueCloseIndex, -1);
+        assert.equal(closeIndex, -1);
+        assert.equal(existsSync(join(closedDir, "456.md")), false);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "kept_open" &&
+              entry.reason ===
+                "implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance",
+          ),
+          true,
+          JSON.stringify(report),
+        );
+        continue;
+      }
+      if (pairedProvenanceRetargetedBeforeClose) {
+        assert.equal(pairedIssueCloseIndex, -1);
+        assert.equal(closeIndex, -1);
+        assert.equal(existsSync(join(closedDir, "456.md")), false);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "kept_open" &&
+              entry.reason ===
+                "implemented-on-main close current issue link no longer matches the leased paired issue",
+          ),
+          true,
+          JSON.stringify(report),
+        );
+        continue;
+      }
+      if (pairedHumanActivityDuringLease) {
+        assert.equal(pairedIssueCloseIndex, -1);
+        assert.equal(closeIndex, -1);
+        assert.equal(existsSync(join(closedDir, "456.md")), false);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "kept_open" &&
+              entry.reason ===
+                "implemented-on-main paired closeout requires linked issue #456 to remain unchanged, unlocked, and free of new activity after acquiring its mutation lease",
+          ),
+          true,
+          JSON.stringify(report),
+        );
+        continue;
+      }
+      if (lifecycleDrift) {
+        assert.ok(graphqlIndices.length >= 2);
+        assert.equal(closeIndex, -1);
+        assert.ok(postIndex >= 0);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some((entry) => entry.action === "closed"),
+          false,
+        );
+        continue;
+      }
+      if (postCloseoutHumanActivity) {
+        assert.ok(graphqlIndices.length >= 2);
+        assert.equal(closeIndex, -1);
+        assert.ok(postIndex >= 0);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "skipped_changed_since_review" &&
+              entry.reason === "updated_at changed",
+          ),
+          true,
+        );
+        continue;
+      }
+      if (betweenFreshnessAndCloseoutHumanActivity) {
+        assert.equal(closeIndex, -1);
+        assert.ok(postIndex >= 0);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "skipped_changed_since_review" &&
+              entry.reason === "closeout evidence freshness receipt could not be recorded",
+          ),
+          true,
+        );
+        continue;
+      }
+      if (postCloseoutPrReviewActivity) {
+        assert.equal(closeIndex, -1);
+        assert.ok(postIndex >= 0);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "skipped_changed_since_review" &&
+              entry.reason === "closeout evidence freshness receipt could not be recorded",
+          ),
+          true,
+        );
+        continue;
+      }
+      assert.ok(graphqlIndices.length >= 2);
+      assert.ok(closeIndex >= 0, `${scenario}: ${readFileSync(reportPath, "utf8")}`);
+      assert.ok(pairedIssueCloseIndex >= 0, scenario);
+      assert.ok(pairedIssueCloseIndex < closeIndex);
+      const postedBodies = readFileSync(postedBodiesPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string);
+      const closeAppliedBodies = postedBodies.filter((body) =>
+        body.includes("clawsweeper-close-applied"),
+      );
+      assert.equal(closeAppliedBodies.length, 2);
+      assert.match(
+        closeAppliedBodies[0],
+        /ClawSweeper recorded implementation evidence for this proposed close/,
+      );
+      assert.match(closeAppliedBodies[0], /Close reason: already implemented on main/);
+      assert.match(closeAppliedBodies[0], /Implementation evidence: \[fix PR #900\]/);
+      assert.match(closeAppliedBodies[0], /clawsweeper-close-applied item=321/);
+      assert.match(closeAppliedBodies[1], /Implementation evidence: \[fix PR #900\]/);
+      assert.match(closeAppliedBodies[1], /clawsweeper-close-applied item=456/);
+      assert.ok(existsSync(join(closedDir, "321.md")));
+      assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+        {
+          number: 456,
+          action: "closed",
+          reason: "already implemented on main; posted close-applied comment",
+        },
+        {
+          number: 321,
+          action: "closed",
+          reason: "already implemented on main; posted close-applied comment",
+        },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 

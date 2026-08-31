@@ -160,7 +160,12 @@ function defaultRatingNextSteps(options: {
   return steps.slice(0, 3);
 }
 
-export function normalizePrRating(rating: PrRating): PrRating {
+export function normalizePrRating(rating: PrRating, proof?: RealBehaviorProof): PrRating {
+  if (proof) {
+    // Cap stale receipt-era proof credit without regrading the reviewer's patch or rank-up advice.
+    const proofTier = lowerRatingTier(rating.proofTier, proofTierFromRealBehaviorProof(proof));
+    rating = { ...rating, proofTier, overallTier: lowerRatingTier(rating.overallTier, proofTier) };
+  }
   if (rating.overallTier === "S" || rating.overallTier === "A" || rating.overallTier === "NA") {
     return { ...rating, nextSteps: [] };
   }

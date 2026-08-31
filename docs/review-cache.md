@@ -96,6 +96,14 @@ proven.
 
 No cache stage can promote a report to close.
 
+Every reused review passes the host-owned scan preflight before checkout
+inspection. Structural reuse scans current reuse metadata and the pinned source
+delta against the base/head pair from the same fresh structural probe; hydrated
+semantic/content reuse also scans current context. Complete raw before/after blobs
+are scanned even when the AST digest ignores a comment-only change. Historical
+outcomes predating scan admission are rejected by the review policy version.
+Scan refusal cannot return a cached success or launch a fallback reviewer.
+
 ## Metrics
 
 Each review run writes `review-cache-metrics.json` in its artifact directory.

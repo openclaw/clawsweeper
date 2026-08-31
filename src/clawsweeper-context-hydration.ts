@@ -15,6 +15,7 @@ import {
   ensureReviewTreeCommit,
   githubReviewBlobSizes,
   hydratePullRequestReviewBlobs,
+  hydratePullRequestReviewHistory,
   materializePullRequestReviewTree,
   removePullRequestReviewTree,
 } from "./clawsweeper-review-blobs.js";
@@ -1002,20 +1003,33 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
       });
 
     if (commitsAvailable) {
-      const hydration = hydratePullRequestReviewBlobs({
+      const testMergeSha =
+        pull.merged === false && pull.state === "open"
+          ? stringOrUndefined(pull.merge_commit_sha)
+          : undefined;
+      const mergeBaseSha = hydratePullRequestReviewHistory({
         targetDir: options.targetDir,
         baseSha,
         headSha,
-        files: options.files,
-        resolveBlobSizes: (objectIds) =>
-          githubReviewBlobSizes({
-            repository: targetRepo(),
-            objectIds,
-            request: (query) => ghJson(["api", "graphql", "-f", `query=${query}`]),
-          }),
+        itemNumber: options.itemNumber,
+        ...(testMergeSha ? { testMergeSha } : {}),
       });
-      if (!hydration.hydrated) {
-        console.warn("pull-request review blobs could not be hydrated before restricted review");
+      for (const revision of new Set([mergeBaseSha ?? baseSha, baseSha])) {
+        const hydration = hydratePullRequestReviewBlobs({
+          targetDir: options.targetDir,
+          baseSha: revision,
+          headSha,
+          files: options.files,
+          resolveBlobSizes: (objectIds) =>
+            githubReviewBlobSizes({
+              repository: targetRepo(),
+              objectIds,
+              request: (query) => ghJson(["api", "graphql", "-f", `query=${query}`]),
+            }),
+        });
+        if (!hydration.hydrated) {
+          console.warn("pull-request review blobs could not be hydrated before restricted review");
+        }
       }
     }
 

@@ -3,8 +3,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  currentClosingPullRequestReferenceFromIssueTimeline,
   fixedPullRequestFromCommitPullsForTest,
   isProtectedItem,
+  linkedIssueNumbersForPullRequestBody,
+  linkedIssueNumbersForImplementationProvenance,
   parseGhJson,
   parseGhJsonLines,
   parseGhJsonWithRetry,
@@ -43,6 +46,8 @@ test("review prompt documents gated backlog close policies", () => {
   assert.match(prompt, /extra duplicate scrutiny/);
   assert.match(prompt, /Never route it to proof-nudge or automated fix-dispatch work/);
   assert.match(prompt, /do not invent a bulk-filing close reason/);
+  assert.match(prompt, /GitHub-verified, merged fixing PR in\s+the same repository/);
+  assert.match(prompt, /linked issue is not permission or proof to close either item/);
   assert.ok(
     [...sweepWorkflow.matchAll(/CLAWSWEEPER_IDEA_REVIVAL_REACTIONS:.*\|\| '5'/g)].length >= 2,
   );
@@ -376,6 +381,7 @@ test("review actions only propose valid closes and never apply directly", () => 
   assert.match(action.closeComment, /Thanks for the context here/);
   assert.match(action.closeComment, /shell check/);
   assert.match(action.closeComment, /already implemented/);
+  assert.doesNotMatch(action.closeComment, /implementation landing is \[commit/);
   assert.match(action.closeComment, /<details>\n<summary>Review details<\/summary>/);
   assert.match(
     action.closeComment,
@@ -390,10 +396,11 @@ test("review actions only propose valid closes and never apply directly", () => 
       action.closeComment.indexOf("What I checked:"),
   );
   assert.match(action.closeComment, /Likely related people:/);
-  assert.match(action.closeComment, /@alice/);
-  assert.match(action.closeComment, /@bob/);
-  assert.doesNotMatch(action.closeComment, /role: recent maintainer/);
-  assert.match(action.closeComment, /role: recent area contributor/);
+  for (const person of ["alice", "bob"]) {
+    assert.match(action.closeComment, new RegExp(`@${String.fromCodePoint(0x200b)}${person}`));
+  }
+  assert.doesNotMatch(action.closeComment, /@alice|@bob|role: introduced behavior|role: recent/);
+  assert.match(action.closeComment, /role: unverified routing candidate; confidence: low/);
   assert.match(action.closeComment, /Codex review notes: model gpt-5\.6-sol, reasoning high;/);
 });
 
@@ -416,20 +423,23 @@ test("review actions render deterministic close comments when model close commen
 });
 
 test("close comments reference high-confidence merged fixing PRs", () => {
+  const fixingPullRequest = {
+    repo: "openclaw/openclaw",
+    number: 456,
+    url: "https://github.com/openclaw/openclaw/pull/456",
+    title: "fix: wire the shell check",
+    mergedAt: "2026-04-28T12:00:00Z",
+    sha: "fedcba9876543210",
+    confidence: "high" as const,
+    source: "GitHub closing PR reference",
+  };
+  assert.deepEqual(
+    validateCloseDecision(item(), closeDecision({ fixedPullRequest: fixingPullRequest })),
+    { ok: true },
+  );
   const action = reviewActionForDecision({
     item: item(),
-    decision: closeDecision({
-      fixedPullRequest: {
-        repo: "openclaw/openclaw",
-        number: 456,
-        url: "https://github.com/openclaw/openclaw/pull/456",
-        title: "fix: wire the shell check",
-        mergedAt: "2026-04-28T12:00:00Z",
-        sha: "fedcba9876543210",
-        confidence: "high",
-        source: "GitHub closing PR reference",
-      },
-    }),
+    decision: closeDecision({ fixedPullRequest: fixingPullRequest }),
     git,
     runtime: { model: "gpt-5.6-sol", reasoningEffort: "high" },
   });
@@ -442,6 +452,207 @@ test("close comments reference high-confidence merged fixing PRs", () => {
   assert.match(
     action.closeComment,
     /fix evidence: merged PR \[#456\]\(https:\/\/github\.com\/openclaw\/openclaw\/pull\/456\), commit/,
+  );
+});
+
+test("implemented-on-main closure fails closed without a GitHub-verified fixing PR", () => {
+  const pullRequest = item({
+    kind: "pull_request",
+    number: 118679,
+    url: "https://github.com/openclaw/openclaw/pull/118679",
+  });
+  const ambiguousCommit = closeDecision({
+    fixedSha: "c2de3206aabbccddeeff00112233445566778899",
+    fixedPullRequest: null,
+  });
+  const noProvenance = validateCloseDecision(pullRequest, ambiguousCommit);
+  assert.deepEqual(noProvenance, {
+    ok: false,
+    actionTaken: "skipped_invalid_decision",
+    reason: "implemented-on-main close requires a GitHub-verified fixing pull request",
+  });
+  assert.equal(
+    reviewActionForDecision({ item: pullRequest, decision: ambiguousCommit, git }).actionTaken,
+    "skipped_invalid_decision",
+  );
+
+  const crossRepository = validateCloseDecision(
+    pullRequest,
+    closeDecision({
+      fixedPullRequest: {
+        repo: "other/repository",
+        number: 125781,
+        url: "https://github.com/other/repository/pull/125781",
+        title: "unrelated implementation",
+        mergedAt: "2026-04-28T12:00:00Z",
+        sha: "c2de3206aabbccddeeff00112233445566778899",
+        confidence: "high",
+        source: "GitHub closing PR reference",
+      },
+    }),
+  );
+  assert.equal(crossRepository.ok, false);
+  assert.equal(
+    crossRepository.reason,
+    "implemented-on-main fixing pull request must be in the reviewed repository",
+  );
+
+  const selfReference = validateCloseDecision(
+    pullRequest,
+    closeDecision({
+      fixedPullRequest: {
+        repo: "openclaw/openclaw",
+        number: 118679,
+        url: "https://github.com/openclaw/openclaw/pull/118679",
+        title: "the PR being closed",
+        mergedAt: "2026-04-28T12:00:00Z",
+        sha: "c2de3206aabbccddeeff00112233445566778899",
+        confidence: "high",
+        source: "GitHub closing PR reference",
+      },
+    }),
+  );
+  assert.equal(selfReference.ok, false);
+  assert.equal(
+    selfReference.reason,
+    "implemented-on-main fixing pull request cannot be the pull request being closed",
+  );
+});
+
+test("PR implementation provenance accepts only explicit same-repository closing issues", () => {
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody(
+      "Fixes #118669\nResolves openclaw/openclaw#118670",
+      "openclaw/openclaw",
+    ),
+    [118669, 118670],
+  );
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody("Fixes #118669.", "openclaw/openclaw"),
+    [118669],
+  );
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody(
+      "Fixes #118669, fixes #118670 and #118671.",
+      "openclaw/openclaw",
+    ),
+    [118669, 118670, 118671],
+  );
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody(
+      "- Fixes #118669 - carried with the current implementation.",
+      "openclaw/openclaw",
+    ),
+    [118669],
+  );
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody(
+      "1. Fixes #118669\n- [x] Fixes #118670",
+      "openclaw/openclaw",
+    ),
+    [118669, 118670],
+  );
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody(
+      "Resolves https://github.com/openclaw/openclaw/issues/118669",
+      "openclaw/openclaw",
+    ),
+    [118669],
+  );
+  assert.equal(
+    linkedIssueNumbersForPullRequestBody("Fixes other/repository#118669", "openclaw/openclaw"),
+    null,
+  );
+  assert.equal(
+    linkedIssueNumbersForPullRequestBody("Related to #118669", "openclaw/openclaw"),
+    null,
+  );
+  assert.equal(
+    linkedIssueNumbersForPullRequestBody(
+      "Do not write `Fixes #118669` in this explanation.\n\n> Fixes #118670\n\n```md\nFixes #118671\n```\n\n````md\n```\nFixes #118672\n````",
+      "openclaw/openclaw",
+    ),
+    null,
+  );
+  assert.equal(
+    linkedIssueNumbersForPullRequestBody("    Fixes #118669\n\tFixes #118670", "openclaw/openclaw"),
+    null,
+  );
+  assert.equal(
+    linkedIssueNumbersForPullRequestBody("\n    - Fixes #118669", "openclaw/openclaw"),
+    null,
+  );
+  assert.deepEqual(
+    linkedIssueNumbersForPullRequestBody(
+      "<!-- example\n    -->\nFixes #118669",
+      "openclaw/openclaw",
+    ),
+    [118669],
+  );
+});
+
+test("PR implementation provenance caps linked issue references", () => {
+  assert.deepEqual(
+    linkedIssueNumbersForImplementationProvenance(
+      "Fixes #1\nFixes #2\nFixes #3\nFixes #4\nFixes #5",
+      "openclaw/openclaw",
+    ),
+    [1, 2, 3, 4, 5],
+  );
+  assert.equal(
+    linkedIssueNumbersForImplementationProvenance(
+      "Fixes #1\nFixes #2\nFixes #3\nFixes #4\nFixes #5\nFixes #6",
+      "openclaw/openclaw",
+    ),
+    null,
+  );
+});
+
+test("PR implementation provenance accepts only the current GitHub issue-closing PR", () => {
+  assert.equal(
+    currentClosingPullRequestReferenceFromIssueTimeline({
+      data: {
+        repository: {
+          issue: {
+            state: "CLOSED",
+            timelineItems: {
+              nodes: [
+                {
+                  __typename: "ClosedEvent",
+                  createdAt: "2026-08-19T12:00:00Z",
+                  closer: { __typename: "PullRequest", number: 125023 },
+                },
+                { __typename: "ReopenedEvent", createdAt: "2026-08-19T12:01:00Z" },
+                { __typename: "ClosedEvent", createdAt: "2026-08-19T12:02:00Z", closer: null },
+              ],
+            },
+          },
+        },
+      },
+    }),
+    null,
+  );
+  assert.deepEqual(
+    currentClosingPullRequestReferenceFromIssueTimeline({
+      data: {
+        repository: {
+          issue: {
+            state: "CLOSED",
+            timelineItems: {
+              nodes: [
+                { __typename: "ReopenedEvent", createdAt: "2026-08-19T12:01:00Z" },
+                {
+                  __typename: "ClosedEvent",
+                  createdAt: "2026-08-19T12:02:00Z",
+                  closer: { __typename: "PullRequest", number: 125023 },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }),
+    { __typename: "PullRequest", number: 125023 },
   );
 });
 
@@ -670,32 +881,6 @@ test("review details show missing AGENTS.md policy status", () => {
   assert.match(action.closeComment, /AGENTS\.md: not found in the target repository\./);
 });
 
-test("likely owner commit links ignore non-sha values", () => {
-  const action = reviewActionForDecision({
-    item: item(),
-    decision: closeDecision({
-      likelyOwners: [
-        {
-          person: "@alice",
-          role: "feature contributor",
-          reason: "The changelog credits a pull request for this feature surface.",
-          commits: ["https://github.com/openclaw/openclaw/pull/76079", " abcdef1234567890 "],
-          files: ["CHANGELOG.md"],
-          confidence: "medium",
-        },
-      ],
-    }),
-    git,
-  });
-
-  assert.equal(action.actionTaken, "proposed_close");
-  assert.doesNotMatch(action.closeComment, /\/commit\/https:/);
-  assert.match(
-    action.closeComment,
-    /\[abcdef123456\]\(https:\/\/github\.com\/openclaw\/openclaw\/commit\/abcdef1234567890\)/,
-  );
-});
-
 test("skill-only OpenClaw PRs can close through ClawHub with upload guidance", () => {
   const decision = closeDecision({
     closeReason: "clawhub",
@@ -745,7 +930,7 @@ test("skill-only OpenClaw PRs can close through ClawHub with upload guidance", (
   assert.match(action.closeComment, /installable ClawHub package/);
 });
 
-test("ClawHub policy allows main-implemented issue and PR close proposals", () => {
+test("ClawHub policy requires verified fixing provenance before main-implemented PR closure", () => {
   const implementedPr = validateCloseDecision(
     item({
       repo: "openclaw/clawhub",
@@ -754,7 +939,8 @@ test("ClawHub policy allows main-implemented issue and PR close proposals", () =
     }),
     closeDecision(),
   );
-  assert.equal(implementedPr.ok, true);
+  assert.equal(implementedPr.ok, false);
+  assert.equal(implementedPr.actionTaken, "skipped_invalid_decision");
 
   const implementedIssue = validateCloseDecision(
     item({
@@ -778,7 +964,7 @@ test("ClawHub policy allows main-implemented issue and PR close proposals", () =
   assert.equal(nonImplementedPr.actionTaken, "skipped_invalid_decision");
 });
 
-test("ClawSweeper policy allows self implemented-on-main issue and PR close proposals", () => {
+test("ClawSweeper policy requires verified fixing provenance before self PR closure", () => {
   const implementedPr = validateCloseDecision(
     item({
       repo: "openclaw/clawsweeper",
@@ -787,7 +973,8 @@ test("ClawSweeper policy allows self implemented-on-main issue and PR close prop
     }),
     closeDecision(),
   );
-  assert.equal(implementedPr.ok, true);
+  assert.equal(implementedPr.ok, false);
+  assert.equal(implementedPr.actionTaken, "skipped_invalid_decision");
 
   const implementedIssue = validateCloseDecision(
     item({

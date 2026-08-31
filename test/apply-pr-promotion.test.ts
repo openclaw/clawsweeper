@@ -508,6 +508,7 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
     const staleReport = stalePullRequestReport({
+      pull_head_sha: "head-sha",
       work_cluster_refs: JSON.stringify(["Related discussion in #400"]),
     }).replace(
       "## Summary\n\nThe dashboard has queue_fix_pr candidates but no generated coding plan.",
@@ -587,6 +588,9 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
     assert.doesNotMatch(promoted, /## Summary\n\nKeep open:/);
     const closeAppliedBody = readFileSync(closeAppliedBodyLogPath, "utf8");
     assert.match(closeAppliedBody, /Close reason: low-signal unmergeable PR\./);
+    assert.match(closeAppliedBody, /recorded closeout evidence/);
+    assert.match(closeAppliedBody, /Review evidence: \[durable ClawSweeper review\]/);
+    assert.doesNotMatch(closeAppliedBody, /Implementation evidence:/);
     assert.doesNotMatch(closeAppliedBody, /Keep open:/);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -1262,99 +1266,6 @@ test("apply-decisions promotes recommended pause-or-close PRs", () => {
       report.some((entry) => entry.action === "closed"),
       true,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("apply-decisions promotes PRs superseded by linked pull requests", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    const proofLogPath = join(root, "proof.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
-    const linkedMarkdownLabelReport = stalePullRequestReport({
-      number: 332,
-      title: "Old activity PR",
-      pr_rating_overall: "D",
-      pr_rating_proof: "D",
-      pr_rating_patch: "D",
-      work_cluster_refs: JSON.stringify([
-        "[replacement PR](https://github.com/openclaw/openclaw/pull/400)",
-      ]),
-    })
-      .replace("Overall tier: F", "Overall tier: D")
-      .replace("Proof tier: F", "Proof tier: D")
-      .replace("Patch tier: F", "Patch tier: D");
-    const synced = reportWithSyncedReviewComment(linkedMarkdownLabelReport, 332, "none");
-    writeFileSync(join(itemsDir, "332.md"), synced.report, "utf8");
-
-    withMockGh(
-      root,
-      promotionGhMock({
-        number: 332,
-        title: "Old activity PR",
-        comment: synced.comment,
-        linkedPulls: {
-          400: {
-            number: 400,
-            title: "Canonical activity PR",
-            html_url: "https://github.com/openclaw/openclaw/pull/400",
-            state: "open",
-            merged_at: null,
-            mergeable_state: "clean",
-            labels: ["proof: sufficient"],
-          },
-        },
-      }),
-      () => {
-        withMockCodexProof(
-          root,
-          {
-            type: "decision",
-            decision: "covered",
-            reason: "PR B is the canonical PR covering PR A.",
-            invocationLogPath: proofLogPath,
-          },
-          () => {
-            runApplyDecisionsForTest({
-              itemsDir,
-              closedDir,
-              plansDir,
-              reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--dry-run",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
-            });
-          },
-        );
-      },
-    );
-
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
-      number: number;
-      action: string;
-      reason: string;
-    }>;
-    assert.equal(
-      report.some((entry) => entry.action === "closed"),
-      true,
-    );
-    assert.match(
-      report.find((entry) => entry.action === "closed")?.reason ?? "",
-      /duplicate or superseded/,
-    );
-    assert.match(readFileSync(proofLogPath, "utf8"), /proof/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

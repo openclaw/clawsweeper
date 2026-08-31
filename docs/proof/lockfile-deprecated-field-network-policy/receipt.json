@@ -1,0 +1,62 @@
+{
+  "proof": "lockfile-deprecated-field-network-policy",
+  "committed_head": "bfda61b0b2520e34569f3797ab4e4089db6f1dd5",
+  "committed_head_note": "the head that was actually exercised (fix + tests); this proof directory was added in a later commit on the same branch that changes no tested file",
+  "branch": "fix/lockfile-deprecated-field-network-policy",
+  "provider": "local-container",
+  "provider_override_reason": "repo-config default provider is aws, which requires openclaw org AWS credentials/self-hosted runners not available outside the org; local-container is Docker-backed and requires only a local Docker daemon",
+  "crabbox_cli_version": "dev (built from github.com/openclaw/crabbox @ 74226d7, go1.26.0, not an official tagged release binary)",
+  "lease": {
+    "id": "cbx_c6901e89c73a",
+    "slug": "harbor-barnacle",
+    "container_id": "f7237eb06447",
+    "type": "node_24-bookworm"
+  },
+  "image": {
+    "ref": "node:24-bookworm",
+    "digest": "sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584"
+  },
+  "docker_engine_version": "29.7.2",
+  "node_version": "v24.19.0",
+  "pnpm_version": "11.10.0",
+  "focused_scenarios": {
+    "command": "node --test test/repair/target-validation.test.ts",
+    "tests": 205,
+    "pass": 202,
+    "fail": 0,
+    "skipped": 3,
+    "skip_reason": "runner does not provide delegated user namespaces and Landlock ABI 3+ (unrelated to this change; same gate hit later in the production real-behavior proof)"
+  },
+  "static_gates": {
+    "format_check": "clean, 744 files",
+    "lint": "clean, 0 warnings/0 errors across lint:src (167 files), lint:repair (166 files), lint:scripts (317 files), lint:dashboard (33-34 files)",
+    "build_all": "clean (tsconfig.json, tsconfig.repair.json, tsconfig.dashboard.json)"
+  },
+  "production_real_behavior_proof": {
+    "target_repo": "openclaw/openclaw",
+    "target_commits_observed": [
+      "e2f841bf1c1286940e3e89627ec2dc02514d9325",
+      "8c6c7a30cfb6e27fdf4ae7ec5b92d3ce015b501a"
+    ],
+    "note": "two separate fresh shallow clones of openclaw/openclaw's moving main, both carrying the real triggering pnpm-lock.yaml deprecated field",
+    "before_fix_result": "throws: target dependency install destination is not approved: https://github.com (reproduces production run 32367984753 exactly)",
+    "after_fix_result": "does not throw that error; PROOF_NETWORK_POLICY_DESTINATION_REJECTED=false in both post-fix runs"
+  },
+  "scope_limits": [
+    "full pnpm run check gate not run: test:coverage:no-build exercises test/sweep-workflow.test.ts, which needs GitHub Actions-simulation secrets/tokens unavailable outside CI and fails identically on unmodified main in this same container; unrelated to the changed surface",
+    "no Codex /review pass performed: that loop is GitHub-tooling-side and not available to run locally",
+    "production real-behavior proof uses an 8s install/setup timeout budget, sufficient to prove the network-policy stage no longer throws, insufficient for a full dependency install"
+  ],
+  "artifacts": [
+    "README.md",
+    "behavior-contract.md",
+    "red-green.md",
+    "run-proof.sh"
+  ],
+  "content_sha256": {
+    "src/repair/target-validation.ts": "0473717e46bfff0e076d39b4955caa1fa908ad74a77ba64e4c5de8fe52bcf900",
+    "test/repair/target-validation.test.ts": "58719718391f45d09981c9b8427025a83d0af16713a26e80793ecf41af6ace27",
+    "docs/proof/lockfile-deprecated-field-network-policy/behavior-contract.md": "6c7495b10bcbacee724cf07ef91a9da6586fbcf57f9f93fb7d7264ac053adf68",
+    "docs/proof/lockfile-deprecated-field-network-policy/run-proof.sh": "f2d23fb7a6967c74d431e58f33185927c2b439fbe649dbd9e0614966311a8188"
+  }
+}

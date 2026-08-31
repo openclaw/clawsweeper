@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { AgentInputScanError, type AgentScanSource } from "../agent-input-scan.js";
 
 import { runCommand as run, runContainedCommand } from "./command-runner.js";
 import {
@@ -435,14 +436,15 @@ export function prepareTargetToolchain(
     } catch (error) {
       setupError = error as Error;
     }
+    let preparedSourceIdentity: ValidationSourceIdentity;
     try {
-      assertValidationSourceIdentity(cwd, sourceIdentity, deadlineAt);
+      preparedSourceIdentity = assertValidationSourceIdentity(cwd, sourceIdentity, deadlineAt);
     } catch (error) {
       if (!setupError || !isValidationIdentityDeadlineError(error)) throw error;
+      throw setupError;
     }
     if (setupError) throw setupError;
     if (preparedPnpmPackageManager) {
-      const preparedSourceIdentity = validationSourceIdentity(cwd, deadlineAt);
       storePreparedTargetPnpmRuntime({
         cwd,
         deadlineAt,
@@ -520,6 +522,12 @@ function preparePnpmToolchain({
     restoreTargetFile(cwd, lockfileSnapshot);
     runPnpmInstall(installArgs, "pnpm frozen reinstall");
   }
+  // A frozen-lockfile install never rewrites an existing lockfile, but pnpm
+  // silently materializes one when the target repo has no lockfile to freeze
+  // against (e.g. a zero-dependency package.json). That install-owned file
+  // didn't exist in the checkout before setup, so drop it again rather than
+  // let it read as a checkout mutation to the post-setup identity guard.
+  if (lockfileSnapshot.kind === "absent") restoreTargetFile(cwd, lockfileSnapshot);
   if (preparePinnedOpenClawHelper) {
     preparePinnedOpenClawValidationHelper({
       cwd,
@@ -1130,9 +1138,15 @@ function assertStructuredInstallMetadataDestinations(
       assertLocalPackageDependency(value.resolved.trim(), ".", localPolicy);
     }
     for (const [name, entry] of Object.entries(value)) {
-      // Funding is package display metadata, but a dependency map may also contain a package
-      // named "funding". Exempt only package records so those dependency records stay inspectable.
+      // Funding is package display metadata copied verbatim from the registry and can be
+      // a string, object, or array, but a dependency map may also contain a package named
+      // "funding". Exempt only package records so those dependency records stay inspectable.
       if (context === "package-record" && name === "funding") continue;
+      // Deprecated is likewise verbatim registry text, but unlike funding it is only ever
+      // a plain string; require that shape so an object- or array-valued "deprecated" (not
+      // a real registry shape) still gets scanned rather than exempted on name alone.
+      if (context === "package-record" && name === "deprecated" && typeof entry === "string")
+        continue;
       if (workspaceLink && (name === "link" || name === "resolved")) continue;
       // Only the document root owns the lockfile packages map; a dependency may also be named
       // "packages", so recursive name matching would incorrectly grant package-record semantics.
@@ -1957,6 +1971,73 @@ export function assertTargetCheckoutBinding(
   }
 }
 
+// The callback owns the quarantine lifetime. A returned tree SHA alone would
+// refer to deleted objects; raw scan bytes must not use Git's text normalization.
+export function withTargetReviewSnapshot<T>(
+  options: { cwd: string; baseSha: string; expected: TargetCheckoutBinding; timeoutMs: number },
+  callback: (source: AgentScanSource, timeoutMs: number) => T,
+): T {
+  const deadlineAt = Date.now() + options.timeoutMs;
+  const assertCurrent = () => {
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) throw new AgentInputScanError("deadline");
+    try {
+      assertTargetCheckoutBinding(options.cwd, options.expected, remainingMs);
+    } catch {
+      throw new AgentInputScanError(Date.now() >= deadlineAt ? "deadline" : "source_drift");
+    }
+  };
+  assertCurrent();
+  return withIsolatedTargetGit(options.cwd, deadlineAt, (git) => {
+    let treeSha: string;
+    let indexTreeSha: string;
+    let objectEnv: NodeJS.ProcessEnv;
+    try {
+      objectEnv = targetIdentityObjectEnvironment(options.cwd, git);
+      // Copy the index before write-tree: refreshing its cache-tree must not
+      // mutate the validated target index or destabilize the binding.
+      const indexFile = git.run(["rev-parse", "--git-path", "index"], "review index path");
+      const scanIndex = path.join(git.root, "review.index");
+      fs.copyFileSync(path.resolve(options.cwd, indexFile), scanIndex);
+      indexTreeSha = git.run(["write-tree"], "review index tree", {
+        env: { ...objectEnv, GIT_INDEX_FILE: scanIndex },
+      });
+      treeSha = buildRawWorktreeTree(options.cwd, git, { objectEnv, preserveRawBytes: true });
+    } catch {
+      throw new AgentInputScanError(Date.now() >= deadlineAt ? "deadline" : "incomplete_source");
+    }
+    const assertRawCurrent = () => {
+      assertCurrent();
+      let currentTreeSha: string;
+      try {
+        currentTreeSha = buildRawWorktreeTree(options.cwd, git, {
+          objectEnv,
+          preserveRawBytes: true,
+        });
+      } catch {
+        throw new AgentInputScanError(Date.now() >= deadlineAt ? "deadline" : "incomplete_source");
+      }
+      if (currentTreeSha !== treeSha) throw new AgentInputScanError("source_drift");
+    };
+    // Admission fences this immutable snapshot before and after scanning.
+    // The final fence here also covers the model's execution in the callback.
+    const result = callback(
+      {
+        kind: "snapshot",
+        baseSha: options.baseSha,
+        headSha: options.expected.headSha,
+        treeSha,
+        indexTreeSha,
+        objectEnv,
+        assertCurrent: assertRawCurrent,
+      },
+      deadlineAt - Date.now(),
+    );
+    assertRawCurrent();
+    return result;
+  });
+}
+
 export function assertTargetPublicationGitConfiguration(
   cwd: string,
   timeoutMs = DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
@@ -2704,7 +2785,14 @@ function validationSourceIdentity(
   ).trim();
   const worktreeSha256 = worktreeContentSha256(cwd, deadlineAt);
   const contentTreeSha = rawWorktreeTreeSha(cwd, deadlineAt);
-  const indexTreeSha = runIdentityGit(cwd, ["write-tree"], deadlineAt, "source index tree").trim();
+  const indexTreeSha = withIsolatedTargetGit(cwd, deadlineAt, (git) => {
+    const indexFile = git.run(["rev-parse", "--git-path", "index"], "source index path");
+    const copy = path.join(git.root, "source.index");
+    fs.copyFileSync(path.resolve(cwd, indexFile), copy);
+    return git.run(["write-tree"], "source index tree", {
+      env: { ...targetIdentityObjectEnvironment(cwd, git), GIT_INDEX_FILE: copy },
+    });
+  });
   const status =
     indexTreeSha === treeSha && contentTreeSha === indexTreeSha
       ? ""
@@ -2736,6 +2824,7 @@ function assertValidationSourceIdentity(
       `target dependency setup mutated checkout identity: ${validationSourceIdentityMismatchFields(actual, expected, { ignoreRuntimeInputs: true }).join(", ")}`,
     );
   }
+  return actual;
 }
 
 function validationCheckoutIdentity(
@@ -3498,9 +3587,15 @@ function rawWorktreeTreeSha(cwd: string, deadlineAt: number) {
 function buildRawWorktreeTree(
   cwd: string,
   git: IsolatedTargetGit,
-  options: { quarantineObjects?: boolean } = {},
+  options: {
+    quarantineObjects?: boolean;
+    objectEnv?: NodeJS.ProcessEnv;
+    preserveRawBytes?: boolean;
+  } = {},
 ) {
-  const objectEnv = options.quarantineObjects ? targetIdentityObjectEnvironment(cwd, git) : {};
+  const objectEnv =
+    options.objectEnv ??
+    (options.quarantineObjects ? targetIdentityObjectEnvironment(cwd, git) : {});
   const headSha = git.run(["rev-parse", "HEAD"], "raw worktree head", { env: objectEnv });
   const headEntries = parseTargetTreeEntries(
     git.run(["ls-tree", "-r", "-z", "--full-tree", "HEAD"], "raw worktree head entries", {
@@ -3517,6 +3612,11 @@ function buildRawWorktreeTree(
     .split("\0")
     .filter(Boolean);
   const paths = [...new Set([...headEntries.keys(), ...indexEntries.keys(), ...untracked])].sort();
+  if (options.preserveRawBytes)
+    parseBoundedGitPathList(paths.length ? `${paths.join("\0")}\0` : "", {
+      maxPaths: MAX_VALIDATION_IGNORED_PATHS,
+      operation: "review snapshot paths",
+    });
   const attributes = readTargetGitAttributes(git, paths);
   const coreFileMode = targetCoreBoolean(git, "core.fileMode", true);
   const coreSymlinks = targetCoreBoolean(git, "core.symlinks", true);
@@ -3572,7 +3672,7 @@ function buildRawWorktreeTree(
     if (stat.isSymbolicLink()) {
       mode = "120000";
       const symlinkContentPath = path.join(git.root, `symlink-${rawEntries.length}`);
-      fs.writeFileSync(symlinkContentPath, fs.readlinkSync(absolutePath));
+      fs.writeFileSync(symlinkContentPath, fs.readlinkSync(absolutePath, { encoding: "buffer" }));
       sourcePath = symlinkContentPath;
     } else if (stat.isFile()) {
       if (sourceEntry?.mode === "120000" && !coreSymlinks) {
@@ -3591,7 +3691,7 @@ function buildRawWorktreeTree(
       throw new Error(`unsupported target worktree path type: ${relativePath}`);
     }
     worktreeLeafPaths.add(relativePath);
-    if (stat.isFile() && mode !== "120000") {
+    if (stat.isFile() && mode !== "120000" && !options.preserveRawBytes) {
       const unsafeAttribute = unsafeCanonicalGitAttribute(attributes.get(relativePath));
       if (unsafeAttribute) {
         if (
@@ -3931,6 +4031,7 @@ function withIsolatedTargetGit<T>(
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_CONFIG_SYSTEM: globalConfig,
       GIT_NO_REPLACE_OBJECTS: "1",
+      GIT_NO_LAZY_FETCH: "1",
       GIT_OPTIONAL_LOCKS: "0",
       GIT_TERMINAL_PROMPT: "0",
       HOME: isolationRoot,
@@ -3951,6 +4052,8 @@ function withIsolatedTargetGit<T>(
             "core.fsmonitor=false",
             "-c",
             "diff.external=",
+            "-c",
+            "protocol.allow=never",
             ...args,
           ],
           {
@@ -4071,13 +4174,18 @@ function runIdentityGit(
   env.GIT_CONFIG_GLOBAL = os.devNull;
   env.GIT_CONFIG_NOSYSTEM = "1";
   env.GIT_NO_REPLACE_OBJECTS = "1";
+  env.GIT_NO_LAZY_FETCH = "1";
   env.GIT_OPTIONAL_LOCKS = "0";
-  return run("git", ["-c", "core.fsmonitor=false", "-c", "diff.external=", ...args], {
-    cwd,
-    env,
-    ...(options.maxBuffer === undefined ? {} : { maxBuffer: options.maxBuffer }),
-    timeoutMs: validationIdentityTimeoutMs(deadlineAt, operation),
-  });
+  return run(
+    "git",
+    ["-c", "protocol.allow=never", "-c", "core.fsmonitor=false", "-c", "diff.external=", ...args],
+    {
+      cwd,
+      env,
+      ...(options.maxBuffer === undefined ? {} : { maxBuffer: options.maxBuffer }),
+      timeoutMs: validationIdentityTimeoutMs(deadlineAt, operation),
+    },
+  );
 }
 
 function parseBoundedGitPathList(

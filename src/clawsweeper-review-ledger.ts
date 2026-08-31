@@ -1,3 +1,4 @@
+import { AgentInputScanError } from "./agent-input-scan.js";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -623,7 +624,7 @@ export function createReviewActionLedger({
             ? failure.reasonCode
             : ACTION_EVENT_REASON_CODES.workerLost
           : ACTION_EVENT_REASON_CODES.leaseActive,
-        retryable: true,
+        retryable: !(active && options.error instanceof AgentInputScanError),
         cached: false,
         startedAtMs: options.ledger.startedAtMs,
         completionReason: failure
@@ -649,7 +650,10 @@ export function createReviewActionLedger({
       phase: ACTION_EVENT_TYPES.reviewBatch,
       status,
       reasonCode,
-      retryable: (failure !== null || partial) && !options.ledger.uncertainMutationObserved,
+      retryable:
+        (failure !== null || partial) &&
+        !options.ledger.uncertainMutationObserved &&
+        !(options.error instanceof AgentInputScanError),
       mutation: options.ledger.mutationObserved,
       identity: { slot: "batch_terminal" },
       operation: "review",

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -268,20 +268,8 @@ function runCodex(options: {
   extraCodexConfig?: readonly string[];
 }): string {
   ensureDir(options.workDir);
-  const promptPath = join(options.workDir, `${options.sha}.prompt.md`);
+  rmSync(join(options.workDir, `${options.sha}.prompt.md`), { force: true });
   const outputPath = join(options.workDir, `${options.sha}.md`);
-  writeFileSync(
-    promptPath,
-    promptForCommit({
-      targetDir: options.targetDir,
-      targetRepo: options.targetRepo,
-      sha: options.sha,
-      baseSha: options.baseSha,
-      metadata: options.metadata,
-      additionalPrompt: options.additionalPrompt,
-    }),
-    "utf8",
-  );
   const codexConfig = [
     codexLoginConfig(),
     'approval_policy="never"',
@@ -289,8 +277,9 @@ function runCodex(options: {
   ];
   if (options.serviceTier) codexConfig.unshift(`service_tier="${options.serviceTier}"`);
   const result = runAgentProcess({
+    scanSource: { kind: "committed", baseSha: options.baseSha, headSha: options.sha },
     label: `commit-review-${options.sha}`,
-    prompt: readFileSync(promptPath, "utf8"),
+    prompt: promptForCommit(options),
     model: options.model,
     reasoningEffort: options.reasoningEffort,
     codexExtraArgs: [

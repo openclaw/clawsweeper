@@ -105,8 +105,8 @@ everything else requires human comparison with current main.
 - [PR review comments](pr-review-comments.md) — active; review-thread handling
 - [Related issue discovery](related-issue-discovery.md) — active; duplicate and
   adjacent-report context
-- [Live proof](live-proof.md) — active; secretless browser/terminal execution,
-  trusted media attachment, and local simulation
+- [Live proof](live-proof.md) — retired for automatic generation;
+  compatibility-only validation, rendering, publication, and retraction
 
 `docs/proof/**` contains inspectable artifacts for specific changes. Those
 files support their recorded claim but do not override current runbooks.
@@ -145,9 +145,13 @@ poster or WebP over accumulated before/after sets.
 
 ## Close policy
 
+- [Implemented-on-main paired close policy](implemented-on-main-close-policy.md)
+  — active policy and formal GitHub-link requirement
 - [Obsolescence policies](obsolescence-close-policies.md) — active policy map
 - [Unsponsored feature policy](unsponsored-feature-close-policy.md) — active
 - [Product direction policy](product-direction-close-policy.md) — active
+- [Material SQLite change discussion proposal](sqlite-change-policy-proposal.md)
+  — proposed; maintainer decision required before any enforcement
 - [Author PR budget policy](author-pr-budget-close-policy.md) — active
 - [Stalled PR policies](stalled-pr-close-policies.md) — active
 

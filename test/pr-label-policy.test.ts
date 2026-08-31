@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createLabelPolicy } from "../dist/clawsweeper-label-policy.js";
 import { createLabelSynchronization } from "../dist/clawsweeper-label-sync.js";
+import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
+import { createReportParser } from "../dist/clawsweeper-report-parser.js";
+import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
+import { createRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.js";
+import { syncApplyPullRequestLabels } from "../dist/clawsweeper-apply-pull-request-labels.js";
+import type { RealBehaviorProof } from "../dist/clawsweeper-types.js";
 import {
   featureShowcaseLabelsForTest,
   goodFirstIssueLabelOptedOutForTest,
@@ -24,7 +31,260 @@ import {
   reviewPromptTemplate,
   telegramVisibleProofLabelsForTest,
 } from "../dist/clawsweeper.js";
-import { closeDecision } from "./helpers.ts";
+import {
+  closeDecision,
+  item,
+  realBehaviorProofReportSection,
+  reportFrontMatter,
+} from "./helpers.ts";
+
+for (const proofStatus of ["missing", "not_applicable"] as const) {
+  test(`failed ${proofStatus} reports remove positive statuses through apply label sync`, () => {
+    const metadata = createRecordMetadata({} as never);
+    const parser = createReportParser({
+      ...metadata,
+      ...createReportHelpers({
+        OWNED_REVIEW_SECTION_HEADINGS: new Set(),
+        parseBacktickLocation: () => null,
+      }),
+      isDocsOnlyPullRequestReport: () => false,
+      isExternalPullRequestReport: () => true,
+    } as Parameters<typeof createReportParser>[0]);
+    const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
+      ...metadata,
+      ...parser,
+      isDocsOnlyPullRequestReport: () => false,
+      isExternalPullRequestReport: () => true,
+    });
+    const policy = createLabelPolicy({
+      ...metadata,
+      ...parser,
+      reportRealBehaviorProofPolicy,
+      asRecord: (value) => value as Record<string, unknown>,
+      isAutomationReportAuthor: () => false,
+      stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
+      timestampMs: (value) => (value ? Date.parse(value) : null),
+    });
+    const oldStatuses = ["status: 🚀 automerge armed", "status: 👀 ready for maintainer look"];
+    for (const [extraLabels, comment, incorrect, expected] of [
+      [["clawsweeper:automerge"], "", false, null],
+      [[], "", false, null],
+      [["clawsweeper:human-review"], "@clawsweeper re-review", false, null],
+      [["clawsweeper:manual-only"], "", false, null],
+      [["clawsweeper:merge-ready"], "", false, null],
+      [[], "@clawsweeper re-review", false, "re_review_loop"],
+      [[], "Working on the remaining finding", true, "actively_grinding"],
+    ] as const) {
+      const labels = [...oldStatuses, ...extraLabels];
+      const report = `${reportFrontMatter({
+        type: "pull_request",
+        number: "74466",
+        review_status: "failed",
+        author: "contributor",
+        author_association: "CONTRIBUTOR",
+        reviewed_at: "2026-08-30T12:00:00Z",
+        labels: JSON.stringify(labels),
+      })}
+${realBehaviorProofReportSection({
+  status: proofStatus,
+  evidenceKind: proofStatus === "missing" ? "none" : "not_applicable",
+  needsContributorAction: proofStatus === "missing",
+  summary: "Retained proof assessment from an incomplete review.",
+})}
+## Review Findings
+
+Overall correctness: ${incorrect ? "patch is incorrect" : "patch is correct"}
+
+Full review comments:
+
+- none
+`;
+      const context = {
+        comments: comment
+          ? [{ author: "contributor", body: comment, createdAt: "2026-08-30T13:00:00Z" }]
+          : [],
+        timeline: [],
+      };
+      const commands: string[][] = [];
+      const synchronization = createLabelSynchronization({
+        ...metadata,
+        ...parser,
+        labelPolicy: policy,
+        ghObservedMutationCommand: ({ args }) => {
+          commands.push(args);
+          return "";
+        },
+        hasNormalizedLabel: (current, label) => current.includes(label),
+        normalizeLabelName: (label) => label.toLowerCase(),
+        protectedLabels: () => [],
+        isBulkFilerExemptAuthorAssociation: () => false,
+        isBulkFilerExemptRepositoryPermission: () => false,
+      } as Parameters<typeof createLabelSynchronization>[0]);
+      const result = syncApplyPullRequestLabels(
+        {
+          ...metadata,
+          ...parser,
+          ...synchronization,
+          prStatusLabelKindFromReport: policy.prStatusLabelKindFromReport,
+        },
+        {
+          markdown: report,
+          item: item({ kind: "pull_request", labels }),
+          number: 74466,
+          currentItemContext: () => context as never,
+          dryRun: false,
+          labelSyncFreshEnough: () => true,
+          staleReviewHead: null,
+          onMutation: () => {},
+        },
+      );
+      assert.equal(result.currentPrStatusKind, expected);
+      assert.equal(policy.prStatusLabelKindFromReport(report, context, labels), expected);
+      assert.equal(reportRealBehaviorProofPolicy(report).blocksMerge, false);
+      for (const oldStatus of oldStatuses) {
+        assert.ok(!result.labels.includes(oldStatus), oldStatus);
+        assert.ok(
+          commands.some((args) => args.includes("--remove-label") && args.includes(oldStatus)),
+          oldStatus,
+        );
+      }
+      assert.ok(!result.labels.includes("status: 📣 needs proof"));
+      assert.ok(
+        !commands.some(
+          (args) => args.includes("--add-label") && args.some((arg) => oldStatuses.includes(arg)),
+        ),
+      );
+      assert.equal(result.markdown, report);
+    }
+  });
+}
+
+test("report-based status selection requires external N/A proof without an action flag", () => {
+  const metadata = createRecordMetadata({} as never);
+  const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
+    ...metadata,
+    isDocsOnlyPullRequestReport: () => false,
+    isExternalPullRequestReport: (markdown) =>
+      metadata.frontMatterValue(markdown, "author_association") === "CONTRIBUTOR",
+    reportAttachedLiveVerification: () => ({ status: "absent" }),
+    reportRealBehaviorProof: () => ({
+      status: "not_applicable",
+      evidenceKind: "not_applicable",
+      needsContributorAction: false,
+      summary: "Recorded reviewer assessment.",
+    }),
+  });
+  const policy = createLabelPolicy({
+    ...metadata,
+    asRecord: (value) => value as Record<string, unknown>,
+    isAutomationReportAuthor: () => false,
+    mergeRiskOptionsFromReport: () => [],
+    reportOverallCorrectness: () => "patch is correct",
+    reportRealBehaviorProofPolicy,
+    reportReviewFindings: () => [],
+    reportSecurityReview: () => ({ status: "cleared", summary: "", concerns: [] }),
+    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
+    timestampMs: (value) => (value ? Date.parse(value) : null),
+  });
+  for (const path of ["README.md", "src/arbitrary.ts"]) {
+    const report = reportFrontMatter({
+      type: "pull_request",
+      review_status: "complete",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      pull_files: JSON.stringify([path]),
+      pull_files_truncated: false,
+      reviewed_at: "2026-08-30T12:00:00Z",
+    });
+    assert.equal(
+      policy.prStatusLabelKindFromReport(report, { comments: [], timeline: [] }, [
+        "clawsweeper:automerge",
+      ]),
+      "needs_proof",
+      path,
+    );
+    for (const [labels, comments, expected] of [
+      [["clawsweeper:human-review"], [], null],
+      [["clawsweeper:manual-only"], [], null],
+      [["clawsweeper:merge-ready"], [], null],
+      [
+        [],
+        [
+          {
+            author: "contributor",
+            body: "@clawsweeper re-review",
+            createdAt: "2026-08-30T13:00:00Z",
+          },
+        ],
+        "re_review_loop",
+      ],
+      [
+        [],
+        [{ author: "contributor", body: "Added evidence", createdAt: "2026-08-30T13:00:00Z" }],
+        "actively_grinding",
+      ],
+    ] as const) {
+      assert.equal(
+        policy.prStatusLabelKindFromReport(
+          report,
+          { comments: [...comments], timeline: [] },
+          labels,
+        ),
+        expected,
+      );
+    }
+    const commands: string[][] = [];
+    const synchronization = createLabelSynchronization({
+      ...metadata,
+      ghObservedMutationCommand: ({ args }) => {
+        commands.push(args);
+        return "";
+      },
+      hasNormalizedLabel: (labels, label) => labels.includes(label),
+      normalizeLabelName: (label) => label.toLowerCase(),
+      protectedLabels: () => [],
+      isBulkFilerExemptAuthorAssociation: () => false,
+      isBulkFilerExemptRepositoryPermission: () => false,
+      reportSecurityReview: () => ({ status: "cleared", summary: "", concerns: [] }),
+      labelPolicy: policy,
+    } as Parameters<typeof createLabelSynchronization>[0]);
+    const decision = closeDecision();
+    const result = syncApplyPullRequestLabels(
+      {
+        ...metadata,
+        ...synchronization,
+        prStatusLabelKindFromReport: policy.prStatusLabelKindFromReport,
+        reportRealBehaviorProof: (markdown) => reportRealBehaviorProofPolicy(markdown).assessment,
+        reportPrRating: () => decision.prRating,
+        reportFeatureShowcase: () => decision.featureShowcase,
+        reportOverallCorrectness: () => "patch is correct",
+        reportSecurityReview: () => decision.securityReview,
+        reportTelegramVisibleProof: () => decision.telegramVisibleProof,
+      },
+      {
+        markdown: report,
+        item: item({ kind: "pull_request", labels: ["clawsweeper:automerge"] }),
+        number: 74465,
+        currentItemContext: () => ({ comments: [], timeline: [] }) as never,
+        dryRun: false,
+        labelSyncFreshEnough: () => true,
+        staleReviewHead: null,
+        onMutation: () => {},
+      },
+    );
+    assert.equal(result.currentPrStatusKind, "needs_proof", path);
+    assert.ok(result.labels.includes("status: 📣 needs proof"), path);
+    assert.ok(!result.labels.includes("proof: sufficient"), path);
+    assert.equal(result.markdown, report, path);
+    assert.ok(
+      commands.some(
+        (args) => args.includes("--add-label") && args.includes("status: 📣 needs proof"),
+      ),
+      path,
+    );
+    assert.ok(!commands.some((args) => args.includes("status: 🚀 automerge armed")), path);
+  }
+});
 
 test("ClawSweeper PR rating labels use one themed overall label", () => {
   assert.deepEqual(prRatingLabelsForTest(["bug"], "A"), ["bug", "rating: 🦞 diamond lobster"]);
@@ -174,6 +434,83 @@ test("ClawSweeper PR status routes security owner acceptance to maintainer look"
   );
 });
 
+test("unresolved proof routes contributors and maintainers to distinct owners", () => {
+  assert.deepEqual(
+    prStatusLabelsForTest(["clawsweeper:automerge"], {
+      proofStatus: "insufficient",
+      needsContributorAction: true,
+    }),
+    ["clawsweeper:automerge", "status: 📣 needs proof"],
+  );
+  assert.deepEqual(
+    prStatusLabelsForTest(["clawsweeper:automerge"], {
+      proofStatus: "insufficient",
+      needsContributorAction: false,
+    }),
+    ["clawsweeper:automerge", "status: needs maintainer proof decision"],
+  );
+});
+
+test("historical receipt failures route to the proof owner without erasing independent proof", () => {
+  let receiptStatus = "failed";
+  let needsContributorAction = false;
+  let reviewFailed = false;
+  const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
+    frontMatterValue: (_markdown, key) =>
+      key === "review_status" && reviewFailed ? "failed" : undefined,
+    frontMatterStringArray: () => [],
+    isDocsOnlyPullRequestReport: () => false,
+    isExternalPullRequestReport: () => true,
+    reviewSectionValue: () => "",
+    reportAttachedLiveVerification: () => ({ status: receiptStatus }) as never,
+    reportRealBehaviorProof: (): RealBehaviorProof => ({
+      status: needsContributorAction ? "missing" : "sufficient",
+      evidenceKind: "terminal",
+      needsContributorAction,
+      summary: "Contributor-supplied terminal output already proves the changed behavior.",
+    }),
+  });
+  const policy = createLabelPolicy({
+    asRecord: (value) => value as Record<string, unknown>,
+    frontMatterValue: (_markdown, key) =>
+      key === "type"
+        ? "pull_request"
+        : key === "reviewed_at"
+          ? "2026-08-27T12:00:00.000Z"
+          : key === "review_status" && reviewFailed
+            ? "failed"
+            : undefined,
+    isAutomationReportAuthor: () => false,
+    mergeRiskOptionsFromReport: () => [],
+    reportOverallCorrectness: () => "patch is correct",
+    reportRealBehaviorProofPolicy,
+    reportReviewFindings: () => [],
+    reportSecurityReview: () => ({ status: "cleared", summary: "", concerns: [] }),
+    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
+    timestampMs: (value) => (value ? Date.parse(value) : null),
+  });
+
+  for (reviewFailed of [false, true]) {
+    for (receiptStatus of ["absent", "passed", "failed", "malformed"]) {
+      for (needsContributorAction of [false, true]) {
+        assert.equal(
+          policy.prStatusLabelKindFromReport("report", { comments: [], timeline: [] }, [
+            "clawsweeper:automerge",
+          ]),
+          needsContributorAction && !reviewFailed
+            ? "needs_proof"
+            : receiptStatus === "failed" || receiptStatus === "malformed"
+              ? "needs_maintainer_proof_decision"
+              : reviewFailed
+                ? null
+                : "automerge_armed",
+          `${receiptStatus}: contributor action=${needsContributorAction}, failed review=${reviewFailed}`,
+        );
+      }
+    }
+  }
+});
+
 test("ClawSweeper PR status labels preserve other label families", () => {
   assert.deepEqual(
     prStatusLabelsForTest(
@@ -201,13 +538,17 @@ test("ClawSweeper PR status labels respect priority ordering", () => {
   const automergeArmedLabel = prStatusLabelSchemeForTest().find(
     (label) => label.kind === "automerge_armed",
   )?.name;
+  const reReviewLabel = prStatusLabelSchemeForTest().find(
+    (label) => label.kind === "re_review_loop",
+  )?.name;
   assert.ok(automergeArmedLabel);
+  assert.ok(reReviewLabel);
   assert.deepEqual(
     prStatusLabelsForTest(["clawsweeper:automerge"], {
       proofStatus: "missing",
       hasRecentReReviewRequest: true,
     }),
-    ["clawsweeper:automerge", automergeArmedLabel],
+    ["clawsweeper:automerge", reReviewLabel],
   );
   assert.deepEqual(
     prStatusLabelsForTest(
@@ -345,11 +686,22 @@ test("ClawSweeper PR status label scheme exposes workflow states", () => {
   );
 });
 
-test("ClawSweeper Telegram proof judgement controls the Mantis proof label", () => {
+test("ClawSweeper Telegram proof judgement controls the E2E proof label", () => {
   assert.deepEqual(telegramVisibleProofLabelsForTest(["channel: telegram"], "needed"), [
     "channel: telegram",
-    "mantis: telegram-visible-proof",
+    "proof: telegram-e2e",
   ]);
+  assert.deepEqual(
+    telegramVisibleProofLabelsForTest(["channel: telegram", "proof: telegram-e2e"], "not_needed"),
+    ["channel: telegram"],
+  );
+  assert.deepEqual(
+    telegramVisibleProofLabelsForTest(
+      ["channel: telegram", "mantis: telegram-visible-proof"],
+      "needed",
+    ),
+    ["channel: telegram", "proof: telegram-e2e"],
+  );
   assert.deepEqual(
     telegramVisibleProofLabelsForTest(
       ["channel: telegram", "mantis: telegram-visible-proof"],
@@ -357,6 +709,48 @@ test("ClawSweeper Telegram proof judgement controls the Mantis proof label", () 
     ),
     ["channel: telegram"],
   );
+});
+
+test("ClawSweeper replaces the legacy Telegram proof label during synchronization", () => {
+  const commands: string[][] = [];
+  const labels = createLabelSynchronization({
+    ghObservedMutationCommand: ({ args }: { args: string[] }) => {
+      commands.push(args);
+      return "";
+    },
+    hasNormalizedLabel: (current: readonly string[], label: string) =>
+      current.some((candidate) => candidate.toLowerCase() === label.toLowerCase()),
+    normalizeLabelName: (label: string) => label.toLowerCase(),
+    protectedLabels: () => [],
+    isBulkFilerExemptAuthorAssociation: () => false,
+    isBulkFilerExemptRepositoryPermission: () => false,
+    frontMatterValue: () => undefined,
+    frontMatterStringArray: () => [],
+    reportSecurityReview: () => ({ status: "not_applicable", evidence: [] }),
+    reviewSectionValue: () => "",
+    labelPolicy: {},
+  } as never);
+
+  labels.syncTelegramVisibleProofLabel({
+    number: 42,
+    labels: ["channel: telegram", "mantis: telegram-visible-proof"],
+    proof: { status: "needed" },
+    dryRun: false,
+  });
+
+  assert.deepEqual(commands, [
+    [
+      "label",
+      "create",
+      "proof: telegram-e2e",
+      "--color",
+      "57606A",
+      "--description",
+      "This PR needs Telegram Test Server proof with the repository E2E skill.",
+    ],
+    ["issue", "edit", "42", "--add-label", "proof: telegram-e2e"],
+    ["issue", "edit", "42", "--remove-label", "mantis: telegram-visible-proof"],
+  ]);
 });
 
 test("ClawSweeper priority label scheme exposes P0 through P3 labels", () => {
@@ -1259,7 +1653,7 @@ test("ClawSweeper issue advisory labels remove stale owned labels and preserve o
         "clawsweeper:human-review",
         "clawsweeper:merge-ready",
         "proof: sufficient",
-        "mantis: telegram-visible-proof",
+        "proof: telegram-e2e",
       ],
       {
         type: "issue",
@@ -1275,7 +1669,7 @@ test("ClawSweeper issue advisory labels remove stale owned labels and preserve o
       "clawsweeper:human-review",
       "clawsweeper:merge-ready",
       "proof: sufficient",
-      "mantis: telegram-visible-proof",
+      "proof: telegram-e2e",
       "issue-rating: 🦀 challenger crab",
       "clawsweeper:current-main-repro",
     ],

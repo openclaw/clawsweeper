@@ -4,8 +4,10 @@ import {
   normalizeRealBehaviorProof,
 } from "./clawsweeper-rating.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
+import { publicLikelyOwner } from "./clawsweeper-regression-provenance.js";
 import {
   AGENTS_POLICY_STATUSES,
+  AUTHORITY_CHAIN_PROOF_MARKER,
   AUTO_IMPLEMENTATION_CANDIDATES,
   FEATURE_SHOWCASE_STATUSES,
   IMPLEMENTATION_COMPLEXITIES,
@@ -28,8 +30,9 @@ import {
   VISION_FIT_STATUSES,
 } from "./clawsweeper-policy.js";
 import {
-  decodeLiveVerificationReportPayload,
+  parseAttachedLiveVerification,
   renderLiveVerificationCommentBlock,
+  type AttachedLiveVerification,
 } from "./live-proof/verification.js";
 import type {
   AgentsPolicyStatus,
@@ -70,7 +73,7 @@ import type {
   TriagePriority,
   VisionFitStatus,
 } from "./clawsweeper-types.js";
-import type { FrontMatterField } from "./clawsweeper-record-metadata.js";
+import type { FrontMatterField } from "./report-front-matter.js";
 
 interface ReportParsingDependencies {
   agentsPolicyStatusLine: (status: AgentsPolicyStatus | undefined) => string;
@@ -128,19 +131,24 @@ const parseRecordedLiveProofPlan = createDecisionParser({
 
 export function reportLiveProofPlan(markdown: string): LiveProofPlan {
   const section = reportSectionValue(markdown, LIVE_PROOF_SECTION_HEADING);
-  const rawSteps = reportSectionList(section, "Steps");
+  const status = reportSectionLineValue(section, "Status");
+  const surface = reportSectionLineValue(section, "Surface");
+  const terminalCompletion =
+    reportSectionLineValue(section, "Terminal completion") ??
+    (status !== "recommended" || surface !== "terminal" ? "not_applicable" : undefined);
   try {
     return parseRecordedLiveProofPlan(
       {
-        status: reportSectionLineValue(section, "Status"),
-        surface: reportSectionLineValue(section, "Surface"),
+        status,
+        surface,
+        terminalCompletion,
         reason: reportSectionLineValue(section, "Reason"),
         payoff: {
           kind: reportSectionLineValue(section, "Payoff"),
           justification: reportSectionLineValue(section, "Payoff justification"),
         },
         entry: reportSectionLineValue(section, "Entry") ?? "",
-        steps: rawSteps.map((step) => JSON.parse(step) as unknown),
+        steps: reportLiveProofSteps(section),
       },
       "report.liveProofPlan",
     );
@@ -148,10 +156,13 @@ export function reportLiveProofPlan(markdown: string): LiveProofPlan {
     return {
       status: "not_applicable",
       surface: "none",
-      reason: "No live-proof plan was recorded in this report.",
+      terminalCompletion: "not_applicable",
+      invalid: true,
+      reason:
+        "The live-proof plan is missing or invalid; regenerate the review report before execution.",
       payoff: {
         kind: "static_text",
-        justification: "No recording payoff was recorded in this report.",
+        justification: "Invalid report plans are non-runnable and fail closed.",
       },
       entry: "",
       steps: [],
@@ -160,15 +171,16 @@ export function reportLiveProofPlan(markdown: string): LiveProofPlan {
 }
 
 function reportSectionValue(markdown: string, heading: string): string {
+  // Preserve marker whitespace and never separate a final CRLF pair.
   const match = markdown.match(
-    new RegExp(`(?:^|\\n)## ${heading}\\n\\n([\\s\\S]*?)(?=\\n## |\\n?$)`),
+    new RegExp(`(?:^|\\n)## ${heading}\\n\\n([\\s\\S]*?)(?=\\r?\\n## |$)`),
   );
-  return match?.[1]?.trim() ?? "";
+  return match?.[1] ?? "";
 }
 
 function reportSectionLineValue(section: string, label: string): string | undefined {
   const prefix = `${label}:`;
-  for (const line of section.split("\n")) {
+  for (const line of section.trim().split("\n")) {
     if (!line.startsWith(prefix)) continue;
     const value = line.slice(prefix.length).trim();
     return value || undefined;
@@ -176,20 +188,27 @@ function reportSectionLineValue(section: string, label: string): string | undefi
   return undefined;
 }
 
-function reportSectionList(section: string, label: string): string[] {
-  const lines = section.split("\n");
-  const start = lines.findIndex((line) => line.trim() === `${label}:`);
-  if (start === -1) return [];
-  const values: string[] = [];
-  for (let index = start + 1; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (/^[A-Z][A-Za-z -]+:/.test(line)) break;
-    const trimmed = line.trimStart();
-    if (!trimmed.startsWith("- ")) continue;
-    const item = trimmed.slice(2).trim();
-    if (item) values.push(item);
+function reportLiveProofSteps(section: string): unknown[] {
+  const lines = section.split(/\r?\n/);
+  // Match raw attachment lines exactly, as the verification parser does.
+  const attachmentStart = lines.findIndex(
+    (line) => line === LIVE_VERIFICATION_MARKER || line === LIVE_PROOF_RECORDING_MARKER,
+  );
+  const planLines = (attachmentStart < 0 ? lines : lines.slice(0, attachmentStart)).map((line) =>
+    line.trim(),
+  );
+  const start = planLines.indexOf("Steps:");
+  if (start < 0 || planLines.lastIndexOf("Steps:") !== start) {
+    throw new Error("live-proof report requires exactly one Steps payload");
   }
-  return values;
+  const payload = planLines.slice(start + 1).filter(Boolean);
+  // legacy-empty-list-v1: already-produced reports used a solitary "- none".
+  if (payload.length === 1 && (payload[0] === "[]" || payload[0] === "- none")) return [];
+  if (!payload.length) throw new Error("live-proof report is missing its Steps payload");
+  return payload.map((line) => {
+    if (!line.startsWith("- ")) throw new Error("live-proof report step must be a JSON list item");
+    return JSON.parse(line.slice(2)) as unknown;
+  });
 }
 
 function neutralizeLiveProofText(value: string): string {
@@ -297,6 +316,10 @@ export function createReportParser({
         continue;
       }
       if (!current) continue;
+      if (line === "  - attribution source: raw_parent_line_v1") {
+        current.attributionSource = "raw_parent_line_v1";
+        continue;
+      }
       const reason = line.match(/^\s+- reason: (.*)$/);
       if (reason?.[1]) {
         current.reason = reason[1];
@@ -322,7 +345,7 @@ export function createReportParser({
       if (confidence?.[1]) current.confidence = confidence[1] as Confidence;
     }
     if (current) owners.push(current);
-    return owners;
+    return owners.map(publicLikelyOwner);
   }
 
   function reportOverallCorrectness(markdown: string): OverallCorrectness {
@@ -526,6 +549,7 @@ export function createReportParser({
   }
 
   function reportRealBehaviorProof(markdown: string): RealBehaviorProof {
+    // Historical execution receipts do not assess relevance to the changed behavior.
     const defaultProof = defaultRealBehaviorProof(markdown);
     if (defaultProof.status === "override" || isDocsOnlyPullRequestReport(markdown)) {
       return defaultProof;
@@ -603,9 +627,11 @@ export function createReportParser({
       evidenceKind,
       needsContributorAction: /^true$/i.test(needsContributorActionValue ?? ""),
     });
+    const authorityChainProofRequired = summary.startsWith(AUTHORITY_CHAIN_PROOF_MARKER);
     if (
       frontMatterValue(markdown, "type") !== "pull_request" ||
       isExternalPullRequestReport(markdown) ||
+      authorityChainProofRequired ||
       (!proof.needsContributorAction &&
         proof.status !== "missing" &&
         proof.status !== "mock_only" &&
@@ -640,7 +666,7 @@ export function createReportParser({
 
   function reportLiveProofRecordingBlock(markdown: string): string {
     const section = reviewSectionValue(markdown, "liveProof");
-    const verificationBlock = reportLiveVerificationBlock(section);
+    const verificationBlock = reportLiveVerificationBlock(markdown);
     const markerIndex = section.lastIndexOf(LIVE_PROOF_RECORDING_MARKER);
     if (markerIndex < 0) return verificationBlock;
     const lines = section
@@ -666,24 +692,30 @@ export function createReportParser({
     return [verificationBlock, lines.join("\n")].filter(Boolean).join("\n\n");
   }
 
-  function reportLiveVerificationBlock(section: string): string {
-    const markerIndex = section.lastIndexOf(`\n${LIVE_VERIFICATION_MARKER}\n`);
-    if (markerIndex < 0) return "";
-    const start = markerIndex + LIVE_VERIFICATION_MARKER.length + 2;
-    const tail = section.slice(start);
-    const resultLine = tail.split("\n", 1)[0] ?? "";
-    const match = /^Result: ([A-Za-z0-9_-]+)$/.exec(resultLine);
-    if (!match?.[1]) return "";
-    try {
-      return renderLiveVerificationCommentBlock(decodeLiveVerificationReportPayload(match[1]));
-    } catch {
-      return "";
-    }
+  function reportAttachedLiveVerification(markdown: string): AttachedLiveVerification {
+    return parseAttachedLiveVerification(
+      reviewSectionValue(markdown, "liveProof"),
+      {
+        repository: frontMatterValue(markdown, "repository"),
+        number: frontMatterValue(markdown, "number"),
+        type: frontMatterValue(markdown, "type"),
+        pullHeadSha: frontMatterValue(markdown, "pull_head_sha"),
+      },
+      reportLiveProofPlan(markdown),
+    );
+  }
+
+  function reportLiveVerificationBlock(markdown: string): string {
+    const attached = reportAttachedLiveVerification(markdown);
+    return attached.status === "passed" || attached.status === "failed"
+      ? renderLiveVerificationCommentBlock(attached.result)
+      : "";
   }
 
   function reportPrRating(markdown: string): PrRating {
     const section = reviewSectionValue(markdown, "prRating");
     const proof = reportRealBehaviorProof(markdown);
+    const attached = reportAttachedLiveVerification(markdown);
     const proofTierField = frontMatterField(markdown, "pr_rating_proof");
     const patchTierField = frontMatterField(markdown, "pr_rating_patch");
     const overallTierField = frontMatterField(markdown, "pr_rating_overall");
@@ -729,13 +761,16 @@ export function createReportParser({
         (proofTierValue === "D" || proofTierValue === "F")
       )
     ) {
-      return normalizePrRating({
-        proofTier: proofTierValue as PrRatingTier,
-        patchTier: patchTierValue as PrRatingTier,
-        overallTier: overallTierValue as PrRatingTier,
-        summary,
-        nextSteps,
-      });
+      return normalizePrRating(
+        {
+          proofTier: proofTierValue as PrRatingTier,
+          patchTier: patchTierValue as PrRatingTier,
+          overallTier: overallTierValue as PrRatingTier,
+          summary,
+          nextSteps,
+        },
+        attached.status === "absent" ? undefined : proof,
+      );
     }
     return derivedPrRating({
       isPullRequest: frontMatterValue(markdown, "type") === "pull_request",
@@ -895,6 +930,7 @@ export function createReportParser({
     labelJustificationsFromReport,
     reportReviewFindings,
     reportSecurityReview,
+    reportAttachedLiveVerification,
     reportRealBehaviorProof,
     reportTelegramVisibleProof,
     reportLiveProofPlan,

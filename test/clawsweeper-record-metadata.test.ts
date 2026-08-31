@@ -82,7 +82,7 @@ test("label names containing replacement patterns survive a front matter write",
 test("front matter keys are matched literally, not as regular expressions", () => {
   // No shipped caller passes a key with regex syntax, but the helpers advertise a plain
   // `key: string` contract; interpolating it raw makes them throw or match the wrong line.
-  for (const key of ["a.c", "a+b", "x(y", "k[0]", "q|r"]) {
+  for (const key of ["a.c", "a+b", "x(y", "k[0]", "q|r", "-detail", "-k[0]"]) {
     const report = ["---", `${key}: original`, "---", "", "body", ""].join("\n");
 
     assert.deepEqual(
@@ -242,4 +242,119 @@ test("a fenced metadata sample is illustration, not a competing record", () => {
     status: "value",
     value: "pull_request",
   });
+});
+
+for (const body of [
+  "title: Quoted title\nrepository: example/quoted\n",
+  "```yaml\n---\ntitle: Quoted title\nrepository: example/quoted\n---\n```\n",
+  "   ~~~~yaml\n---\ntitle: Quoted title\n---\n   ~~~~~\n",
+  "````yaml\n```\n---\ntitle: Quoted title\n---\n````\n",
+  "```yaml\n~~~\n```not-a-closer\n---\ntitle: Quoted title\n---\n```\n",
+]) {
+  test(`header-owned metadata survives body quotes: ${JSON.stringify(body)}`, () => {
+    const report = `---\ntitle: "Original"\nrepository: openclaw/clawsweeper\n---\n\n## Summary\n\n${body}`;
+    assert.equal(metadata.frontMatterValue(report, "title"), "Original");
+    assert.equal(metadata.frontMatterValue(report, "repository"), "openclaw/clawsweeper");
+  });
+}
+
+for (const prefix of [
+  "",
+  "Prose first.\n",
+  "``yaml\n",
+  "```bad`info\n",
+  "    ```yaml\n",
+  "\t```yaml\n",
+]) {
+  test(`unfenced competing records fail closed after ${JSON.stringify(prefix)}`, () => {
+    const report = `---\ntitle: Original\ntype: pull_request\n---\n\n${prefix}---\ntitle: Competing\nrepository: other/record\nnumber: 999\n---\n`;
+    assert.deepEqual(metadata.frontMatterField(report, "title"), { status: "ambiguous" });
+    assert.equal(metadata.frontMatterValue(report, "type"), "pull_request");
+  });
+}
+
+test("missing body lookalikes remain ambiguous while genuinely absent fields permit legacy handling", () => {
+  for (const body of ["title: Quoted", "```yaml\ntitle: Quoted\n```", "---\ntitle: Quoted\n---"]) {
+    assert.deepEqual(metadata.frontMatterField(`---\nnumber: 321\n---\n\n${body}\n`, "title"), {
+      status: "ambiguous",
+    });
+  }
+  assert.deepEqual(metadata.frontMatterField("---\nnumber: 321\n---\n\nPlain body.\n", "title"), {
+    status: "absent",
+  });
+});
+
+test("raw empty fields never consume the next line and paired quotes retain their existing decoding", () => {
+  for (const value of ["", " ", "\t"]) {
+    const report = `---\ntitle:${value}\nrepository: openclaw/clawsweeper\n---\n`;
+    assert.deepEqual(metadata.frontMatterField(report, "title"), { status: "ambiguous" });
+    assert.equal(metadata.frontMatterValue(report, "repository"), "openclaw/clawsweeper");
+  }
+  for (const [raw, value] of [
+    ['""', ""],
+    ['"a\\nb"', "a\\nb"],
+    ['"unpaired', '"unpaired'],
+    ["'single'", "'single'"],
+  ]) {
+    assert.deepEqual(metadata.frontMatterField(`---\ntitle: ${raw}\n---\n`, "title"), {
+      status: "value",
+      value,
+    });
+  }
+});
+
+test("literal keys, CRLF, and nested multiline metadata retain top-level ownership", () => {
+  const report = [
+    "---",
+    "a.c: literal",
+    "title: Original",
+    "pr_surface_files: [",
+    '  {"path":"src/example.ts","additions":1,"deletions":0},',
+    '  {"path":"src/other.ts","additions":2,"deletions":1}',
+    "]",
+    "details: |",
+    "  title: Nested",
+    "  repository: nested/data",
+    "---",
+    "",
+    "## Summary",
+    "",
+    "a.c: Quoted",
+    "title: Quoted",
+  ].join("\r\n");
+  assert.equal(metadata.frontMatterValue(report, "title"), "Original");
+  assert.equal(metadata.frontMatterValue(report, "a.c"), "literal");
+  assert.deepEqual(metadata.frontMatterField(report, "repository"), { status: "absent" });
+  assert.deepEqual(metadata.frontMatterField(report, "aXc"), { status: "absent" });
+});
+
+test("cache-control lookalikes cannot disable unique header fields or supply missing cache fields", () => {
+  const report =
+    "---\nreview_cache_hit: false\nreview_policy: current\n---\n\n## Summary\n\nreview_cache_hit: true\nreview_policy: quoted\nreview_structural_fingerprint: body-only\n";
+  assert.equal(metadata.frontMatterValue(report, "review_cache_hit"), "false");
+  assert.equal(metadata.frontMatterValue(report, "review_policy"), "current");
+  assert.deepEqual(metadata.frontMatterField(report, "review_structural_fingerprint"), {
+    status: "ambiguous",
+  });
+});
+
+test("false fence closers cannot conceal a later unfenced competing record", () => {
+  const quoted = "```yaml\n    ```\n~~~\n```not-a-close\n---\ntitle: Quoted\n---\n```\n";
+  const header = "---\ntitle: Original\ntype: pull_request\n---\n\n";
+  assert.equal(metadata.frontMatterValue(header + quoted, "title"), "Original");
+  const competing = header + quoted + "\nProse.\n---\ntitle: Competing\n---\n";
+  assert.deepEqual(metadata.frontMatterField(competing, "title"), { status: "ambiguous" });
+  assert.equal(metadata.frontMatterValue(competing, "type"), "pull_request");
+});
+
+test("metadata fragments cannot be hidden by pseudo-fences or metadata comments", () => {
+  for (const fragment of [
+    "```bad`info\ntitle: Competing\n---\n",
+    "``yaml\ntitle: Competing\n---\n",
+    "---\n# Record metadata\ntitle: Competing\n---\n",
+  ]) {
+    assert.deepEqual(metadata.frontMatterField(`---\ntitle: Original\n---\n${fragment}`, "title"), {
+      status: "ambiguous",
+    });
+  }
 });

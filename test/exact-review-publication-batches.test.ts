@@ -1086,7 +1086,7 @@ test("batch claims retain lifecycle identity until canonical routing is durable"
       runAttempt: number;
       outcome: string;
     }>;
-    canonicalReceipts: Array<{ outcome: string }>;
+    canonicalReceipts: Array<{ outcome: string; receiptId: string }>;
     routerReceipts: Array<{ receiptId: string }>;
     terminalDisposition: { kind: string } | null;
   };
@@ -1116,6 +1116,7 @@ test("batch claims retain lifecycle identity until canonical routing is durable"
     ],
   );
   assert.equal(projection.canonicalReceipts[0]?.outcome, "accepted");
+  assert.match(projection.canonicalReceipts[0]?.receiptId ?? "", /^batch:/);
   assert.deepEqual(
     projection.routerReceipts.map((receipt) => receipt.receiptId),
     ["router-batch:9735:2:735"],
@@ -2829,6 +2830,266 @@ test("batch ask widens owner scanning without exceeding the configured lease siz
   }
 });
 
+test("aged superseded publication does not dispatch a fresh owner before its deadline", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let now = 1_850_000;
+  const agedEnqueuedAt = now;
+  Date.now = () => now;
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const checkedTargets: string[] = [];
+  const dispatches: Array<{ inputs: Record<string, string> }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
+      return new Response(JSON.stringify({ id: 999 }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/repos/fresh/repo/installation") {
+      return new Response(JSON.stringify({ id: 1001 }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      return new Response(JSON.stringify({ token: "dispatch-token" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/app/installations/1001/access_tokens") {
+      return new Response(JSON.stringify({ token: "fresh-token" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/repos/fresh/repo/issues/161") {
+      checkedTargets.push("fresh/repo#161");
+      return new Response(JSON.stringify({ state: "open" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/exact-review-batch-publish.yml/dispatches"
+    ) {
+      dispatches.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  try {
+    const storage = new TestStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+        EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "300000",
+        EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
+        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
+      },
+    );
+    await queue.fetch(publicationRequest("superseded-aged-1", 160, "1060", "stale/repo", 1));
+    const owned = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-superseded-aged",
+          lease_owner: "worker-1",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    assert.equal(owned.claimed, true, JSON.stringify(owned));
+
+    now += 1;
+    await queue.fetch(publicationRequest("superseded-aged-2", 160, "1061", "stale/repo", 2));
+    const removedNewer = await (
+      await queue.fetch(
+        batchRequest("/publications/supersede", {
+          items: [{ item_key: "stale/repo#160@publish:1061:1", revision: 1 }],
+        }),
+      )
+    ).json();
+    assert.equal(removedNewer.superseded, 1);
+
+    now = agedEnqueuedAt + 300_001;
+    const freshEnqueuedAt = now;
+    await queue.fetch(publicationRequest("valid-fresh-owner", 161, "1062", "fresh/repo"));
+    await queue.alarm();
+
+    assert.deepEqual(checkedTargets, []);
+    assert.equal(dispatches.length, 0);
+    assert.equal(storage.scheduledAlarm(), freshEnqueuedAt + 300_000);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+  }
+});
+
+test("oldest publication aging deadline drives the alarm and then its owner claim", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let now = 1_900_000;
+  const agingDeadline = now + 300_000;
+  Date.now = () => now;
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const dispatches: Array<{ inputs: Record<string, string> }> = [];
+  const checkedTargets: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
+      return new Response(JSON.stringify({ id: 999 }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/repos/aged/repo/installation") {
+      return new Response(JSON.stringify({ id: 1000 }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      return new Response(JSON.stringify({ token: "dispatch-token" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/app/installations/1000/access_tokens") {
+      return new Response(JSON.stringify({ token: "aged-token" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/repos/aged/repo/issues/140") {
+      checkedTargets.push("aged/repo#140");
+      return new Response(JSON.stringify({ state: "open" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/exact-review-batch-publish.yml/dispatches"
+    ) {
+      dispatches.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  try {
+    const storage = new TestStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "4",
+        EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "300000",
+        EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
+        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
+      },
+    );
+    await queue.fetch(publicationRequest("owner-aged", 140, "1040", "aged/repo"));
+    now += 120_000;
+    await queue.fetch(publicationRequest("owner-fresh", 141, "1041", "fresh/repo"));
+
+    await queue.alarm();
+
+    assert.deepEqual(checkedTargets, []);
+    assert.equal(dispatches.length, 0);
+    assert.equal(storage.scheduledAlarm(), agingDeadline);
+
+    now = agingDeadline - 1;
+    await queue.fetch(publicationRequest("owner-fresh-replenished", 142, "1042", "fresh/repo"));
+    now = agingDeadline;
+    await queue.alarm();
+
+    assert.deepEqual(checkedTargets, ["aged/repo#140"]);
+    assert.equal(dispatches.length, 1);
+    const dispatch = dispatches[0]!;
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-aged-owner",
+          lease_owner: "worker-1",
+          max_items: 50,
+          dispatch_id: dispatch.inputs.dispatch_id,
+          dispatched_at: dispatch.inputs.dispatched_at,
+        }),
+      )
+    ).json();
+    assert.equal(claim.claimed, true, JSON.stringify(claim));
+    assert.deepEqual(
+      claim.batch.items.map((item: { item_key: string }) => item.item_key),
+      ["aged/repo#140@publish:1040:1"],
+    );
+    if (process.env.CLAWSWEEPER_EVIDENCE_TRANSCRIPT === "1") {
+      console.log(
+        `PUBLICATION_OWNER_AGING_PROOF=${JSON.stringify({
+          early_alarm_at: new Date(agingDeadline).toISOString(),
+          alarm_dispatched: dispatches.length === 1,
+          terminal_preflight: checkedTargets,
+          claimed_items: claim.batch.items.map((item: { item_key: string }) => item.item_key),
+        })}`,
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+  }
+});
+
+test("fresh publication owner still wins when no owner's work has aged", async () => {
+  const originalNow = Date.now;
+  let now = 1_950_000;
+  Date.now = () => now;
+  try {
+    const queue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      {
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+        EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "300000",
+        EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
+        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
+      },
+    );
+    await queue.fetch(publicationRequest("owner-full-1", 150, "1050", "full/repo"));
+    now += 1;
+    await queue.fetch(publicationRequest("owner-full-2", 151, "1051", "full/repo"));
+    now += 60_001;
+    await queue.fetch(publicationRequest("owner-fresh-only", 152, "1052", "fresh/repo"));
+
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-fresh-owner",
+          lease_owner: "worker-1",
+          max_items: 50,
+        }),
+      )
+    ).json();
+
+    assert.equal(claim.claimed, true, JSON.stringify(claim));
+    assert.deepEqual(
+      claim.batch.items.map((item: { item_key: string }) => item.item_key),
+      ["fresh/repo#152@publish:1052:1"],
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("fresh publication admission reserves bounded service and preserves historical FIFO", async () => {
   const originalNow = Date.now;
   let now = 2_000_000;
@@ -2876,15 +3137,14 @@ test("fresh publication admission reserves bounded service and preserves histori
         }),
       )
     ).json();
-    const keys = new Set(claim.batch.items.map((item: { item_key: string }) => item.item_key));
     assert.deepEqual(
-      keys,
-      new Set([
+      claim.batch.items.map((item: { item_key: string }) => item.item_key),
+      [
         "openclaw/openclaw#10@publish:7010:1",
         "openclaw/openclaw#11@publish:7011:1",
         "openclaw/openclaw#12@publish:7012:1",
         "openclaw/openclaw#90@publish:7190:1",
-      ]),
+      ],
     );
   } finally {
     Date.now = originalNow;
@@ -3435,6 +3695,57 @@ test("retryable batch completion releases ownership and preserves queue retry po
   } finally {
     Date.now = originalNow;
   }
+});
+
+test("batch completion refreshes deterministic invalid artifacts", async () => {
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
+    },
+  );
+  await queue.fetch(publicationRequest("delivery-invalid-artifact", 127, "1027"));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-invalid-artifact",
+        lease_owner: "worker-1",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  const member = claim.batch.items[0];
+
+  const completion = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "refresh_required",
+            reason_code: "invalid_artifact",
+          },
+        ],
+      }),
+    )
+  ).json();
+
+  assert.equal(completion.accepted, 1, JSON.stringify(completion));
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: { sourceAction: string; publication?: unknown } }>;
+  };
+  assert.equal(state.items[member.item_key], undefined);
+  assert.equal(
+    state.items["openclaw/openclaw#127"].decision.sourceAction,
+    "artifact_retention_recovery",
+  );
+  assert.equal(state.items["openclaw/openclaw#127"].decision.publication, undefined);
 });
 
 test("credential circuits persist, preserve healthy owners, and defer unattempted members without retry charge", async () => {

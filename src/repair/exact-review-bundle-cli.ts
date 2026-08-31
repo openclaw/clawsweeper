@@ -15,12 +15,10 @@ const context = contextFromEnv(process.env);
 const bundleDir = requiredEnv(process.env, "EXACT_REVIEW_BUNDLE_DIR");
 if (command === "create") {
   const reviewPath = optionalEnv(process.env, "EXACT_REVIEW_REPORT_PATH");
-  const liveProofDir = optionalEnv(process.env, "EXACT_REVIEW_LIVE_PROOF_DIR");
   const actionLedgerRoot = optionalEnv(process.env, "EXACT_REVIEW_ACTION_LEDGER_ROOT");
   const manifest = createExactReviewBundle({
     bundleDir,
     ...(reviewPath ? { reviewPath } : {}),
-    ...(liveProofDir ? { liveProofDir } : {}),
     ...(actionLedgerRoot ? { actionLedgerRoot } : {}),
     createdAt: new Date().toISOString(),
     context,

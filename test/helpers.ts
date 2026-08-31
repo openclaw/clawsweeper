@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
 import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
@@ -165,6 +166,7 @@ export function closeDecision(overrides = {}) {
     liveProofPlan: {
       status: "not_applicable",
       surface: "none",
+      terminalCompletion: "not_applicable",
       reason: "This non-PR issue triage does not need live proof.",
       payoff: {
         kind: "static_text",
@@ -436,6 +438,20 @@ export function implementedCloseReport(overrides = {}) {
     fixed_at: "2026-05-01T02:00:00Z",
     ...overrides,
   })}\n\n## Evidence\n\n- **main fix:** git show confirms current main has the replacement implementation and it is not in the latest release yet\n  - file: [src/clawsweeper.ts](https://github.com/openclaw/clawsweeper/blob/1234567890abcdef1234567890abcdef12345678/src/clawsweeper.ts)\n  - sha: [1234567890ab](https://github.com/openclaw/clawsweeper/commit/1234567890abcdef1234567890abcdef12345678)\n\n## Close Comment\n\nClosing this because the requested behavior is already on main.\n`;
+}
+
+export function verifiedImplementationPullRequestReport(overrides = {}) {
+  const repository = String(
+    (overrides as { repository?: unknown }).repository ?? "openclaw/clawsweeper",
+  );
+  return implementedCloseReport({
+    fixed_pr_url: `https://github.com/${repository}/pull/900`,
+    fixed_pr_number: "900",
+    fixed_pr_merged_at: "2026-05-01T02:00:00Z",
+    fixed_pr_confidence: "high",
+    fixed_pr_source: "GitHub linked-issue current closing PR",
+    ...overrides,
+  });
 }
 
 export function stalePullRequestReport(overrides = {}) {
@@ -777,6 +793,7 @@ export function promotionGhMock(options: {
     html_url: "https://github.com/openclaw/openclaw/pull/" + number,
     state: "open",
     created_at: itemCreatedAt,
+    updated_at: liveUpdatedAt,
     mergeable,
     mergeable_state: mergeableState,
     changed_files: changedFiles,
@@ -971,6 +988,7 @@ export function withMockCodexProof(
   const originalCodexBin = process.env.CODEX_BIN;
   const binDir = join(root, "bin");
   mkdirSync(binDir, { recursive: true });
+  writeFakeScanner(binDir);
   const codexPath = join(binDir, "codex");
   const script =
     result.type === "decision"

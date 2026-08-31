@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative } from "node:path";
+import { parseReportFrontMatter } from "./report-front-matter.js";
 
 export type MaintainerDecisionKind =
   | "none"
@@ -394,18 +395,16 @@ function readFrontMatter(markdown: string): {
   values: Record<string, string>;
   ambiguous: boolean;
 } {
-  const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  const parsed = parseReportFrontMatter(markdown);
   const values: Record<string, string> = {};
-  for (const line of (match?.[1] ?? "").split(/\r?\n/)) {
-    const separator = line.indexOf(":");
-    if (separator <= 0) continue;
-    values[line.slice(0, separator).trim()] = unquote(line.slice(separator + 1).trim());
+  if (!parsed) return { values, ambiguous: false };
+  let ambiguous = parsed.ambiguous;
+  const competingKeys = new Set([...parsed.competingKeys].map((key) => key.trim()));
+  for (const [rawKey, entries] of parsed.fields) {
+    const key = rawKey.trim();
+    if (Object.hasOwn(values, key) || competingKeys.has(key)) ambiguous = true;
+    values[key] = unquote((entries[0] ?? "").trim());
   }
-  if (!match) return { values, ambiguous: false };
-  const remainder = markdown.slice(match[0].length);
-  const ambiguous = Object.keys(values).some((key) =>
-    new RegExp(`^${escapeRegExp(key)}:`, "m").test(remainder),
-  );
   return { values, ambiguous };
 }
 

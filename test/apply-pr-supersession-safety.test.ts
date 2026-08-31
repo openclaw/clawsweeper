@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -14,173 +14,111 @@ import {
   withMockGh,
 } from "./helpers.ts";
 
-test("apply-decisions keeps promoted PR close proposals open when coverage proof fails", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
-    const synced = reportWithSyncedReviewComment(
-      stalePullRequestReport({
-        number: 352,
-        title: "Old activity PR",
-        pr_rating_overall: "D",
-        pr_rating_proof: "D",
-        work_cluster_refs: JSON.stringify([
-          "Superseded by https://github.com/openclaw/openclaw/pull/400",
-        ]),
-      }),
-      352,
-      "none",
-    );
-    writeFileSync(join(itemsDir, "352.md"), synced.report, "utf8");
-
-    withMockGh(
-      root,
-      promotionGhMock({
-        number: 352,
-        title: "Old activity PR",
-        comment: synced.comment,
-        linkedPulls: {
-          400: {
-            number: 400,
-            title: "Canonical activity PR",
-            html_url: "https://github.com/openclaw/openclaw/pull/400",
-            state: "open",
-            merged_at: null,
-            mergeable_state: "clean",
-            labels: ["proof: sufficient"],
-          },
-        },
-      }),
-      () => {
-        withMockCodexProof(root, { type: "failure", message: "model unavailable" }, () => {
-          runApplyDecisionsForTest({
-            itemsDir,
-            closedDir,
-            plansDir,
-            reportPath,
-            extraArgs: [
-              "--target-repo",
-              "openclaw/openclaw",
-              "--dry-run",
-              "--apply-kind",
-              "all",
-              "--processed-limit",
-              "3",
-            ],
-          });
-        });
-      },
-    );
-
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
-      action: string;
-      reason: string;
-    }>;
-    assert.equal(
-      report.some((entry) => entry.action === "closed"),
-      false,
-    );
-    assert.match(
-      report.find((entry) => entry.action === "retry_pr_close_coverage_proof")?.reason ?? "",
-      /PR close coverage proof failed/,
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("apply-decisions promotes PRs superseded by merged linked pull requests without proof labels", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
-    const synced = reportWithSyncedReviewComment(
-      stalePullRequestReport({
-        number: 333,
-        title: "Old merged-replacement PR",
-        pr_rating_overall: "D",
-        pr_rating_proof: "D",
-        work_cluster_refs: JSON.stringify([
-          "Superseded by https://github.com/openclaw/openclaw/pull/400",
-        ]),
-      }),
-      333,
-      "none",
-    );
-    writeFileSync(join(itemsDir, "333.md"), synced.report, "utf8");
-
-    withMockGh(
-      root,
-      promotionGhMock({
-        number: 333,
-        title: "Old merged-replacement PR",
-        comment: synced.comment,
-        linkedPulls: {
-          400: {
-            number: 400,
-            title: "Merged canonical PR",
-            html_url: "https://github.com/openclaw/openclaw/pull/400",
-            state: "closed",
-            merged_at: "2026-05-02T00:00:00Z",
-            mergeable_state: "dirty",
-            labels: ["status: needs proof", "rating: unranked krab"],
-          },
-        },
-      }),
-      () => {
-        withMockCodexProof(
-          root,
-          {
-            type: "decision",
-            decision: "covered",
-            reason: "PR B is the merged canonical PR covering PR A.",
-          },
-          () => {
-            runApplyDecisionsForTest({
-              itemsDir,
-              closedDir,
-              plansDir,
-              reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--dry-run",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
-            });
-          },
+for (const syncCommentsOnly of [false, true]) {
+  for (const [name, mergedAt, reference, mergeableState] of [
+    ["open replacement", null, "[replacement PR]", "clean"],
+    ["behind replacement", null, "[replacement PR]", "behind"],
+    ["merged replacement", "2026-05-02T00:00:00Z", "[replacement PR]", "clean"],
+    ["related canonical work", "2026-05-02T00:00:00Z", "[Related canonical record work]", "clean"],
+  ] as const) {
+    test(`apply-decisions preserves keep-open review with ${name} (comments-only=${syncCommentsOnly})`, () => {
+      const root = mkdtempSync(tmpPrefix);
+      try {
+        const itemsDir = join(root, "items");
+        const closedDir = join(root, "closed");
+        const plansDir = join(root, "plans");
+        const reportPath = join(root, "apply-report.json");
+        const proofLogPath = join(root, "proof.log");
+        const closeLogPath = join(root, "close.log");
+        mkdirSync(itemsDir, { recursive: true });
+        const synced = reportWithSyncedReviewComment(
+          stalePullRequestReport({
+            number: 333,
+            title: "Keep this distinct change open",
+            pr_rating_overall: "D",
+            pr_rating_proof: "D",
+            pr_rating_patch: "D",
+            work_cluster_refs: JSON.stringify([
+              `${reference}(https://github.com/openclaw/openclaw/pull/400)`,
+            ]),
+          }).replaceAll("tier: F", "tier: D"),
+          333,
+          "none",
         );
-      },
-    );
-
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
-      action: string;
-      reason: string;
-    }>;
-    assert.equal(
-      report.some((entry) => entry.action === "closed"),
-      true,
-    );
-    assert.match(
-      report.find((entry) => entry.action === "closed")?.reason ?? "",
-      /duplicate or superseded/,
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+        const itemPath = join(itemsDir, "333.md");
+        writeFileSync(itemPath, synced.report, "utf8");
+        withMockGh(
+          root,
+          promotionGhMock({
+            number: 333,
+            title: "Keep this distinct change open",
+            comment: synced.comment,
+            closeCommandLogPath: closeLogPath,
+            linkedPulls: {
+              400: {
+                number: 400,
+                title: "Related work",
+                html_url: "https://github.com/openclaw/openclaw/pull/400",
+                state: mergedAt ? "closed" : "open",
+                merged_at: mergedAt,
+                mergeable_state: mergeableState,
+                labels: mergedAt ? [] : ["proof: sufficient"],
+              },
+            },
+          }),
+          () =>
+            withMockCodexProof(
+              root,
+              {
+                type: "failure",
+                message: "keep-open must not start close coverage proof",
+                invocationLogPath: proofLogPath,
+              },
+              () =>
+                runApplyDecisionsForTest({
+                  itemsDir,
+                  closedDir,
+                  plansDir,
+                  reportPath,
+                  extraArgs: [
+                    "--target-repo",
+                    "openclaw/openclaw",
+                    "--skip-dashboard",
+                    "--item-number",
+                    "333",
+                    "--apply-kind",
+                    "all",
+                    ...(syncCommentsOnly
+                      ? ["--sync-comments-only", "--comment-sync-min-age-days", "0"]
+                      : []),
+                  ],
+                }),
+            ),
+        );
+        const persisted = readFileSync(itemPath, "utf8");
+        assert.match(persisted, /^decision: keep_open$/m);
+        assert.match(persisted, /^action_taken: kept_open$/m);
+        assert.match(persisted, /^close_reason: none$/m);
+        assert.doesNotMatch(
+          persisted,
+          /Close this PR as superseded|I’m closing this PR as superseded/,
+        );
+        const commentPath = join(root, "comment-state-333.json");
+        const comment = existsSync(commentPath)
+          ? JSON.parse(readFileSync(commentPath, "utf8")).body
+          : synced.comment;
+        assert.doesNotMatch(
+          comment,
+          /Close this PR as superseded|I’m closing this PR as superseded/,
+        );
+        assert.equal(existsSync(proofLogPath), false);
+        assert.equal(existsSync(closeLogPath), false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   }
-});
+}
 
 test("apply-decisions does not promote PRs superseded by no-proof linked pull requests", () => {
   const root = mkdtempSync(tmpPrefix);
@@ -499,108 +437,6 @@ test("apply-decisions does not promote PRs superseded by section-only unsafe lin
       false,
     );
     assert.doesNotMatch(JSON.stringify(report), /proof should not run/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("apply-decisions promotes PRs when a proof-backed canonical PR is behind", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
-    const sourceReport = stalePullRequestReport({
-      number: 342,
-      title: "Old activity PR",
-      labels: JSON.stringify([]),
-      pr_rating_overall: "D",
-      pr_rating_proof: "D",
-      pr_rating_patch: "D",
-      work_cluster_refs: JSON.stringify([
-        "Superseded by https://github.com/openclaw/openclaw/pull/400",
-      ]),
-    })
-      .replace("Status: missing", "Status: sufficient")
-      .replace(
-        "Overall tier: F\nProof tier: F\nPatch tier: F",
-        "Overall tier: D\nProof tier: D\nPatch tier: D",
-      );
-    const synced = reportWithSyncedReviewComment(sourceReport, 342, "none");
-    writeFileSync(join(itemsDir, "342.md"), synced.report, "utf8");
-    writeFileSync(
-      join(itemsDir, "400.md"),
-      stalePullRequestReport({
-        number: 400,
-        title: "Canonical PR with stale proof report",
-        labels: JSON.stringify(["status: needs proof"]),
-        pr_rating_overall: "D",
-        pr_rating_proof: "D",
-        pr_rating_patch: "D",
-      }).replace(
-        "Overall tier: F\nProof tier: F\nPatch tier: F",
-        "Overall tier: D\nProof tier: D\nPatch tier: D",
-      ),
-      "utf8",
-    );
-
-    withMockGh(
-      root,
-      promotionGhMock({
-        number: 342,
-        title: "Old activity PR",
-        comment: synced.comment,
-        linkedPulls: {
-          400: {
-            number: 400,
-            title: "Canonical PR with live proof label",
-            html_url: "https://github.com/openclaw/openclaw/pull/400",
-            state: "open",
-            merged_at: null,
-            mergeable_state: "behind",
-            labels: ["proof: sufficient"],
-          },
-        },
-      }),
-      () => {
-        withMockCodexProof(
-          root,
-          {
-            type: "decision",
-            decision: "covered",
-            reason: "PR B is the live proof-backed canonical PR covering PR A.",
-          },
-          () => {
-            runApplyDecisionsForTest({
-              itemsDir,
-              closedDir,
-              plansDir,
-              reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--dry-run",
-                "--apply-kind",
-                "all",
-                "--item-numbers",
-                "342",
-                "--processed-limit",
-                "3",
-              ],
-            });
-          },
-        );
-      },
-    );
-
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{ action: string }>;
-    assert.equal(
-      report.some((entry) => entry.action === "closed"),
-      true,
-    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

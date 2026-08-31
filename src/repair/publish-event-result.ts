@@ -243,6 +243,27 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     );
   }
   const deferredCloseCoverageExpected = applyDisposition === "close_coverage_deferred";
+  if (applyDisposition === "superseded") {
+    console.log(
+      `Skipping ${options.targetRepo}#${options.itemNumber}: a verified newer durable review tuple is already live`,
+    );
+    writeSummary({
+      targetRepo: options.targetRepo,
+      itemNumber: options.itemNumber,
+      syncedCount: 0,
+      closedCount: 0,
+      missingCount: 0,
+      closeReasons: options.closeReasons,
+    });
+    if (options.batchMutationOutput) {
+      writeBatchMutationResult(options.batchMutationOutput, {
+        kind: "superseded",
+        disposition: { requeueLatestExpected: false },
+      });
+    }
+    writePublicationCompletionOutputs("superseded", "remote_newer_tuple");
+    return;
+  }
   if (activeReviewLeaseRetryAt !== null) {
     console.log(
       `Deferring ${options.targetRepo}#${options.itemNumber}: active review lease remains active until ${activeReviewLeaseRetryAt}`,
@@ -266,10 +287,11 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     }
   }
   if (
-    syncedCount + closedCount + missingCount === 0 &&
-    guardedOpenAction === null &&
-    !requeueLatestExpected &&
-    !deferredCloseCoverageExpected
+    (applyDisposition === "unproven" && guardedOpenAction === null && !requeueLatestExpected) ||
+    (syncedCount + closedCount + missingCount === 0 &&
+      guardedOpenAction === null &&
+      !requeueLatestExpected &&
+      !deferredCloseCoverageExpected)
   ) {
     const observed =
       exactActions

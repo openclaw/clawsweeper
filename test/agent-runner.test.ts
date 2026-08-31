@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 
 import {
   agentRunner,
@@ -26,6 +27,7 @@ test("agent runner preserves review-style Codex argument composition", () => {
   assert.deepEqual(
     codexAgentArgs({
       label: "review-42",
+      scanSource: { kind: "prompt" },
       prompt: "review",
       model: "gpt-public",
       reasoningEffort: "high",
@@ -87,6 +89,7 @@ test("agent runner preserves ordered repair-worker Codex arguments", () => {
   assert.deepEqual(
     codexAgentArgs({
       label: "repair",
+      scanSource: { kind: "prompt" },
       prompt: "repair",
       model: "gpt-public",
       reasoningEffort: "high",
@@ -99,11 +102,25 @@ test("agent runner preserves ordered repair-worker Codex arguments", () => {
   );
 });
 
-test("runAgentProcess delegates the default path to Codex with unchanged argv and stdin", () => {
+test("runAgentProcess delegates the default path to Codex with unchanged argv and stdin", (t) => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-agent-runner-test-"));
   const binary = join(root, "fake-codex");
   const argsPath = join(root, "args.json");
   const promptPath = join(root, "prompt.txt");
+  const diagnosticPromptPath = join(root, "diagnostic.prompt.md");
+  const schemaPath = join(root, "schema.json");
+  const prompt = "prompt over stdin\r\n🦞 exact bytes\n";
+  const schema = '{"type":"object","description":"exact schema bytes"}\n';
+  writeFileSync(schemaPath, schema);
+  writeFileSync(diagnosticPromptPath, "stale prompt", { mode: 0o644 });
+  useFakeScanner(
+    t,
+    `
+assert.equal(fs.existsSync(${JSON.stringify(diagnosticPromptPath)}), false);
+assert.equal(inputs.find(({name}) => name === 'prompt').bytes.toString(), ${JSON.stringify(prompt)});
+assert.equal(inputs.find(({name}) => name === 'schema').bytes.toString(), ${JSON.stringify(schema)});
+`,
+  );
   writeFileSync(
     binary,
     `#!/usr/bin/env node
@@ -117,7 +134,9 @@ process.stdout.write("ok");
   try {
     const result = runAgentProcess({
       label: "default-codex",
-      prompt: "prompt over stdin",
+      scanSource: { kind: "prompt" },
+      prompt,
+      diagnosticPromptPath,
       model: "internal",
       reasoningEffort: "low",
       cwd: root,
@@ -128,7 +147,7 @@ process.stdout.write("ok");
         AGENT_RUNNER_PROMPT_PATH: promptPath,
       },
       timeoutMs: 10_000,
-      codexExtraArgs: ["--sandbox", "read-only", "-"],
+      codexExtraArgs: ["--sandbox", "read-only", "--output-schema", schemaPath, "-"],
     });
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(readFileSync(argsPath, "utf8")), [
@@ -137,9 +156,14 @@ process.stdout.write("ok");
       'model_reasoning_effort="low"',
       "--sandbox",
       "read-only",
+      "--output-schema",
+      schemaPath,
       "-",
     ]);
-    assert.equal(readFileSync(promptPath, "utf8"), "prompt over stdin");
+    assert.equal(readFileSync(promptPath, "utf8"), prompt);
+    assert.equal(readFileSync(diagnosticPromptPath, "utf8"), prompt);
+    assert.equal(statSync(diagnosticPromptPath).mode & 0o777, 0o600);
+    assert.equal(readFileSync(schemaPath, "utf8"), schema);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -150,6 +174,7 @@ test("OpenClaw runner requires a provider/model override", () => {
     () =>
       runAgentProcess({
         label: "missing-model",
+        scanSource: { kind: "prompt" },
         prompt: "prompt",
         model: "internal",
         cwd: process.cwd(),
@@ -160,7 +185,8 @@ test("OpenClaw runner requires a provider/model override", () => {
   );
 });
 
-test("OpenClaw checkout inspection attests the exact tracked path without checkout writes", () => {
+test("OpenClaw checkout inspection attests the exact tracked path without checkout writes", (t) => {
+  useFakeScanner(t);
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-agent-runner-test-"));
   const binary = join(root, "fake-openclaw");
   execFileSync("git", ["init", "-q"], { cwd: root });
@@ -218,10 +244,17 @@ process.stdout.write(JSON.stringify({
   try {
     chmodSync(trackedPath, 0o444);
     chmodSync(root, 0o555);
-    const verified = runAgentCheckoutInspection({ cwd: root, env: baseEnv, timeoutMs: 10_000 });
+    const scan = { scanSource: { kind: "prompt" as const }, initialPrompt: "Review the checkout." };
+    const verified = runAgentCheckoutInspection({
+      ...scan,
+      cwd: root,
+      env: baseEnv,
+      timeoutMs: 10_000,
+    });
     assert.equal(verified.status, 0, verified.error?.message);
 
     const wrongPath = runAgentCheckoutInspection({
+      ...scan,
       cwd: root,
       env: { ...baseEnv, OPENCLAW_TEST_DIFFERENT_PATH: "1" },
       timeoutMs: 10_000,
@@ -230,6 +263,7 @@ process.stdout.write(JSON.stringify({
     assert.match(wrongPath.error?.message ?? "", /exact challenged path/);
 
     const missingReceipt = runAgentCheckoutInspection({
+      ...scan,
       cwd: root,
       env: { ...baseEnv, OPENCLAW_TEST_NO_RECEIPT: "1" },
       timeoutMs: 10_000,
@@ -243,10 +277,13 @@ process.stdout.write(JSON.stringify({
   }
 });
 
-test("OpenClaw checkout inspection reports challenge setup failures", () => {
+test("OpenClaw checkout inspection reports challenge setup failures", (t) => {
+  useFakeScanner(t);
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-agent-runner-missing-test-"));
   try {
     const result = runAgentCheckoutInspection({
+      scanSource: { kind: "prompt" },
+      initialPrompt: "Inspect checkout.",
       cwd: join(root, "missing"),
       env: {
         ...process.env,
@@ -262,7 +299,8 @@ test("OpenClaw checkout inspection reports challenge setup failures", () => {
   }
 });
 
-test("checkout inspection lists tracked files beyond the 1 MB spawn default", () => {
+test("checkout inspection lists tracked files beyond the 1 MB spawn default", (t) => {
+  useFakeScanner(t);
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-agent-runner-large-index-test-"));
   try {
     execFileSync("git", ["init", "-q"], { cwd: root });
@@ -284,6 +322,8 @@ test("checkout inspection lists tracked files beyond the 1 MB spawn default", ()
     assert.ok(listing.length > 1024 * 1024, `listing is ${listing.length} bytes`);
 
     const result = runAgentCheckoutInspection({
+      scanSource: { kind: "prompt" },
+      initialPrompt: "Inspect checkout.",
       cwd: root,
       env: {
         ...process.env,

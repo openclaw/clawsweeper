@@ -197,13 +197,13 @@ REVISION_STATUS="$revision_status" PATH_STATUS="$path_status" node -e '
     assert.ok(body.detail.length > 0);
   }
   assert.match(revision.detail, /invalid direct publication revision/);
-  assert.match(outsidePath.detail, /direct publication path is outside steipete-CodexBar#2797/);
+  assert.equal(outsidePath.detail, "direct publication path is outside its target tuple");
   assert.notEqual(revision.detail, outsidePath.detail);
   const lines = [
     "Durable Object initialized: exact_review_direct_publication_plans table present",
     "invalid revision: HTTP " + process.env.REVISION_STATUS + "; error=" + revision.error + "; fallback_required=" + revision.fallback_required + "; detail=" + revision.detail,
     "outside path: HTTP " + process.env.PATH_STATUS + "; error=" + outsidePath.error + "; fallback_required=" + outsidePath.fallback_required + "; detail=" + outsidePath.detail,
-    "distinct validation details: true",
+    "distinct bounded validation details: true",
   ];
   fs.writeFileSync(process.argv[3], lines.join("\n") + "\n");
 ' \

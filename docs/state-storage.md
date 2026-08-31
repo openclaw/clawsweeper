@@ -5,6 +5,19 @@ for review records, R2 is canonical for immutable action ledgers and published
 assets, and the `state` branch of `openclaw/clawsweeper-state` retains only the
 operational paths that have not migrated yet.
 
+Report readers share one anchored leading-front-matter parser. A unique header
+value remains authoritative when report prose or a valid fenced example quotes
+the same key. Duplicate header keys and competing unfenced metadata blocks
+(including fragments left by an injected terminator) make the affected fields
+ambiguous. A missing header field with a body lookalike stays ambiguous rather
+than enabling legacy close-promotion fallback. Indented nested data cannot
+override top-level fields. Decision packets reject document-wide structural
+ambiguity, including duplicate header keys, and remove stale packets using the
+real report path. Unrelated body-only keys do not create packet ambiguity.
+The advisory metadata-spoofing inventory remains deliberately
+broader than runtime authorization. No Bay schema or UI change is needed: the
+record shape and observer-only projection are unchanged.
+
 | Logical paths                                                                         | Canonical owner                               | Git state status                   |
 | ------------------------------------------------------------------------------------- | --------------------------------------------- | ---------------------------------- |
 | `records/**`                                                                          | Durable Object record store with R2 snapshots | Never checked out or written       |
@@ -19,7 +32,10 @@ operational paths that have not migrated yet.
 | `notifications/**`                                                                    | `clawsweeper-state` `state` branch            | Retained until its own migration   |
 | `apply-report.json`, `repair-apply-report.json`                                       | `clawsweeper-state` `state` branch            | Retained until their own migration |
 
-`setup-state` always hydrates records from the Worker and ledger/assets from R2.
+`setup-state` hydrates records from the Worker and, when requested, ledger/assets
+from R2. Exact and batch review publishers pass the reviewed item numbers to
+read only their open/closed reports, plans, and decision packets. Those focused
+reads do not depend on repository-wide snapshots or journal exports.
 Jobs that need operational Git state receive a sparse checkout containing only
 the retained paths above. Canonical-only lanes set `hydrate-git-state: "false"`
 and never mint or use a state-repository token.
@@ -42,6 +58,14 @@ identity per comment id, update timestamp, and body digest; a newer edit
 supersedes older pending work, while retries reuse the same receipt. Detailed
 terminal receipts use the same 30-day horizon as resolved dead letters, and the
 per-comment watermark remains after receipt compaction.
+
+Direct publication saves its lifecycle plan and receipt outcome on the claimed
+lease decision. Completion and terminal-run reconciliation use that saved
+authority for source-drift requeues, even if ingress has replaced the current
+decision. Recovery preserves the old target, fence, and revision's terminal
+fact; it does not manufacture router, acknowledgement, or review-result receipts.
+OpenClaw Bay needs no schema or UI change: its existing observer-only projection
+shows the requeue disposition without inventing review success or failure.
 
 Exact-review publication retries use R2 only as a cache in front of GitHub
 Artifacts. After a GitHub download passes the normal bundle validator, the

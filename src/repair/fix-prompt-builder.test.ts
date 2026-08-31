@@ -112,6 +112,27 @@ test("fix prompt makes Codex own the validation loop", () => {
   assert.match(prompt, /do not report validation as passed unless it passed after your last edit/);
 });
 
+test("fix prompt uses Telegram as the primary surface for applicable core behavior", () => {
+  const prompt = promptFor({
+    summary: "Repair a shared reply lifecycle regression.",
+    affected_surfaces: ["src/agents"],
+    likely_files: ["src/agents/reply-lifecycle.ts"],
+    changelog_required: false,
+  });
+
+  assert.match(
+    prompt,
+    /Live behavior: use Telegram as the primary proof surface whenever it can exercise the changed behavior/,
+  );
+  assert.match(prompt, /including shared core behavior/);
+  assert.match(
+    prompt,
+    /after base sync read and use `.agents\/skills\/telegram-e2e-userbot\/SKILL.md`/,
+  );
+  assert.match(prompt, /exercise the exact change/);
+  assert.match(prompt, /extend its harness or recipes when needed/);
+});
+
 test("automerge fix prompt makes Codex own PR repair, rebase, and CI discovery", () => {
   const prompt = buildFixPrompt({
     fixArtifact: {

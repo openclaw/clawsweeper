@@ -6,16 +6,20 @@ import {
   LIVE_VERIFICATION_MARKER,
   type REVIEW_SECTIONS,
 } from "../clawsweeper-policy.js";
-import type { CloseReason, MediaProofCommandRunner } from "../clawsweeper-types.js";
+import type { CloseReason, LiveProofPlan, MediaProofCommandRunner } from "../clawsweeper-types.js";
 import type { LiveProofPullRequestState } from "./execute.js";
 import {
+  MediaProbeExecutionError,
   parseLiveProofManifest,
   validateAttachedMedia,
   type LiveProofManifest,
 } from "./manifest.js";
 import {
   encodeLiveVerificationReportPayload,
+  parseAttachedLiveVerification,
   parseLiveVerificationResult,
+  validateLiveVerificationReportIdentity,
+  validateLiveVerificationReportPlan,
   type LiveVerificationResult,
 } from "./verification.js";
 
@@ -36,6 +40,7 @@ export interface LiveProofAttachDependencies {
   env?: NodeJS.ProcessEnv;
   runner?: MediaProofCommandRunner;
   fetchPullRequest: (repo: string, item: number) => Promise<LiveProofPullRequestState>;
+  reportLiveProofPlan: (markdown: string) => LiveProofPlan;
   frontMatterValue: (markdown: string, key: string) => string | undefined;
   sectionValue: (markdown: string, heading: string) => string;
   replaceSectionValue: (markdown: string, heading: string, value: string) => string;
@@ -43,10 +48,25 @@ export interface LiveProofAttachDependencies {
   renderReviewCommentFromReport: (markdown: string, closeReason: CloseReason) => string;
   markedReviewCommentBody: (number: number, body: string) => string;
   upsertReviewComment: (number: number, body: string) => Record<string, unknown> | undefined;
+  selectTarget?: (repo: string) => void;
   log?: (message: string) => void;
 }
 
 export type LiveProofAttachResult = "attached" | "detached" | "unchanged" | "skipped" | "dry-run";
+
+export class LiveProofArtifactValidationError extends Error {
+  override name = "LiveProofArtifactValidationError";
+}
+
+const DETERMINISTIC_INVALID_ARTIFACT_FS_CODES = new Set([
+  "ENOENT",
+  "ENOTDIR",
+  "EISDIR",
+  "ELOOP",
+  "EFBIG",
+  "EOVERFLOW",
+  "ERR_FS_FILE_TOO_LARGE",
+]);
 
 export async function attachLiveProof(
   options: LiveProofAttachOptions,
@@ -72,24 +92,29 @@ async function attachLiveProofInternal(
   const log = dependencies.log ?? console.log;
   const bundleDir = resolve(options.bundleDir);
   const recordPath = resolve(options.recordPath);
-  const verification = parseLiveVerificationResult(
-    JSON.parse(readFileSync(join(bundleDir, "live-verification.json"), "utf8")) as unknown,
-  );
-  const manifestPath = join(bundleDir, "live-proof-manifest.json");
-  const manifest = existsSync(manifestPath)
-    ? parseLiveProofManifest(JSON.parse(readFileSync(manifestPath, "utf8")) as unknown)
-    : undefined;
-  const mp4Path = join(bundleDir, "live-proof.mp4");
-  const posterPath = join(bundleDir, "poster.jpg");
-  if (manifest) {
-    validateManifestMatchesVerification(manifest, verification);
-    validateAttachedMedia({ manifest, mp4Path, posterPath, runner });
-  } else if (existsSync(mp4Path) || existsSync(posterPath)) {
-    throw new Error("live proof media is present without a manifest");
-  }
+  const { verification, report, manifest, mp4Path, posterPath } = validateArtifact(() => {
+    const verification = parseLiveVerificationResult(
+      JSON.parse(readFileSync(join(bundleDir, "live-verification.json"), "utf8")) as unknown,
+    );
+    const report = readFileSync(recordPath, "utf8");
+    validateReportIdentity(report, verification, dependencies.frontMatterValue);
+    validateLiveVerificationReportPlan(verification, dependencies.reportLiveProofPlan(report));
+    const manifestPath = join(bundleDir, "live-proof-manifest.json");
+    const manifest = existsSync(manifestPath)
+      ? parseLiveProofManifest(JSON.parse(readFileSync(manifestPath, "utf8")) as unknown)
+      : undefined;
+    const mp4Path = join(bundleDir, "live-proof.mp4");
+    const posterPath = join(bundleDir, "poster.jpg");
+    if (manifest) {
+      validateManifestMatchesVerification(manifest, verification);
+      validateAttachedMedia({ manifest, mp4Path, posterPath, runner });
+    } else if (existsSync(mp4Path) || existsSync(posterPath)) {
+      throw new Error("live proof media is present without a manifest");
+    }
+    return { verification, report, manifest, mp4Path, posterPath };
+  });
+  dependencies.selectTarget?.(verification.repo);
 
-  const report = readFileSync(recordPath, "utf8");
-  validateReportIdentity(report, verification, dependencies.frontMatterValue);
   const reportHead = dependencies.frontMatterValue(report, "pull_head_sha")?.toLowerCase() ?? "";
   let liveHead: string;
   if (reviewedHeadIsAuthoritative) {
@@ -172,6 +197,30 @@ async function attachLiveProofInternal(
   return "attached";
 }
 
+function validateArtifact<T>(operation: () => T): T {
+  try {
+    return operation();
+  } catch (error) {
+    if (error instanceof MediaProbeExecutionError || isRetryableArtifactFsError(error)) throw error;
+    throw new LiveProofArtifactValidationError(
+      error instanceof Error ? error.message : "live proof artifact validation failed",
+      { cause: error },
+    );
+  }
+}
+
+function isRetryableArtifactFsError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const { code, syscall } = error as NodeJS.ErrnoException;
+  const normalizedCode = typeof code === "string" ? code.trim() : "";
+  return (
+    normalizedCode.length > 0 &&
+    typeof syscall === "string" &&
+    syscall.trim().length > 0 &&
+    !DETERMINISTIC_INVALID_ARTIFACT_FS_CODES.has(normalizedCode)
+  );
+}
+
 export function detachLiveProof(
   options: LiveProofDetachOptions,
   dependencies: LiveProofAttachDependencies,
@@ -232,12 +281,21 @@ export function syncLiveProofComment(
   );
   const report = readFileSync(recordPath, "utf8");
   validateReportIdentity(report, verification, dependencies.frontMatterValue);
-  if (
-    !dependencies
-      .sectionValue(report, dependencies.reviewSections.liveProof)
-      .includes(LIVE_VERIFICATION_MARKER)
-  ) {
+  const plan = dependencies.reportLiveProofPlan(report);
+  validateLiveVerificationReportPlan(verification, plan);
+  const attached = parseAttachedLiveVerification(
+    dependencies.sectionValue(report, dependencies.reviewSections.liveProof),
+    reportIdentity(report, dependencies.frontMatterValue),
+    plan,
+  );
+  if (attached.status === "absent") {
     throw new Error("record is missing the attached Live Verification result");
+  }
+  if (
+    (attached.status !== "passed" && attached.status !== "failed") ||
+    JSON.stringify(attached.result) !== JSON.stringify(verification)
+  ) {
+    throw new Error("record Live Verification result does not match the proof bundle");
   }
   const closeReason = (dependencies.frontMatterValue(report, "close_reason") ??
     "none") as CloseReason;
@@ -283,18 +341,19 @@ function validateReportIdentity(
   result: Pick<LiveVerificationResult, "repo" | "item" | "head_sha">,
   frontMatterValue: (markdown: string, key: string) => string | undefined,
 ): void {
-  if (frontMatterValue(report, "repository")?.toLowerCase() !== result.repo.toLowerCase()) {
-    throw new Error("record repository does not match the live verification result");
-  }
-  if (Number(frontMatterValue(report, "number")) !== result.item) {
-    throw new Error("record item number does not match the live verification result");
-  }
-  if (frontMatterValue(report, "type") !== "pull_request") {
-    throw new Error("live proof can only be attached to a pull request report");
-  }
-  if (frontMatterValue(report, "pull_head_sha")?.toLowerCase() !== result.head_sha) {
-    throw new Error("record pull_head_sha does not match the live verification result");
-  }
+  validateLiveVerificationReportIdentity(result, reportIdentity(report, frontMatterValue));
+}
+
+function reportIdentity(
+  report: string,
+  frontMatterValue: (markdown: string, key: string) => string | undefined,
+) {
+  return {
+    repository: frontMatterValue(report, "repository"),
+    number: frontMatterValue(report, "number"),
+    type: frontMatterValue(report, "type"),
+    pullHeadSha: frontMatterValue(report, "pull_head_sha"),
+  };
 }
 
 function validateDetachedReportIdentity(

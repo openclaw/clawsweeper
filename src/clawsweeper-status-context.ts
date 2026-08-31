@@ -15,8 +15,212 @@ import {
   isRegressionAssessment,
   isPublicRegressionProvenance,
 } from "./clawsweeper-regression-provenance.js";
-import { isGitHubNotFoundError } from "./github-retry.js";
+import { GitHubRateLimitError, isGitHubNotFoundError } from "./github-retry.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
+
+export const MAX_IMPLEMENTATION_LINKED_ISSUE_REFERENCES = 5;
+
+export function linkedIssueNumbersForPullRequestBody(
+  body: string,
+  targetRepo: string,
+): readonly number[] | null {
+  let fence: { delimiter: "`" | "~"; length: number } | null = null;
+  let htmlComment = false;
+  const semanticLines: string[] = [];
+  for (const line of body.split(/\r?\n/)) {
+    // Indented Markdown is ambiguous without a full block parser. Ignore it
+    // rather than allowing a code example to produce closeout provenance.
+    if (!htmlComment && /^(?:\t| {4})/.test(line)) {
+      semanticLines.push("");
+      continue;
+    }
+    // Do not let HTML-comment examples inside code affect the surrounding
+    // Markdown's comment state. A fenced or inline-code line cannot be a
+    // semantic closing directive, so discard it before looking for comments.
+    if (!htmlComment) {
+      const fenceMatch = line.match(/^[\t ]*(`{3,}|~{3,})/);
+      if (fenceMatch) {
+        const marker = fenceMatch[1] ?? "";
+        const delimiter = marker[0] as "`" | "~" | undefined;
+        if (delimiter) {
+          if (!fence) {
+            fence = { delimiter, length: marker.length };
+          } else if (fence.delimiter === delimiter && marker.length >= fence.length) {
+            fence = null;
+          }
+        }
+        semanticLines.push("");
+        continue;
+      }
+      if (fence || /^[\t ]*>/.test(line) || line.includes("`")) {
+        semanticLines.push("");
+        continue;
+      }
+    }
+    let visible = "";
+    let remaining = line;
+    while (remaining) {
+      if (htmlComment) {
+        const end = remaining.indexOf("-->");
+        if (end < 0) break;
+        remaining = remaining.slice(end + 3);
+        htmlComment = false;
+        continue;
+      }
+      const start = remaining.indexOf("<!--");
+      if (start < 0) {
+        visible += remaining;
+        break;
+      }
+      visible += remaining.slice(0, start);
+      remaining = remaining.slice(start + 4);
+      htmlComment = true;
+    }
+    semanticLines.push(visible);
+  }
+  const semanticBody = semanticLines.join("\n");
+  const escapedRepo = escapeRegExp(targetRepo);
+  const closingVerb = "(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)";
+  const issueReference =
+    `(?:#(\\d+)\\b|(${escapedRepo})#(\\d+)\\b|https?:\\/\\/github\\.com\\/(${escapedRepo})\\/issues\\/(\\d+)\\b|` +
+    `([A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+)#(\\d+)\\b|https?:\\/\\/github\\.com\\/([A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+)\\/issues\\/(\\d+)\\b)`;
+  const closingDirective = new RegExp(
+    `^[\\t ]*(?:(?:[-*+][\\t ]+(?:\\[[ xX]\\][\\t ]+)?)|(?:\\d+[.)][\\t ]+))?` +
+      `${closingVerb}[\\t ]*(?::[\\t ]*)?(.*)$`,
+    "i",
+  );
+  const issueReferencePattern = new RegExp(issueReference, "gi");
+  const additionalReferenceSeparator = new RegExp(
+    `^[\\t ]*(?:,|\\band\\b)[\\t ]*(?:${closingVerb}[\\t ]*(?::[\\t ]*)?)?$`,
+    "i",
+  );
+  const issueNumbers = new Set<number>();
+  for (const line of semanticBody.split(/\r?\n/)) {
+    const directive = line.match(closingDirective);
+    if (!directive) continue;
+    const referenceTail = directive[1] ?? "";
+    const references = [...referenceTail.matchAll(issueReferencePattern)];
+    const firstReference = references[0];
+    if (!firstReference || firstReference.index !== 0) return null;
+    for (const [index, match] of references.entries()) {
+      if (index > 0) {
+        const previous = references[index - 1];
+        if (!previous || previous.index === undefined || match.index === undefined) return null;
+        const separator = referenceTail.slice(previous.index + previous[0].length, match.index);
+        if (!additionalReferenceSeparator.test(separator)) return null;
+      }
+      const linkedRepo = match[2] ?? match[4] ?? match[6] ?? match[8] ?? targetRepo;
+      if (linkedRepo.toLowerCase() !== targetRepo.toLowerCase()) return null;
+      const rawNumber = match[1] ?? match[3] ?? match[5] ?? match[7] ?? match[9];
+      const number = rawNumber ? Number(rawNumber) : NaN;
+      if (!Number.isSafeInteger(number) || number <= 0) return null;
+      issueNumbers.add(number);
+    }
+  }
+  return issueNumbers.size > 0 ? [...issueNumbers].sort((left, right) => left - right) : null;
+}
+
+export function linkedIssueNumbersForImplementationProvenance(
+  body: string,
+  targetRepo: string,
+): readonly number[] | null {
+  const issueNumbers = linkedIssueNumbersForPullRequestBody(body, targetRepo);
+  return issueNumbers && issueNumbers.length <= MAX_IMPLEMENTATION_LINKED_ISSUE_REFERENCES
+    ? issueNumbers
+    : null;
+}
+
+export function currentClosingPullRequestReferenceFromIssueTimeline(
+  result: unknown,
+): Record<string, unknown> | null {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) return null;
+  const data = (result as Record<string, unknown>).data;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
+  const repository = (data as Record<string, unknown>).repository;
+  if (typeof repository !== "object" || repository === null || Array.isArray(repository))
+    return null;
+  const issue = (repository as Record<string, unknown>).issue;
+  if (typeof issue !== "object" || issue === null || Array.isArray(issue)) return null;
+  const issueRecord = issue as Record<string, unknown>;
+  if (typeof issueRecord.state !== "string" || issueRecord.state.toUpperCase() !== "CLOSED") {
+    return null;
+  }
+  const timelineItems = issueRecord.timelineItems;
+  if (typeof timelineItems !== "object" || timelineItems === null || Array.isArray(timelineItems)) {
+    return null;
+  }
+  const nodes = (timelineItems as Record<string, unknown>).nodes;
+  if (!Array.isArray(nodes)) return null;
+  const lifecycleEvents = nodes
+    .filter(
+      (node): node is Record<string, unknown> =>
+        typeof node === "object" &&
+        node !== null &&
+        !Array.isArray(node) &&
+        ["ClosedEvent", "ReopenedEvent"].includes(
+          String((node as Record<string, unknown>).__typename),
+        ),
+    )
+    .map((node) => ({
+      node,
+      createdAt: typeof node.createdAt === "string" ? Date.parse(node.createdAt) : NaN,
+    }))
+    .filter((event) => Number.isFinite(event.createdAt));
+  if (lifecycleEvents.length === 0) return null;
+  const latestCreatedAt = Math.max(...lifecycleEvents.map((event) => event.createdAt));
+  const latestEvents = lifecycleEvents.filter((event) => event.createdAt === latestCreatedAt);
+  if (
+    latestEvents.length !== 1 ||
+    latestEvents[0]?.node.__typename !== "ClosedEvent" ||
+    typeof latestEvents[0].node.closer !== "object" ||
+    latestEvents[0].node.closer === null ||
+    Array.isArray(latestEvents[0].node.closer)
+  ) {
+    return null;
+  }
+  const closer = latestEvents[0].node.closer as Record<string, unknown>;
+  return closer.__typename === "PullRequest" ? closer : null;
+}
+
+function hasCurrentClosingIssueReference(
+  result: unknown,
+  targetRepo: string,
+  expectedIssueNumber: number,
+): boolean {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) return false;
+  const data = (result as Record<string, unknown>).data;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return false;
+  const repository = (data as Record<string, unknown>).repository;
+  if (typeof repository !== "object" || repository === null || Array.isArray(repository)) {
+    return false;
+  }
+  const pullRequest = (repository as Record<string, unknown>).pullRequest;
+  if (typeof pullRequest !== "object" || pullRequest === null || Array.isArray(pullRequest)) {
+    return false;
+  }
+  const closingReferences = (pullRequest as Record<string, unknown>).closingIssuesReferences;
+  if (
+    typeof closingReferences !== "object" ||
+    closingReferences === null ||
+    Array.isArray(closingReferences)
+  ) {
+    return false;
+  }
+  const nodes = (closingReferences as Record<string, unknown>).nodes;
+  if (!Array.isArray(nodes)) return false;
+  return nodes.some((node) => {
+    if (typeof node !== "object" || node === null || Array.isArray(node)) return false;
+    const issue = node as Record<string, unknown>;
+    if (issue.number !== expectedIssueNumber || issue.state !== "OPEN") return false;
+    const repository = issue.repository;
+    return (
+      typeof repository === "object" &&
+      repository !== null &&
+      !Array.isArray(repository) &&
+      (repository as Record<string, unknown>).nameWithOwner === targetRepo
+    );
+  });
+}
 
 interface StatusContextDependencies {
   targetProfile: () => RepositoryProfile;
@@ -30,6 +234,7 @@ interface StatusContextDependencies {
   sweepStatusPath: (profile?: RepositoryProfile) => string;
   markdownRepository: (markdown: string, file?: string) => string;
   ghJson: <T>(args: string[]) => T;
+  GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
   asRecord: (value: unknown) => Record<string, unknown>;
   frontMatterValue: (markdown: string, key: string) => string | undefined;
   stringOrUndefined: (value: unknown) => string | undefined;
@@ -49,6 +254,7 @@ export function createStatusContext({
   sweepStatusPath,
   markdownRepository,
   ghJson,
+  GitHubRuntimeBudgetError,
   asRecord,
   frontMatterValue,
   stringOrUndefined,
@@ -400,6 +606,265 @@ ${profileStatusEnd(profile)}`;
     return candidates[0] ?? null;
   }
 
+  function fixedPullRequestForLinkedIssue(issueNumber: number): FixedPullRequest | null {
+    try {
+      const [owner, name] = targetRepo().split("/");
+      if (!owner || !name) return null;
+      const timeline = ghJson<unknown>([
+        "api",
+        "graphql",
+        "-f",
+        "query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { state timelineItems(last: 100, itemTypes: [CLOSED_EVENT, REOPENED_EVENT]) { nodes { __typename ... on ClosedEvent { createdAt closer { __typename ... on PullRequest { number url mergedAt repository { nameWithOwner } } } } ... on ReopenedEvent { createdAt } } } } } }",
+        "-F",
+        `owner=${owner}`,
+        "-F",
+        `name=${name}`,
+        "-F",
+        `number=${issueNumber}`,
+      ]);
+      const reference = currentClosingPullRequestReferenceFromIssueTimeline(timeline);
+      if (!reference) return null;
+      const record = asRecord(reference);
+      const number = record.number;
+      const repository = asRecord(record.repository);
+      if (
+        typeof number !== "number" ||
+        !Number.isInteger(number) ||
+        repository.nameWithOwner !== targetRepo()
+      ) {
+        return null;
+      }
+      const defaultBranch = defaultBranchForFixedSha();
+      if (!defaultBranch) return null;
+      const pull = ghJson<unknown>([
+        "api",
+        `repos/${targetRepo()}/pulls/${number}`,
+        "--jq",
+        "{number,title,state,html_url,merged,merged_at,merge_commit_sha,head:{sha:.head.sha},base:{ref:.base.ref}}",
+      ]);
+      return pullTargetsBranch(pull, defaultBranch) &&
+        pullMergeCommitIsOnDefaultBranch(pull, defaultBranch)
+        ? fixedPullRequestFromUnknown(pull, "GitHub linked-issue current closing PR")
+        : null;
+    } catch (error) {
+      if (error instanceof GitHubRateLimitError || error instanceof GitHubRuntimeBudgetError) {
+        throw error;
+      }
+      // Missing or unreadable linkage must not turn into an inferred close.
+      return null;
+    }
+  }
+
+  function openLinkedIssueHasCanonicalClosingReference(
+    issueNumber: number,
+    expectedNumber: number,
+  ): boolean {
+    try {
+      const [owner, name] = targetRepo().split("/");
+      if (!owner || !name) return false;
+      const pullRequest = ghJson<unknown>([
+        "api",
+        "graphql",
+        "-f",
+        "query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { closingIssuesReferences(first: 100, excludeUserLinked: true) { nodes { number state repository { nameWithOwner } } } } } }",
+        "-F",
+        `owner=${owner}`,
+        "-F",
+        `name=${name}`,
+        "-F",
+        `number=${expectedNumber}`,
+      ]);
+      return hasCurrentClosingIssueReference(pullRequest, targetRepo(), issueNumber);
+    } catch (error) {
+      if (error instanceof GitHubRateLimitError || error instanceof GitHubRuntimeBudgetError) {
+        throw error;
+      }
+      return false;
+    }
+  }
+
+  function verifiedFixedPullRequestForNumber(
+    number: number,
+    source: string,
+  ): FixedPullRequest | null {
+    try {
+      const defaultBranch = defaultBranchForFixedSha();
+      if (!defaultBranch) return null;
+      const pull = ghJson<unknown>([
+        "api",
+        `repos/${targetRepo()}/pulls/${number}`,
+        "--jq",
+        "{number,title,state,html_url,merged,merged_at,merge_commit_sha,head:{sha:.head.sha},base:{ref:.base.ref}}",
+      ]);
+      return pullTargetsBranch(pull, defaultBranch) &&
+        pullMergeCommitIsOnDefaultBranch(pull, defaultBranch)
+        ? fixedPullRequestFromUnknown(pull, source)
+        : null;
+    } catch (error) {
+      if (error instanceof GitHubRateLimitError || error instanceof GitHubRuntimeBudgetError) {
+        throw error;
+      }
+      return null;
+    }
+  }
+
+  function fixedPullRequestFromReviewedImplementation(
+    item: Item,
+    decision: Decision,
+  ): FixedPullRequest | null {
+    const candidate = decision.fixedPullRequest;
+    if (
+      item.kind !== "pull_request" ||
+      decision.decision !== "close" ||
+      decision.confidence !== "high" ||
+      !candidate ||
+      candidate.confidence !== "high" ||
+      candidate.repo !== targetRepo() ||
+      candidate.number === item.number
+    ) {
+      return null;
+    }
+    // The review establishes semantic equivalence. GitHub supplies the separate,
+    // live check that the cited implementation is a merged PR still reachable
+    // from the repository's default branch. GitHub need not have auto-closed
+    // the linked issue for either fact to be true.
+    return verifiedFixedPullRequestForNumber(
+      candidate.number,
+      "GitHub reviewed implementation landing",
+    );
+  }
+
+  function fixedPullRequestFromReviewedFixedSha(
+    item: Item,
+    decision: Decision,
+  ): FixedPullRequest | null {
+    if (
+      item.kind !== "pull_request" ||
+      decision.decision !== "close" ||
+      decision.confidence !== "high"
+    ) {
+      return null;
+    }
+    const fixedSha = decision.fixedSha?.trim();
+    if (!fixedSha || fixedSha === "unknown") return null;
+    try {
+      const defaultBranch = defaultBranchForFixedSha();
+      if (!defaultBranch) return null;
+      const recentMatches = recentPullsForFixedSha()
+        .filter(
+          (pull) =>
+            pullFixedShaMatch(pull, fixedSha) !== null && pullTargetsBranch(pull, defaultBranch),
+        )
+        .map((pull) => asRecord(pull).number)
+        .filter((number): number is number => typeof number === "number" && number !== item.number);
+      const commitMatches =
+        recentMatches.length > 0
+          ? recentMatches
+          : ghJson<unknown[]>([
+              "api",
+              `repos/${targetRepo()}/commits/${fixedSha}/pulls`,
+              "-H",
+              "Accept: application/vnd.github+json",
+            ])
+              .filter((pull) => pullTargetsBranch(pull, defaultBranch))
+              .map((pull) => asRecord(pull).number)
+              .filter(
+                (number): number is number => typeof number === "number" && number !== item.number,
+              );
+      const uniqueNumbers = [...new Set(commitMatches)];
+      // A review may establish that a landed commit resolves the PR's linked
+      // issue even when the original merged PR omitted GitHub's closing syntax.
+      // Do not choose between multiple PRs that happen to contain that SHA.
+      return uniqueNumbers.length === 1
+        ? verifiedFixedPullRequestForNumber(
+            uniqueNumbers[0]!,
+            "GitHub reviewed implementation landing",
+          )
+        : null;
+    } catch (error) {
+      if (error instanceof GitHubRateLimitError || error instanceof GitHubRuntimeBudgetError) {
+        throw error;
+      }
+      return null;
+    }
+  }
+
+  function fixedPullRequestFromLinkedPullRequest(
+    item: Item,
+    context: ItemContext,
+    decision: Decision,
+  ): FixedPullRequest | null {
+    if (item.kind !== "pull_request") return null;
+    if (decision.decision !== "close" || decision.confidence !== "high") return null;
+    if (!["implemented_on_main", "mostly_implemented_on_main"].includes(decision.closeReason)) {
+      return null;
+    }
+    const body = asRecord(context.pullRequest).body;
+    if (typeof body !== "string") return null;
+    const issueNumbers = linkedIssueNumbersForImplementationProvenance(body, targetRepo());
+    if (!issueNumbers) return null;
+    let first: FixedPullRequest | null = null;
+    for (const issueNumber of issueNumbers) {
+      const pull = fixedPullRequestForLinkedIssue(issueNumber);
+      if (!pull || pull.number === item.number) return null;
+      if (first && pull.number !== first.number) return null;
+      first = pull;
+    }
+    return first;
+  }
+
+  function implementedOnMainPullRequestProvenanceApplyBlock(
+    markdown: string,
+    item: Item,
+    closeReason: Decision["closeReason"],
+    expectedLinkedIssueNumber?: number,
+  ): string | null {
+    if (
+      item.kind !== "pull_request" ||
+      !["implemented_on_main", "mostly_implemented_on_main"].includes(closeReason)
+    ) {
+      return null;
+    }
+    const expectedNumber = Number(frontMatterValue(markdown, "fixed_pr_number"));
+    if (!Number.isInteger(expectedNumber) || expectedNumber <= 0) {
+      return "implemented-on-main close requires current GitHub-verified fixing pull request provenance";
+    }
+    try {
+      const pull = asRecord(
+        ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${item.number}`, "--jq", "{body}"]),
+      );
+      if (typeof pull.body !== "string") {
+        return "implemented-on-main close could not revalidate the pull request's current issue linkage";
+      }
+      const issueNumbers = linkedIssueNumbersForImplementationProvenance(pull.body, targetRepo());
+      if (!issueNumbers) {
+        return "implemented-on-main close no longer has a current explicit same-repository issue link";
+      }
+      if (
+        expectedLinkedIssueNumber !== undefined &&
+        (issueNumbers.length !== 1 || issueNumbers[0] !== expectedLinkedIssueNumber)
+      ) {
+        return "implemented-on-main close current issue link no longer matches the leased paired issue";
+      }
+      for (const issueNumber of issueNumbers) {
+        if (!openLinkedIssueHasCanonicalClosingReference(issueNumber, expectedNumber)) {
+          return "implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance";
+        }
+      }
+      return verifiedFixedPullRequestForNumber(
+        expectedNumber,
+        "GitHub reviewed implementation landing",
+      )
+        ? null
+        : "implemented-on-main close no longer has current GitHub-verified fixing pull request provenance";
+    } catch (error) {
+      if (error instanceof GitHubRateLimitError || error instanceof GitHubRuntimeBudgetError) {
+        throw error;
+      }
+      return "implemented-on-main close could not revalidate current GitHub provenance";
+    }
+  }
+
   function fixedPullRequestFromCommitPulls(
     pulls: readonly unknown[],
     source: string,
@@ -506,6 +971,22 @@ ${profileStatusEnd(profile)}`;
     return asRecord(asRecord(value).base).ref === branch;
   }
 
+  function pullMergeCommitIsOnDefaultBranch(value: unknown, defaultBranch: string): boolean {
+    const mergeCommitSha = asRecord(value).merge_commit_sha;
+    if (typeof mergeCommitSha !== "string" || !mergeCommitSha.trim()) return false;
+    const comparison = asRecord(
+      ghJson<unknown>([
+        "api",
+        `repos/${targetRepo()}/compare/${encodeURIComponent(mergeCommitSha)}...${encodeURIComponent(defaultBranch)}`,
+        "--jq",
+        "{status}",
+      ]),
+    );
+    // In GitHub's compare direction, the default branch is ahead of (or identical to)
+    // the merge commit exactly when that commit is still reachable from the branch.
+    return comparison.status === "ahead" || comparison.status === "identical";
+  }
+
   function pullExplicitlyClosesIssue(value: unknown, issueNumber: number): boolean {
     const body = asRecord(value).body;
     if (typeof body !== "string" || !body.trim()) return false;
@@ -589,11 +1070,22 @@ ${profileStatusEnd(profile)}`;
     context: ItemContext,
     priorReviewMarkdown?: string,
   ): Decision {
+    if (
+      item.kind === "pull_request" &&
+      ["implemented_on_main", "mostly_implemented_on_main"].includes(decision.closeReason)
+    ) {
+      const fixedPullRequest =
+        fixedPullRequestFromReviewedImplementation(item, decision) ??
+        fixedPullRequestFromReviewedFixedSha(item, decision) ??
+        fixedPullRequestFromLinkedPullRequest(item, context, decision);
+      return { ...decision, fixedPullRequest };
+    }
     if (decision.fixedPullRequest) return decision;
     const fixedPullRequest =
       fixedPullRequestFromContext(item, context, decision) ??
       persistedFixedPullRequest(decision, priorReviewMarkdown) ??
-      (item.kind === "issue" ? fixedPullRequestFromCommitSha(decision, item.number) : null);
+      (item.kind === "issue" ? fixedPullRequestFromCommitSha(decision, item.number) : null) ??
+      fixedPullRequestFromLinkedPullRequest(item, context, decision);
     return fixedPullRequest ? { ...decision, fixedPullRequest } : decision;
   }
 
@@ -645,6 +1137,7 @@ ${profileStatusEnd(profile)}`;
     const rawSourceAuthor = frontMatterValue(markdown, "regression_provenance_source_author");
     const sourceAuthor = sourceCommitSha && rawSourceAuthor ? rawSourceAuthor : null;
     const provenance = {
+      verificationSource: frontMatterValue(markdown, "regression_provenance_verification_source"),
       repo: frontMatterValue(markdown, "regression_provenance_repo"),
       pullRequestNumber: rawNumber ? Number(rawNumber) : NaN,
       pullRequestUrl: frontMatterValue(markdown, "regression_provenance_pr_url"),
@@ -683,7 +1176,9 @@ ${profileStatusEnd(profile)}`;
 
   return {
     fixedPullRequestFromCommitPullsForTest,
+    linkedIssueNumbersForPullRequestBodyForTest: linkedIssueNumbersForPullRequestBody,
     attachFixedPullRequest,
+    implementedOnMainPullRequestProvenanceApplyBlock,
     currentWorkflowStatusBlock,
     displayTitle,
     fixedInReportText,

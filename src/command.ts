@@ -2,6 +2,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, normalize, resolve } from "node:path";
 
+export const SWEEPER_COMMAND_MAX_BUFFER_BYTES = 128 * 1024 * 1024;
+
 export type RunTextOptions = {
   cwd?: string | undefined;
   env?: NodeJS.ProcessEnv | undefined;

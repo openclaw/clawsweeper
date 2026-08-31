@@ -124,6 +124,12 @@ failure detail remain private. The store scan is bounded at 10,000 records and
 returns an unavailable projection rather than a partial result beyond that
 limit.
 
+Queue completion preserves a previously committed final lifecycle outcome when
+a later callback reports a different final result. Explicit requeue transitions
+remain available, and a requeued revision can acquire its next terminal outcome.
+The lifecycle store still rejects conflicting direct terminal writes; completion
+and acknowledgement drivers use the committed outcome as their authority.
+
 ## Completeness And Private State
 
 Combined queue/live activity is published only when the queue projection, the

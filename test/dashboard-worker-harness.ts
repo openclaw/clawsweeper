@@ -12,6 +12,7 @@ import { gunzipSync } from "node:zlib";
 import worker, {
   automaticIssueWork,
   ExactReviewQueue,
+  completedBayReviews,
   exactReviewEffectiveLeaseExpiresAt,
   exactReviewJitteredDelayMs,
   exactReviewPublicationCapacity,
@@ -36,6 +37,10 @@ import {
   triageRoutingGroupsForLabels,
 } from "../dashboard/triage-routing-groups.ts";
 import { ExactReviewPublicationBatchStore } from "../dashboard/exact-review-publication-batches.ts";
+import {
+  ExactReviewDirectPublicationStore,
+  validateDirectPublicationPlan,
+} from "../dashboard/exact-review-direct-publication.ts";
 import type { ExactReviewQueueItem } from "../dashboard/exact-review-queue.ts";
 import {
   commandAcknowledgementState,
@@ -93,8 +98,10 @@ class MemorySqlStorage {
   private readonly database = new DatabaseSync(":memory:");
   private failure: { pattern: RegExp; error: Error } | undefined;
   private bindingLimit = Number.POSITIVE_INFINITY;
+  private queryHistory: Array<{ query: string; bindings: unknown[] }> | null = null;
 
   exec(query: string, ...bindings: unknown[]) {
+    this.queryHistory?.push({ query, bindings });
     if (bindings.length > this.bindingLimit) {
       throw new Error(`test SQL binding limit exceeded: ${bindings.length}`);
     }
@@ -133,6 +140,17 @@ class MemorySqlStorage {
 
   setBindingLimit(limit: number) {
     this.bindingLimit = limit;
+  }
+
+  queriesMatching(pattern: RegExp) {
+    const flags = pattern.flags.replaceAll("g", "");
+    return (this.queryHistory ?? []).filter(({ query }) =>
+      new RegExp(pattern.source, flags).test(query),
+    );
+  }
+
+  resetQueryHistory() {
+    this.queryHistory = [];
   }
 
   hasNormalizedQueue() {
@@ -1022,6 +1040,7 @@ export {
   worker,
   automaticIssueWork,
   ExactReviewQueue,
+  completedBayReviews,
   exactReviewEffectiveLeaseExpiresAt,
   exactReviewJitteredDelayMs,
   exactReviewPublicationCapacity,
@@ -1043,6 +1062,8 @@ export {
   TRIAGE_ROUTING_GROUPS,
   triageRoutingGroupsForLabels,
   ExactReviewPublicationBatchStore,
+  ExactReviewDirectPublicationStore,
+  validateDirectPublicationPlan,
   commandAcknowledgementState,
   EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS,
   ExactReviewLifecycleProjectionStore,
