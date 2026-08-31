@@ -4648,8 +4648,13 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
       console.error("exact_review_queue_malformed_server_response");
       return json({ error: "exact_review_queue_unavailable" }, response.status);
     }
-  } catch {
-    console.error("exact_review_queue_request_failed");
+  } catch (error) {
+    const failure = objectValue(error);
+    console.error("exact_review_queue_request_failed", {
+      remote: failure.remote === true,
+      retryable: failure.retryable === true,
+      overloaded: failure.overloaded === true,
+    });
     return json({ error: "exact_review_queue_unavailable" }, 500);
   }
 }

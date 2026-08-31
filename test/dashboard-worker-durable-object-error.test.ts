@@ -46,7 +46,7 @@ test("exact-review Durable Object rejects storage failures directly", async () =
   assert.equal((await queue.fetch(publicationsListRequest(100))).status, 200);
 });
 
-test("exact-review Worker projects rejected Durable Object calls to a fixed public error", async () => {
+test("exact-review Worker retains only platform flags from rejected Durable Object calls", async () => {
   const internalStack = [
     "Error: database pool internals",
     "at readQueue (file:///srv/clawsweeper-private/exact-review-queue.ts:91:4)",
@@ -57,19 +57,40 @@ test("exact-review Worker projects rejected Durable Object calls to a fixed publ
   const errors: unknown[][] = [];
   console.error = (...values: unknown[]) => errors.push(values);
   try {
-    const response = await worker.fetch(signedPublicationsListRequest(requestBody, secret), {
-      CLAWSWEEPER_WEBHOOK_SECRET: secret,
-      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
-        async fetch() {
-          throw internalStack;
-        },
-      }),
-    });
+    for (const [failure, flags] of [
+      [internalStack, { remote: false, retryable: false, overloaded: false }],
+      [
+        Object.assign(new Error(internalStack), { remote: true }),
+        { remote: true, retryable: false, overloaded: false },
+      ],
+      [
+        Object.assign(new Error(internalStack), { retryable: true }),
+        { remote: false, retryable: true, overloaded: false },
+      ],
+      [
+        Object.assign(new Error(internalStack), { retryable: true, overloaded: true }),
+        { remote: false, retryable: true, overloaded: true },
+      ],
+      [
+        { message: internalStack, remote: "true", retryable: 1, overloaded: internalStack },
+        { remote: false, retryable: false, overloaded: false },
+      ],
+    ] as const) {
+      errors.length = 0;
+      const response = await worker.fetch(signedPublicationsListRequest(requestBody, secret), {
+        CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+          async fetch() {
+            throw failure;
+          },
+        }),
+      });
 
-    assert.equal(response.status, 500);
-    assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
-    assert.deepEqual(await response.json(), { error: "exact_review_queue_unavailable" });
-    assert.deepEqual(errors, [["exact_review_queue_request_failed"]]);
+      assert.equal(response.status, 500);
+      assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
+      assert.deepEqual(await response.json(), { error: "exact_review_queue_unavailable" });
+      assert.deepEqual(errors, [["exact_review_queue_request_failed", flags]]);
+    }
   } finally {
     console.error = originalError;
   }

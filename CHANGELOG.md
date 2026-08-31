@@ -19,6 +19,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Retain only Cloudflare failure flags in queue transport logs so backend faults can be diagnosed without exposing exception details.
+
 - Hydrate review blobs from cached PR snapshots that store an absent previous filename as `null`, preventing repeat reviews from refusing otherwise available source.
 
 - Preserve Codex keep-open verdicts during publication instead of treating related PR links as independent supersession decisions.
