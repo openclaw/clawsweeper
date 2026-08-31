@@ -750,14 +750,16 @@ function rethrowQueueFailure(
           stack,
         )
       : null;
+  const traceId = request
+    ? exactReviewQueueTraceId(request.headers.get(EXACT_REVIEW_QUEUE_TRACE_HEADER))
+    : null;
+  const endpoint = request
+    ? exactReviewQueueEndpointTemplate(new URL(request.url).pathname)
+    : "initialization";
   console.error("exact_review_queue_handler_failed", {
     phase,
-    trace_id: request
-      ? exactReviewQueueTraceId(request.headers.get(EXACT_REVIEW_QUEUE_TRACE_HEADER))
-      : null,
-    endpoint: request
-      ? exactReviewQueueEndpointTemplate(new URL(request.url).pathname)
-      : "initialization",
+    trace_id: traceId,
+    endpoint,
     failure_category:
       error instanceof RecordExportConsistencyError
         ? "record_export_consistency"
