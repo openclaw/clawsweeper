@@ -1975,7 +1975,7 @@ const STATUS_TEXT_VALUES = new Set([
   "fresh", "miss"
 ]);
 const STATUS_TIME_FIELDS = new Set([
-  "at", "completed_at", "generated_at", "observed_at", "oldest_at", "oldest_pending_at",
+  "at", "client_checked_at", "completed_at", "generated_at", "observed_at", "oldest_at", "oldest_pending_at",
   "oldest_ready_at", "oldest_backoff_at", "oldest_dispatching_at", "oldest_leased_at",
   "next_attempt_at", "next_wake_at", "last_tide_at", "received_at", "since", "started_at",
   "updated_at", "washed_at"
@@ -2201,7 +2201,62 @@ function dashboardStatusSnapshot(value) {
     dashboard_health: source.dashboard_health || { conclusion: "needs_attention", severity: "amber" },
     exact_review_queue: exactReviewQueue,
     recent_durable_publication_events: source.recent_durable_publication_events ?? null,
-    freshness: source.freshness || { state: "unavailable", cache_state: "miss", generated_at: null, age_ms: null, maximum_age_ms: 60000 }
+    freshness: dashboardStatusFreshness(source)
+  };
+}
+function unavailableDashboardStatusFreshness(cacheState = "miss", maximumAgeMs = 60000) {
+  return { state: "unavailable", cache_state: cacheState, generated_at: null, age_ms: null, maximum_age_ms: maximumAgeMs };
+}
+function dashboardStatusFreshness(source) {
+  const freshness = source?.freshness && typeof source.freshness === "object" && !Array.isArray(source.freshness)
+    ? source.freshness
+    : null;
+  const cacheState = freshness?.cache_state === "fresh" || freshness?.cache_state === "stale"
+    ? freshness.cache_state
+    : "miss";
+  const maximumAgeMs = Number.isSafeInteger(freshness?.maximum_age_ms) &&
+    freshness.maximum_age_ms > 0 && freshness.maximum_age_ms <= 900000
+      ? freshness.maximum_age_ms
+      : 60000;
+  if (!freshness) return unavailableDashboardStatusFreshness(cacheState, maximumAgeMs);
+  if (
+    freshness.state === "unavailable" && freshness.generated_at === null &&
+    freshness.age_ms === null
+  ) return unavailableDashboardStatusFreshness(cacheState, maximumAgeMs);
+  const generatedAt = dashboardObservabilityTimestamp(freshness.generated_at);
+  const generatedMs = generatedAt ? Date.parse(generatedAt) : NaN;
+  const clientCheckedAt = freshness.client_checked_at === undefined
+    ? null
+    : dashboardObservabilityTimestamp(freshness.client_checked_at);
+  const clientCheckedMs = clientCheckedAt ? Date.parse(clientCheckedAt) : null;
+  const now = Date.now();
+  if (
+    !generatedAt || generatedAt !== source.generated_at || !Number.isFinite(now) ||
+    generatedMs > now + 60000 ||
+    (freshness.client_checked_at !== undefined && !clientCheckedAt) ||
+    (clientCheckedMs !== null && clientCheckedMs > now + 60000) ||
+    !Number.isSafeInteger(freshness.age_ms) || freshness.age_ms < 0 ||
+    (freshness.state !== "fresh" && freshness.state !== "stale")
+  ) return unavailableDashboardStatusFreshness(cacheState, maximumAgeMs);
+  const elapsedMs = clientCheckedMs === null
+    ? Math.max(0, now - generatedMs)
+    : Math.max(0, now - clientCheckedMs);
+  const ageMs = clientCheckedMs === null
+    ? Math.max(freshness.age_ms, elapsedMs)
+    : freshness.age_ms + elapsedMs;
+  if (!Number.isSafeInteger(ageMs) || ageMs > 1000000000000) {
+    return unavailableDashboardStatusFreshness(cacheState, maximumAgeMs);
+  }
+  const state = freshness.state === "stale" || cacheState === "stale" || ageMs > maximumAgeMs
+    ? "stale"
+    : "fresh";
+  return {
+    state,
+    cache_state: cacheState,
+    generated_at: generatedAt,
+    age_ms: ageMs,
+    maximum_age_ms: maximumAgeMs,
+    client_checked_at: new Date(now).toISOString()
   };
 }
 let lastData = null;
@@ -2771,16 +2826,27 @@ function unavailableDashboardHealthHistoryContract() {
     freshness: { state: "unavailable", latest_sample_at: null, age_ms: null, maximum_age_ms: 720000 }
   };
 }
+function exactUnavailableDashboardHealthHistoryContract(source) {
+  if (source.generated_at !== null) return null;
+  const expected = unavailableDashboardHealthHistoryContract();
+  const coverage = dashboardObservabilityObject(source.coverage);
+  const freshness = dashboardObservabilityObject(source.freshness);
+  if (!coverage || !freshness) return null;
+  const coverageFields = Object.keys(expected.coverage);
+  const freshnessFields = Object.keys(expected.freshness);
+  if (
+    Object.keys(coverage).length !== coverageFields.length ||
+    Object.keys(freshness).length !== freshnessFields.length ||
+    coverageFields.some((field) => coverage[field] !== expected.coverage[field]) ||
+    freshnessFields.some((field) => freshness[field] !== expected.freshness[field])
+  ) return null;
+  return expected;
+}
 function dashboardHealthHistoryContract(source, rangeMs) {
   const coverage = dashboardObservabilityObject(source.coverage);
   const freshness = dashboardObservabilityObject(source.freshness);
   const generatedAt = dashboardObservabilityTimestamp(source.generated_at);
-  if (
-    source.generated_at === null &&
-    coverage?.state === "unavailable" &&
-    freshness?.state === "unavailable"
-  )
-    return unavailableDashboardHealthHistoryContract();
+  if (source.generated_at === null) return exactUnavailableDashboardHealthHistoryContract(source);
   if (!coverage && !freshness && !generatedAt) return unavailableDashboardHealthHistoryContract();
   const expected = dashboardObservabilityCount(coverage?.expected_slots);
   const observed = dashboardObservabilityCount(coverage?.observed_slots);
@@ -2873,7 +2939,7 @@ function dashboardHealthHistorySnapshot(value, requestedRange) {
     samples.push(sample);
   }
   const contract = dashboardHealthHistoryContract(source, rangeMs);
-  if (!contract) return null;
+  if (!contract || (source.generated_at === null && samples.length > 0)) return null;
   return {
     schema_version: 1,
     range: requestedRange,

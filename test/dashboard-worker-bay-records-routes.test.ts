@@ -6429,10 +6429,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.equal(bayHistoryRuntime.bayHandoffHistory()[0].dispatching, 1);
   assert.equal(bayHistoryRuntime.bayStateWriterHistory()[0].pending, 2);
   const projectedBayHistory = bayHistoryRuntime.bayHealthHistorySnapshot(validBayHistory, "6h");
-  assert.equal(
-    JSON.stringify(projectedBayHistory),
-    JSON.stringify(bayHistoryRuntime.bayHealthHistorySnapshot(projectedBayHistory, "6h")),
-  );
+  assert.equal(bayHistoryRuntime.bayHealthHistorySnapshot(projectedBayHistory, "6h"), null);
 
   const bayMarker = "synthetic-bay-history-marker";
   const bayMarkerUrl =
@@ -6454,6 +6451,36 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     generated_at: new Date(projectedBayGeneratedAt).toISOString(),
     ...publicHealthHistoryContract("6h", validBayHistory.samples, projectedBayGeneratedAt),
   };
+  const unavailableBayHistory = {
+    ...validBayHistory,
+    generated_at: null,
+    coverage: {
+      state: "unavailable",
+      expected_slots: null,
+      observed_slots: null,
+      usable_slots: null,
+      failed_slots: null,
+      missing_slots: null,
+      coverage_percent: null,
+      largest_gap_slots: null,
+      largest_gap_ms: null,
+      window_started_at: null,
+      window_ended_at: null,
+    },
+    freshness: {
+      state: "unavailable",
+      latest_sample_at: null,
+      age_ms: null,
+      maximum_age_ms: 720_000,
+    },
+    samples: [],
+  };
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(bayHistoryRuntime.bayHealthHistorySnapshot(unavailableBayHistory, "6h")),
+    ),
+    unavailableBayHistory,
+  );
   for (const malformed of [
     { samples: validBayHistory.samples },
     { ...validBayHistory, range: bayMarker },
@@ -6493,6 +6520,18 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
       freshness: {
         ...contractedBayHistory.freshness,
         age_ms: Number(contractedBayHistory.freshness.age_ms) + 1,
+      },
+    },
+    { ...unavailableBayHistory, samples: validBayHistory.samples },
+    {
+      ...unavailableBayHistory,
+      coverage: { ...unavailableBayHistory.coverage, observed_slots: 0 },
+    },
+    {
+      ...unavailableBayHistory,
+      freshness: {
+        ...unavailableBayHistory.freshness,
+        latest_sample_at: new Date(bayAt).toISOString(),
       },
     },
   ]) {

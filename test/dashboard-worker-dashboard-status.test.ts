@@ -806,6 +806,13 @@ test("dashboard sanitizes stored status immediately and never renders transport 
     bay: {},
     recent: {},
     diagnostics: { errors: [marker], error_count: 0 },
+    freshness: {
+      state: "fresh",
+      cache_state: "fresh",
+      generated_at: "2026-08-15T12:00:00.000Z",
+      age_ms: 0,
+      maximum_age_ms: 60_000,
+    },
     exact_review_queue: {
       scheduled_feed: { target_rate_per_hour: 300, token_balance: marker },
     },
@@ -818,6 +825,11 @@ test("dashboard sanitizes stored status immediately and never renders transport 
   assert.deepEqual(JSON.parse(withCache.writes[0]).exact_review_queue.scheduled_feed, {
     target_rate_per_hour: 300,
   });
+  const persisted = JSON.parse(withCache.writes[0]);
+  assert.equal(persisted.freshness.state, "stale");
+  assert.ok(persisted.freshness.age_ms > persisted.freshness.maximum_age_ms);
+  assert.match(String(withCache.elements.get("updated")?.textContent), /stale snapshot/);
+  assert.equal(typeof persisted.freshness.client_checked_at, "string");
   assert.doesNotMatch(JSON.stringify([...withCache.elements.values()]), new RegExp(marker, "i"));
 
   const withoutCache = await run(null);
@@ -894,6 +906,22 @@ test("dashboard reprojects separately fetched public observability before render
   });
   new Script(script).runInContext(context);
   await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const clientNow = Date.now();
+  const clockSkewedStatus = context.dashboardStatusSnapshot({
+    schema_version: 1,
+    generated_at: new Date(clientNow + 30_000).toISOString(),
+    freshness: {
+      state: "fresh",
+      cache_state: "fresh",
+      generated_at: new Date(clientNow + 30_000).toISOString(),
+      age_ms: 0,
+      maximum_age_ms: 60_000,
+    },
+  });
+  assert.equal(clockSkewedStatus.freshness.state, "fresh");
+  assert.equal(typeof clockSkewedStatus.freshness.client_checked_at, "string");
+  assert.equal(context.dashboardStatusSnapshot(clockSkewedStatus).freshness.state, "fresh");
 
   const validApply = dashboardApplyObservabilityFixture();
   nextPayload = validApply;
@@ -1014,6 +1042,34 @@ test("dashboard reprojects separately fetched public observability before render
     generated_at: new Date(projectedHistoryGeneratedAt).toISOString(),
     ...publicHealthHistoryContract("6h", validHistory.samples, projectedHistoryGeneratedAt),
   };
+  const unavailableHistory = {
+    ...validHistory,
+    generated_at: null,
+    coverage: {
+      state: "unavailable",
+      expected_slots: null,
+      observed_slots: null,
+      usable_slots: null,
+      failed_slots: null,
+      missing_slots: null,
+      coverage_percent: null,
+      largest_gap_slots: null,
+      largest_gap_ms: null,
+      window_started_at: null,
+      window_ended_at: null,
+    },
+    freshness: {
+      state: "unavailable",
+      latest_sample_at: null,
+      age_ms: null,
+      maximum_age_ms: 720_000,
+    },
+    samples: [],
+  };
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.dashboardHealthHistorySnapshot(unavailableHistory, "6h"))),
+    unavailableHistory,
+  );
   for (const malformed of [
     { samples: validHistory.samples },
     { ...validHistory, range: marker },
@@ -1054,6 +1110,15 @@ test("dashboard reprojects separately fetched public observability before render
         ...projectedHistory.freshness,
         age_ms: Number(projectedHistory.freshness.age_ms) + 1,
       },
+    },
+    { ...unavailableHistory, samples: validHistory.samples },
+    {
+      ...unavailableHistory,
+      coverage: { ...unavailableHistory.coverage, expected_slots: 0 },
+    },
+    {
+      ...unavailableHistory,
+      freshness: { ...unavailableHistory.freshness, age_ms: 0 },
     },
   ]) {
     assert.equal(context.dashboardHealthHistorySnapshot(malformed, "6h"), null);
