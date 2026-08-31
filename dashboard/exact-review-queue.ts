@@ -28,6 +28,7 @@ import {
   EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
   REVIEW_COVERAGE_INVENTORY_KEY,
   ExactReviewDirectPublicationStore,
+  RecordExportConsistencyError,
   directPublicationRejectionDetail,
   normalizeReviewCoverageInventory,
   sha256Hex,
@@ -43,6 +44,11 @@ import {
   type RecordSection,
   type ReviewCoverageSummary,
 } from "./exact-review-direct-publication.ts";
+import {
+  EXACT_REVIEW_QUEUE_TRACE_HEADER,
+  exactReviewQueueEndpointTemplate,
+  exactReviewQueueTraceId,
+} from "./exact-review-queue-observability.ts";
 import {
   REVIEW_OBSERVABILITY_RANGES,
   summarizeReviewObservability,
@@ -731,7 +737,11 @@ function exactReviewPublicBayRepositories(env): Set<string> {
   return new Set(repositories);
 }
 
-function rethrowQueueFailure(error: unknown, phase: "initialize" | "fetch"): never {
+function rethrowQueueFailure(
+  error: unknown,
+  phase: "initialize" | "fetch",
+  request?: Request,
+): never {
   const stack = objectValue(error).stack;
   // Remote error text may contain private data; retain only deployed source coordinates.
   const frame =
@@ -742,6 +752,16 @@ function rethrowQueueFailure(error: unknown, phase: "initialize" | "fetch"): nev
       : null;
   console.error("exact_review_queue_handler_failed", {
     phase,
+    trace_id: request
+      ? exactReviewQueueTraceId(request.headers.get(EXACT_REVIEW_QUEUE_TRACE_HEADER))
+      : null,
+    endpoint: request
+      ? exactReviewQueueEndpointTemplate(new URL(request.url).pathname)
+      : "initialization",
+    failure_category:
+      error instanceof RecordExportConsistencyError
+        ? "record_export_consistency"
+        : "handler_exception",
     location: frame ? [Number(frame[1]), Number(frame[2])] : null,
   });
   throw error;
@@ -828,7 +848,7 @@ export class ExactReviewQueue {
     try {
       return await this.handleFetch(request);
     } catch (error) {
-      rethrowQueueFailure(error, "fetch");
+      rethrowQueueFailure(error, "fetch", request);
     }
   }
 

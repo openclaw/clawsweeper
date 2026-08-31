@@ -27,6 +27,7 @@ export const DASHBOARD_STRICT_BASELINE_FILES = Object.freeze([
   "dashboard/exact-review-lifecycle.ts",
   "dashboard/exact-review-publication-batches.ts",
   "dashboard/exact-review-publication-retry.ts",
+  "dashboard/exact-review-queue-observability.ts",
   "dashboard/exact-review-queue-shared.ts",
   "dashboard/exact-review-read-model.ts",
   "dashboard/github-api.ts",

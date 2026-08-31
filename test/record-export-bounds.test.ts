@@ -559,12 +559,123 @@ test("signed record export hides missing and invalid logical byte metadata", asy
     assert.equal(invalidResponse.status, 500);
     assert.equal(invalidResponse.headers.get("content-type"), "application/json; charset=utf-8");
     assert.deepEqual(await invalidResponse.json(), { error: "exact_review_queue_unavailable" });
-    assert.deepEqual(errors, [
-      ["exact_review_queue_handler_failed", { phase: "fetch", location: null }],
-      ["exact_review_queue_request_failed", { remote: false, retryable: false, overloaded: false }],
-      ["exact_review_queue_handler_failed", { phase: "fetch", location: null }],
-      ["exact_review_queue_request_failed", { remote: false, retryable: false, overloaded: false }],
-    ]);
+    const malformedHarness = await exportHarness();
+    const malformed = fixtureRecord({
+      source: "backfill",
+      section: "commits",
+      id: "c".repeat(40),
+      content: "malformed-chunk",
+      storeRevision: 1,
+    });
+    seedFixtureRecord(malformedHarness.storage, malformed);
+    malformedHarness.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
+          SET content = NULL, byte_length = 1, chunk_count = 1
+        WHERE repo_slug = ? AND section = ? AND record_id = ?`,
+      REPO_SLUG,
+      malformed.section,
+      malformed.id,
+    );
+    malformedHarness.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_RECORD_BACKFILL_CHUNK_TABLE}
+         (repo_slug, section, record_id, chunk_index, content_base64)
+       VALUES (?, ?, ?, 0, '%%%')`,
+      REPO_SLUG,
+      malformed.section,
+      malformed.id,
+    );
+    const malformedResponse = await exportResponse(malformedHarness.env, 0);
+    assert.equal(malformedResponse.status, 500);
+    assert.deepEqual(await malformedResponse.json(), { error: "exact_review_queue_unavailable" });
+
+    const invalidUtf8Harness = await exportHarness();
+    const invalidUtf8 = fixtureRecord({
+      source: "backfill",
+      section: "commits",
+      id: "d".repeat(40),
+      content: "invalid-utf8",
+      storeRevision: 1,
+    });
+    seedFixtureRecord(invalidUtf8Harness.storage, invalidUtf8);
+    invalidUtf8Harness.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
+          SET content = NULL, byte_length = 1, chunk_count = 1
+        WHERE repo_slug = ? AND section = ? AND record_id = ?`,
+      REPO_SLUG,
+      invalidUtf8.section,
+      invalidUtf8.id,
+    );
+    invalidUtf8Harness.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_RECORD_BACKFILL_CHUNK_TABLE}
+         (repo_slug, section, record_id, chunk_index, content_base64)
+       VALUES (?, ?, ?, 0, '/w==')`,
+      REPO_SLUG,
+      invalidUtf8.section,
+      invalidUtf8.id,
+    );
+    const invalidUtf8Response = await exportResponse(invalidUtf8Harness.env, 0);
+    assert.equal(invalidUtf8Response.status, 500);
+    assert.deepEqual(await invalidUtf8Response.json(), { error: "exact_review_queue_unavailable" });
+
+    const malformedCanonicalHarness = await exportHarness();
+    const malformedCanonical = fixtureRecord({
+      source: "canonical",
+      section: "items",
+      id: "2",
+      content: "canonical-malformed".repeat(EXACT_REVIEW_CANONICAL_INLINE_BYTES),
+      storeRevision: 1,
+    });
+    seedFixtureRecord(malformedCanonicalHarness.storage, malformedCanonical);
+    malformedCanonicalHarness.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE}
+        WHERE repo_slug = ? AND section = ? AND item_id = ?`,
+      REPO_SLUG,
+      malformedCanonical.section,
+      Number(malformedCanonical.id),
+    );
+    const malformedCanonicalResponse = await exportResponse(malformedCanonicalHarness.env, 0);
+    assert.equal(malformedCanonicalResponse.status, 500);
+    assert.deepEqual(await malformedCanonicalResponse.json(), {
+      error: "exact_review_queue_unavailable",
+    });
+
+    assert.equal(errors.length, 10);
+    for (let index = 0; index < errors.length; index += 2) {
+      assert.equal(errors[index]?.[0], "exact_review_queue_handler_failed");
+      assert.equal(errors[index + 1]?.[0], "exact_review_queue_request_failed");
+      const handler = errors[index]?.[1] as Record<string, unknown>;
+      const request = errors[index + 1]?.[1] as Record<string, unknown>;
+      assert.match(
+        String(handler.trace_id),
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+      assert.equal(request.trace_id, handler.trace_id);
+      assert.deepEqual(handler, {
+        phase: "fetch",
+        trace_id: handler.trace_id,
+        endpoint: "records_export",
+        failure_category: "record_export_consistency",
+        location: null,
+      });
+      assert.deepEqual(request, {
+        trace_id: handler.trace_id,
+        endpoint: "records_export",
+        phase: "request",
+        transport: "throw",
+        upstream_status: null,
+        remote: false,
+        retryable: false,
+        overloaded: false,
+        failure_category: "request_exception",
+      });
+    }
+    const serializedErrors = JSON.stringify(errors);
+    assert.equal(serializedErrors.includes(REPO_SLUG), false);
+    assert.equal(serializedErrors.includes("missing-metadata"), false);
+    assert.equal(serializedErrors.includes("invalid-metadata"), false);
+    assert.equal(serializedErrors.includes("malformed-chunk"), false);
+    assert.equal(serializedErrors.includes("invalid-utf8"), false);
+    assert.equal(serializedErrors.includes("canonical-malformed"), false);
   } finally {
     console.error = originalError;
   }

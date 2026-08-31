@@ -196,6 +196,13 @@ export class CanonicalRecordTupleConflictError extends Error {
   }
 }
 
+export class RecordExportConsistencyError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "RecordExportConsistencyError";
+  }
+}
+
 export class ExactReviewDirectPublicationStore {
   private readonly storage: DurableStorage;
 
@@ -1204,7 +1211,7 @@ export class ExactReviewDirectPublicationStore {
     )[0];
     const revision = Number(row?.current_revision);
     if (!Number.isSafeInteger(revision) || revision < 1) {
-      throw new Error("record export revision allocation failed");
+      throw new RecordExportConsistencyError("record export revision allocation failed");
     }
     return revision;
   }
@@ -1218,7 +1225,7 @@ export class ExactReviewDirectPublicationStore {
     )[0];
     const revision = Number(row?.current_revision ?? 0);
     if (!Number.isSafeInteger(revision) || revision < 0) {
-      throw new Error("invalid record export revision watermark");
+      throw new RecordExportConsistencyError("invalid record export revision watermark");
     }
     return revision;
   }
@@ -1233,11 +1240,23 @@ export class ExactReviewDirectPublicationStore {
       if (String(row.source) === "canonical" && section !== "commits") {
         const itemId = Number(id);
         if (!Number.isSafeInteger(itemId) || itemId < 1) {
-          throw new Error(`invalid canonical export identity: ${repoSlug}/${section}/${id}`);
+          throw new RecordExportConsistencyError(
+            `invalid canonical export identity: ${repoSlug}/${section}/${id}`,
+          );
         }
-        const canonical = this.readCanonical(repoSlug, section, itemId);
+        let canonical: CanonicalRecord | null;
+        try {
+          canonical = this.readCanonical(repoSlug, section, itemId);
+        } catch (error) {
+          if (error instanceof RecordExportConsistencyError) throw error;
+          throw new RecordExportConsistencyError("canonical export content is malformed", {
+            cause: error,
+          });
+        }
         if (!canonical || canonical.deleted || canonical.content === null) {
-          throw new Error(`canonical export content missing: ${repoSlug}/${section}/${id}`);
+          throw new RecordExportConsistencyError(
+            `canonical export content missing: ${repoSlug}/${section}/${id}`,
+          );
         }
         content = canonical.content;
       } else {
@@ -1302,7 +1321,11 @@ export class ExactReviewDirectPublicationStore {
         id,
       ),
     )[0];
-    if (!row) throw new Error(`backfill export content missing: ${repoSlug}/${section}/${id}`);
+    if (!row) {
+      throw new RecordExportConsistencyError(
+        `backfill export content missing: ${repoSlug}/${section}/${id}`,
+      );
+    }
     if (row.content !== null) return String(row.content);
     const chunks = Array.from(
       this.storage.sql.exec(
@@ -1316,19 +1339,30 @@ export class ExactReviewDirectPublicationStore {
       ),
     );
     if (chunks.length !== Number(row.chunk_count)) {
-      throw new Error(`backfill export chunk count mismatch: ${repoSlug}/${section}/${id}`);
+      throw new RecordExportConsistencyError(
+        `backfill export chunk count mismatch: ${repoSlug}/${section}/${id}`,
+      );
     }
-    const parts = chunks.map((chunk) => base64Bytes(String(chunk.content_base64)));
-    const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
-    let offset = 0;
-    for (const part of parts) {
-      bytes.set(part, offset);
-      offset += part.byteLength;
+    try {
+      const parts = chunks.map((chunk) => base64Bytes(String(chunk.content_base64)));
+      const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
+      let offset = 0;
+      for (const part of parts) {
+        bytes.set(part, offset);
+        offset += part.byteLength;
+      }
+      if (bytes.byteLength !== Number(row.byte_length)) {
+        throw new RecordExportConsistencyError(
+          `backfill export byte count mismatch: ${repoSlug}/${section}/${id}`,
+        );
+      }
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch (error) {
+      if (error instanceof RecordExportConsistencyError) throw error;
+      throw new RecordExportConsistencyError("backfill export content is malformed", {
+        cause: error,
+      });
     }
-    if (bytes.byteLength !== Number(row.byte_length)) {
-      throw new Error(`backfill export byte count mismatch: ${repoSlug}/${section}/${id}`);
-    }
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   }
 
   private insertSync(row: DirectPublicationRow) {
@@ -1370,7 +1404,7 @@ function recordExportSourceByteLength(row: Record<string, unknown>) {
     byteLength < 0 ||
     (Number(row.deleted) === 1 && byteLength !== 0)
   ) {
-    throw new Error(
+    throw new RecordExportConsistencyError(
       `invalid record export byte metadata: ${String(row.repo_slug)}/${String(row.section)}/${String(row.record_id)}`,
     );
   }

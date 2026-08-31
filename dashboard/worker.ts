@@ -57,6 +57,11 @@ import {
   type ExactReviewIngress,
 } from "./exact-review-queue.ts";
 import {
+  EXACT_REVIEW_QUEUE_TRACE_HEADER,
+  exactReviewQueueEndpointTemplate,
+  newExactReviewQueueTraceId,
+} from "./exact-review-queue-observability.ts";
+import {
   AUTOMERGE_METRICS_EVENT_TYPE,
   AUTOMERGE_METRICS_EVENT_KEY_PREFIX,
   AUTOMERGE_METRICS_EVENT_ID_KEY_PREFIX,
@@ -3866,7 +3871,9 @@ async function githubWebhook(request, env, ctx) {
     });
     const queue = exactReviewQueueStub(env);
     if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
-    const intakeResponse = await queue.fetch(
+    const { response: intakeResponse } = await exactReviewQueueFetch(
+      queue,
+      "/command-intake",
       new Request("https://clawsweeper-exact-review-queue/command-intake", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -4705,7 +4712,9 @@ async function recordLifecycleCommandAcknowledgement(env, completion) {
   const queue = exactReviewQueueStub(env);
   if (!queue) return { accepted: true, sourceDeliveryId: null, bayJourneyDeliveryId: null };
   const observedAt = Date.parse(String(completion.completed_at || ""));
-  const response = await queue.fetch(
+  const { response } = await exactReviewQueueFetch(
+    queue,
+    "/lifecycle/command-ack/observed",
     new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4743,7 +4752,9 @@ async function reserveExactReviewSourceAuthority(
 ): Promise<{ deduped: true } | { sourceAuthoritySeq: number } | null> {
   const queue = exactReviewQueueStub(env);
   if (!queue) return null;
-  const response = await queue.fetch(
+  const { response } = await exactReviewQueueFetch(
+    queue,
+    "/source-authority",
     new Request("https://clawsweeper-exact-review-queue/source-authority", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4775,7 +4786,9 @@ async function completeExactReviewSourceAuthority(
 ) {
   const queue = exactReviewQueueStub(env);
   if (!queue) throw new Error("exact-review queue not configured");
-  const response = await queue.fetch(
+  const { response } = await exactReviewQueueFetch(
+    queue,
+    "/source-authority/complete",
     new Request("https://clawsweeper-exact-review-queue/source-authority/complete", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4792,34 +4805,79 @@ async function completeExactReviewSourceAuthority(
   }
 }
 
-async function exactReviewQueueRequest(env, path, request?: Request) {
-  const queue = exactReviewQueueStub(env);
-  if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
+async function exactReviewQueueFetch(queue: DurableObjectStub, path: string, request?: Request) {
   const body = request ? await request.text() : undefined;
+  const traceId = newExactReviewQueueTraceId();
+  const endpoint = exactReviewQueueEndpointTemplate(path);
   try {
+    const headers = new Headers(body ? { "content-type": "application/json" } : undefined);
+    headers.set(EXACT_REVIEW_QUEUE_TRACE_HEADER, traceId);
     const response = await queue.fetch(
       new Request(`https://clawsweeper-exact-review-queue${path}`, {
         method: request?.method || "GET",
-        headers: body ? { "content-type": "application/json" } : undefined,
+        headers,
         ...(body ? { body } : {}),
       }),
     );
-    if (response.status < 500) return response;
+    if (response.status < 500) return { response, malformedServerResponse: false };
     const responseBody = await response.clone().text();
     try {
       JSON.parse(responseBody);
-      return response;
+      console.error("exact_review_queue_structured_server_response", {
+        trace_id: traceId,
+        endpoint,
+        phase: "request",
+        transport: "structured_5xx",
+        upstream_status: response.status,
+        failure_category: "structured_server_response",
+      });
+      return { response, malformedServerResponse: false };
     } catch {
-      console.error("exact_review_queue_malformed_server_response");
-      return json({ error: "exact_review_queue_unavailable" }, response.status);
+      console.error("exact_review_queue_malformed_server_response", {
+        trace_id: traceId,
+        endpoint,
+        phase: "request",
+        transport: "non_json_5xx",
+        upstream_status: response.status,
+        failure_category: "malformed_server_response",
+      });
+      return { response, malformedServerResponse: true };
     }
   } catch (error) {
     const failure = objectValue(error);
+    const remote = failure.remote === true;
+    const retryable = failure.retryable === true;
+    const overloaded = failure.overloaded === true;
     console.error("exact_review_queue_request_failed", {
-      remote: failure.remote === true,
-      retryable: failure.retryable === true,
-      overloaded: failure.overloaded === true,
+      trace_id: traceId,
+      endpoint,
+      phase: "request",
+      transport: "throw",
+      upstream_status: null,
+      remote,
+      retryable,
+      overloaded,
+      failure_category: overloaded
+        ? "platform_overloaded"
+        : retryable
+          ? "platform_retryable"
+          : remote
+            ? "remote_exception"
+            : "request_exception",
     });
+    throw error;
+  }
+}
+
+async function exactReviewQueueRequest(env, path, request?: Request) {
+  const queue = exactReviewQueueStub(env);
+  if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
+  try {
+    const { response, malformedServerResponse } = await exactReviewQueueFetch(queue, path, request);
+    return malformedServerResponse
+      ? json({ error: "exact_review_queue_unavailable" }, response.status)
+      : response;
+  } catch {
     return json({ error: "exact_review_queue_unavailable" }, 500);
   }
 }
@@ -6160,7 +6218,9 @@ async function enqueueExactReview({
 }) {
   const queue = exactReviewQueueStub(env);
   if (!queue) return null;
-  const response = await queue.fetch(
+  const { response } = await exactReviewQueueFetch(
+    queue,
+    "/enqueue",
     new Request("https://clawsweeper-exact-review-queue/enqueue", {
       method: "POST",
       headers: { "content-type": "application/json" },
