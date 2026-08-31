@@ -50,6 +50,15 @@ const behaviorProof: {
     reconstructionQueries: number;
     nextCursor: number | null;
   } | null;
+  failureCorrelation: {
+    responseStatus: number;
+    responseBody: { error: string };
+    traceId: string;
+    durableObject: Record<string, unknown>;
+    worker: Record<string, unknown>;
+    pairedTraceId: boolean;
+    contentRedacted: boolean;
+  } | null;
 } = {
   claim:
     "a signed records export stays within source-byte and reconstruction-work budgets, advances its cursor, and repeated calls materialize the exact fixture",
@@ -60,6 +69,7 @@ const behaviorProof: {
   expectedManifest: [],
   materializedManifest: [],
   oversizedFirst: null,
+  failureCorrelation: null,
 };
 
 test.after(() => {
@@ -536,7 +546,8 @@ test("signed record export hides missing and invalid logical byte metadata", asy
     const missingResponse = await exportResponse(missingHarness.env, 0);
     assert.equal(missingResponse.status, 500);
     assert.equal(missingResponse.headers.get("content-type"), "application/json; charset=utf-8");
-    assert.deepEqual(await missingResponse.json(), { error: "exact_review_queue_unavailable" });
+    const missingResponseBody = (await missingResponse.json()) as { error: string };
+    assert.deepEqual(missingResponseBody, { error: "exact_review_queue_unavailable" });
 
     const invalidHarness = await exportHarness();
     const invalid = fixtureRecord({
@@ -676,6 +687,23 @@ test("signed record export hides missing and invalid logical byte metadata", asy
     assert.equal(serializedErrors.includes("malformed-chunk"), false);
     assert.equal(serializedErrors.includes("invalid-utf8"), false);
     assert.equal(serializedErrors.includes("canonical-malformed"), false);
+    const proofHandler = errors[0]?.[1] as Record<string, unknown>;
+    const proofWorker = errors[1]?.[1] as Record<string, unknown>;
+    behaviorProof.failureCorrelation = {
+      responseStatus: missingResponse.status,
+      responseBody: missingResponseBody,
+      traceId: String(proofHandler.trace_id),
+      durableObject: proofHandler,
+      worker: proofWorker,
+      pairedTraceId: proofHandler.trace_id === proofWorker.trace_id,
+      contentRedacted:
+        !serializedErrors.includes(REPO_SLUG) &&
+        !serializedErrors.includes("missing-metadata") &&
+        !serializedErrors.includes("invalid-metadata") &&
+        !serializedErrors.includes("malformed-chunk") &&
+        !serializedErrors.includes("invalid-utf8") &&
+        !serializedErrors.includes("canonical-malformed"),
+    };
   } finally {
     console.error = originalError;
   }
