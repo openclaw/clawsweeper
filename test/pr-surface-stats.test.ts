@@ -39,8 +39,11 @@ test("surface counts use only the current rename path while proof retains both s
       pullFiles: [{ filename, previous_filename, status: "renamed", additions: 57, deletions: 0 }],
     };
     const files = prSurfaceFilesFromContext(context);
+    assert.ok(files);
     assert.deepEqual(files, [{ path: filename, additions: 57, deletions: 0 }]);
-    const populated = buildOpenClawPrSurfaceStats(files).filter((row) => row.files > 0);
+    const stats = buildOpenClawPrSurfaceStats(files);
+    assert.ok(stats);
+    const populated = stats.filter((row) => row.files > 0);
     assert.equal(populated.length, 1);
     assert.equal(populated[0]?.bucket, bucket);
     assert.deepEqual(
@@ -52,7 +55,7 @@ test("surface counts use only the current rename path while proof retains both s
         ...context,
         counts: { comments: 0, timeline: 0, pullFilesTruncated: true },
       }),
-      [],
+      null,
     );
   }
 });
@@ -63,6 +66,7 @@ test("OpenClaw support fixtures count as tests, including the +57 ownership repr
   const stats = buildOpenClawPrSurfaceStats([
     { path: pinnedTestRolePaths[0], additions: 57, deletions: 0 },
   ]);
+  assert.ok(stats);
   assert.equal(renderOpenClawPrSurfaceSummary(stats), "Tests +57. Total +57 across 1 file.");
   const table = renderOpenClawPrSurfaceTable(stats);
   assert.match(table, /\| Source \| 0 \| 0 \| 0 \| 0 \|/);
