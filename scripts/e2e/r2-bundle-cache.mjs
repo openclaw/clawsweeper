@@ -178,7 +178,7 @@ function deleteLocalR2Object(objectKey) {
     "npx",
     [
       "--yes",
-      "wrangler@4.127.1",
+      "wrangler@4.107.0",
       "r2",
       "object",
       "delete",

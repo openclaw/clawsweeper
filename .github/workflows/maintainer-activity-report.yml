@@ -271,8 +271,8 @@ jobs:
             echo "::error title=Cloudflare Pages token missing::Set OPENCLAW_CLOUDFLARE_PAGES_API_TOKEN for the OpenClaw Cloudflare account. The existing Workers token is intentionally not used for Pages deploys."
             exit 1
           fi
-          npx wrangler@4.127.1 pages project create "$REPORTS_PROJECT" --production-branch main || true
-          npx wrangler@4.127.1 pages deploy reports \
+          npx wrangler@4.107.0 pages project create "$REPORTS_PROJECT" --production-branch main || true
+          npx wrangler@4.107.0 pages deploy reports \
             --project-name "$REPORTS_PROJECT" \
             --branch main \
             --commit-dirty=false \

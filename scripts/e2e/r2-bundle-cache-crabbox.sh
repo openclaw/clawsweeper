@@ -36,7 +36,7 @@ echo CRABBOX_PHASE:build
 pnpm run build:all
 
 echo CRABBOX_PHASE:behavior
-npx --yes wrangler@4.127.1 dev \
+npx --yes wrangler@4.107.0 dev \
   --config dashboard/wrangler.toml \
   --local \
   --persist-to "$proof_root" \
