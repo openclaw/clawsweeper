@@ -107,6 +107,17 @@ review metrics, stored-data warnings, root-cause clusters, proof suggestions,
 merge-risk options, full review comments, labels, evidence, optional rank-up
 moves, the rank legend, workflow notes, and review history.
 
+For OpenClaw, the PR surface table and config detector share explicit test-role
+names: test/spec code leaves, terminal dotted or hyphenated `test-support`,
+`test-helpers`, `test-utils`, `test-harness`, and `test-fixtures` code suffixes,
+and explicit test directories. Generic support/helper names remain production
+candidates. Generated files retain table precedence; config detection filters
+each rename side before patch uncertainty, retaining production or semantic docs
+evidence and truncated-list warnings. Reviewer production/test metrics remain
+separately assessed. Test roles grant no contributor-proof exemption and do not
+change storage detection or upgrade-proof gates. OpenClaw Bay needs no change
+because its observer API and data contract are unchanged.
+
 The recorded reviewer proof assessment and the host's existing proof requirement
 are separate. An applicable external PR assessed as `not_applicable` still needs
 proof: the verdict, readiness, verification, checklist, and status label explain

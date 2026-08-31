@@ -9,6 +9,41 @@ import { detailsBody, reportFrontMatter } from "./helpers.ts";
 import { asRecord } from "../dist/clawsweeper-item-policy.js";
 import { createReportOrchestrationFoundation } from "../dist/clawsweeper-orchestration-foundation.js";
 import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
+import { pinnedTestRolePaths } from "./openclaw-file-role-fixture.ts";
+
+test("support-only surface moves +57 to Tests while the reviewer production metric stays intact", () => {
+  const metric = {
+    label: "Production vs test LOC",
+    value: "production +0/-0; tests +57/-0",
+    reason: "Synthetic reviewer assessment of the support-only change.",
+  };
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "12345",
+    work_candidate: "none",
+    pr_surface_files: JSON.stringify([
+      { path: pinnedTestRolePaths[0], additions: 57, deletions: 0 },
+    ]),
+    pr_surface_files_truncated: false,
+    review_metrics: JSON.stringify([metric]),
+  })}
+
+## Summary
+
+Updates test support.
+`;
+  const comment = renderReviewCommentFromReport(report, "none");
+  assert.match(comment, /\| Source \| 0 \| 0 \| 0 \| 0 \|/);
+  assert.match(comment, /\| Tests \| 1 \| 57 \| 0 \| \+57 \|/);
+  assert.match(comment, /Total \+57 across 1 file\./);
+  assert.ok(comment.includes(`| **${metric.label}** | ${metric.value} | ${metric.reason} |`));
+  const truncated = renderReviewCommentFromReport(
+    report.replace("pr_surface_files_truncated: false", "pr_surface_files_truncated: true"),
+    "none",
+  );
+  assert.doesNotMatch(truncated, /View PR surface stats|\| Tests \|/);
+  assert.ok(truncated.includes(metric.value));
+});
 
 test("security-needs-attention reports block unopted repair and automerge pass markers", () => {
   const securitySection = `

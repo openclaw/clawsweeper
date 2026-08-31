@@ -1,3 +1,4 @@
+import { isOpenClawTestRolePath } from "./openclaw-file-role.js";
 import type {
   ConfigSurfaceChange,
   DataModelChange,
@@ -264,6 +265,7 @@ function sqliteSchemaDeclarationLine(line: string): boolean {
 }
 
 function isOpenClawConfigSurfacePath(path: string): boolean {
+  if (isOpenClawTestRolePath(path)) return false;
   return (
     /^src\/config\/(?:zod-schema[^/]*|types[^/]*|schema(?:[-.][^/]*)?)\.ts$/.test(path) ||
     /^src\/plugins\/manifest(?:-registry)?\.ts$/.test(path) ||

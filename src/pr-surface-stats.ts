@@ -1,3 +1,5 @@
+import { isOpenClawTestRolePath } from "./openclaw-file-role.js";
+
 export type PrSurfaceBucket = "source" | "tests" | "docs" | "config" | "generated" | "other";
 
 export interface PrSurfaceFile {
@@ -70,7 +72,7 @@ export function openClawPrSurfaceBucket(file: string): PrSurfaceBucket {
   const basename = normalized.split("/").pop() ?? normalized;
 
   if (isOpenClawGeneratedPath(normalized, basename)) return "generated";
-  if (isOpenClawTestPath(normalized)) return "tests";
+  if (isOpenClawTestRolePath(normalized)) return "tests";
   if (isOpenClawDocsPath(normalized, basename)) return "docs";
   if (isOpenClawConfigPath(normalized, basename)) return "config";
   if (isOpenClawSourcePath(normalized)) return "source";
@@ -115,14 +117,6 @@ function totalPrSurfaceStats(
 
 function isOpenClawSourcePath(file: string): boolean {
   return /^(?:src|ui|packages|extensions)\//.test(file);
-}
-
-function isOpenClawTestPath(file: string): boolean {
-  return (
-    /(?:^|\/)__tests__\//.test(file) ||
-    /^(?:test|tests)\//.test(file) ||
-    /\.(?:test|spec|e2e\.test)\.[cm]?[jt]sx?$/.test(file)
-  );
 }
 
 function isOpenClawDocsPath(file: string, basename: string): boolean {

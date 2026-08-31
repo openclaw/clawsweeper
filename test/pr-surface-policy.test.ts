@@ -12,6 +12,166 @@ import {
 } from "../dist/clawsweeper.js";
 import { reportFrontMatter } from "./helpers.ts";
 import { hydratePrimaryBody } from "./primary-body-fixture.ts";
+import { namedTestRoles, pinnedTestRolePaths } from "./openclaw-file-role-fixture.ts";
+
+test("config test roles are excluded before inspecting assertion, key-like, or incomplete patches", () => {
+  const filenames = [
+    "src/config/schema.test.ts",
+    "src/config/types.spec.ts",
+    "src/config/zod-schema.e2e.test.ts",
+    ...namedTestRoles.flatMap((role) => [
+      `src/config/schema.${role}.ts`,
+      `src/config/types-${role}.ts`,
+      `src/config/zod-schema-${role}.ts`,
+      `src/config/${role}/schema.ts`,
+    ]),
+    ...["test", "tests", "__tests__"].map((directory) => `src/config/${directory}/schema.ts`),
+    ...pinnedTestRolePaths,
+  ];
+  const patches = [
+    undefined,
+    "",
+    "@@\n context only",
+    "@@\n+// comment only",
+    "@@\n+  expect(result).toEqual(expected);",
+    "@@\n+  allowedProviders: z.string(),",
+    "@@\n+  allowedProviders: z.string(),\n\n[truncated 99 chars]",
+    `@@\n${" // retained context\n".repeat(110)}+  allowedProviders: z.string(),`,
+  ];
+  for (const filename of filenames) {
+    for (const patch of patches) {
+      for (const normalized of [false, true]) {
+        const files = [{ filename, patch }];
+        const pullFiles = normalized
+          ? hydratePrimaryBody("", "pull_request", { pullFiles: files }).context.pullFiles
+          : files;
+        assert.deepEqual(
+          configSurfaceChangeFromPullFilesForTest({ pullFiles }),
+          { change: false, keys: [] },
+          `${filename}: ${normalized ? "normalized" : "raw"} ${patch}`,
+        );
+      }
+    }
+  }
+});
+
+test("config production names retain keys and conservative patch uncertainty", () => {
+  const filenames = [
+    "src/config/schema.ts",
+    "src/config/types.ts",
+    "src/config/zod-schema.ts",
+    "src/config/schema.generated.ts",
+    "src/config/schema.test-support.production.ts",
+    "src/config/schema.test-supportive.ts",
+    "src/config/schema.TEST.ts",
+    ...["support", "helper", "helpers", "harness", "fixtures", "utils"].map(
+      (role) => `src/config/schema.${role}.ts`,
+    ),
+  ];
+  const cases = [
+    [undefined, ["unknown-config-surface-change"]],
+    ["", ["unknown-config-surface-change"]],
+    ["@@\n context only", ["unknown-config-surface-change"]],
+    ["@@\n+// comment only", []],
+    ["@@\n+  allowedProviders: z.string(),", ["allowedProviders"]],
+    [
+      "@@\n+  allowedProviders: z.string(),\n\n[truncated 99 chars]",
+      ["allowedProviders", "unknown-config-surface-change"],
+    ],
+  ] as const;
+  for (const filename of filenames) {
+    for (const [patch, keys] of cases) {
+      assert.deepEqual(
+        configSurfaceChangeFromPullFilesForTest({ pullFiles: [{ filename, patch }] }),
+        { change: keys.length > 0, keys },
+        filename,
+      );
+    }
+  }
+  const pullFiles = hydratePrimaryBody("", "pull_request", {
+    pullFiles: [
+      {
+        filename: "src/config/schema.ts",
+        patch: `@@\n${" // retained context\n".repeat(110)}+  allowedProviders: z.string(),`,
+      },
+    ],
+  }).context.pullFiles;
+  assert.match(pullFiles[0].patch, /\[truncated \d+ chars\]$/);
+  assert.deepEqual(configSurfaceChangeFromPullFilesForTest({ pullFiles }), {
+    change: true,
+    keys: ["unknown-config-surface-change"],
+  });
+});
+
+test("config rename candidates retain production and semantic docs evidence on either side", () => {
+  const cases = [
+    ["src/config/schema.ts", "src/config/schema.test-support.ts", true],
+    ["src/config/schema.test-support.ts", "src/config/schema.ts", true],
+    ["src/config/schema.test.ts", "src/config/schema.test-support.ts", false],
+    ["src/config/schema.test-support.ts", "src/config/schema.test.ts", false],
+    ["docs/gateway/configuration.md", "src/config/schema.test-support.ts", true],
+    ["src/config/schema.test-support.ts", "docs/gateway/configuration.md", true],
+    ["docs/plugins/manifest.md", "src/config/schema.test.ts", true],
+    ["src/config/schema.test.ts", "docs/plugins/manifest.md", true],
+  ] as const;
+  for (const [previous_filename, filename, production] of cases) {
+    for (const patch of [
+      undefined,
+      "",
+      "@@\n+| `agents.defaults.model` | Default model. |",
+      "@@\n+| `agents.defaults.model` | Default model. |\n\n[truncated 99 chars]",
+    ]) {
+      const keys = production
+        ? [
+            ...(patch ? ["agents.defaults.model"] : []),
+            ...(!patch || patch.includes("[truncated") ? ["unknown-config-surface-change"] : []),
+          ]
+        : [];
+      assert.deepEqual(
+        configSurfaceChangeFromPullFilesForTest({
+          pullFiles: [{ filename, previous_filename, patch }],
+        }),
+        { change: keys.length > 0, keys },
+        `${previous_filename} -> ${filename}`,
+      );
+    }
+  }
+});
+
+test("config test filtering preserves file-list uncertainty and caller path policy", () => {
+  for (const pullFiles of [undefined, [], [{ filename: "src/config/schema.test.ts" }]]) {
+    for (const pullFilesTruncated of [undefined, false, true]) {
+      const keys = pullFilesTruncated ? ["unknown-truncated-pull-files"] : [];
+      assert.deepEqual(configSurfaceChangeFromPullFilesForTest({ pullFiles, pullFilesTruncated }), {
+        change: keys.length > 0,
+        keys,
+      });
+    }
+  }
+  for (const [filename, change] of [
+    [" src/config/schema.ts ", true],
+    ["src\\config\\schema.ts", false],
+    ["src/CONFIG/schema.ts", false],
+    ["scripts/schema.ts", false],
+    ["src/config/schema.mts", false],
+    ["src/config/schema.tsx", false],
+    ["docs/gateway/configuration.test-support.md", true],
+  ] as const) {
+    assert.equal(
+      configSurfaceChangeFromPullFilesForTest({ pullFiles: [{ filename }] }).change,
+      change,
+      filename,
+    );
+  }
+  assert.deepEqual(
+    configSurfaceChangeFromPullFilesForTest({
+      repo: "openclaw/clawhub",
+      pullFilesTruncated: true,
+      pullFiles: [{ filename: "src/config/schema.ts" }],
+    }),
+    { change: false, keys: [] },
+  );
+});
 
 function persistenceReport(detection: { change: boolean; surfaces: string[] }, headSha: string) {
   return `${reportFrontMatter({

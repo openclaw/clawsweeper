@@ -27,6 +27,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Let Codex own transport recovery within one review process; the durable queue owns fresh attempts. Batch publication now loads only reviewed item tuples and syncs their comments directly, removing full-repository hydration, source Git pulls, and a second comment-sync dispatch.
 
+- OpenClaw PR reviews now count explicitly named test support as Tests and exclude test-role files from config-surface warnings while preserving contributor-proof and storage gates.
 - Proof-review guidance now maps changed source behavior to exercised scenarios and observed results, and historical Live Verification PASS comments clarify their declared scenario and assertion scope.
 - Reviewer input now retains bounded late proof/trace excerpts with explicit body coverage and treats PR patches as reviewer-only media inputs, without increasing the body budget, adding media fetches, or weakening proof requirements; OpenClaw Bay is unaffected.
 - PR reviews now separate introduced changes from main-only drift, verify test-merge parents, and avoid stored-data warnings for ordinary Markdown prose beside source.

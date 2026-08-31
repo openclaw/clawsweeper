@@ -7,6 +7,7 @@ import { createReportParser } from "../dist/clawsweeper-report-parser.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 
 import {
+  configSurfaceChangeFromPullFilesForTest,
   parseDecision,
   prRatingLabelsForTest,
   pullRequestFilePathsFromContextForTest,
@@ -29,6 +30,64 @@ import {
   reportFrontMatter,
   reviewFinding,
 } from "./helpers.ts";
+
+for (const status of ["sufficient", "missing", "mock_only", "insufficient", "not_applicable"]) {
+  test(`test-only config review clears only the config gate with ${status} contributor proof`, () => {
+    for (const filename of ["src/config/schema.test.ts", "src/config/schema.test-support.ts"]) {
+      const detection = configSurfaceChangeFromPullFilesForTest({
+        pullFiles: [{ filename, patch: "@@\n+  expect(result).toEqual(expected);" }],
+      });
+      assert.deepEqual(detection, { change: false, keys: [] });
+      const report = `${reportFrontMatter({
+        type: "pull_request",
+        number: "74466",
+        review_status: "complete",
+        author: "contributor",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify(["clawsweeper:automerge"]),
+        work_candidate: "none",
+        pull_head_sha: "a".repeat(40),
+        pull_files: JSON.stringify([filename]),
+        pull_files_truncated: false,
+        config_surface_change: detection.change,
+        config_surface_keys: JSON.stringify(detection.keys),
+      })}
+
+## Summary
+
+The test-only patch has no actionable source findings.
+
+${realBehaviorProofReportSection({
+  status,
+  evidenceKind:
+    status === "sufficient" ? "terminal" : status === "not_applicable" ? "not_applicable" : "none",
+  needsContributorAction: status !== "sufficient" && status !== "not_applicable",
+  summary: "Synthetic contributor proof assessment for the comment regression.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Full review comments:
+
+- none
+`;
+      const comment = renderReviewCommentFromReport(report, "none");
+      const markers = reviewAutomationMarkersFromReport(report);
+      assert.doesNotMatch(comment, /Config surface change detected|unknown-config-surface-change/);
+      if (status === "sufficient") {
+        assert.match(markers, /clawsweeper-verdict:pass/);
+        assert.doesNotMatch(markers, /needs-human|fix-required/);
+        assert.match(comment, /^Codex review: passed\./);
+      } else {
+        assert.match(markers, /clawsweeper-verdict:needs-human/);
+        assert.doesNotMatch(comment, /clawsweeper-verdict:pass|clawsweeper-action:fix-required/);
+        assert.match(comment, /^Codex review: needs real behavior proof before merge\./);
+      }
+    }
+  });
+}
 
 const recordedNotApplicableProof = {
   status: "not_applicable",

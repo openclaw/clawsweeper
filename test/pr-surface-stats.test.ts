@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { asRecord } from "../dist/clawsweeper-item-policy.js";
+import { createReportOrchestrationFoundation } from "../dist/clawsweeper-orchestration-foundation.js";
+import { pullRequestFilePathsFromContextForTest } from "../dist/clawsweeper.js";
 
 import {
   buildOpenClawPrSurfaceStats,
@@ -7,6 +10,94 @@ import {
   renderOpenClawPrSurfaceSummary,
   renderOpenClawPrSurfaceTable,
 } from "../dist/pr-surface-stats.js";
+import { pinnedTestRolePaths } from "./openclaw-file-role-fixture.ts";
+
+test("surface counts use only the current rename path while proof retains both sides", () => {
+  const { prSurfaceFilesFromContext } = createReportOrchestrationFoundation(
+    new Proxy(
+      { asRecord },
+      {
+        get: (target, key) =>
+          Reflect.get(target, key) ??
+          (() => {
+            throw new Error(`Unexpected surface projection dependency: ${String(key)}`);
+          }),
+      },
+    ) as Parameters<typeof createReportOrchestrationFoundation>[0],
+  );
+  for (const [previous_filename, filename, bucket] of [
+    ["src/config/schema.ts", "src/config/schema.test-support.ts", "tests"],
+    ["src/config/schema.test-support.ts", "src/config/schema.ts", "source"],
+    ["src/config/schema.test.ts", "src/config/schema.test-support.ts", "tests"],
+    ["docs/gateway/configuration.md", "src/config/schema.test-support.ts", "tests"],
+    ["src/config/schema.test-support.ts", "docs/gateway/configuration.md", "docs"],
+  ] as const) {
+    const context = {
+      issue: {},
+      comments: [],
+      timeline: [],
+      pullFiles: [{ filename, previous_filename, status: "renamed", additions: 57, deletions: 0 }],
+    };
+    const files = prSurfaceFilesFromContext(context);
+    assert.deepEqual(files, [{ path: filename, additions: 57, deletions: 0 }]);
+    const populated = buildOpenClawPrSurfaceStats(files).filter((row) => row.files > 0);
+    assert.equal(populated.length, 1);
+    assert.equal(populated[0]?.bucket, bucket);
+    assert.deepEqual(
+      new Set(pullRequestFilePathsFromContextForTest(context)),
+      new Set([filename, previous_filename]),
+    );
+    assert.deepEqual(
+      prSurfaceFilesFromContext({
+        ...context,
+        counts: { comments: 0, timeline: 0, pullFilesTruncated: true },
+      }),
+      [],
+    );
+  }
+});
+
+test("OpenClaw support fixtures count as tests, including the +57 ownership repro", () => {
+  for (const path of pinnedTestRolePaths)
+    assert.equal(openClawPrSurfaceBucket(path), "tests", path);
+  const stats = buildOpenClawPrSurfaceStats([
+    { path: pinnedTestRolePaths[0], additions: 57, deletions: 0 },
+  ]);
+  assert.equal(renderOpenClawPrSurfaceSummary(stats), "Tests +57. Total +57 across 1 file.");
+  const table = renderOpenClawPrSurfaceTable(stats);
+  assert.match(table, /\| Source \| 0 \| 0 \| 0 \| 0 \|/);
+  assert.match(table, /\| Tests \| 1 \| 57 \| 0 \| \+57 \|/);
+});
+
+test("test-role sharing preserves bucket precedence, source roots, and normalization", () => {
+  const cases = [
+    ["src/config/schema.generated.test-support.ts", "generated"],
+    ["docs/.generated/schema.test-support.ts", "generated"],
+    ["src/test-support/__snapshots__/schema.snap", "generated"],
+    ["docs/gateway/schema.test-support.ts", "tests"],
+    ["docs/test-support/README.md", "tests"],
+    ["src/config/schema.test-support.md", "docs"],
+    ["docs/gateway/configuration.md", "docs"],
+    ["src/config/schema.generated.ts", "generated"],
+    ["src/config/schema.test-support.production.ts", "source"],
+    ["src/config/schema.test-supportive.ts", "source"],
+    ["src/config/schema.support.ts", "source"],
+    ["src/config/schema.TEST.ts", "source"],
+    [".github/test-support/check.ts", "tests"],
+    ["test-support/package.json", "tests"],
+    [".github/workflows/check.yml", "config"],
+    ["src/runtime.ts", "source"],
+    ["ui/runtime.ts", "source"],
+    ["packages/runtime.ts", "source"],
+    ["extensions/runtime.ts", "source"],
+    ["scripts/runtime.ts", "other"],
+    ["apps/runtime.ts", "other"],
+    ["fixtures/runtime.ts", "other"],
+    ["scripts/check-harness.ts", "other"],
+    [" src\\config\\test-support\\schema.ts ", "tests"],
+  ] as const;
+  for (const [path, bucket] of cases) assert.equal(openClawPrSurfaceBucket(path), bucket, path);
+});
 
 test("OpenClaw PR surface buckets classify changed paths", () => {
   assert.equal(openClawPrSurfaceBucket("src/agents/runtime.ts"), "source");
