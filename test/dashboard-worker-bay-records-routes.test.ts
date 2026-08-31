@@ -39,6 +39,7 @@ import {
   leasedExactReviewQueueItem,
   leasedExactReviewPublicationItem,
 } from "./dashboard-worker-harness.ts";
+import { publicHealthHistoryContract } from "../dashboard/worker.ts";
 import {
   EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE,
   EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
@@ -6447,6 +6448,12 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
       },
     })),
   };
+  const projectedBayGeneratedAt = Date.now();
+  const contractedBayHistory = {
+    ...validBayHistory,
+    generated_at: new Date(projectedBayGeneratedAt).toISOString(),
+    ...publicHealthHistoryContract("6h", validBayHistory.samples, projectedBayGeneratedAt),
+  };
   for (const malformed of [
     { samples: validBayHistory.samples },
     { ...validBayHistory, range: bayMarker },
@@ -6473,6 +6480,20 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
         ...validBayHistory.samples[0],
         at: new Date(bayAt - index * 5 * 60_000).toISOString(),
       })).reverse(),
+    },
+    {
+      ...contractedBayHistory,
+      freshness: {
+        ...contractedBayHistory.freshness,
+        state: contractedBayHistory.freshness.state === "fresh" ? "stale" : "fresh",
+      },
+    },
+    {
+      ...contractedBayHistory,
+      freshness: {
+        ...contractedBayHistory.freshness,
+        age_ms: Number(contractedBayHistory.freshness.age_ms) + 1,
+      },
     },
   ]) {
     assert.equal(bayHistoryRuntime.bayHealthHistorySnapshot(malformed, "6h"), null);

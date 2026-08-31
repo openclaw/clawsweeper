@@ -2812,6 +2812,14 @@ function dashboardHealthHistoryContract(source, rangeMs) {
     : dashboardObservabilityTimestamp(freshness?.latest_sample_at);
   const ageMs = freshness?.age_ms === null ? null : dashboardObservabilityCount(freshness?.age_ms);
   const maximumAgeMs = dashboardObservabilityCount(freshness?.maximum_age_ms);
+  const generatedMs = generatedAt ? Date.parse(generatedAt) : NaN;
+  const latestSampleMs = latestSampleAt ? Date.parse(latestSampleAt) : null;
+  const expectedAgeMs = latestSampleMs === null || !Number.isFinite(generatedMs)
+    ? null
+    : Math.max(0, generatedMs - latestSampleMs);
+  const expectedFreshnessState = expectedAgeMs === null
+    ? "unavailable"
+    : expectedAgeMs <= 720000 ? "fresh" : "stale";
   if (
     !coverage || !freshness || !generatedAt ||
     !["complete", "partial", "unavailable"].includes(coverage.state) ||
@@ -2827,7 +2835,9 @@ function dashboardHealthHistoryContract(source, rangeMs) {
     maximumAgeMs !== 720000 ||
     (latestSampleAt === null) !== (freshness.latest_sample_at === null) ||
     (ageMs === null) !== (freshness.age_ms === null) ||
-    (freshness.state === "unavailable") !== (latestSampleAt === null)
+    (freshness.state === "unavailable") !== (latestSampleAt === null) ||
+    (latestSampleMs !== null && latestSampleMs > generatedMs) ||
+    ageMs !== expectedAgeMs || freshness.state !== expectedFreshnessState
   ) return null;
   return {
     generated_at: generatedAt,

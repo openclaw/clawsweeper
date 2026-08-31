@@ -20,6 +20,7 @@ import {
   jsonResponse,
   buildExactReviewQueueRequest,
 } from "./dashboard-worker-harness.ts";
+import { publicHealthHistoryContract } from "../dashboard/worker.ts";
 
 const ISSUE_TRIAGE_VIEW_IDS = [
   "clawsweeper",
@@ -1007,6 +1008,12 @@ test("dashboard reprojects separately fetched public observability before render
       },
     })),
   };
+  const projectedHistoryGeneratedAt = Date.now();
+  const projectedHistory = {
+    ...validHistory,
+    generated_at: new Date(projectedHistoryGeneratedAt).toISOString(),
+    ...publicHealthHistoryContract("6h", validHistory.samples, projectedHistoryGeneratedAt),
+  };
   for (const malformed of [
     { samples: validHistory.samples },
     { ...validHistory, range: marker },
@@ -1034,6 +1041,20 @@ test("dashboard reprojects separately fetched public observability before render
       })),
     },
     { ...validHistory, samples: [validHistory.samples[0], validHistory.samples[0]] },
+    {
+      ...projectedHistory,
+      freshness: {
+        ...projectedHistory.freshness,
+        state: projectedHistory.freshness.state === "fresh" ? "stale" : "fresh",
+      },
+    },
+    {
+      ...projectedHistory,
+      freshness: {
+        ...projectedHistory.freshness,
+        age_ms: Number(projectedHistory.freshness.age_ms) + 1,
+      },
+    },
   ]) {
     assert.equal(context.dashboardHealthHistorySnapshot(malformed, "6h"), null);
   }

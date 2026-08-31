@@ -66,6 +66,8 @@ credentials or lifecycle rows.
   require the reconciliation result to report a mismatch.
 - Request reconciliation with no signature and with an invalid signature.
 - Supply zero history samples, one failed collection slot, and an overdue latest sample.
+- Supply freshness states and ages that contradict the generated/latest timestamps and
+  require both public dashboard parsers to reject the payload.
 - Supply `failed = 0` and `attempts = 0` and require `n/a`, not `0%`.
 - Make durable lifecycle inventory unavailable while retaining queue/live activity and
   require both states to remain independently visible.
