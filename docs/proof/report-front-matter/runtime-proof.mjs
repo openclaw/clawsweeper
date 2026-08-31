@@ -15,7 +15,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
 const args = Object.fromEntries(
   Array.from({ length: (process.argv.length - 2) / 2 }, (_, index) => [
@@ -44,18 +43,35 @@ const deniedLog = join(proofRoot, "denied-commands.log");
 for (const command of ["gh", "codex", "claude"]) {
   writeFileSync(
     join(tripwireDir, command),
-    `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(deniedLog)}, '${command} denied\\n'); process.exit(97);\n`,
+    String.raw`#!/usr/bin/env node
+const command = require('node:path').basename(process.argv[1]);
+require('node:assert/strict').ok(['gh', 'codex', 'claude'].includes(command));
+require('node:fs').appendFileSync(process.env.CLAWSWEEPER_PROOF_DENIED_LOG, command + ' denied\n');
+process.exit(97);
+`,
     { mode: 0o755 },
   );
 }
 const denyNetwork = join(proofRoot, "deny-network.cjs");
 writeFileSync(
   denyNetwork,
-  `const deny = () => { require('node:fs').appendFileSync(${JSON.stringify(deniedLog)}, 'network denied\\n'); throw new Error('Synthetic proof denies network'); }; globalThis.fetch = deny; require('node:net').Socket.prototype.connect = deny; for (const name of ['node:http', 'node:https']) { const module = require(name); module.request = deny; module.get = deny; } require('node:module').syncBuiltinESMExports();\n`,
+  String.raw`const deny = () => {
+  require('node:fs').appendFileSync(process.env.CLAWSWEEPER_PROOF_DENIED_LOG, 'network denied\n');
+  throw new Error('Synthetic proof denies network');
+};
+globalThis.fetch = deny;
+require('node:net').Socket.prototype.connect = deny;
+for (const name of ['node:http', 'node:https']) {
+  const module = require(name);
+  module.request = deny;
+  module.get = deny;
+}
+require('node:module').syncBuiltinESMExports();
+`,
 );
 const childEnv = {
   PATH: [tripwireDir, dirname(process.execPath), "/usr/bin", "/bin"].join(":"),
-  NODE_OPTIONS: `--require=${denyNetwork}`,
+  CLAWSWEEPER_PROOF_DENIED_LOG: deniedLog,
   CI: "1",
 };
 const commands = [];
@@ -66,7 +82,8 @@ function equal(actual, wanted, label) {
   assert.deepEqual(actual, wanted, label);
 }
 function run(name, argv) {
-  const result = spawnSync(process.execPath, argv, {
+  const nodeArgs = ["--require", denyNetwork, ...argv];
+  const result = spawnSync(process.execPath, nodeArgs, {
     cwd: proofRoot,
     env: childEnv,
     encoding: "utf8",
@@ -76,8 +93,8 @@ function run(name, argv) {
   writeFileSync(join(proofRoot, `${name}.stderr`), result.stderr);
   commands.push({
     name,
-    argv: [process.execPath, ...argv],
-    argvSha256: hash(JSON.stringify([process.execPath, ...argv])),
+    argv: [process.execPath, ...nodeArgs],
+    argvSha256: hash(JSON.stringify([process.execPath, ...nodeArgs])),
     cwd: proofRoot,
     exitCode: result.status,
   });
@@ -86,6 +103,17 @@ function run(name, argv) {
 const tripwireCheck = run("tripwire-self-check", [join(tripwireDir, "gh")]);
 equal(tripwireCheck.status, 97, "the GitHub tripwire executes and denies commands");
 equal(readFileSync(deniedLog, "utf8"), "gh denied\n", "the GitHub tripwire records attempts");
+unlinkSync(deniedLog);
+const networkCheck = run("network-self-check", ["--eval", 'fetch("https://example.invalid");']);
+equal(
+  {
+    exitCode: networkCheck.status,
+    deniedError: networkCheck.stderr.includes("Error: Synthetic proof denies network"),
+  },
+  { exitCode: 1, deniedError: true },
+  "the application preload rejects fetch with its known denial error",
+);
+equal(readFileSync(deniedLog, "utf8"), "network denied\n", "the network tripwire records attempts");
 unlinkSync(deniedLog);
 const requiredDecision = {
   required: true,
@@ -208,9 +236,28 @@ for (const { name, markdown, required, baselinePoisoned } of [
   const probe = join(proofRoot, `${name}-decisions.mjs`);
   writeFileSync(
     probe,
-    `import { readFileSync } from 'node:fs';\nimport { maintainerDecisionBlocksClose, buildDecisionPacketFromReport } from ${JSON.stringify(pathToFileURL(join(root, "dist/decision-packets.js")).href)};\nconst none = readFileSync(${JSON.stringify(reportPath)}, 'utf8'); const required = readFileSync(${JSON.stringify(requiredPath)}, 'utf8');\nconsole.log(JSON.stringify({ noneBlocked: maintainerDecisionBlocksClose(none), nonePacket: buildDecisionPacketFromReport(none), requiredBlocked: maintainerDecisionBlocksClose(required), requiredPacket: buildDecisionPacketFromReport(required, { generatedAt: '2026-08-30T00:00:00.000Z', reportPath: 'records/openclaw-clawsweeper/items/321.md' }) }));\n`,
+    `import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const { maintainerDecisionBlocksClose, buildDecisionPacketFromReport } = await import(pathToFileURL(process.argv[2]).href);
+const none = readFileSync(process.argv[3], 'utf8');
+const required = readFileSync(process.argv[4], 'utf8');
+console.log(JSON.stringify({
+  noneBlocked: maintainerDecisionBlocksClose(none),
+  nonePacket: buildDecisionPacketFromReport(none),
+  requiredBlocked: maintainerDecisionBlocksClose(required),
+  requiredPacket: buildDecisionPacketFromReport(required, {
+    generatedAt: '2026-08-30T00:00:00.000Z',
+    reportPath: 'records/openclaw-clawsweeper/items/321.md'
+  })
+}));
+`,
   );
-  const decisions = run(`decisions-${name}`, [probe]);
+  const decisions = run(`decisions-${name}`, [
+    probe,
+    join(root, "dist/decision-packets.js"),
+    reportPath,
+    requiredPath,
+  ]);
   equal(decisions.status, 0, `${name}: decision export invocation`);
   const result = JSON.parse(decisions.stdout);
   equal(result.noneBlocked, poisoned, `${name}: no invented maintainer blocker`);
@@ -261,9 +308,21 @@ equal(existsSync(join(proofRoot, "jobs")), false, "competing record writes no jo
 const competingProbe = join(proofRoot, "competing-decisions.mjs");
 writeFileSync(
   competingProbe,
-  `import { readFileSync } from 'node:fs';\nimport { maintainerDecisionBlocksClose, buildDecisionPacketFromReport } from ${JSON.stringify(pathToFileURL(join(root, "dist/decision-packets.js")).href)};\nconst markdown = readFileSync(${JSON.stringify(competingPath)}, 'utf8');\nconsole.log(JSON.stringify({ blocked: maintainerDecisionBlocksClose(markdown), packet: buildDecisionPacketFromReport(markdown) }));\n`,
+  `import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const { maintainerDecisionBlocksClose, buildDecisionPacketFromReport } = await import(pathToFileURL(process.argv[2]).href);
+const markdown = readFileSync(process.argv[3], 'utf8');
+console.log(JSON.stringify({
+  blocked: maintainerDecisionBlocksClose(markdown),
+  packet: buildDecisionPacketFromReport(markdown)
+}));
+`,
 );
-const competingDecisions = run("decisions-competing-comment-list", [competingProbe]);
+const competingDecisions = run("decisions-competing-comment-list", [
+  competingProbe,
+  join(root, "dist/decision-packets.js"),
+  competingPath,
+]);
 equal(competingDecisions.status, 0, "competing record decision exports execute");
 const competingResult = JSON.parse(competingDecisions.stdout);
 equal(
@@ -355,6 +414,8 @@ const sourcePaths = [
   "src/repair/create-job.ts",
   "src/repair/workflow-utils.ts",
 ];
+const tripwireSelfChecks = commands.filter(({ name }) => name.endsWith("-self-check")).length;
+const applicationInvocations = commands.length - tripwireSelfChecks;
 const manifest = {
   expected,
   assertions,
@@ -376,7 +437,9 @@ const manifest = {
   commands,
   observations,
   githubReads: 0,
-  tripwireSelfChecks: 1,
+  tripwireSelfChecks,
+  applicationInvocations,
+  childEnvironment: childEnv,
   networkAttempts: 0,
   jobsCreated: 0,
   environment:
@@ -391,6 +454,8 @@ console.log(
       expected,
       assertions,
       scenarios: observations.length,
+      tripwireSelfChecks,
+      applicationInvocations,
       githubReads: 0,
       jobsCreated: 0,
       manifest: join(proofRoot, "manifest.json"),

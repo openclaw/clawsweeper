@@ -94,13 +94,13 @@ part of this procedure.
 [runtime-proof.mjs](runtime-proof.mjs) executes **13 scenarios per mode**. The
 expectation mode is explicit, with no source-symbol detection.
 
-| Scenarios | Baseline expectation | Candidate expectation |
-| --- | --- | --- |
-| Ordinary and fenced quoted header keys (2) | Intake exits 2; `none` invents a blocker; required packet is suppressed | Intake succeeds; `none` yields false/null; required decision survives exactly |
-| Body heading, header comments, header list, body list, single/repeated delimited body-only keys (6) | All remain readable | All remain readable |
-| Genuine competing owned-key record containing comments/list entries (1) | Intake rejects ambiguous ref; decision blocks with no packet | Same guarded rejection |
-| Eligible F/missing legacy-rating selector (1) | Selects `322` | Selects `322` |
-| Missing ratings with body lookalikes: no legacy sections, F/missing legacy sections, fenced lookalikes plus legacy sections (3) | Selects nothing | Selects nothing |
+| Scenarios                                                                                                                       | Baseline expectation                                                    | Candidate expectation                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Ordinary and fenced quoted header keys (2)                                                                                      | Intake exits 2; `none` invents a blocker; required packet is suppressed | Intake succeeds; `none` yields false/null; required decision survives exactly |
+| Body heading, header comments, header list, body list, single/repeated delimited body-only keys (6)                             | All remain readable                                                     | All remain readable                                                           |
+| Genuine competing owned-key record containing comments/list entries (1)                                                         | Intake rejects ambiguous ref; decision blocks with no packet            | Same guarded rejection                                                        |
+| Eligible F/missing legacy-rating selector (1)                                                                                   | Selects `322`                                                           | Selects `322`                                                                 |
+| Missing ratings with body lookalikes: no legacy sections, F/missing legacy sections, fenced lookalikes plus legacy sections (3) | Selects nothing                                                         | Selects nothing                                                               |
 
 The six benign structural cases are positive controls on both versions, not
 failures attributed to the original bug. F/missing legacy ratings are valid
@@ -114,19 +114,28 @@ The actual intake invocation uses `create-job --from-report` with synthetic
 check the original subject, question, rationale, options, and owner. Selector
 cases invoke actual `workflow-utils proposed-item-numbers` against a flat
 synthetic `records/.../items` directory. Each mode expects 22 application
-invocations, one GitHub-command tripwire self-check, and 136 baseline / 150
+invocations, two tripwire self-checks (GitHub command and network denial), and 138 baseline / 152
 candidate assertions. These counts are expectations, not an execution receipt.
 
 ## Boundaries and output
 
-Children receive a credential-free allowlist. `gh`, `codex`, and `claude`
-tripwires reject execution; the GitHub tripwire is self-tested and its log is
-cleared before measuring application behavior. A Node preload denies fetch,
-HTTP(S), and socket connections. Assertions require zero subsequent command or
-network attempts, no jobs written, and unchanged selector records.
+Children receive a credential-free allowlist. Static `gh`, `codex`, and `claude`
+tripwires and the static network-denial preload read their log pathname from the
+child-only `CLAWSWEEPER_PROOF_DENIED_LOG` environment value. The command names
+remain an explicit allowlist. Decision probes receive module and report paths
+as arguments; runtime paths are never inserted into generated JavaScript.
+
+The central spawn helper passes the preload through explicit Node `--require`
+arguments. It denies fetch, HTTP(S), and socket connections. Independent self-checks
+require the GitHub command's rejection and a fetch to `https://example.invalid`
+to fail with the known network-denial error and log entry. Both self-check logs
+are cleared before measuring application behavior. Assertions require zero
+subsequent command or network attempts, no jobs written, and unchanged selector
+records.
 
 Generated manifests bind source IDs, archive hashes, source/dist hashes, driver
-and fixture hashes, exact argv and argv hashes, observations, and toolchain.
+and fixture hashes, complete argv (including the preload) and argv hashes,
+the non-secret child environment, observations, and toolchain.
 Build/runtime logs and manifests stay in the caller's output directory, outside
 committed source. Publish only inspected normalized observations in the PR body
 after fresh execution and record provider/image/lease separately.

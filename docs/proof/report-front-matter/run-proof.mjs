@@ -196,7 +196,9 @@ try {
     );
     const result = JSON.parse(output);
     assert.equal(result.scenarios, 13);
-    assert.equal(result.assertions, mode === "baseline" ? 136 : 150);
+    assert.equal(result.assertions, mode === "baseline" ? 138 : 152);
+    assert.equal(result.tripwireSelfChecks, 2);
+    assert.equal(result.applicationInvocations, 22);
     assert.deepEqual(sourceHashes(source), before, `${mode} source changed during execution`);
     assert.deepEqual(
       dependencyHashes(),
