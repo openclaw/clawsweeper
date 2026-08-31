@@ -4268,7 +4268,7 @@ jobs:
           permission-issues: read
           permission-pull-requests: read
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
 

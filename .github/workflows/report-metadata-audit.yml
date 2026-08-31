@@ -48,7 +48,7 @@ jobs:
           fi
           node scripts/audit-report-metadata-spoofing.mjs "${args[@]}"
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: report-metadata-audit
           path: .artifacts/report-metadata-audit.json

@@ -79,8 +79,8 @@
     "repair:publish-result": "node dist/repair/publish-result.js",
     "repair:review-results": "node dist/repair/review-results.js",
     "target-fanout": "node dist/repair/target-fanout.js",
-    "dashboard:deploy": "npx wrangler@4.107.0 deploy --config dashboard/wrangler.toml",
-    "dashboard:dev": "npx wrangler@4.107.0 dev --config dashboard/wrangler.toml",
+    "dashboard:deploy": "npx wrangler@4.127.1 deploy --config dashboard/wrangler.toml",
+    "dashboard:dev": "npx wrangler@4.127.1 dev --config dashboard/wrangler.toml",
     "dashboard:refresh-ci": "node scripts/dashboard-refresh-ci.mjs",
     "dashboard:smoke": "node scripts/dashboard-smoke.mjs",
     "test": "pnpm run build:all && pnpm run test:no-build",
@@ -124,14 +124,14 @@
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
-    "markdown-it": "^15.0.0",
-    "oxfmt": "^0.58.0",
-    "oxlint": "^1.73.0",
-    "oxlint-tsgolint": "0.24.0",
+    "markdown-it": "^15.0.1",
+    "oxfmt": "^0.65.0",
+    "oxlint": "^1.80.0",
+    "oxlint-tsgolint": "7.0.2001",
     "playwright-core": "^1.62.1"
   },
   "engines": {
     "node": ">=24"
   },
-  "packageManager": "pnpm@11.10.0"
+  "packageManager": "pnpm@11.24.0"
 }

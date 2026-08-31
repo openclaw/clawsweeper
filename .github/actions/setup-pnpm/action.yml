@@ -6,7 +6,7 @@ inputs:
     default: "24"
   pnpm-version:
     description: pnpm version to activate through Corepack.
-    default: "11.10.0"
+    default: "11.24.0"
   working-directory:
     description: Directory containing package.json.
     default: "."
@@ -16,7 +16,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@v6
+    - uses: actions/setup-node@v7
       with:
         node-version: ${{ inputs.node-version }}
 

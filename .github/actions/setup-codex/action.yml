@@ -3,10 +3,10 @@ description: Cache, install, and authenticate the OpenAI Codex CLI.
 inputs:
   codex-version:
     description: Exact Codex CLI npm package version.
-    default: "0.146.0"
+    default: "0.150.1"
   proxy-version:
     description: Exact Codex Responses proxy npm package version.
-    default: "0.139.0"
+    default: "0.150.1"
   auth-mode:
     description: Authentication mode. Use proxy to keep OPENAI_API_KEY out of Codex subprocesses, or login for legacy codex login.
     default: "proxy"
