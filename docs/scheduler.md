@@ -75,10 +75,14 @@ group with the same single-pending policy, so newer revisions replace stale
 pending work instead of building a duplicate queue. Durable exact-review leases
 use lease-scoped workflow groups and remain owned by the Worker admission lane.
 If a successful exact-review run loses its completion callback, reconciliation
-uses the accepted or deduplicated direct-publication receipt to preserve an
-owed source-drift review. A superseded receipt or a newer queued revision does
-not create another review. Queue-completion failures remain visible separately
-from Codex or content failures.
+uses the saved lease's accepted or deduplicated direct-publication receipt and
+requeue plan to preserve one owed source-drift review. The terminal `requeue`
+disposition is recorded before completion and stays on the old fenced revision.
+A superseded receipt cannot authorize a requeue; a newer command keeps its
+current decision and revision through the ordinary finishing path.
+Queue-completion failures remain visible separately from Codex or content
+failures, using the logical generation result and typed deferral rather than
+the review process exit alone. The workflow failure gate is unchanged.
 
 Recoverable parked reviews use the nominal 5/10/20-minute retry ladder, but
 each item persists a schedule-time uniform jitter of 0.75-1.5x for every rung.

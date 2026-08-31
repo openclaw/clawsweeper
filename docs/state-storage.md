@@ -46,6 +46,14 @@ supersedes older pending work, while retries reuse the same receipt. Detailed
 terminal receipts use the same 30-day horizon as resolved dead letters, and the
 per-comment watermark remains after receipt compaction.
 
+Direct publication saves its lifecycle plan and receipt outcome on the claimed
+lease decision. Completion and terminal-run reconciliation use that saved
+authority for source-drift requeues, even if ingress has replaced the current
+decision. Recovery preserves the old target, fence, and revision's terminal
+fact; it does not manufacture router, acknowledgement, or review-result receipts.
+OpenClaw Bay needs no schema or UI change: its existing observer-only projection
+shows the requeue disposition without inventing review success or failure.
+
 Exact-review publication retries use R2 only as a cache in front of GitHub
 Artifacts. After a GitHub download passes the normal bundle validator, the
 publisher stores a deterministic byte-preserving archive at

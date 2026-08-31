@@ -26,6 +26,121 @@ import {
 } from "./helpers.ts";
 import { scheduledReviewSemanticSourceRevision } from "../scripts/classify-scheduled-review-noop.ts";
 
+test("exact review failure annotation follows logical generation and preserves the failure gate", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const failure = workflow.jobs["event-review-apply"].steps.find(
+    (entry: { name?: string }) => entry.name === "Fail unsuccessful exact review generation",
+  );
+  const evaluate = (template: string, values: Record<string, string>) => {
+    const expression = template
+      .replace(/^\s*\$\{\{\s*|\s*\}\}\s*$/g, "")
+      .replace(/\balways\(\)/g, "true")
+      .replace(
+        /steps\.([a-z0-9-]+)\.(outputs\.([a-z0-9_]+)|outcome)/g,
+        (_match, stepId: string, access: string, output?: string) =>
+          JSON.stringify(values[`${stepId}.${output ?? access}`] ?? ""),
+      );
+    return Function(`"use strict"; return (${expression});`)();
+  };
+  // Exhaust the independent gate facts; raw process outcome must not override
+  // typed deferrals or content failures reported after an exit-zero process.
+  for (let mask = 0; mask < 256; mask += 1) {
+    const [claimed, accepted, completed, superseded, held, itemSuperseded, generated, deferred] =
+      Array.from({ length: 8 }, (_, bit) => Boolean(mask & (1 << bit)));
+    if (superseded && held) continue;
+    const values = {
+      "claim-exact-review-queue.claimed": String(claimed),
+      "direct-exact-review-publication.accepted": String(accepted),
+      "complete-exact-review-queue.outcome": completed ? "success" : "failure",
+      "reserve-exact-review-lease.status": superseded ? "superseded" : held ? "held" : "posted",
+      "review-exact-event-item.superseded": String(itemSuperseded),
+      "exact-review-generation-result.outcome": generated ? "success" : "failure",
+      "exact-review-generation-result.retry_kind": deferred ? "throttle" : "",
+    };
+    const generationFailed = !generated && !deferred && !held && !superseded;
+    const expected =
+      claimed && ((!accepted && !completed && !superseded && !itemSuperseded) || generationFailed);
+    assert.equal(evaluate(failure.if, values), expected, JSON.stringify(values));
+    assert.equal(
+      evaluate(failure.env.CLASSIFICATION, values),
+      generationFailed ? "codex_or_content_failure" : "queue_completion_failure",
+    );
+  }
+  for (const scenario of [
+    {
+      name: "completion only",
+      generation: "success",
+      process: "success",
+      retry: "",
+      reservation: "posted",
+      completion: "failure",
+      expected: "queue_completion_failure",
+    },
+    {
+      name: "held deferral",
+      generation: "failure",
+      process: "skipped",
+      retry: "coordination",
+      reservation: "held",
+      completion: "failure",
+      expected: "queue_completion_failure",
+    },
+    {
+      name: "throttle process failure",
+      generation: "failure",
+      process: "failure",
+      retry: "throttle",
+      reservation: "posted",
+      completion: "failure",
+      expected: "queue_completion_failure",
+    },
+    {
+      name: "exit-zero content failure",
+      generation: "failure",
+      process: "success",
+      retry: "",
+      reservation: "posted",
+      completion: "success",
+      expected: "codex_or_content_failure",
+    },
+    {
+      name: "simultaneous failures",
+      generation: "failure",
+      process: "failure",
+      retry: "",
+      reservation: "posted",
+      completion: "failure",
+      expected: "codex_or_content_failure",
+    },
+  ]) {
+    const values = {
+      "claim-exact-review-queue.claimed": "true",
+      "direct-exact-review-publication.accepted": "false",
+      "exact-review-generation-result.outcome": scenario.generation,
+      "exact-review-generation-result.retry_kind": scenario.retry,
+      "review-exact-event-item.outcome": scenario.process,
+      "review-exact-event-item.exit_code": scenario.process === "failure" ? "1" : "0",
+      "complete-exact-review-queue.outcome": scenario.completion,
+      "reserve-exact-review-lease.status": scenario.reservation,
+    };
+    assert.equal(evaluate(failure.if, values), true, scenario.name);
+    const env = Object.fromEntries(
+      Object.entries(failure.env).map(([key, value]) => [
+        key,
+        String(evaluate(String(value), values)),
+      ]),
+    );
+    const result = spawnSync("bash", ["-c", failure.run], { env, encoding: "utf8" });
+    assert.equal(result.status, 1, scenario.name);
+    assert.match(result.stdout, new RegExp(`classification=${scenario.expected} `), scenario.name);
+    assert.match(
+      result.stdout,
+      new RegExp(`queue_completion=${scenario.completion}`),
+      scenario.name,
+    );
+  }
+});
+
 test("sweep keeps optional media tooling out of review startup", () => {
   const workflow = readText(".github/workflows/sweep.yml");
 

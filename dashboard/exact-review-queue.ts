@@ -2278,21 +2278,18 @@ export class ExactReviewQueue {
       if (reviewFailureReason && publicationItem) {
         return json({ error: "review_failure_reason_for_publication" }, 400);
       }
-      const leasedDirectLifecycle = item.leaseDecision?.publication?.directLifecycle;
-      const directLifecycleLeasePublication =
-        item.leaseDecision?.sourceAction === EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION &&
-        Boolean(leasedDirectLifecycle);
+      const leasedDirectLifecycle = exactReviewSavedDirectLifecycle(item);
       // A non-superseding command may replace the current decision while this
       // old lease is still publishing. Its saved direct plan, not the newer
       // decision, establishes that this completion owns the old revision.
       const directLifecyclePublicationCompletion =
-        directLifecycleLeasePublication &&
+        Boolean(leasedDirectLifecycle) &&
         outcome === "success" &&
         (publicationCompletion?.kind === "published" ||
           publicationCompletion?.kind === "superseded");
       const exactDirectLifecycleRequeue =
         directLifecyclePublicationCompletion &&
-        leasedDirectLifecycle?.plan.kind === "requeue" &&
+        leasedDirectLifecycle?.owedRequeue &&
         publicationCompletion?.kind === "published";
       const publicationCompletionOwnedByLease =
         publicationItem || directLifecyclePublicationCompletion;
@@ -3580,17 +3577,15 @@ export class ExactReviewQueue {
         if (matches.length !== 1) continue;
         const item = matches[0];
         const leaseRevision = Number(item.leaseRevision || 0);
-        const directLifecycle = item.decision.publication?.directLifecycle;
+        const directLifecycle = exactReviewSavedDirectLifecycle(item);
         const owedDirectLifecycleRequeue =
           run.outcome === "success" &&
           item.revision <= leaseRevision &&
-          directLifecycle?.plan.kind === "requeue" &&
-          (directLifecycle.receiptOutcome === "accepted" ||
-            directLifecycle.receiptOutcome === "deduped");
+          directLifecycle?.owedRequeue;
         if (owedDirectLifecycleRequeue) {
           this.recordLifecycleTerminal(
             {
-              canonicalTargetKey: `${item.decision.targetRepo}#${item.decision.itemNumber}`,
+              canonicalTargetKey: directLifecycle.canonicalTargetKey,
               fenceKey: item.key,
               revision: leaseRevision,
               kind: "requeue",
@@ -7991,7 +7986,7 @@ export class ExactReviewQueue {
     item: ExactReviewQueueItem,
     now: number,
   ) {
-    const publication = item.decision.publication;
+    const publication = item.leaseDecision?.publication;
     if (publication?.directLifecycle?.plan.kind !== "requeue") {
       throw new Error("direct lifecycle requeue requires an exact direct receipt");
     }
@@ -12160,6 +12155,20 @@ function exactReviewDeadLetterInsert(
     lastFailedAt,
     itemJson: JSON.stringify(item),
     ...(errorFingerprint ? { errorFingerprint } : {}),
+  };
+}
+
+function exactReviewSavedDirectLifecycle(item: ExactReviewQueueItem) {
+  const decision = item.leaseDecision;
+  const lifecycle = decision?.publication?.directLifecycle;
+  if (decision?.sourceAction !== EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION || !lifecycle) {
+    return undefined;
+  }
+  return {
+    canonicalTargetKey: `${decision.targetRepo}#${decision.itemNumber}`,
+    owedRequeue:
+      lifecycle.plan.kind === "requeue" &&
+      (lifecycle.receiptOutcome === "accepted" || lifecycle.receiptOutcome === "deduped"),
   };
 }
 
