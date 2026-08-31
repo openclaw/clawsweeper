@@ -70,6 +70,20 @@ export function agentInputScanFailureExitCode(error: unknown): number | null {
 const MAX_SCAN_BYTES = 256 * 1024 * 1024;
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const hostRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const REVIEW_TOOL_BOOTSTRAP_ENV = [
+  "SystemRoot",
+  "HOME",
+  "USERPROFILE",
+  "LOCALAPPDATA",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "NODE_USE_ENV_PROXY",
+  "NODE_EXTRA_CA_CERTS",
+] as const;
 
 function within(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -164,6 +178,15 @@ export function managedScannerCacheRoot(
   return root;
 }
 
+export function reviewToolBootstrapEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const child: NodeJS.ProcessEnv = {};
+  for (const name of REVIEW_TOOL_BOOTSTRAP_ENV) {
+    const value = env[name];
+    if (value !== undefined) child[name] = value;
+  }
+  return child;
+}
+
 function trustedScanner(cwd: string, lexicalCwd: string, timeoutMs: number): string {
   try {
     return trustedExecutable("trufflehog", cwd, lexicalCwd);
@@ -176,10 +199,7 @@ function trustedScanner(cwd: string, lexicalCwd: string, timeoutMs: number): str
   const result = spawnSync(process.execPath, [installer, "--timeout-ms", String(timeoutMs)], {
     encoding: "utf8",
     env: {
-      SystemRoot: process.env.SystemRoot,
-      HOME: process.env.HOME,
-      USERPROFILE: process.env.USERPROFILE,
-      LOCALAPPDATA: process.env.LOCALAPPDATA,
+      ...reviewToolBootstrapEnvironment(process.env),
       // The child receives only the parent-validated absolute location, so it
       // cannot create a managed cache inside either checkout before refusal.
       CLAWSWEEPER_REVIEW_TOOLS_DIR: cacheRoot,

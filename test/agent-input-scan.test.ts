@@ -22,6 +22,7 @@ import {
   INCOMPLETE_AGENT_INPUT_SOURCE_EXIT_CODE,
   agentInputScanFailureExitCode,
   managedScannerCacheRoot,
+  reviewToolBootstrapEnvironment,
   scanAgentInput,
 } from "../dist/agent-input-scan.js";
 import { reviewedFixtureForSource } from "../dist/agent-input-scan-fixtures.js";
@@ -38,6 +39,27 @@ test("only incomplete source scan failures receive the terminal review exit code
   );
   assert.equal(agentInputScanFailureExitCode(new AgentInputScanError("scanner_failed")), null);
   assert.equal(agentInputScanFailureExitCode(new Error("review failed")), null);
+});
+
+test("managed scanner bootstrap forwards only required proxy and CA configuration", () => {
+  assert.deepEqual(
+    reviewToolBootstrapEnvironment({
+      SystemRoot: "C:\\Windows",
+      HTTPS_PROXY: "http://proxy.example",
+      no_proxy: "localhost",
+      NODE_USE_ENV_PROXY: "1",
+      NODE_EXTRA_CA_CERTS: "C:\\certs\\corp.pem",
+      NODE_TLS_REJECT_UNAUTHORIZED: "0",
+      CLAWSWEEPER_TOKEN: "secret",
+    }),
+    {
+      SystemRoot: "C:\\Windows",
+      HTTPS_PROXY: "http://proxy.example",
+      no_proxy: "localhost",
+      NODE_USE_ENV_PROXY: "1",
+      NODE_EXTRA_CA_CERTS: "C:\\certs\\corp.pem",
+    },
+  );
 });
 
 function fixture(t: test.TestContext, prompt = "Review the change.") {
