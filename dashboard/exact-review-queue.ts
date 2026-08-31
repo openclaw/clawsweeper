@@ -2368,18 +2368,15 @@ export class ExactReviewQueue {
         lifecycleIdentity.fenceKey,
         lifecycleIdentity.revision,
       );
-      const terminalDisposition =
-        exactReviewLifecycleCompletionDisposition({
-          projection: projectionBeforeTerminalCommit,
-          outcome,
-          publicationCompletion,
-          requeued: lifecycleRequeued,
-          parked: Boolean(completionResult.parked),
-          deadLetter: Boolean(completionResult.deadLetter),
-          lifecycleTerminal,
-        }) ??
-        projectionBeforeTerminalCommit?.terminalDisposition?.kind ??
-        null;
+      const terminalDisposition = exactReviewLifecycleCompletionDisposition({
+        projection: projectionBeforeTerminalCommit,
+        outcome,
+        publicationCompletion,
+        requeued: lifecycleRequeued,
+        parked: Boolean(completionResult.parked),
+        deadLetter: Boolean(completionResult.deadLetter),
+        lifecycleTerminal,
+      });
       const terminalFinalization =
         publicationCompletionOwnedByLease &&
         !lifecycleRequeued &&
@@ -6654,17 +6651,14 @@ export class ExactReviewQueue {
               ),
               env: this.env,
             });
-            const terminalDisposition =
-              exactReviewLifecycleCompletionDisposition({
-                projection: projectionBeforeTerminalCommit,
-                outcome: "success",
-                publicationCompletion: requested.publicationCompletion,
-                requeued: result.requeued,
-                parked: result.parked,
-                deadLetter: Boolean(result.deadLetter),
-              }) ??
-              projectionBeforeTerminalCommit?.terminalDisposition?.kind ??
-              null;
+            const terminalDisposition = exactReviewLifecycleCompletionDisposition({
+              projection: projectionBeforeTerminalCommit,
+              outcome: "success",
+              publicationCompletion: requested.publicationCompletion,
+              requeued: result.requeued,
+              parked: result.parked,
+              deadLetter: Boolean(result.deadLetter),
+            });
             const terminalFinalization =
               !result.requeued &&
               !result.parked &&
@@ -6780,17 +6774,14 @@ export class ExactReviewQueue {
               }),
             );
           }
-          const terminalDisposition =
-            exactReviewLifecycleCompletionDisposition({
-              projection: projectionBeforeTerminalCommit,
-              outcome: "success",
-              publicationCompletion,
-              requeued: result.requeued,
-              parked: result.parked,
-              deadLetter: Boolean(result.deadLetter),
-            }) ??
-            projectionBeforeTerminalCommit?.terminalDisposition?.kind ??
-            null;
+          const terminalDisposition = exactReviewLifecycleCompletionDisposition({
+            projection: projectionBeforeTerminalCommit,
+            outcome: "success",
+            publicationCompletion,
+            requeued: result.requeued,
+            parked: result.parked,
+            deadLetter: Boolean(result.deadLetter),
+          });
           const terminalFinalization =
             !result.requeued &&
             !result.parked &&
@@ -7085,18 +7076,15 @@ export class ExactReviewQueue {
     },
     now: number,
   ) {
-    if (
-      !this.lifecycleProjectionStore.read(
-        identity.canonicalTargetKey,
-        identity.fenceKey,
-        identity.revision,
-      )
-    ) {
-      return;
-    }
+    const projection = this.lifecycleProjectionStore.read(
+      identity.canonicalTargetKey,
+      identity.fenceKey,
+      identity.revision,
+    );
+    if (!projection) return;
     const terminal = this.lifecycleProjectionStore.recordTerminalDisposition({
       ...identity,
-      kind: identity.kind,
+      kind: completionTerminalDisposition(projection, identity.kind) ?? identity.kind,
       observedAt: now,
     });
     this.syncBayLifecycle(terminal);
@@ -11718,28 +11706,41 @@ function exactReviewLifecycleCompletionDisposition({
   deadLetter: boolean;
   lifecycleTerminal?: LifecycleTerminalDisposition;
 }): LifecycleTerminalDisposition | null {
-  if (deadLetter) return "dead_letter";
-  if (requeued || parked) return "requeue";
-  if (lifecycleTerminal) return lifecycleTerminal;
-  if (publicationCompletion?.kind === "superseded") {
-    return publicationCompletion.reasonCode === "remote_closed" ? "target_closed" : "superseded";
-  }
-  if (publicationCompletion?.kind === "permanent_failure") return "failure";
-  if (
+  let disposition: LifecycleTerminalDisposition | null;
+  if (deadLetter) disposition = "dead_letter";
+  else if (requeued || parked) disposition = "requeue";
+  else if (lifecycleTerminal) disposition = lifecycleTerminal;
+  else if (publicationCompletion?.kind === "superseded") {
+    disposition =
+      publicationCompletion.reasonCode === "remote_closed" ? "target_closed" : "superseded";
+  } else if (publicationCompletion?.kind === "permanent_failure") disposition = "failure";
+  else if (
     publicationCompletion?.kind === "deferred" &&
     publicationCompletion.reasonCode === "close_coverage_deferred" &&
     projection?.routerReceipt?.outcome === "durable"
   ) {
-    return "review_completed_routed";
-  }
-  if (
+    disposition = "review_completed_routed";
+  } else if (
     publicationCompletion?.kind === "retryable_failure" ||
     publicationCompletion?.kind === "refresh_required" ||
     publicationCompletion?.kind === "deferred"
   ) {
-    return "requeue";
+    disposition = "requeue";
+  } else {
+    disposition = outcome === "failure" || outcome === "cancelled" ? "failure" : null;
   }
-  return outcome === "failure" || outcome === "cancelled" ? "failure" : null;
+  return completionTerminalDisposition(projection, disposition);
+}
+
+function completionTerminalDisposition(
+  projection: ExactReviewLifecycleProjection | null,
+  requested: LifecycleTerminalDisposition | null,
+): LifecycleTerminalDisposition | null {
+  const committed = projection?.terminalDisposition?.kind;
+  // Completion observes an existing final outcome; only requeue can transition it.
+  return committed && committed !== "requeue" && requested !== "requeue"
+    ? committed
+    : (requested ?? committed ?? null);
 }
 
 function finishExactReviewPublicationQueueItem({

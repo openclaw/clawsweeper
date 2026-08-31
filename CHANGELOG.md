@@ -72,6 +72,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Preserve committed lifecycle outcomes when later queue completions disagree, preventing terminal-state conflicts from failing completion callbacks and acknowledgement drivers.
 - Retain numeric queue failure source locations inside the Durable Object before remote transport discards the original stack, without logging private error text.
 - Bound shared repair GitHub CLI calls with native process deadlines and honor per-call timeout settings. Thanks @SebTardif.
 - Bound standalone webhook GitHub requests to 15 seconds, including response bodies, so stalled calls return a retryable response. Thanks @SebTardif.
