@@ -34,7 +34,12 @@ Queue transport failures keep the fixed public `exact_review_queue_unavailable`
 response. Server logs for `exact_review_queue_request_failed` retain only the
 Cloudflare `remote`, `retryable`, and `overloaded` boolean flags; exception text,
 stacks, request payloads, and credentials are excluded. These flags are diagnostic
-signals and do not change retry or publication policy.
+signals and do not change retry or publication policy. Inside the Durable Object,
+`exact_review_queue_handler_failed` additionally records `initialize` or `fetch`
+and the first numeric `[line, column]` location in the deployed `worker.js` module
+(or `null` when unavailable). Match coordinates to that deployment’s bundle;
+remote transport replaces the original stack before the outer Worker sees it.
+These logs exclude error messages, SQL, private paths, and raw stacks.
 
 ## Deployment
 

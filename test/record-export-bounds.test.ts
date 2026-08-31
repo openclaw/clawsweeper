@@ -560,7 +560,9 @@ test("signed record export hides missing and invalid logical byte metadata", asy
     assert.equal(invalidResponse.headers.get("content-type"), "application/json; charset=utf-8");
     assert.deepEqual(await invalidResponse.json(), { error: "exact_review_queue_unavailable" });
     assert.deepEqual(errors, [
+      ["exact_review_queue_handler_failed", { phase: "fetch", location: null }],
       ["exact_review_queue_request_failed", { remote: false, retryable: false, overloaded: false }],
+      ["exact_review_queue_handler_failed", { phase: "fetch", location: null }],
       ["exact_review_queue_request_failed", { remote: false, retryable: false, overloaded: false }],
     ]);
   } finally {

@@ -72,6 +72,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Retain numeric queue failure source locations inside the Durable Object before remote transport discards the original stack, without logging private error text.
 - Bound shared repair GitHub CLI calls with native process deadlines and honor per-call timeout settings. Thanks @SebTardif.
 - Bound standalone webhook GitHub requests to 15 seconds, including response bodies, so stalled calls return a retryable response. Thanks @SebTardif.
 - Completed obsolete exact-review publications when apply verifies a strictly newer durable review for the same revision, preserving retry behavior for unproven results. Thanks @vincentkoc. (#1249)

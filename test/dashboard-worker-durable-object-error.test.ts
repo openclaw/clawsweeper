@@ -36,14 +36,57 @@ function signedPublicationsListRequest(body: string, secret: string) {
   });
 }
 
-test("exact-review Durable Object rejects storage failures directly", async () => {
+test("exact-review Durable Object logs only source coordinates and rethrows storage failures", async (t) => {
   const storage = new MemoryDurableStorage();
   const queue = newQueue(storage);
   assert.equal((await queue.fetch(publicationsListRequest(100))).status, 200);
+  const errors: unknown[][] = [];
+  t.mock.method(console, "error", (...values: unknown[]) => errors.push(values));
+  for (const [stack, location] of [
+    ["Error: private marker\n    at query (worker.js:91:4)", [91, 4]],
+    [
+      "Error: private marker\r\n    at query (file:///private-path/worker.js:123:7)\r\n    at caller (worker.js:234:8)",
+      [123, 7],
+    ],
+    ["Error: private marker worker.js:91:4", null],
+    ["Error: private marker\n    at query (private-worker.js:91:4)", null],
+    ["Error: private marker\n    at query (worker.js:0:4)", null],
+    ["Error: private marker\n    at query (worker.js:1234567:4)", null],
+    [undefined, null],
+  ] as const) {
+    const failure = new Error("private marker");
+    failure.stack = stack;
+    errors.length = 0;
+    storage.failNextSql(/SELECT item_key, item_json/, failure);
+    await assert.rejects(queue.fetch(publicationsListRequest(100)), (error) => error === failure);
+    assert.deepEqual(errors, [["exact_review_queue_handler_failed", { phase: "fetch", location }]]);
+    assert.equal((await queue.fetch(publicationsListRequest(100))).status, 200);
+  }
+});
 
-  storage.failNextSql(/SELECT item_key, item_json/);
-  await assert.rejects(queue.fetch(publicationsListRequest(100)), /injected SQL failure/);
-  assert.equal((await queue.fetch(publicationsListRequest(100))).status, 200);
+test("exact-review schema barrier logs source coordinates before rejecting initialization", async (t) => {
+  const storage = new MemoryDurableStorage();
+  const failure = new Error("private schema marker");
+  failure.stack = "Error: private schema marker\n    at schema (worker.js:456:9)";
+  storage.failNextSql(/CREATE TABLE/, failure);
+  const errors: unknown[][] = [];
+  t.mock.method(console, "error", (...values: unknown[]) => errors.push(values));
+  let initialized: Promise<void> | undefined;
+  new ExactReviewQueue(
+    {
+      storage,
+      blockConcurrencyWhile: (callback: () => Promise<void>) => {
+        initialized = callback();
+        return initialized;
+      },
+    },
+    {},
+  );
+  assert.ok(initialized);
+  await assert.rejects(initialized, (error) => error === failure);
+  assert.deepEqual(errors, [
+    ["exact_review_queue_handler_failed", { phase: "initialize", location: [456, 9] }],
+  ]);
 });
 
 test("exact-review Worker retains only platform flags from rejected Durable Object calls", async () => {

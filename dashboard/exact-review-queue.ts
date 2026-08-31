@@ -731,6 +731,22 @@ function exactReviewPublicBayRepositories(env): Set<string> {
   return new Set(repositories);
 }
 
+function rethrowQueueFailure(error: unknown, phase: "initialize" | "fetch"): never {
+  const stack = objectValue(error).stack;
+  // Remote error text may contain private data; retain only deployed source coordinates.
+  const frame =
+    typeof stack === "string"
+      ? /^[ \t]+at (?:[^\r\n]*[/ (])?worker\.js:([1-9]\d{0,5}):([1-9]\d{0,5})\)?[ \t]*\r?$/m.exec(
+          stack,
+        )
+      : null;
+  console.error("exact_review_queue_handler_failed", {
+    phase,
+    location: frame ? [Number(frame[1]), Number(frame[2])] : null,
+  });
+  throw error;
+}
+
 export class ExactReviewQueue {
   private state;
   private storage;
@@ -789,20 +805,34 @@ export class ExactReviewQueue {
     if (typeof state.blockConcurrencyWhile === "function") {
       this.lifecycleProjectionReady = Promise.resolve(
         state.blockConcurrencyWhile(async () => {
-          this.lifecycleProjectionStore.ensureSchemaSync();
-          this.lifecycleTelemetryStore.ensureSchemaSync();
-          this.lifecycleTelemetryStore.syncBayRepositoryScope(
-            exactReviewPublicBayRepositories(this.env),
-          );
+          try {
+            this.lifecycleProjectionStore.ensureSchemaSync();
+            this.lifecycleTelemetryStore.ensureSchemaSync();
+            this.lifecycleTelemetryStore.syncBayRepositoryScope(
+              exactReviewPublicBayRepositories(this.env),
+            );
+          } catch (error) {
+            rethrowQueueFailure(error, "initialize");
+          }
         }),
       );
     } else {
-      this.ready = this.initializeStorage();
+      this.ready = this.initializeStorage().catch((error) =>
+        rethrowQueueFailure(error, "initialize"),
+      );
       this.lifecycleProjectionReady = this.ready;
     }
   }
 
   async fetch(request: Request) {
+    try {
+      return await this.handleFetch(request);
+    } catch (error) {
+      rethrowQueueFailure(error, "fetch");
+    }
+  }
+
+  private async handleFetch(request: Request) {
     const url = new URL(request.url);
     // This is deliberately the only route that may observe lifecycle rows
     // before full queue initialization. Its constructor-managed schema barrier
@@ -4679,7 +4709,8 @@ export class ExactReviewQueue {
 
   private ensureReady() {
     if (this.ready) return this.ready;
-    const initialize = () => this.initializeStorage();
+    const initialize = () =>
+      this.initializeStorage().catch((error) => rethrowQueueFailure(error, "initialize"));
     this.ready =
       typeof this.state.blockConcurrencyWhile === "function"
         ? Promise.resolve(this.state.blockConcurrencyWhile(initialize))
