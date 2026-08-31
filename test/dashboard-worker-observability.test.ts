@@ -137,6 +137,8 @@ test("public telemetry routes contain malformed and rejecting durable reads", as
             complete: false,
             queue_stages: null,
             live_stages: null,
+            queue_legacy_batch_stages: null,
+            live_legacy_batch_stages: null,
             total: null,
           },
         });
@@ -1512,6 +1514,10 @@ test("dashboard reuses a current Bay snapshot from the matching shared status sc
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
           completion_source: "verified_final_review_receipts",
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
         },
       },
       pipeline: [{ id: "shared-snapshot", arbitrary_count: 41, arbitrary_boolean: true }],
@@ -1581,6 +1587,10 @@ test("dashboard rejects a current Bay snapshot from a different public scope", a
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
           completion_source: "verified_final_review_receipts",
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
         },
       },
       pipeline: [],
@@ -1622,7 +1632,7 @@ test("dashboard isolates fresh edge caches by public Bay scope", async () => {
     value: { default: cache },
   });
   await cache.put(
-    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v6/openclaw%2Fopenclaw/fresh"),
+    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/openclaw%2Fopenclaw/fresh"),
     jsonResponse({
       schema_version: 1,
       generated_at: new Date().toISOString(),
@@ -1635,6 +1645,10 @@ test("dashboard isolates fresh edge caches by public Bay scope", async () => {
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
           completion_source: "verified_final_review_receipts",
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
         },
       },
       pipeline: [],
@@ -1661,7 +1675,7 @@ test("dashboard isolates fresh edge caches by public Bay scope", async () => {
   }
 });
 
-test("dashboard refreshes a durable snapshot that predates lifecycle provenance", async () => {
+test("dashboard refreshes a durable snapshot that predates the legacy timing aggregate", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
   Object.defineProperty(globalThis, "caches", {
@@ -1679,7 +1693,13 @@ test("dashboard refreshes a durable snapshot that predates lifecycle provenance"
       automatic_work: [],
       pipeline: [{ id: "legacy-shared-snapshot" }],
       diagnostics: { errors: [], error_count: 0 },
-      bay: { timings: { sample_kind: "completed_exact_review_lifecycles" } },
+      bay: {
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
+        },
+      },
       fleet: { active_codex_jobs: 1 },
     }),
   );
@@ -1751,7 +1771,7 @@ test("dashboard rewrites a malformed durable root to a fixed incomplete snapshot
     assert.equal(persisted.includes(marker), false);
     assert.equal(JSON.parse(persisted).public_projection_complete, false);
     assert.equal(
-      await cache.match(new Request("https://clawsweeper.openclaw.ai/api/status-cache/v6/_/fresh")),
+      await cache.match(new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh")),
       undefined,
     );
   } finally {
@@ -2045,6 +2065,10 @@ test("optional exact-review telemetry failures do not freeze an idle status snap
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
           completion_source: "verified_final_review_receipts",
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
         },
       },
       pipeline: [],
@@ -2129,6 +2153,10 @@ test("optional queue status failures remain bounded in public and persisted snap
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
           completion_source: "verified_final_review_receipts",
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
         },
       },
       pipeline: [],
@@ -2240,6 +2268,7 @@ test("optional queue status failure retains the last complete public Bay queue s
       item_number: 125_204,
       stage: "arriving",
       source: "queue",
+      legacy_batch_path: false,
     },
   ]);
   const emptyActivityStages = Object.fromEntries(
@@ -2277,6 +2306,10 @@ test("optional queue status failure retains the last complete public Bay queue s
           sample_kind: "completed_review_journeys",
           source: "durable_exact_review_lifecycles",
           completion_source: "verified_final_review_receipts",
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
         },
       },
       pipeline: [],
@@ -2320,12 +2353,15 @@ test("optional queue status failure retains the last complete public Bay queue s
         item_number: 125_204,
         stage: "arriving",
         source: "queue",
+        legacy_batch_path: false,
       },
     ]);
     assert.deepEqual(status.exact_review_queue.bay_projection.activity, {
       complete: false,
       queue_stages: null,
       live_stages: null,
+      queue_legacy_batch_stages: null,
+      live_legacy_batch_stages: null,
       total: null,
     });
     assert.equal(status.dashboard_health.conclusion, "needs_attention");
@@ -2387,6 +2423,8 @@ test("optional queue status failure retains the last complete public Bay queue s
       complete: false,
       queue_stages: null,
       live_stages: null,
+      queue_legacy_batch_stages: null,
+      live_legacy_batch_stages: null,
       total: null,
     });
 

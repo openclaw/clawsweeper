@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { mockGhBinEnv } from "../helpers.ts";
+import { writeFakeScanner } from "../agent-input-scan-helpers.ts";
 
 const repoRoot = process.cwd();
 
@@ -1429,6 +1430,7 @@ process.exit(1);
 }
 
 function writeFakeCodex(binDir: string) {
+  writeFakeScanner(binDir);
   fs.writeFileSync(
     path.join(binDir, "codex"),
     `#!/usr/bin/env node

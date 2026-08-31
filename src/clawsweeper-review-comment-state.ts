@@ -566,9 +566,9 @@ export function createReviewCommentState(
       liveRevision &&
       reportRevision &&
       liveRevision === reportRevision &&
-      Number.isInteger(liveLeaseCommentId) &&
+      Number.isSafeInteger(liveLeaseCommentId) &&
       liveLeaseCommentId > 0 &&
-      Number.isInteger(reportLeaseCommentId) &&
+      Number.isSafeInteger(reportLeaseCommentId) &&
       reportLeaseCommentId > 0 &&
       liveLeaseCommentId > reportLeaseCommentId,
     );

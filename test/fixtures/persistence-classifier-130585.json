@@ -1,0 +1,18 @@
+{
+  "pullRequest": "https://github.com/openclaw/openclaw/pull/130585",
+  "headSha": "7415491d399e97288a1e5c58eea8273a0d3e12e0",
+  "pullFiles": [
+    {
+      "filename": "scripts/run-opengrep.sh",
+      "additions": 1,
+      "deletions": 3,
+      "patch": "@@ -45,10 +45,8 @@ if ! command -v opengrep >/dev/null 2>&1; then\n   cat >&2 <<'EOF'\n error: 'opengrep' not found on PATH.\n \n-Install with one of:\n+Install with:\n   curl -fsSL https://raw.githubusercontent.com/opengrep/opengrep/v1.27.1/install.sh | bash -s -- -v v1.27.1\n-  brew install opengrep/tap/opengrep\n-  pipx install opengrep\n \n (See https://opengrep.dev for other options.)\n EOF"
+    },
+    {
+      "filename": "test/scripts/run-opengrep.test.ts",
+      "additions": 31,
+      "deletions": 0,
+      "patch": "@@ -42,6 +42,37 @@ function installOpengrepStub(repo: string): { argsPath: string; binDir: string }\n }\n \n describe(\"run-opengrep.sh\", () => {\n+  it(\"fails before scanning with official installation advice when opengrep is missing\", () => {\n+    const repo = createTempDir(\"openclaw-run-opengrep-missing-\");\n+    copyRunOpengrepFiles(repo);\n+    writeFile(path.join(repo, \"security/opengrep/precise.yml\"), \"rules: []\\n\");\n+\n+    const binDir = path.join(repo, \"bin\");\n+    fs.mkdirSync(binDir);\n+    for (const command of [\"bash\", \"dirname\", \"cat\"]) {\n+      const executable = execFileSync(\"bash\", [\"-c\", 'command -v \"$1\"', \"_\", command], {\n+        encoding: \"utf8\",\n+      }).trim();\n+      fs.symlinkSync(executable, path.join(binDir, command));\n+    }\n+\n+    const result = spawnSync(\n+      \"bash\",\n+      [\"scripts/run-opengrep.sh\", \"--changed\", \"--sarif\", \"--error\"],\n+      { cwd: repo, env: { ...process.env, PATH: binDir }, encoding: \"utf8\" },\n+    );\n+\n+    expect(result.status).toBe(127);\n+    expect(result.stdout).toBe(\"\");\n+    expect(result.stderr).toContain(\"'opengrep' not found on PATH\");\n+    expect(result.stderr).toMatch(\n+      /curl -fsSL https:\\/\\/raw\\.githubusercontent\\.com\\/opengrep\\/opengrep\\/\\S+\\/install\\.sh \\| bash -s -- -v \\S+/,\n+    );\n+    expect(fs.existsSync(path.join(repo, \".opengrep-out\"))).toBe(false);\n+    expect(result.stderr).not.toContain(\"pipx\");\n+    expect(result.stderr).not.toContain(\"opengrep/tap/opengrep\");\n+  });\n+\n   it(\"validates the rulepack when only OpenGrep rulepack files changed\", () => {\n     const repo = createTempDir(\"openclaw-run-opengrep-\");\n     git(repo, \"init\", \"-q\");"
+    }
+  ]
+}

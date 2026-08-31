@@ -32,7 +32,7 @@ The fixed proof-triage views are:
 | `missing-proof`              | Needs proof review       | Proof is requested, but ClawSweeper has not marked it sufficient or overridden.     |
 | `sufficient-proof`           | Proof sufficient         | ClawSweeper judged the real behavior proof sufficient.                              |
 | `mock-only-proof`            | Mock-only proof          | Proof appears to rely only on tests, mocks, snapshots, lint, typecheck, or CI.      |
-| `telegram-proof`             | Telegram proof           | PRs where Mantis should capture Telegram visible proof.                             |
+| `telegram-proof`             | Telegram proof           | PRs that need Telegram Test Server proof with the repository E2E skill.              |
 | `sufficient-with-need-label` | Sufficient + needs label | PRs that have sufficient proof but still carry the needs-real-behavior-proof label. |
 
 View IDs, titles, and descriptions are server-owned constants. The projector

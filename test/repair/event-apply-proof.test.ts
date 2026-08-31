@@ -466,6 +466,10 @@ test("exact event proof supersedes only one explicitly verified newer durable tu
     ],
     [verified, eventApplyAction({ number: 42, action: "skipped_runtime_budget" })],
     [verified, eventApplyAction({ number: 43, action: "kept_open" })],
+    [
+      verified,
+      eventApplyAction({ number: 42, action: "review_comment_synced", durableReviewSynced: true }),
+    ],
   ]) {
     assert.equal(exactEventApplyProof(actions, 42).disposition, "unproven");
   }

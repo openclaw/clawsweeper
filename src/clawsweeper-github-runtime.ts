@@ -400,10 +400,25 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
   ) {
     if (process.env.EXACT_EVENT_PUBLICATION !== "true" || args[0] !== "api") return null;
     if (
-      args.some((arg) =>
-        ["-i", "--include", "--paginate", "--slurp", "-f", "--raw-field", "-F", "--field"].includes(
-          arg,
-        ),
+      args.some(
+        (arg) =>
+          [
+            "-i",
+            "--include",
+            "--paginate",
+            "--slurp",
+            "-f",
+            "--raw-field",
+            "-F",
+            "--field",
+            "-q",
+            "--jq",
+            "-t",
+            "--template",
+          ].includes(arg) ||
+          arg.startsWith("--jq=") ||
+          arg.startsWith("--template=") ||
+          /^-i*[qt]/.test(arg),
       )
     ) {
       return null;

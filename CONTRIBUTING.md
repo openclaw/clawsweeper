@@ -34,6 +34,11 @@ pnpm run check
 Corepack reads the pinned `pnpm@11.10.0` version from `package.json`; do not
 replace it with an unpinned global pnpm command in canonical examples.
 
+Workflow-intake fixtures require Bash 4+ for `mapfile`. macOS `/bin/bash` 3.2 is
+insufficient; select an installed newer Bash on `PATH` for validation, for example
+`PATH="/opt/homebrew/opt/bash/bin:$PATH" pnpm run check`. This does not change your
+default shell.
+
 Use the narrowest meaningful validation for the changed surface first. For a
 docs-only change, run `git diff --check` and verify the changed links and
 commands. For code, test, workflow, queue, API, UI, package, or integration

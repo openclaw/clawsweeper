@@ -74,6 +74,7 @@ function isClawSweeperAdvisoryLabel(label: string): boolean {
     label === "feature: ✨ showcase" ||
     label === "good first issue" ||
     label === "mantis: telegram-visible-proof" ||
+    label === "proof: telegram-e2e" ||
     label === "triage: needs-real-behavior-proof"
   );
 }

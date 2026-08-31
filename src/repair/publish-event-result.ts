@@ -287,10 +287,11 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     }
   }
   if (
-    syncedCount + closedCount + missingCount === 0 &&
-    guardedOpenAction === null &&
-    !requeueLatestExpected &&
-    !deferredCloseCoverageExpected
+    (applyDisposition === "unproven" && guardedOpenAction === null && !requeueLatestExpected) ||
+    (syncedCount + closedCount + missingCount === 0 &&
+      guardedOpenAction === null &&
+      !requeueLatestExpected &&
+      !deferredCloseCoverageExpected)
   ) {
     const observed =
       exactActions

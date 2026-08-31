@@ -24,6 +24,7 @@ import {
 } from "./exact-review-publication-retry.ts";
 import {
   CanonicalRecordTupleConflictError,
+  EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES,
   EXACT_REVIEW_DIRECT_PUBLICATION_MAX_POST_BYTES,
   REVIEW_COVERAGE_INVENTORY_KEY,
   ExactReviewDirectPublicationStore,
@@ -286,6 +287,7 @@ export type ExactReviewReviewRecoveryReason =
   | "workflow_cancelled"
   | "workflow_failed";
 type ExactReviewRetryKind = "coordination" | "throttle";
+type ExactReviewFailureReason = "incomplete_source";
 type ExactReviewPublicationFailureKind = "github_rate_limit" | "github_transient";
 type ExactReviewDispatchFailureClass =
   | "permanent_rejection"
@@ -698,6 +700,8 @@ const DEFAULT_STATE_WRITER_COORDINATOR_MAX_LEASE_AGE_MS = 30 * 60_000;
 const RECORD_EXPORT_DEFAULT_LIMIT = 100;
 const RECORD_EXPORT_MAX_LIMIT = 200;
 const RECORD_EXPORT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const RECORD_EXPORT_MAX_SOURCE_BYTES = EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES;
+const RECORD_EXPORT_MAX_RECONSTRUCTION_RECORDS = 50;
 const RECORD_INGEST_MAX_RECORDS = 100;
 const RECORD_INGEST_MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 const RECORD_INGEST_MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -2028,6 +2032,18 @@ export class ExactReviewQueue {
       }
       const outcome = exactReviewCompletionOutcome(body.outcome, "success");
       if (!outcome) return json({ error: "invalid_outcome" }, 400);
+      const reviewFailureReason =
+        body.review_failure_reason === undefined
+          ? undefined
+          : body.review_failure_reason === "incomplete_source"
+            ? (body.review_failure_reason as ExactReviewFailureReason)
+            : null;
+      if (body.review_failure_reason !== undefined && !reviewFailureReason) {
+        return json({ error: "invalid_review_failure_reason" }, 400);
+      }
+      if (reviewFailureReason && outcome !== "failure") {
+        return json({ error: "review_failure_reason_without_failure" }, 400);
+      }
       const failureKind =
         body.failure_kind === undefined
           ? undefined
@@ -2125,6 +2141,9 @@ export class ExactReviewQueue {
       if (retryKind && requestedRetryAt === null) {
         return json({ error: "retry_kind_without_retry_at" }, 400);
       }
+      if (reviewFailureReason && retryKind) {
+        return json({ error: "review_failure_reason_with_retry" }, 400);
+      }
       const state = this.readStateSync();
       const item = tupleCompletion ? state.items[itemKey] : exactReviewItemForLease(state, leaseId);
       if (
@@ -2178,6 +2197,9 @@ export class ExactReviewQueue {
       }
       if (retryKind && publicationItem) {
         return json({ error: "retry_kind_outside_regular_review" }, 400);
+      }
+      if (reviewFailureReason && publicationItem) {
+        return json({ error: "review_failure_reason_for_publication" }, 400);
       }
       const leasedDirectLifecycle = item.leaseDecision?.publication?.directLifecycle;
       const directLifecycleLeasePublication =
@@ -2290,9 +2312,10 @@ export class ExactReviewQueue {
                 requestedRetryAt ?? undefined,
                 requeueLatest,
                 retryKind,
+                reviewFailureReason,
                 this.random,
               ),
-              retried: outcome !== "success",
+              retried: outcome !== "success" && reviewFailureReason === undefined,
               refreshed: false,
               deadLetter: undefined,
             };
@@ -2692,6 +2715,8 @@ export class ExactReviewQueue {
         cursor,
         limit,
         maxBytes: RECORD_EXPORT_MAX_RESPONSE_BYTES,
+        maxSourceBytes: RECORD_EXPORT_MAX_SOURCE_BYTES,
+        maxRecords: RECORD_EXPORT_MAX_RECONSTRUCTION_RECORDS,
       });
       return json({
         repoSlug,
@@ -3015,7 +3040,13 @@ export class ExactReviewQueue {
                 supersededRevisions: [],
               }
             : this.directPublicationStore.accept(validated, now);
-        this.recordLifecycleDirectPublication({ validated, owned, accepted, now });
+        this.recordLifecycleDirectPublication({
+          validated,
+          owned,
+          accepted,
+          now,
+          publicationPath: deferredBatchCompletion ? "batch" : "direct",
+        });
         if (!deferredBatchCompletion) {
           this.recordLifecycleTelemetryDirect({
             validated,
@@ -3474,16 +3505,38 @@ export class ExactReviewQueue {
         );
         if (matches.length !== 1) continue;
         const item = matches[0];
-        const { requeued: didRequeue, parked } = finishExactReviewQueueItem(
-          state,
-          item,
-          now,
-          run.outcome,
-          0,
-          false,
-          undefined,
-          this.random,
-        );
+        const leaseRevision = Number(item.leaseRevision || 0);
+        const directLifecycle = item.decision.publication?.directLifecycle;
+        const owedDirectLifecycleRequeue =
+          run.outcome === "success" &&
+          item.revision <= leaseRevision &&
+          directLifecycle?.plan.kind === "requeue" &&
+          (directLifecycle.receiptOutcome === "accepted" ||
+            directLifecycle.receiptOutcome === "deduped");
+        if (owedDirectLifecycleRequeue) {
+          this.recordLifecycleTerminal(
+            {
+              canonicalTargetKey: `${item.decision.targetRepo}#${item.decision.itemNumber}`,
+              fenceKey: item.key,
+              revision: leaseRevision,
+              kind: "requeue",
+            },
+            now,
+          );
+        }
+        const { requeued: didRequeue, parked } = owedDirectLifecycleRequeue
+          ? this.requeueDirectLifecyclePublicationSync(state, item, now)
+          : finishExactReviewQueueItem(
+              state,
+              item,
+              now,
+              run.outcome,
+              0,
+              false,
+              undefined,
+              undefined,
+              this.random,
+            );
         reconciled += 1;
         if (parked) continue;
         if (didRequeue) {
@@ -3516,6 +3569,9 @@ export class ExactReviewQueue {
       );
       const bayActiveKeys = exactReviewQueueBayActiveKeys(
         url.searchParams.getAll("bay_active_key"),
+      );
+      const bayActiveLegacyKeys = exactReviewQueueBayActiveKeys(
+        url.searchParams.getAll("bay_active_legacy_key"),
       );
       const now = Date.now();
       const snapshot = this.storage.transactionSync(() => {
@@ -3617,6 +3673,7 @@ export class ExactReviewQueue {
         bayPriorityKeys,
         batchByItemKey,
         bayActiveKeys,
+        bayActiveLegacyKeys,
       );
       return json({
         ...stats,
@@ -7014,7 +7071,7 @@ export class ExactReviewQueue {
     this.syncBayLifecycle(terminal);
   }
 
-  private recordLifecycleDirectPublication({ validated, owned, accepted, now }) {
+  private recordLifecycleDirectPublication({ validated, owned, accepted, now, publicationPath }) {
     const sourceDecision = owned?.decision.publication
       ? owned.decision.publication.producerDecision
       : (owned?.leaseDecision ?? owned?.decision);
@@ -7080,7 +7137,7 @@ export class ExactReviewQueue {
     this.lifecycleProjectionStore.recordCanonicalReceipt({
       ...identity,
       outcome: accepted.outcome,
-      receiptId: `direct:${validated.fenceKey}:${validated.revision}:${accepted.outcome}`,
+      receiptId: `${publicationPath === "batch" ? "batch" : "direct-v2"}:${validated.fenceKey}:${validated.revision}:${accepted.outcome}`,
       observedAt: now,
     });
     if (accepted.outcome === "superseded") {
@@ -11266,7 +11323,12 @@ function exactReviewPublicationCompletion(
     ]),
     // Accept the pre-deployment tuple while an old publisher can still finish.
     // New publishers use deferred/close_coverage_deferred instead.
-    refresh_required: new Set(["artifact_unavailable", "artifact_expired", "close_coverage_retry"]),
+    refresh_required: new Set([
+      "artifact_unavailable",
+      "artifact_expired",
+      "close_coverage_retry",
+      "invalid_artifact",
+    ]),
     deferred: new Set(["close_coverage_deferred"]),
     permanent_failure: new Set([
       "invalid_artifact",
@@ -12030,9 +12092,10 @@ function finishExactReviewQueueItem(
   requestedRetryAt = 0,
   requeueLatest = false,
   retryKind?: ExactReviewRetryKind,
+  reviewFailureReason?: ExactReviewFailureReason,
   random: () => number = Math.random,
 ) {
-  const retryingFailure = outcome !== "success";
+  const retryingFailure = outcome !== "success" && reviewFailureReason === undefined;
   const hasNewerRevision = item.revision > Number(item.leaseRevision || 0);
   if (
     !exactReviewQueueIsPublication(item) &&

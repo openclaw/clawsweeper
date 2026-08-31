@@ -1086,7 +1086,7 @@ test("batch claims retain lifecycle identity until canonical routing is durable"
       runAttempt: number;
       outcome: string;
     }>;
-    canonicalReceipts: Array<{ outcome: string }>;
+    canonicalReceipts: Array<{ outcome: string; receiptId: string }>;
     routerReceipts: Array<{ receiptId: string }>;
     terminalDisposition: { kind: string } | null;
   };
@@ -1116,6 +1116,7 @@ test("batch claims retain lifecycle identity until canonical routing is durable"
     ],
   );
   assert.equal(projection.canonicalReceipts[0]?.outcome, "accepted");
+  assert.match(projection.canonicalReceipts[0]?.receiptId ?? "", /^batch:/);
   assert.deepEqual(
     projection.routerReceipts.map((receipt) => receipt.receiptId),
     ["router-batch:9735:2:735"],
@@ -3694,6 +3695,57 @@ test("retryable batch completion releases ownership and preserves queue retry po
   } finally {
     Date.now = originalNow;
   }
+});
+
+test("batch completion refreshes deterministic invalid artifacts", async () => {
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
+    },
+  );
+  await queue.fetch(publicationRequest("delivery-invalid-artifact", 127, "1027"));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-invalid-artifact",
+        lease_owner: "worker-1",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  const member = claim.batch.items[0];
+
+  const completion = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "refresh_required",
+            reason_code: "invalid_artifact",
+          },
+        ],
+      }),
+    )
+  ).json();
+
+  assert.equal(completion.accepted, 1, JSON.stringify(completion));
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: { sourceAction: string; publication?: unknown } }>;
+  };
+  assert.equal(state.items[member.item_key], undefined);
+  assert.equal(
+    state.items["openclaw/openclaw#127"].decision.sourceAction,
+    "artifact_retention_recovery",
+  );
+  assert.equal(state.items["openclaw/openclaw#127"].decision.publication, undefined);
 });
 
 test("credential circuits persist, preserve healthy owners, and defer unattempted members without retry charge", async () => {

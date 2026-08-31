@@ -127,23 +127,27 @@ test("every workflow job that runs the main bundle directly obtains it", () => {
   assert.ok(audited.length > 0, `no job invoking ${MAIN_BUNDLE} was audited`);
 });
 
-test("review jobs execute live proof before their existing artifact upload", () => {
+test("review jobs upload completed reviews without automatic live proof", () => {
   const workflow = parse(fs.readFileSync(".github/workflows/sweep.yml", "utf8")) as {
     jobs?: Record<string, { steps?: { name?: unknown; run?: unknown; uses?: unknown }[] }>;
   };
   for (const jobName of ["event-review-apply", "review"]) {
     const steps = workflow.jobs?.[jobName]?.steps ?? [];
     const review = steps.findIndex((step) => String(step.name ?? "").startsWith("Review "));
-    const execute = steps.findIndex((step) => String(step.run ?? "").includes("live-proof-review"));
     const upload = steps.findIndex(
       (step, index) =>
-        index > execute && String(step.uses ?? "").startsWith("actions/upload-artifact@"),
+        index > review && String(step.uses ?? "").startsWith("actions/upload-artifact@"),
     );
-    assert.ok(review >= 0 && execute > review && upload > execute, jobName);
+    assert.ok(review >= 0 && upload > review, jobName);
+    assert.equal(
+      steps.some((step) => String(step.run ?? "").includes("live-proof-review")),
+      false,
+      jobName,
+    );
   }
 });
 
-test("every durable review-record publication lane preserves the merged live-proof boundary", () => {
+test("historical publication lanes preserve live-proof folding after generation retirement", () => {
   const publicationSites: string[] = [];
   for (const workflowPath of fs.globSync(".github/workflows/*.yml").sort()) {
     const workflow = parse(fs.readFileSync(workflowPath, "utf8")) as {
@@ -170,11 +174,7 @@ test("every durable review-record publication lane preserves the merged live-pro
       publicationSites.push(site);
       if (site === ".github/workflows/sweep.yml:event-review-apply") {
         const directSetup = steps.find((step) => step.id === "direct-setup-state");
-        assert.match(
-          String(directSetup?.if ?? ""),
-          /execute-exact-live-proof\.outputs\.produced != 'true'/,
-          site,
-        );
+        assert.doesNotMatch(String(directSetup?.if ?? ""), /live-proof|live_proof/, site);
         continue;
       }
       if (site === ".github/workflows/exact-review-batch-publish.yml:publish") {

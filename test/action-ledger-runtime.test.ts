@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -46,9 +46,9 @@ import {
 } from "../dist/action-ledger-files.js";
 
 function tempRoot(): string {
-  return fs.realpathSync.native(
-    fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-runtime-")),
-  );
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-runtime-"));
+  after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return fs.realpathSync.native(root);
 }
 
 function trustedChildRoot(root: string, name: string): string {
@@ -2924,46 +2924,54 @@ test("CrabFleet projection admission is fair across spool roots", async () => {
   const firstWaveResolvers: Array<(response: Response) => void> = [];
   const startOrder: string[] = [];
   let saturatedStarted = 0;
+  let releaseFirstWave = false;
   const saturatedFetch = (() => {
     saturatedStarted += 1;
     startOrder.push("saturated");
-    if (saturatedStarted <= CRABFLEET_PROJECTION_LIMITS.maxConcurrent) {
+    if (saturatedStarted <= CRABFLEET_PROJECTION_LIMITS.maxConcurrent && !releaseFirstWave) {
       return new Promise<Response>((resolve) => firstWaveResolvers.push(resolve));
     }
     return Promise.resolve(new Response(null, { status: 204 }));
   }) as typeof fetch;
   const saturatedTotal =
     CRABFLEET_PROJECTION_LIMITS.maxConcurrent + CRABFLEET_PROJECTION_LIMITS.maxQueued;
-  for (let index = 0; index < saturatedTotal; index += 1) {
-    assert.ok(recordReviewNumber(saturatedRoot, 100 + index, env, saturatedFetch));
-  }
-  assert.ok(
-    recordReviewNumber(independentRoot, 999, env, (async () => {
-      startOrder.push("independent");
-      return new Response(null, { status: 204 });
-    }) as typeof fetch),
-  );
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(startOrder, Array(CRABFLEET_PROJECTION_LIMITS.maxConcurrent).fill("saturated"));
-
-  firstWaveResolvers.shift()!(new Response(null, { status: 204 }));
-  const fairnessDeadline = Date.now() + 500;
-  while (!startOrder.includes("independent")) {
-    if (Date.now() >= fairnessDeadline) {
-      throw new Error("independent root did not receive the next projection slot");
+  try {
+    for (let index = 0; index < saturatedTotal; index += 1) {
+      assert.ok(recordReviewNumber(saturatedRoot, 100 + index, env, saturatedFetch));
     }
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.deepEqual(startOrder.slice(0, 5), [
-    "saturated",
-    "saturated",
-    "saturated",
-    "saturated",
-    "independent",
-  ]);
+    assert.ok(
+      recordReviewNumber(independentRoot, 999, env, (async () => {
+        startOrder.push("independent");
+        return new Response(null, { status: 204 });
+      }) as typeof fetch),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(
+      startOrder,
+      Array(CRABFLEET_PROJECTION_LIMITS.maxConcurrent).fill("saturated"),
+    );
 
-  for (const resolve of firstWaveResolvers) resolve(new Response(null, { status: 204 }));
-  await flushPendingCrabFleetPosts();
+    firstWaveResolvers.shift()!(new Response(null, { status: 204 }));
+    const fairnessDeadline = Date.now() + 500;
+    while (!startOrder.includes("independent")) {
+      if (Date.now() >= fairnessDeadline) {
+        throw new Error("independent root did not receive the next projection slot");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.deepEqual(startOrder.slice(0, 5), [
+      "saturated",
+      "saturated",
+      "saturated",
+      "saturated",
+      "independent",
+    ]);
+  } finally {
+    // Release held slots on failure so later tests do not inherit a starved pool.
+    releaseFirstWave = true;
+    for (const resolve of firstWaveResolvers) resolve(new Response(null, { status: 204 }));
+    await flushPendingCrabFleetPosts();
+  }
   assert.equal(startOrder.filter((entry) => entry === "saturated").length, saturatedTotal);
 });
 
@@ -4168,6 +4176,162 @@ test("state shard imports retain global event identity and causal acyclicity", (
   assert.equal(fs.existsSync(path.join(cycleDestination, secondShard.relativePath)), false);
 });
 
+async function withImportRaceChildren(
+  run: (own: (child: ChildProcess) => ReturnType<typeof childResult>) => Promise<void>,
+): Promise<void> {
+  const children: { child: ChildProcess; closed: Promise<number | null> }[] = [];
+  let failure: { error: unknown } | undefined;
+  let cleanupErrors: unknown[] = [];
+  try {
+    await run((child) => {
+      const closed = new Promise<number | null>((resolve) => child.once("close", resolve));
+      children.push({ child, closed });
+      let error: Error | undefined;
+      child.on("error", (cause) => {
+        error ??= cause;
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk) => {
+        stdout += String(chunk);
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+      const result = closed.then((code) => {
+        if (error) throw error;
+        return { code, stdout, stderr };
+      });
+      // A readiness failure may prevent the caller from ever awaiting this result.
+      void result.catch(() => {});
+      return result;
+    });
+  } catch (error) {
+    failure = { error };
+  } finally {
+    const cleanup = await Promise.allSettled(
+      children.map(async ({ child, closed }) => {
+        // These disposable fixtures can be blocked in Atomics.wait indefinitely.
+        if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            closed,
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error("import race child did not close")), 2_000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }),
+    );
+    cleanupErrors = cleanup.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [...(failure ? [failure.error] : []), ...cleanupErrors],
+      "import race child cleanup failed",
+      failure ? { cause: failure.error } : undefined,
+    );
+  }
+  if (failure) throw failure.error;
+}
+
+test("import race child ownership closes held children on pre-release failures", async () => {
+  for (const stage of ["readiness", "second-spawn"]) {
+    const root = tempRoot();
+    const children: ChildProcess[] = [];
+    const closed: ChildProcess[] = [];
+    const releasePath = path.join(root, "release");
+    const failure = new Error("injected failure after second spawn");
+    await assert.rejects(
+      withImportRaceChildren(async (own) => {
+        const startHeldChild = (readyPath: string) => {
+          const child = spawn(
+            process.execPath,
+            [
+              "--input-type=module",
+              "-e",
+              `import fs from "node:fs";
+process.on("SIGTERM", () => {});
+fs.writeFileSync(process.argv[1], "ready");
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);`,
+              readyPath,
+            ],
+            { stdio: ["ignore", "pipe", "pipe"] },
+          );
+          own(child);
+          children.push(child);
+          child.once("close", () => closed.push(child));
+        };
+        const readyPath = path.join(root, "ready");
+        startHeldChild(readyPath);
+        await waitForPath(readyPath);
+        assert.equal(children[0].exitCode, null);
+        assert.equal(children[0].signalCode, null);
+        if (stage === "readiness") {
+          // Reject readiness deterministically while the first fixture is still held.
+          await waitForPath(path.join(root, "unobserved-ready"));
+        } else {
+          startHeldChild(path.join(root, "second-ready"));
+          throw failure;
+        }
+        fs.writeFileSync(releasePath, "release");
+      }),
+      (error) => {
+        if (stage === "readiness") {
+          assert.equal(
+            String(error),
+            `Error: timed out waiting for ${path.join(root, "unobserved-ready")}`,
+          );
+        } else {
+          assert.equal(error, failure);
+        }
+        return true;
+      },
+    );
+    assert.equal(fs.existsSync(releasePath), false);
+    assert.equal(children.length, stage === "readiness" ? 1 : 2);
+    assert.deepEqual(new Set(closed), new Set(children));
+    for (const child of children) {
+      assert.equal(child.signalCode, "SIGKILL");
+      assert.equal(child.stdout?.closed, true);
+      assert.equal(child.stderr?.closed, true);
+    }
+  }
+});
+
+test("import race child ownership observes spawn rejection before awaiting results", async () => {
+  const root = tempRoot();
+  let child: ChildProcess | undefined;
+  const failure = new Error("injected failure after spawn rejection");
+  await assert.rejects(
+    withImportRaceChildren(async (own) => {
+      child = spawn(process.execPath, ["-e", ""], {
+        cwd: path.join(root, "missing"),
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const result = own(child);
+      await new Promise<void>((resolve) => child!.once("close", () => resolve()));
+      // Cross an event-loop turn before consuming the already rejected result.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await assert.rejects(result, { code: "ENOENT" });
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
+  assert.equal(child?.pid, undefined);
+  assert.equal(child?.stdout?.closed, true);
+  assert.equal(child?.stderr?.closed, true);
+});
+
 test("destination import transactions prevent concurrent opposing parent edges", async () => {
   const root = tempRoot();
   const base = recordReview(root);
@@ -4220,28 +4384,40 @@ importActionEventShards(process.argv[1], process.argv[2]);`;
     moduleUrl,
   )});
 importActionEventShards(process.argv[1], process.argv[2]);`;
-  const firstChild = spawn(
-    process.execPath,
-    ["--input-type=module", "-e", firstScript, firstSource, destination, readyPath, releasePath],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
-  const firstDone = childResult(firstChild);
-  await waitForPath(readyPath);
-  const secondChild = spawn(
-    process.execPath,
-    ["--input-type=module", "-e", importScript, secondSource, destination],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
-  const secondDone = childResult(secondChild);
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  fs.writeFileSync(releasePath, "release\n");
+  await withImportRaceChildren(async (own) => {
+    const firstDone = own(
+      spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          firstScript,
+          firstSource,
+          destination,
+          readyPath,
+          releasePath,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      ),
+    );
+    await waitForPath(readyPath);
+    const secondDone = own(
+      spawn(
+        process.execPath,
+        ["--input-type=module", "-e", importScript, secondSource, destination],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    fs.writeFileSync(releasePath, "release\n");
 
-  const [firstResult, secondResult] = await Promise.all([firstDone, secondDone]);
-  assert.equal(firstResult.code, 0, firstResult.stderr || firstResult.stdout);
-  assert.notEqual(secondResult.code, 0, secondResult.stdout);
-  assert.match(secondResult.stderr, /causal cycle/);
-  assert.equal(fs.existsSync(path.join(destination, firstShard.relativePath)), true);
-  assert.equal(fs.existsSync(path.join(destination, secondShard.relativePath)), false);
+    const [firstResult, secondResult] = await Promise.all([firstDone, secondDone]);
+    assert.equal(firstResult.code, 0, firstResult.stderr || firstResult.stdout);
+    assert.notEqual(secondResult.code, 0, secondResult.stdout);
+    assert.match(secondResult.stderr, /causal cycle/);
+    assert.equal(fs.existsSync(path.join(destination, firstShard.relativePath)), true);
+    assert.equal(fs.existsSync(path.join(destination, secondShard.relativePath)), false);
+  });
 });
 
 test("state shard imports reject noncanonical trusted root spellings", async () => {

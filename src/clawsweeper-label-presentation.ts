@@ -52,11 +52,13 @@ export function createReportLabelPresentation(
     nextTelegramVisibleProofLabels,
     prStatusLabelForKind,
     prStatusLabelKindFromReportLabels,
+    publicHistoricalVerificationBlockerLine,
     publicRealBehaviorProofLine,
     reportFeatureShowcase,
     reportOverallCorrectness,
     reportPrRating,
     reportRealBehaviorProof,
+    reportRealBehaviorProofPolicy,
     reportSecurityReview,
     reportTelegramVisibleProof,
     sentence,
@@ -320,6 +322,7 @@ export function createReportLabelPresentation(
     const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
     const realBehaviorProof = reportRealBehaviorProof(markdown);
     if (isPullRequest && frontMatterValue(markdown, "review_status") !== "failed") {
+      const proofPolicy = reportRealBehaviorProofPolicy(markdown);
       const rating = reportPrRating(markdown);
       const ratingLabel = ratingLabelForTier(rating.overallTier).name;
       const previousRatingLabel = frontMatterStringArray(markdown, "labels").find(
@@ -328,11 +331,15 @@ export function createReportLabelPresentation(
       const changed = previousRatingLabel
         ? ` Replaced prior ${inlineCode(previousRatingLabel)}.`
         : "";
+      const requiredProofContext =
+        proofPolicy.proofBlocksMerge && proofPolicy.assessment.status === "not_applicable"
+          ? " This is the recorded reviewer rating; real behavior proof remains required by host policy."
+          : "";
       add(
         ratingLabel,
         `Overall readiness is ${themedRatingName(rating.overallTier)}; proof is ${themedRatingName(
           rating.proofTier,
-        )} and patch quality is ${themedRatingName(rating.patchTier)}.${changed}`,
+        )} and patch quality is ${themedRatingName(rating.patchTier)}.${changed}${requiredProofContext}`,
       );
       const featureShowcase = reportFeatureShowcase(markdown);
       if (
@@ -355,8 +362,8 @@ export function createReportLabelPresentation(
         add(
           prStatusLabelForKind(statusKind).name,
           `${prStatusLabelForKind(statusKind).description} ${publicRealBehaviorProofLine(
-            realBehaviorProof,
-          )}`,
+            proofPolicy,
+          )}${proofPolicy.verificationBlocksMerge ? ` ${publicHistoricalVerificationBlockerLine()}` : ""}`,
         );
       }
       if (realBehaviorProof.status === "sufficient") {

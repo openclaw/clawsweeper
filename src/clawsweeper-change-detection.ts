@@ -1,4 +1,9 @@
-import type { ConfigSurfaceChange, DataModelChange, ItemContext } from "./clawsweeper-types.js";
+import type {
+  ConfigSurfaceChange,
+  DataModelChange,
+  ItemContext,
+  SqliteSchemaChange,
+} from "./clawsweeper-types.js";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -79,10 +84,18 @@ export function dataModelChangeFromContext(repo: string, context: ItemContext): 
     const path = typeof file.filename === "string" ? file.filename.trim() : "";
     const previousPath =
       typeof file.previous_filename === "string" ? file.previous_filename.trim() : "";
-    const candidates = [path, previousPath].filter(Boolean);
-    const likelyPath = candidates.find(isLikelyOpenClawDataModelPath) ?? "";
+    // Scope each rename side before unknown handling, retaining semantic docs
+    // while excluding CI definitions that cannot define an OpenClaw data model.
+    const candidates = [path, previousPath].filter(isDataModelCandidatePath);
     const patch = typeof file.patch === "string" ? file.patch : null;
     const lines = patch === null ? [] : changedPatchLines(patch);
+    const storageContext = dataModelStorageContext(patch ?? "");
+    const likelyPath =
+      candidates.find(
+        (candidate) =>
+          isLikelyOpenClawDataModelPath(candidate) ||
+          (!isDataModelDocumentationPath(candidate) && storageContext.length > 0),
+      ) ?? "";
 
     if (
       likelyPath &&
@@ -92,7 +105,7 @@ export function dataModelChangeFromContext(repo: string, context: ItemContext): 
     }
 
     for (const candidate of candidates) {
-      if (isDocsPath(candidate)) {
+      if (isDataModelDocumentationPath(candidate)) {
         if (patch !== null && !configSurfacePatchIsTruncated(patch)) {
           dataModelSurfacesFromPatch(candidate, lines, { docsOnly: true }).forEach((surface) =>
             surfaces.add(surface),
@@ -100,8 +113,8 @@ export function dataModelChangeFromContext(repo: string, context: ItemContext): 
         }
         continue;
       }
-      dataModelSurfacesFromPatch(candidate, lines, { docsOnly: false }).forEach((surface) =>
-        surfaces.add(surface),
+      dataModelSurfacesFromPatch(candidate, lines, { docsOnly: false, patch: patch ?? "" }).forEach(
+        (surface) => surfaces.add(surface),
       );
     }
   }
@@ -129,6 +142,125 @@ export function dataModelChangeFromPullFilesForTest(options: {
   };
   if (options.pullFiles !== undefined) context.pullFiles = options.pullFiles;
   return dataModelChangeFromContext(options.repo ?? "openclaw/openclaw", context);
+}
+
+export function sqliteSchemaChangeFromContext(
+  repo: string,
+  context: ItemContext,
+): SqliteSchemaChange {
+  if (repo !== "openclaw/openclaw") {
+    return { change: false, files: [] };
+  }
+
+  const files = new Set<string>();
+  for (const entry of context.pullFiles ?? []) {
+    const file = asRecord(entry);
+    const path = typeof file.filename === "string" ? file.filename.trim() : "";
+    const previousPath =
+      typeof file.previous_filename === "string" ? file.previous_filename.trim() : "";
+    const productionPaths = [path, previousPath].filter(isProductionSourcePath);
+    if (productionPaths.length === 0) continue;
+
+    const patch = typeof file.patch === "string" ? file.patch : null;
+    const likelySchemaPath = productionPaths.find(isLikelySqliteSchemaPath);
+    if (patch === null) {
+      if (likelySchemaPath) files.add(path || likelySchemaPath);
+      continue;
+    }
+
+    const changedLines = changedPatchLines(patch);
+    if (
+      sqliteSchemaPatchChangesTables(patch, changedLines) ||
+      (likelySchemaPath &&
+        (configSurfacePatchIsTruncated(patch) || changedLines.some(sqliteSchemaDeclarationLine)))
+    ) {
+      files.add(path || likelySchemaPath || productionPaths[0]!);
+    }
+  }
+
+  return { change: files.size > 0, files: [...files].sort() };
+}
+
+export function sqliteSchemaChangeFromPullFilesForTest(options: {
+  repo?: string;
+  pullFiles?: unknown[];
+  pullFilesTruncated?: boolean;
+}): SqliteSchemaChange {
+  const counts: ItemContext["counts"] = { comments: 0, timeline: 0 };
+  if (options.pullFilesTruncated !== undefined)
+    counts.pullFilesTruncated = options.pullFilesTruncated;
+  const context: ItemContext = {
+    issue: {},
+    comments: [],
+    timeline: [],
+    counts,
+  };
+  if (options.pullFiles !== undefined) context.pullFiles = options.pullFiles;
+  return sqliteSchemaChangeFromContext(options.repo ?? "openclaw/openclaw", context);
+}
+
+function isProductionSourcePath(path: string): boolean {
+  if (!path || isDocsPath(path)) return false;
+  const segments = path.toLowerCase().split("/");
+  if (
+    segments.some((segment) =>
+      ["__tests__", "example", "examples", "fixture", "fixtures", "test", "tests"].includes(
+        segment,
+      ),
+    )
+  ) {
+    return false;
+  }
+  const basename = segments.at(-1) ?? "";
+  return ![".spec.", ".test.", ".test-support."].some((marker) => {
+    const markerIndex = basename.indexOf(marker);
+    return markerIndex >= 0 && markerIndex + marker.length < basename.length;
+  });
+}
+
+function isDataModelCandidatePath(path: string): boolean {
+  return (
+    !/^\.github\/workflows\//i.test(path) && (isProductionSourcePath(path) || isDocsPath(path))
+  );
+}
+
+function isLikelySqliteSchemaPath(path: string): boolean {
+  return /(?:^|\/)(?:migrations?|sqlite)(?:\/|[-_.])|(?:sqlite|memory|database|db)[-_.]?schema|schema[-_.]?sqlite|sqlite[-_.]?store|\.sql$/i.test(
+    path,
+  );
+}
+
+function sqliteSchemaPatchChangesTables(patch: string, changedLines: readonly string[]): boolean {
+  const changedText = changedLines.join("\n");
+  if (
+    /\b(?:CREATE|ALTER|DROP)\s+(?:VIRTUAL\s+)?TABLE\b|\bRENAME\s+TABLE\b|\bsqliteTable\s*\(/i.test(
+      changedText,
+    )
+  ) {
+    return true;
+  }
+
+  const patchText = patch
+    .split("\n")
+    .filter((line) => !line.startsWith("@@") && !line.startsWith("+++") && !line.startsWith("---"))
+    .map((line) => line.replace(/^[ +-]/, ""))
+    .join("\n");
+  return (
+    /\b(?:CREATE|ALTER)\s+(?:VIRTUAL\s+)?TABLE\b|\bsqliteTable\s*\(/i.test(patchText) &&
+    changedLines.some(sqliteSchemaDeclarationLine)
+  );
+}
+
+function sqliteSchemaDeclarationLine(line: string): boolean {
+  const text = line.replace(/^[+-]/, "").trim();
+  return (
+    /\b(?:CREATE|ALTER|DROP)\s+(?:VIRTUAL\s+)?TABLE\b|\bRENAME\s+TABLE\b|\bsqliteTable\s*\(/i.test(
+      text,
+    ) ||
+    /^(?:[`"']?[A-Za-z_][\w$]*[`"']?\s+|[A-Za-z_$][\w$]*\s*:\s*)(?:BLOB|INTEGER|NULL|REAL|TEXT|ANY|blob|integer|numeric|real|text)\b/i.test(
+      text,
+    )
+  );
 }
 
 function isOpenClawConfigSurfacePath(path: string): boolean {
@@ -295,7 +427,7 @@ export function hasDataModelUpgradeProof(text: string): boolean {
 function dataModelSurfacesFromPatch(
   path: string,
   lines: readonly string[],
-  options: { docsOnly: boolean },
+  options: { docsOnly: boolean; patch?: string },
 ): string[] {
   const text = lines.filter((line) => dataModelLineLooksSemantic(line, options)).join("\n");
   if (!text) return [];
@@ -305,6 +437,15 @@ function dataModelSurfacesFromPatch(
   const pathHint = dataModelPathHint(path);
   if (pathHint && dataModelTextMatchesPathHint(text, pathHint)) add(pathHint);
   if (pathHint && dataModelTextLooksLikePersistedShapeField(text, pathHint)) add(pathHint);
+  // Storage context establishes changed fields only within the same hunk.
+  for (const hunk of (options.patch ?? "").split(/^@@.*$/m)) {
+    const changedText = changedPatchLines(hunk)
+      .filter((line) => dataModelLineLooksSemantic(line, options))
+      .join("\n");
+    for (const surface of dataModelStorageContext(hunk)) {
+      if (dataModelTextLooksLikePersistedShapeField(changedText, surface)) add(surface);
+    }
+  }
   if (
     /\b(?:CREATE|ALTER|DROP)\s+(?:TABLE|INDEX|VIEW|COLUMN)\b|\bADD\s+COLUMN\b|\bPRAGMA\s+user_version\b|\bschema[_-]?version\b/i.test(
       text,
@@ -322,11 +463,7 @@ function dataModelSurfacesFromPatch(
   ) {
     add("durable storage schema");
   }
-  if (
-    /\b(?:JSON\.(?:parse|stringify)|readFile|writeFile|localStorage|sessionStorage|workspaceState|globalState|serialized|persisted?|statePath)\b/i.test(
-      text,
-    )
-  ) {
+  if (dataModelTextHasSerialization(text)) {
     add("serialized state");
   }
   if (
@@ -337,7 +474,7 @@ function dataModelSurfacesFromPatch(
     add("persistent cache schema");
   }
   if (
-    /\b(?:embedding|vector|collection|dimension|metadata|row[_-]?id|document[_-]?id|chunk[_-]?id|similarity[_-]?index)\b/i.test(
+    /\b(?:embedding(?:[_-]?dimension)?|vector(?:[_-]?dimension)?|collection|dimension|metadata|row[_-]?id|document[_-]?id|chunk[_-]?id|similarity[_-]?index)\b/i.test(
       text,
     )
   ) {
@@ -346,18 +483,59 @@ function dataModelSurfacesFromPatch(
   return [...surfaces];
 }
 
+function dataModelTextHasSerialization(text: string): boolean {
+  return /\b(?:JSON\.(?:parse|stringify)|readFile|writeFile|localStorage|sessionStorage|indexedDB|IDBObjectStore|workspaceState|globalState|serialized|persisted?|statePath)\b/i.test(
+    text,
+  );
+}
+
+function dataModelStorageContext(patch: string): string[] {
+  // Retain nearby storage evidence when only the stored fields change. Hunk
+  // headers and comments cannot establish a persistence boundary on their own.
+  const text = patch
+    .split("\n")
+    .filter((line) => /^[ +-]/.test(line) && !/^(?:\+\+\+|---)/.test(line))
+    .map((line) => line.slice(1).trim())
+    .filter((line) => dataModelLineLooksSemantic(line, { docsOnly: false }))
+    .join("\n");
+  const surfaces: string[] = [];
+  if (dataModelTextHasSerialization(text)) surfaces.push("serialized state");
+  if (/\b(?:DurableObject|state\.storage|storage\.(?:get|put|delete|list))\b/i.test(text)) {
+    surfaces.push("durable storage schema");
+  }
+  if (/\b(?:CREATE|ALTER)\s+(?:VIRTUAL\s+)?TABLE\b|\bsqliteTable\s*\(/i.test(text)) {
+    surfaces.push("database schema");
+  }
+  return surfaces;
+}
+
 function dataModelLineLooksSemantic(line: string, options: { docsOnly: boolean }): boolean {
   const trimmed = line.trim();
   if (!trimmed || /^\/\/|^\/\*|^\*|^<!--/.test(trimmed)) return false;
   if (!options.docsOnly) return true;
-  return /\b(?:schema|migration|migrate|upgrade|backfill|database|sqlite|postgres|durable object|storage|cache|serialized|json state|embedding|vector|metadata|doctor|repair)\b/i.test(
-    trimmed,
+  // Markdown lives beside runtime code too. Words such as "session" or
+  // "metadata" describe behavior, not necessarily a changed stored contract.
+  return (
+    /\b(?:CREATE|ALTER|DROP)\s+(?:TABLE|INDEX|VIEW|COLUMN)\b|\bPRAGMA\s+user_version\b/i.test(
+      trimmed,
+    ) ||
+    /^["'`]?(?:schema[_-]?version|cache[_-]?(?:key|version|schema|namespace)|embedding[_-]?dimension|vector[_-]?dimension|row[_-]?id|document[_-]?id|chunk[_-]?id)["'`]?\s*:/i.test(
+      trimmed,
+    ) ||
+    /\b(?:serialized|persisted|storage|database|cache|vector|embedding)\s+(?:data\s+)?(?:format|schema|layout|identity|namespace)\b/i.test(
+      trimmed,
+    )
   );
 }
 
 function isLikelyOpenClawDataModelPath(path: string): boolean {
   if (!path || isDocsPath(path)) return false;
+  if (isMarkdownConfigSurfacePath(path)) return /(?:^|\/)HOOK\.md$/.test(path);
   return Boolean(dataModelPathHint(path)) || /\.(?:sql|sqlite|db|prisma)$/.test(path);
+}
+
+function isDataModelDocumentationPath(path: string): boolean {
+  return isDocsPath(path) || isMarkdownConfigSurfacePath(path);
 }
 
 function dataModelPathHint(path: string): string {
@@ -371,11 +549,7 @@ function dataModelPathHint(path: string): string {
   if (/(^|\/)(?:cache|caches)(?:\/|[-_.])|cache[-_.]schema/i.test(path)) {
     return "persistent cache schema";
   }
-  if (
-    /(^|\/)(?:state|sessions?|history|persistence)(?:\/|[-_.])|(?:serialized|persisted?)[-_.]?(?:state|json)/i.test(
-      path,
-    )
-  ) {
+  if (/(^|\/)persistence(?:\/|[-_.])|(?:serialized|persisted?)[-_.]?(?:state|json)/i.test(path)) {
     return "serialized state";
   }
   if (
@@ -433,6 +607,7 @@ function dataModelTextMatchesPathHint(text: string, pathHint: string): boolean {
 function dataModelTextLooksLikePersistedShapeField(text: string, pathHint: string): boolean {
   if (pathHint === "database schema") {
     return (
+      text.split("\n").some(sqliteSchemaDeclarationLine) ||
       /\b[$A-Z_a-z][$\w]*\??\s*:\s*(?:bigint|blob|boolean|bool|datetime|integer|int|jsonb?|numeric|real|serial|sqliteTable|text|timestamp|uuid|varchar)\s*\(/i.test(
         text,
       ) ||
@@ -442,7 +617,7 @@ function dataModelTextLooksLikePersistedShapeField(text: string, pathHint: strin
     );
   }
 
-  return /\b[$A-Z_a-z][$\w]*\??\s*:\s*(?:Array|Map|ReadonlyArray|Record|Set|boolean|number|string|unknown|[$A-Z_a-z][$\w]*)(?:\b|[<[\]])/i.test(
+  return /(?:^|[{};,]\s*)(?:readonly\s+)?(?:["'][^"']+["']|[$A-Z_a-z][$\w]*)\??\s*:\s*\S/m.test(
     text,
   );
 }

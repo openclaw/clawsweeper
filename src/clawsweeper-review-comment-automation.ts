@@ -15,6 +15,7 @@ export function createReviewCommentAutomation(
     configSurfaceReviewRequired,
     dataModelSurfaceReviewRequired,
     realBehaviorProofBlocksMerge,
+    reportAttachedLiveVerification,
     pullHeadShaFromReport,
     markerAttributeValue,
   } = dependencies;
@@ -68,6 +69,7 @@ export function createReviewCommentAutomation(
     const reviewLeaseOwner = frontMatterValue(markdown, "review_lease_owner") ?? "unknown";
     const reviewLeaseCommentId = frontMatterValue(markdown, "review_lease_comment_id") ?? "unknown";
     const sourceRevision = frontMatterValue(markdown, "item_source_revision") ?? "unknown";
+    const liveVerification = reportAttachedLiveVerification(markdown).status;
     const baseAttrs = [
       `item=${markerAttributeValue(number)}`,
       `sha=${markerAttributeValue(headSha)}`,
@@ -77,6 +79,7 @@ export function createReviewCommentAutomation(
       `lease_owner=${markerAttributeValue(reviewLeaseOwner)}`,
       `lease_comment_id=${markerAttributeValue(reviewLeaseCommentId)}`,
       `source_revision=${markerAttributeValue(sourceRevision)}`,
+      `live_verification=${liveVerification}`,
     ].join(" ");
     const securityNeedsAttention = reportSecurityReview(markdown).status === "needs_attention";
     const humanReviewMarkers = (): string => {

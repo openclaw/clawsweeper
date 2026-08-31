@@ -193,6 +193,12 @@ const stageFixtures = [
       { number: 1, name: "Publish review artifacts", status: "completed", conclusion: "success" },
       {
         number: 2,
+        name: "Replay committed direct lifecycle handoff",
+        status: "completed",
+        conclusion: "success",
+      },
+      {
+        number: 3,
         name: "Finalize healthy members under a fenced heartbeat",
         status: "in_progress",
         conclusion: null,
@@ -314,6 +320,7 @@ await seedLifecycle();
 await seedWorkflows();
 
 let summary;
+let lastProjection;
 const projectionDeadline = Date.now() + 60_000;
 do {
   const [statusResponse, lifecycleResponse] = await Promise.all([
@@ -336,10 +343,18 @@ do {
           typeof item?.stage === "string",
       )
     : [];
+  const representedItemNumbers = new Set(stageCards.map((item) => item.item_number));
   const lifecycleBay = lifecycle?.durable_lifecycle_bay;
+  lastProjection = {
+    activity_complete: activity?.complete === true,
+    stage_cards: stageCards.length,
+    represented_items: representedItemNumbers.size,
+    lifecycle_state: lifecycleBay?.collection?.state ?? null,
+    lifecycle_records: lifecycleBay?.inventory?.lifecycle_records ?? null,
+  };
   if (
     activity?.complete === true &&
-    stageCards.length === itemNumbers.length &&
+    itemNumbers.every((number) => representedItemNumbers.has(number)) &&
     lifecycleBay?.collection?.state === "complete" &&
     lifecycleBay?.inventory?.lifecycle_records >= itemNumbers.length
   ) {
@@ -353,7 +368,11 @@ do {
   await new Promise((resolve) => setTimeout(resolve, 1_000));
 } while (Date.now() < projectionDeadline);
 
-if (!summary) throw new Error("seeded projections did not become complete within 60 seconds");
+if (!summary) {
+  throw new Error(
+    `seeded projections did not become complete within 60 seconds: ${JSON.stringify(lastProjection)}`,
+  );
+}
 console.log(
   JSON.stringify(
     {

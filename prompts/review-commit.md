@@ -36,6 +36,12 @@ queries, advisory searches, and general web lookups are allowed when they can
 materially raise confidence within the time budget. Prefer focused checks over
 full-suite work unless the commit is small and the full gate is cheap.
 
+The host owns this review and its mandatory scan of the explicit initial payload
+and complete introduced before/after source bytes. Do not start target-bundled
+autoreview helpers or another reviewer, and do not claim those helpers ran.
+Later tool results, automatically loaded project docs, resumed/steered history,
+and universal provider egress are outside this admission scan's scope.
+
 Do not return JSON. Return Markdown only. The Markdown must start with YAML-ish
 front matter, then a human-readable report.
 

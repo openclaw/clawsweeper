@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,23 +62,32 @@ function runLocalReview(
   return { status: result.status, out: `${result.stderr ?? ""}${result.stdout ?? ""}` };
 }
 
-test(
-  "local-review successfully reviews a committed range without exposing GitHub credentials",
-  { skip: process.platform === "win32" },
-  () => {
-    const dir = initRepo();
-    const harness = mkdtempSync(join(tmpdir(), "lr-success-"));
-    try {
-      git(dir, "branch", "local-base");
-      writeFileSync(join(dir, "feature.txt"), "offline proof\n");
-      git(dir, "add", "feature.txt");
-      git(dir, "commit", "-q", "-m", "feat: preserve offline local review");
+for (const admission of ["clean", "finding"])
+  test(
+    `local-review ${admission} preserves GitHub isolation without diagnostic prompt copies`,
+    { skip: process.platform === "win32" },
+    (t) => {
+      const dir = initRepo();
+      const harness = mkdtempSync(join(tmpdir(), "lr-success-"));
+      const reportDir = join(harness, "reports");
+      useFakeScanner(
+        t,
+        `
+assert.equal(fs.readdirSync(${JSON.stringify(reportDir)}, {recursive: true}).some(name => String(name).endsWith('.prompt.md')), false);
+${admission === "finding" ? "process.exit(183);" : ""}
+`,
+      );
+      try {
+        git(dir, "branch", "local-base");
+        writeFileSync(join(dir, "feature.txt"), "offline proof\n");
+        git(dir, "add", "feature.txt");
+        git(dir, "commit", "-q", "-m", "feat: preserve offline local review");
 
-      const capture = join(harness, "capture.json");
-      const fakeCodex = join(harness, "codex");
-      writeFileSync(
-        fakeCodex,
-        `#!/usr/bin/env node
+        const capture = join(harness, "capture.json");
+        const fakeCodex = join(harness, "codex");
+        writeFileSync(
+          fakeCodex,
+          `#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 const output = args[args.indexOf("--output-last-message") + 1];
@@ -89,50 +107,62 @@ fs.writeFileSync(process.env.LOCAL_REVIEW_PROOF_CAPTURE, JSON.stringify({
 }));
 fs.writeFileSync(output, "---\\nresult: success\\n---\\n\\nOffline local review completed.\\n");
 `,
-      );
-      chmodSync(fakeCodex, 0o755);
+        );
+        chmodSync(fakeCodex, 0o755);
 
-      const result = runLocalReview(
-        dir,
-        [
-          "--target-repo",
-          "openclaw/clawsweeper",
-          "--base",
-          "local-base",
-          "--report-dir",
-          join(harness, "reports"),
-        ],
-        {
-          CODEX_BIN: fakeCodex,
-          LOCAL_REVIEW_PROOF_CAPTURE: capture,
-          GH_TOKEN: "must-not-reach-reviewer",
-          GITHUB_TOKEN: "must-not-reach-reviewer",
-          GH_ENTERPRISE_TOKEN: "must-not-reach-reviewer",
-          GITHUB_ENTERPRISE_TOKEN: "must-not-reach-reviewer",
-        },
-      );
+        const result = runLocalReview(
+          dir,
+          [
+            "--target-repo",
+            "openclaw/clawsweeper",
+            "--base",
+            "local-base",
+            "--report-dir",
+            reportDir,
+          ],
+          {
+            CODEX_BIN: fakeCodex,
+            LOCAL_REVIEW_PROOF_CAPTURE: capture,
+            GH_TOKEN: "must-not-reach-reviewer",
+            GITHUB_TOKEN: "must-not-reach-reviewer",
+            GH_ENTERPRISE_TOKEN: "must-not-reach-reviewer",
+            GITHUB_ENTERPRISE_TOKEN: "must-not-reach-reviewer",
+          },
+        );
 
-      assert.equal(result.status, 0, result.out);
-      const recorded = JSON.parse(readFileSync(capture, "utf8")) as {
-        args: string[];
-        leakedTokens: string[];
-        ghConfigDir: string;
-        prompt: string;
-      };
-      assert.deepEqual(recorded.leakedTokens, []);
-      assert.ok(existsSync(recorded.ghConfigDir));
-      assert.ok(recorded.args.includes('web_search="disabled"'));
-      const sandboxIndex = recorded.args.indexOf("--sandbox");
-      assert.equal(recorded.args[sandboxIndex + 1], "read-only");
-      assert.match(recorded.prompt, /do not run gh/i);
-      assert.match(recorded.prompt, /do not .*network request/i);
-      assert.match(result.out, /local-review\.md/);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-      rmSync(harness, { recursive: true, force: true });
-    }
-  },
-);
+        assert.equal(
+          readdirSync(reportDir, { recursive: true }).some((name) =>
+            String(name).endsWith(".prompt.md"),
+          ),
+          false,
+        );
+        if (admission === "finding") {
+          assert.equal(result.status, 1, result.out);
+          assert.match(result.out, /Agent input scan refused: findings/);
+          assert.equal(existsSync(capture), false);
+          return;
+        }
+        assert.equal(result.status, 0, result.out);
+        const recorded = JSON.parse(readFileSync(capture, "utf8")) as {
+          args: string[];
+          leakedTokens: string[];
+          ghConfigDir: string;
+          prompt: string;
+        };
+        assert.deepEqual(recorded.leakedTokens, []);
+        assert.ok(existsSync(recorded.ghConfigDir));
+        assert.ok(recorded.args.includes('web_search="disabled"'));
+        const sandboxIndex = recorded.args.indexOf("--sandbox");
+        assert.equal(recorded.args[sandboxIndex + 1], "read-only");
+        assert.match(recorded.prompt, /do not run gh/i);
+        assert.match(recorded.prompt, /do not .*network request/i);
+        assert.match(result.out, /local-review\.md/);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        rmSync(harness, { recursive: true, force: true });
+      }
+    },
+  );
 
 // The local-review offline contract: commitMetadata(..., offline=true) must read
 // only local git and never shell out to `gh`. Using an UNSUPPORTED repo slug proves

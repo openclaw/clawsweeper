@@ -162,6 +162,9 @@ export function exactEventApplyProof(
     soleExactAction === "kept_open" && soleExactResult?.activeReviewLeaseVerified === true
       ? normalizedReviewLeaseRetryAt(soleExactResult.activeReviewLeaseExpiresAt)
       : null;
+  const hasStaleReviewTuple = exactActions.some(
+    (entry) => entry.action === "skipped_stale_review_comment_sync",
+  );
   const superseded =
     soleExactAction === "skipped_stale_review_comment_sync" &&
     soleExactResult?.newerReviewTupleVerified === true;
@@ -183,16 +186,18 @@ export function exactEventApplyProof(
     legacyTuplelessReviewLease:
       soleExactAction === "skipped_stale_review_comment_sync" &&
       soleExactResult?.reason.includes(LEGACY_TUPLELESS_REVIEW_LEASE_REASON) === true,
-    disposition: hasSourceDrift
-      ? sourceDrift
-        ? "source_drift"
+    disposition: hasStaleReviewTuple
+      ? superseded
+        ? "superseded"
         : "unproven"
-      : closeCoverageDeferred
-        ? "close_coverage_deferred"
-        : terminalPolicyNoop
-          ? "terminal_policy_noop"
-          : superseded
-            ? "superseded"
+      : hasSourceDrift
+        ? sourceDrift
+          ? "source_drift"
+          : "unproven"
+        : closeCoverageDeferred
+          ? "close_coverage_deferred"
+          : terminalPolicyNoop
+            ? "terminal_policy_noop"
             : syncedCount + terminalCount > 0
               ? "applied"
               : "unproven",

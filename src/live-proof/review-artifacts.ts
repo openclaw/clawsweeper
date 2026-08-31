@@ -66,6 +66,9 @@ export function inspectReviewLiveProofs(
     const markdown = readFileSync(recordPath, "utf8");
     if (dependencies.frontMatterValue(markdown, "type") !== "pull_request") continue;
     const plan = dependencies.reportLiveProofPlan(markdown);
+    if (plan.invalid) {
+      throw new Error(`live proof plan for ${item} is invalid: ${plan.reason}`);
+    }
     if (plan.status !== "recommended" || plan.surface === "none") continue;
     candidates.push(item);
     recordMedia ||= plan.payoff.kind !== "static_text";

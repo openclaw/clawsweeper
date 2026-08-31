@@ -1137,6 +1137,7 @@ ${profileStatusEnd(profile)}`;
     const rawSourceAuthor = frontMatterValue(markdown, "regression_provenance_source_author");
     const sourceAuthor = sourceCommitSha && rawSourceAuthor ? rawSourceAuthor : null;
     const provenance = {
+      verificationSource: frontMatterValue(markdown, "regression_provenance_verification_source"),
       repo: frontMatterValue(markdown, "regression_provenance_repo"),
       pullRequestNumber: rawNumber ? Number(rawNumber) : NaN,
       pullRequestUrl: frontMatterValue(markdown, "regression_provenance_pr_url"),

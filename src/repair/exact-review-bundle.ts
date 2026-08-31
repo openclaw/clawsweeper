@@ -79,7 +79,6 @@ export interface ExactReviewBundleManifest {
 export interface CreateExactReviewBundleOptions {
   bundleDir: string;
   reviewPath?: string;
-  liveProofDir?: string;
   actionLedgerRoot?: string;
   createdAt: string;
   context: ExactReviewBundleContext;
@@ -112,13 +111,6 @@ export function createExactReviewBundle(
   if (options.actionLedgerRoot && fs.existsSync(options.actionLedgerRoot)) {
     copyTree(options.actionLedgerRoot, path.join(bundleDir, "action-ledger"));
   }
-  if (options.liveProofDir && fs.existsSync(options.liveProofDir)) {
-    copyLiveProofBundle(
-      options.liveProofDir,
-      path.join(bundleDir, "live-proof", String(context.itemNumber)),
-    );
-  }
-
   const files = collectBundleFiles(bundleDir);
   if (context.liveProceeded && !artifactPresent) {
     throw new Error("a proceeded exact review bundle requires a review artifact");
@@ -455,36 +447,6 @@ function copyTree(sourceRoot: string, destinationRoot: string): void {
     if (entry.isDirectory()) copyTree(source, destination);
     else if (entry.isFile()) copyRegularFile(source, destination);
     else throw new Error("action ledger root contains a non-file entry");
-  }
-}
-
-function copyLiveProofBundle(sourceRoot: string, destinationRoot: string): void {
-  const stat = fs.lstatSync(sourceRoot);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) {
-    throw new Error("live proof source must be a regular directory");
-  }
-  const names = [
-    "live-verification.json",
-    "live-proof-manifest.json",
-    "live-proof.mp4",
-    "poster.jpg",
-  ] as const;
-  const present = new Set(names.filter((name) => fs.existsSync(path.join(sourceRoot, name))));
-  if (!present.has("live-verification.json")) {
-    throw new Error("live proof bundle is missing live-verification.json");
-  }
-  const hasManifest = present.has("live-proof-manifest.json");
-  const hasMedia = present.has("live-proof.mp4") || present.has("poster.jpg");
-  if (
-    hasManifest !== (present.has("live-proof.mp4") && present.has("poster.jpg")) ||
-    (hasMedia && !hasManifest)
-  ) {
-    throw new Error("live proof media and manifest must be complete");
-  }
-  for (const name of names) {
-    const source = path.join(sourceRoot, name);
-    if (!fs.existsSync(source)) continue;
-    copyRegularFile(source, path.join(destinationRoot, name), exactReviewBundleFileLimit(name));
   }
 }
 

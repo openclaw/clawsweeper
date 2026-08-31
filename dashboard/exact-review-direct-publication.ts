@@ -355,6 +355,11 @@ export class ExactReviewDirectPublicationStore {
          (repo_slug, store_revision, section, record_id)`,
     );
     this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_record_export_by_repo_section_revision
+         ON ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+         (repo_slug, section, store_revision)`,
+    );
+    this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_RECORD_BACKFILL_TABLE} (
          repo_slug TEXT NOT NULL,
          section TEXT NOT NULL CHECK (
@@ -810,29 +815,65 @@ export class ExactReviewDirectPublicationStore {
     cursor: number;
     limit: number;
     maxBytes: number;
+    maxSourceBytes: number;
+    maxRecords: number;
   }): { records: RecordExportEntry[]; nextCursor: number | null; watermark: number } {
     const placeholders = options.sections.map(() => "?").join(", ");
+    // The preflight joins source metadata before reconstruction. It must not
+    // scan more candidates than the reconstruction bound can ever consume.
+    const rowLimit = Math.min(options.limit, options.maxRecords);
     const rows = Array.from(
       this.storage.sql.exec(
-        `SELECT repo_slug, section, record_id, digest, deleted, revision, store_revision,
-                source, updated_at
-           FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
-          WHERE repo_slug = ?
-            AND section IN (${placeholders})
-            AND store_revision > ?
-            AND store_revision > ?
-          ORDER BY store_revision
+        `SELECT export.repo_slug, export.section, export.record_id, export.digest,
+                export.deleted, export.revision, export.store_revision, export.source,
+                export.updated_at,
+                CASE
+                  WHEN export.deleted = 1 THEN '0'
+                  WHEN export.source = 'canonical' AND export.section <> 'commits'
+                    THEN CAST(canonical.byte_length AS TEXT)
+                  ELSE CAST(backfill.byte_length AS TEXT)
+                END AS source_byte_length
+           FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
+           LEFT JOIN ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} canonical
+             ON export.deleted = 0
+            AND export.source = 'canonical'
+            AND export.section <> 'commits'
+            AND canonical.repo_slug = export.repo_slug
+            AND canonical.section = export.section
+            AND canonical.item_id = CAST(export.record_id AS INTEGER)
+           LEFT JOIN ${EXACT_REVIEW_RECORD_BACKFILL_TABLE} backfill
+             ON export.deleted = 0
+            AND (export.source = 'backfill' OR export.section = 'commits')
+            AND backfill.repo_slug = export.repo_slug
+            AND backfill.section = export.section
+            AND backfill.record_id = export.record_id
+          WHERE export.repo_slug = ?
+            AND export.section IN (${placeholders})
+            AND export.store_revision > ?
+            AND export.store_revision > ?
+          ORDER BY export.store_revision
           LIMIT ?`,
         options.repoSlug,
         ...options.sections,
         options.sinceRevision,
         options.cursor,
-        options.limit,
+        rowLimit,
       ),
     );
+    const selectedRows: Record<string, unknown>[] = [];
+    let sourceBytes = 0;
+    for (const row of rows) {
+      if (selectedRows.length >= options.maxRecords) break;
+      const byteLength = recordExportSourceByteLength(row);
+      if (selectedRows.length > 0 && byteLength > options.maxSourceBytes - sourceBytes) {
+        break;
+      }
+      selectedRows.push(row);
+      sourceBytes += byteLength;
+    }
     const records: RecordExportEntry[] = [];
     let responseBytes = 0;
-    for (const row of rows) {
+    for (const row of selectedRows) {
       const entry = this.recordExportEntrySync(row);
       const entryBytes = new TextEncoder().encode(JSON.stringify(entry)).byteLength;
       if (records.length && responseBytes + entryBytes > options.maxBytes) break;
@@ -841,12 +882,28 @@ export class ExactReviewDirectPublicationStore {
     }
     const watermark = this.currentExportRevisionSync();
     const lastRevision = records.at(-1)?.storeRevision ?? null;
+    const hasMore =
+      lastRevision !== null && records.length === rows.length && rows.length === rowLimit
+        ? Array.from(
+            this.storage.sql.exec(
+              `SELECT 1
+                 FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
+                WHERE export.repo_slug = ?
+                  AND export.section IN (${placeholders})
+                  AND export.store_revision > ?
+                  AND export.store_revision > ?
+                LIMIT 1`,
+              options.repoSlug,
+              ...options.sections,
+              options.sinceRevision,
+              lastRevision,
+            ),
+          ).length > 0
+        : false;
     return {
       records,
       nextCursor:
-        lastRevision !== null && (records.length < rows.length || rows.length === options.limit)
-          ? lastRevision
-          : null,
+        lastRevision !== null && (records.length < rows.length || hasMore) ? lastRevision : null,
       watermark,
     };
   }
@@ -1302,6 +1359,22 @@ export class ExactReviewDirectPublicationStore {
       row.failureReason,
     );
   }
+}
+
+function recordExportSourceByteLength(row: Record<string, unknown>) {
+  const value = row.source_byte_length;
+  const byteLength =
+    typeof value === "string" && /^(0|[1-9]\d*)$/.test(value) ? Number(value) : NaN;
+  if (
+    !Number.isSafeInteger(byteLength) ||
+    byteLength < 0 ||
+    (Number(row.deleted) === 1 && byteLength !== 0)
+  ) {
+    throw new Error(
+      `invalid record export byte metadata: ${String(row.repo_slug)}/${String(row.section)}/${String(row.record_id)}`,
+    );
+  }
+  return byteLength;
 }
 
 function canonicalTupleOperations(

@@ -20,6 +20,13 @@ review engine in `src/commit-sweeper.ts`, used two ways:
 
 ## Usage
 
+Install a trusted TruffleHog executable on the host `PATH`, outside the source
+checkout and ClawSweeper checkout, before running either review command. Hosted
+setup pins version 3.97.1; local workers do not provision it. The mandatory scan
+covers the explicit initial payload and complete introduced before/after source
+bytes, independently of prompt truncation. See the [safety model](../README.md#safety-model)
+for refused inputs, the 256 MiB staging cap, deadline, and coverage limits.
+
 ```text
 pnpm run build
 pnpm local-review -- --base main
@@ -35,6 +42,22 @@ points `GH_CONFIG_DIR` at an empty directory, disables Codex web search, and
 forbids other review-time network lookups. Repositories without a configured
 profile are rejected (no foreign-profile fallback). It never writes to GitHub;
 the local Markdown report is the only output.
+
+For `review --local-range`, per-file line counts come from complete Git numstat
+metadata for the resolved merge-base-to-HEAD range, independently of bounded
+review patches and introduction evidence. NUL-framed paths preserve rename and
+copy identities. Complete file enumeration is mandatory and retains the prior
+runtime command contract (128 MiB capture budget and no read deadline); an
+unreadable, malformed, or over-limit required file list still fails the review.
+Statistics are best-effort metadata bounded to 1 MiB and five seconds:
+unreadable, over-limit, timed-out, malformed, or mismatched numstat leaves all
+file counts unknown without stopping review. Binary line counts remain unknown,
+while a pure rename or mode-only change can have verified zero counts when
+metadata is valid. Reports preserve unknown counts as JSON nulls. The
+OpenClaw PR surface renders numeric totals only for a complete file list with
+known counts for every file; otherwise it explains why statistics are unavailable.
+Historical reports are unchanged. OpenClaw Bay needs no update because its
+observer data, routes, and controls do not consume these file statistics.
 
 ## Related Files
 

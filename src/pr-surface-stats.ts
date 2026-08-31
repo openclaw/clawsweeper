@@ -2,8 +2,8 @@ export type PrSurfaceBucket = "source" | "tests" | "docs" | "config" | "generate
 
 export interface PrSurfaceFile {
   path: string;
-  additions: number;
-  deletions: number;
+  additions: number | null;
+  deletions: number | null;
 }
 
 export interface PrSurfaceStatsRow {
@@ -24,7 +24,9 @@ const BUCKETS: readonly { bucket: PrSurfaceBucket; label: string }[] = [
   { bucket: "other", label: "Other" },
 ];
 
-export function buildOpenClawPrSurfaceStats(files: readonly PrSurfaceFile[]): PrSurfaceStatsRow[] {
+export function buildOpenClawPrSurfaceStats(
+  files: readonly PrSurfaceFile[],
+): PrSurfaceStatsRow[] | null {
   const rows = BUCKETS.map(({ bucket, label }) => ({
     bucket,
     label,
@@ -34,8 +36,23 @@ export function buildOpenClawPrSurfaceStats(files: readonly PrSurfaceFile[]): Pr
     net: 0,
   }));
   const byBucket = new Map(rows.map((row) => [row.bucket, row]));
+  let additions = 0;
+  let deletions = 0;
 
   for (const file of files) {
+    if (
+      typeof file.additions !== "number" ||
+      typeof file.deletions !== "number" ||
+      !Number.isSafeInteger(file.additions) ||
+      !Number.isSafeInteger(file.deletions) ||
+      file.additions < 0 ||
+      file.deletions < 0
+    ) {
+      return null;
+    }
+    additions += file.additions;
+    deletions += file.deletions;
+    if (!Number.isSafeInteger(additions) || !Number.isSafeInteger(deletions)) return null;
     const bucket = openClawPrSurfaceBucket(file.path);
     const row = byBucket.get(bucket);
     if (!row) continue;

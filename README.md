@@ -36,8 +36,8 @@ At a high level ClawSweeper:
 - reviews open issues and pull requests on a schedule and on exact GitHub events
 - writes one durable markdown report per item in generated state
 - syncs one marker-backed public review comment per issue or PR, edited in place
-- can record and attach deterministic browser or terminal live proof for
-  user-visible changes in explicitly opted-in repositories
+- preserves validation, rendering, media publication, and retraction for
+  historical live-proof artifacts; new reviews do not generate live proof
 - closes only unchanged, high-confidence, policy-allowed proposals
 - routes maintainer commands such as `@clawsweeper review`,
   `@clawsweeper fix`, `@clawsweeper autofix`, and `@clawsweeper automerge`
@@ -195,6 +195,11 @@ Issues with an open PR that references them using GitHub closing syntax such as
 that high-confidence PR candidate earlier in the same apply run.
 Open issue/PR pairs from the same author stay open together unless the paired
 item is already resolved or a maintainer explicitly asks to close one side.
+Related PR links do not promote a completed keep-open review into a close
+proposal. Codex owns that supersession decision; comment publication preserves
+the verdict. Independent no-diff, stale-PR, and author-budget policies still
+apply.
+
 PR-to-PR duplicate/superseded closes also require a safe canonical target:
 ClawSweeper refuses to close one PR as replaced by another PR that is closed
 unmerged, missing positive real behavior proof, F-rated, already proposed for
@@ -540,6 +545,76 @@ its final month). The local, GitHub-isolated review engine survives as
 
 ### Safety Model
 
+Native reviews require host-owned TruffleHog admission before any model-backed
+checkout inspection or review. The host scans the explicit initial prompt and
+schema plus complete raw before/after blobs and the full introduced diff. Scan
+coverage is independent of the 80-path/24K-character display evidence limits.
+Repair reviews scan the committed, staged, unstaged, and applicable untracked
+bytes of the validated checkout. Clean text-converted checkouts retain both
+canonical Git and raw working bytes in scan coverage. The host never starts a target-bundled autoreview helper or second reviewer.
+
+Hosted Codex and OpenClaw setup share the checksum-pinned TruffleHog 3.97.1
+installer in `.github/actions/setup-review-tools/install.sh`. It supports Linux
+amd64 and fails on unsupported platforms. Local operators must install a trusted
+[TruffleHog executable](https://github.com/trufflesecurity/trufflehog#installation)
+on the host `PATH`, outside both checkouts; workers never
+install dependencies themselves. Missing tools, unclassified findings, scan errors, source
+drift, incomplete ancestry/objects, changed gitlinks, and LFS pointers refuse the
+review. The scan stages at most 256 MiB in private external temporary files and
+uses the remaining review deadline; it never silently truncates or bypasses.
+Diagnostics omit scanner output and source values. Restore prerequisites or
+remove sensitive input before retrying a refusal.
+
+The host classifies the reviewed synthetic malformed-configuration URI in
+`test/action-ledger-runtime.test.ts` and the explicitly approved autoreview
+negative-test URI in the [canonical autoreview test](https://github.com/openclaw/agent-skills/blob/a8466c1d860588a083610fe41fd277c1d88b14e0/skills/autoreview/tests/test_autoreview_hardening.py)
+or its [vendored OpenClaw copy](https://github.com/openclaw/openclaw/blob/136eab023035dd5943818f791d3c3db7d92e4491/.agents/skills/autoreview/tests/test_autoreview_hardening.py)
+as non-sensitive after a complete scan. Static host policy associates each
+exact full-URI SHA-256 with only its approved source paths, requiring a literal
+at the reported line of a host-staged Git blob from mode `100644`.
+Deduplicated blobs retain every scanned logical endpoint's path and Git mode,
+including mode-only transitions and shared-path aliases. Every captured reference
+must qualify under the same digest's exact path and mode `100644` policy before
+any source is eligible for classification or an audit notice.
+The policy does not trust checkout ignore rules, domain patterns, fixture words,
+test names, or unchanged-line inference; no nearby fixture is implicitly approved.
+Findings attributed to prompt, schema, diff, additional-input, other-path, or
+encoded-only occurrences remain blocking, as do other findings, verified findings,
+and incomplete scans. Unverified findings alone never qualify: every finding must
+match the exact bytes, source association, and strict detector contract. This
+classification does not expand TruffleHog's detection coverage.
+The classification is pinned to TruffleHog 3.97.1's output contract; scanner
+upgrades require requalification. See `src/agent-input-scan-fixtures.ts`.
+After successful cleanup and final source fences, each accepted fixture/source
+pair emits a host-side structured stderr notice with `event`, `fixtureSha256`,
+`source`, `detector`, and `findings` entries containing `blob`, `line`, `decoder`,
+and `occurrences`. Counts are per source: a shared blob can appear in both source
+notices and those counts must not be summed across sources. A refused or drifted
+scan emits no success notice. Raw values and verification diagnostics never
+appear in that audit notice.
+
+Generated review and repair prompt diagnostics retire the previous attempt's
+copy before admission and persist only successfully scanned exact prompt bytes
+with owner-only access. Commit review, assist, and close-coverage proof do not
+retain unused prompt copies. Original inputs and explicitly requested prompt
+exports (`repair:render` or worker `--dry-run`) remain operator-owned outputs.
+
+This admission boundary is not universal provider-egress scanning. Automatically
+loaded project docs, resumed/steered history, later tool results, and unchanged
+repository history are outside its scope. Planning, assist, and close-coverage
+calls scan their explicit prompt/schema; they do not attest a source review.
+No dashboard projection or observer API changes; OpenClaw Bay is unaffected.
+
+Maintainers can run the dispatch-only `Hosted native review scan smoke` job in
+`ci.yml`. It uses the existing `OPENAI_API_KEY` and `CLAWSWEEPER_MODEL` secrets
+only during host setup, with no App mutation token. The proof artifact records
+zero provider starts on refusal, one clean native structured run, exact fixture
+and runner identities, and coverage limits without exposing the configured model.
+
+- Review and repair base fetches use fully qualified branch refspecs so inherited
+  `fetch.prune` or `remote.origin.prune` settings do not delete the requested
+  tracking ref. Validation uses the same repair fetch helper; no host Git
+  configuration changes are required.
 - Maintainer-authored items are excluded from automated closes unless the close
   reason is verified `implemented_on_main`.
 - Protected labels block close proposals.

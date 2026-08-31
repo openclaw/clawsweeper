@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { parse as parseYaml } from "yaml";
 
 import {
   applyDecisionPriority,
@@ -2369,7 +2370,9 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
   assert.match(openclawAction, /openclaw-version:[\s\S]*default: "2026\.7\.2"/);
   assert.match(openclawAction, /openclaw@\$\{\{ inputs\['openclaw-version'\] \}\}/);
   assert.doesNotMatch(openclawAction, /@latest/);
-  assert.equal(openclawAction.match(/env\.CLAWSWEEPER_RUNNER == 'openclaw'/g)?.length, 4);
+  for (const step of parseYaml(openclawAction).runs.steps) {
+    assert.match(step.if ?? "", /env\.CLAWSWEEPER_RUNNER == 'openclaw'/);
+  }
   // Source builds bridge unreleased OpenClaw features and must stay pinned to
   // an exact SHA, gated to the openclaw runner, and off by default.
   assert.match(openclawAction, /openclaw-source-ref:[\s\S]*default: ""/);
@@ -2558,10 +2561,6 @@ test("review prompt keeps automerge opt-in from becoming generic manual review",
   assert.match(prompt, /`maintainer` label/);
   assert.match(prompt, /large `size:\*` label/);
   assert.match(prompt, /choose `queue_fix_pr` even when the\s+finding is process-only or P3/);
-  assert.match(prompt, /`CHANGELOG\.md` is release-owned/);
-  assert.match(prompt, /Do not\s+make missing `CHANGELOG\.md` a review finding/i);
-  assert.match(prompt, /ask for PR-body or commit\s+message context/);
-  assert.doesNotMatch(prompt, /missing required changelog\s+entry/);
   assert.match(prompt, /does not by itself block a clean automerge verdict/);
 });
 

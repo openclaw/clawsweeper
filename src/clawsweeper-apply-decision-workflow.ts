@@ -293,6 +293,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     };
     const {
       applyReportEntriesForDir,
+      createOpenReportLookup,
       captureApplyCanonicalBaseline,
       syncDecisionPacketMarkdown,
       writeReportMarkdown,
@@ -331,12 +332,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     );
     const files = fileEntries.map((entry) => entry.name);
     const boundedExactSelection = exactEventPublication && requestedItemNumberSet.size > 0;
-    // Exact-event publication handles one leased item and cannot pair-close with
-    // limit=1. Keep unrelated canonical records out of this memory-bounded path.
-    const allOpenFileEntries = boundedExactSelection
-      ? fileEntries
-      : applyReportEntriesForDir(itemsDir, "items", false);
-    const openFileEntryByNumber = new Map(allOpenFileEntries.map((entry) => [entry.number, entry]));
+    const openReportEntry = createOpenReportLookup(fileEntries, boundedExactSelection);
     const pairedIssueCloseoutReportKeys = new Set<string>();
     const closedThisRun = new Set<string>();
     const authorPrBudgetClosesThisRun = new Map<string, number>();
@@ -399,12 +395,16 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       } catch (error) {
         publicationError = error;
       }
-      const finalEntryNumbers = boundedExactSelection
-        ? new Set([
-            ...requestedItemNumberSet,
-            ...results.flatMap((result) => (result.number > 0 ? [result.number] : [])),
-          ])
-        : undefined;
+      // Reload current run evidence, including interrupted paired mutations, without
+      // retaining unrelated open records or the full archived history.
+      const finalEntryNumbers = new Set([
+        ...requestedItemNumberSet,
+        ...results.flatMap((result) => (result.number > 0 ? [result.number] : [])),
+        ...[...applyLedger.items.values()]
+          .filter((state) => state.started && !state.terminal)
+          .map((state) => state.entry.number),
+        ...(activeApplyItem ? [activeApplyItem.number] : []),
+      ]);
       const finalEntries = new Map<number, ReportEntry>();
       for (const finalEntry of [
         ...reportEntriesForDir(itemsDir, finalEntryNumbers),
@@ -507,7 +507,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let markdown = entry.markdown;
       const repo = entry.repo;
       const number = entry.number;
-      let mutationLedgerEntry = entry;
+      let mutationLedgerEntry: ReportEntry = entry;
       const liveReadGeneration = new LiveReadGeneration();
       setGuardReadGeneration(liveReadGeneration);
       const fetchApplyItem = (
@@ -740,7 +740,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         renameSync(path, closedPath);
       };
       const archivePairedIssue = (issueNumber: number): void => {
-        const pairedEntry = openFileEntryByNumber.get(issueNumber);
+        const pairedEntry = openReportEntry(issueNumber);
         if (!pairedEntry) {
           throw new Error(`missing independently reviewed linked issue report #${issueNumber}`);
         }
@@ -774,7 +774,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         pairedIssueCloseoutReportKeys.add(pairCloseKey(pairedEntry.repo, issueNumber));
       };
       const pairedIssueCanonicalProvenanceBlock = (issueNumber: number): string | null => {
-        const pairedEntry = openFileEntryByNumber.get(issueNumber);
+        const pairedEntry = openReportEntry(issueNumber);
         if (!pairedEntry) return "implemented-on-main paired closeout requires an independently reviewed linked issue report";
         const parentFixedPrNumber = frontMatterValue(markdown, "fixed_pr_number");
         const parentFixedPrUrl = frontMatterValue(markdown, "fixed_pr_url");
@@ -798,7 +798,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         return null;
       };
       const withPairedIssueMutationLedger = <T>(issueNumber: number, operation: () => T): T => {
-        const pairedEntry = openFileEntryByNumber.get(issueNumber);
+        const pairedEntry = openReportEntry(issueNumber);
         if (!pairedEntry) throw new Error(`missing independently reviewed linked issue report #${issueNumber}`);
         const previousMutationLedgerEntry = mutationLedgerEntry;
         const previousActiveApplyItem = activeApplyItem;
@@ -1356,7 +1356,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         minAgeDescription,
         minAgeMs,
         number,
-        openFileEntryByNumber,
+        openReportEntry,
         processedLimit,
         repo,
         requiredMaintainerDecision,
@@ -2460,7 +2460,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         options: { onOperationCompleted?: () => void } = {},
       ): T =>
         withPairedIssueMutationLedger(pairedNumber, () => {
-        const pairedEntry = openFileEntryByNumber.get(pairedNumber);
+        const pairedEntry = openReportEntry(pairedNumber);
         if (!pairedEntry) {
           throw new ApplyMutationReviewGuardError(
             `missing independently reviewed linked issue report #${pairedNumber}`,
@@ -2652,13 +2652,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         canStartPairedIssueClose: (pairedNumber, pairedKind) =>
           applyLedger.items.has(pairCloseKey(repo, pairedNumber)) &&
           canStartSameAuthorPairCloseInThisRun(pairedNumber, pairedKind),
-        pairedIssueMarkdown: (pairedNumber) => openFileEntryByNumber.get(pairedNumber)?.markdown ?? null,
+        pairedIssueMarkdown: (pairedNumber) => openReportEntry(pairedNumber)?.markdown ?? null,
         pairedIssueReviewUpdatedAt: (pairedNumber) => {
-          const pairedMarkdown = openFileEntryByNumber.get(pairedNumber)?.markdown;
+          const pairedMarkdown = openReportEntry(pairedNumber)?.markdown;
           return pairedMarkdown ? frontMatterValue(pairedMarkdown, "item_updated_at") ?? null : null;
         },
         pairedIssueDurableReviewCommentUpdatedAt: (pairedNumber) => {
-          const pairedMarkdown = openFileEntryByNumber.get(pairedNumber)?.markdown;
+          const pairedMarkdown = openReportEntry(pairedNumber)?.markdown;
           if (!pairedMarkdown) return null;
           const pairedCloseReason = reportDecision(
             pairedMarkdown,
@@ -2712,7 +2712,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           results.push(result);
           logProgress(`${simulated ? "would close" : "closed"} linked issue #${result.number}`);
           closedThisRun.add(pairCloseKey(repo, result.number));
-          const pairedEntry = openFileEntryByNumber.get(result.number);
+          const pairedEntry = openReportEntry(result.number);
           const pairedState = pairedEntry
             ? startApplyActionLedgerItem(applyLedger, pairedEntry)
             : null;

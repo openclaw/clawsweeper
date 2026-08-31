@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "repo": "openclaw/clawsweeper",
+  "item": 42,
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "plan_sha256": "7a2d40142f1e6bcff31424265a58859bfbc06175894666cc7a13ce5be2e1140f",
+  "surface": "terminal",
+  "entry": "pnpm openclaw --help",
+  "drive_status": "completed",
+  "steps": [
+    {
+      "action": "expect_output",
+      "status": "completed",
+      "detail": "ok",
+      "subject": "Usage: openclaw [options] [command]",
+      "assertion": "Usage: openclaw [options] [command]",
+      "present_at_start": false,
+      "satisfied": true
+    }
+  ],
+  "output": "Already up to date\nDone in 2.3s using pnpm v11.24.0\n$ node cli.mjs --help\nUsage: openclaw [options] [command]\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+  "overall_pass": true,
+  "verified_at": "2026-08-28T07:43:51.756Z"
+}

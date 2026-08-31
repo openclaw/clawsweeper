@@ -1,10 +1,19 @@
+import { createHash } from "node:crypto";
 import type { LiveProofPlan, LiveProofStep } from "../clawsweeper-types.js";
+import { LIVE_VERIFICATION_MARKER } from "../clawsweeper-policy.js";
 import type { LiveProofDriveStatus } from "./manifest.js";
-import { TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL, type LiveProofStepLogEntry } from "./drivers.js";
+import type { LiveProofStepLogEntry } from "./drivers.js";
 
 export const LIVE_VERIFICATION_SCHEMA_VERSION = 1;
 export const LIVE_VERIFICATION_OUTPUT_MAX_CHARS = 16_000;
 export const LIVE_VERIFICATION_COMMENT_OUTPUT_MAX_CHARS = 4_000;
+const OUTPUT_TRUNCATION_MARKER = "… output truncated …";
+const LEGACY_TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL =
+  "command exited successfully; expected output was not observed in the captured pane";
+const MISSING_OBSERVED_OUTCOME_REASON =
+  "live verification completed without a satisfied expect_text or expect_output observation";
+const INCOMPLETE_OBSERVED_OUTCOME_REASON =
+  "live verification completed without every expect_text or expect_output observation satisfied";
 
 export type LiveVerificationStepStatus = "completed" | "failed" | "not_run";
 
@@ -30,6 +39,7 @@ export interface LiveVerificationResult {
   repo: string;
   item: number;
   head_sha: string;
+  plan_sha256: string;
   surface: "browser" | "terminal";
   entry: string;
   drive_status: LiveProofDriveStatus;
@@ -40,11 +50,25 @@ export interface LiveVerificationResult {
   verified_at: string;
 }
 
+export type AttachedLiveVerification =
+  | { status: "absent" }
+  | { status: "passed"; result: LiveVerificationResult }
+  | { status: "failed"; result: LiveVerificationResult }
+  | { status: "malformed" };
+
+export interface LiveVerificationReportIdentity {
+  repository: string | undefined;
+  number: string | undefined;
+  type: string | undefined;
+  pullHeadSha: string | undefined;
+}
+
 const RESULT_KEYS = new Set([
   "schema_version",
   "repo",
   "item",
   "head_sha",
+  "plan_sha256",
   "surface",
   "entry",
   "drive_status",
@@ -118,20 +142,25 @@ export function buildLiveVerificationResult(options: {
         : {}),
     };
   });
-  const overallPass =
-    options.driveStatus === "completed" &&
-    steps.every(
-      (step) =>
-        step.status === "completed" && (step.satisfied === undefined || step.satisfied === true),
-    );
+  const overallPass = liveVerificationOverallPass(options.driveStatus, steps);
   const failure = overallPass
     ? undefined
-    : buildLiveVerificationFailure(steps, options.output, options.executionFailureReason);
+    : buildLiveVerificationFailure(
+        steps,
+        options.output,
+        options.executionFailureReason ??
+          (options.driveStatus === "completed"
+            ? steps.some(isOutcomeAssertion)
+              ? INCOMPLETE_OBSERVED_OUTCOME_REASON
+              : MISSING_OBSERVED_OUTCOME_REASON
+            : undefined),
+      );
   return {
     schema_version: 1,
     repo: options.repo,
     item: options.item,
     head_sha: options.headSha,
+    plan_sha256: liveProofPlanSha256(options.plan),
     surface: options.plan.surface as "browser" | "terminal",
     entry: options.plan.entry,
     drive_status: options.driveStatus,
@@ -139,7 +168,7 @@ export function buildLiveVerificationResult(options: {
     output:
       options.plan.surface === "browser" && options.executionFailureReason === undefined
         ? ""
-        : trimText(options.output, LIVE_VERIFICATION_OUTPUT_MAX_CHARS),
+        : truncateOutput(options.output, LIVE_VERIFICATION_OUTPUT_MAX_CHARS),
     ...(failure ? { failure } : {}),
     overall_pass: overallPass,
     verified_at: options.verifiedAt,
@@ -165,6 +194,14 @@ export function parseLiveVerificationResult(value: unknown): LiveVerificationRes
   if (!/^[0-9a-f]{40}$/.test(headSha)) {
     throw new Error("live verification result.head_sha must be a 40-character commit SHA");
   }
+  const planSha256 = requireSingleLine(
+    record.plan_sha256,
+    "live verification result.plan_sha256",
+    64,
+  );
+  if (!/^[0-9a-f]{64}$/.test(planSha256)) {
+    throw new Error("live verification result.plan_sha256 must be a lowercase SHA-256 digest");
+  }
   if (record.surface !== "browser" && record.surface !== "terminal") {
     throw new Error("live verification result.surface must be browser or terminal");
   }
@@ -186,12 +223,10 @@ export function parseLiveVerificationResult(value: unknown): LiveVerificationRes
   if (typeof record.overall_pass !== "boolean") {
     throw new Error("live verification result.overall_pass must be boolean");
   }
-  const derivedOverallPass =
-    record.drive_status === "completed" &&
-    steps.every(
-      (step) =>
-        step.status === "completed" && (step.satisfied === undefined || step.satisfied === true),
-    );
+  const derivedOverallPass = liveVerificationOverallPass(
+    record.drive_status as LiveProofDriveStatus,
+    steps,
+  );
   if (record.overall_pass !== derivedOverallPass) {
     throw new Error("live verification result.overall_pass does not match its step outcomes");
   }
@@ -214,6 +249,7 @@ export function parseLiveVerificationResult(value: unknown): LiveVerificationRes
     repo,
     item,
     head_sha: headSha,
+    plan_sha256: planSha256,
     surface: record.surface,
     entry,
     drive_status: record.drive_status as LiveProofDriveStatus,
@@ -243,6 +279,122 @@ export function decodeLiveVerificationReportPayload(value: string): LiveVerifica
   return parseLiveVerificationResult(parsed);
 }
 
+export function validateLiveVerificationReportIdentity(
+  result: Pick<LiveVerificationResult, "repo" | "item" | "head_sha">,
+  identity: LiveVerificationReportIdentity,
+): void {
+  if (identity.repository?.trim().toLowerCase() !== result.repo.toLowerCase()) {
+    throw new Error("record repository does not match the live verification result");
+  }
+  if (Number(identity.number) !== result.item) {
+    throw new Error("record item number does not match the live verification result");
+  }
+  if (identity.type !== "pull_request") {
+    throw new Error("live proof can only be attached to a pull request report");
+  }
+  if (identity.pullHeadSha?.trim().toLowerCase() !== result.head_sha) {
+    throw new Error("record pull_head_sha does not match the live verification result");
+  }
+}
+
+export function liveProofPlanSha256(plan: LiveProofPlan): string {
+  if (plan.invalid) {
+    throw new Error("invalid live proof plan cannot be verified");
+  }
+  const canonicalPlan = {
+    status: plan.status,
+    surface: plan.surface,
+    terminalCompletion: plan.terminalCompletion,
+    reason: plan.reason,
+    payoff: {
+      kind: plan.payoff.kind,
+      justification: plan.payoff.justification,
+    },
+    entry: plan.entry,
+    steps: plan.steps.map(canonicalLiveProofStep),
+  };
+  return createHash("sha256").update(JSON.stringify(canonicalPlan)).digest("hex");
+}
+
+export function validateLiveVerificationReportPlan(
+  result: Pick<LiveVerificationResult, "entry" | "plan_sha256" | "steps" | "surface">,
+  plan: LiveProofPlan,
+): void {
+  if (
+    result.plan_sha256 !== liveProofPlanSha256(plan) ||
+    result.surface !== plan.surface ||
+    result.entry !== plan.entry
+  ) {
+    throw new Error("record live proof plan does not match the live verification result");
+  }
+  if (
+    result.steps.length !== plan.steps.length ||
+    result.steps.some(
+      (outcome, index) => !liveVerificationOutcomeMatchesStep(outcome, plan.steps[index]),
+    )
+  ) {
+    throw new Error("live verification step outcomes do not match the record live proof plan");
+  }
+}
+
+export function parseAttachedLiveVerification(
+  section: string,
+  identity: LiveVerificationReportIdentity,
+  plan: LiveProofPlan,
+): AttachedLiveVerification {
+  const lines = section.split(/\r?\n/);
+  const markerLines = lines
+    .map((line, index) => (line === LIVE_VERIFICATION_MARKER ? index : -1))
+    .filter((index) => index >= 0);
+  if (markerLines.length === 0) return { status: "absent" };
+  if (markerLines.length !== 1) return { status: "malformed" };
+
+  const resultLine = lines[(markerLines[0] ?? -1) + 1] ?? "";
+  const match = /^Result: ([A-Za-z0-9_-]+)$/.exec(resultLine);
+  if (!match?.[1]) return { status: "malformed" };
+  try {
+    const result = decodeLiveVerificationReportPayload(match[1]);
+    validateLiveVerificationReportIdentity(result, identity);
+    validateLiveVerificationReportPlan(result, plan);
+    return { status: result.overall_pass ? "passed" : "failed", result };
+  } catch {
+    return { status: "malformed" };
+  }
+}
+
+function canonicalLiveProofStep(step: LiveProofStep): Record<string, string | number> {
+  switch (step.action) {
+    case "goto":
+      return { action: step.action, path: step.path };
+    case "click":
+    case "wait_for":
+      return { action: step.action, target: step.target };
+    case "fill":
+      return { action: step.action, target: step.target, value: step.value };
+    case "press":
+      return { action: step.action, key: step.key };
+    case "wait":
+      return { action: step.action, seconds: step.seconds };
+    case "expect_text":
+    case "expect_output":
+      return { action: step.action, text: step.text };
+    case "run":
+      return { action: step.action, command: step.command };
+  }
+}
+
+function liveVerificationOutcomeMatchesStep(
+  outcome: LiveVerificationStepResult,
+  step: LiveProofStep | undefined,
+): boolean {
+  if (!step || outcome.action !== step.action) return false;
+  const subject = liveProofStepSubject(step);
+  return isOutcomeAssertion(step)
+    ? outcome.assertion === subject &&
+        (outcome.subject === undefined || outcome.subject === subject)
+    : outcome.subject === subject;
+}
+
 export function renderLiveVerificationCommentBlock(result: LiveVerificationResult): string {
   const parsed = parseLiveVerificationResult(result);
   const resultLine = `**Result:** ${parsed.overall_pass ? "PASS" : "FAIL"} (${parsed.drive_status})${parsed.overall_pass ? "" : ` — ${renderFailureSummary(parsed)}`}`;
@@ -251,6 +403,12 @@ export function renderLiveVerificationCommentBlock(result: LiveVerificationResul
     "",
     resultLine,
   ];
+  if (parsed.overall_pass) {
+    lines.push(
+      "",
+      "PASS covers only the declared scenario and assertions; the real behavior proof assessment determines whether they cover the PR's changes.",
+    );
+  }
   if (parsed.surface === "browser") {
     const executed = parsed.steps.filter((step) => step.status !== "not_run");
     if (executed.length) {
@@ -293,13 +451,14 @@ export function renderLiveVerificationCommentBlock(result: LiveVerificationResul
       "**Assertions:**",
       "",
       ...assertions.map((step) => {
-        const outcome =
-          step.status === "completed" && step.satisfied === true
-            ? terminalOutputWasNotObserved(parsed.surface, step)
-              ? "NOT OBSERVED"
-              : "PASS"
-            : "FAIL";
-        const detail = outcome === "NOT OBSERVED" ? ` — ${sanitizeInline(step.detail)}` : "";
+        const passed = step.status === "completed" && step.satisfied === true;
+        const notObserved =
+          passed &&
+          parsed.surface === "terminal" &&
+          step.action === "expect_output" &&
+          step.detail === LEGACY_TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL;
+        const outcome = !passed ? "FAIL" : notObserved ? "NOT OBSERVED" : "PASS";
+        const detail = notObserved ? ` — ${sanitizeInline(step.detail)}` : "";
         return `- ${outcome} \`${sanitizeInline(step.action)}\`: ${sanitizeInline(step.assertion ?? "")}${detail}`;
       }),
     );
@@ -307,27 +466,17 @@ export function renderLiveVerificationCommentBlock(result: LiveVerificationResul
   return lines.join("\n");
 }
 
-function terminalOutputWasNotObserved(
-  surface: LiveProofPlan["surface"],
-  step: LiveVerificationStepResult,
-): boolean {
-  return (
-    surface === "terminal" &&
-    step.action === "expect_output" &&
-    step.status === "completed" &&
-    step.satisfied === true &&
-    step.detail === TERMINAL_OUTPUT_NOT_OBSERVED_DETAIL
-  );
+export function sanitizeUntrustedOutput(value: string): string {
+  return truncateOutput(sanitizeUntrustedText(value), LIVE_VERIFICATION_COMMENT_OUTPUT_MAX_CHARS);
 }
 
-export function sanitizeUntrustedOutput(value: string): string {
+function sanitizeUntrustedText(value: string): string {
   const normalized = value.replaceAll("\r\n", "\n").replace(/[\r\u2028\u2029]/g, "\n");
-  const inert = normalized
+  return normalized
     .replaceAll("`", "ˋ")
     .replaceAll("<", "‹")
     .replaceAll(">", "›")
     .replace(/([‹<]\s*!?--\s*)clawsweeper/gi, "$1claw\u200bsweeper");
-  return trimText(inert, LIVE_VERIFICATION_COMMENT_OUTPUT_MAX_CHARS);
 }
 
 function parseStep(value: unknown, index: number): LiveVerificationStepResult {
@@ -424,6 +573,25 @@ function buildLiveVerificationFailure(
   };
 }
 
+function liveVerificationOverallPass(
+  driveStatus: LiveProofDriveStatus,
+  steps: readonly LiveVerificationStepResult[],
+): boolean {
+  return (
+    driveStatus === "completed" &&
+    steps.some(isOutcomeAssertion) &&
+    steps.every(
+      (step) =>
+        step.status === "completed" &&
+        (isOutcomeAssertion(step) ? step.satisfied === true : step.satisfied === undefined),
+    )
+  );
+}
+
+function isOutcomeAssertion(step: Pick<LiveVerificationStepResult, "action">): boolean {
+  return step.action === "expect_text" || step.action === "expect_output";
+}
+
 function liveProofStepSubject(step: LiveProofStep): string {
   switch (step.action) {
     case "goto":
@@ -478,7 +646,7 @@ function renderFailureSummary(result: LiveVerificationResult): string {
 }
 
 function sanitizeInline(value: string): string {
-  return sanitizeUntrustedOutput(value).replaceAll("\n", " ").slice(0, 2_000);
+  return sanitizeUntrustedText(value).replaceAll("\n", " ").slice(0, 2_000);
 }
 
 function oneLineReason(value: string): string {
@@ -495,6 +663,15 @@ function oneLineReason(value: string): string {
 function trimText(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars - 24)}\n… output truncated …`;
+}
+
+function truncateOutput(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const separator = `\n${OUTPUT_TRUNCATION_MARKER}\n`;
+  const available = maxChars - separator.length;
+  const headChars = Math.ceil(available / 2);
+  const tailChars = Math.floor(available / 2);
+  return `${value.slice(0, headChars)}${separator}${value.slice(-tailChars)}`;
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {

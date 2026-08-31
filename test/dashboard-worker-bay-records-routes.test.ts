@@ -45,6 +45,7 @@ import {
   EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE,
   EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
   EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE,
+  EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE,
 } from "../dashboard/exact-review-lifecycle-telemetry.ts";
 
 let nextBayFinalReceiptCommentId = 900_000;
@@ -179,6 +180,12 @@ test("Bay lifecycle metrics include every durable ingress source and only final 
       receiptId: `canonical:${sourceAction}`,
       observedAt: triggeredAt + 20_000,
     });
+    telemetry.recordDirectOutcome({
+      ...identity,
+      claimGeneration: 1,
+      outcome: "accepted",
+      observedAt: triggeredAt + 20_000,
+    });
     lifecycle.recordRouterReceipt({
       ...identity,
       outcome: "durable",
@@ -280,6 +287,119 @@ test("Bay lifecycle metrics include every durable ingress source and only final 
   assert.equal(scoped.terminal?.terminal_count, 4);
   assert.ok(
     scoped.terminal?.terminal_buffer.every((entry) => entry.item_key.startsWith("openclaw/")),
+  );
+});
+
+test("Bay lifecycle excludes the retired batch path from normal review timing by default", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  telemetry.syncBayRepositoryScope(new Set(["openclaw/openclaw"]), now);
+
+  for (const [index, direct] of [true, false].entries()) {
+    const identity = {
+      canonicalTargetKey: `openclaw/openclaw#${9_180 + index}`,
+      fenceKey: direct
+        ? `openclaw/openclaw#${9_180 + index}@exact:1`
+        : `openclaw/openclaw#${9_180 + index}@publish:9180:1`,
+      revision: 1,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `publication-path:${index}`,
+      sourceAction: "synchronize",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: now + index * 10_000,
+      observedAt: now + index * 10_000,
+    });
+    recordBayFinalReceipt(lifecycle, identity, now + index * 10_000 + 60_000);
+    if (direct) {
+      telemetry.recordDirectOutcome({
+        ...identity,
+        claimGeneration: 1,
+        outcome: "accepted",
+        observedAt: now + index * 10_000 + 60_000,
+      });
+    }
+    telemetry.syncBayLifecycle(
+      lifecycle.recordTerminalDisposition({
+        ...identity,
+        kind: "review_completed_routed",
+        observedAt: now + index * 10_000 + 60_000,
+      }),
+    );
+  }
+
+  const snapshot = telemetry.baySnapshot(now + 120_000, new Set(["openclaw/openclaw"]));
+  assert.deepEqual(snapshot.timings?.overall, {
+    average_ms: 60_000,
+    median_ms: 60_000,
+    samples: 1,
+  });
+  assert.deepEqual(snapshot.timings?.including_legacy_batch.overall, {
+    average_ms: 60_000,
+    median_ms: 60_000,
+    samples: 2,
+  });
+  assert.deepEqual(
+    snapshot.terminal?.terminal_buffer.map((entry) => entry.legacy_batch_path),
+    [false, true],
+  );
+});
+
+test("Bay lifecycle retains direct-path classification after direct telemetry expires", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9182",
+    fenceKey: "openclaw/openclaw#9182@exact:1",
+    revision: 1,
+  };
+  telemetry.syncBayRepositoryScope(new Set(["openclaw/openclaw"]), now);
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "retained-direct-path",
+    sourceAction: "synchronize",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now,
+    observedAt: now,
+  });
+  recordBayFinalReceipt(lifecycle, identity, now + 60_000);
+  telemetry.syncBayLifecycle(
+    lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "review_completed_routed",
+      observedAt: now + 60_000,
+    }),
+  );
+  telemetry.recordDirectOutcome({
+    ...identity,
+    claimGeneration: 1,
+    outcome: "accepted",
+    observedAt: now + 60_000,
+  });
+
+  const afterRetention = now + 8 * 24 * 60 * 60_000;
+  telemetry.recordDirectOutcome({
+    canonicalTargetKey: "openclaw/openclaw#9183",
+    fenceKey: "openclaw/openclaw#9183@exact:1",
+    revision: 1,
+    claimGeneration: 1,
+    outcome: "accepted",
+    observedAt: afterRetention,
+  });
+
+  assert.equal(
+    telemetry.baySnapshot(afterRetention, new Set(["openclaw/openclaw"])).terminal
+      ?.terminal_buffer[0]?.legacy_batch_path,
+    false,
   );
 });
 
@@ -401,6 +521,12 @@ test("Bay lifecycle includes an in-flight public review when it initializes its 
 
   telemetry.syncBayRepositoryScope(new Set(["openclaw/openclaw"]), now);
   recordBayFinalReceipt(lifecycle, identity, now + 1_000);
+  telemetry.recordDirectOutcome({
+    ...identity,
+    claimGeneration: 1,
+    outcome: "accepted",
+    observedAt: now + 1_000,
+  });
   telemetry.syncBayLifecycle(
     lifecycle.recordTerminalDisposition({
       ...identity,
@@ -425,6 +551,7 @@ test("Bay lifecycle timing coverage is bound to the configured public repository
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
   const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
   const now = Date.now();
+  telemetry.ensureSchemaSync();
   const privateIdentity = {
     canonicalTargetKey: "private/example#9110",
     fenceKey: "private/example#9110@exact:1",
@@ -441,6 +568,12 @@ test("Bay lifecycle timing coverage is bound to the configured public repository
     observedAt: now - 3 * 60 * 60_000,
   });
   recordBayFinalReceipt(lifecycle, privateIdentity, now - 3 * 60 * 60_000 + 60_000);
+  telemetry.recordDirectOutcome({
+    ...privateIdentity,
+    claimGeneration: 1,
+    outcome: "accepted",
+    observedAt: now - 3 * 60 * 60_000 + 60_000,
+  });
   telemetry.syncBayLifecycle(
     lifecycle.recordTerminalDisposition({
       ...privateIdentity,
@@ -464,6 +597,12 @@ test("Bay lifecycle timing coverage is bound to the configured public repository
     observedAt: now + 89 * 60_000,
   });
   recordBayFinalReceipt(lifecycle, previouslyPrivatePublicIdentity, now + 90 * 60_000);
+  telemetry.recordDirectOutcome({
+    ...previouslyPrivatePublicIdentity,
+    claimGeneration: 1,
+    outcome: "accepted",
+    observedAt: now + 90 * 60_000,
+  });
   telemetry.syncBayLifecycle(
     lifecycle.recordTerminalDisposition({
       ...previouslyPrivatePublicIdentity,
@@ -500,6 +639,12 @@ test("Bay lifecycle timing coverage is bound to the configured public repository
   );
   telemetry.syncBayRepositoryScope(expandedScope, now + 2 * 60 * 60_000);
   recordBayFinalReceipt(lifecycle, inFlightScopeChangeIdentity, now + 2 * 60 * 60_000 + 60_000);
+  telemetry.recordDirectOutcome({
+    ...inFlightScopeChangeIdentity,
+    claimGeneration: 1,
+    outcome: "accepted",
+    observedAt: now + 2 * 60 * 60_000 + 60_000,
+  });
   telemetry.syncBayLifecycle(
     lifecycle.recordTerminalDisposition({
       ...inFlightScopeChangeIdentity,
@@ -742,6 +887,81 @@ test("Bay lifecycle orders delayed terminal delivery by completion time", () => 
   );
 });
 
+test("Bay lifecycle tide rebuild preserves pre-change direct publication classification", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  telemetry.syncBayRepositoryScope(new Set(["openclaw/openclaw"]), now);
+
+  const recordDirectReview = (number: number, triggeredAt: number, prefix: string) => {
+    const identity = {
+      canonicalTargetKey: `openclaw/openclaw#${number}`,
+      fenceKey: `openclaw/openclaw#${number}@exact:1`,
+      revision: 1,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `direct-rebuild:${number}`,
+      sourceAction: "synchronize",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt,
+      observedAt: triggeredAt,
+    });
+    lifecycle.recordCanonicalReceipt({
+      ...identity,
+      outcome: "accepted",
+      receiptId: `${prefix}:${identity.fenceKey}:1:accepted`,
+      observedAt: triggeredAt + 1_000,
+    });
+    recordBayFinalReceipt(lifecycle, identity, triggeredAt + 1_000);
+    telemetry.recordDirectOutcome({
+      ...identity,
+      claimGeneration: 1,
+      outcome: "accepted",
+      observedAt: triggeredAt + 1_000,
+    });
+    return lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "review_completed_routed",
+      observedAt: triggeredAt + 1_000,
+    });
+  };
+
+  const older = recordDirectReview(9381, now + 1_000, "direct");
+  const newer = recordDirectReview(9382, now + 3_000, "direct-v2");
+  telemetry.syncBayLifecycle(newer);
+  telemetry.syncBayLifecycle(older);
+
+  assert.deepEqual(
+    telemetry
+      .baySnapshot(now + 5_000, new Set(["openclaw/openclaw"]))
+      .terminal?.terminal_buffer.map((entry) => entry.legacy_batch_path),
+    [false, false],
+  );
+
+  storage.sql.exec(
+    `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} WHERE event_id = ?`,
+    `bay:v2:${older.fenceKey}:${older.revision}`,
+  );
+  storage.sql.exec(
+    `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE}
+      WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+    older.canonicalTargetKey,
+    older.fenceKey,
+    older.revision,
+  );
+  delete older.bayTelemetryEventId;
+  telemetry.syncBayLifecycle(older);
+  assert.equal(
+    telemetry.baySnapshot(now + 6_000, new Set(["openclaw/openclaw"])).terminal?.terminal_buffer[0]
+      ?.legacy_batch_path,
+    false,
+  );
+});
+
 test("Bay lifecycle refreshes a retained terminal outcome without advancing its tide", () => {
   const storage = new MemoryDurableStorage();
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
@@ -797,6 +1017,52 @@ test("Bay lifecycle refreshes a retained terminal outcome without advancing its 
   const snapshot = telemetry.baySnapshot(now + 1_000);
   assert.equal(snapshot.terminal?.terminal_count, 1);
   assert.equal(snapshot.terminal?.terminal_buffer[0]?.outcome, "cancelled");
+  assert.equal(snapshot.terminal?.terminal_buffer[0]?.legacy_batch_path, false);
+  assert.equal(snapshot.timings?.overall.samples, 1);
+});
+
+test("Bay lifecycle keeps failed legacy publishers out of the default direct view", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9392",
+    fenceKey: "openclaw/openclaw#9392@publish:9392:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "failed-legacy-publication",
+    sourceAction: "exact_review_artifact_publish",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now,
+    observedAt: now,
+  });
+  lifecycle.recordReviewResult({
+    ...identity,
+    claimGeneration: 1,
+    runId: "9392",
+    runAttempt: 1,
+    outcome: "failed",
+    observedAt: now + 100,
+  });
+  recordBayFinalReceipt(lifecycle, identity, now + 200);
+  telemetry.syncBayLifecycle(
+    lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "failure",
+      observedAt: now + 200,
+    }),
+  );
+
+  const snapshot = telemetry.baySnapshot(now + 1_000);
+  assert.equal(snapshot.terminal?.terminal_buffer[0]?.outcome, "failure");
+  assert.equal(snapshot.terminal?.terminal_buffer[0]?.legacy_batch_path, true);
+  assert.equal(snapshot.timings?.overall.samples, 0);
+  assert.equal(snapshot.timings?.including_legacy_batch.overall.samples, 1);
 });
 
 test("Bay lifecycle telemetry migrates durable tide metadata", () => {
@@ -852,6 +1118,17 @@ test("Bay lifecycle telemetry migrates durable tide metadata", () => {
   const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
   telemetry.ensureSchemaSync();
   for (const table of [
+    EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE,
+    EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE,
+  ]) {
+    const columns = new Set(
+      Array.from(storage.sql.exec(`SELECT name FROM pragma_table_info('${table}')`)).map((row) =>
+        String(row.name || ""),
+      ),
+    );
+    assert.equal(columns.has("legacy_batch_path"), true);
+  }
+  for (const table of [
     EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
     EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
   ]) {
@@ -870,6 +1147,257 @@ test("Bay lifecycle telemetry migrates durable tide metadata", () => {
     assert.equal(snapshot.terminal?.tide_generation, 1);
     assert.equal(snapshot.terminal?.terminal_count, 1);
     assert.equal(snapshot.terminal?.recently_washed.length, 20);
+  }
+});
+
+test("Bay lifecycle migration recovers retained pre-v2 direct tide rows from their fence", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const now = Date.now();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9421",
+    fenceKey: "openclaw/openclaw#9421@publish:100:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "retained-direct-migration",
+    sourceAction: "synchronize",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now - 60_000,
+    observedAt: now - 60_000,
+  });
+  lifecycle.recordCanonicalReceipt({
+    ...identity,
+    outcome: "accepted",
+    receiptId: `direct:${identity.fenceKey}:1:accepted`,
+    observedAt: now,
+  });
+  lifecycle.recordRouterReceipt({
+    ...identity,
+    outcome: "durable",
+    receiptId: "router-direct:100:1",
+    observedAt: now,
+  });
+  storage.sql.exec(
+    `CREATE TABLE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE} (
+       repository_scope TEXT NOT NULL,
+       bucket TEXT NOT NULL CHECK (bucket IN ('terminal', 'washed')),
+       event_id TEXT NOT NULL,
+       canonical_target_key TEXT NOT NULL,
+       outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'cancelled')),
+       triggered_at INTEGER NOT NULL,
+       completed_at INTEGER NOT NULL,
+       PRIMARY KEY (repository_scope, bucket, event_id)
+     ) STRICT`,
+  );
+  storage.sql.exec(
+    `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+       (repository_scope, bucket, event_id, canonical_target_key, outcome, triggered_at, completed_at)
+     VALUES ('__all_repositories__', 'terminal', ?, ?, 'success', ?, ?)`,
+    `bay:v2:${identity.fenceKey}:${identity.revision}`,
+    identity.canonicalTargetKey,
+    now - 60_000,
+    now,
+  );
+
+  new ExactReviewLifecycleTelemetryStore(storage).ensureSchemaSync();
+
+  const row = Array.from(
+    storage.sql.exec(
+      `SELECT legacy_batch_path
+         FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+        WHERE event_id = ?`,
+      `bay:v2:${identity.fenceKey}:${identity.revision}`,
+    ),
+  )[0];
+  assert.equal(row?.legacy_batch_path, 0);
+});
+
+test("Bay lifecycle repairs failed publishers after path migration and timing expiry", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const now = Date.now();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9420",
+    fenceKey: "openclaw/openclaw#9420@publish:99:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "failed-pre-v2-publisher",
+    sourceAction: "exact_review_artifact_publish",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now - 60_000,
+    observedAt: now - 60_000,
+  });
+  lifecycle.recordReviewResult({
+    ...identity,
+    claimGeneration: 1,
+    runId: "9420",
+    runAttempt: 1,
+    outcome: "failed",
+    observedAt: now,
+  });
+  recordBayFinalReceipt(lifecycle, identity, now);
+  lifecycle.recordTerminalDisposition({ ...identity, kind: "failure", observedAt: now });
+  storage.sql.exec(
+    `CREATE TABLE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} (
+       event_id TEXT PRIMARY KEY,
+       canonical_target_key TEXT NOT NULL,
+       fence_key TEXT NOT NULL,
+       revision INTEGER NOT NULL CHECK (revision >= 1),
+       outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'cancelled')),
+       triggered_at INTEGER NOT NULL,
+       completed_at INTEGER NOT NULL,
+       legacy_batch_path INTEGER NOT NULL CHECK (legacy_batch_path IN (0, 1))
+     ) STRICT`,
+  );
+  storage.sql.exec(
+    `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
+       (event_id, canonical_target_key, fence_key, revision, outcome, triggered_at, completed_at,
+        legacy_batch_path)
+     VALUES (?, ?, ?, 1, 'failure', ?, ?, 0)`,
+    `bay:v2:${identity.fenceKey}:${identity.revision}`,
+    identity.canonicalTargetKey,
+    identity.fenceKey,
+    now - 60_000,
+    now,
+  );
+  storage.sql.exec(
+    `CREATE TABLE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE} (
+       repository_scope TEXT NOT NULL,
+       bucket TEXT NOT NULL CHECK (bucket IN ('terminal', 'washed')),
+       event_id TEXT NOT NULL,
+       canonical_target_key TEXT NOT NULL,
+       outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'cancelled')),
+       triggered_at INTEGER NOT NULL,
+       completed_at INTEGER NOT NULL,
+       legacy_batch_path INTEGER NOT NULL CHECK (legacy_batch_path IN (0, 1)),
+       PRIMARY KEY (repository_scope, bucket, event_id)
+     ) STRICT`,
+  );
+  storage.sql.exec(
+    `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+       (repository_scope, bucket, event_id, canonical_target_key, outcome, triggered_at, completed_at,
+        legacy_batch_path)
+     VALUES ('__all_repositories__', 'terminal', ?, ?, 'failure', ?, ?, 0)`,
+    `bay:v2:${identity.fenceKey}:${identity.revision}`,
+    identity.canonicalTargetKey,
+    now - 60_000,
+    now,
+  );
+
+  new ExactReviewLifecycleTelemetryStore(storage).ensureSchemaSync();
+
+  for (const table of [
+    EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE,
+    EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE,
+  ]) {
+    const row = Array.from(
+      storage.sql.exec(
+        `SELECT legacy_batch_path FROM ${table} WHERE event_id = ?`,
+        `bay:v2:${identity.fenceKey}:${identity.revision}`,
+      ),
+    )[0];
+    assert.equal(row?.legacy_batch_path, 1);
+  }
+
+  storage.sql.exec(
+    `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} WHERE event_id = ?`,
+    `bay:v2:${identity.fenceKey}:${identity.revision}`,
+  );
+  storage.sql.exec(
+    `UPDATE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+        SET legacy_batch_path = 0
+      WHERE event_id = ?`,
+    `bay:v2:${identity.fenceKey}:${identity.revision}`,
+  );
+  new ExactReviewLifecycleTelemetryStore(storage).ensureSchemaSync();
+  const retained = Array.from(
+    storage.sql.exec(
+      `SELECT legacy_batch_path
+         FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+        WHERE event_id = ?`,
+      `bay:v2:${identity.fenceKey}:${identity.revision}`,
+    ),
+  )[0];
+  assert.equal(retained?.legacy_batch_path, 1);
+});
+
+test("Bay lifecycle migration keeps every retained pre-v2 batch router variant legacy", () => {
+  for (const [index, routerReceiptId] of [
+    "router-batch:101:1",
+    "router-batch-proof:101:1",
+    "router-batch-not-required:101:1",
+  ].entries()) {
+    const storage = new MemoryDurableStorage();
+    const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+    const now = Date.now();
+    const identity = {
+      canonicalTargetKey: `openclaw/openclaw#${9422 + index}`,
+      fenceKey: `openclaw/openclaw#${9422 + index}@publish:101:1`,
+      revision: 1,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: "retained-batch-migration",
+      sourceAction: "synchronize",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: now - 60_000,
+      observedAt: now - 60_000,
+    });
+    lifecycle.recordCanonicalReceipt({
+      ...identity,
+      outcome: "accepted",
+      receiptId: `direct:${identity.fenceKey}:1:accepted`,
+      observedAt: now,
+    });
+    lifecycle.recordRouterReceipt({
+      ...identity,
+      outcome: "durable",
+      receiptId: routerReceiptId,
+      observedAt: now,
+    });
+    storage.sql.exec(
+      `CREATE TABLE ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE} (
+       repository_scope TEXT NOT NULL,
+       bucket TEXT NOT NULL CHECK (bucket IN ('terminal', 'washed')),
+       event_id TEXT NOT NULL,
+       canonical_target_key TEXT NOT NULL,
+       outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'cancelled')),
+       triggered_at INTEGER NOT NULL,
+       completed_at INTEGER NOT NULL,
+       PRIMARY KEY (repository_scope, bucket, event_id)
+     ) STRICT`,
+    );
+    storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+       (repository_scope, bucket, event_id, canonical_target_key, outcome, triggered_at, completed_at)
+     VALUES ('__all_repositories__', 'terminal', ?, ?, 'success', ?, ?)`,
+      `bay:v2:${identity.fenceKey}:${identity.revision}`,
+      identity.canonicalTargetKey,
+      now - 60_000,
+      now,
+    );
+
+    new ExactReviewLifecycleTelemetryStore(storage).ensureSchemaSync();
+
+    const row = Array.from(
+      storage.sql.exec(
+        `SELECT legacy_batch_path
+         FROM ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
+        WHERE event_id = ?`,
+        `bay:v2:${identity.fenceKey}:${identity.revision}`,
+      ),
+    )[0];
+    assert.equal(row?.legacy_batch_path, 1);
   }
 });
 
@@ -1674,6 +2202,7 @@ test("Bay lifecycle metrics retain idle terminal progress and the bounded remain
       outcome: "success",
       completed_at: new Date(now).toISOString(),
       journey_duration_ms: 1_000,
+      legacy_batch_path: false,
     },
   ]);
 });
@@ -1831,6 +2360,12 @@ test("public Bay status uses the authoritative lifecycle metrics route without l
     digest: createHash("sha256").update("public-bay-final-effect").digest("hex"),
     observedAt: now,
   });
+  telemetry.recordDirectOutcome({
+    ...identity,
+    claimGeneration: 1,
+    outcome: "accepted",
+    observedAt: now,
+  });
   const completed = lifecycle.recordTerminalDisposition({
     ...identity,
     kind: "review_completed_routed",
@@ -1875,6 +2410,7 @@ test("public Bay status uses the authoritative lifecycle metrics route without l
         item_number: 9302,
         outcome: "success",
         journey_duration_ms: 30_000,
+        legacy_batch_path: false,
       },
     ]);
     assert.equal(
@@ -3923,19 +4459,7 @@ test("canonical commit records and tuples export with one monotonic revision", a
     )
   ).json();
   assert.equal(pageTwo.records.length, 1);
-  assert.equal(pageTwo.nextCursor, 2);
-  const terminalPage = await (
-    await worker.fetch(
-      signedStateAppendRequest(
-        exportPath,
-        { ...pageOnePayload, cursor: pageTwo.nextCursor },
-        secret,
-      ),
-      env,
-    )
-  ).json();
-  assert.deepEqual(terminalPage.records, []);
-  assert.equal(terminalPage.nextCursor, null);
+  assert.equal(pageTwo.nextCursor, null);
   assert.deepEqual(pageTwo.records[0], {
     section: "items",
     id: "711",
@@ -4467,6 +4991,14 @@ test("dashboard status reads the exact-review handoff model from the durable que
     applying: 0,
     repairing: 1,
   });
+  assert.deepEqual(status.bay_projection.legacy_batch_stages, {
+    arriving: 0,
+    "setting-up": 0,
+    reviewing: 0,
+    publishing: 1,
+    applying: 0,
+    repairing: 0,
+  });
   assert.deepEqual(
     status.bay_projection.items.map((item) => ({
       item_key: item.item_key,
@@ -4476,15 +5008,16 @@ test("dashboard status reads the exact-review handoff model from the durable que
     [
       { item_key: "openclaw/gogcli#597", stage: "arriving", queue_state: "pending" },
       { item_key: "openclaw/gogcli#600", stage: "setting-up", queue_state: "leased" },
-      { item_key: "openclaw/gogcli#599", stage: "publishing", queue_state: "leased" },
       { item_key: "openclaw/gogcli#601", stage: "repairing", queue_state: "pending" },
       { item_key: "openclaw/gogcli#598", stage: "arriving", queue_state: "pending" },
+      { item_key: "openclaw/gogcli#599", stage: "publishing", queue_state: "leased" },
     ],
   );
   assert.deepEqual(Object.keys(status.bay_projection.items[0]).sort(), [
     "created_at",
     "item_key",
     "item_number",
+    "legacy_batch_path",
     "next_attempt_at",
     "queue_state",
     "repository",
@@ -4553,6 +5086,82 @@ test("Bay queue projection maps durable batch-owned publication items to Applyin
       },
     ],
   );
+});
+
+test("Bay queue projection keeps scheduled exact reviews on the direct path", async () => {
+  const queue = new ExactReviewQueue(
+    { storage: new MemoryDurableStorage() },
+    { EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0" },
+  );
+  await queue.fetch(
+    buildExactReviewQueueRequest(
+      "bay-scheduled-direct",
+      603,
+      "scheduled_hot_intake",
+      "issue",
+      "openclaw/openclaw",
+    ),
+  );
+
+  const status = await exactReviewQueueStatusSnapshot({
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  });
+
+  assert.equal(status?.bay_projection.items[0]?.legacy_batch_path, false);
+});
+
+test("Bay queue projection preserves a direct review beside newer legacy publication work", async () => {
+  const storage = new MemoryDurableStorage();
+  const direct = leasedExactReviewQueueItem(605, "6050");
+  const legacy = leasedExactReviewPublicationItem(605, "6051");
+  legacy.updatedAt = direct.updatedAt + 1_000;
+  legacy.nextAttemptAt = direct.nextAttemptAt + 1_000;
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [direct.key]: direct, [legacy.key]: legacy },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const status = await exactReviewQueueStatusSnapshot({
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  });
+
+  assert.equal(status?.bay_projection.total, 1);
+  assert.equal(status?.bay_projection.items[0]?.item_key, direct.key);
+  assert.equal(status?.bay_projection.items[0]?.legacy_batch_path, false);
+
+  const legacyActive = await exactReviewQueueStatusSnapshot(
+    { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) },
+    { bayActiveLegacyKeys: [direct.key] },
+  );
+  assert.equal(legacyActive?.bay_projection.active_overlaps["setting-up"], 0);
+
+  const directActive = await exactReviewQueueStatusSnapshot(
+    { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) },
+    { bayActiveKeys: [direct.key] },
+  );
+  assert.equal(directActive?.bay_projection.active_overlaps["setting-up"], 1);
+});
+
+test("Bay queue projection retains the legacy path during batch terminal finalization", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(603, "6030");
+  Object.assign(item, {
+    state: "pending",
+    terminalFinalization: {
+      disposition: "review_completed_routed",
+      statusState: "Complete",
+      statusDetail: "The durable review result and its route handoff completed.",
+    },
+  });
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const status = await exactReviewQueueStatusSnapshot({
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  });
+
+  assert.equal(status?.bay_projection.items[0]?.legacy_batch_path, true);
 });
 
 test("Bay queue projection sends parked review and publication work to Repair Cove", async () => {
@@ -4676,6 +5285,14 @@ test("Bay queue projection caps its sample and validates its full durable census
     { arriving: 8, "setting-up": 8, repairing: 8 },
   );
   assert.deepEqual(status.bay_projection.active_overlaps, {
+    arriving: 0,
+    "setting-up": 0,
+    reviewing: 0,
+    publishing: 0,
+    applying: 0,
+    repairing: 0,
+  });
+  assert.deepEqual(status.bay_projection.legacy_batch_stages, {
     arriving: 0,
     "setting-up": 0,
     reviewing: 0,
@@ -4831,7 +5448,9 @@ test("Bay queue projection caps its sample and validates its full durable census
       sample_limit: 24,
       total: null,
       stages: null,
+      legacy_batch_stages: null,
       active_overlaps: null,
+      legacy_batch_active_overlaps: null,
       items: [],
     });
     assert.equal(JSON.stringify(malformed.bay_projection).includes(malformedMarker), false);
@@ -4839,6 +5458,49 @@ test("Bay queue projection caps its sample and validates its full durable census
     assert.equal(corruption.retained(retainedState.items["openclaw/gogcli#10008"]), true);
   }
   await storage.put("exact-review-queue", cleanState);
+});
+
+test("Bay queue projection samples normal direct work across stages before hidden legacy rows", async () => {
+  const storage = new MemoryDurableStorage();
+  const items: Record<
+    string,
+    | ReturnType<typeof leasedExactReviewPublicationItem>
+    | ReturnType<typeof leasedExactReviewQueueItem>
+  > = {};
+  for (let index = 0; index < 24; index += 1) {
+    const legacy = leasedExactReviewPublicationItem(40_000 + index, String(80_000 + index));
+    items[legacy.key] = legacy;
+    const normal = leasedExactReviewQueueItem(60_000 + index, String(100_000 + index));
+    items[normal.key] = normal;
+  }
+  const direct = leasedExactReviewPublicationItem(50_000, "90000");
+  assert.ok(direct.decision.publication);
+  assert.ok(direct.leaseDecision.publication);
+  direct.decision.publication.directLifecycle = {
+    plan: { kind: "router" },
+    receiptOutcome: "accepted",
+  };
+  direct.leaseDecision.publication.directLifecycle = {
+    plan: { kind: "router" },
+    receiptOutcome: "accepted",
+  };
+  items[direct.key] = direct;
+  await storage.put("exact-review-queue", { deliveries: {}, items });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const status = await exactReviewQueueStatusSnapshot({
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  });
+
+  assert.ok(status);
+  assert.equal(status.bay_projection.total, 49);
+  assert.equal(status.bay_projection.items.length, 24);
+  assert.equal(
+    status.bay_projection.items.some((item) => item.item_number === 50_000),
+    true,
+  );
+  assert.equal(status.bay_projection.items.filter((item) => item.legacy_batch_path).length, 0);
+  assert.equal(status.bay_projection.items.filter((item) => item.stage === "publishing").length, 1);
 });
 
 test("triage routing groups classify impact labels without forcing one primary group", () => {
@@ -5192,7 +5854,11 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /id="drawer"/);
   assert.match(body, /function openDrawer\(id\)/);
   assert.match(body, /id="queue-sample-drawer"/);
-  assert.match(body, /Completed reviews per tide/);
+  assert.match(body, /Retired proof\/batch journeys hidden/);
+  assert.match(body, /id="legacy-proof-toggle"/);
+  assert.match(body, /buildItems\(state\.data,false\)/);
+  assert.doesNotMatch(body, /buildItems\(state\.data,state\.includeLegacyBatch\)/);
+  assert.match(body, /Include retired proof\/batch/);
   assert.match(body, /Master Sweeper/);
   assert.match(body, /id="bay-control-board"/);
   assert.match(body, /Review admission/);
@@ -5694,6 +6360,11 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   const terminalRowsStart = body.indexOf("function terminalRows(");
   const terminalRowsEnd = body.indexOf("function runChanged(", terminalRowsStart);
   assert.ok(terminalRowsStart > 0 && terminalRowsEnd > terminalRowsStart);
+  const terminalRowState = {
+    includeLegacyBatch: false,
+    consumedDirectTideGeneration: null as number | null,
+    consumedLegacyTideGeneration: null as number | null,
+  };
   const aggregateTerminalRows = new Script(
     `${body.slice(terminalRowsStart, terminalRowsEnd)};terminalRows`,
   ).runInNewContext({
@@ -5701,6 +6372,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     Math,
     Number,
     String,
+    state: terminalRowState,
     BAY_OUTCOMES: ["success", "failure", "cancelled"],
     strictBayAction: () => null,
     bayObject: (value: unknown) =>
@@ -5711,6 +6383,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
       aggregateTerminalRows(
         {
           bay: {
+            tide_generation: 1,
             terminal_buffer: [
               {
                 outcome: "success",
@@ -5786,6 +6459,59 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.equal(JSON.stringify(terminalRows).includes("synthetic private workflow title"), false);
   assert.equal(JSON.stringify(terminalRows).includes("synthetic private terminal title"), false);
   assert.equal(JSON.stringify(terminalRows).includes("example.invalid"), false);
+  terminalRowState.includeLegacyBatch = true;
+  terminalRowState.consumedDirectTideGeneration = 12;
+  assert.deepEqual(
+    aggregateTerminalRows(
+      {
+        bay: {
+          tide_generation: 12,
+          recently_washed: [
+            {
+              outcome: "success",
+              repository: "openclaw/openclaw",
+              item_number: 74,
+              journey_duration_ms: 1_000,
+              legacy_batch_path: false,
+            },
+            {
+              outcome: "success",
+              repository: "openclaw/openclaw",
+              item_number: 75,
+              journey_duration_ms: 1_000,
+              legacy_batch_path: true,
+            },
+          ],
+        },
+      },
+      true,
+    ).map((row: { number: number }) => row.number),
+    [75],
+  );
+  terminalRowState.consumedLegacyTideGeneration = 12;
+  assert.deepEqual(
+    aggregateTerminalRows(
+      {
+        bay: {
+          tide_generation: 12,
+          recently_washed: [
+            {
+              outcome: "success",
+              repository: "openclaw/openclaw",
+              item_number: 75,
+              journey_duration_ms: 1_000,
+              legacy_batch_path: true,
+            },
+          ],
+        },
+      },
+      true,
+    ),
+    [],
+  );
+  terminalRowState.includeLegacyBatch = false;
+  terminalRowState.consumedDirectTideGeneration = null;
+  terminalRowState.consumedLegacyTideGeneration = null;
   assert.deepEqual(
     JSON.parse(
       JSON.stringify(
@@ -5841,9 +6567,58 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   );
   assert.equal(cappedTerminalRows.length, 24);
   assert.ok(cappedTerminalRows.every((row: { outcome: string }) => row.outcome === "success"));
+  const tideVisibilityStart = body.indexOf("function retainedWashedRows(");
+  const tideVisibilityEnd = body.indexOf("function runChanged(", tideVisibilityStart);
+  assert.ok(tideVisibilityStart > 0 && tideVisibilityEnd > tideVisibilityStart);
+  const tideHasVisibleOutcomes = new Script(
+    `${body.slice(tideVisibilityStart, tideVisibilityEnd)};tideHasVisibleOutcomes`,
+  ).runInNewContext({ Array, state: { includeLegacyBatch: false } });
+  assert.equal(tideHasVisibleOutcomes({ recently_washed: [{ legacy_batch_path: true }] }), false);
+  assert.equal(
+    tideHasVisibleOutcomes({
+      recently_washed: [{ legacy_batch_path: true }, { legacy_batch_path: false }],
+    }),
+    true,
+  );
+  const includeLegacyTide = new Script(
+    `${body.slice(tideVisibilityStart, tideVisibilityEnd)};tideHasVisibleOutcomes`,
+  ).runInNewContext({ Array, state: { includeLegacyBatch: true } });
+  assert.equal(includeLegacyTide({ recently_washed: [{ legacy_batch_path: true }] }), true);
+  const retainedWashState = { consumedLegacyTideGeneration: null as number | null };
+  const retainedWashAvailable = new Script(
+    `${body.slice(tideVisibilityStart, tideVisibilityEnd)};retainedWashAvailable`,
+  ).runInNewContext({
+    Array,
+    Number,
+    state: retainedWashState,
+    bayObject: (value: unknown) =>
+      value && typeof value === "object" && !Array.isArray(value) ? value : null,
+  });
+  const retainedWash = {
+    bay: { tide_generation: 7, recently_washed: [{ legacy_batch_path: true }] },
+  };
+  assert.equal(retainedWashAvailable(retainedWash), true);
+  assert.equal(
+    retainedWashAvailable({
+      bay: { tide_generation: 8, recently_washed: [{ legacy_batch_path: false }] },
+    }),
+    false,
+  );
+  assert.equal(
+    retainedWashAvailable({
+      bay: {
+        tide_generation: 9,
+        recently_washed: [{ legacy_batch_path: false }, { legacy_batch_path: true }],
+      },
+    }),
+    true,
+  );
+  retainedWashState.consumedLegacyTideGeneration = 7;
+  assert.equal(retainedWashAvailable(retainedWash), false);
   const tideRows = aggregateTerminalRows(
     {
       bay: {
+        tide_generation: 13,
         recently_washed: Array.from({ length: 20 }, (_, index) => ({
           outcome: "failure",
           repository: "openclaw/openclaw",
@@ -5882,6 +6657,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     Number,
     Object,
     String,
+    state: { includeLegacyBatch: false },
     STAGES: ["arriving", "setting-up", "reviewing", "publishing", "applying", "repairing"],
     queueStageLabel: () => "aggregate queue stage",
     strictBayAction: () => null,
@@ -6305,12 +7081,164 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
   assert.match(body, /item_url/);
   assert.doesNotMatch(body, new RegExp(marker, "i"));
 
+  const sampleNoteStart = body.indexOf("function updateSampleNote(");
+  const sampleNoteEnd = body.indexOf("function toggleLegacyProof(", sampleNoteStart);
+  assert.ok(sampleNoteStart > 0 && sampleNoteEnd > sampleNoteStart);
+  const sampleNote = { textContent: "" };
+  const sampleState = {
+    includeLegacyBatch: false,
+    data: {
+      bay: { terminal_count: 7, tide_threshold: 20 },
+      health: { sampled_runs: 4 },
+    },
+  };
+  const updateSampleNote = new Script(
+    `${body.slice(sampleNoteStart, sampleNoteEnd)};updateSampleNote`,
+  ).runInNewContext({
+    document: { getElementById: () => sampleNote },
+    state: sampleState,
+    terminalRows: () => [{}, {}],
+  });
+  updateSampleNote();
+  assert.match(sampleNote.textContent, /^2 completed items visible in the current normal-review/);
+  sampleState.includeLegacyBatch = true;
+  updateSampleNote();
+  assert.match(sampleNote.textContent, /^7 \/ 20 completed items visible in the current shared/);
+
+  const toggleStart = body.indexOf("function toggleLegacyProof(");
+  const toggleEnd = body.indexOf("async function fetchStatus(", toggleStart);
+  assert.ok(toggleStart > 0 && toggleEnd > toggleStart);
+  const toggleState = {
+    includeLegacyBatch: false,
+    pendingItems: null,
+    tideGeneration: 7,
+    consumedDirectTideGeneration: 7 as number | null,
+    consumedLegacyTideGeneration: null as number | null,
+    data: { bay: { tide_generation: 7, recently_washed: [{ legacy_batch_path: true }] } },
+    found: "openclaw/openclaw#1",
+    previousRuns: { previous: true },
+    confirmingOutcomes: { previous: true },
+    items: [],
+  };
+  const buildItemsIncludeWashed: boolean[] = [];
+  const retainedTideDelays: number[] = [];
+  new Script(`${body.slice(toggleStart, toggleEnd)};toggleLegacyProof();`).runInNewContext({
+    state: toggleState,
+    document: {
+      getElementById: () => ({
+        classList: { toggle: () => undefined },
+        setAttribute: () => undefined,
+        textContent: "",
+      }),
+    },
+    buildItems: (_data: unknown, includeWashed: boolean) => {
+      buildItemsIncludeWashed.push(includeWashed);
+      return [];
+    },
+    renderRepos: () => undefined,
+    render: () => undefined,
+    updateTide: () => undefined,
+    updateSampleNote: () => undefined,
+    showToast: () => undefined,
+    retainedWashAvailable: () => toggleState.consumedLegacyTideGeneration !== 7,
+    runTide: () => undefined,
+    setTimeout: (_callback: () => void, delay: number) => retainedTideDelays.push(delay),
+  });
+  assert.equal(toggleState.includeLegacyBatch, true);
+  assert.deepEqual(buildItemsIncludeWashed, [true]);
+  assert.deepEqual(retainedTideDelays, [150]);
+  toggleState.includeLegacyBatch = false;
+  toggleState.consumedLegacyTideGeneration = 7;
+  buildItemsIncludeWashed.length = 0;
+  new Script(`${body.slice(toggleStart, toggleEnd)};toggleLegacyProof();`).runInNewContext({
+    state: toggleState,
+    document: {
+      getElementById: () => ({
+        classList: { toggle: () => undefined },
+        setAttribute: () => undefined,
+        textContent: "",
+      }),
+    },
+    buildItems: (_data: unknown, includeWashed: boolean) => {
+      buildItemsIncludeWashed.push(includeWashed);
+      return [];
+    },
+    renderRepos: () => undefined,
+    render: () => undefined,
+    updateTide: () => undefined,
+    updateSampleNote: () => undefined,
+    showToast: () => undefined,
+    retainedWashAvailable: () => toggleState.consumedLegacyTideGeneration !== 7,
+    runTide: () => undefined,
+    setTimeout: (_callback: () => void, delay: number) => retainedTideDelays.push(delay),
+  });
+  assert.deepEqual(buildItemsIncludeWashed, [false]);
+  assert.deepEqual(retainedTideDelays, [150]);
+  assert.match(body, /state\.consumedDirectTideGeneration=tideGeneration/);
+  assert.match(
+    body,
+    /if\(state\.includeLegacyBatch\)state\.consumedLegacyTideGeneration=tideGeneration/,
+  );
+  assert.match(body, /if\(mode==="real"\)state\.realTidePending=true/);
+
+  const beginTideStart = body.indexOf("function beginTide(");
+  const beginTideEnd = body.indexOf("function runTide(", beginTideStart);
+  assert.ok(beginTideStart > 0 && beginTideEnd > beginTideStart);
+  const tideState = {
+    tideBusy: false,
+    tideMode: null as string | null,
+    tideSequence: 0,
+    realTidePending: false,
+    tideGeneration: 7,
+    includeLegacyBatch: false,
+    consumedDirectTideGeneration: null as number | null,
+    consumedLegacyTideGeneration: null as number | null,
+    data: { generation: 7 },
+    items: [],
+  };
+  const tideTimers: Array<{ callback: () => void; delay: number }> = [];
+  let tideBuilds = 0;
+  const beach = {
+    style: { setProperty: () => undefined, removeProperty: () => undefined },
+    dataset: {} as Record<string, string>,
+    classList: { add: () => undefined, remove: () => undefined },
+  };
+  const beginTide = new Script(
+    `${body.slice(beginTideStart, beginTideEnd)};beginTide`,
+  ).runInNewContext({
+    state: tideState,
+    tideTiming: () => ({ crest: 1, wash: 2, receding: 4, reveal: 5, end: 7 }),
+    document: {
+      getElementById: (id: string) => (id === "tide-live" ? { textContent: "" } : beach),
+    },
+    setTideBusy: (busy: boolean) => {
+      tideState.tideBusy = busy;
+    },
+    showToast: () => undefined,
+    setTimeout: (callback: () => void, delay: number) => tideTimers.push({ callback, delay }),
+    buildItems: () => {
+      tideBuilds += 1;
+      return [];
+    },
+    renderRepos: () => undefined,
+    render: () => undefined,
+  });
+  beginTide("real");
+  tideState.tideGeneration = 8;
+  tideState.data = { generation: 8 };
+  beginTide("real");
+  tideTimers.find((timer) => timer.delay === 1)?.callback();
+  tideTimers.find((timer) => timer.delay === 2)?.callback();
+  assert.equal(tideBuilds, 0, "the active tide must not clear a newer queued generation");
+  assert.equal(tideState.realTidePending, true);
+
   const projectionStart = body.indexOf("var MAX_BAY_COUNT");
   const projectionEnd = body.indexOf("function terminalRows", projectionStart);
   assert.ok(projectionStart > 0 && projectionEnd > projectionStart);
   const projectionSource = body.slice(projectionStart, projectionEnd);
+  const clientState = { includeLegacyBatch: false };
   const runtime = new Script(
-    `${projectionSource};({publicBayStatus,unavailableBayStatus,expandQueue})`,
+    `${projectionSource};({publicBayStatus,unavailableBayStatus,expandQueue,queueStageCount})`,
   ).runInNewContext({
     Array,
     Date,
@@ -6318,6 +7246,7 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
     Number,
     Object,
     String,
+    state: clientState,
     STAGES: ["arriving", "setting-up", "reviewing", "publishing", "applying", "repairing"],
   });
   const emptyStages = {
@@ -6339,10 +7268,13 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
         sample_limit: 24,
         total: 2,
         stages: { ...emptyStages, arriving: 2 },
+        legacy_batch_stages: { ...emptyStages, arriving: 1 },
         activity: {
           complete: true,
           queue_stages: { ...emptyStages, arriving: 2 },
           live_stages: { ...emptyStages, reviewing: 1 },
+          queue_legacy_batch_stages: { ...emptyStages, arriving: 1 },
+          live_legacy_batch_stages: { ...emptyStages },
           total: 3,
           items: [
             {
@@ -6350,6 +7282,7 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
               item_number: 81,
               stage: "reviewing",
               source: "live",
+              legacy_batch_path: false,
               title: marker,
               url: `https://example.invalid/item?query=${marker}`,
               action: {
@@ -6383,7 +7316,15 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
               item_number: 82,
               stage: "arriving",
               source: "queue",
+              legacy_batch_path: false,
               failure_key: marker,
+            },
+            {
+              repository: "openclaw/openclaw",
+              item_number: 81,
+              stage: "arriving",
+              source: "queue",
+              legacy_batch_path: true,
             },
           ],
           nested: { key: marker },
@@ -6444,6 +7385,7 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
           repository: "openclaw/openclaw",
           item_number: 83,
           journey_duration_ms: 1200,
+          legacy_batch_path: false,
           title: marker,
         },
       ],
@@ -6461,6 +7403,20 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
               samples: 2,
             },
           ],
+        },
+        including_legacy_batch: {
+          overall: { samples: 3, average_ms: 1400, median_ms: 1200 },
+          history: {
+            bucket_minutes: 5,
+            points: [
+              {
+                ended_at: "2026-08-16T12:05:00.000Z",
+                average_ms: 1400,
+                median_ms: 1200,
+                samples: 3,
+              },
+            ],
+          },
         },
       },
       last_tide_at: null,
@@ -6489,6 +7445,7 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
         item_number: 81,
         stage: "reviewing",
         source: "live",
+        legacy_batch_path: false,
         action: {
           repository: "openclaw/clawsweeper",
           run_id: 7001,
@@ -6507,6 +7464,14 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
         item_number: 82,
         stage: "arriving",
         source: "queue",
+        legacy_batch_path: false,
+      },
+      {
+        repository: "openclaw/openclaw",
+        item_number: 81,
+        stage: "arriving",
+        source: "queue",
+        legacy_batch_path: true,
       },
     ],
   );
@@ -6516,11 +7481,19 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
       repository: "openclaw/openclaw",
       item_number: 83,
       journey_duration_ms: 1200,
+      legacy_batch_path: false,
     },
   ]);
   const expanded = runtime.expandQueue(projected);
+  assert.equal(expanded.length, 2);
   assert.equal(expanded[0].started_at, "2026-08-16T12:00:00.000Z");
   assert.equal(expanded[0].run_id, 7001);
+  assert.equal(expanded[1].key, "direct:openclaw/clawsweeper#82");
+  clientState.includeLegacyBatch = true;
+  const expandedWithLegacy = runtime.expandQueue(projected);
+  assert.equal(expandedWithLegacy.length, 3);
+  assert.equal(expandedWithLegacy[2].key, "legacy:openclaw/openclaw#81");
+  clientState.includeLegacyBatch = false;
 
   const retainedQueueOnly = JSON.parse(JSON.stringify(valid));
   retainedQueueOnly.exact_review_queue.bay_projection.items = [
@@ -6535,6 +7508,8 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
     complete: false,
     queue_stages: null,
     live_stages: null,
+    queue_legacy_batch_stages: null,
+    live_legacy_batch_stages: null,
     total: null,
   };
   const retainedProjection = runtime.publicBayStatus(retainedQueueOnly);
@@ -6549,10 +7524,14 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
   assert.equal(retainedProjection.exact_review_queue.bay_projection.activity.live_stages, null);
   assert.equal(retainedProjection.exact_review_queue.bay_projection.activity.total, null);
   assert.equal(retainedProjection.bay.active_census_complete, false);
+  assert.equal(runtime.queueStageCount(retainedProjection, "arriving"), 1);
+  clientState.includeLegacyBatch = true;
+  assert.equal(runtime.queueStageCount(retainedProjection, "arriving"), 2);
+  clientState.includeLegacyBatch = false;
   assert.deepEqual(JSON.parse(JSON.stringify(runtime.expandQueue(retainedProjection))), [
     {
-      id: "queue:openclaw/openclaw#91",
-      key: "openclaw/openclaw#91",
+      id: "queue:direct:openclaw/openclaw#91",
+      key: "direct:openclaw/openclaw#91",
       number: 91,
       repository: "openclaw/openclaw",
       item_url: "https://github.com/openclaw/openclaw/issues/91",
@@ -6561,6 +7540,7 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
       source: "queue",
       outcome: null,
       queue_item: true,
+      legacy_batch_path: false,
       action: null,
       run_id: null,
       started_at: null,
