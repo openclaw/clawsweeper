@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readReviewGit, reviewMergeBase } from "./pr-review-evidence.js";
 import { MAX_SCAN_BYTES } from "./agent-input-scan.js";
@@ -11,6 +11,41 @@ export type ReviewBlobHydration = {
   hydrated: boolean;
   blobs: number;
 };
+
+type ReviewGitFailureReason =
+  | "review_commit_fetch_failed"
+  | "review_checkout_failed"
+  | "review_git_inspection_failed";
+
+export class ReviewGitError extends Error {
+  readonly diagnosticStage = "source_preparation";
+  readonly status: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly errorCode: string | null;
+  readonly stderr: string;
+  reviewedHeadSha?: string;
+
+  constructor(
+    readonly diagnosticReason: ReviewGitFailureReason,
+    result: SpawnSyncReturns<string>,
+  ) {
+    // Public errors omit process output; the diagnostic writer owns its redaction.
+    super("Review source preparation failed.");
+    this.name = "ReviewGitError";
+    this.status = result.status;
+    this.signal = result.signal;
+    this.errorCode = (result.error as NodeJS.ErrnoException | undefined)?.code ?? null;
+    this.stderr = result.stderr ?? "";
+  }
+}
+
+function checkedReviewGit(
+  result: SpawnSyncReturns<string>,
+  reason: ReviewGitFailureReason,
+): string {
+  if (result.error || result.status !== 0) throw new ReviewGitError(reason, result);
+  return result.stdout;
+}
 
 function gitCommitExists(targetDir: string, sha: string): boolean {
   return (
@@ -27,8 +62,9 @@ function gitRepositoryIsShallow(targetDir: string): boolean {
     cwd: targetDir,
     encoding: "utf8",
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    maxBuffer: MAX_GIT_OUTPUT_BYTES,
   });
-  return !result.error && result.status === 0 && result.stdout.trim() === "true";
+  return checkedReviewGit(result, "review_git_inspection_failed").trim() === "true";
 }
 
 export function ensureReviewTreeCommit({
@@ -36,16 +72,14 @@ export function ensureReviewTreeCommit({
   sha,
   sourceRef,
   destinationRef,
-  completeHistory = false,
 }: {
   targetDir: string;
   sha: string;
   sourceRef: string;
   destinationRef: string;
-  completeHistory?: boolean;
 }): boolean {
   if (!GIT_OBJECT_ID.test(sha)) return false;
-  const shallow = completeHistory && gitRepositoryIsShallow(targetDir);
+  const shallow = gitRepositoryIsShallow(targetDir);
   if (gitCommitExists(targetDir, sha) && !shallow) return true;
   const fetched = spawnSync(
     "git",
@@ -56,18 +90,20 @@ export function ensureReviewTreeCommit({
       "--no-tags",
       "--no-write-fetch-head",
       "--recurse-submodules=no",
-      ...(completeHistory ? (shallow ? ["--unshallow"] : []) : ["--depth=1"]),
+      ...(shallow ? ["--unshallow"] : []),
       "origin",
       `${sourceRef}:${destinationRef}`,
     ],
     {
       cwd: targetDir,
       env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      stdio: "ignore",
+      encoding: "utf8",
+      maxBuffer: MAX_GIT_OUTPUT_BYTES,
       timeout: 30_000,
     },
   );
-  return !fetched.error && fetched.status === 0 && gitCommitExists(targetDir, sha);
+  checkedReviewGit(fetched, "review_commit_fetch_failed");
+  return gitCommitExists(targetDir, sha);
 }
 
 export function ensurePullRequestReviewHead({
@@ -81,48 +117,29 @@ export function ensurePullRequestReviewHead({
 }): boolean {
   if (!Number.isSafeInteger(itemNumber) || itemNumber <= 0) return false;
   const destinationRef = `refs/clawsweeper/review-cache/head-${itemNumber}`;
-  return (
-    ensureReviewTreeCommit({
-      targetDir,
-      sha: headSha,
-      sourceRef: `refs/pull/${itemNumber}/head`,
-      destinationRef,
-      completeHistory: true,
-    }) ||
-    // The PR ref and REST head can briefly disagree after a force-push. Fetching the
-    // exact validated object keeps the model bound to the revision under review.
-    ensureReviewTreeCommit({
-      targetDir,
-      sha: headSha,
-      sourceRef: headSha,
-      destinationRef,
-      completeHistory: true,
-    })
-  );
-}
-
-const REVIEW_HISTORY_DEPTH = 256;
-
-function deepenReviewHistory(targetDir: string, revisions: readonly string[]): void {
-  spawnSync(
-    "git",
-    [
-      "fetch",
-      "--filter=blob:none",
-      "--no-tags",
-      "--no-write-fetch-head",
-      "--recurse-submodules=no",
-      `--depth=${REVIEW_HISTORY_DEPTH}`,
-      "origin",
-      ...revisions,
-    ],
-    {
-      cwd: targetDir,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      stdio: "ignore",
-      timeout: 30_000,
-    },
-  );
+  let failure: ReviewGitError | undefined;
+  // A ref may move or disappear after REST hydration. Only the pinned object
+  // decides success, and failure of the ref fetch must still permit the exact fetch.
+  for (const sourceRef of [`refs/pull/${itemNumber}/head`, headSha]) {
+    try {
+      if (
+        ensureReviewTreeCommit({
+          targetDir,
+          sha: headSha,
+          sourceRef,
+          destinationRef,
+        })
+      ) {
+        return true;
+      }
+    } catch (error) {
+      if (!(error instanceof ReviewGitError)) throw error;
+      error.reviewedHeadSha = headSha;
+      failure = error;
+    }
+  }
+  if (failure) throw failure;
+  return false;
 }
 
 export function hydratePullRequestReviewHistory(options: {
@@ -140,29 +157,18 @@ export function hydratePullRequestReviewHistory(options: {
     itemNumber <= 0
   )
     return null;
-  if (reviewMergeBase(targetDir, baseSha, headSha).status === "unavailable") {
-    // Existing tree hydration may have fetched only the PR tip. Bound history, not
-    // the reviewed identity; failure remains explicit in the local evidence reader.
-    //
-    // Deepen the reviewed head on its own first. A depth-limited fetch re-bounds the
-    // ancestry of every revision it names, so naming the pinned base here as well
-    // truncates a base branch whose history the checkout already had -- the very
-    // ancestry a merge base is found in. Only deepen the base when the head alone did
-    // not establish one, which is the case where the base is itself shallow.
-    deepenReviewHistory(targetDir, [headSha]);
-    if (reviewMergeBase(targetDir, baseSha, headSha).status === "unavailable") {
-      // Unchanged fallback: the same fetch this function has always issued, for the case
-      // where the base is itself shallow and has to be deepened to reach an ancestor.
-      deepenReviewHistory(targetDir, [baseSha, headSha]);
-    }
-  }
   if (testMergeSha && GIT_OBJECT_ID.test(testMergeSha)) {
-    ensureReviewTreeCommit({
-      targetDir,
-      sha: testMergeSha,
-      sourceRef: `refs/pull/${itemNumber}/merge`,
-      destinationRef: `refs/clawsweeper/review-cache/merge-${itemNumber}`,
-    });
+    try {
+      ensureReviewTreeCommit({
+        targetDir,
+        sha: testMergeSha,
+        sourceRef: `refs/pull/${itemNumber}/merge`,
+        destinationRef: `refs/clawsweeper/review-cache/merge-${itemNumber}`,
+      });
+    } catch (error) {
+      // Test-merge evidence is optional; required base/head acquisition owns admission.
+      if (!(error instanceof ReviewGitError)) throw error;
+    }
   }
   return reviewMergeBase(targetDir, baseSha, headSha).sha;
 }
@@ -173,7 +179,10 @@ function reviewTreeMatchesCommit({ targetDir, sha }: { targetDir: string; sha: s
     encoding: "utf8",
     env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
   });
-  if (head.error || head.status !== 0 || head.stdout.trim().toLowerCase() !== sha.toLowerCase()) {
+  if (
+    checkedReviewGit(head, "review_git_inspection_failed").trim().toLowerCase() !==
+    sha.toLowerCase()
+  ) {
     return false;
   }
   const status = spawnSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
@@ -181,7 +190,7 @@ function reviewTreeMatchesCommit({ targetDir, sha }: { targetDir: string; sha: s
     encoding: "utf8",
     env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
   });
-  return !status.error && status.status === 0 && status.stdout.trim() === "";
+  return checkedReviewGit(status, "review_git_inspection_failed").trim() === "";
 }
 
 export function materializePullRequestReviewTree({
@@ -203,14 +212,12 @@ export function materializePullRequestReviewTree({
     {
       cwd: targetDir,
       env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      stdio: "ignore",
+      encoding: "utf8",
+      maxBuffer: MAX_GIT_OUTPUT_BYTES,
     },
   );
-  return (
-    !worktree.error &&
-    worktree.status === 0 &&
-    reviewTreeMatchesCommit({ targetDir: worktreeDir, sha: headSha })
-  );
+  checkedReviewGit(worktree, "review_checkout_failed");
+  return reviewTreeMatchesCommit({ targetDir: worktreeDir, sha: headSha });
 }
 
 export function removePullRequestReviewTree({

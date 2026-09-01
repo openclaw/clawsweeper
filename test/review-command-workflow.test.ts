@@ -19,6 +19,9 @@ import { createReviewActionLedger } from "../dist/clawsweeper-review-ledger.js";
 import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
 import { closeDecision } from "./helpers.ts";
 import { AgentInputScanError } from "../dist/agent-input-scan.js";
+import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
+import { asRecord } from "../dist/clawsweeper-item-policy.js";
+import { materializePullRequestReviewTree } from "../dist/clawsweeper-review-blobs.js";
 
 import { parseArgs } from "../dist/clawsweeper-args.js";
 import {
@@ -156,6 +159,8 @@ for (const scenario of [
   "changed-pr-refusal",
   "changed-pr-codex-failure",
   "changed-pr-exact-codex-failure",
+  "changed-pr-exact-fetch-failure",
+  "changed-pr-exact-checkout-failure",
   "changed-pr-clean",
   "content-clean",
   "fresh-refusal",
@@ -164,6 +169,8 @@ for (const scenario of [
     const refuseScan = scenario.endsWith("refusal");
     const codexFailure = scenario.endsWith("codex-failure");
     const exactFailure = scenario.includes("exact");
+    const fetchFailure = scenario.endsWith("fetch-failure");
+    const checkoutFailure = scenario.endsWith("checkout-failure");
     const changedPr = scenario.startsWith("changed-pr-");
     const fresh = scenario === "fresh-refusal" || changedPr;
     const hydrated = fresh || scenario.startsWith("content-");
@@ -187,6 +194,7 @@ for (const scenario of [
     git("add", ".");
     git("commit", "-qm", "change");
     const headSha = git("rev-parse", "HEAD");
+    if (fetchFailure) git("remote", "add", "origin", join(root, "unavailable.git"));
     const pull = changedPr
       ? {
           headSha,
@@ -294,6 +302,7 @@ for (const scenario of [
     let structuralFetches = 0;
     let cachedCompletions = 0;
     let checkoutInspectionCalls = 0;
+    let reviewTreeCleanupCalls = 0;
     let activeReviewMutationRunner = null;
 
     const oldEnv = process.env;
@@ -311,6 +320,7 @@ for (const scenario of [
       GITHUB_JOB: "review",
       GITHUB_SHA: headSha,
       EXACT_REVIEW_ITEM_KEY: exactFailure ? `${REPO}#${ITEM_NUMBER}` : "",
+      EXACT_REVIEW_SOURCE_HEAD_SHA: "f".repeat(40),
     };
     t.after(() => {
       process.env = oldEnv;
@@ -351,6 +361,28 @@ for (const scenario of [
       collectItemContext: () => {
         hydrationCalls += 1;
         if (!hydrated) throw new Error("scheduled structural cache hit must not hydrate");
+        if (fetchFailure) {
+          const unavailable = () => {
+            throw new Error("unexpected fixture dependency");
+          };
+          const hydration = createContextHydration(
+            new Proxy(
+              {
+                asRecord,
+                stringOrUndefined: (value: unknown) =>
+                  typeof value === "string" ? value : undefined,
+                isSafeGitBranchName: (branch: string) => branch === "main",
+                targetRepo: () => REPO,
+              },
+              { get: (target, key) => Reflect.get(target, key) ?? unavailable },
+            ) as Parameters<typeof createContextHydration>[0],
+          );
+          hydration.hydratePullRequestReviewSource({
+            itemNumber: ITEM_NUMBER,
+            targetDir: target,
+            pullRequest: { base: { ref: "main", sha: "e".repeat(40) }, head: { sha: headSha } },
+          });
+        }
         return context;
       },
       completePullChecksContext: (checks) => checks?.complete === true,
@@ -431,11 +463,24 @@ for (const scenario of [
       pullHeadShaFromContext: (value) => value.pullRequest?.head.sha ?? null,
       reviewStructuralPullStateFromContext: () => pull,
       materializePullRequestReviewTree: ({ worktreeDir }) => {
+        if (checkoutFailure) {
+          const parent = join(root, "blocked-parent");
+          writeFileSync(parent, "a file cannot contain a worktree");
+          return materializePullRequestReviewTree({
+            targetDir: target,
+            worktreeDir: join(parent, "review-tree"),
+            itemNumber: ITEM_NUMBER,
+            headSha,
+          });
+        }
         mkdirSync(worktreeDir, { recursive: true });
         git("clone", "-q", target, worktreeDir);
         return true;
       },
-      removePullRequestReviewTree: () => true,
+      removePullRequestReviewTree: () => {
+        reviewTreeCleanupCalls += 1;
+        return true;
+      },
       localExactReviewItem: () => false,
       makeTreeReadOnly: () => [],
       postReviewStartStatusComment: () => {
@@ -470,7 +515,8 @@ for (const scenario of [
       codexFailureLogKind: () => "codex_execution",
       codexReviewFailureRetryable: () => true,
       codexFailureDecision: () => {
-        if (codexFailure) return closeDecision({ decision: "keep_open", closeReason: null });
+        if (codexFailure || checkoutFailure)
+          return closeDecision({ decision: "keep_open", closeReason: null });
         throw new Error("scan refusal must not become a decision");
       },
       runCodex: () => {
@@ -545,6 +591,42 @@ for (const scenario of [
         assert.equal(existsSync(join(artifactDir, `${ITEM_NUMBER}.md`)), false);
         return;
       }
+      if (fetchFailure || checkoutFailure) {
+        assert.throws(execute, {
+          name: "ReviewGitError",
+          message: "Review source preparation failed.",
+        });
+        assert.equal(generationCalls, 0);
+        assert.equal(checkoutInspectionCalls, 0);
+        assert.equal(existsSync(providerCalls), false);
+        assert.equal(existsSync(join(artifactDir, `${ITEM_NUMBER}.md`)), false);
+        assert.equal(reviewTreeCleanupCalls, checkoutFailure ? 1 : 0);
+        const output = join(artifactDir, "failure-diagnostics");
+        const manifest = JSON.parse(readFileSync(join(output, "manifest.json"), "utf8"));
+        assert.deepEqual(manifest.failure, {
+          stage: "source_preparation",
+          reason_code: fetchFailure ? "review_commit_fetch_failed" : "review_checkout_failed",
+        });
+        assert.equal(
+          manifest.source.sha,
+          headSha,
+          "the observed PR head replaces the stale dispatch head and fetched base",
+        );
+        assert.ok(Number.isInteger(manifest.process.status) && manifest.process.status > 0);
+        assert.equal(manifest.process.signal, null);
+        assert.equal(manifest.process.error_code, null);
+        assert.equal(manifest.retryable, true);
+        assert.equal(manifest.process.workflow_exit, 1);
+        const detail = readFileSync(join(output, "stderr.tail.txt"), "utf8");
+        assert.match(detail, /REDACTED_PATH/);
+        assert.equal(detail.includes(root), false);
+        const terminal = readAllSpooledActionEvents(root).filter(
+          (event) => event.action.status === "failed",
+        );
+        assert.equal(terminal.length, 3);
+        assert.ok(terminal.every((event) => event.action.retryable === true));
+        return;
+      }
       if (codexFailure) {
         assert.throws(execute, /Codex failed/);
         assert.equal(existsSync(join(artifactDir, "failure-diagnostics")), exactFailure);
@@ -553,6 +635,7 @@ for (const scenario of [
             readFileSync(join(artifactDir, "failure-diagnostics", "manifest.json"), "utf8"),
           );
           assert.equal(manifest.retryable, true);
+          assert.equal(manifest.source.sha, headSha);
           assert.equal(manifest.classification, "source_preparation");
           assert.deepEqual(manifest.failure, {
             stage: "source_preparation",

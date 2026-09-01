@@ -44,7 +44,7 @@ export function writeExactReviewFailureDiagnostics(options: {
   const diagnosticStage = safeCode(error.diagnosticStage, /^(?:source_preparation)$/);
   const diagnosticReason = safeCode(
     error.diagnosticReason,
-    /^(?:configuration_missing|setup_script_failed)$/,
+    /^(?:configuration_missing|setup_script_failed|review_commit_fetch_failed|review_checkout_failed|review_git_inspection_failed)$/,
   );
   const values = exactValues(options.prompt, options.model, options.env ?? process.env);
   const inputs = {

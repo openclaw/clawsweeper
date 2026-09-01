@@ -17,6 +17,7 @@ import {
   hydratePullRequestReviewHistory,
   materializePullRequestReviewTree,
   removePullRequestReviewTree,
+  ReviewGitError,
 } from "./clawsweeper-review-blobs.js";
 import {
   filterReviewComments,
@@ -906,19 +907,25 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     const baseSha = stringOrUndefined(base.sha) ?? "";
     const headSha = stringOrUndefined(head.sha) ?? "";
     const baseRef = stringOrUndefined(base.ref) ?? "";
-    const commitsAvailable =
-      isSafeGitBranchName(baseRef) &&
-      ensureReviewTreeCommit({
-        targetDir: options.targetDir,
-        sha: baseSha,
-        sourceRef: `refs/heads/${baseRef}`,
-        destinationRef: `refs/clawsweeper/review-cache/base-${options.itemNumber}`,
-      }) &&
-      ensurePullRequestReviewHead({
-        targetDir: options.targetDir,
-        itemNumber: options.itemNumber,
-        headSha,
-      });
+    let commitsAvailable: boolean;
+    try {
+      commitsAvailable =
+        isSafeGitBranchName(baseRef) &&
+        ensureReviewTreeCommit({
+          targetDir: options.targetDir,
+          sha: baseSha,
+          sourceRef: `refs/heads/${baseRef}`,
+          destinationRef: `refs/clawsweeper/review-cache/base-${options.itemNumber}`,
+        }) &&
+        ensurePullRequestReviewHead({
+          targetDir: options.targetDir,
+          itemNumber: options.itemNumber,
+          headSha,
+        });
+    } catch (error) {
+      if (error instanceof ReviewGitError) error.reviewedHeadSha = headSha;
+      throw error;
+    }
 
     if (commitsAvailable) {
       const testMergeSha =

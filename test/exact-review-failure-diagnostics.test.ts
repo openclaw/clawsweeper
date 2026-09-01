@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { ReviewGitError } from "../dist/clawsweeper-review-blobs.js";
 import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
 
 const expectedFiles = ["error.txt", "manifest.json", "stderr.tail.txt", "stdout.error.txt"];
@@ -188,6 +190,36 @@ test("unsafe files are omitted whole and recorded in the readiness manifest", ()
         ["stderr.tail.txt"],
       );
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("native review fetch timeouts retain structured process diagnostics", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-diagnostics-"));
+  try {
+    const result = spawnSync(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      encoding: "utf8",
+      timeout: 25,
+    });
+    assert.equal((result.error as NodeJS.ErrnoException | undefined)?.code, "ETIMEDOUT");
+    assert.equal(result.status, null);
+    assert.match(result.signal ?? "", /^SIG[A-Z0-9]+$/);
+    const error = new ReviewGitError("review_commit_fetch_failed", result);
+    assert.equal(error.message, "Review source preparation failed.");
+    const output = write(root, error);
+    const manifest = JSON.parse(readFileSync(join(output, "manifest.json"), "utf8"));
+    assert.equal(manifest.classification, "source_preparation");
+    assert.deepEqual(manifest.failure, {
+      stage: "source_preparation",
+      reason_code: "review_commit_fetch_failed",
+    });
+    assert.deepEqual(manifest.process, {
+      status: null,
+      signal: result.signal,
+      error_code: "ETIMEDOUT",
+      workflow_exit: 1,
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

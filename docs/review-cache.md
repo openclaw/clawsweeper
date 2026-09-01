@@ -83,6 +83,17 @@ deadline; metadata requests retain the existing GitHub transport timeout policy.
 The scanner separately enforces its aggregate budget, including prompts and the
 binary patch, and still refuses incomplete or unsupported source without fetching.
 
+Target-branch and release metadata refreshes preserve complete Git ancestry.
+Required base/head preparation completes a shallow checkout before inspection;
+fetching an optional test-merge commit never reduces that history. A moved PR ref
+still falls back to the pinned head object, and unavailable test-merge evidence
+does not prevent review of the required base/head pair.
+
+Failed Git preparation stops the review before model execution. Exact-review
+failure artifacts retain the source-preparation reason, observed PR head, process
+exit status, signal, and error code, plus bounded redacted stderr. Public errors
+omit raw process output. The existing scanner and source-size limits still apply.
+
 Preparation remains in full-context collection, before restricted checkout
 inspection. Structural reuse keeps its existing pinned-source scan and refusal
 behavior; it does not gain a separate hydrator. Context-only callers that do not
