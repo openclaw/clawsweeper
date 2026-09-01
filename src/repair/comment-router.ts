@@ -650,7 +650,7 @@ function claimedDispatchState({
   command: LooseRecord;
   repo: string;
   workflowName: string;
-  expectedTitle: string;
+  expectedTitle: string | readonly string[];
 }) {
   const claim = priorDispatchClaim(command);
   if (!claim) return null;
@@ -734,8 +734,9 @@ function verifyDispatchExecutionRuns({
   runs: LooseRecord[];
   repo: string;
   workflowName: string;
-  expectedTitle: string;
+  expectedTitle: string | readonly string[];
 }) {
+  const expectedTitles = typeof expectedTitle === "string" ? [expectedTitle] : expectedTitle;
   const requiredJobName =
     workflowName === "assist.yml"
       ? "assist"
@@ -747,7 +748,7 @@ function verifyDispatchExecutionRuns({
   return runs.map((run) => {
     const createdAtMs = Date.parse(String(run.created_at ?? run.createdAt ?? ""));
     if (
-      String(run.display_title ?? run.displayTitle ?? "") !== expectedTitle ||
+      !expectedTitles.includes(String(run.display_title ?? run.displayTitle ?? "")) ||
       String(run.status ?? "").toLowerCase() !== "completed" ||
       !Number.isFinite(claimedAtMs) ||
       !Number.isFinite(createdAtMs) ||
@@ -3390,7 +3391,10 @@ function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
   if (command.intent === "re_review") return enqueueClawSweeperReReview(command);
   const requiresCommandStatus = ["autofix", "automerge"].includes(String(command.intent ?? ""));
   let dispatchKey = dispatchReceiptKey(command);
-  const expectedTitle = `Review event item ${command.repo}#${command.issue_number} [${dispatchKey}]`;
+  const expectedTitle = [
+    `Review event item ${command.repo}#${command.issue_number} [${dispatchKey}]`,
+    `Review manual item [${dispatchKey}]`,
+  ];
   const claimed = claimedDispatchState({
     command,
     repo: reviewRepo,

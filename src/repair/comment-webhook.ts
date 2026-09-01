@@ -3,6 +3,11 @@ import crypto from "node:crypto";
 import http from "node:http";
 
 import { repositoryProfileFor } from "../repository-profiles.js";
+import {
+  hostedTargetRetryableAdmission,
+  probeHostedPublicTarget,
+  type HostedTargetAdmission,
+} from "../hosted-target-admission.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import {
   isAssistPublicationCommentBody,
@@ -137,6 +142,23 @@ export async function handleGitHubWebhook({
   const decision = classifyWebhook({ event, payload });
   if (!decision.accepted) return { statusCode: 202, body: decision };
   const accepted = decision as AcceptedWebhook;
+  const appJwt = createAppJwt();
+  let reviewInstallationId = 0;
+  let admission: HostedTargetAdmission;
+  try {
+    reviewInstallationId = await reviewRepoInstallationId({ appJwt });
+    const metadataToken = await createInstallationToken({
+      appJwt,
+      installationId: reviewInstallationId,
+      label: REVIEW_REPO,
+      repositories: [repoName(REVIEW_REPO)],
+      permissions: { metadata: "read" },
+    });
+    admission = await probeHostedPublicTarget(accepted.targetRepo, metadataToken, fetch);
+  } catch (error) {
+    admission = hostedTargetRetryableAdmission(error);
+  }
+  if (admission.outcome !== "public") return standaloneAdmissionResponse(admission);
 
   if (
     accepted.type === "issue_comment" &&
@@ -171,8 +193,7 @@ export async function handleGitHubWebhook({
     return { statusCode: 202, body: { ok: true, ...result } };
   }
 
-  const appJwt = createAppJwt();
-  const dispatchToken = await createReviewRepoDispatchToken({ appJwt });
+  const dispatchToken = await createReviewRepoDispatchToken({ appJwt, reviewInstallationId });
 
   if (accepted.type === "item") {
     await dispatchItemReview({ token: dispatchToken, accepted });
@@ -535,7 +556,7 @@ async function createInstallationToken({
   return token;
 }
 
-async function createReviewRepoDispatchToken({ appJwt }: { appJwt: string }) {
+async function reviewRepoInstallationId({ appJwt }: { appJwt: string }) {
   const installation = await githubFetch({
     token: appJwt,
     path: `/repos/${REVIEW_REPO}/installation`,
@@ -546,15 +567,37 @@ async function createReviewRepoDispatchToken({ appJwt }: { appJwt: string }) {
   if (!Number.isInteger(installationId) || installationId <= 0) {
     throw new Error(`review repo installation response missing id for ${REVIEW_REPO}`);
   }
+  return installationId;
+}
+
+async function createReviewRepoDispatchToken({
+  appJwt,
+  reviewInstallationId,
+}: {
+  appJwt: string;
+  reviewInstallationId: number;
+}) {
   return createInstallationToken({
     appJwt,
-    installationId,
+    installationId: reviewInstallationId,
     label: REVIEW_REPO,
     repositories: [repoName(REVIEW_REPO)],
     permissions: {
       contents: "write",
     },
   });
+}
+
+function standaloneAdmissionResponse(admission: HostedTargetAdmission) {
+  return admission.outcome === "terminal"
+    ? {
+        statusCode: 202,
+        body: { ok: false, accepted: false, reason: "private_target_unsupported" },
+      }
+    : {
+        statusCode: 503,
+        body: { ok: false, error: "target_visibility_unverified", retryable: true },
+      };
 }
 
 function createAppJwt() {

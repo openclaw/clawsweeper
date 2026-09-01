@@ -423,7 +423,7 @@ jobs:
         run: pnpm run --silent repair:github-egress-telemetry submit
 
       - name: Release unfinished batch members
-        if: ${{ always() && steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        if: ${{ always() && steps.batch.outputs.manifest != '' }}
         continue-on-error: true
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}

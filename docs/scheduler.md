@@ -228,6 +228,8 @@ Generic `openclaw/*` and `steipete/*` repositories:
   the target dispatcher and GitHub App installation are present
 - scheduled review/audit: target fanout dispatches small cursor-based batches
   from `target_inventory.owners`
+- private and internal targets: local maintainer review only, using an
+  operator-provided checkout
 - generic OpenClaw issues may auto-close only when already implemented on the
   default branch; generic OpenClaw PRs may additionally use age-gated mostly
   implemented there
@@ -235,6 +237,8 @@ Generic `openclaw/*` and `steipete/*` repositories:
 
 Manual `workflow_dispatch` can override `target_repo`, `item_number`,
 `item_numbers`, `batch_size`, `shard_count`, `hot_intake`, and apply inputs.
+For batch input, `batch_size` controls items assigned per worker and
+`shard_count` controls requested parallelism within the configured hard cap.
 Exact item dispatches use a dedicated concurrency group and exact planner
 matrix rather than the broad normal-review queue.
 
@@ -873,8 +877,11 @@ To add a new target repository, add a repository profile, wire schedule target
 resolution and concurrency target resolution in `.github/workflows/sweep.yml`,
 then confirm the generated state paths remain flat under one repo slug.
 
-To add a new generic owner, add a `generic_fallbacks` entry and include that
-owner in `target_inventory.owners`; target fanout will dispatch explicit
-per-repository runs without adding owner-specific cron case blocks. Keep
-scheduled fanout public-only unless the generated records publish to a private
-state surface.
+Hosted owner fallback is limited to `openclaw/*` and `steipete/*`. To schedule
+another owner, add explicit repository profiles and include that owner in
+`target_inventory.owners`, then wire that owner's inventory token or explicit
+public-inventory fallback into the fanout workflow. Configuration alone does
+not activate a new owner. Fanout ignores every repository that is not admitted
+by the shared configured-profile-or-owner-fallback policy. Keep scheduled
+fanout public-only unless the generated records publish to a private state
+surface.

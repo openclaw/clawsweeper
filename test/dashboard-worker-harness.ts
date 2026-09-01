@@ -9,9 +9,9 @@ import { isDeepStrictEqual } from "node:util";
 import { createContext, Script } from "node:vm";
 import { gunzipSync } from "node:zlib";
 
-import worker, {
+import runtimeWorker, {
   automaticIssueWork,
-  ExactReviewQueue,
+  ExactReviewQueue as RuntimeExactReviewQueue,
   completedBayReviews,
   exactReviewEffectiveLeaseExpiresAt,
   exactReviewJitteredDelayMs,
@@ -48,6 +48,10 @@ import {
   ExactReviewLifecycleProjectionStore,
   lifecycleState,
 } from "../dashboard/exact-review-lifecycle.ts";
+import type {
+  HostedPublicTargetProbe,
+  HostedTargetAdmission,
+} from "../dashboard/exact-review-queue.ts";
 import { ExactReviewLifecycleTelemetryStore } from "../dashboard/exact-review-lifecycle-telemetry.ts";
 import { LIVE_ACTIVITY_SOURCE_LIMIT, liveActivityBaySnapshot } from "../dashboard/live-activity.ts";
 import { captureCanonicalRecordBaseline } from "../dist/repair/canonical-record-baseline.js";
@@ -63,6 +67,54 @@ function seededRandom(seed: number) {
     return ((mixed ^ (mixed >>> 14)) >>> 0) / 4_294_967_296;
   };
 }
+
+function withHostedTargetAdmissionDefaults<Env extends Record<string, unknown>>(
+  env: Env,
+  includeVisibilityProbe: boolean,
+): Env {
+  const prepared = Object.create(
+    Object.getPrototypeOf(env),
+    Object.getOwnPropertyDescriptors(env),
+  ) as Env;
+  if (!Object.hasOwn(prepared, "hostedTargetPredicate")) {
+    Object.defineProperty(prepared, "hostedTargetPredicate", {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: () => true,
+    });
+  }
+  if (includeVisibilityProbe && !Object.hasOwn(prepared, "hostedPublicTargetProbe")) {
+    Object.defineProperty(prepared, "hostedPublicTargetProbe", {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: async () => "public",
+    });
+  }
+  return prepared;
+}
+
+class ExactReviewQueue extends RuntimeExactReviewQueue {
+  constructor(
+    state: ConstructorParameters<typeof RuntimeExactReviewQueue>[0],
+    env: ConstructorParameters<typeof RuntimeExactReviewQueue>[1],
+    random?: ConstructorParameters<typeof RuntimeExactReviewQueue>[2],
+  ) {
+    super(state, withHostedTargetAdmissionDefaults(env, true), random);
+  }
+}
+
+const worker = {
+  ...runtimeWorker,
+  fetch(
+    request: Request,
+    env: Record<string, unknown> = {},
+    ctx?: { waitUntil?: (promise: Promise<unknown>) => void },
+  ) {
+    return runtimeWorker.fetch(request, withHostedTargetAdmissionDefaults(env, false), ctx);
+  },
+};
 
 class MemoryKv {
   private values = new Map<string, string>();
@@ -746,7 +798,11 @@ function createExactReviewAdmissionHarness(
     captureBatchDispatch?: boolean;
     workflow?: () => Response | Promise<Response>;
     targetInstallation?: (targetRepo: string) => Response | Promise<Response>;
-    targetRepository?: (targetRepo: string) => Response | Promise<Response>;
+    targetAccessToken?: (
+      installationId: number,
+      init: RequestInit | undefined,
+    ) => Response | Promise<Response>;
+    targetRepository?: (targetRepo: string, init?: RequestInit) => Response | Promise<Response>;
     targetItem?: (targetRepo: string) => Response | Promise<Response>;
     targetPull?: (targetRepo: string) => Response | Promise<Response>;
     producerRun?: (
@@ -756,6 +812,10 @@ function createExactReviewAdmissionHarness(
     ) => Response | Promise<Response>;
     dispatch?: () => Response | Promise<Response>;
     batchDispatch?: () => Response | Promise<Response>;
+    useRealHostedPublicTargetProbe?: boolean;
+    hostedPublicTargetProbe?: (
+      targetRepo: string,
+    ) => Promise<HostedPublicTargetProbe | HostedTargetAdmission>;
   } = {},
 ) {
   const originalFetch = globalThis.fetch;
@@ -779,8 +839,13 @@ function createExactReviewAdmissionHarness(
     const repository = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)$/);
     if (repository) {
       return (
-        options.targetRepository?.(repository[1]) ?? jsonResponse({ full_name: repository[1] })
+        options.targetRepository?.(repository[1], init) ??
+        jsonResponse({ full_name: repository[1], private: false, visibility: "public" })
       );
+    }
+    const accessToken = url.pathname.match(/^\/app\/installations\/(\d+)\/access_tokens$/);
+    if (accessToken && options.targetAccessToken) {
+      return options.targetAccessToken(Number(accessToken[1]), init);
     }
     if (url.pathname === "/app/installations/999/access_tokens") {
       return jsonResponse({ token: "queue-token" });
@@ -841,6 +906,12 @@ function createExactReviewAdmissionHarness(
     {
       CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
       CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+      hostedTargetPredicate: () => true,
+      ...(options.useRealHostedPublicTargetProbe
+        ? { hostedPublicTargetProbe: undefined }
+        : options.hostedPublicTargetProbe
+          ? { hostedPublicTargetProbe: options.hostedPublicTargetProbe }
+          : {}),
       EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
       EXACT_REVIEW_QUEUE_MAX_CONCURRENT: options.maxConcurrent ?? "1",
       ...(options.publicationBatching

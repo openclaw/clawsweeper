@@ -74,6 +74,230 @@ test("command intake migrations, watermarks, receipts, and revisions stay idempo
   );
 });
 
+test("signed command intake rejects nonpublic visibility before storing command content", async () => {
+  for (const outcome of ["terminal", "retryable"] as const) {
+    const storage = new MemoryDurableStorage();
+    const retryAt = Date.now() + 60_000;
+    let probes = 0;
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        hostedPublicTargetProbe: async () => {
+          probes += 1;
+          return { outcome, retryAt };
+        },
+      },
+    );
+    const intake = intakeFixture({ updatedAt: COMMAND_UPDATED_AT, body: COMMAND_BODY });
+    const body = JSON.stringify(intake);
+    const secret = "synthetic-intake-proof";
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/internal/exact-review/command-intake", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+        },
+        body,
+      }),
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      },
+    );
+    assert.equal(response.status, outcome === "terminal" ? 422 : 503);
+    assert.equal(probes, 1);
+    if (outcome === "retryable") assert.ok(Number(response.headers.get("retry-after")) > 0);
+    for (const table of [
+      "exact_review_command_intakes",
+      "exact_review_command_receipts",
+      "exact_review_command_watermarks",
+      "exact_review_command_bay_journeys",
+      "exact_review_item_revisions",
+    ]) {
+      assert.equal(
+        Number(Array.from(storage.sql.exec(`SELECT COUNT(*) AS count FROM ${table}`))[0]?.count),
+        0,
+        table,
+      );
+    }
+    assert.equal(await storage.getAlarm(), null);
+  }
+});
+
+test("admitted public commands recheck visibility before consuming credentials", async () => {
+  const intake = intakeFixture({ updatedAt: COMMAND_UPDATED_AT, body: COMMAND_BODY });
+  const request = () =>
+    new Request("https://clawsweeper-exact-review-queue/command-intake", {
+      method: "POST",
+      body: JSON.stringify(intake),
+    });
+
+  const terminalStorage = new MemoryDurableStorage();
+  let terminalPublic = true;
+  const terminalQueue = new ExactReviewQueue(
+    { storage: terminalStorage },
+    { hostedPublicTargetProbe: async () => (terminalPublic ? "public" : "terminal") },
+  );
+  const terminalAccepted = await terminalQueue.fetch(request());
+  assert.equal(terminalAccepted.status, 202);
+  assert.equal((await terminalAccepted.json()).accepted, true);
+  assert.equal(commandReceiptOutcome(terminalStorage), "pending");
+  terminalPublic = false;
+  await terminalQueue.alarm();
+  assert.equal(commandReceipt(terminalStorage)?.outcome, "rejected");
+  assert.equal(commandReceipt(terminalStorage)?.detail, "private_target_unsupported");
+  terminalPublic = true;
+  const terminalRedelivery = await terminalQueue.fetch(request());
+  assert.equal(terminalRedelivery.status, 202);
+  assert.deepEqual(await terminalRedelivery.json(), {
+    ok: true,
+    accepted: false,
+    reason: "private_target_unsupported",
+    command_version_id: intake.commandVersionId,
+  });
+
+  const transientStorage = new MemoryDurableStorage();
+  let transientPublic = true;
+  let probes = 0;
+  const transientQueue = new ExactReviewQueue(
+    { storage: transientStorage },
+    {
+      hostedPublicTargetProbe: async () => {
+        probes += 1;
+        return transientPublic ? "public" : "retryable";
+      },
+    },
+  );
+  const transientAccepted = await transientQueue.fetch(request());
+  assert.equal(transientAccepted.status, 202);
+  assert.equal((await transientAccepted.json()).accepted, true);
+  transientPublic = false;
+  for (let attempts = 1; attempts < 16; attempts += 1) {
+    transientStorage.sql.exec(
+      "UPDATE exact_review_command_intakes SET next_attempt_at = 0 WHERE command_version_id = ?",
+      intake.commandVersionId,
+    );
+    await transientQueue.alarm();
+    assert.equal(commandReceiptOutcome(transientStorage), "pending");
+    assert.equal(commandIntakeAttempts(transientStorage, intake.commandVersionId), attempts);
+  }
+  transientStorage.sql.exec(
+    "UPDATE exact_review_command_intakes SET next_attempt_at = 0 WHERE command_version_id = ?",
+    intake.commandVersionId,
+  );
+  await transientQueue.alarm();
+  assert.equal(probes, 17);
+  assert.equal(commandReceipt(transientStorage)?.outcome, "rejected");
+  assert.equal(commandReceipt(transientStorage)?.detail, "target_visibility_unverified_exhausted");
+  assert.equal(commandIntakeRecord(transientStorage, intake.commandVersionId), null);
+  transientPublic = true;
+  const transientRedelivery = await transientQueue.fetch(request());
+  assert.equal(transientRedelivery.status, 202);
+  assert.deepEqual(await transientRedelivery.json(), {
+    ok: true,
+    accepted: false,
+    reason: "target_visibility_unverified_exhausted",
+    command_version_id: intake.commandVersionId,
+  });
+});
+
+test("command intake rejects an ineligible hosted target before durable intake", async () => {
+  const storage = new MemoryDurableStorage();
+  let visibilityProbes = 0;
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      hostedTargetPredicate: () => false,
+      hostedPublicTargetProbe: async () => {
+        visibilityProbes += 1;
+        return "public";
+      },
+    },
+  );
+  const intake = intakeFixture({
+    updatedAt: COMMAND_UPDATED_AT,
+    body: COMMAND_BODY,
+    targetRepo: "outside/public-repo",
+  });
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/command-intake", {
+      method: "POST",
+      body: JSON.stringify(intake),
+    }),
+  );
+
+  assert.equal(response.status, 422);
+  assert.deepEqual(await response.json(), { error: "private_target_unsupported" });
+  assert.equal(visibilityProbes, 0);
+  assert.equal(
+    Number(
+      Array.from(storage.sql.exec("SELECT COUNT(*) AS count FROM exact_review_command_intakes"))[0]
+        ?.count ?? 0,
+    ),
+    0,
+  );
+  assert.equal(
+    Number(
+      Array.from(storage.sql.exec("SELECT COUNT(*) AS count FROM exact_review_command_receipts"))[0]
+        ?.count ?? 0,
+    ),
+    0,
+  );
+});
+
+test("Worker forwards its eligibility fact without a second queue lookup", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      hostedTargetPredicate: () => {
+        throw new Error("queue repeated hosted target eligibility lookup");
+      },
+    },
+  );
+  const namespace = new MemoryDurableNamespace(queue);
+  const intake = intakeFixture({
+    updatedAt: COMMAND_UPDATED_AT,
+    body: COMMAND_BODY,
+    targetRepo: "partner/configured-repo",
+  });
+  const body = JSON.stringify(intake);
+  const secret = "prepared-hosted-target-secret";
+  const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  let workerEligibilityChecks = 0;
+
+  const response = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/internal/exact-review/command-intake", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-clawsweeper-exact-review-signature": signature,
+      },
+      body,
+    }),
+    {
+      CLAWSWEEPER_WEBHOOK_SECRET: secret,
+      EXACT_REVIEW_QUEUE: namespace,
+      hostedTargetPredicate: () => {
+        workerEligibilityChecks += 1;
+        return true;
+      },
+    },
+  );
+
+  assert.equal(response.status, 202);
+  assert.equal((await response.json()).accepted, true);
+  assert.equal(workerEligibilityChecks, 1);
+  assert.equal(
+    Number(
+      Array.from(storage.sql.exec("SELECT COUNT(*) AS count FROM exact_review_command_intakes"))[0]
+        ?.count ?? 0,
+    ),
+    1,
+  );
+});
+
 test("a verified same-timestamp edit fences an older receipt before enqueue effects", () => {
   const storage = new MemoryDurableStorage();
   const store = new ExactReviewCommandIntakeStore(storage);
@@ -317,8 +541,7 @@ test("hosted durable command intake keeps the GitHub delivery identity for Bay j
     bayJourneyDeliveryId: commandDeliveryId,
   });
   assert.equal(
-    new ExactReviewCommandIntakeStore(storage).read(intake.commandVersionId)?.intake.decision
-      .bayJourneyDeliveryId,
+    commandIntakeRecord(storage, intake.commandVersionId)?.intake.decision.bayJourneyDeliveryId,
     commandDeliveryId,
   );
 
@@ -556,9 +779,9 @@ function commandVersionId() {
   return `command-${COMMAND_COMMENT_ID}-${Date.parse(COMMAND_UPDATED_AT).toString(36)}-${bodyDigest}`;
 }
 
-function intakeFixture(options: { updatedAt: string; body: string }) {
+function intakeFixture(options: { updatedAt: string; body: string; targetRepo?: string }) {
   return directReReviewIntake({
-    targetRepo: "openclaw/openclaw",
+    targetRepo: options.targetRepo ?? "openclaw/openclaw",
     targetBranch: "main",
     itemNumber: ITEM_NUMBER,
     itemKind: "pull_request",
@@ -583,6 +806,20 @@ function commandReceipt(storage: MemoryDurableStorage) {
     ),
   )[0];
   return row;
+}
+
+function commandIntakeRecord(storage: MemoryDurableStorage, commandVersion: string) {
+  const row = Array.from(
+    storage.sql.exec(
+      "SELECT record_json FROM exact_review_command_intakes WHERE command_version_id = ?",
+      commandVersion,
+    ),
+  )[0] as { record_json?: string } | undefined;
+  return row?.record_json ? JSON.parse(row.record_json) : null;
+}
+
+function commandIntakeAttempts(storage: MemoryDurableStorage, commandVersion: string) {
+  return Number(commandIntakeRecord(storage, commandVersion)?.attempts);
 }
 
 function receiptOutcome(storage: MemoryDurableStorage, commandVersion: string) {
@@ -644,6 +881,13 @@ async function startGithubLoopback() {
     }
     if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
       return sendJson(response, 200, { id: 777 });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw") {
+      return sendJson(response, 200, {
+        full_name: "openclaw/openclaw",
+        private: false,
+        visibility: "public",
+      });
     }
     if (/^\/app\/installations\/(?:123|777)\/access_tokens$/.test(url.pathname)) {
       return sendJson(response, 201, { token: "loopback-token" });

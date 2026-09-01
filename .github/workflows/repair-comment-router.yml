@@ -87,7 +87,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  hosted-target-admission:
+    uses: ./.github/workflows/hosted-target-admission.yml
+    with:
+      target_repo: ${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+    secrets:
+      CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
   route-comments:
+    needs: hosted-target-admission
+    if: ${{ needs.hosted-target-admission.outputs.outcome == 'public' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -135,8 +144,8 @@ jobs:
             echo "target_slug=$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
             item_number="${ITEM_NUMBERS:-}"
             if [[ "$item_number" =~ ^[1-9][0-9]*$ ]] &&
-              [[ ${#item_number} -lt 16 ||
-              ( ${#item_number} -eq 16 && "$item_number" < "9007199254740992" ) ]]; then
+              (( ${#item_number} < 16 ||
+              ( ${#item_number} == 16 && 10#$item_number < 9007199254740992 ) )); then
               echo "records_item_number=$item_number"
             fi
           } >> "$GITHUB_OUTPUT"

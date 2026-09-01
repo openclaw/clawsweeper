@@ -2382,6 +2382,18 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
     eventJob,
     /startsWith\(github\.event\.workflow_run\.display_title, 'Review event item '\)/,
   );
+  for (const prefix of [
+    "Review manual item",
+    "Review manual batch ",
+    "Review manual hot target",
+    "Review manual target",
+  ]) {
+    assert.match(
+      eventJob,
+      new RegExp(`startsWith\\(github\\.event\\.workflow_run\\.display_title, '${prefix}'\\)`),
+      prefix,
+    );
+  }
   assert.match(
     eventJob,
     /SOURCE_RUN_ATTEMPT: \$\{\{ github\.event\.workflow_run\.run_attempt \}\}/,
@@ -3133,9 +3145,7 @@ test("apply workflow target token can inspect source workflow runs", () => {
 test("targeted apply dispatches keep apply names ahead of exact-review names", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const runName = workflow.slice(workflow.indexOf("run-name:"), workflow.indexOf("\non:"));
-  const firstExactDispatchName = runName.indexOf(
-    "(github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.item_numbers, 'router-'))",
-  );
+  const firstExactDispatchName = runName.indexOf("'Review manual item'");
 
   assert.ok(firstExactDispatchName > -1);
   for (const applyName of [
@@ -5355,7 +5365,7 @@ test("apply proof and mutation start from fresh non-persisted source checkouts",
   assert.doesNotMatch(applyJob, /git pull --rebase/);
 });
 
-test("sweep target tokens fall back when an org app installation is missing", () => {
+test("sweep target fanout uses owner inventory and central hosted-target tokens", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const stepBlocks = (name: string) =>
     workflow
@@ -5363,13 +5373,28 @@ test("sweep target tokens fall back when an org app installation is missing", ()
       .slice(1)
       .map((block) => block.split("\n      - ")[0]);
 
-  assert.match(
-    workflow,
-    /CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: \$\{\{ steps\.steipete-token\.outputs\.token \|\| '__public__' \}\}/,
-  );
-  const openclawInventoryBlocks = stepBlocks("Create OpenClaw inventory token");
-  assert.equal(openclawInventoryBlocks.length, 1);
-  assert.doesNotMatch(openclawInventoryBlocks[0] ?? "", /continue-on-error: true/);
+  const inventoryTargets = [
+    ["openclaw", "openclaw"],
+    ["steipete", "steipete"],
+  ] as const;
+  for (const [label, owner] of inventoryTargets) {
+    const blocks = stepBlocks(`Create ${label} inventory token`);
+    assert.equal(blocks.length, 1, `missing owner inventory token for ${label}`);
+    assert.match(blocks[0] ?? "", /continue-on-error: true/);
+    assert.match(blocks[0] ?? "", new RegExp(`owner: ${owner}`));
+    assert.doesNotMatch(blocks[0] ?? "", /repositories:/);
+    assert.match(blocks[0] ?? "", /permission-metadata: read/);
+  }
+  const hostedMetadataBlocks = stepBlocks("Create hosted target metadata token");
+  assert.equal(hostedMetadataBlocks.length, 1);
+  assert.match(hostedMetadataBlocks[0] ?? "", /continue-on-error: true/);
+  assert.match(hostedMetadataBlocks[0] ?? "", /owner: openclaw/);
+  assert.match(hostedMetadataBlocks[0] ?? "", /repositories: clawsweeper/);
+  assert.match(hostedMetadataBlocks[0] ?? "", /permission-metadata: read/);
+  assert.match(workflow, /CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW/);
+  assert.match(workflow, /CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE/);
+  assert.match(workflow, /CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN/);
+  assert.doesNotMatch(workflow, /CLAWSWEEPER_TARGET_METADATA_TOKEN_/);
   for (const name of [
     "Create target read token",
     "Create target write token",
@@ -5719,24 +5744,16 @@ test("exact queue and manual item dispatches reserve their live shard capacity",
     workflow,
     /github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.hot_intake == 'true' && \(github\.event\.inputs\.item_number != '' \|\| github\.event\.inputs\.item_numbers != ''\)\) && format\('clawsweeper-intake-exact-\{0\}'/,
   );
-  assert.match(
-    runName,
-    /format\('Review event items \{0\}#\{1\},\{2\} \[shards=\{3\}\]', github\.event\.inputs\.target_repo \|\| 'openclaw\/openclaw', github\.event\.inputs\.item_number, github\.event\.inputs\.item_numbers, \(github\.event\.inputs\.hot_intake == 'true' && '1' \|\| github\.event\.inputs\.shard_count \|\| '89'\)\)/,
-  );
-  assert.match(
-    runName,
-    /github\.event_name == 'workflow_dispatch' &&\s+github\.event\.inputs\.item_number != '' &&\s+github\.event\.inputs\.item_numbers == ''\) &&\s+format\('Review event item \{0\}#\{1\}', github\.event\.inputs\.target_repo \|\| 'openclaw\/openclaw', github\.event\.inputs\.item_number\)/,
-  );
-  assert.match(
-    runName,
-    /format\('Review event items \{0\}#\{1\} \[shards=\{2\}\]', github\.event\.inputs\.target_repo \|\| 'openclaw\/openclaw', github\.event\.inputs\.item_numbers, \(github\.event\.inputs\.hot_intake == 'true' && '1' \|\| github\.event\.inputs\.shard_count \|\| '89'\)\)/,
-  );
+  assert.match(runName, /format\('Review manual item \[\{0\}\]'/);
+  assert.match(runName, /'Review manual item'/);
+  assert.match(runName, /format\('Review manual batch \[shards=\{0\}\]'/);
+  assert.doesNotMatch(runName, /github\.event\.inputs\.item_count/);
+  assert.match(runName, /'Review manual target'/);
   assert.ok(
-    runName.indexOf("format('Review event item {0}#{1}'") <
-      runName.lastIndexOf("'Review ClawSweeper items'"),
+    runName.indexOf("'Review manual item'") < runName.lastIndexOf("'Review ClawSweeper items'"),
   );
-  assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review event item "\)/);
-  assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review event items "\)/);
+  assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review manual item"\)/);
+  assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review manual batch "\)/);
   assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review exact item "\)/);
   assert.match(exactCapacityBlock, /\.displayTitle \| startswith\("Review scheduled hot item "\)/);
   assert.match(
@@ -5752,8 +5769,23 @@ test("exact queue and manual item dispatches reserve their live shard capacity",
   assert.doesNotMatch(singularFastPath, /gh run view/);
   assert.match(exactCapacityBlock, /gh run view "\$id".*--json jobs/);
   assert.match(exactCapacityBlock, /limit review_shards\.hard_cap/);
+  assert.match(exactCapacityBlock, /reserved_shards="\$hard_cap"/);
+  assert.match(exactCapacityBlock, /\[shards=\(\[0-9\]\+\)/);
   assert.match(exactCapacityBlock, /reserved_shards="\$requested_shards"/);
-  assert.match(exactCapacityBlock, /reserved_shards="\$item_count"/);
+  assert.doesNotMatch(exactCapacityBlock, /reserved_shards="\$item_count"/);
+  for (const [requested, cap, expected] of [
+    [9, 89, 9],
+    [4, 89, 4],
+    [120, 89, 89],
+  ]) {
+    assert.equal(Math.min(requested, cap), expected);
+  }
+  const manualNames = runName.slice(
+    runName.indexOf("'Review manual item'"),
+    runName.indexOf("'Audit ClawSweeper state'"),
+  );
+  assert.doesNotMatch(manualNames, /github\.event\.inputs\.target_repo/);
+  assert.doesNotMatch(manualNames, /github\.event\.inputs\.item_number,/);
   assert.match(modeBlock, /active_run_count .* \+ \$\(active_sweep_exact_workers\)/);
 });
 
@@ -6158,6 +6190,48 @@ test("sweep workflow_dispatch input count stays under GitHub limit", () => {
   const inputNames = [...inputBlock.matchAll(/^      [A-Za-z0-9_]+:/gm)];
 
   assert.ok(inputNames.length <= 25, `workflow_dispatch has ${inputNames.length} inputs`);
+});
+
+test("manual review docs name only declared sweep inputs", () => {
+  const readme = readText("README.md");
+  const scheduler = readText("docs/scheduler.md");
+  const guidanceSections = [
+    readme.slice(
+      readme.indexOf("- Manual runs can pass"),
+      readme.indexOf("- Each shard checks out"),
+    ),
+    scheduler.slice(
+      scheduler.indexOf("can override `target_repo`"),
+      scheduler.indexOf("Exact item dispatches use"),
+    ),
+  ];
+  const requiredInputs = ["item_number", "item_numbers", "shard_count", "batch_size"];
+  const schedulerInputs = ["target_repo", "hot_intake"];
+  const workflow = readText(".github/workflows/sweep.yml");
+  const inputBlock = workflow.slice(
+    workflow.indexOf("  workflow_dispatch:\n    inputs:"),
+    workflow.indexOf("\n  schedule:"),
+  );
+  const declaredInputs = new Set(
+    [...inputBlock.matchAll(/^      ([A-Za-z0-9_]+):/gm)].map((match) => match[1]),
+  );
+
+  for (const guidance of guidanceSections) {
+    assert.doesNotMatch(guidance, /`item_count`/);
+    for (const input of requiredInputs) {
+      assert.match(guidance, new RegExp(`\`${input}\``));
+    }
+    for (const [, documentedInput] of guidance.matchAll(/`([a-z][a-z0-9_]*)`/g)) {
+      assert.equal(
+        declaredInputs.has(documentedInput),
+        true,
+        `${documentedInput} must remain a declared workflow input`,
+      );
+    }
+  }
+  for (const input of schedulerInputs) {
+    assert.match(guidanceSections[1] ?? "", new RegExp(`\`${input}\``));
+  }
 });
 
 test("sweep review continuations stay workflow-dispatch compatible", () => {

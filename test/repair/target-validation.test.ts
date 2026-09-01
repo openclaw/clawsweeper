@@ -4724,7 +4724,7 @@ test("changed-gate caches restore while pending fresh runtime output stays prote
   for (const scenario of ["success", "fallback", "tamper"] as const) {
     const cwd = gitPackageFixture({
       "build:ci-artifacts": "node scripts/build-runtime.mjs",
-      "check:changed": "node scripts/build-runtime.mjs",
+      ...(scenario === "success" ? { "check:changed": "node scripts/build-runtime.mjs" } : {}),
       "test:serial": "node --test",
     });
     fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n.cache/\n");
@@ -4792,6 +4792,7 @@ test("changed-gate caches restore while pending fresh runtime output stays prote
           cwd,
           validationOptions("openclaw/openclaw", {
             allowExpensiveValidation: true,
+            strictTargetValidation: scenario === "success",
             pinnedBaseRef: "origin/main",
             toolchain: {
               packageManager: "pnpm",

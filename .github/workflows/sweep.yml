@@ -55,18 +55,31 @@ run-name: >-
           github.event.schedule == '48 * * * *' ||
           github.event.schedule == '8,23,38,53 * * * *'))) &&
       format('Apply default ClawSweeper closures for {0}', github.event.inputs.target_repo || ((github.event.schedule == '8,23,38,53 * * * *') && 'openclaw/clawhub' || 'openclaw/openclaw')) ||
-    (github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.item_numbers, 'router-')) &&
-      format('Review event item {0}#{1} [{2}]', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_number || '?', github.event.inputs.item_numbers) ||
     (github.event_name == 'workflow_dispatch' &&
-      github.event.inputs.item_number != '' &&
-      github.event.inputs.item_numbers != '') &&
-      format('Review event items {0}#{1},{2} [shards={3}]', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_number, github.event.inputs.item_numbers, (github.event.inputs.hot_intake == 'true' && '1' || github.event.inputs.shard_count || '89')) ||
+      github.event.inputs.apply_existing != 'true' &&
+      github.event.inputs.audit_dashboard != 'true' &&
+      startsWith(github.event.inputs.item_numbers, 'router-')) &&
+      format('Review manual item [{0}]', github.event.inputs.item_numbers) ||
     (github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.apply_existing != 'true' &&
+      github.event.inputs.audit_dashboard != 'true' &&
       github.event.inputs.item_number != '' &&
       github.event.inputs.item_numbers == '') &&
-      format('Review event item {0}#{1}', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_number) ||
-    (github.event_name == 'workflow_dispatch' && github.event.inputs.item_numbers != '') &&
-      format('Review event items {0}#{1} [shards={2}]', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_numbers, (github.event.inputs.hot_intake == 'true' && '1' || github.event.inputs.shard_count || '89')) ||
+      'Review manual item' ||
+    (github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.apply_existing != 'true' &&
+      github.event.inputs.audit_dashboard != 'true' &&
+      github.event.inputs.item_numbers != '') &&
+      format('Review manual batch [shards={0}]', (github.event.inputs.hot_intake == 'true' && '1' || github.event.inputs.shard_count || '89')) ||
+    (github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.apply_existing != 'true' &&
+      github.event.inputs.audit_dashboard != 'true' &&
+      github.event.inputs.hot_intake == 'true') &&
+      'Review manual hot target' ||
+    (github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.apply_existing != 'true' &&
+      github.event.inputs.audit_dashboard != 'true') &&
+      'Review manual target' ||
     ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') ||
       (github.event_name == 'schedule' &&
         (github.event.schedule == '7 */6 * * *' ||
@@ -243,6 +256,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  hosted-target-admission:
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_target_sweep') }}
+    uses: ./.github/workflows/hosted-target-admission.yml
+    with:
+      target_repo: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || (((github.event.schedule == '17 */6 * * *') || (github.event.schedule == '4/20 * * * *') || (github.event.schedule == '41/10 * * * *') || (github.event.schedule == '37 */6 * * *')) && 'openclaw/clawsweeper' || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '12 */6 * * *') && 'openclaw/clawhub' || 'openclaw/openclaw')) }}
+    secrets:
+      CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
   event-disabled-target:
     name: Skip disabled target event
     if: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1' }}
@@ -3621,7 +3642,8 @@ jobs:
 
   target-fanout:
     name: Fan out target repository sweeps
-    if: ${{ github.event_name == 'schedule' && (github.event.schedule == '4/20 * * * *' || github.event.schedule == '41/10 * * * *' || github.event.schedule == '37 */6 * * *') }}
+    needs: hosted-target-admission
+    if: ${{ always() && needs.hosted-target-admission.outputs.outcome == 'public' && github.event_name == 'schedule' && (github.event.schedule == '4/20 * * * *' || github.event.schedule == '41/10 * * * *' || github.event.schedule == '37 */6 * * *') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -3645,29 +3667,44 @@ jobs:
         with:
           build-script: build:repair
 
-      - name: Create OpenClaw inventory token
-        id: openclaw-token
+      - name: Create openclaw inventory token
+        id: openclaw-inventory-token
+        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: openclaw
+          permission-metadata: read
 
       - name: Create steipete inventory token
-        id: steipete-token
+        id: steipete-inventory-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: steipete
+          permission-metadata: read
+
+      - name: Create hosted target metadata token
+        id: hosted-target-metadata-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: clawsweeper
+          permission-metadata: read
 
       - name: Dispatch selected targets
         env:
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
-          CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-token.outputs.token }}
-          CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-token.outputs.token || '__public__' }}
+          CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-inventory-token.outputs.token || '__public__' }}
+          CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-inventory-token.outputs.token || '__public__' }}
+          CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN: ${{ steps.hosted-target-metadata-token.outputs.token }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           FANOUT_MODE: ${{ github.event.schedule == '41/10 * * * *' && 'normal-review' || (github.event.schedule == '37 */6 * * *' && 'audit' || 'hot-intake') }}
           FANOUT_LIMIT: ${{ github.event.schedule == '41/10 * * * *' && '12' || (github.event.schedule == '37 */6 * * *' && '12' || '20') }}
@@ -3693,15 +3730,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
-          CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-token.outputs.token }}
-          CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-token.outputs.token || '__public__' }}
+          CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-inventory-token.outputs.token || '__public__' }}
+          CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-inventory-token.outputs.token || '__public__' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           REVIEW_COVERAGE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: pnpm run target-fanout -- coverage --window-days 7 --publish-url "$REVIEW_COVERAGE_URL" >> "$GITHUB_STEP_SUMMARY"
 
   plan:
     name: Plan review candidates
-    if: ${{ (github.event_name != 'repository_dispatch' || github.event.action == 'clawsweeper_target_sweep') && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *') || (github.event.schedule == '4/20 * * * *' || github.event.schedule == '41/10 * * * *' || github.event.schedule == '37 */6 * * *') || github.event.schedule == '13 * * * *'))) && !(github.event_name == 'schedule' && (github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *') && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
+    needs: hosted-target-admission
+    if: ${{ always() && needs.hosted-target-admission.outputs.outcome == 'public' && (github.event_name != 'repository_dispatch' || github.event.action == 'clawsweeper_target_sweep') && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *') || (github.event.schedule == '4/20 * * * *' || github.event.schedule == '41/10 * * * *' || github.event.schedule == '37 */6 * * *') || github.event.schedule == '13 * * * *'))) && !(github.event_name == 'schedule' && (github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *') && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -3875,18 +3913,18 @@ jobs:
           }
           active_sweep_exact_workers() {
             local runs total id title status run_event jobs_json active_shards total_shards
-            local reserved_shards hard_cap requested_shards item_numbers commas item_count
+            local reserved_shards hard_cap requested_shards
             total=0
             hard_cap="$(limit review_shards.hard_cap)"
             runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select((.displayTitle | startswith("Review exact item ")) or (.displayTitle | startswith("Review scheduled hot item ")) or (.displayTitle | startswith("Review scheduled normal item ")) or (.event == "workflow_dispatch" and ((.displayTitle | startswith("Review event item ")) or (.displayTitle | startswith("Review event items "))))) | [.databaseId, .displayTitle, .status, .event] | @tsv' 2>/dev/null || true)"
+              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select((.displayTitle | startswith("Review exact item ")) or (.displayTitle | startswith("Review scheduled hot item ")) or (.displayTitle | startswith("Review scheduled normal item ")) or (.event == "workflow_dispatch" and ((.displayTitle | startswith("Review manual item")) or (.displayTitle | startswith("Review manual batch "))))) | [.databaseId, .displayTitle, .status, .event] | @tsv' 2>/dev/null || true)"
             while IFS=$'\t' read -r id title status run_event; do
               if [ -z "$id" ]; then
                 continue
               fi
               active_shards=0
               total_shards=0
-              if [[ "$title" == Review\ exact\ item\ * ]] || [[ "$title" == Review\ scheduled\ hot\ item\ * ]] || [[ "$title" == Review\ scheduled\ normal\ item\ * ]] || { [ "$run_event" = "workflow_dispatch" ] && [[ "$title" == Review\ event\ item\ * ]]; }; then
+              if [[ "$title" == Review\ exact\ item\ * ]] || [[ "$title" == Review\ scheduled\ hot\ item\ * ]] || [[ "$title" == Review\ scheduled\ normal\ item\ * ]] || { [ "$run_event" = "workflow_dispatch" ] && [[ "$title" == Review\ manual\ item* ]]; }; then
                 active_shards=1
                 total=$((total + active_shards))
                 continue
@@ -3907,29 +3945,20 @@ jobs:
                 total_shards=0
               fi
               # Single-item event reviews reserve one worker. Explicit batches carry
-              # enough run-name metadata to reserve their maximum possible matrix until
-              # live shard jobs exist; after expansion, only live shard jobs consume slots.
+              # their requested shard count until live shard jobs exist; after expansion,
+              # only live shard jobs consume slots.
               if [ "$active_shards" -lt 1 ] && [ "$total_shards" -lt 1 ]; then
                 reserved_shards="$(limit review_shards.exact_item_default)"
-                if [[ "$title" == Review\ event\ items\ * ]]; then
+                if [[ "$title" == Review\ manual\ batch\ * ]]; then
                   reserved_shards="$hard_cap"
                   if [[ "$title" =~ \[shards=([0-9]+)\]$ ]]; then
                     requested_shards="${BASH_REMATCH[1]}"
-                    item_numbers="${title#*#}"
-                    item_numbers="${item_numbers%% *}"
-                    if [[ "$item_numbers" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
-                      if [ "$requested_shards" -lt 1 ]; then
-                        requested_shards=1
-                      fi
-                      commas="${item_numbers//[^,]/}"
-                      item_count=$((${#commas} + 1))
-                      reserved_shards="$requested_shards"
-                      if [ "$reserved_shards" -gt "$item_count" ]; then
-                        reserved_shards="$item_count"
-                      fi
-                      if [ "$reserved_shards" -gt "$hard_cap" ]; then
-                        reserved_shards="$hard_cap"
-                      fi
+                    if [ "$requested_shards" -lt 1 ]; then
+                      requested_shards=1
+                    fi
+                    reserved_shards="$requested_shards"
+                    if [ "$reserved_shards" -gt "$hard_cap" ]; then
+                      reserved_shards="$hard_cap"
                     fi
                   fi
                 fi
@@ -3943,7 +3972,7 @@ jobs:
             local runs total id title status jobs_json active_shards total_shards
             total=0
             runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | CURRENT_RUN_ID="${GITHUB_RUN_ID:-0}" STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select((.databaseId | tostring) != env.CURRENT_RUN_ID) | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items" or (.displayTitle | startswith("Review target repo ")) or (.displayTitle | startswith("Review hot target repo "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
+              | CURRENT_RUN_ID="${GITHUB_RUN_ID:-0}" STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select((.databaseId | tostring) != env.CURRENT_RUN_ID) | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items" or .displayTitle == "Review manual target" or .displayTitle == "Review manual hot target" or (.displayTitle | startswith("Review target repo ")) or (.displayTitle | startswith("Review hot target repo "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
             while IFS=$'\t' read -r id title status; do
               if [ -z "$id" ]; then
                 continue
@@ -3969,7 +3998,7 @@ jobs:
               # lane size. Runs with completed shard jobs are publishing and consume no
               # Codex slots, so the next serialized planner may refill that capacity.
               if [ "$active_shards" -lt 1 ] && [ "$total_shards" -lt 1 ]; then
-                if [ "$title" = "Review hot ClawSweeper items" ] || [[ "$title" == Review\ hot\ target\ repo\ * ]]; then
+                if [ "$title" = "Review hot ClawSweeper items" ] || [ "$title" = "Review manual hot target" ] || [[ "$title" == Review\ hot\ target\ repo\ * ]]; then
                   active_shards="$(limit review_shards.hot_intake_default)"
                 else
                   active_shards="$(limit review_shards.normal_default)"
@@ -5258,7 +5287,8 @@ jobs:
 
   retry-failed-reviews:
     name: Retry failed Codex reviews
-    if: ${{ github.event_name == 'schedule' && github.event.schedule == '13 * * * *' }}
+    needs: hosted-target-admission
+    if: ${{ always() && needs.hosted-target-admission.outputs.outcome == 'public' && github.event_name == 'schedule' && github.event.schedule == '13 * * * *' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -5409,7 +5439,8 @@ jobs:
 
   audit-dashboard:
     name: Audit state
-    if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')) }}
+    needs: hosted-target-admission
+    if: ${{ always() && needs.hosted-target-admission.outputs.outcome == 'public' && ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -5554,7 +5585,8 @@ jobs:
 
   apply-proof:
     name: Prove close coverage without write credentials
-    if: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
+    needs: hosted-target-admission
+    if: ${{ always() && needs.hosted-target-admission.outputs.outcome == 'public' && ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

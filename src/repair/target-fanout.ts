@@ -11,6 +11,13 @@ import {
   type DurableCursorSnapshot,
   type DurableCursorStoreOptions,
 } from "../durable-cursor-store.js";
+import {
+  hostedTargetPolicyFromRegistry,
+  isHostedTargetEligible,
+  probeHostedPublicTarget,
+  type HostedTargetAdmission,
+  type HostedTargetPolicy,
+} from "../hosted-target-admission.js";
 import { fetchExactReviewQueuePressure } from "../queue-pressure.js";
 import { coverageTrackedCountsFromManifest } from "../review-coverage-manifest.js";
 import { parseArgs, repoRoot } from "./lib.js";
@@ -22,6 +29,7 @@ export type FanoutMode = "hot-intake" | "normal-review" | "audit";
 export interface InventoryConfig {
   owners: readonly string[];
   denyRepositories: readonly string[];
+  hostedTargetPolicy: HostedTargetPolicy;
   includePrivate: boolean;
   includeArchived: boolean;
   includeForks: boolean;
@@ -220,6 +228,12 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     });
   }
 
+  selection = {
+    ...selection,
+    repositories: await admitSelectedRepositories(selection.repositories, {
+      policy: config.hostedTargetPolicy,
+    }),
+  };
   const commands = selection.repositories.map((repository) =>
     workflowDispatchArgs(repository, options, candidateCapacityFor(repository)),
   );
@@ -290,6 +304,8 @@ export function readInventoryConfig(
   const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
   const config = record(parsed, "target repository config");
   const inventory = record(config.target_inventory, "target_inventory");
+  const hostedTargetPolicy = hostedTargetPolicyFromRegistry(parsed);
+  if (!hostedTargetPolicy) throw new Error("target repository config has invalid hosted policy");
   return {
     owners: stringArray(inventory.owners, "target_inventory.owners").map((owner) =>
       owner.toLowerCase(),
@@ -298,6 +314,7 @@ export function readInventoryConfig(
       inventory.deny_repositories,
       "target_inventory.deny_repositories",
     ).map((repo) => repo.toLowerCase()),
+    hostedTargetPolicy,
     includePrivate: booleanValue(inventory.include_private, false),
     includeArchived: booleanValue(inventory.include_archived, false),
     includeForks: booleanValue(inventory.include_forks, false),
@@ -309,8 +326,14 @@ export async function loadEligibleRepositories(
   config: InventoryConfig,
   owners = config.owners,
 ): Promise<SelectedRepository[]> {
+  const configuredOwners = new Set(config.owners.map((owner) => owner.toLowerCase()));
+  const selectedOwners = [...new Set(owners.map((owner) => owner.trim().toLowerCase()))];
+  const unsupportedOwner = selectedOwners.find((owner) => !configuredOwners.has(owner));
+  if (unsupportedOwner) {
+    throw new Error(`target fanout owner is not configured: ${unsupportedOwner}`);
+  }
   const repositories: ListedRepository[] = [];
-  for (const owner of owners) {
+  for (const owner of selectedOwners) {
     const listed = listOwnerRepositories(owner);
     repositories.push(...listed);
   }
@@ -330,6 +353,9 @@ export function filterEligibleRepositories(
     .filter((repository) => !config.requireIssues || repository.hasIssuesEnabled)
     .filter((repository) => repository.defaultBranch !== "")
     .filter((repository) => !denied.has(repository.nameWithOwner.toLowerCase()))
+    .filter((repository) =>
+      isHostedTargetEligible(repository.nameWithOwner, config.hostedTargetPolicy),
+    )
     .sort((left, right) => left.nameWithOwner.localeCompare(right.nameWithOwner))
     .map((repository) => ({
       targetRepo: repository.nameWithOwner.toLowerCase(),
@@ -553,6 +579,39 @@ function listedRepository(value: unknown, label: string): ListedRepository {
   };
 }
 
+export async function admitSelectedRepositories<RepositoryT extends SelectedRepository>(
+  repositories: readonly RepositoryT[],
+  options: {
+    policy: HostedTargetPolicy;
+    token?: string;
+    reader?: typeof fetch;
+  },
+): Promise<RepositoryT[]> {
+  const token = options.token ?? hostedTargetMetadataToken();
+  const reader = options.reader ?? fetch;
+  const eligible = repositories.filter((repository) =>
+    isHostedTargetEligible(repository.targetRepo, options.policy),
+  );
+  const admissions = await Promise.all(
+    eligible.map(
+      async (repository) =>
+        [repository, await probeHostedPublicTarget(repository.targetRepo, token, reader)] as const,
+    ),
+  );
+  const retryable = admissions.find(([, admission]) => admission.outcome === "retryable");
+  if (retryable) {
+    throw new Error(
+      `target fanout visibility probe is retryable for ${retryable[0].targetRepo}; no dispatches were sent and the cursor was not advanced`,
+    );
+  }
+  return admissions
+    .filter(
+      (entry): entry is readonly [RepositoryT, HostedTargetAdmission & { outcome: "public" }] =>
+        entry[1].outcome === "public",
+    )
+    .map(([repository]) => repository);
+}
+
 function workflowDispatchArgs(
   repository: SelectedRepository,
   options: FanoutOptions,
@@ -661,6 +720,17 @@ function publicInventoryEnv(): NodeJS.ProcessEnv {
     process.env.GITHUB_TOKEN ||
     process.env.GH_TOKEN;
   return token ? { GH_TOKEN: token, GITHUB_TOKEN: token } : {};
+}
+
+function hostedTargetMetadataToken(): string {
+  const explicit =
+    process.env.CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN ||
+    process.env.CLAWSWEEPER_PUBLIC_INVENTORY_TOKEN ||
+    "";
+  if (explicit || process.env.GITHUB_ACTIONS === "true") return explicit;
+  return (
+    process.env.CLAWSWEEPER_DISPATCH_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN || ""
+  );
 }
 
 function dispatchEnv(): NodeJS.ProcessEnv {

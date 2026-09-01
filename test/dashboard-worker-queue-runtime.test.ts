@@ -30,6 +30,11 @@ import {
   leasedExactReviewPublicationItem,
   unclaimedExactReviewQueueItem,
 } from "./dashboard-worker-harness.ts";
+import type { HostedPublicTargetProbe } from "../dashboard/exact-review-queue.ts";
+import {
+  HOSTED_TARGET_ELIGIBILITY_HEADER,
+  isHostedTargetEligible,
+} from "../src/hosted-target-admission.ts";
 
 function serializedConsoleCalls(calls: unknown[][]) {
   return calls
@@ -54,6 +59,12 @@ function assertConsoleCallsExclude(calls: unknown[][], sentinels: string[]) {
   for (const sentinel of sentinels) {
     assert.equal(serialized.includes(sentinel), false, `console output included ${sentinel}`);
   }
+}
+
+function sqlCount(storage: MemoryDurableStorage, table: string) {
+  return Number(
+    Array.from(storage.sql.exec(`SELECT COUNT(*) AS count FROM ${table}`))[0]?.count ?? 0,
+  );
 }
 
 function consoleCallBlocks(source: string) {
@@ -88,6 +99,1097 @@ test("ordinary queue and state-blob logs reject unbounded diagnostic arguments",
       assert.doesNotMatch(call, /,\s*(?:_?error|detail|reason|key|path|delivery)\s*[,)]/);
     }
   }
+});
+
+test("hosted admission gates Worker forwarding and queue authority persistence", () => {
+  const workerSource = fs.readFileSync("dashboard/worker.ts", "utf8");
+  for (const path of ["command-intake", "enqueue", "branch-authority", "source-authority"]) {
+    assert.match(
+      workerSource,
+      new RegExp(
+        `url\\.pathname === "/internal/exact-review/${path}"[\\s\\S]{0,180}authenticatedHostedTargetQueueRequest`,
+      ),
+    );
+  }
+  const forwarding = workerSource.slice(
+    workerSource.indexOf("async function authenticatedHostedTargetQueueRequest"),
+    workerSource.indexOf("async function authenticatedLifecycleCommandAcknowledgement"),
+  );
+  assert.ok(
+    forwarding.indexOf("workerHostedTargetEligibility") <
+      forwarding.indexOf("exactReviewQueueRequest"),
+  );
+  assert.match(forwarding, /HOSTED_TARGET_ELIGIBILITY_HEADER/);
+
+  const queueSource = fs.readFileSync("dashboard/exact-review-queue.ts", "utf8");
+  for (const [route, persistenceMarker] of [
+    ["/branch-authority", "exactReviewBranchAuthorityReservationKey"],
+    ["/source-authority", "exactReviewSourceAuthorityReservationKey"],
+  ] as const) {
+    const start = queueSource.indexOf(`url.pathname === "${route}"`);
+    const end = queueSource.indexOf('request.method === "POST"', start + 30);
+    const block = queueSource.slice(start, end);
+    assert.ok(block.indexOf("hostedTargetAdmission") < block.indexOf(persistenceMarker), route);
+    assert.ok(block.indexOf("hostedTargetMetadataToken") < block.indexOf(persistenceMarker), route);
+    assert.ok(
+      block.indexOf("hasPreparedHostedTargetEligibility") < block.indexOf(persistenceMarker),
+      route,
+    );
+  }
+});
+
+test("enqueue visibility rejection happens before queue, receipt, or lifecycle persistence", async () => {
+  for (const { admission, status, body } of [
+    {
+      admission: "terminal" as const,
+      status: 422,
+      body: { error: "private_target_unsupported" },
+    },
+    {
+      admission: "retryable" as const,
+      status: 503,
+      body: { error: "target_visibility_unverified", retryable: true },
+    },
+  ]) {
+    const storage = new MemoryDurableStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      { hostedPublicTargetProbe: async () => admission },
+    );
+    const response = await queue.fetch(
+      buildExactReviewQueueRequest(`pre-persistence-${admission}`, 8080, "opened"),
+    );
+
+    assert.equal(response.status, status);
+    assert.deepEqual(await response.json(), body);
+    assert.equal(sqlCount(storage, "exact_review_queue_deliveries"), 0);
+    assert.equal(sqlCount(storage, "exact_review_queue_items"), 0);
+    assert.equal(sqlCount(storage, "exact_review_lifecycle_projection_v1"), 0);
+    assert.equal(
+      new ExactReviewLifecycleProjectionStore(storage).readBaySnapshot().inventory
+        ?.lifecycle_records,
+      0,
+    );
+  }
+});
+
+test("owner-fallback public targets are probed and admitted without configured profiles", async () => {
+  let probes = 0;
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      hostedTargetPredicate: (targetRepo: string) =>
+        isHostedTargetEligible(targetRepo, {
+          configuredRepositories: [],
+          genericFallbacks: [
+            {
+              owner: "openclaw",
+              denyRepositories: ["openclaw/clawsweeper-state", "openclaw/.github"],
+              allowRepoNamePattern: /^[a-z0-9_.-]+$/,
+            },
+          ],
+        }),
+      hostedPublicTargetProbe: async () => {
+        probes += 1;
+        return "public";
+      },
+    },
+  );
+
+  const response = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "generic-public-target",
+      8_073,
+      "opened",
+      "pull_request",
+      "openclaw/example-tool",
+    ),
+  );
+
+  assert.equal(response.status, 202);
+  assert.equal((await response.json()).queued, true);
+  assert.equal(probes, 1);
+  assert.equal(sqlCount(storage, "exact_review_queue_deliveries"), 1);
+  assert.equal(sqlCount(storage, "exact_review_queue_items"), 1);
+});
+
+test("configured other-owner targets are eligible while unknown public targets stop pre-effect", async () => {
+  const policy = {
+    configuredRepositories: ["partner/configured-repo"],
+    genericFallbacks: [],
+  };
+  let configuredProbes = 0;
+  const configuredStorage = new MemoryDurableStorage();
+  const configuredQueue = new ExactReviewQueue(
+    { storage: configuredStorage },
+    {
+      hostedTargetPredicate: (targetRepo: string) => isHostedTargetEligible(targetRepo, policy),
+      hostedPublicTargetProbe: async () => {
+        configuredProbes += 1;
+        return "public";
+      },
+    },
+  );
+  const configuredResponse = await configuredQueue.fetch(
+    buildExactReviewQueueRequest(
+      "configured-other-owner",
+      8_074,
+      "opened",
+      "pull_request",
+      "partner/configured-repo",
+    ),
+  );
+  assert.equal(configuredResponse.status, 202);
+  assert.equal((await configuredResponse.json()).queued, true);
+  assert.equal(configuredProbes, 1);
+  assert.equal(sqlCount(configuredStorage, "exact_review_queue_deliveries"), 1);
+  assert.equal(sqlCount(configuredStorage, "exact_review_queue_items"), 1);
+
+  let outsideProbes = 0;
+  let metadataTokens = 0;
+  const outsideStorage = new MemoryDurableStorage();
+  const outsideQueue = new ExactReviewQueue(
+    { storage: outsideStorage },
+    {
+      hostedTargetPredicate: (targetRepo: string) => isHostedTargetEligible(targetRepo, policy),
+      hostedPublicTargetProbe: async () => {
+        outsideProbes += 1;
+        return "public";
+      },
+    },
+  );
+  const outsideResponse = await outsideQueue.fetch(
+    buildExactReviewQueueRequest(
+      "outside-owner",
+      8_075,
+      "opened",
+      "pull_request",
+      "outside/public-repo",
+    ),
+    async () => {
+      metadataTokens += 1;
+      return "metadata-token";
+    },
+  );
+  assert.equal(outsideResponse.status, 422);
+  assert.deepEqual(await outsideResponse.json(), { error: "private_target_unsupported" });
+  assert.equal(outsideProbes, 0);
+  assert.equal(metadataTokens, 0);
+  assert.equal(sqlCount(outsideStorage, "exact_review_queue_deliveries"), 0);
+  assert.equal(sqlCount(outsideStorage, "exact_review_queue_items"), 0);
+  assert.equal(sqlCount(outsideStorage, "exact_review_lifecycle_projection_v1"), 0);
+});
+
+test("private metadata is probed with one central-only token and leaves no durable side effects", async () => {
+  const metadataToken = "central-metadata-token-sentinel";
+  const installationRepos: string[] = [];
+  const metadataRequests: RequestInit[] = [];
+  let metadataMints = 0;
+  let targetMints = 0;
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    useRealHostedPublicTargetProbe: true,
+    targetInstallation: (targetRepo) => {
+      installationRepos.push(targetRepo);
+      return jsonResponse({ id: 999 });
+    },
+    targetAccessToken: (_installationId, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        repositories?: string[];
+        permissions?: Record<string, string>;
+      };
+      if (body.permissions?.metadata === "read") {
+        metadataMints += 1;
+        assert.deepEqual(body.repositories, ["clawsweeper"]);
+        assert.deepEqual(body.permissions, { metadata: "read" });
+        return jsonResponse({ token: metadataToken });
+      }
+      targetMints += 1;
+      return jsonResponse({ token: "unexpected-target-token" });
+    },
+    targetRepository: (_targetRepo, init) => {
+      metadataRequests.push(init ?? {});
+      return Response.json({}, { status: 404 });
+    },
+  });
+  try {
+    const response = await harness.queue.fetch(
+      buildExactReviewQueueRequest("central-private-metadata", 8_070, "opened"),
+    );
+    assert.equal(response.status, 422);
+    assert.deepEqual(await response.json(), { error: "private_target_unsupported" });
+    assert.deepEqual(installationRepos, ["openclaw/clawsweeper"]);
+    assert.equal(metadataMints, 1);
+    assert.equal(targetMints, 0);
+    assert.equal(metadataRequests.length, 1);
+    const request = metadataRequests[0]!;
+    assert.equal(request.cache, "no-store");
+    assert.equal(request.redirect, "manual");
+    assert.equal(new Headers(request.headers).get("cache-control"), "no-store");
+    assert.equal(new Headers(request.headers).get("authorization"), `Bearer ${metadataToken}`);
+    assert.equal(sqlCount(harness.storage, "exact_review_queue_deliveries"), 0);
+    assert.equal(sqlCount(harness.storage, "exact_review_queue_items"), 0);
+    assert.equal(sqlCount(harness.storage, "exact_review_lifecycle_projection_v1"), 0);
+    assertConsoleCallsExclude(warnings, [metadataToken]);
+  } finally {
+    console.warn = originalWarn;
+    harness.restore();
+  }
+});
+
+test("one alarm pass reuses its central metadata token across visibility rechecks", async () => {
+  let metadataMints = 0;
+  let metadataReads = 0;
+  let targetReadMints = 0;
+  const metadataToken = "central-pass-token";
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    useRealHostedPublicTargetProbe: true,
+    targetAccessToken: (_installationId, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        repositories?: string[];
+        permissions?: Record<string, string>;
+      };
+      if (body.permissions?.metadata === "read") {
+        metadataMints += 1;
+        assert.deepEqual(body.repositories, ["clawsweeper"]);
+        assert.deepEqual(body.permissions, { metadata: "read" });
+        return jsonResponse({ token: metadataToken });
+      }
+      if (body.permissions?.issues === "read") targetReadMints += 1;
+      return jsonResponse({ token: "queue-token" });
+    },
+    targetRepository: (targetRepo, init) => {
+      metadataReads += 1;
+      assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${metadataToken}`);
+      return jsonResponse({ full_name: targetRepo, private: false, visibility: "public" });
+    },
+  });
+  try {
+    assert.equal(
+      (
+        await harness.queue.fetch(
+          buildExactReviewQueueRequest("central-pass-reuse", 8_071, "opened"),
+        )
+      ).status,
+      202,
+    );
+    await harness.queue.alarm();
+    assert.equal(metadataReads, 3);
+    assert.equal(metadataMints, 2);
+    assert.equal(targetReadMints, 1);
+    assert.equal(harness.dispatched.length, 1);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("metadata quota reset durably defers admission before target credentials", async () => {
+  const resetAt = Date.now() + 90_000;
+  let metadataReads = 0;
+  let targetReadMints = 0;
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    useRealHostedPublicTargetProbe: true,
+    targetAccessToken: (_installationId, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        permissions?: Record<string, string>;
+      };
+      if (body.permissions?.metadata === "read") {
+        return jsonResponse({ token: "central-rate-token" });
+      }
+      if (body.permissions?.issues === "read") targetReadMints += 1;
+      return jsonResponse({ token: "queue-token" });
+    },
+    targetRepository: (targetRepo) => {
+      metadataReads += 1;
+      return metadataReads === 1
+        ? jsonResponse({ full_name: targetRepo, private: false, visibility: "public" })
+        : Response.json(
+            {},
+            {
+              status: 403,
+              headers: {
+                "x-ratelimit-remaining": "0",
+                "x-ratelimit-reset": String(Math.ceil(resetAt / 1_000)),
+              },
+            },
+          );
+    },
+  });
+  try {
+    assert.equal(
+      (
+        await harness.queue.fetch(
+          buildExactReviewQueueRequest("central-rate-reset", 8_072, "opened"),
+        )
+      ).status,
+      202,
+    );
+    await harness.queue.alarm();
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, { attempts: number; nextAttemptAt: number; state: string }>;
+    };
+    assert.equal(metadataReads, 2);
+    assert.equal(targetReadMints, 0);
+    assert.equal(state.items["openclaw/gogcli#8072"]?.state, "pending");
+    assert.equal(state.items["openclaw/gogcli#8072"]?.attempts, 0);
+    assert.ok((state.items["openclaw/gogcli#8072"]?.nextAttemptAt ?? 0) >= resetAt - 1_000);
+    assert.equal(harness.dispatched.length, 0);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("branch and source authority admission precedes durable reservation", async () => {
+  const sourceHeadSha = "a".repeat(40);
+  for (const route of ["branch", "source"] as const) {
+    for (const admission of ["terminal", "retryable", "public"] as const) {
+      let probes = 0;
+      let targetTokens = 0;
+      let targetReads = 0;
+      const itemNumber = route === "branch" ? 8081 : 8082;
+      const deliveryId = `${route}-authority-${admission}`;
+      const reservationKey =
+        route === "branch"
+          ? `exact-review-branch-authority-reservation:v1:${encodeURIComponent(deliveryId)}`
+          : `exact-review-source-authority-reservation:v1:${encodeURIComponent(deliveryId)}`;
+      const siblingReservationKey =
+        route === "branch"
+          ? `exact-review-source-authority-reservation:v1:${encodeURIComponent(deliveryId)}`
+          : `exact-review-branch-authority-reservation:v1:${encodeURIComponent(deliveryId)}`;
+      const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+        workflow: () => jsonResponse({ state: "disabled_manually" }),
+        hostedPublicTargetProbe: async () => {
+          probes += 1;
+          return admission;
+        },
+        targetAccessToken: (installationId) => {
+          if (installationId === 123) {
+            targetTokens += 1;
+            return jsonResponse({ token: "target-token" });
+          }
+          return jsonResponse({ token: "queue-token" });
+        },
+        targetRepository: () => {
+          targetReads += 1;
+          return jsonResponse({ default_branch: "trunk" });
+        },
+        targetPull: () => {
+          targetReads += 1;
+          return jsonResponse({ head: { sha: sourceHeadSha } });
+        },
+      });
+      try {
+        const sequenceBefore = 41;
+        const alarmBefore = 123_456;
+        harness.storage.rawPut("exact-review-source-authority-sequence:v1", sequenceBefore);
+        if (admission !== "public") await harness.storage.setAlarm(alarmBefore);
+        const decision =
+          route === "branch"
+            ? {
+                targetRepo: "openclaw/fs-safe",
+                itemNumber,
+                itemKind: "issue",
+                sourceEvent: "issues",
+                sourceAction: "legacy_dispatch",
+                supersedesInProgress: false,
+              }
+            : {
+                targetRepo: "openclaw/fs-safe",
+                targetBranch: "trunk",
+                itemNumber,
+                itemKind: "pull_request",
+                sourceEvent: "pull_request",
+                sourceAction: "synchronize",
+                supersedesInProgress: true,
+                sourceHeadSha,
+              };
+        const reserved = await harness.queue.fetch(
+          new Request(`https://clawsweeper-exact-review-queue/${route}-authority`, {
+            method: "POST",
+            headers: {
+              [HOSTED_TARGET_ELIGIBILITY_HEADER]: decision.targetRepo,
+            },
+            body: JSON.stringify({
+              delivery_id: deliveryId,
+              installation_id: 123,
+              decision,
+            }),
+          }),
+        );
+        assert.equal(
+          reserved.status,
+          admission === "terminal"
+            ? 422
+            : admission === "retryable"
+              ? 503
+              : route === "branch"
+                ? 202
+                : 200,
+        );
+
+        if (admission !== "public") {
+          assert.equal(probes, 1);
+          assert.equal(targetTokens, 0);
+          assert.equal(targetReads, 0);
+          assert.equal(harness.storage.rawHas(reservationKey), false);
+          assert.equal(harness.storage.rawHas(siblingReservationKey), false);
+          assert.equal(
+            harness.storage.rawGet("exact-review-source-authority-sequence:v1"),
+            sequenceBefore,
+          );
+          assert.equal(await harness.storage.getAlarm(), alarmBefore);
+          assert.equal(sqlCount(harness.storage, "exact_review_queue_deliveries"), 0);
+          assert.equal(sqlCount(harness.storage, "exact_review_queue_items"), 0);
+          continue;
+        }
+
+        assert.equal(probes, 1);
+        assert.equal(harness.storage.rawHas(reservationKey), true);
+        assert.ok((await harness.storage.getAlarm()) !== null);
+        await harness.queue.alarm();
+        assert.ok(targetTokens > 0);
+        assert.equal(targetReads, 1);
+        assert.ok(probes > 1);
+        assert.equal(sqlCount(harness.storage, "exact_review_queue_deliveries"), 1);
+        const state = (await harness.storage.get("exact-review-queue")) as {
+          items: Record<string, unknown>;
+        };
+        assert.ok(state.items[`openclaw/fs-safe#${itemNumber}`]);
+      } finally {
+        harness.restore();
+      }
+    }
+  }
+});
+
+test("authority reservations remain absent while visibility I/O is pending", async () => {
+  for (const route of ["branch", "source"] as const) {
+    let releaseProbe!: () => void;
+    let signalProbe!: () => void;
+    const probeStarted = new Promise<void>((resolve) => {
+      signalProbe = resolve;
+    });
+    const probeRelease = new Promise<void>((resolve) => {
+      releaseProbe = resolve;
+    });
+    let targetTokens = 0;
+    const itemNumber = route === "branch" ? 8083 : 8084;
+    const deliveryId = `${route}-authority-fence`;
+    const reservationKey =
+      route === "branch"
+        ? `exact-review-branch-authority-reservation:v1:${encodeURIComponent(deliveryId)}`
+        : `exact-review-source-authority-reservation:v1:${encodeURIComponent(deliveryId)}`;
+    const sourceHeadSha = "b".repeat(40);
+    const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+      hostedPublicTargetProbe: async () => {
+        signalProbe();
+        await probeRelease;
+        return "public";
+      },
+      targetAccessToken: () => {
+        targetTokens += 1;
+        return jsonResponse({ token: "target-token" });
+      },
+    });
+    try {
+      const decision =
+        route === "branch"
+          ? {
+              targetRepo: "openclaw/fs-safe",
+              itemNumber,
+              itemKind: "issue",
+              sourceEvent: "issues",
+              sourceAction: "legacy_dispatch",
+              supersedesInProgress: false,
+            }
+          : {
+              targetRepo: "openclaw/fs-safe",
+              targetBranch: "main",
+              itemNumber,
+              itemKind: "pull_request",
+              sourceEvent: "pull_request",
+              sourceAction: "synchronize",
+              supersedesInProgress: true,
+              sourceHeadSha,
+            };
+      const reservation = harness.queue.fetch(
+        new Request(`https://clawsweeper-exact-review-queue/${route}-authority`, {
+          method: "POST",
+          headers: {
+            [HOSTED_TARGET_ELIGIBILITY_HEADER]: decision.targetRepo,
+          },
+          body: JSON.stringify({
+            delivery_id: deliveryId,
+            installation_id: 123,
+            decision,
+          }),
+        }),
+      );
+
+      await probeStarted;
+      assert.equal(harness.storage.rawHas(reservationKey), false);
+      assert.equal(harness.storage.rawHas("exact-review-source-authority-sequence:v1"), false);
+      assert.equal(await harness.storage.getAlarm(), null);
+      assert.equal(targetTokens, 0);
+      releaseProbe();
+      const response = await reservation;
+
+      assert.equal(response.status, route === "branch" ? 202 : 200);
+      assert.equal(harness.storage.rawHas(reservationKey), true);
+      assert.ok((await harness.storage.getAlarm()) !== null);
+      assert.equal(targetTokens, 0);
+      assert.equal(sqlCount(harness.storage, "exact_review_queue_deliveries"), 0);
+      assert.equal(sqlCount(harness.storage, "exact_review_queue_items"), 0);
+    } finally {
+      harness.restore();
+    }
+  }
+});
+
+test("ordinary alarm admission rechecks public targets after item reads", async () => {
+  for (const finalAdmission of ["public", "terminal", "retryable"] as const) {
+    let probes = 0;
+    let itemReads = 0;
+    let targetTokens = 0;
+    const itemNumber =
+      finalAdmission === "public" ? 8085 : finalAdmission === "terminal" ? 8086 : 8087;
+    const itemKey = `openclaw/gogcli#${itemNumber}`;
+    const harness = createExactReviewAdmissionHarness(
+      () => {
+        itemReads += 1;
+        return jsonResponse({ state: "open" });
+      },
+      {
+        hostedPublicTargetProbe: async () => {
+          probes += 1;
+          return probes < 3 ? "public" : finalAdmission;
+        },
+        targetAccessToken: (_installationId, init) => {
+          const body = JSON.parse(String(init?.body)) as {
+            permissions?: Record<string, string>;
+          };
+          if (body.permissions?.issues === "read") targetTokens += 1;
+          return jsonResponse({ token: "queue-token" });
+        },
+      },
+    );
+    try {
+      assert.equal(
+        (
+          await harness.queue.fetch(
+            buildExactReviewQueueRequest(
+              `ordinary-transition-${finalAdmission}`,
+              itemNumber,
+              "opened",
+            ),
+          )
+        ).status,
+        202,
+      );
+      await harness.queue.alarm();
+
+      assert.equal(probes, 3);
+      assert.equal(itemReads, 1);
+      assert.equal(targetTokens, 1);
+      assert.equal(harness.dispatched.length, finalAdmission === "public" ? 1 : 0);
+      const state = (await harness.storage.get("exact-review-queue")) as {
+        items: Record<string, { attempts: number; nextAttemptAt: number; state: string }>;
+      };
+      if (finalAdmission === "public") {
+        assert.equal(state.items[itemKey]?.state, "dispatching");
+      } else if (finalAdmission === "terminal") {
+        assert.equal(state.items[itemKey], undefined);
+        const lifecycle = new ExactReviewLifecycleProjectionStore(harness.storage).read(
+          itemKey,
+          itemKey,
+          1,
+        );
+        assert.equal(lifecycle?.terminalDisposition?.kind, "superseded");
+      } else {
+        assert.equal(state.items[itemKey]?.state, "pending");
+        assert.equal(state.items[itemKey]?.attempts, 0);
+        assert.ok(state.items[itemKey]!.nextAttemptAt > Date.now());
+      }
+    } finally {
+      harness.restore();
+    }
+  }
+});
+
+test("ordinary command admission terminalizes locally or defers before target credentials", async () => {
+  for (const lane of ["review", "publication"] as const) {
+    for (const finalAdmission of ["terminal", "retryable"] as const) {
+      const itemNumber =
+        8_090 + (lane === "publication" ? 10 : 0) + (finalAdmission === "terminal" ? 1 : 2);
+      const producerRunId = `${itemNumber}0`;
+      const commandStatusMarker = `<!-- clawsweeper-command-status:${itemNumber}:re_review:${"c".repeat(40)} -->`;
+      const statusCommentId = itemNumber * 10;
+      let admission: HostedPublicTargetProbe = "public";
+      let probes = 0;
+      let itemReads = 0;
+      let targetTokens = 0;
+      const harness = createExactReviewAdmissionHarness(
+        () => {
+          itemReads += 1;
+          return jsonResponse({ state: "open" });
+        },
+        {
+          hostedPublicTargetProbe: async () => {
+            probes += 1;
+            return admission;
+          },
+          targetAccessToken: (_installationId, init) => {
+            const body = JSON.parse(String(init?.body)) as {
+              permissions?: Record<string, string>;
+            };
+            if (body.permissions?.issues === "read") targetTokens += 1;
+            return jsonResponse({ token: "queue-token" });
+          },
+        },
+      );
+      try {
+        const decisionOverrides =
+          lane === "review"
+            ? { commandStatusMarker, statusCommentId }
+            : exactReviewPublicationOverrides(itemNumber, producerRunId);
+        if (lane === "publication") {
+          Object.assign(decisionOverrides.publication.producerDecision, {
+            commandStatusMarker,
+            statusCommentId,
+          });
+        }
+        const sourceAction = lane === "publication" ? "exact_review_artifact_publish" : "opened";
+        assert.equal(
+          (
+            await harness.queue.fetch(
+              buildExactReviewQueueRequest(
+                `command-${lane}-${finalAdmission}`,
+                itemNumber,
+                sourceAction,
+                "issue",
+                "openclaw/gogcli",
+                decisionOverrides,
+              ),
+            )
+          ).status,
+          202,
+        );
+        const itemKey =
+          lane === "publication"
+            ? `openclaw/gogcli#${itemNumber}@publish:${producerRunId}:1`
+            : `openclaw/gogcli#${itemNumber}`;
+        admission = finalAdmission;
+
+        await harness.queue.alarm();
+
+        assert.equal(probes, 2);
+        assert.equal(itemReads, 0);
+        assert.equal(targetTokens, 0);
+        assert.equal(harness.dispatched.length, 0);
+        const state = (await harness.storage.get("exact-review-queue")) as {
+          items: Record<
+            string,
+            {
+              state: string;
+              attempts: number;
+              nextAttemptAt: number;
+              decision: { commandStatusMarker?: string; statusCommentId?: number };
+              terminalFinalization?: {
+                disposition: string;
+                projection: { fenceKey: string; revision: number };
+              };
+            }
+          >;
+        };
+        if (finalAdmission === "retryable") {
+          assert.equal(state.items[itemKey]?.state, "pending");
+          assert.equal(state.items[itemKey]?.attempts, 0);
+          assert.ok(state.items[itemKey]!.nextAttemptAt > Date.now());
+          assert.equal(
+            Object.keys(state.items).some((key) => key.startsWith("terminal-finalization:")),
+            false,
+          );
+          continue;
+        }
+
+        assert.equal(state.items[itemKey], undefined);
+        assert.equal(
+          Object.keys(state.items).some((key) => key.startsWith("terminal-finalization:")),
+          false,
+        );
+        assert.equal(
+          new ExactReviewLifecycleProjectionStore(harness.storage).read(
+            `openclaw/gogcli#${itemNumber}`,
+            itemKey,
+            1,
+          )?.terminalDisposition?.kind,
+          "superseded",
+        );
+
+        await harness.queue.alarm();
+
+        assert.equal(probes, 2);
+        assert.equal(itemReads, 0);
+        assert.equal(targetTokens, 0);
+        assert.equal(harness.dispatched.length, 0);
+      } finally {
+        harness.restore();
+      }
+    }
+  }
+});
+
+test("ordinary command admission does not finalize a newer status revision", async () => {
+  const itemNumber = 8_103;
+  const oldMarker = `<!-- clawsweeper-command-status:${itemNumber}:re_review:${"a".repeat(40)} -->`;
+  const newMarker = `<!-- clawsweeper-command-status:${itemNumber}:re_review:${"b".repeat(40)} -->`;
+  let admission: HostedPublicTargetProbe = "public";
+  let probes = 0;
+  let targetTokens = 0;
+  let releaseProbe!: () => void;
+  let signalProbe!: () => void;
+  const probeStarted = new Promise<void>((resolve) => {
+    signalProbe = resolve;
+  });
+  const probeRelease = new Promise<void>((resolve) => {
+    releaseProbe = resolve;
+  });
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    hostedPublicTargetProbe: async () => {
+      probes += 1;
+      if (probes === 2) {
+        signalProbe();
+        await probeRelease;
+      }
+      return admission;
+    },
+    targetAccessToken: (_installationId, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        permissions?: Record<string, string>;
+      };
+      if (body.permissions?.issues === "read") targetTokens += 1;
+      return jsonResponse({ token: "queue-token" });
+    },
+  });
+  try {
+    assert.equal(
+      (
+        await harness.queue.fetch(
+          buildExactReviewQueueRequest(
+            "command-race-old",
+            itemNumber,
+            "legacy_dispatch",
+            "issue",
+            undefined,
+            {
+              commandStatusMarker: oldMarker,
+              statusCommentId: 81_030,
+            },
+          ),
+        )
+      ).status,
+      202,
+    );
+    const alarm = harness.queue.alarm();
+    await probeStarted;
+    assert.equal(
+      (
+        await harness.queue.fetch(
+          buildExactReviewQueueRequest(
+            "command-race-new",
+            itemNumber,
+            "legacy_dispatch",
+            "issue",
+            undefined,
+            {
+              commandStatusMarker: newMarker,
+              statusCommentId: 81_031,
+            },
+          ),
+        )
+      ).status,
+      202,
+    );
+    const itemKey = `openclaw/gogcli#${itemNumber}`;
+    const beforeRelease = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<
+        string,
+        { revision: number; decision: { commandStatusMarker?: string; statusCommentId?: number } }
+      >;
+    };
+    const driverKey = `terminal-finalization:${itemKey}:1`;
+    assert.equal(beforeRelease.items[driverKey]?.decision.commandStatusMarker, oldMarker);
+    admission = "terminal";
+    releaseProbe();
+    await alarm;
+
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<
+        string,
+        { revision: number; decision: { commandStatusMarker?: string; statusCommentId?: number } }
+      >;
+    };
+    assert.equal(state.items[itemKey]?.revision, 2);
+    assert.equal(state.items[itemKey]?.decision.commandStatusMarker, newMarker);
+    assert.equal(state.items[itemKey]?.decision.statusCommentId, 81_031);
+    assert.equal(state.items[driverKey]?.decision.commandStatusMarker, oldMarker);
+    assert.equal(
+      Object.keys(state.items).filter((key) => key.startsWith("terminal-finalization:")).length,
+      1,
+    );
+    assert.equal(harness.dispatched.length, 0);
+
+    for (const item of Object.values(state.items)) {
+      item.nextAttemptAt = Date.now() - 1;
+    }
+    state.dispatcher.reviewAdmissionNextAt = 0;
+    await harness.storage.put("exact-review-queue", state);
+    await harness.queue.alarm();
+
+    const terminal = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, unknown>;
+    };
+    assert.equal(Object.keys(terminal.items).length, 0);
+    assert.equal(harness.dispatched.length, 0);
+    assert.equal(targetTokens, 0);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("private transition retires publication work without erasing durable fences", async () => {
+  let admission: HostedPublicTargetProbe = "public";
+  let targetTokens = 0;
+  const itemNumber = 8088;
+  const itemKey = `openclaw/gogcli#${itemNumber}@publish:${itemNumber}0:1`;
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    hostedPublicTargetProbe: async () => admission,
+    targetAccessToken: (_installationId, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        permissions?: Record<string, string>;
+      };
+      if (body.permissions?.issues === "read") targetTokens += 1;
+      return jsonResponse({ token: "queue-token" });
+    },
+  });
+  try {
+    const request = () =>
+      buildExactReviewQueueRequest(
+        "publication-private-transition",
+        itemNumber,
+        "exact_review_artifact_publish",
+        "issue",
+        "openclaw/gogcli",
+        exactReviewPublicationOverrides(itemNumber, `${itemNumber}0`),
+      );
+    assert.equal((await harness.queue.fetch(request())).status, 202);
+    await harness.queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/lifecycle-audit/inventory", {
+        method: "POST",
+        body: "{}",
+      }),
+    );
+    const generationBefore = Number(
+      Array.from(
+        harness.storage.sql.exec(
+          "SELECT storage_generation FROM exact_review_queue_meta WHERE singleton_id = 1",
+        ),
+      )[0]?.storage_generation,
+    );
+    admission = "terminal";
+
+    await harness.queue.alarm();
+
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, unknown>;
+    };
+    assert.equal(state.items[itemKey], undefined);
+    assert.equal(targetTokens, 0);
+    assert.equal(sqlCount(harness.storage, "exact_review_queue_deliveries"), 1);
+    assert.equal(sqlCount(harness.storage, "exact_review_publication_heads"), 1);
+    assert.equal(sqlCount(harness.storage, "exact_review_queue_dead_letters"), 0);
+    assert.equal(sqlCount(harness.storage, "exact_review_lifecycle_audit_snapshots_v1"), 1);
+    assert.equal(sqlCount(harness.storage, "exact_review_lifecycle_audit_snapshot_rows_v1"), 1);
+    const lifecycle = new ExactReviewLifecycleProjectionStore(harness.storage).read(
+      `openclaw/gogcli#${itemNumber}`,
+      itemKey,
+      1,
+    );
+    assert.equal(lifecycle?.terminalDisposition?.kind, "superseded");
+    const generationAfter = Number(
+      Array.from(
+        harness.storage.sql.exec(
+          "SELECT storage_generation FROM exact_review_queue_meta WHERE singleton_id = 1",
+        ),
+      )[0]?.storage_generation,
+    );
+    assert.ok(generationAfter > generationBefore);
+
+    admission = "public";
+    const replay = await harness.queue.fetch(request());
+    assert.equal(replay.status, 202);
+    assert.equal((await replay.json()).deduped, true);
+    const replayed = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, unknown>;
+    };
+    assert.equal(replayed.items[itemKey], undefined);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("unknown publication visibility defers without spending an attempt", async () => {
+  let admission: HostedPublicTargetProbe = "public";
+  let targetTokens = 0;
+  const itemNumber = 8089;
+  const itemKey = `openclaw/gogcli#${itemNumber}@publish:${itemNumber}0:1`;
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    hostedPublicTargetProbe: async () => admission,
+    targetAccessToken: (_installationId, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        permissions?: Record<string, string>;
+      };
+      if (body.permissions?.issues === "read") targetTokens += 1;
+      return jsonResponse({ token: "queue-token" });
+    },
+  });
+  try {
+    assert.equal(
+      (
+        await harness.queue.fetch(
+          buildExactReviewQueueRequest(
+            "publication-unknown-transition",
+            itemNumber,
+            "exact_review_artifact_publish",
+            "issue",
+            "openclaw/gogcli",
+            exactReviewPublicationOverrides(itemNumber, `${itemNumber}0`),
+          ),
+        )
+      ).status,
+      202,
+    );
+    admission = "retryable";
+
+    await harness.queue.alarm();
+
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<
+        string,
+        { attempts: number; publicationFailureAttempts?: number; state: string }
+      >;
+    };
+    assert.deepEqual(
+      {
+        attempts: state.items[itemKey]?.attempts,
+        publicationFailureAttempts: state.items[itemKey]?.publicationFailureAttempts,
+        state: state.items[itemKey]?.state,
+      },
+      { attempts: 0, publicationFailureAttempts: undefined, state: "pending" },
+    );
+    assert.equal(targetTokens, 0);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("single claim terminalizes a target before recording a workflow claim", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewQueueItem(8081, "unclaimed");
+  item.claimedRunId = undefined;
+  item.claimedRunAttempt = undefined;
+  item.claimGeneration = undefined;
+  item.claimProtocolVersion = undefined;
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+  const queue = new ExactReviewQueue(
+    { storage },
+    { hostedPublicTargetProbe: async () => "terminal" },
+  );
+
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/claim", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        run_id: "80810",
+        run_attempt: 1,
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 422);
+  assert.deepEqual(await response.json(), { error: "private_target_unsupported" });
+  const state = (await storage.get("exact-review-queue")) as { items: Record<string, unknown> };
+  assert.equal(state.items[item.key], undefined);
+});
+
+test("publication batch preflight terminalizes private members and releases retryable members", async () => {
+  async function runAdmission(repo: string, number: number, admission: HostedPublicTargetProbe) {
+    const storage = new MemoryDurableStorage();
+    const env = {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "0",
+    };
+    const queued = await new ExactReviewQueue({ storage }, env).fetch(
+      buildExactReviewQueueRequest(
+        `publication-${admission}`,
+        number,
+        "exact_review_artifact_publish",
+        "issue",
+        repo,
+        exactReviewPublicationOverrides(number, `${number}0`, "opened", 1, repo),
+      ),
+    );
+    assert.equal(queued.status, 202);
+    const response = await new ExactReviewQueue(
+      { storage },
+      { ...env, hostedPublicTargetProbe: async () => admission },
+    ).fetch(
+      new Request("https://clawsweeper-exact-review-queue/publication-batches/claim", {
+        method: "POST",
+        body: JSON.stringify({
+          claim_id: `admission-${admission}`,
+          lease_owner: "publication-worker",
+          max_items: 1,
+        }),
+      }),
+    );
+    return {
+      body: await response.json(),
+      state: (await storage.get("exact-review-queue")) as {
+        items: Record<string, unknown>;
+      },
+    };
+  }
+
+  const terminal = await runAdmission("openclaw/fs-safe", 8082, "terminal");
+  assert.deepEqual(terminal.body, {
+    ok: true,
+    claimed: false,
+    batch: null,
+    requested_max_items: 1,
+    effective_max_items: 1,
+    reason: "private_target_unsupported",
+  });
+  assert.equal(terminal.state.items["openclaw/fs-safe#8082@publish:80820:1"], undefined);
+
+  const retryable = await runAdmission("openclaw/fs-safe", 8083, "retryable");
+  assert.deepEqual(retryable.body, {
+    ok: true,
+    claimed: false,
+    batch: null,
+    requested_max_items: 1,
+    effective_max_items: 1,
+    reason: "target_visibility_unverified",
+    retryable: true,
+  });
+  assert.ok(retryable.state.items["openclaw/fs-safe#8083@publish:80830:1"]);
 });
 
 test("exact-review queue coalesces deliveries, dispatches a bound rollout snapshot, and rejects duplicate claims", async () => {
@@ -1715,27 +2817,42 @@ test("matching stale batch departures release their own fence and redispatch cur
   }
 });
 
-test("exact-review batch claim retries resume their existing leased batch", async () => {
+test("exact-review batch claim retries re-admit each target and return only public members", async () => {
+  let retryPhase = false;
+  const probes = new Map<string, number>();
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
     publicationBatching: true,
+    publicationBatchSize: "3",
     captureBatchDispatch: true,
+    hostedPublicTargetProbe: async (repo) => {
+      probes.set(repo, (probes.get(repo) ?? 0) + 1);
+      if (!retryPhase || repo === "openclaw/gogcli") return "public";
+      return repo === "openclaw/fs-safe" ? "terminal" : "retryable";
+    },
   });
   try {
-    assert.equal(
-      (
-        await harness.queue.fetch(
-          buildExactReviewQueueRequest(
-            "batch-claim-retry",
-            9244,
-            "exact_review_artifact_publish",
-            "issue",
-            "openclaw/gogcli",
-            exactReviewPublicationOverrides(9244, "92440"),
-          ),
-        )
-      ).status,
-      202,
-    );
+    for (const [index, repo] of [
+      "openclaw/gogcli",
+      "openclaw/fs-safe",
+      "openclaw/openclaw",
+    ].entries()) {
+      const number = 9244 + index;
+      assert.equal(
+        (
+          await harness.queue.fetch(
+            buildExactReviewQueueRequest(
+              `batch-claim-retry-${index}`,
+              number,
+              "exact_review_artifact_publish",
+              "issue",
+              repo,
+              exactReviewPublicationOverrides(number, `${number}0`, "opened", 1, repo),
+            ),
+          )
+        ).status,
+        202,
+      );
+    }
     await harness.queue.alarm();
     assert.equal(harness.batchDispatches, 1);
 
@@ -1745,12 +2862,109 @@ test("exact-review batch claim retries resume their existing leased batch", asyn
         body: JSON.stringify({ claim_id: "retry-claim", lease_owner: "retry-worker" }),
       });
     const first = await (await harness.queue.fetch(request())).json();
-    const retry = await (await harness.queue.fetch(request())).json();
+    retryPhase = true;
+    probes.clear();
+    const resumed = await (await harness.queue.fetch(request())).json();
 
     assert.equal(first.claimed, true, JSON.stringify(first));
-    assert.equal(retry.claimed, true, JSON.stringify(retry));
-    assert.equal(retry.batch.batch_id, first.batch.batch_id);
-    assert.deepEqual(retry.batch.items, first.batch.items);
+    assert.equal(resumed.claimed, true, JSON.stringify(resumed));
+    assert.equal(resumed.batch.batch_id, first.batch.batch_id);
+    assert.deepEqual(
+      resumed.batch.items.map((item) => item.item_key),
+      ["openclaw/gogcli#9244@publish:92440:1"],
+    );
+    assert.deepEqual(Object.fromEntries(probes), {
+      "openclaw/fs-safe": 1,
+      "openclaw/gogcli": 1,
+      "openclaw/openclaw": 1,
+    });
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<
+        string,
+        { attempts: number; publicationFailureAttempts?: number; state: string }
+      >;
+    };
+    assert.equal(state.items["openclaw/fs-safe#9245@publish:92450:1"], undefined);
+    assert.deepEqual(
+      {
+        attempts: state.items["openclaw/openclaw#9246@publish:92460:1"]?.attempts,
+        publicationFailureAttempts:
+          state.items["openclaw/openclaw#9246@publish:92460:1"]?.publicationFailureAttempts,
+        state: state.items["openclaw/openclaw#9246@publish:92460:1"]?.state,
+      },
+      { attempts: 0, publicationFailureAttempts: undefined, state: "pending" },
+    );
+    const stats = await (
+      await harness.queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json();
+    assert.equal(stats.lanes.publication.dead_letters.open, 0);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("exact-review batch retry rereads the membership fence after visibility I/O", async () => {
+  let retry = false;
+  let retryProbeBlocked = false;
+  let releaseProbe!: () => void;
+  let signalProbe!: () => void;
+  const probeStarted = new Promise<void>((resolve) => {
+    signalProbe = resolve;
+  });
+  const probeRelease = new Promise<void>((resolve) => {
+    releaseProbe = resolve;
+  });
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    publicationBatching: true,
+    captureBatchDispatch: true,
+    hostedPublicTargetProbe: async () => {
+      if (!retry) return "public";
+      if (retryProbeBlocked) return "public";
+      retryProbeBlocked = true;
+      signalProbe();
+      await probeRelease;
+      return "terminal";
+    },
+  });
+  try {
+    const enqueue = (deliveryId: string, leaseRevision: number) =>
+      harness.queue.fetch(
+        buildExactReviewQueueRequest(
+          deliveryId,
+          9247,
+          "exact_review_artifact_publish",
+          "issue",
+          "openclaw/gogcli",
+          exactReviewPublicationOverrides(
+            9247,
+            "92470",
+            leaseRevision === 1 ? "opened" : "edited",
+            leaseRevision,
+          ),
+        ),
+      );
+    assert.equal((await enqueue("batch-fence-initial", 1)).status, 202);
+    await harness.queue.alarm();
+    const request = () =>
+      new Request("https://clawsweeper-exact-review-queue/publication-batches/claim", {
+        method: "POST",
+        body: JSON.stringify({ claim_id: "retry-fence", lease_owner: "retry-worker" }),
+      });
+    assert.equal((await (await harness.queue.fetch(request())).json()).claimed, true);
+
+    retry = true;
+    const retryClaim = harness.queue.fetch(request());
+    await probeStarted;
+    assert.equal((await enqueue("batch-fence-newer", 2)).status, 202);
+    releaseProbe();
+    const resumed = await (await retryClaim).json();
+    assert.equal(resumed.claimed, true);
+    assert.deepEqual(resumed.batch.items, []);
+
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, { revision: number }>;
+    };
+    assert.equal(state.items["openclaw/gogcli#9247@publish:92470:1"]?.revision, 2);
   } finally {
     harness.restore();
   }

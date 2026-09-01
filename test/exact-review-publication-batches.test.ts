@@ -14,8 +14,26 @@ import {
   type DirectPublicationPlan,
 } from "../dashboard/exact-review-direct-publication.ts";
 import { EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE } from "../dashboard/exact-review-lifecycle.ts";
-import { ExactReviewQueue } from "../dashboard/exact-review-queue.ts";
+import { ExactReviewQueue as RuntimeExactReviewQueue } from "../dashboard/exact-review-queue.ts";
 import worker from "../dashboard/worker.ts";
+
+class ExactReviewQueue extends RuntimeExactReviewQueue {
+  constructor(
+    state: ConstructorParameters<typeof RuntimeExactReviewQueue>[0],
+    env: ConstructorParameters<typeof RuntimeExactReviewQueue>[1],
+    random?: ConstructorParameters<typeof RuntimeExactReviewQueue>[2],
+  ) {
+    super(
+      state,
+      {
+        hostedTargetPredicate: () => true,
+        hostedPublicTargetProbe: async () => "public",
+        ...env,
+      },
+      random,
+    );
+  }
+}
 
 class SqlCursor<T extends Record<string, unknown>> implements Iterable<T> {
   private readonly rows: T[];

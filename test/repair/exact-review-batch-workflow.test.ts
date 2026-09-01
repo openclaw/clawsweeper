@@ -453,7 +453,10 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.equal(source.match(/repair:exact-review-batch release/g)?.length, 1);
   assert.match(source, /Finalize healthy members under a fenced heartbeat/);
   assert.match(source, /Release unfinished batch members/);
-  assert.match(source, /always\(\).*steps\.batch\.outputs\.claimed/);
+  assert.match(
+    source,
+    /name: Release unfinished batch members[\s\S]*?if: \$\{\{ always\(\) && steps\.batch\.outputs\.manifest != '' \}\}/,
+  );
   assert.match(source, /name: Release unfinished batch members[\s\S]*?continue-on-error: true/);
   assert.match(source, /while sleep 60/);
   assert.match(source, /test ! -f "\$heartbeat_failed"/);

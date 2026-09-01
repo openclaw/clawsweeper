@@ -276,6 +276,21 @@ test("resumes link validation after a closed code fence", () => {
   });
 });
 
+test("reports malformed and unclosed fenced code blocks", () => {
+  withFixture((root) => {
+    writeFileSync(
+      join(root, "README.md"),
+      "````yaml\nname: Outer\n```yaml\nname: Nested\n````\n\n```text\nunclosed\n",
+    );
+    const findings = checkDocumentation(root).filter(
+      (finding) => finding.kind === "markdown-fence",
+    );
+    assert.ok(findings.some((finding) => finding.message.includes("exactly three")));
+    assert.ok(findings.some((finding) => finding.message.includes("starts before")));
+    assert.ok(findings.some((finding) => finding.message.includes("not closed")));
+  });
+});
+
 test("preserves UTF-16 offsets around inline code", () => {
   withFixture((root) => {
     writeFileSync(

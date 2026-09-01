@@ -705,7 +705,7 @@ export class ExactReviewLifecycleTelemetryStore {
   }
 
   /**
-   * Records the configured public Bay repository scope from the queue's
+   * Records the public Bay repository scope from the queue's
    * constructor barrier. A changed allowlist starts a fresh timing epoch, so
    * facts observed while a repository was private cannot warm its public view.
    * Public metrics reads only compare against this durable scope; they do not
