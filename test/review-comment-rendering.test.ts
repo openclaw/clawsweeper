@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import MarkdownIt from "markdown-it";
 
 import {
   canPatchReviewComment,
@@ -27,6 +28,33 @@ import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
 import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
 import { normalizeRepo, repositoryProfileFor } from "../dist/repository-profiles.js";
 import type { DecisionKind, Evidence } from "../dist/clawsweeper-types.js";
+
+function markdownLinkDestinations(markdown: string): Set<string> {
+  const destinations = new Set<string>();
+  const parser = new MarkdownIt({ html: true });
+  for (const token of parser.parse(markdown, {})) {
+    if (token.type !== "inline") continue;
+    for (const child of token.children ?? []) {
+      if (child.type !== "link_open") continue;
+      const href = child.attrGet("href");
+      if (typeof href === "string") destinations.add(href);
+    }
+  }
+  return destinations;
+}
+
+test("Markdown destination assertions reject prose and lookalike links inside details", () => {
+  const expected = "https://docs.openclaw.ai/tools";
+  const lookalike = "https://docs.openclaw.ai.invalid/tools";
+  const misleading = `<details>\n<summary>Evidence</summary>\n\n${expected}\n\n[${expected}](${lookalike})\n\n</details>`;
+  const destinations = markdownLinkDestinations(misleading);
+  assert.deepEqual(destinations, new Set([lookalike]));
+  assert.equal(destinations.has(expected), false);
+  assert.equal(
+    markdownLinkDestinations(misleading.replace(lookalike, expected)).has(expected),
+    true,
+  );
+});
 
 const evidenceLinks = createRepositoryLinks({
   reportRepo: "openclaw/clawsweeper-state",
@@ -162,23 +190,27 @@ test("repository evidence survives structured decision, report, parse and both c
       );
       assert.doesNotMatch(comment, /did not complete|infrastructure failure/);
       for (const output of [report, comment]) {
-        assert.ok(output.includes(source), output);
-        assert.ok(output.includes(commit), output);
+        const destinations = markdownLinkDestinations(output);
+        assert.ok(destinations.has(source), output);
+        assert.ok(destinations.has(commit), output);
         assert.ok(
-          output.includes(
+          destinations.has(
             `https://github.com/openclaw/openclaw/blob/${"b".repeat(40)}/src/config.ts#L12`,
           ),
         );
         assert.ok(
-          output.includes(
+          destinations.has(
             `https://github.com/openai/codex/blob/${dependencyEvidence.sha}/docs/config.md`,
           ),
         );
-        assert.ok(!output.includes("https://docs.openclaw.ai/config"));
-        assert.ok(!output.includes("openclaw/openclaw/blob/78c290807ce7/codex-rs"));
+        assert.ok(destinations.has(visionUrl), output);
+        assert.equal(destinations.has("https://docs.openclaw.ai/config"), false);
       }
-      assert.ok(comment.includes("https://docs.openclaw.ai/tools"));
-      assert.ok(comment.includes("https://github.com/openclaw/openclaw/blob/main/VISION.md"));
+      const commentDestinations = markdownLinkDestinations(comment);
+      assert.ok(commentDestinations.has("https://docs.openclaw.ai/tools"));
+      assert.ok(
+        commentDestinations.has("https://github.com/openclaw/openclaw/blob/main/VISION.md"),
+      );
       assert.ok(comment.includes(`[\`source.json\`](${source})`));
       const visionReference = `[\`VISION.md\`](${visionUrl})`;
       const linkedDetail = detail.includes("`VISION.md`")
@@ -188,7 +220,10 @@ test("repository evidence survives structured decision, report, parse and both c
         comment.includes(`- **dependency vision:** ${linkedDetail}`),
         `${kind}: ${detail}\n${comment}`,
       );
-      assert.ok(!comment.includes("https://github.com/openai/codex/blob/main/VISION.md"));
+      assert.equal(
+        commentDestinations.has("https://github.com/openai/codex/blob/main/VISION.md"),
+        false,
+      );
     }
   }
 });
@@ -216,10 +251,15 @@ test("explicit GitHub destinations preserve full identity and historical same-re
       explicit,
       kind === "close" ? "implemented_on_main" : "none",
     );
-    assert.ok(comment.includes(source));
-    assert.ok(comment.includes(commit));
-    assert.ok(renderReviewCommentFromReport(report, "none").includes(source));
-    assert.ok(renderReviewCommentFromReport(legacy, "none").includes(`/commit/${"a".repeat(40)}`));
+    const destinations = markdownLinkDestinations(comment);
+    assert.ok(destinations.has(source));
+    assert.ok(destinations.has(commit));
+    assert.ok(markdownLinkDestinations(renderReviewCommentFromReport(report, "none")).has(source));
+    assert.ok(
+      markdownLinkDestinations(renderReviewCommentFromReport(legacy, "none")).has(
+        `https://github.com/openclaw/openclaw/commit/${"a".repeat(40)}`,
+      ),
+    );
   }
 });
 
@@ -251,17 +291,23 @@ test("unresolved evidence and conflicting destinations never acquire target link
         .split("\n")
         .find((line) => line.startsWith("- **dependency source:**"));
       assert.ok(evidence, comment);
-      assert.doesNotMatch(evidence, /\]\(https:\/\/github\.com\//, JSON.stringify(entry));
+      assert.equal(markdownLinkDestinations(evidence).size, 0, JSON.stringify(entry));
     }
   }
   const missingSha = evidenceReport([
     { ...dependencyEvidence, sha: null, file: "docs/config.md", line: null },
   ]);
-  assert.doesNotMatch(missingSha, /openai\/codex\/blob\/a{40}/);
-  assert.doesNotMatch(
+  for (const output of [
+    missingSha,
     renderReviewCommentFromReport(missingSha, "implemented_on_main"),
-    /docs\.openclaw\.ai\/config/,
-  );
+  ]) {
+    const destinations = markdownLinkDestinations(output);
+    assert.equal(
+      destinations.has(`https://github.com/openai/codex/blob/${"a".repeat(40)}/docs/config.md`),
+      false,
+    );
+    assert.equal(destinations.has("https://docs.openclaw.ai/config"), false);
+  }
   const target = evidenceReport([
     {
       ...dependencyEvidence,
@@ -272,8 +318,8 @@ test("unresolved evidence and conflicting destinations never acquire target link
     },
   ]);
   assert.ok(
-    renderReviewCommentFromReport(target, "implemented_on_main").includes(
-      `/blob/${"a".repeat(40)}/src/config.ts#L12`,
+    markdownLinkDestinations(renderReviewCommentFromReport(target, "implemented_on_main")).has(
+      `https://github.com/openclaw/openclaw/blob/${"a".repeat(40)}/src/config.ts#L12`,
     ),
   );
 });
