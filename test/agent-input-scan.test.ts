@@ -532,23 +532,34 @@ const autoreviewSources = [
   "skills/autoreview/tests/test_autoreview_hardening.py",
   ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
 ];
+const browserChromeSource = "extensions/browser/src/browser/chrome.test.ts";
+const browserServerContextSource =
+  "extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts";
+const ledgerFixtureSha256 = "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e";
 
 test("reviewed fixture registry binds exact digests to exact regular-file source paths", () => {
   for (const [source, digest] of [
-    [ledgerSource, "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e"],
+    [ledgerSource, ledgerFixtureSha256],
     ...autoreviewSources.map((source) => [
       source,
       "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83",
     ]),
+    [browserChromeSource, "d69d650dc6c312f3e1071f8613df780323fadd01b8c40e6edd02715cd731ae60"],
+    [browserChromeSource, "60267342b1ab046bd8c42e2226fdfce2aa081e7f18e17c35c9c013d7b1de5720"],
+    [
+      browserServerContextSource,
+      "60267342b1ab046bd8c42e2226fdfce2aa081e7f18e17c35c9c013d7b1de5720",
+    ],
   ]) {
-    assert.deepEqual(reviewedFixtureForSource(source!, "100644"), {
+    assert.deepEqual(reviewedFixtureForSource(source!, "100644", digest!), {
       fixtureSha256: digest,
       source,
     });
     for (const mode of ["100755", "120000", "160000", "000000", "644"])
-      assert.equal(reviewedFixtureForSource(source!, mode), undefined);
+      assert.equal(reviewedFixtureForSource(source!, mode, digest!), undefined);
     for (const alias of [`./${source}`, `other/${source}`, `${source}.bak`, source!.toUpperCase()])
-      assert.equal(reviewedFixtureForSource(alias, "100644"), undefined);
+      assert.equal(reviewedFixtureForSource(alias, "100644", digest!), undefined);
+    assert.equal(reviewedFixtureForSource(source!, "100644", "0".repeat(64)), undefined);
   }
 });
 
@@ -782,7 +793,7 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
       assert.equal(notice.source, ledgerSource);
       assert.equal(
         notice.fixtureSha256,
-        reviewedFixtureForSource(ledgerSource, "100644")!.fixtureSha256,
+        reviewedFixtureForSource(ledgerSource, "100644", ledgerFixtureSha256)!.fixtureSha256,
       );
       assert.equal(notice.detector, "URI");
       assert.match(notice.notice, /classified as non-sensitive/);

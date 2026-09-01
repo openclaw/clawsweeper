@@ -16,12 +16,28 @@ const REVIEWED_FIXTURES = [
       ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
     ],
   },
+  {
+    // OpenClaw Browser local-CDP credential-redaction fixture introduced by 8e03b0c62e76.
+    fixtureSha256: "d69d650dc6c312f3e1071f8613df780323fadd01b8c40e6edd02715cd731ae60",
+    sources: ["extensions/browser/src/browser/chrome.test.ts"],
+  },
+  {
+    // OpenClaw Browser remote-CDP redaction fixtures introduced by 58da2f5897 and 4b5987829.
+    fixtureSha256: "60267342b1ab046bd8c42e2226fdfce2aa081e7f18e17c35c9c013d7b1de5720",
+    sources: [
+      "extensions/browser/src/browser/chrome.test.ts",
+      "extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts",
+    ],
+  },
 ] as const;
 
-export function reviewedFixtureForSource(source: string, mode: string) {
+export function reviewedFixtureForSource(source: string, mode: string, fixtureSha256: string) {
   const fixture =
     mode === "100644"
-      ? REVIEWED_FIXTURES.find((entry) => entry.sources.some((path) => path === source))
+      ? REVIEWED_FIXTURES.find(
+          (entry) =>
+            entry.fixtureSha256 === fixtureSha256 && entry.sources.some((path) => path === source),
+        )
       : undefined;
   return fixture ? { fixtureSha256: fixture.fixtureSha256, source } : undefined;
 }
@@ -125,7 +141,7 @@ export function classifyReviewedFixtureScan(
         !staged.references.length ||
         staged.references.some(
           ({ source, mode }) =>
-            reviewedFixtureForSource(source, mode)?.fixtureSha256 !== fixture.fixtureSha256,
+            reviewedFixtureForSource(source, mode, digest)?.fixtureSha256 !== fixture.fixtureSha256,
         ) ||
         typeof source.line !== "number" ||
         !Number.isSafeInteger(source.line) ||
