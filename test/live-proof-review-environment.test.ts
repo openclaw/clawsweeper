@@ -470,8 +470,40 @@ test(
   { timeout: 30_000 },
   () => {
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-detached-stdio-"));
+    const cleanupEnvironment = join(root, "cleanup-publication.sh");
     const processToken = `clawsweeper-detached-stdio-${process.pid}-${Date.now()}`;
     try {
+      writeFileSync(
+        cleanupEnvironment,
+        [
+          "mv() {",
+          "  local publication scan_state=absent",
+          '  if [ "$#" -eq 4 ] && [ "$3" = "$result_temporary" ] && [ "$4" = "$result" ]; then',
+          '    IFS= read -r publication <"$3"',
+          '    if [[ "$publication" == "v1|done|"* ]]; then',
+          '      [ ! -e "$scan_file" ] || scan_state=present',
+          '      builtin printf "%s\\n" "$scan_state" >>"$BASH_ENV.log"',
+          "    fi",
+          "  fi",
+          '  command mv "$@"',
+          "}",
+        ].join("\n"),
+      );
+      const runner: MediaProofCommandRunner = (command, args, options = {}) => {
+        if (command === "tmux" && args[0] === "run-shell" && args[1] === "-b") {
+          // Observe before the real rename; publishing done lets the controller end the watchdog.
+          const quotedEnvironment = "'" + cleanupEnvironment.replaceAll("'", "'\\''") + "'";
+          return mediaProofCommandRunner(
+            command,
+            [
+              ...args.slice(0, -1),
+              "/usr/bin/env BASH_ENV=" + quotedEnvironment + " " + args.at(-1),
+            ],
+            options,
+          );
+        }
+        return mediaProofCommandRunner(command, args, options);
+      };
       writeFileSync(
         join(root, "detached-stdio.mjs"),
         [
@@ -514,7 +546,7 @@ test(
         rawVideoPath: join(root, "proof.webm"),
         maxRecordingSeconds: 90,
         recordMedia: false,
-        runner: mediaProofCommandRunner,
+        runner,
       });
 
       assert.equal(result.status, "completed", result.output);
@@ -528,6 +560,11 @@ test(
         code: 0,
         signal: null,
       });
+      assert.equal(
+        readFileSync(cleanupEnvironment + ".log", "utf8"),
+        "absent\n",
+        "cleanup completion must follow private scan-file removal",
+      );
       assert.deepEqual(processesContaining(processToken), []);
       assert.deepEqual(
         readdirSync(root).filter((name) => name.startsWith("proof.webm.")),

@@ -81,7 +81,9 @@ repeat the expensive macOS per-process lease checks in additional TERM sweeps.
 Up to eight independent signal workers run together, each revalidating the
 lease or original terminal immediately before signaling. Every worker is joined
 and its failure retained before the next scan. The controller's cleanup budget
-is unchanged.
+is unchanged. The watchdog removes its private scan file before publishing the
+completion receipt, so the controller cannot finish while that file remains.
+Failed removal produces a cleanup-error receipt instead of success.
 
 Process exit and PTY closure are separate tmux observations; cleanup waits for
 both rather than rejecting their intermediate states. If the original pane

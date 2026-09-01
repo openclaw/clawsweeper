@@ -538,7 +538,12 @@ result_temporary=$7
 result=$8
 scan_file="$result_temporary.scan.$$"
 receipt() { builtin printf "%s\\n" "$1" >"$result_temporary" && mv -f -- "$result_temporary" "$result" || exit 125; }
-finish() { receipt "v1|done|$nonce|$pane_pid|$tty_path|$lease_identity|$1|$2|$3"; /bin/rm -f -- "$scan_file"; exit "$4"; }
+finish() {
+  # The controller can tear down the watchdog as soon as it observes done.
+  /bin/rm -f -- "$scan_file" || set -- "$1" error:scan-cleanup "$3" 125
+  receipt "v1|done|$nonce|$pane_pid|$tty_path|$lease_identity|$1|$2|$3"
+  exit "$4"
+}
 case "$tty_path" in /dev/*) tty_name=\${tty_path#/dev/} ;; *) finish startup error:tty 0 125 ;; esac
 case "$pane_pid" in ""|*[!0-9]*) finish startup error:pane-pid 0 125 ;; esac
 case "$lease_identity" in *[!0-9:]*|:*|*:|*:*:*|"") finish startup error:lease-identity 0 125 ;; *:*) ;; *) finish startup error:lease-identity 0 125 ;; esac
