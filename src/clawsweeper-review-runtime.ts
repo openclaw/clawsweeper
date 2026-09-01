@@ -95,16 +95,21 @@ export function createReviewRuntime({
   function gitInfo(openclawDir: string, options: ReviewGitInfoOptions = {}): GitInfo {
     const targetBranch = options.targetBranch ?? reviewTargetBranch(openclawDir);
     requireSafeGitBranchName(targetBranch, "target branch");
+    const shallow = run("git", ["rev-parse", "--is-shallow-repository"], { cwd: openclawDir });
     run(
       "git",
       [
         "fetch",
+        "--filter=blob:none",
+        "--no-tags",
+        "--recurse-submodules=no",
+        ...(shallow === "true" ? ["--unshallow"] : []),
         "origin",
         `refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
-        "--depth=50",
       ],
       {
         cwd: openclawDir,
+        timeoutMs: 30_000,
       },
     );
     const mainSha = run("git", ["rev-parse", `refs/remotes/origin/${targetBranch}`], {
@@ -134,9 +139,22 @@ export function createReviewRuntime({
     }
     if (latestRelease?.tagName) {
       try {
-        run("git", ["fetch", "--force", "origin", "tag", latestRelease.tagName, "--depth=1"], {
-          cwd: openclawDir,
-        });
+        run(
+          "git",
+          [
+            "fetch",
+            "--force",
+            "--filter=blob:none",
+            "--recurse-submodules=no",
+            "origin",
+            "tag",
+            latestRelease.tagName,
+          ],
+          {
+            cwd: openclawDir,
+            timeoutMs: 30_000,
+          },
+        );
         latestRelease.sha = run("git", ["rev-list", "-n", "1", latestRelease.tagName], {
           cwd: openclawDir,
         });

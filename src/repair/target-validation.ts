@@ -1435,10 +1435,13 @@ export function runAllowedValidationCommandsWithBinding(
             );
           }
           const restoreChangedGateState =
-            options.targetRepo === "openclaw/openclaw" &&
-            isChangedGateCommand(parts, options) &&
-            !pendingRuntimeBuild
-              ? prepareDisposableChangedGateState(cwd, validationEnv, ignoredValidationInputs)
+            options.targetRepo === "openclaw/openclaw" && isChangedGateCommand(parts, options)
+              ? prepareDisposableChangedGateState(
+                  cwd,
+                  validationEnv,
+                  ignoredValidationInputs,
+                  pendingRuntimeBuild ? [] : runtimeArtifactBuildOutputRoots(cwd),
+                )
               : null;
           let restoreValidationCache: (() => void) | null;
           try {
@@ -1552,9 +1555,13 @@ export function runAllowedValidationCommandsWithBinding(
               resetValidationEnvironment(deadlineAt - identityReserveMs);
               const restoreFallbackChangedGateState =
                 options.targetRepo === "openclaw/openclaw" &&
-                isChangedGateCommand(fallbackParts, options) &&
-                !pendingRuntimeBuild
-                  ? prepareDisposableChangedGateState(cwd, validationEnv, ignoredValidationInputs)
+                isChangedGateCommand(fallbackParts, options)
+                  ? prepareDisposableChangedGateState(
+                      cwd,
+                      validationEnv,
+                      ignoredValidationInputs,
+                      pendingRuntimeBuild ? [] : runtimeArtifactBuildOutputRoots(cwd),
+                    )
                   : null;
               let restoreFallbackValidationCache: (() => void) | null;
               try {
@@ -3038,6 +3045,7 @@ function prepareDisposableChangedGateState(
   cwd: string,
   validationEnv: NodeJS.ProcessEnv,
   ignoredValidationInputs: readonly string[],
+  disposableOutputRoots: readonly string[],
 ) {
   const checkout = fs.realpathSync(cwd);
   const backupRoot = fs.realpathSync(
@@ -3063,7 +3071,8 @@ function prepareDisposableChangedGateState(
   }> = [];
   try {
     const disposablePaths = [
-      ...runtimeArtifactBuildOutputRoots(cwd).map((relativePath) => ({
+      // Pending build outputs stay bound for archive smoke; tool caches are always disposable.
+      ...disposableOutputRoots.map((relativePath) => ({
         relativePath,
         kind: "output" as const,
       })),

@@ -44,6 +44,15 @@ exact file, symbol, document, or PR claim that establishes the signal in
 A shared name, similar tool surface, nearby implementation, optional
 integration, or unavailable sibling checkout is not an affirmative signal.
 
+Every structured `evidence` entry must deliberately set `repo` to the verified
+`owner/repository`: the target repo for target evidence, the actual dependency
+owner for dependency evidence, or `null` when ownership is unknown. Verify the
+source repository before attributing it; a sibling or absolute checkout path
+does not establish ownership. Use a repository-relative `file`, its `line`, and
+the full source commit `sha` when known. Never attach the target's main SHA to
+dependency evidence. Keep unknown locations as text rather than guessing links.
+Split multi-repository evidence into separate entries or use explicit links; bare inline references share the entry's single repository owner.
+
 In particular, OpenClaw Code Mode and Codex Code Mode are separate
 implementations; an OpenClaw Code Mode change does not require sibling
 `../codex` inspection unless one of the affirmative signals above establishes
@@ -965,7 +974,7 @@ PR body, or linked repository. Being outside `openclaw/openclaw` does not itself
 permit contributors or workers to edit release-owned files; the target's own
 policy governs.
 
-When citing docs in the close comment, link the public `docs.openclaw.ai` page rather than the internal `docs/*.md` GitHub file whenever a public page exists. The docs site publishes the same content and is the user-facing target. Keep `file`, `line`, and `sha` populated in the structured `evidence` object for auditability, but the prose/comment should prefer links like `https://docs.openclaw.ai/plugins/building-plugins` over `https://github.com/openclaw/openclaw/blob/.../docs/plugins/building-plugins.md`.
+When citing OpenClaw-owned docs in the close comment, link the public `docs.openclaw.ai` page rather than the internal `docs/*.md` GitHub file whenever a public page exists. The docs site publishes the same content and is the user-facing target. Keep `repo`, `file`, `line`, and `sha` populated in the structured `evidence` object for auditability, but the prose/comment should prefer links like `https://docs.openclaw.ai/plugins/building-plugins` over `https://github.com/openclaw/openclaw/blob/.../docs/plugins/building-plugins.md`. Dependency docs belong to their own repository; never map their `docs/` paths onto the target's docs site.
 
 Return JSON only, matching the output schema. Always populate `likelyOwners`
 with the person or people most likely connected to the relevant code path or

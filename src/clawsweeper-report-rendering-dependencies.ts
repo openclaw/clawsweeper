@@ -61,7 +61,8 @@ export interface CreateReportRenderingDependencies {
     evidence: Evidence[];
   }) => string;
   ensureDir: (path: string) => void;
-  fileUrl: (file: string, sha: string, line?: number) => string;
+  fileUrl: (file: string, sha: string, line?: number, repo?: string) => string;
+  normalizeEvidence: (entry: Evidence) => Evidence;
   fixedInReportText: (markdown: string) => string;
   fixedInText: (decision: Decision) => string;
   fixedPullRequestFromReport: (markdown: string) => FixedPullRequest | null;
@@ -111,7 +112,7 @@ export interface CreateReportRenderingDependencies {
   ) => string;
   likelyOwnerLine: (owner: LikelyOwner) => string;
   linkedRelease: (tag: string) => string;
-  linkedSha: (sha: string) => string;
+  linkedSha: (sha: string, repo?: string) => string;
   markdownLink: (label: string, url: string) => string;
   markdownRepository: (markdown: string, file?: string) => string;
   mergeRiskOptionsFromReport: (markdown: string) => MergeRiskOption[];

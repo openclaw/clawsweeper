@@ -64,7 +64,8 @@ export interface CreateReportOrchestrationDependencies {
   effectiveReviewStatus: (markdown: string) => string;
   ensureDir: (path: string) => void;
   eventTimestampMs: (value: unknown) => number | null;
-  fileUrl: (file: string, sha: string, line?: number) => string;
+  fileUrl: (file: string, sha: string, line?: number, repo?: string) => string;
+  normalizeEvidence: (entry: Evidence) => Evidence;
   filterReviewContextComments: (
     comments: readonly unknown[],
     number: number,
@@ -221,7 +222,7 @@ export interface CreateReportOrchestrationDependencies {
   };
   likelyOwnerLine: (owner: LikelyOwner) => string;
   linkedRelease: (tag: string) => string;
-  linkedSha: (sha: string) => string;
+  linkedSha: (sha: string, repo?: string) => string;
   lowSignalUnmergeablePrAuthorActivityBlockReason: (options: {
     author: string;
     createdAt: string;

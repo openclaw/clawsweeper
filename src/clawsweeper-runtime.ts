@@ -291,6 +291,7 @@ const {
 function evidenceEntry(options: Partial<Evidence> & Pick<Evidence, "label" | "detail">): Evidence {
   return {
     label: options.label,
+    repo: options.repo ?? null,
     detail: options.detail,
     file: options.file ?? null,
     line: options.line ?? null,
@@ -488,7 +489,7 @@ const reportParser = createReportParser({
   parseSecurityConcernHeading: (...args) => parseSecurityConcernHeading(...args),
   sectionLineValue: (...args) => sectionLineValue(...args),
   sectionList: (...args) => sectionList(...args),
-  splitFileAndLine,
+  normalizeEvidence: repositoryLinks.normalizeEvidence,
 });
 export const { reportLiveProofPlan, rootCauseClusterFromReportForTest } = reportParser;
 export const reportLiveProofPlanForTest = reportLiveProofPlan;
@@ -892,6 +893,7 @@ function recordOrUndefined(value: unknown): Record<string, unknown> | undefined 
 }
 
 const reviewPresentation = createReviewPresentation({
+  normalizeEvidence: repositoryLinks.normalizeEvidence,
   docsPageUrl,
   fileUrl,
   frontMatterStringArray,
@@ -907,6 +909,7 @@ const reviewPresentation = createReviewPresentation({
   reportRealBehaviorProofPolicy,
   securityConcernLocation,
   splitFileAndLine,
+  targetRepo,
 });
 const { isSupportedMantisScenario, sentence, validMantisMaintainerComment } = reviewPresentation;
 

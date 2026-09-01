@@ -192,10 +192,11 @@ function persistenceReport(detection: { change: boolean; surfaces: string[] }, h
   })}\n\n## Summary\n\nReview completed.\n\n## Review Findings\n\nOverall correctness: patch is correct\n\nOverall confidence: 0.9\n\nFull review comments:\n\n- none\n`;
 }
 
-for (const [name, fixturePath] of [
-  ["pane-local diagnostics", "./fixtures/persistence-classifier-132718.json"],
-  ["test-support workspace guard", "./fixtures/persistence-classifier-133209.json"],
-]) {
+for (const [name, fixturePath, normalizationTruncates] of [
+  ["pane-local diagnostics", "./fixtures/persistence-classifier-132718.json", true],
+  ["test-support workspace guard", "./fixtures/persistence-classifier-133209.json", true],
+  ["Go chunk diagnostics", "./fixtures/persistence-classifier-134934.json", false],
+] as const) {
   for (const normalized of [false, true]) {
     test(`${name} creates no stored-data warning or migration gate (${normalized ? "production-normalized" : "full"} patch)`, () => {
       const fixture = JSON.parse(readFileSync(new URL(fixturePath, import.meta.url), "utf8"));
@@ -203,10 +204,13 @@ for (const [name, fixturePath] of [
         ? hydratePrimaryBody("", "pull_request", { pullFiles: fixture.pullFiles }).context.pullFiles
         : fixture.pullFiles;
       if (normalized) {
-        assert.ok(pullFiles.some((file) => /\[truncated \d+ chars\]$/.test(file.patch)));
+        assert.equal(
+          pullFiles.some((file) => /\[truncated \d+ chars\]$/.test(file.patch)),
+          normalizationTruncates,
+        );
       }
       const detection = dataModelChangeFromPullFilesForTest({ pullFiles });
-      const report = persistenceReport(detection, fixture.headSha);
+      const report = persistenceReport(detection, fixture.headSha ?? fixture.mergeCommit);
       // Check the contributor-visible consequence before the classification detail.
       assert.doesNotMatch(
         renderReviewCommentFromReport(report, "none"),
@@ -232,6 +236,24 @@ test("runtime state names and typed parameters alone do not establish stored dat
         pullFiles: [{ filename, previous_filename: "ui/src/session-view.ts", patch: evidence }],
       });
       assert.deepEqual(detection, { change: false, surfaces: [] }, filename);
+    }
+  }
+});
+
+test("generic metadata and diagnostic identifiers do not warn or gate without storage evidence", () => {
+  for (const name of ["metadata", "documentId", "chunkID", "collection", "dimension", "rowId"]) {
+    for (const patch of [
+      `@@\n+  ${name}: value,`,
+      `@@\n+log.Printf("rejected %s", ${name})`,
+      `@@\n+const ${name} = input;`,
+      `@@\n localStorage.getItem("preferences");\n@@\n+  ${name}: value,`,
+    ]) {
+      const pullFiles = [{ filename: "scripts/translation/diagnostics.go", patch }];
+      const detection = dataModelChangeFromPullFilesForTest({ pullFiles });
+      const report = persistenceReport(detection, "a".repeat(40));
+      assert.doesNotMatch(renderReviewCommentFromReport(report, "none"), /Confirm migration/);
+      assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+      assert.deepEqual(detection, { change: false, surfaces: [] }, `${name}: ${patch}`);
     }
   }
 });
@@ -299,6 +321,32 @@ test("storage evidence still warns and gates browser, runtime, and schema change
       filename: "src/memory/vector-store.ts",
       patch: "@@\n-  embeddingDimension: 768,\n+  embeddingDimension: 1024,",
       surface: "vector/embedding metadata",
+    },
+    {
+      filename: "src/memory/vector-store.ts",
+      patch: '@@\n+console.log("rejected", chunkId);\n+  metadata: row.metadata,',
+      surface: "vector/embedding metadata",
+    },
+    {
+      filename: "src/runtime/records.ts",
+      patch: "@@\n-  embeddingDimension: 768,\n+  embeddingDimension: 1024,",
+      surface: "vector/embedding metadata",
+    },
+    {
+      filename: "docs/search.md",
+      patch: "@@\n+The vector schema now includes a revision field.",
+      surface: "vector/embedding metadata",
+    },
+    {
+      filename: "scripts/translation/records.go",
+      patch: '@@\n+log.Printf("rejected %s", chunkID)\n+CREATE TABLE chunks (id TEXT);',
+      surface: "database schema",
+    },
+    {
+      filename: "src/runtime/records.ts",
+      patch:
+        '@@\n+console.log("rejected", chunkId);\n await state.storage.put("snapshot", {\n+  metadata: nextMetadata,\n });',
+      surface: "durable storage schema",
     },
     {
       filename: "src/db/schema.sql",
@@ -733,6 +781,36 @@ for (const { name, file, surfaces, pullFilesTruncated } of [
     surfaces: [],
   },
   {
+    name: "Go test with a missing persistence patch",
+    file: { filename: "src/storage/records_test.go" },
+    surfaces: [],
+  },
+  {
+    name: "Go test with a truncated schema patch",
+    file: {
+      filename: "src/storage/records_test.go",
+      patch: "@@\n+CREATE TABLE fixture (id TEXT);\n\n[truncated 90 chars]",
+    },
+    surfaces: [],
+  },
+  {
+    name: "production to Go test rename with schema removed",
+    file: {
+      filename: "scripts/translation/records_test.go",
+      previous_filename: "scripts/translation/records.go",
+      patch: "@@\n-CREATE TABLE chunks (id TEXT);",
+    },
+    surfaces: ["database schema: scripts/translation/records.go"],
+  },
+  {
+    name: "Go test to production rename with a missing persistence patch",
+    file: {
+      filename: "src/storage/records.go",
+      previous_filename: "src/storage/records_test.go",
+    },
+    surfaces: ["unknown-data-model-change: src/storage/records.go"],
+  },
+  {
     name: "test support with a truncated schema patch",
     file: {
       filename: "src/db/schema.test-support.ts",
@@ -826,6 +904,15 @@ for (const { name, file, surfaces, pullFilesTruncated } of [
     });
 
     assert.deepEqual(detection, { change: surfaces.length > 0, surfaces });
+    const report = persistenceReport(detection, "a".repeat(40));
+    assert.equal(
+      /Confirm migration/.test(renderReviewCommentFromReport(report, "none")),
+      detection.change,
+    );
+    assert.match(
+      reviewAutomationMarkersFromReport(report),
+      detection.change ? /clawsweeper-verdict:needs-human/ : /clawsweeper-verdict:pass/,
+    );
   });
 }
 
@@ -965,6 +1052,10 @@ test("production path classification preserves test segment and basename boundar
     ["src/test-fixtures/schema.sql", true],
     ["src/cache/store.spec.", true],
     ["src/cache/store.spec.unit.spec.", false],
+    ["scripts/translation/records_test.go", false],
+    ["scripts/translation/records.go", true],
+    ["src/storage/records_test.go", false],
+    ["src/storage/records.go", true],
   ] as const;
 
   for (const [filename, expectedChange] of cases) {

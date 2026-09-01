@@ -4720,13 +4720,14 @@ test("intermediate validation cannot tamper with fresh runtime outputs before ar
   );
 });
 
-test("changed-gate fallback preserves and protects pending fresh runtime output", () => {
-  for (const tamperWithFreshRuntime of [false, true]) {
+test("changed-gate caches restore while pending fresh runtime output stays protected", () => {
+  for (const scenario of ["success", "fallback", "tamper"] as const) {
     const cwd = gitPackageFixture({
       "build:ci-artifacts": "node scripts/build-runtime.mjs",
+      "check:changed": "node scripts/build-runtime.mjs",
       "test:serial": "node --test",
     });
-    fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n");
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n.cache/\n");
     const scripts = path.join(cwd, "scripts");
     fs.mkdirSync(scripts, { recursive: true });
     fs.writeFileSync(path.join(scripts, "build-runtime.mjs"), "// trusted fixture shim\n");
@@ -4746,6 +4747,11 @@ test("changed-gate fallback preserves and protects pending fresh runtime output"
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
     fs.writeFileSync(path.join(cwd, "test", "example.test.ts"), "export const value = 2;\n");
+    const caches = [".cache/vitest", "node_modules/.cache", "node_modules/.vite"];
+    for (const cache of caches) {
+      fs.mkdirSync(path.join(cwd, cache), { recursive: true });
+      fs.writeFileSync(path.join(cwd, cache, "previous.bin"), "trusted cache\n");
+    }
 
     const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-runtime-fallback-"));
     writeNodeCommandShim(
@@ -4759,10 +4765,15 @@ test("changed-gate fallback preserves and protects pending fresh runtime output"
         '  fs.writeFileSync("dist/runtime.js", "fresh runtime\\n");',
         "}",
         'if (args.includes("check:changed")) {',
-        '  console.error("terminating stalled Vitest process");',
-        "  process.exit(1);",
+        `  for (const cache of ${JSON.stringify(caches)}) {`,
+        '    fs.writeFileSync(`${cache}/previous.bin`, "rewritten cache\\n");',
+        '    fs.writeFileSync(`${cache}/generated.bin`, "generated cache\\n");',
+        "  }",
+        ...(scenario === "success"
+          ? []
+          : ['  console.error("terminating stalled Vitest process");', "  process.exit(1);"]),
         "}",
-        ...(tamperWithFreshRuntime
+        ...(scenario === "tamper"
           ? [
               'if (args.includes("test:serial")) {',
               '  fs.writeFileSync("dist/runtime.js", "tampered runtime\\n");',
@@ -4791,22 +4802,32 @@ test("changed-gate fallback preserves and protects pending fresh runtime output"
         ),
       );
 
-    if (tamperWithFreshRuntime) {
+    if (scenario === "tamper") {
       assert.throws(
         execute,
         /unsafe validation command mutated fresh runtime build output \(pnpm test:serial test\/example\.test\.ts\)/,
       );
-      continue;
+    } else {
+      assert.deepEqual(execute(), [
+        "pnpm build:ci-artifacts",
+        ...(scenario === "success"
+          ? ["pnpm check:changed"]
+          : ["git diff --check origin/main...HEAD", "pnpm test:serial test/example.test.ts"]),
+        smoke,
+      ]);
+      assert.equal(
+        fs.readFileSync(path.join(cwd, "dist", "runtime.js"), "utf8"),
+        "fresh runtime\n",
+      );
+      assert.equal(fs.existsSync(path.join(cwd, "dist-runtime-build.tar.zst")), false);
     }
-
-    assert.deepEqual(execute(), [
-      "pnpm build:ci-artifacts",
-      "git diff --check origin/main...HEAD",
-      "pnpm test:serial test/example.test.ts",
-      smoke,
-    ]);
-    assert.equal(fs.readFileSync(path.join(cwd, "dist", "runtime.js"), "utf8"), "fresh runtime\n");
-    assert.equal(fs.existsSync(path.join(cwd, "dist-runtime-build.tar.zst")), false);
+    for (const cache of caches) {
+      assert.equal(
+        fs.readFileSync(path.join(cwd, cache, "previous.bin"), "utf8"),
+        "trusted cache\n",
+      );
+      assert.equal(fs.existsSync(path.join(cwd, cache, "generated.bin")), false);
+    }
   }
 });
 
