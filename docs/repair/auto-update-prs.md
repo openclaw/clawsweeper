@@ -71,6 +71,11 @@ The trusted automation lane exists only for review bots we control. It does
 not treat random `@clawsweeper`, `@openclaw-clawsweeper`, or contributor prose as
 permission to spend workers or push commits.
 
+Status comment adoption and recovery require a readable trusted author login.
+Missing, empty, and unknown authors are rejected. Logins match case-insensitively
+without trimming: the router accepts `clawsweeper` and its configured trusted
+bots; the repair executor accepts `clawsweeper` and the two default bots above.
+
 ## Review Comment Shape
 
 ClawSweeper comments are meant to be readable by maintainers and parseable by

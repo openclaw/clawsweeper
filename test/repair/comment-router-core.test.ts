@@ -44,6 +44,7 @@ import {
   latestTrustedExactHeadReview,
   isCanonicalLandingNeedsHumanText,
   isReadyHumanReviewPause,
+  isTrustedStatusCommentAuthor,
   latestRepairLoopResumeTime,
   isAuthorReadOnlyCommandAllowed,
   isMaintainerCommandAllowed,
@@ -84,6 +85,44 @@ import {
 import { CLAWSWEEPER_CO_AUTHOR_TRAILER } from "../../dist/repair/co-author-credit.js";
 import { issueSourceRevisionSha256 } from "../../dist/repair/issue-source-guard.js";
 import { parseSimpleYaml, validateJob } from "../../dist/repair/lib.js";
+
+test("status comment authors fail closed even when the allowlist contains an empty login", () => {
+  const trusted = new Set(["", "clawsweeper[bot]", "openclaw-clawsweeper[bot]"]);
+  for (const comment of [
+    null,
+    undefined,
+    {},
+    { user: null },
+    { user: {} },
+    { user: { login: null } },
+    ...["", " ", "ghost", "contributor", " clawsweeper[bot] "].map((login) => ({
+      user: { login },
+    })),
+  ]) {
+    assert.equal(isTrustedStatusCommentAuthor(comment, trusted), false, JSON.stringify(comment));
+  }
+});
+
+test("status comment authors preserve consumer allowlists and untrimmed case-insensitive matching", () => {
+  const fixed = new Set(["clawsweeper[bot]", "openclaw-clawsweeper[bot]"]);
+  const configured = new Set(["custom[bot]"]);
+  for (const login of [
+    "clawsweeper",
+    "CLAWSWEEPER",
+    "ClawSweeper[bot]",
+    "OpenClaw-ClawSweeper[bot]",
+  ]) {
+    assert.equal(isTrustedStatusCommentAuthor({ user: { login } }, fixed), true, login);
+  }
+  assert.equal(isTrustedStatusCommentAuthor({ user: { login: "CUSTOM[bot]" } }, configured), true);
+  assert.equal(isTrustedStatusCommentAuthor({ user: { login: "CUSTOM[bot]" } }, fixed), false);
+  assert.equal(
+    isTrustedStatusCommentAuthor({ user: { login: "clawsweeper[bot]" } }, configured),
+    false,
+  );
+  assert.equal(isTrustedStatusCommentAuthor({ user: { login: "clawsweeper" } }, new Set()), true);
+  assert.equal(isTrustedStatusCommentAuthor({ user: { login: " clawsweeper " } }, fixed), false);
+});
 
 test("review comment section extraction supports headings and stops at metadata", () => {
   const body = [

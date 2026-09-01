@@ -55,7 +55,10 @@ import {
   automergeOutcomeReviewedShaFromResult,
   automergePlanningHeadBlock,
 } from "./automerge-outcome.js";
-import { isCanonicalLandingNeedsHumanText } from "./comment-router-core.js";
+import {
+  isCanonicalLandingNeedsHumanText,
+  isTrustedStatusCommentAuthor,
+} from "./comment-router-core.js";
 import { parsePullRequestUrl, pullRequestNumberFromUrl, sameRepoSlug } from "./github-ref.js";
 import {
   clawsweeperGitUserEmail,
@@ -80,6 +83,7 @@ import {
 } from "./constants.js";
 
 const AUTOMERGE_LABEL = "clawsweeper:automerge";
+const REPAIR_TRUSTED_STATUS_AUTHORS = new Set(["clawsweeper[bot]", "openclaw-clawsweeper[bot]"]);
 const AUTOFIX_LABEL = "clawsweeper:autofix";
 const AUTOFIX_LABEL_COLOR = "0A3069";
 const AUTOFIX_LABEL_DESCRIPTION =
@@ -4584,13 +4588,7 @@ function fetchPullRequestViewForRepo({ repo, number }: LooseRecord) {
 }
 
 function isTrustedStatusComment(comment: LooseRecord) {
-  const author = String(comment.user?.login ?? "").toLowerCase();
-  return (
-    !author ||
-    author === "clawsweeper" ||
-    author === "clawsweeper[bot]" ||
-    author === "openclaw-clawsweeper[bot]"
-  );
+  return isTrustedStatusCommentAuthor(comment, REPAIR_TRUSTED_STATUS_AUTHORS);
 }
 
 function hasAutomergeStatusMarker(body: JsonValue, number: JsonValue) {

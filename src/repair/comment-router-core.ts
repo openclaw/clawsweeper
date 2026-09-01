@@ -822,6 +822,15 @@ export function existingRepairLoopModeOutcome({ intent, trustedBot }: LooseRecor
   };
 }
 
+export function isTrustedStatusCommentAuthor(
+  comment: LooseRecord | null | undefined,
+  trustedAuthors: ReadonlySet<string>,
+): boolean {
+  // Missing authors fail closed; do not normalize padded logins into trusted identities.
+  const author = String(comment?.user?.login ?? "").toLowerCase();
+  return !!author && (author === "clawsweeper" || trustedAuthors.has(author));
+}
+
 export function isCanonicalLandingNeedsHumanText(value: JsonValue) {
   const text = String(value ?? "");
   if (!text) return false;

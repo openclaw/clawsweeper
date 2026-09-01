@@ -61,6 +61,7 @@ import {
   issueImplementationClusterId,
   issueImplementationJobPath,
   isReadyHumanReviewPause,
+  isTrustedStatusCommentAuthor,
   latestTrustedExactHeadReview,
   maintainerModeCommandCanResumePausedMode,
   maintainerApprovalAppliesToExactHeadReview,
@@ -5449,8 +5450,7 @@ function findExistingCommandStatusComment(command: LooseRecord) {
 }
 
 function isTrustedStatusComment(comment: LooseRecord) {
-  const author = String(comment.user?.login ?? "").toLowerCase();
-  return !author || author === "clawsweeper" || trustedBots.has(author);
+  return isTrustedStatusCommentAuthor(comment, trustedBots);
 }
 
 function reactToComment(command: LooseRecord, content: string) {
