@@ -165,3 +165,8 @@ export function latestClawSweeperReviewFromHydration(
     context,
   );
 }
+
+export function previousClawSweeperReviewDigest(value: unknown): string | null {
+  const digest = asRecord(value).verdictDigest;
+  return typeof digest === "string" && /^[0-9a-f]{64}$/.test(digest) ? digest : null;
+}

@@ -109,25 +109,6 @@ test("buildLocalRangeReview synthesizes a PR item + offline diff from the local 
     assert.match(byName("feature.txt")?.patch ?? "", /\+hello world/);
     assert.equal(byName("keep.txt")?.status, "M");
     assert.match(byName("keep.txt")?.patch ?? "", /\+more/);
-    const semanticFiles = result.context.semanticPullFiles as Array<Record<string, unknown>>;
-    const semanticByName = (name: string) => semanticFiles.find((file) => file.filename === name);
-    assert.deepEqual(
-      {
-        baseMode: semanticByName("feature.txt")?.baseMode,
-        baseType: semanticByName("feature.txt")?.baseType,
-        headMode: semanticByName("feature.txt")?.headMode,
-        headType: semanticByName("feature.txt")?.headType,
-        treeModesComplete: semanticByName("feature.txt")?.treeModesComplete,
-      },
-      {
-        baseMode: null,
-        baseType: null,
-        headMode: "100644",
-        headType: "blob",
-        treeModesComplete: true,
-      },
-    );
-
     assert.equal(result.context.counts.pullFiles, 2);
     assert.equal(result.context.counts.pullFilesHydrated, 2);
     assert.equal(result.context.counts.pullFilesTruncated, false);
@@ -386,7 +367,7 @@ test(
       ]) {
         writeFileSync(modeFile, mode);
         const review = buildLocalRangeReviewForTest(dir, "openclaw/openclaw", "base-ref");
-        for (const files of [review.context.pullFiles, review.context.semanticPullFiles]) {
+        for (const files of [review.context.pullFiles]) {
           assert.deepEqual(
             files.map(({ filename, status, additions, deletions }) => ({
               filename,
@@ -464,7 +445,6 @@ test(
       // Synthetic >2 MiB enumeration; existing factory dependencies avoid per-path Git processes.
       // This proves capture compatibility, not a native Git tree or scanner acceptance.
       let patches = 0;
-      let identities = 0;
       const build = createLocalRangeReviewer({
         run: (command, args, options) => {
           if (args.includes("diff")) {
@@ -475,13 +455,9 @@ test(
         },
         pullCommitContentRevision: () => "fixture-commit-revision",
         reviewCommentContentRevision: () => "fixture-comment-revision",
-        pullFileTreeIdentity: () => {
-          identities++;
-          return {};
-        },
       });
       const review = build(dir, "openclaw/openclaw", "base-ref");
-      for (const files of [review.context.pullFiles, review.context.semanticPullFiles]) {
+      for (const files of [review.context.pullFiles]) {
         assert.equal(files.length, 2048);
         assert.deepEqual(
           files.map(({ filename }) => filename),
@@ -490,7 +466,6 @@ test(
         assert.ok(files.every((file) => file.additions === null && file.deletions === null));
       }
       assert.equal(patches, 2048);
-      assert.equal(identities, 2048);
       assert.equal(review.context.counts.pullFilesTruncated, false);
       assert.equal(
         readReviewGit(dir, ["diff", "--name-status", "-z", "base-ref..HEAD", "--"]),
@@ -580,7 +555,7 @@ test("buildLocalRangeReview distinguishes binary counts, real zeros, and edited 
     git(dir, "commit", "-qm", "rename, copy, mode, and binary");
 
     const review = buildLocalRangeReviewForTest(dir, "openclaw/openclaw", "base-ref");
-    for (const files of [review.context.pullFiles, review.context.semanticPullFiles]) {
+    for (const files of [review.context.pullFiles]) {
       const byName = (filename: string) => files.find((file) => file.filename === filename);
       assert.deepEqual(
         files.map(({ filename, additions, deletions }) => ({ filename, additions, deletions })),
@@ -626,7 +601,7 @@ test(
       git(dir, "add", "-A");
       git(dir, "commit", "-qm", "special paths");
       const review = buildLocalRangeReviewForTest(dir, "openclaw/openclaw", "base-ref");
-      for (const files of [review.context.pullFiles, review.context.semanticPullFiles]) {
+      for (const files of [review.context.pullFiles]) {
         assert.deepEqual(
           files.map(({ filename, previous_filename, additions, deletions }) => ({
             filename,
@@ -750,13 +725,8 @@ test("--local-range defaults to the current checkout and isolates gh config in a
     const cacheMetrics = JSON.parse(
       readFileSync(join(dirname(ghConfigDir ?? ""), "review-cache-metrics.json"), "utf8"),
     ) as Record<string, unknown>;
-    assert.equal(cacheMetrics.semantic_cache_checks, 0);
-    assert.equal(cacheMetrics.semantic_cache_hits, 0);
-    assert.equal(cacheMetrics.semantic_cache_revalidations, 0);
-    assert.match(
-      readFileSync(join(dirname(ghConfigDir ?? ""), "0.md"), "utf8"),
-      /review_semantic_cache_version: unknown/,
-    );
+    assert.equal(cacheMetrics.structural_cache_hits, 0);
+    assert.equal(cacheMetrics.content_cache_hits, 0);
     assert.equal(git(dir, "status", "--porcelain"), "");
   } finally {
     rmSync(codexDir, { recursive: true, force: true });
@@ -989,7 +959,7 @@ test("--local-range persists whole-range Git statistics beyond every display evi
       /87 files changed, 6087 insertions\(\+\), 4 deletions\(-\)/,
     );
     const review = buildLocalRangeReviewForTest(dir, "openclaw/openclaw", "base-ref");
-    for (const entries of [review.context.pullFiles, review.context.semanticPullFiles]) {
+    for (const entries of [review.context.pullFiles]) {
       const files = entries as Array<Record<string, unknown>>;
       assert.deepEqual(
         files.map(({ filename: path, additions, deletions }) => ({ path, additions, deletions })),
@@ -1006,13 +976,8 @@ test("--local-range persists whole-range Git statistics beyond every display evi
       assert.ok(!files.some((file) => file.filename === "src/reversed.ts"));
     }
     const promptLarge = review.context.pullFiles.find((file) => file.filename === "src/large.ts");
-    const semanticLarge = review.context.semanticPullFiles.find(
-      (file) => file.filename === "src/large.ts",
-    );
     assert.match(promptLarge.patch, /\[truncated \d+ chars\]$/);
-    assert.match(semanticLarge.patch, /\[truncated \d+ chars\]$/);
     assert.ok(promptLarge.patch.length < 8100);
-    assert.ok(semanticLarge.patch.length > 512_000);
     assert.equal(review.context.counts.pullFiles, 87);
     assert.equal(review.context.counts.pullFilesTruncated, false);
     const evidence = buildPullRequestReviewEvidence({

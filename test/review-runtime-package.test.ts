@@ -1,21 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
-  appendFileSync,
-  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
-  statSync,
   symlinkSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import { tmpPrefix } from "./helpers.ts";
 
@@ -35,7 +31,7 @@ function reviewRuntimeArgs(output: string, plan: string, stateRoot: string): str
   ];
 }
 
-test("review runtime artifact carries the TypeScript compiler service", () => {
+test("review runtime archive loads without a compiler or install step", () => {
   const fixture = mkdtempSync(tmpPrefix);
   const artifactsRoot = join(process.cwd(), ".artifacts");
   mkdirSync(artifactsRoot, { recursive: true });
@@ -44,16 +40,6 @@ test("review runtime artifact carries the TypeScript compiler service", () => {
   const stateRoot = join(fixture, "state");
   const archive = join(fixture, "review-runtime.tar.gz");
   const roundtrip = join(fixture, "roundtrip");
-  const nativePackageName = `typescript-${process.platform}-${process.arch}`;
-  const nativeCompiler = join(
-    roundtrip,
-    "node_modules",
-    "@typescript",
-    nativePackageName,
-    "lib",
-    process.platform === "win32" ? "tsc.exe" : "tsc",
-  );
-
   try {
     mkdirSync(stateRoot);
     writeFileSync(plan, '{"shards":[{"shard":0,"itemNumbers":[]}]}\n');
@@ -64,166 +50,22 @@ test("review runtime artifact carries the TypeScript compiler service", () => {
     execFileSync("tar", ["-czf", archive, "-C", output, "."], { stdio: "pipe" });
     mkdirSync(roundtrip);
     execFileSync("tar", ["-xzf", archive, "-C", roundtrip], { stdio: "pipe" });
+    assert.equal(existsSync(join(roundtrip, "node_modules", "typescript")), false);
     assert.equal(existsSync(join(roundtrip, "node_modules", "@typescript")), false);
-
-    const typescriptPackage = JSON.parse(
-      readFileSync(join(roundtrip, "node_modules", "typescript", "package.json"), "utf8"),
-    );
-    assert.equal(typescriptPackage.name, "typescript");
-    assert.equal(
-      JSON.parse(readFileSync(join(roundtrip, "node_modules", "yaml", "package.json"), "utf8"))
-        .name,
-      "yaml",
-    );
-    const typescriptSource = realpathSync(join(process.cwd(), "node_modules", "typescript"));
-    const nativeSource = realpathSync(
-      join(dirname(typescriptSource), "@typescript", nativePackageName),
-    );
-    const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-    const packOutput = JSON.parse(
-      execFileSync(
-        npmCommand,
-        ["pack", nativeSource, "--pack-destination", fixture, "--ignore-scripts", "--json"],
-        { encoding: "utf8" },
-      ),
-    );
-    const packed = Array.isArray(packOutput) ? packOutput[0] : Object.values(packOutput)[0];
-    assert.equal(typeof packed?.filename, "string");
-    assert.equal(typeof packed?.integrity, "string");
-    const packageFile = join(fixture, packed.filename);
-    writeFileSync(
-      join(roundtrip, "pnpm-lock.yaml"),
-      `lockfileVersion: '9.0'
-packages:
-  '@typescript/${nativePackageName}@${typescriptPackage.version}':
-    resolution: {integrity: ${packed.integrity}}
-`,
-    );
-    mkdirSync(join(roundtrip, "scripts"));
-    const installerPath = join(roundtrip, "scripts", "install-review-native-compiler.mjs");
-    copyFileSync("scripts/install-review-native-compiler.mjs", installerPath);
-
-    const tamperedPackage = join(fixture, "tampered.tgz");
-    copyFileSync(packageFile, tamperedPackage);
-    appendFileSync(tamperedPackage, "tampered");
-    const rejected = spawnSync(process.execPath, [installerPath], {
-      cwd: roundtrip,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        CLAWSWEEPER_NATIVE_PACKAGE_TARBALL: tamperedPackage,
+    const loaded = execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `const runtime = await import(${JSON.stringify(pathToFileURL(join(roundtrip, "dist/clawsweeper.js")).href)}); if (typeof runtime.main !== "function") throw new Error("missing CLI"); console.log("runtime loaded");`,
+      ],
+      {
+        cwd: fixture,
+        env: { ...process.env, NODE_PATH: "" },
+        encoding: "utf8",
       },
-    });
-    assert.notEqual(rejected.status, 0);
-    assert.match(rejected.stderr, /integrity mismatch/i);
-    assert.equal(existsSync(nativeCompiler), false);
-
-    const externalNamespace = join(fixture, "external-typescript-namespace");
-    const externalSentinel = join(externalNamespace, "keep.txt");
-    mkdirSync(externalNamespace);
-    writeFileSync(externalSentinel, "keep");
-    const namespaceLink = join(roundtrip, "node_modules", "@typescript");
-    symlinkSync(
-      externalNamespace,
-      namespaceLink,
-      process.platform === "win32" ? "junction" : "dir",
     );
-    const symlinkedParent = spawnSync(process.execPath, [installerPath], {
-      cwd: roundtrip,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        CLAWSWEEPER_NATIVE_PACKAGE_TARBALL: packageFile,
-      },
-    });
-    assert.notEqual(symlinkedParent.status, 0);
-    assert.match(symlinkedParent.stderr, /symbolic-link @typescript namespace/i);
-    assert.equal(readFileSync(externalSentinel, "utf8"), "keep");
-    unlinkSync(namespaceLink);
-
-    execFileSync(process.execPath, [installerPath], {
-      cwd: roundtrip,
-      env: {
-        ...process.env,
-        CLAWSWEEPER_NATIVE_PACKAGE_TARBALL: packageFile,
-      },
-      stdio: "pipe",
-    });
-
-    assert.equal(
-      JSON.parse(
-        readFileSync(
-          join(roundtrip, "node_modules", "@typescript", nativePackageName, "package.json"),
-          "utf8",
-        ),
-      ).name,
-      `@typescript/${nativePackageName}`,
-    );
-    assert.equal(existsSync(nativeCompiler), true);
-    if (process.platform !== "win32") {
-      assert.notEqual(statSync(nativeCompiler).mode & 0o111, 0);
-    }
-    execFileSync(nativeCompiler, ["--version"], { stdio: "pipe" });
-
-    writeFileSync(join(roundtrip, "package.json"), '{"type":"module"}\n');
-    const smokePath = join(roundtrip, "semantic-smoke.mjs");
-    writeFileSync(
-      smokePath,
-      `
-import { createReviewSemanticRecord } from "./dist/review-semantic-cache.js";
-
-const record = createReviewSemanticRecord({
-  item: { repo: "openclaw/openclaw", number: 1, kind: "pull_request" },
-  context: {
-    issue: { title: "Cache" },
-    comments: [],
-    timeline: [],
-    pullRequest: { base: { ref: "main", sha: "a".repeat(40) } },
-    pullFiles: [{
-      filename: "src/cache.ts",
-      status: "modified",
-      additions: 1,
-      deletions: 1,
-      patch: "@@ -1 +1 @@\\n-const value = 1;\\n+const value = 2;",
-      baseMode: "100644",
-      baseType: "blob",
-      headMode: "100644",
-      headType: "blob",
-      treeModesComplete: true,
-    }],
-    pullCommits: [],
-    pullCommitsRevision: "d".repeat(64),
-    pullReviewComments: [],
-    pullChecks: {
-      complete: true,
-      checkRuns: [],
-      checkRunsTruncated: false,
-      statuses: [],
-      statusesTruncated: false,
-    },
-    counts: {
-      pullFiles: 1,
-      pullFilesHydrated: 1,
-      pullFilesTruncated: false,
-      pullCommits: 0,
-      pullCommitsHydrated: 0,
-      pullCommitsTruncated: false,
-    },
-  },
-  git: { mainSha: "b".repeat(40), releaseStateComplete: true, latestRelease: null },
-  structuralContextRevision: "c".repeat(64),
-  reviewPolicy: "policy",
-  reviewModel: "model",
-});
-
-if (!record.eligible) throw new Error(record.eligibilityReason);
-`,
-    );
-    execFileSync(process.execPath, [smokePath], {
-      cwd: roundtrip,
-      env: { ...process.env, NODE_PATH: "" },
-      stdio: "pipe",
-    });
+    assert.match(loaded, /runtime loaded/);
   } finally {
     rmSync(output, { force: true, recursive: true });
     rmSync(fixture, { force: true, recursive: true });

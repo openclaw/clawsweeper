@@ -30,7 +30,6 @@ import type {
 import type { UserFacingCommandError } from "./command.js";
 import type { CodexProcessResult } from "./codex-process.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
-import type { ReviewSemanticRecord } from "./review-semantic-cache.js";
 import type { ReviewStructuralPullState } from "./review-structural-cache.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
 import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
@@ -241,7 +240,6 @@ export interface CreateReviewCommandWorkflowDependencies {
     reviewPolicy: string;
     runtime: ReviewRuntime;
     structuralRecord?: ReviewStructuralRecord | null;
-    semanticRecord?: ReviewSemanticRecord | null;
     reviewLeaseOwner?: string;
     reviewLeaseCommentId?: number;
   }) => string;
@@ -258,7 +256,6 @@ export interface CreateReviewCommandWorkflowDependencies {
     allowSupersededLeaseCleanup?: boolean;
   }) => ReviewStartStatusCommentResult;
   previousClawSweeperReviewDigestFromReport: (markdown: string) => string | null;
-  pullChecksContext: (number: number, headSha: string) => unknown;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
   pullRequestHeadSha: (number: number) => string;
   recordReviewLogPublication: (options: {
@@ -271,7 +268,6 @@ export interface CreateReviewCommandWorkflowDependencies {
     retryable?: boolean;
   }) => ActionEvent | null;
   removePullRequestReviewTree: (options: { targetDir: string; worktreeDir: string }) => boolean;
-  refreshRelatedItemsContext: (item: Item, context: ItemContext) => unknown[];
   replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
   renderReviewCommentFromReport: (
     markdown: string,
@@ -368,11 +364,6 @@ export interface CreateReviewCommandWorkflowDependencies {
   updateBulkFilerDetectedFrontMatter: (
     markdown: string,
     detection: BulkFilerDetectionResult,
-  ) => string;
-  updateReviewSemanticFrontMatter: (
-    markdown: string,
-    record: ReviewSemanticRecord | null,
-    cacheHit: boolean,
   ) => string;
   updateReviewStructuralFrontMatter: (
     markdown: string,

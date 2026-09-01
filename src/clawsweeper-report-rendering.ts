@@ -39,7 +39,6 @@ export function createReportRendering(dependencies: CreateReportRenderingDepende
     reviewHistoryForStaleComment,
     sanitizePublicSelfReferences,
     syncWorkPlanFromReport,
-    updateReviewSemanticFrontMatter,
     updateReviewStructuralFrontMatter,
   } = { ...context, ...commentHelpers, ...commentPresentation, ...actions, ...document };
 
@@ -63,7 +62,6 @@ export function createReportRendering(dependencies: CreateReportRenderingDepende
     reviewHistoryForStaleComment,
     sanitizePublicSelfReferences,
     syncWorkPlanFromReport,
-    updateReviewSemanticFrontMatter,
     updateReviewStructuralFrontMatter,
   };
 }

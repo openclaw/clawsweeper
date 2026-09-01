@@ -355,7 +355,6 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
     reviewHistoryForStaleComment,
     sanitizePublicSelfReferences,
     syncWorkPlanFromReport,
-    updateReviewSemanticFrontMatter,
     updateReviewStructuralFrontMatter,
   } = reportRendering;
 
@@ -422,7 +421,6 @@ export function createReportOrchestration(dependencies: CreateReportOrchestratio
     syncBulkFilerLabelForTest,
     syncWorkPlanFromReport,
     telegramVisibleProofLabelsForTest,
-    updateReviewSemanticFrontMatter,
     updateReviewStructuralFrontMatter,
     upgradeNoDiffPullRequestReport,
     upgradePullRequestClosePromotionReport,

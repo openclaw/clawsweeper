@@ -40,7 +40,6 @@ interface CreateItemContextDependencies {
   compactPullCommit: (value: unknown) => unknown;
   compactPullFile: (value: unknown) => unknown;
   compactPullRequest: (value: unknown) => unknown;
-  compactSemanticPullFile: (value: unknown) => unknown;
   compactTimelineEvent: (value: unknown) => unknown;
   extractLatestClawSweeperReviewFromHydration: (
     commentsWindow: ContextHydration<unknown>,
@@ -90,12 +89,12 @@ interface CreateItemContextDependencies {
   }) => unknown[];
   reviewCommentContentRevision: (entries: readonly unknown[]) => string;
   reviewTimelineDigestParts: (entries: unknown) => unknown;
-  semanticPullFilesWithTreeIdentity: (options: {
+  hydratePullRequestReviewSource: (options: {
     files: readonly unknown[];
     itemNumber: number;
     pullRequest: unknown;
     targetDir: string;
-  }) => unknown[];
+  }) => void;
   sha256: (text: string) => string;
   stringOrUndefined: (value: unknown) => string | undefined;
   targetRepo: () => string;
@@ -112,7 +111,6 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
     compactPullCommit,
     compactPullFile,
     compactPullRequest,
-    compactSemanticPullFile,
     compactTimelineEvent,
     extractLatestClawSweeperReviewFromHydration,
     fetchReviewedPrActivityCursor,
@@ -130,7 +128,7 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
     relatedItemsContext,
     reviewCommentContentRevision,
     reviewTimelineDigestParts,
-    semanticPullFilesWithTreeIdentity,
+    hydratePullRequestReviewSource,
     sha256,
     stringOrUndefined,
     targetRepo,
@@ -380,21 +378,19 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
         80,
         compactPullFile,
       );
-      context.semanticPullFiles =
+      if (
         options.reviewCacheDigest &&
         options.reviewCacheGitDir &&
         !pullFilesWindow.truncated &&
         pullFilesWindow.total === pullFiles.length
-          ? semanticPullFilesWithTreeIdentity({
-              files: pullFiles,
-              itemNumber: item.number,
-              pullRequest,
-              targetDir: options.reviewCacheGitDir,
-            })
-          : compactMappedWindow(pullFiles, pullFilesWindow.total, 80, (file) => ({
-              ...asRecord(compactSemanticPullFile(file)),
-              treeModesComplete: false,
-            }));
+      ) {
+        hydratePullRequestReviewSource({
+          files: pullFiles,
+          itemNumber: item.number,
+          pullRequest,
+          targetDir: options.reviewCacheGitDir,
+        });
+      }
       context.pullCommits = compactMappedWindow(
         pullCommits,
         pullCommitsWindow.total,

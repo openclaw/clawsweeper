@@ -35,6 +35,14 @@ The automation is designed around five goals:
 5. GitHub mutations should remain deterministic, authenticated, bounded, and
    reversible when the model, runner, network, or operator disappears.
 
+Prefer the capable agent over custom reasoning machinery. Codex owns code
+judgment, investigation, implementation, and choosing appropriate validation.
+ClawSweeper supplies evidence and enforces the boundaries the agent cannot own:
+authorization, credential isolation, bounded scheduling, durable identity, and
+GitHub mutation gates. Add orchestration only for a concrete boundary or
+operational contract; do not duplicate the agent's reasoning in parsers,
+heuristics, or additional agent loops.
+
 The system separates model judgment from mutation authority. Codex reviews and
 edits code. TypeScript and GitHub Actions decide whether work is allowed,
 validate the result, and perform GitHub writes with short-lived GitHub App

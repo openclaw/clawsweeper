@@ -72,7 +72,6 @@ for (const [name, url] of Object.entries(mediaFixtureUrls)) {
     const pullFiles = [{ filename: "test/proof-fixture.ts", status: "added", patch }];
     const fixture = hydratePrimaryBody("Patch-only media.", "pull_request", { pullFiles });
     assert.equal(fixture.context.pullFiles[0].patch, patch);
-    assert.equal(fixture.context.semanticPullFiles[0].patch, patch);
     const prompt = reviewPromptForTest(fixture.target, fixture.context, {
       mainSha: "a".repeat(40),
       latestRelease: null,

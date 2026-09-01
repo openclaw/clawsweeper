@@ -634,7 +634,6 @@ const {
   completePullChecksContext,
   isClawSweeperComment,
   pullChecksContext,
-  pullFileTreeIdentity,
   quoteGitHubSearchTerm,
   structuralExternalRelationSensitivity,
 } = contextHydration;
@@ -1198,7 +1197,6 @@ const planCommand = createPlanCommand({
 const buildLocalRangeReview = createLocalRangeReviewer({
   run,
   pullCommitContentRevision,
-  pullFileTreeIdentity,
   reviewCommentContentRevision,
 });
 

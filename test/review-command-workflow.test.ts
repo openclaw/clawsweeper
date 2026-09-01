@@ -17,7 +17,7 @@ import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import { runAgentCheckoutInspection, runAgentProcess } from "../dist/agent-runner.js";
 import { createReviewActionLedger } from "../dist/clawsweeper-review-ledger.js";
 import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
-import { createReviewSemanticRecord } from "../dist/review-semantic-cache.js";
+import { closeDecision } from "./helpers.ts";
 import { AgentInputScanError } from "../dist/agent-input-scan.js";
 
 import { parseArgs } from "../dist/clawsweeper-args.js";
@@ -153,21 +153,17 @@ for (const scenario of [
   "structural-clean",
   "structural-refusal",
   "content-refusal",
-  "semantic-refusal",
+  "changed-pr-refusal",
+  "changed-pr-clean",
+  "content-clean",
   "fresh-refusal",
 ]) {
   test(`scheduled ${scenario} preserves admission and terminal ledger classification`, (t) => {
-    const refuseScan = scenario !== "structural-clean";
-    const fresh = scenario === "fresh-refusal";
-    const hydrated = fresh || scenario === "content-refusal" || scenario === "semantic-refusal";
-    const semantic = scenario === "semantic-refusal";
-    if (refuseScan)
-      useFakeScanner(
-        t,
-        semantic
-          ? "if (inputs.some(({bytes}) => bytes.includes('sensitive-comment-marker'))) process.exit(183);"
-          : "process.exit(183);",
-      );
+    const refuseScan = scenario.endsWith("refusal");
+    const changedPr = scenario.startsWith("changed-pr-");
+    const fresh = scenario === "fresh-refusal" || changedPr;
+    const hydrated = fresh || scenario.startsWith("content-");
+    if (refuseScan) useFakeScanner(t, "process.exit(183);");
     const root = realpathSync(mkdtempSync(join(tmpdir(), "clawsweeper-scheduled-cache-")));
     const artifactDir = join(root, "artifacts");
     const itemsDir = join(root, "items");
@@ -187,7 +183,7 @@ for (const scenario of [
     git("add", ".");
     git("commit", "-qm", "change");
     const headSha = git("rev-parse", "HEAD");
-    const pull = semantic
+    const pull = changedPr
       ? {
           headSha,
           baseSha,
@@ -207,7 +203,6 @@ for (const scenario of [
       : null;
     const priorRecord = structuralRecord(PRIOR_ACTIVITY_AT, pull);
     const currentRecord = structuralRecord(RESERVED_AT, pull);
-    const fixtureGit = { mainSha: "a".repeat(40), releaseStateComplete: true, latestRelease: null };
     const patch = "@@ -1 +1 @@\n-const value = 1;\n+const value = 2; // sensitive-comment-marker";
     const context = {
       issue: { updatedAt: RESERVED_AT },
@@ -217,7 +212,7 @@ for (const scenario of [
       timelineRevision: "timeline",
       structuralItemStateDigest: currentRecord.itemStateDigest,
       previousClawSweeperReview: { verdictDigest: digest("previous") },
-      ...(semantic
+      ...(changedPr
         ? {
             pullRequest: {
               head: { sha: headSha },
@@ -274,7 +269,7 @@ for (const scenario of [
     const item = {
       repo: REPO,
       number: ITEM_NUMBER,
-      kind: semantic ? ("pull_request" as const) : ("issue" as const),
+      kind: changedPr ? ("pull_request" as const) : ("issue" as const),
       title: "Scheduled cache proof",
       url: `https://github.com/${REPO}/issues/${ITEM_NUMBER}`,
       createdAt: "2026-08-01T00:00:00Z",
@@ -322,35 +317,6 @@ for (const scenario of [
       sha256: digest,
       isRuntimeBudgetError: () => false,
     });
-    const priorSemantic = semantic
-      ? createReviewSemanticRecord({
-          item,
-          context: {
-            ...context,
-            pullFiles: context.pullFiles!.map((file) => ({
-              ...file,
-              patch: patch.replace(" // sensitive-comment-marker", ""),
-            })),
-          },
-          git: fixtureGit,
-          structuralContextRevision: currentRecord.contextRevision,
-          reviewPolicy: POLICY,
-          reviewModel: PUBLIC_CODEX_MODEL,
-        })
-      : null;
-    if (priorSemantic) {
-      const current = createReviewSemanticRecord({
-        item,
-        context,
-        git: fixtureGit,
-        structuralContextRevision: currentRecord.contextRevision,
-        reviewPolicy: POLICY,
-        reviewModel: PUBLIC_CODEX_MODEL,
-      });
-      assert.equal(current.eligible, true, current.eligibilityReason);
-      assert.equal(current.codeDigest, priorSemantic.codeDigest);
-      assert.notEqual(current.exactDigest, priorSemantic.exactDigest);
-    }
     const providerCalls = join(root, "provider-calls");
     const provider = join(root, "codex");
     writeFileSync(
@@ -382,6 +348,7 @@ for (const scenario of [
         if (!hydrated) throw new Error("scheduled structural cache hit must not hydrate");
         return context;
       },
+      completePullChecksContext: (checks) => checks?.complete === true,
       commentId: (comment: Record<string, unknown> | undefined) =>
         typeof comment?.id === "number" ? comment.id : null,
       DEFAULT_PLAN_BATCH_SIZE: 3,
@@ -410,7 +377,6 @@ for (const scenario of [
         lastFullReviewAt: new Date(Date.now() - 60_000).toISOString(),
         lastFullReviewDecision: "keep_open",
         structuralRecord: hydrated ? null : priorRecord,
-        semanticRecord: priorSemantic,
       }),
       fetchReviewStructuralRecord: () => {
         structuralFetches += 1;
@@ -421,7 +387,7 @@ for (const scenario of [
         return ledgerOwner.finishReviewActionLedgerItem(options);
       },
       freshDedicatedReviewStartLeases: (options: { headSha: string }) => {
-        assert.equal(options.headSha, semantic ? headSha : priorRecord.sourceRevision);
+        assert.equal(options.headSha, changedPr ? headSha : priorRecord.sourceRevision);
         return [
           {
             comment: leaseComment,
@@ -453,7 +419,7 @@ for (const scenario of [
       reviewLeaseStillMatchesContext,
       liveClawSweeperReviewDigest: () => digest("previous"),
       stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
-      itemContentDigest: () => (semantic ? digest("different-content") : digest("content")),
+      itemContentDigest: () => (changedPr ? digest("different-content") : digest("content")),
       extractLatestClawSweeperReview: () => context.previousClawSweeperReview,
       fetchIssueReviewComments: () => [],
       pullHeadShaFromContext: (value) => value.pullRequest?.head.sha ?? null,
@@ -501,7 +467,7 @@ for (const scenario of [
       },
       runCodex: () => {
         generationCalls += 1;
-        if (fresh)
+        if (fresh && refuseScan)
           return runAgentProcess({
             label: "fresh-review",
             cwd: target,
@@ -511,8 +477,14 @@ for (const scenario of [
             env: { ...process.env, CODEX_BIN: provider },
             timeoutMs: 30_000,
           });
-        throw new Error("scheduled structural cache hit must not generate a review");
+        assert.equal(changedPr, true, "unchanged input must use the cache");
+        return closeDecision({ decision: "keep_open", closeReason: null });
       },
+      attachFixedPullRequest: (decision) => decision,
+      verifyRegressionProvenance: (decision) => decision,
+      reviewActionForDecision: () => ({ actionTaken: "none" }),
+      markdownFor: () =>
+        "---\nreview_status: complete\ndecision: keep_open\n---\nFresh Codex review\n",
       selectCandidates: () => ({ candidates: [{ ...item }], scannedPages: 1 }),
       suppliedReviewStartLeaseFromArgs,
       targetRepo: () => REPO,
@@ -561,10 +533,20 @@ for (const scenario of [
       }
       execute();
 
-      assert.equal(hydrationCalls, 0);
+      if (changedPr) {
+        assert.equal(hydrationCalls, 1);
+        assert.equal(generationCalls, 1);
+        assert.equal(cachedCompletions, 0);
+        assert.match(
+          readFileSync(join(artifactDir, `${ITEM_NUMBER}.md`), "utf8"),
+          /Fresh Codex review/,
+        );
+        return;
+      }
+      assert.equal(hydrationCalls, hydrated ? 1 : 0);
       assert.equal(generationCalls, 0);
       assert.equal(startCommentCalls, 0);
-      assert.equal(structuralFetches, 2);
+      assert.ok(structuralFetches >= 2);
       assert.equal(cachedCompletions, 1);
       assert.equal(checkoutInspectionCalls, 1);
       const carriedReportPath = join(artifactDir, `${ITEM_NUMBER}.md`);
@@ -575,8 +557,9 @@ for (const scenario of [
       const metrics = JSON.parse(
         readFileSync(join(artifactDir, "review-cache-metrics.json"), "utf8"),
       );
-      assert.equal(metrics.structural_cache_hits, 1);
-      assert.equal(metrics.hydrations, 0);
+      assert.equal(metrics.structural_cache_hits, hydrated ? 0 : 1);
+      assert.equal(metrics.content_cache_hits, hydrated ? 1 : 0);
+      assert.equal(metrics.hydrations, hydrated ? 1 : 0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -159,7 +159,6 @@ try {
     const pullFiles = [{ filename: "test/proof-fixture.ts", status: "added", patch }];
     const fixture = hydratePrimaryBody("Patch-only media.", "pull_request", { pullFiles });
     assert.equal(fixture.context.pullFiles[0].patch, patch);
-    assert.equal(fixture.context.semanticPullFiles[0].patch, patch);
     assert.deepEqual(
       render(fixture).context.pullFiles,
       JSON.parse(JSON.stringify(fixture.context.pullFiles)),

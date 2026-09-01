@@ -8,12 +8,6 @@ import type { Item, ItemContext } from "./clawsweeper-types.js";
 interface LocalRangeReviewDependencies {
   run: (command: string, args: string[], options?: { cwd?: string }) => string;
   pullCommitContentRevision: (entries: readonly unknown[]) => string | null;
-  pullFileTreeIdentity: (options: {
-    file: unknown;
-    targetDir: string;
-    baseSha: string;
-    headSha: string;
-  }) => Record<string, unknown>;
   reviewCommentContentRevision: (entries: readonly unknown[]) => string;
 }
 
@@ -107,7 +101,6 @@ function localRangeFiles(targetDir: string, diffArgs: string[]) {
 export function createLocalRangeReviewer({
   run,
   pullCommitContentRevision,
-  pullFileTreeIdentity,
   reviewCommentContentRevision,
 }: LocalRangeReviewDependencies) {
   // Offline local-range review synthesizes a complete PR review from committed
@@ -173,18 +166,12 @@ export function createLocalRangeReviewer({
     }
     const diffArgs = ["diff", "--no-ext-diff", "--no-textconv", `${baseSha}..${headSha}`];
     const rangeFiles = localRangeFiles(targetDir, diffArgs);
-    const semanticPullFiles: unknown[] = [];
     const pullFiles = rangeFiles.map((metadata) => {
       const paths = metadata.previous_filename
         ? [metadata.previous_filename, metadata.filename]
         : [metadata.filename];
       const patch = run("git", ["--literal-pathspecs", ...diffArgs, "--", ...paths], {
         cwd: targetDir,
-      });
-      const file = { ...metadata, patch: truncateText(patch, 512 * 1024) };
-      semanticPullFiles.push({
-        ...file,
-        ...pullFileTreeIdentity({ file, targetDir, baseSha, headSha }),
       });
       return { ...metadata, patch: truncateText(patch, 8000) };
     });
@@ -222,7 +209,6 @@ export function createLocalRangeReviewer({
         base: { ref: base, sha: baseSha },
       },
       pullFiles,
-      semanticPullFiles,
       pullCommits: localCommitIdentities.map((commit) => ({
         sha: commit.sha,
         author: commit.author,

@@ -28,7 +28,6 @@ for (const kind of ["issue", "pull_request"] as const) {
   test(`raw ${kind} body reaches real review JSON with exact bounded late proof coverage`, () => {
     const body = longProofBody();
     const { target, context } = hydratePrimaryBody(body, kind, { closingBodies: [body] });
-    context.semanticPullFiles = [{ patch: "PERSISTENCE_ONLY_SEMANTIC_SENTINEL" }];
     context.pullCommitsRevision = "PERSISTENCE_ONLY_COMMIT_SENTINEL";
     if (context.prHydrationSnapshot) {
       context.prHydrationSnapshot.completeReviewComments = [
@@ -56,10 +55,7 @@ for (const kind of ["issue", "pull_request"] as const) {
       assert.ok(rendered.closingPullRequests[0].body.endsWith("[truncated 48641 chars]"));
     }
     assert.doesNotMatch(prompt, new RegExp(scriptSentinel));
-    assert.doesNotMatch(
-      prompt,
-      /PERSISTENCE_ONLY_|semanticPullFiles|prHydrationSnapshot|pullCommitsRevision/,
-    );
+    assert.doesNotMatch(prompt, /PERSISTENCE_ONLY_|prHydrationSnapshot|pullCommitsRevision/);
     const introduction =
       prompt.match(/\n\n## PR Introduction Evidence\n[\s\S]*?\n```\n/)?.[0] ?? "";
     assert.equal(
@@ -324,24 +320,6 @@ test("review prompt includes compact previous review state without raw durable r
   assert.match(prompt, /Prior review found one blocker/);
   assert.match(prompt, /"commentsFiltered": 2/);
   assert.doesNotMatch(prompt, /How this review workflow works/);
-});
-
-test("review prompt excludes full semantic-cache patches", () => {
-  const context = {
-    issue: { number: 123, title: "Sample PR" },
-    comments: [],
-    timeline: [],
-    pullFiles: [{ filename: "src/cache.ts", patch: "prompt-sized patch" }],
-    semanticPullFiles: [
-      { filename: "src/cache.ts", patch: "FULL_SEMANTIC_CACHE_PATCH_MUST_STAY_PRIVATE" },
-    ],
-    counts: { comments: 0, timeline: 0, pullFiles: 1 },
-  };
-
-  const prompt = reviewPromptForTest(item({ kind: "pull_request", number: 123 }), context, git);
-
-  assert.match(prompt, /prompt-sized patch/);
-  assert.doesNotMatch(prompt, /FULL_SEMANTIC_CACHE_PATCH_MUST_STAY_PRIVATE/);
 });
 
 test("review prompt excludes persistence-only PR hydration snapshots", () => {

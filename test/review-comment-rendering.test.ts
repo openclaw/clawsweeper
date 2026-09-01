@@ -156,11 +156,11 @@ test("structural cache probes before hydration but acquires a lease before carry
   assert.ok(contentCache > structuralLease);
   assert.ok(contentPreflight > contentCache);
   assert.ok(contentPreflight < contentWrite);
-  assert.equal(provenancePromotions.length, 3);
+  assert.equal(provenancePromotions.length, 2);
   assert.ok(provenancePromotions[0]!.index > structuralPreflight);
   assert.ok(provenancePromotions[0]!.index < structuralWrite);
-  assert.ok(provenancePromotions[2]!.index > contentPreflight);
-  assert.ok(provenancePromotions[2]!.index < contentWrite);
+  assert.ok(provenancePromotions[1]!.index > contentPreflight);
+  assert.ok(provenancePromotions[1]!.index < contentWrite);
   assert.ok(mediaPrep > contentCache);
   assert.match(
     reviewLoop.slice(structuralHit, structuralWrite),
@@ -216,107 +216,6 @@ test("structural cache probes before hydration but acquires a lease before carry
     workflow,
     /review-artifacts\/shard-\$\{\{ matrix\.shard \}\}\/review-cache-metrics\.json/,
   );
-});
-
-test("semantic cache runs after hydration and revalidates under the acquired lease", () => {
-  const source = [
-    readFileSync("src/clawsweeper-review-command-workflow.ts", "utf8"),
-    readFileSync("src/clawsweeper-report-rendering.ts", "utf8"),
-    readFileSync("src/clawsweeper-report-document.ts", "utf8"),
-    readFileSync("src/clawsweeper-context-hydration.ts", "utf8"),
-  ].join("\n");
-  const reviewLoop = source.slice(
-    source.indexOf("for (const item of candidates)"),
-    source.indexOf("let decision: Decision", source.indexOf("for (const item of candidates)")),
-  );
-  const hydration = reviewLoop.indexOf("collectItemContext(item");
-  const semanticRecord = reviewLoop.indexOf("createReviewSemanticRecord({", hydration);
-  const issueLease = reviewLoop.indexOf('} else if (item.kind !== "pull_request")', hydration);
-  const issueReviewRevalidation = reviewLoop.indexOf(
-    "fetchIssueReviewComments(item.number)",
-    issueLease,
-  );
-  const localRangeGuard = reviewLoop.lastIndexOf("if (!localRangeData)", semanticRecord);
-  const semanticDecision = reviewLoop.indexOf("reviewSemanticCacheDecision({", semanticRecord);
-  const semanticRevalidation = reviewLoop.indexOf(
-    "semanticCacheRevalidations += 1",
-    semanticDecision,
-  );
-  const semanticPreflight = reviewLoop.indexOf("cachePreflightPasses(", semanticDecision);
-  const checkRevalidation = reviewLoop.indexOf("pullChecksContext(", semanticRevalidation);
-  const priorReviewRevalidation = reviewLoop.indexOf(
-    "fetchIssueReviewComments(item.number)",
-    semanticRevalidation,
-  );
-  const relationRevalidation = reviewLoop.indexOf(
-    "refreshRelatedItemsContext(item, context)",
-    semanticRevalidation,
-  );
-  const revalidatedRecord = reviewLoop.indexOf(
-    "createReviewSemanticRecord({",
-    relationRevalidation,
-  );
-  const semanticWrite = reviewLoop.indexOf(
-    "writeFileSync(reportPath, carried",
-    semanticRevalidation,
-  );
-  const semanticProvenance = reviewLoop.indexOf(
-    "carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue)",
-    semanticRevalidation,
-  );
-  const contentCache = reviewLoop.indexOf("reviewContentCacheHit({", semanticWrite);
-
-  assert.ok(hydration >= 0);
-  assert.ok(localRangeGuard > hydration);
-  assert.ok(issueLease > hydration);
-  assert.ok(issueReviewRevalidation > issueLease);
-  assert.ok(issueReviewRevalidation < semanticRecord);
-  assert.ok(semanticRecord > hydration);
-  assert.ok(semanticDecision > semanticRecord);
-  assert.ok(semanticPreflight > semanticDecision);
-  assert.ok(semanticPreflight < semanticWrite);
-  assert.ok(semanticRevalidation > semanticDecision);
-  assert.ok(checkRevalidation > semanticRevalidation);
-  assert.ok(priorReviewRevalidation > checkRevalidation);
-  assert.ok(relationRevalidation > priorReviewRevalidation);
-  assert.ok(revalidatedRecord > relationRevalidation);
-  assert.ok(semanticWrite > revalidatedRecord);
-  assert.ok(semanticProvenance > revalidatedRecord);
-  assert.ok(semanticProvenance < semanticWrite);
-  assert.ok(contentCache > semanticWrite);
-  assert.match(
-    reviewLoop.slice(semanticRevalidation, semanticWrite),
-    /refreshStructuralRecordForVerdict\(\)/,
-  );
-  assert.match(
-    reviewLoop.slice(localRangeGuard, semanticDecision),
-    /expectedPreviousReviewDigest[\s\S]*currentPreviousReviewDigest/,
-  );
-  assert.match(
-    reviewLoop.slice(priorReviewRevalidation, semanticWrite),
-    /reviewSemanticPriorReviewDigest\(\s*revalidatedContext\.previousClawSweeperReview/,
-  );
-  assert.match(
-    reviewLoop.slice(priorReviewRevalidation, relationRevalidation),
-    /catch \(error\)[\s\S]*durable_review_refresh_failed[\s\S]*releaseOwnedReviewLease[\s\S]*acquiredReviewLeases\.splice[\s\S]*continue/,
-  );
-  assert.match(
-    reviewLoop.slice(semanticRevalidation, semanticWrite),
-    /updateReviewSemanticFrontMatter\(carried, semanticRecord, true\)/,
-  );
-  assert.match(
-    reviewLoop.slice(semanticWrite, contentCache),
-    /previousReviewIdentityChanged[\s\S]*!git\.releaseStateComplete/,
-  );
-  const verdictRefresh = source.slice(
-    source.indexOf("const refreshStructuralRecordForVerdict"),
-    source.indexOf("\n      if (", source.indexOf("const refreshStructuralRecordForVerdict") + 1),
-  );
-  assert.match(verdictRefresh, /const refreshedGit = loadReviewGitInfo\(\)/);
-  assert.doesNotMatch(verdictRefresh, /\bgit\s*=/);
-  assert.match(source, /semantic_cache_eligibility_reasons/);
-  assert.match(source, /review_semantic_code_digest/);
-  assert.match(source, /check-state=unavailable/);
 });
 
 test("review comment patching only targets ClawSweeper-owned comments", () => {

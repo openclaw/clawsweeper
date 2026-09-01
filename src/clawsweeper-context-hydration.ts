@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import {
   BULK_FILED_LABEL,
   BULK_FILER_SEARCH_TIMEOUT_MS,
@@ -24,6 +23,7 @@ import {
   latestClawSweeperReview,
   latestClawSweeperReviewFromHydration,
   previousClawSweeperReviewFromComment,
+  previousClawSweeperReviewDigest,
   timestampValueMs,
 } from "./clawsweeper-review-comments.js";
 import { truncateText } from "./clawsweeper-text.js";
@@ -33,7 +33,6 @@ import type {
   BulkFilerRepositoryPermissionCache,
   ClosingPullRequestReference,
   ContextHydration,
-  GitTreeEntry,
   GoodFirstIssueHumanLabelState,
   Item,
   ItemKind,
@@ -41,7 +40,6 @@ import type {
 } from "./clawsweeper-types.js";
 import { isGitHubNotFoundError } from "./github-retry.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
-import { reviewSemanticPriorReviewDigest } from "./review-semantic-cache.js";
 import { compareCodeUnits, stableJson } from "./stable-json.js";
 
 interface CreateContextHydrationDependencies {
@@ -276,7 +274,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
   }
 
   function liveClawSweeperReviewDigest(number: number): string | null {
-    return reviewSemanticPriorReviewDigest(
+    return previousClawSweeperReviewDigest(
       extractLatestClawSweeperReview(fetchIssueReviewComments(number), number),
     );
   }
@@ -598,7 +596,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     isDigitsOnly,
     quoteGitHubSearchTerm,
     referencingMergedPullRequestsForIssue,
-    refreshRelatedItemsContext,
     relatedItemsContext,
     structuralExternalRelationSensitivity,
   } = relatedContext;
@@ -898,90 +895,12 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     };
   }
 
-  function compactSemanticPullFile(value: unknown): unknown {
-    const file = asRecord(value);
-    return {
-      filename: file.filename,
-      previous_filename: file.previous_filename,
-      status: file.status,
-      additions: file.additions,
-      deletions: file.deletions,
-      changes: file.changes,
-      patch: truncateText(file.patch, 512 * 1024),
-    };
-  }
-
-  function normalizedPullFileStatus(value: unknown): string {
-    const status = typeof value === "string" ? value.trim().toLowerCase() : "";
-    if (status === "m" || status === "modified" || status === "changed") return "modified";
-    if (status === "a" || status === "added") return "added";
-    if (status === "d" || status === "deleted" || status === "removed") return "deleted";
-    if (status.startsWith("r") || status === "renamed") return "renamed";
-    if (status.startsWith("c") || status === "copied") return "copied";
-    return status;
-  }
-
-  function gitTreeEntry(
-    targetDir: string,
-    sha: string,
-    path: string,
-  ): GitTreeEntry | null | undefined {
-    if (!path || path.includes("\0") || path.includes("\n") || path.includes("\r"))
-      return undefined;
-    const result = spawnSync("git", ["ls-tree", "-z", sha, "--", path], {
-      cwd: targetDir,
-      encoding: "utf8",
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      maxBuffer: 1024 * 1024,
-    });
-    if (result.error || result.status !== 0) return undefined;
-    if (!result.stdout) return null;
-    if (!result.stdout.endsWith("\0")) return undefined;
-    const entry = result.stdout.slice(0, -1);
-    if (entry.includes("\0")) return undefined;
-    const match = entry.match(/^([0-7]{6}) (blob|tree|commit) [0-9a-f]{40,64}\t(.*)$/s);
-    if (!match || match[3] !== path) return undefined;
-    return { mode: match[1]!, type: match[2]! };
-  }
-
-  function pullFileTreeIdentity(options: {
-    file: unknown;
-    targetDir: string;
-    baseSha: string;
-    headSha: string;
-  }): Record<string, unknown> {
-    const file = asRecord(options.file);
-    const filename = stringOrUndefined(file.filename) ?? "";
-    const previousFilename = stringOrUndefined(file.previous_filename) ?? "";
-    const status = normalizedPullFileStatus(file.status);
-    if (!filename) return { treeModesComplete: false };
-    const basePath = status === "added" ? null : previousFilename || filename;
-    const headPath = status === "deleted" ? null : filename;
-    const baseEntry = basePath ? gitTreeEntry(options.targetDir, options.baseSha, basePath) : null;
-    const headEntry = headPath ? gitTreeEntry(options.targetDir, options.headSha, headPath) : null;
-    const treeModesComplete =
-      baseEntry !== undefined &&
-      headEntry !== undefined &&
-      ((status === "added" && baseEntry === null && headEntry !== null) ||
-        (status === "deleted" && baseEntry !== null && headEntry === null) ||
-        ((status === "modified" || status === "renamed" || status === "copied") &&
-          baseEntry !== null &&
-          headEntry !== null));
-    return {
-      baseMode: baseEntry?.mode ?? null,
-      baseType: baseEntry?.type ?? null,
-      headMode: headEntry?.mode ?? null,
-      headType: headEntry?.type ?? null,
-      treeModesComplete,
-    };
-  }
-
-  function semanticPullFilesWithTreeIdentity(options: {
+  function hydratePullRequestReviewSource(options: {
     files: readonly unknown[];
     itemNumber: number;
     pullRequest: unknown;
     targetDir: string;
-  }): unknown[] {
+  }): void {
     const pull = asRecord(options.pullRequest);
     const base = asRecord(pull.base);
     const head = asRecord(pull.head);
@@ -1032,20 +951,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
         }
       }
     }
-
-    return options.files.map((value) => {
-      const compact = asRecord(compactSemanticPullFile(value));
-      if (!commitsAvailable) return { ...compact, treeModesComplete: false };
-      return {
-        ...compact,
-        ...pullFileTreeIdentity({
-          file: value,
-          targetDir: options.targetDir,
-          baseSha,
-          headSha,
-        }),
-      };
-    });
   }
 
   function compactPullFilePaths(value: unknown): string[] {
@@ -1087,7 +992,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     compactPullRequest,
     compactPullRequestForTest,
     compactReferencingMergedPullRequestForTest,
-    compactSemanticPullFile,
     compactTimelineEvent,
     completePullChecksContext,
     detectBulkFiler,
@@ -1110,17 +1014,15 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     previousClawSweeperReviewDigestFromReport,
     previousClawSweeperReviewDigestFromReportForTest,
     pullChecksContext,
-    pullFileTreeIdentity,
     quoteGitHubSearchTerm,
     referencingMergedPullRequestCandidatesForTest,
     referencingMergedPullRequestsForIssue,
     referencingMergedPullRequestsForIssueForTest,
-    refreshRelatedItemsContext,
     relatedGitHubIssueSearchQueryForTest,
     relatedItemsContext,
     relatedTitleSearchTerms,
     sameAuthorCounterpartApplyReason,
-    semanticPullFilesWithTreeIdentity,
+    hydratePullRequestReviewSource,
     ensurePullRequestReviewHead,
     materializePullRequestReviewTree,
     removePullRequestReviewTree,

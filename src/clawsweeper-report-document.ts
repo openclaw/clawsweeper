@@ -26,7 +26,6 @@ import type {
   ReviewRuntime,
   RootCauseClusterAssessment,
 } from "./clawsweeper-types.js";
-import { type ReviewSemanticRecord } from "./review-semantic-cache.js";
 import {
   reviewStructuralPullStateDigest,
   type ReviewStructuralRecord,
@@ -446,49 +445,6 @@ export function createReportDocumentRendering(
     );
   }
 
-  function updateReviewSemanticFrontMatter(
-    markdown: string,
-    record: ReviewSemanticRecord | null,
-    cacheHit: boolean,
-  ): string {
-    let next = replaceFrontMatterValue(
-      markdown,
-      "review_semantic_cache_version",
-      record ? String(record.version) : "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_fingerprint",
-      record?.fingerprint ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_code_digest",
-      record?.codeDigest ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_exact_digest",
-      record?.exactDigest ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_context_digest",
-      record?.contextDigest ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_eligible",
-      record ? String(record.eligible) : "false",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_eligibility_reason",
-      record?.eligibilityReason ?? "unknown",
-    );
-    return replaceFrontMatterValue(next, "review_semantic_cache_hit", cacheHit ? "true" : "false");
-  }
-
   function markdownFor(options: {
     item: Item;
     context: ItemContext;
@@ -501,7 +457,6 @@ export function createReportDocumentRendering(
     reviewPolicy: string;
     runtime: ReviewRuntime;
     structuralRecord?: ReviewStructuralRecord | null;
-    semanticRecord?: ReviewSemanticRecord | null;
     reviewLeaseOwner?: string;
     reviewLeaseCommentId?: number;
   }): string {
@@ -687,14 +642,6 @@ review_structural_pull_state_digest: ${
       options.structuralRecord ? (options.structuralRecord.pullStateDigest ?? "none") : "unknown"
     }
 review_structural_cache_hit: false
-review_semantic_cache_version: ${options.semanticRecord?.version ?? "unknown"}
-review_semantic_fingerprint: ${options.semanticRecord?.fingerprint ?? "unknown"}
-review_semantic_code_digest: ${options.semanticRecord?.codeDigest ?? "unknown"}
-review_semantic_exact_digest: ${options.semanticRecord?.exactDigest ?? "unknown"}
-review_semantic_context_digest: ${options.semanticRecord?.contextDigest ?? "unknown"}
-review_semantic_eligible: ${options.semanticRecord?.eligible ?? false}
-review_semantic_eligibility_reason: ${options.semanticRecord?.eligibilityReason ?? "unknown"}
-review_semantic_cache_hit: false
 item_source_revision: ${options.context.sourceRevision ?? "unknown"}
 review_timeline_revision: ${options.context.timelineRevision ?? "unknown"}
 review_activity_cursor: ${options.context.pullReviewActivityCursor ?? "unknown"}
@@ -969,7 +916,6 @@ ${renderReviewContextBudget(options.context)}
     pullRequestFilePathsFromContextForTest,
     pullRequestFilePathsFromContext,
     updateReviewStructuralFrontMatter,
-    updateReviewSemanticFrontMatter,
     markdownFor,
   };
 }

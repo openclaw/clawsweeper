@@ -4282,11 +4282,6 @@ jobs:
         run: |
           tar -xzf .artifacts/review-runtime.tar.gz
 
-      - name: Install review compiler service
-        continue-on-error: true
-        working-directory: clawsweeper
-        run: node scripts/install-review-native-compiler.mjs
-
       - uses: ./clawsweeper/.github/actions/setup-codex
         if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' }}
         env:

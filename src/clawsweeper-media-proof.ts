@@ -42,7 +42,6 @@ function trimTrailingUrlPunctuation(raw: string): string {
 
 function proofMediaUrlsFromContext(context: ItemContext): string[] {
   const {
-    semanticPullFiles: _,
     pullCommitsRevision: __,
     prHydrationSnapshot: ___,
     pullFiles: ____,

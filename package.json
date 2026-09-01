@@ -120,7 +120,6 @@
     "repair:pr-intake": "node dist/repair/pr-repair-intake.js"
   },
   "dependencies": {
-    "typescript": "^7.0.2",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
@@ -129,7 +128,8 @@
     "oxfmt": "^0.58.0",
     "oxlint": "^1.73.0",
     "oxlint-tsgolint": "0.24.0",
-    "playwright-core": "^1.62.1"
+    "playwright-core": "^1.62.1",
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=24"

@@ -2,7 +2,6 @@ import type { MaintainerDecision } from "./decision-packets.js";
 import type { PrCloseCoverageProofModelResult } from "./pr-close-coverage-proof.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 import type { ReviewHistoryCycle } from "./review-history.js";
-import type { ReviewSemanticRecord } from "./review-semantic-cache.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
 import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import type { SchedulerDueCandidate } from "./scheduler-policy.js";
@@ -327,7 +326,6 @@ export interface ExistingReview {
   lastFullReviewAt: string | undefined;
   lastFullReviewDecision: string | undefined;
   structuralRecord: ReviewStructuralRecord | null;
-  semanticRecord: ReviewSemanticRecord | null;
 }
 
 export interface LatestRelease {
@@ -659,7 +657,6 @@ export interface ItemContext {
   relatedItems?: unknown[];
   pullRequest?: unknown;
   pullFiles?: unknown[];
-  semanticPullFiles?: unknown[];
   pullCommits?: unknown[];
   pullCommitsRevision?: string;
   pullReviewComments?: unknown[];
@@ -692,11 +689,6 @@ export interface ItemContext {
     pullReviewCommentsIncluded?: number;
     pullReviewCommentsFiltered?: number;
   };
-}
-
-export interface GitTreeEntry {
-  mode: string;
-  type: string;
 }
 
 export interface LocalRelatedTitleEntry {

@@ -804,7 +804,7 @@ fi
   }
 });
 
-test("manual review shards receive the compiler-backed runtime artifact", () => {
+test("manual review shards receive a ready-to-run artifact", () => {
   const workflow = readText(".github/workflows/sweep.yml");
   const planJobStart = workflow.indexOf("\n  plan:");
   const reviewJobStart = workflow.indexOf("\n  review:", planJobStart);
@@ -832,11 +832,7 @@ test("manual review shards receive the compiler-backed runtime artifact", () => 
   assert.match(reviewJob, /name: clawsweeper-runtime-dist\s+path: clawsweeper\/\.artifacts/);
   assert.doesNotMatch(reviewJob, /name: clawsweeper-runtime-dist\s+path: clawsweeper\/dist/);
   assert.match(reviewJob, /tar -xzf \.artifacts\/review-runtime\.tar\.gz/);
-  assert.match(
-    reviewJob,
-    /name: Install review compiler service\s+continue-on-error: true[\s\S]*node scripts\/install-review-native-compiler\.mjs/,
-  );
-  assert.doesNotMatch(reviewJob, /npm pack "@typescript/);
+  assert.doesNotMatch(reviewJob, /install-review-native-compiler|npm pack "@typescript/);
 });
 
 test("exact event review publishes directly with a queue-bounded canonical fallback", () => {
