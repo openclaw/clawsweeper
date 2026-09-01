@@ -9,6 +9,7 @@ type Spawn = (
   args: string[],
 ) => { error?: Error; status: number | null; stderr: string };
 
+export const OPENCLAW_CODEX_SOURCE_INCOMPATIBLE_EXIT_CODE = 80;
 export function prepareOpenClawCodexSourceForReview(options: {
   targetRepo: string;
   reviewDir: string;
@@ -37,10 +38,19 @@ export function prepareOpenClawCodexSourceForReview(options: {
   if (result.error || result.status !== 0) {
     const detail = result.stderr.trim() || result.error?.message || `exit ${result.status}`;
     throw new ReviewSourcePreparationError(
-      "setup_script_failed",
+      result.status === OPENCLAW_CODEX_SOURCE_INCOMPATIBLE_EXIT_CODE
+        ? "source_incompatible"
+        : "setup_script_failed",
       `Could not prepare the PR-pinned Codex source: ${detail}`,
     );
   }
+}
+
+export function openClawCodexSourcePreparationFailureRetryable(error: unknown): boolean {
+  return !(
+    error instanceof ReviewSourcePreparationError &&
+    error.diagnosticReason === "source_incompatible"
+  );
 }
 
 function requiredEnvironmentPath(env: NodeJS.ProcessEnv, name: string): string {

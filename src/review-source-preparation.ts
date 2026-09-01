@@ -1,6 +1,7 @@
 export type ReviewSourcePreparationFailureReason =
   | "configuration_missing"
   | "setup_script_failed"
+  | "source_incompatible"
   | "review_commits_unavailable"
   | "review_history_unavailable"
   | "review_blob_metadata_unavailable"

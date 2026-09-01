@@ -178,13 +178,15 @@ for (const scenario of [
   "changed-pr-exact-codex-failure",
   "changed-pr-exact-fetch-failure",
   "changed-pr-exact-native-checkout-failure",
+  "changed-pr-exact-source-incompatible",
   "changed-pr-clean",
   "content-clean",
   "fresh-refusal",
 ]) {
   test(`scheduled ${scenario} preserves admission and terminal ledger classification`, (t) => {
     const refuseScan = scenario.endsWith("refusal");
-    const codexFailure = scenario.endsWith("codex-failure");
+    const sourceIncompatible = scenario.endsWith("source-incompatible");
+    const codexFailure = scenario.endsWith("codex-failure") || sourceIncompatible;
     const exactFailure = scenario.includes("exact");
     const invalidBase = scenario.endsWith("invalid-base-refusal");
     const missingHead = scenario.endsWith("missing-head-refusal");
@@ -568,7 +570,8 @@ for (const scenario of [
       buildReviewPrompt: () => ({ text: "Review the current item." }),
       itemSnapshotHash: () => digest("snapshot"),
       codexFailureLogKind: () => "codex_execution",
-      codexReviewFailureRetryable: (error: unknown) => !(error instanceof AgentInputScanError),
+      codexReviewFailureRetryable: (error: unknown) =>
+        !(error instanceof AgentInputScanError) && !sourceIncompatible,
       codexFailureDecision: () => {
         if (codexFailure || preparationFailure || checkoutUnavailable)
           return closeDecision({
@@ -600,7 +603,7 @@ for (const scenario of [
         if (codexFailure) {
           throw Object.assign(new Error("Codex source preparation failed"), {
             diagnosticStage: "source_preparation",
-            diagnosticReason: "setup_script_failed",
+            diagnosticReason: sourceIncompatible ? "source_incompatible" : "setup_script_failed",
           });
         }
         if (fresh && refuseScan)
@@ -775,12 +778,16 @@ for (const scenario of [
           const manifest = JSON.parse(
             readFileSync(join(artifactDir, "failure-diagnostics", "manifest.json"), "utf8"),
           );
-          assert.equal(manifest.retryable, true);
+          assert.equal(manifest.retryable, !sourceIncompatible);
           assert.equal(manifest.source.sha, headSha);
           assert.equal(manifest.classification, "source_preparation");
           assert.deepEqual(manifest.failure, {
             stage: "source_preparation",
-            reason_code: preparationFailure ? "configuration_missing" : "setup_script_failed",
+            reason_code: sourceIncompatible
+              ? "source_incompatible"
+              : preparationFailure
+                ? "configuration_missing"
+                : "setup_script_failed",
           });
         }
         return;

@@ -47,7 +47,10 @@ import {
 } from "./codex-transient.js";
 import { UserFacingCommandError } from "./command.js";
 import { emptyMaintainerDecision } from "./decision-packets.js";
-import { prepareOpenClawCodexSourceForReview } from "./openclaw-codex-source.js";
+import {
+  openClawCodexSourcePreparationFailureRetryable,
+  prepareOpenClawCodexSourceForReview,
+} from "./openclaw-codex-source.js";
 import { repositoryProfileFor, type RepositoryProfile } from "./repository-profiles.js";
 
 interface ReviewRuntimeDependencies {
@@ -830,6 +833,7 @@ ${extra}
 
   function codexReviewFailureRetryable(error: unknown): boolean {
     if (error instanceof AgentInputScanError) return false;
+    if (!openClawCodexSourcePreparationFailureRetryable(error)) return false;
     return error instanceof CodexReviewError ? error.retryable : true;
   }
 

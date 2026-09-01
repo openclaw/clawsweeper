@@ -8,6 +8,7 @@ cache_dir_input="${4:-}"
 source_url="${5:-https://github.com/openai/codex.git}"
 pin_dir_input="${6:-$target_dir_input}"
 setup_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
+source_incompatible_exit=80
 
 target_repo="$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]')"
 if [[ "$target_repo" != "openclaw/openclaw" ]]; then
@@ -62,7 +63,7 @@ fi
 package_json_input="$pin_root/extensions/codex/package.json"
 if [[ ! -f "$package_json_input" || -L "$package_json_input" ]]; then
   echo "OpenClaw Codex version pin must be a regular file." >&2
-  exit 1
+  exit "$source_incompatible_exit"
 fi
 package_json="$(node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' "$package_json_input")"
 case "$package_json/" in
@@ -72,18 +73,7 @@ case "$package_json/" in
     exit 1
     ;;
 esac
-version="$(node - "$package_json" <<'NODE'
-const fs = require("node:fs");
-const file = process.argv[2];
-const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
-const version = manifest.dependencies?.["@openai/codex"];
-if (typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
-  console.error("OpenClaw must pin @openai/codex to one exact version.");
-  process.exit(1);
-}
-process.stdout.write(version);
-NODE
-)"
+version="$(node "$(dirname "$setup_script")/validate-pin.mjs" "$package_json")"
 tag="rust-v$version"
 source_dir="$workspace_root/codex"
 
