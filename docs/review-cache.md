@@ -75,8 +75,12 @@ When full context collection requests a review checkout, source preparation runs
 independently of cache-digest eligibility and the API's 80-file context window.
 It reads the exact raw Git delta for the pinned merge-base/head (and pinned
 base/head endpoint evidence), including deleted and historical blobs. Current
-main never replaces the pinned REST base. Blob-size metadata uses batches of at
-most 160 objects; one explicit fetch per delta retrieves missing blobs only after
+main never replaces the pinned REST base. Commit acquisition fetches complete
+blobless ancestry, including when the branch has advanced past that base, and
+unshallows existing shallow checkouts. Branch, release-tag, and test-merge
+fetches never introduce new depth boundaries. A missing pinned commit still
+blocks preparation; no newer revision substitutes for it. Blob-size metadata uses
+batches of at most 160 objects; one explicit fetch per delta retrieves missing blobs only after
 the complete set fits the scanner's shared 256 MiB upper bound. Local metadata
 reads remain bounded to 4 MiB and source hydration has a 30-second Git-work
 deadline; metadata requests retain the existing GitHub transport timeout policy.

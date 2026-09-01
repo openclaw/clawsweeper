@@ -171,8 +171,10 @@ automatically a PR edit. Findings in untouched files remain valid when an
 introduced hunk elsewhere causes the failure; risks, labels, scores, and fixups
 must use that same ownership boundary.
 
-The existing PR hydration path may fetch up to 256 commits of ancestry per tip
-and the pinned open-PR test merge before restricted review. The evidence reader
+PR source acquisition fetches complete blobless ancestry and the pinned open-PR
+test merge before restricted review, with a 30-second deadline per fetch. Branch
+and release refreshes preserve that ancestry; existing shallow checkouts are
+unshallowed rather than deepened to a fixed commit count. The evidence reader
 itself cannot fetch objects or run external diff drivers. It bounds each Git read
 to 1 MiB and five seconds, lists to 80 paths, and the introduced patch to 24,000
 characters. Missing blobs, incomplete shallow ancestry, multiple merge bases,
