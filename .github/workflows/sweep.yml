@@ -978,6 +978,13 @@ jobs:
           fi
           git -C "$checkout_dir" rev-parse --short HEAD
 
+      - uses: ./.github/actions/setup-openclaw-codex-source
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
+        with:
+          target-repo: ${{ steps.target.outputs.target_repo }}
+          target-dir: ${{ steps.target.outputs.target_checkout_dir }}
+          review-artifact-dir: ${{ github.workspace }}/artifacts/event
+
       - name: Mark re-review command in progress
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         continue-on-error: true
@@ -4335,6 +4342,12 @@ jobs:
             git clone --filter=blob:none --branch "$target_branch" --single-branch "$url" "$checkout_dir"
           fi
           git -C "$checkout_dir" rev-parse --short HEAD
+
+      - uses: ./clawsweeper/.github/actions/setup-openclaw-codex-source
+        with:
+          target-repo: ${{ needs.plan.outputs.target_repo }}
+          target-dir: ${{ needs.plan.outputs.target_checkout_dir }}
+          review-artifact-dir: ${{ github.workspace }}/review-artifacts/shard-${{ matrix.shard }}
 
       - name: Mark shard start
         id: shard-start

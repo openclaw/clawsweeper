@@ -391,8 +391,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           ) {
             return false;
           }
-          pullRequestReviewTreeSha = headSha;
           reviewOpenclawDir = pullRequestReviewTreeDir;
+          pullRequestReviewTreeFailure = null;
+          pullRequestReviewTreeSha = headSha;
           if (readonlyOpenclaw) {
             makeTreeReadOnly(reviewOpenclawDir, itemReadonlyModeSnapshots);
           }
@@ -895,7 +896,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         if (!localRangeData && item.kind === "pull_request") {
           const headSha = pullHeadShaFromContext(context);
           if (!headSha || !preparePullRequestReviewTree(headSha)) {
-            pullRequestReviewTreeFailure = new Error(
+            pullRequestReviewTreeFailure ??= new Error(
               `Read-only checkout inspection failed: pull request #${item.number} head ${headSha ?? "unknown"} was unavailable in the restricted review checkout`,
             );
             cachePreflightState = "failed";

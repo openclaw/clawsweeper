@@ -201,6 +201,64 @@ test("exact event review exposes the token-only signal before runtime setup", ()
   assert.equal(steps[ordered[7][1]]!.id, "reserve-exact-review-lease");
 });
 
+test("OpenClaw review jobs provision the pinned sibling Codex source before review", () => {
+  type Step = {
+    name?: string;
+    uses?: string;
+    with?: Record<string, string>;
+  };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Step[] }>;
+  };
+  for (const scenario of [
+    {
+      job: "event-review-apply",
+      action: "./.github/actions/setup-openclaw-codex-source",
+      targetRepo: "${{ steps.target.outputs.target_repo }}",
+      targetDir: "${{ steps.target.outputs.target_checkout_dir }}",
+      artifactDir: "${{ github.workspace }}/artifacts/event",
+      reviewStep: "Review exact event item",
+    },
+    {
+      job: "review",
+      action: "./clawsweeper/.github/actions/setup-openclaw-codex-source",
+      targetRepo: "${{ needs.plan.outputs.target_repo }}",
+      targetDir: "${{ needs.plan.outputs.target_checkout_dir }}",
+      artifactDir: "${{ github.workspace }}/review-artifacts/shard-${{ matrix.shard }}",
+      reviewStep: "Review shard",
+    },
+  ] as const) {
+    const steps = workflow.jobs[scenario.job]!.steps;
+    const targetCheckout = steps.findIndex((step) => step.name === "Check out target repository");
+    const sourceCheckout = steps.findIndex((step) => step.uses === scenario.action);
+    const review = steps.findIndex((step) => step.name === scenario.reviewStep);
+
+    assert.notEqual(targetCheckout, -1, `${scenario.job}: target checkout`);
+    assert.notEqual(sourceCheckout, -1, `${scenario.job}: Codex source checkout`);
+    assert.notEqual(review, -1, `${scenario.job}: review`);
+    assert.ok(targetCheckout < sourceCheckout, `${scenario.job}: source follows target checkout`);
+    assert.ok(sourceCheckout < review, `${scenario.job}: source precedes review`);
+    assert.deepEqual(steps[sourceCheckout]!.with, {
+      "target-repo": scenario.targetRepo,
+      "target-dir": scenario.targetDir,
+      "review-artifact-dir": scenario.artifactDir,
+    });
+  }
+});
+
+test("Codex source setup normalizes OpenClaw casing and stays out of the OpenClaw runner", () => {
+  const action = YAML.parse(readText(".github/actions/setup-openclaw-codex-source/action.yml")) as {
+    runs: { steps: Array<{ id?: string; if?: string; uses?: string }> };
+  };
+  const normalize = action.runs.steps.find((step) => step.id === "target");
+  const cache = action.runs.steps.find((step) => step.uses === "actions/cache@v6");
+  assert.ok(normalize);
+  assert.match(cache?.if ?? "", /steps\.target\.outputs\.repository == 'openclaw\/openclaw'/u);
+  assert.match(cache?.if ?? "", /env\.CLAWSWEEPER_RUNNER != 'openclaw'/u);
+  const setup = action.runs.steps.at(-1);
+  assert.match(setup?.if ?? "", /env\.CLAWSWEEPER_RUNNER != 'openclaw'/u);
+});
+
 test("automatic OpenClaw bug dispatch uses one gate across direct and deferred publication", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
     jobs: Record<

@@ -49,6 +49,7 @@ import {
 } from "./codex-transient.js";
 import { UserFacingCommandError } from "./command.js";
 import { emptyMaintainerDecision } from "./decision-packets.js";
+import { prepareOpenClawCodexSourceForReview } from "./openclaw-codex-source.js";
 import { repositoryProfileFor, type RepositoryProfile } from "./repository-profiles.js";
 
 interface ReviewRuntimeDependencies {
@@ -959,6 +960,10 @@ ${extra}
     extraCodexConfig?: string[];
   }): Decision {
     const startedAt = Date.now();
+    prepareOpenClawCodexSourceForReview({
+      targetRepo: options.item.repo,
+      reviewDir: options.openclawDir,
+    });
     ensureDir(options.workDir);
     const promptPath = join(options.workDir, `${options.item.number}.prompt.md`);
     rmSync(promptPath, { force: true });
