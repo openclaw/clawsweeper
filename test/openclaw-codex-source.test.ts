@@ -81,3 +81,32 @@ test("PR review source preparation is inactive outside provisioned OpenClaw work
   }
   assert.equal(invoked, false);
 });
+
+test("source preparation failures carry safe diagnostic identity", () => {
+  assert.throws(
+    () =>
+      prepareOpenClawCodexSourceForReview({
+        targetRepo: "openclaw/openclaw",
+        reviewDir: "/workspace/artifacts/review-trees/1338",
+        env: {
+          CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT: "/action/install.sh",
+          CLAWSWEEPER_OPENCLAW_CODEX_TARGET_DIR: "/workspace/openclaw",
+          CLAWSWEEPER_OPENCLAW_CODEX_ARTIFACT_DIR: "/workspace/artifacts",
+          CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR: "/workspace/openclaw-codex-cache.git",
+        },
+        spawn: () => ({ status: 128, stderr: "remote unavailable" }) as SpawnSyncReturns<string>,
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(
+        (error as Error & { diagnosticStage?: string }).diagnosticStage,
+        "source_preparation",
+      );
+      assert.equal(
+        (error as Error & { diagnosticReason?: string }).diagnosticReason,
+        "setup_script_failed",
+      );
+      return true;
+    },
+  );
+});

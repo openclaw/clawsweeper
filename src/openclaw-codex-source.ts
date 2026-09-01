@@ -8,6 +8,20 @@ type Spawn = (
   args: string[],
 ) => { error?: Error; status: number | null; stderr: string };
 
+type SourcePreparationFailureReason = "configuration_missing" | "setup_script_failed";
+
+class OpenClawCodexSourcePreparationError extends Error {
+  readonly diagnosticStage = "source_preparation";
+
+  constructor(
+    readonly diagnosticReason: SourcePreparationFailureReason,
+    message: string,
+  ) {
+    super(message);
+    this.name = "OpenClawCodexSourcePreparationError";
+  }
+}
+
 export function prepareOpenClawCodexSourceForReview(options: {
   targetRepo: string;
   reviewDir: string;
@@ -35,12 +49,20 @@ export function prepareOpenClawCodexSourceForReview(options: {
   ]);
   if (result.error || result.status !== 0) {
     const detail = result.stderr.trim() || result.error?.message || `exit ${result.status}`;
-    throw new Error(`Could not prepare the PR-pinned Codex source: ${detail}`);
+    throw new OpenClawCodexSourcePreparationError(
+      "setup_script_failed",
+      `Could not prepare the PR-pinned Codex source: ${detail}`,
+    );
   }
 }
 
 function requiredEnvironmentPath(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name]?.trim();
-  if (!value) throw new Error(`Missing ${name} for OpenClaw Codex source setup.`);
+  if (!value) {
+    throw new OpenClawCodexSourcePreparationError(
+      "configuration_missing",
+      `Missing ${name} for OpenClaw Codex source setup.`,
+    );
+  }
   return value;
 }

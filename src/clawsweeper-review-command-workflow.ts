@@ -1360,6 +1360,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               itemKind: item.kind,
               itemNumber: item.number,
               sourceSha: context.sourceRevision ?? process.env.EXACT_REVIEW_SOURCE_HEAD_SHA,
+              retryable: codexFailureRetryable,
               workflowExit: 1,
             });
           } catch {

@@ -29,6 +29,7 @@ function write(root: string, error: Error, env: NodeJS.ProcessEnv = {}) {
     itemKind: "pull_request",
     itemNumber: 1318,
     sourceSha: "a".repeat(40),
+    retryable: true,
     workflowExit: 1,
     env,
   });
@@ -82,6 +83,8 @@ test("exact-review diagnostics retain distinct safe causes within the aggregate 
     const manifest = JSON.parse(readFileSync(join(first, "manifest.json"), "utf8"));
     assert.deepEqual(readdirSync(first).sort(), expectedFiles);
     assert.equal(manifest.classification, "codex_execution");
+    assert.equal(manifest.retryable, true);
+    assert.deepEqual(manifest.failure, { stage: "unknown", reason_code: "unknown" });
     assert.deepEqual(manifest.process, {
       status: 1,
       signal: "SIGTERM",
@@ -123,6 +126,43 @@ test("exact-review diagnostics retain distinct safe causes within the aggregate 
       expectedFiles.reduce((size, name) => size + statSync(join(first, name)).size, 0) <= 24 * 1024,
     );
     assert.throws(() => write(join(root, "first"), failure("later", "later")), /already exist/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("source-preparation diagnostics survive unsafe raw detail", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-diagnostics-"));
+  try {
+    const error = Object.assign(new Error(`fetch failed for ${"a1".repeat(20)}`), {
+      diagnosticStage: "source_preparation",
+      diagnosticReason: "setup_script_failed",
+    });
+    const output = writeExactReviewFailureDiagnostics({
+      artifactDir: root,
+      error,
+      prompt: "private prompt",
+      model: "private-model",
+      classification: "codex_execution",
+      repo: "openclaw/openclaw",
+      itemKind: "pull_request",
+      itemNumber: 1338,
+      sourceSha: "a".repeat(40),
+      retryable: true,
+      workflowExit: 1,
+      env: {},
+    });
+    const manifest = JSON.parse(readFileSync(join(output, "manifest.json"), "utf8"));
+    assert.equal(manifest.classification, "source_preparation");
+    assert.equal(manifest.retryable, true);
+    assert.deepEqual(manifest.failure, {
+      stage: "source_preparation",
+      reason_code: "setup_script_failed",
+    });
+    assert.equal(
+      readFileSync(join(output, "error.txt"), "utf8"),
+      "[omitted: unsafe diagnostic content]\n",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

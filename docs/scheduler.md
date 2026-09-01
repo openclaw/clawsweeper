@@ -91,7 +91,9 @@ the review process exit alone. The workflow failure gate is unchanged.
 Caught Codex failures in an exact-review job also upload a separate 14-day
 diagnostic artifact while the runner remains alive. Its `error.txt`,
 `stdout.error.txt`, and `stderr.tail.txt` files are sanitized for repository
-readers and total at most 24 KiB with the readiness `manifest.json`. Raw
+readers and total at most 24 KiB with the readiness `manifest.json`. The
+manifest retains a bounded failure stage, reason code, and the queue's computed
+retryability even when unsafe raw detail is omitted. Raw
 reports, unstructured stdout, and non-error prompt events are omitted. It is
 never a publication input; cancellation, runner loss, or job termination can
 still prevent upload. OpenClaw Bay and queue schemas are unchanged.

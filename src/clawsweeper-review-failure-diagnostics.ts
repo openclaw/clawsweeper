@@ -36,10 +36,16 @@ export function writeExactReviewFailureDiagnostics(options: {
   itemKind: "issue" | "pull_request";
   itemNumber: number;
   sourceSha?: string | null | undefined;
+  retryable: boolean;
   workflowExit: number;
   env?: NodeJS.ProcessEnv;
 }): string {
   const error = record(options.error);
+  const diagnosticStage = safeCode(error.diagnosticStage, /^(?:source_preparation)$/);
+  const diagnosticReason = safeCode(
+    error.diagnosticReason,
+    /^(?:configuration_missing|setup_script_failed)$/,
+  );
   const values = exactValues(options.prompt, options.model, options.env ?? process.env);
   const inputs = {
     "error.txt": options.error instanceof Error ? options.error.message : String(options.error),
@@ -54,12 +60,17 @@ export function writeExactReviewFailureDiagnostics(options: {
     {
       version: 1,
       classification:
-        /^(?:provider_throttle|transport_network|content_or_output|model_access|timeout|codex_execution)$/.test(
+        diagnosticStage ??
+        (/^(?:provider_throttle|transport_network|content_or_output|model_access|timeout|codex_execution)$/.test(
           options.classification,
         )
           ? options.classification
-          : "codex_execution",
-      retryable: error.retryable === true,
+          : "codex_execution"),
+      retryable: options.retryable,
+      failure: {
+        stage: diagnosticStage ?? "unknown",
+        reason_code: diagnosticReason ?? "unknown",
+      },
       process: {
         status: Number.isInteger(error.status) && Number(error.status) >= 0 ? error.status : null,
         signal: safeCode(error.signal, /^SIG[A-Z0-9]+$/),

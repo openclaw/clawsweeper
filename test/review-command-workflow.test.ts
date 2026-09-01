@@ -468,14 +468,19 @@ for (const scenario of [
       buildReviewPrompt: () => ({ text: "Review the current item." }),
       itemSnapshotHash: () => digest("snapshot"),
       codexFailureLogKind: () => "codex_execution",
-      codexReviewFailureRetryable: () => false,
+      codexReviewFailureRetryable: () => true,
       codexFailureDecision: () => {
         if (codexFailure) return closeDecision({ decision: "keep_open", closeReason: null });
         throw new Error("scan refusal must not become a decision");
       },
       runCodex: () => {
         generationCalls += 1;
-        if (codexFailure) throw new Error("Codex process startup failed");
+        if (codexFailure) {
+          throw Object.assign(new Error("Codex source preparation failed"), {
+            diagnosticStage: "source_preparation",
+            diagnosticReason: "setup_script_failed",
+          });
+        }
         if (fresh && refuseScan)
           return runAgentProcess({
             label: "fresh-review",
@@ -543,6 +548,17 @@ for (const scenario of [
       if (codexFailure) {
         assert.throws(execute, /Codex failed/);
         assert.equal(existsSync(join(artifactDir, "failure-diagnostics")), exactFailure);
+        if (exactFailure) {
+          const manifest = JSON.parse(
+            readFileSync(join(artifactDir, "failure-diagnostics", "manifest.json"), "utf8"),
+          );
+          assert.equal(manifest.retryable, true);
+          assert.equal(manifest.classification, "source_preparation");
+          assert.deepEqual(manifest.failure, {
+            stage: "source_preparation",
+            reason_code: "setup_script_failed",
+          });
+        }
         return;
       }
       execute();
