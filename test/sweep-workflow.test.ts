@@ -5563,21 +5563,99 @@ test("event review completion removes ClawSweeper eyes reaction", () => {
   assert.doesNotMatch(block, /issues\/comments\/\$ITEM_NUMBER\/reactions/);
 });
 
-test("event re-review status distinguishes lease deferral from interruptions", () => {
-  const workflow = readText(".github/workflows/sweep.yml");
-  const block = workflow.slice(
-    workflow.indexOf("- name: Mark unsuccessful re-review"),
-    workflow.indexOf("- name: Export exact review generation result"),
-  );
+test("exact event re-review reports review completion before durable publication", () => {
+  type Step = {
+    name?: string;
+    if?: string;
+    run?: string;
+    env?: Record<string, string>;
+    "continue-on-error"?: boolean;
+  };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Step[] }>;
+  };
+  const steps = workflow.jobs["event-review-apply"]!.steps;
+  const index = (name: string) => steps.findIndex((candidate) => candidate.name === name);
+  const pendingIndex = index("Mark exact review ready for publication");
+  assert.notEqual(pendingIndex, -1, "missing post-review publication status");
+  const pending = steps[pendingIndex]!;
 
-  assert.match(block, /\[ "\$REVIEW_OUTCOME" = "cancelled" \]/);
-  assert.match(block, /\[ "\$RESERVATION_STATUS" = "held" \]/);
-  assert.match(block, /state="Waiting"/);
-  assert.match(block, /Another exact-head review is already active/);
-  assert.match(block, /state="Interrupted"/);
-  assert.match(block, /The durable queue will retry it/);
-  assert.doesNotMatch(block, /CAPACITY_OUTCOME/);
-  assert.doesNotMatch(block, /state="Superseded"/);
+  assert.equal(pending["continue-on-error"], true);
+  assert.equal(pending.env?.CLAWSWEEPER_ACTION_LEDGER_DISABLED, undefined);
+  assert.equal(
+    pending.env?.STATUS_COMMENT_ID,
+    "${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}",
+  );
+  assert.match(pending.run ?? "", /--state "Publication pending"/);
+  assert.match(
+    pending.run ?? "",
+    /The exact review is complete; durable result publication is pending\./,
+  );
+  assert.ok(index("Review exact event item") < pendingIndex);
+  assert.ok(pendingIndex < index("Finalize exact event action ledger"));
+  assert.ok(
+    index("Finalize exact event action ledger") < index("Create exact review artifact bundle"),
+  );
+  assert.ok(pendingIndex < index("Queue durable exact review publication"));
+  assert.ok(pendingIndex < index("Deliver GitHub effects and prepare direct state mutation"));
+  assert.ok(pendingIndex < index("Finalize direct exact review lifecycle"));
+  assert.ok(pendingIndex < index("Complete exact-review queue lease"));
+  assert.ok(pendingIndex < index("Mark unsuccessful re-review"));
+
+  const evaluate = (template: string, values: Record<string, string>) => {
+    const expression = template
+      .replace(/^\s*\$\{\{\s*|\s*\}\}\s*$/g, "")
+      .replace(/\balways\(\)/g, "true")
+      .replace(/!cancelled\(\)/g, JSON.stringify(values.cancelled !== "true"))
+      .replace(
+        /steps\.([a-z0-9-]+)\.(outputs\.([a-z0-9_]+)|outcome)/g,
+        (_match, stepId: string, access: string, output?: string) =>
+          JSON.stringify(values[`${stepId}.${output ?? access}`] ?? ""),
+      );
+    return Boolean(Function(`"use strict"; return (${expression});`)());
+  };
+  const successful = {
+    "claim-exact-review-queue.claimed": "true",
+    "target.has_command_context": "true",
+    "live-item.proceed": "true",
+    "setup-pnpm.outcome": "success",
+    "review-exact-event-item.outcome": "success",
+    "review-exact-event-item.superseded": "false",
+    "review-exact-event-item.retry_at": "",
+    "target-write-token.token": "token",
+  };
+  assert.equal(evaluate(pending.if ?? "", successful), true);
+  for (const [key, value] of [
+    ["cancelled", "true"],
+    ["target.has_command_context", "false"],
+    ["review-exact-event-item.outcome", "failure"],
+    ["review-exact-event-item.superseded", "true"],
+    ["review-exact-event-item.retry_at", "2026-09-01T12:00:00.000Z"],
+    ["target-write-token.token", ""],
+  ]) {
+    assert.equal(evaluate(pending.if ?? "", { ...successful, [key]: value }), false, key);
+  }
+
+  const markUnsuccessful = steps[index("Mark unsuccessful re-review")]!;
+  assert.match(markUnsuccessful.run ?? "", /\[ "\$REVIEW_OUTCOME" = "cancelled" \]/);
+  assert.match(markUnsuccessful.run ?? "", /\[ "\$RESERVATION_STATUS" = "held" \]/);
+  assert.match(markUnsuccessful.run ?? "", /state="Waiting"/);
+  assert.match(markUnsuccessful.run ?? "", /state="Interrupted"/);
+  assert.doesNotMatch(markUnsuccessful.run ?? "", /state="Superseded"/);
+  const fallbackPublication = {
+    ...successful,
+    "prepare-direct-exact-review-publication.failure_kind": "",
+    "direct-exact-review-publication.accepted": "false",
+    "queue-exact-review-publication.outcome": "success",
+  };
+  assert.equal(evaluate(markUnsuccessful.if ?? "", fallbackPublication), false);
+  assert.equal(
+    evaluate(markUnsuccessful.if ?? "", {
+      ...fallbackPublication,
+      "queue-exact-review-publication.outcome": "failure",
+    }),
+    true,
+  );
 });
 
 test("trusted comment router owns command ledger capacity retries", () => {

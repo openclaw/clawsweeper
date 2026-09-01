@@ -1344,6 +1344,28 @@ jobs:
             echo "terminal_during_review=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Keep this producer-owned phase before publication can create the terminal finalizer.
+      # A later nonterminal PATCH could overwrite the finalizer's Complete status.
+      - name: Mark exact review ready for publication
+        if: ${{ always() && !cancelled() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.has_command_context == 'true' && steps.live-item.outputs.proceed == 'true' && steps.setup-pnpm.outcome == 'success' && steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.superseded != 'true' && steps.review-exact-event-item.outputs.retry_at == '' && steps.target-write-token.outputs.token != '' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          COMMAND_STATUS_MARKER: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).commandStatusMarker || '' }}
+          STATUS_COMMENT_ID: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          pnpm run repair:update-command-status -- \
+            --repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --marker "$COMMAND_STATUS_MARKER" \
+            --status-comment-id "$STATUS_COMMENT_ID" \
+            --state "Publication pending" \
+            --detail "The exact review is complete; durable result publication is pending." \
+            --run-url "$RUN_URL"
+
       - name: Finalize exact event action ledger
         if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         continue-on-error: true
