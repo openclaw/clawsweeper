@@ -1014,13 +1014,14 @@ export class ExactReviewQueue {
     if (request.method === "POST" && url.pathname === "/command-intake") {
       const value = await request.json().catch(() => null);
       const targetRepo = String(objectValue(objectValue(value).decision).targetRepo || "");
-      if (
-        /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo) &&
-        !this.hasPreparedHostedTargetEligibility(request, targetRepo)
-      ) {
-        const eligibility = await this.hostedTargetEligibility(targetRepo);
-        if (eligibility.outcome !== "eligible") {
-          return hostedTargetEligibilityResponse(eligibility);
+      if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) {
+        const admission = await this.hostedTargetAdmission(
+          targetRepo,
+          hostedTargetMetadataToken,
+          this.hasPreparedHostedTargetEligibility(request, targetRepo),
+        );
+        if (admission.outcome !== "public") {
+          return hostedTargetProbeResponse(admission);
         }
       }
       const now = Date.now();
@@ -15618,17 +15619,6 @@ export function hostedTargetProbeResponse(admission: HostedTargetAdmission) {
     response.headers.set("retry-after", String(retryAfterSeconds));
   }
   return response;
-}
-
-function hostedTargetEligibilityResponse(eligibility: HostedTargetEligibility) {
-  return hostedTargetProbeResponse(
-    eligibility.outcome === "terminal"
-      ? { outcome: "terminal" }
-      : {
-          outcome: "retryable",
-          ...(eligibility.retryAt ? { retryAt: eligibility.retryAt } : {}),
-        },
-  );
 }
 
 function directPublicationSupersededResponse(

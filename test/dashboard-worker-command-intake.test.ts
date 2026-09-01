@@ -74,7 +74,58 @@ test("command intake migrations, watermarks, receipts, and revisions stay idempo
   );
 });
 
-test("command visibility outcomes stay durable without consuming credentials", async () => {
+test("signed command intake rejects nonpublic visibility before storing command content", async () => {
+  for (const outcome of ["terminal", "retryable"] as const) {
+    const storage = new MemoryDurableStorage();
+    const retryAt = Date.now() + 60_000;
+    let probes = 0;
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        hostedPublicTargetProbe: async () => {
+          probes += 1;
+          return { outcome, retryAt };
+        },
+      },
+    );
+    const intake = intakeFixture({ updatedAt: COMMAND_UPDATED_AT, body: COMMAND_BODY });
+    const body = JSON.stringify(intake);
+    const secret = "synthetic-intake-proof";
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/internal/exact-review/command-intake", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+        },
+        body,
+      }),
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      },
+    );
+    assert.equal(response.status, outcome === "terminal" ? 422 : 503);
+    assert.equal(probes, 1);
+    if (outcome === "retryable") assert.ok(Number(response.headers.get("retry-after")) > 0);
+    for (const table of [
+      "exact_review_command_intakes",
+      "exact_review_command_receipts",
+      "exact_review_command_watermarks",
+      "exact_review_command_bay_journeys",
+      "exact_review_item_revisions",
+    ]) {
+      assert.equal(
+        Number(Array.from(storage.sql.exec(`SELECT COUNT(*) AS count FROM ${table}`))[0]?.count),
+        0,
+        table,
+      );
+    }
+    assert.equal(await storage.getAlarm(), null);
+  }
+});
+
+test("admitted public commands recheck visibility before consuming credentials", async () => {
   const intake = intakeFixture({ updatedAt: COMMAND_UPDATED_AT, body: COMMAND_BODY });
   const request = () =>
     new Request("https://clawsweeper-exact-review-queue/command-intake", {
@@ -83,17 +134,20 @@ test("command visibility outcomes stay durable without consuming credentials", a
     });
 
   const terminalStorage = new MemoryDurableStorage();
+  let terminalPublic = true;
   const terminalQueue = new ExactReviewQueue(
     { storage: terminalStorage },
-    { hostedPublicTargetProbe: async () => "terminal" },
+    { hostedPublicTargetProbe: async () => (terminalPublic ? "public" : "terminal") },
   );
   const terminalAccepted = await terminalQueue.fetch(request());
   assert.equal(terminalAccepted.status, 202);
   assert.equal((await terminalAccepted.json()).accepted, true);
   assert.equal(commandReceiptOutcome(terminalStorage), "pending");
+  terminalPublic = false;
   await terminalQueue.alarm();
   assert.equal(commandReceipt(terminalStorage)?.outcome, "rejected");
   assert.equal(commandReceipt(terminalStorage)?.detail, "private_target_unsupported");
+  terminalPublic = true;
   const terminalRedelivery = await terminalQueue.fetch(request());
   assert.equal(terminalRedelivery.status, 202);
   assert.deepEqual(await terminalRedelivery.json(), {
@@ -104,19 +158,21 @@ test("command visibility outcomes stay durable without consuming credentials", a
   });
 
   const transientStorage = new MemoryDurableStorage();
+  let transientPublic = true;
   let probes = 0;
   const transientQueue = new ExactReviewQueue(
     { storage: transientStorage },
     {
       hostedPublicTargetProbe: async () => {
         probes += 1;
-        return "retryable";
+        return transientPublic ? "public" : "retryable";
       },
     },
   );
   const transientAccepted = await transientQueue.fetch(request());
   assert.equal(transientAccepted.status, 202);
   assert.equal((await transientAccepted.json()).accepted, true);
+  transientPublic = false;
   for (let attempts = 1; attempts < 16; attempts += 1) {
     transientStorage.sql.exec(
       "UPDATE exact_review_command_intakes SET next_attempt_at = 0 WHERE command_version_id = ?",
@@ -131,10 +187,11 @@ test("command visibility outcomes stay durable without consuming credentials", a
     intake.commandVersionId,
   );
   await transientQueue.alarm();
-  assert.equal(probes, 16);
+  assert.equal(probes, 17);
   assert.equal(commandReceipt(transientStorage)?.outcome, "rejected");
   assert.equal(commandReceipt(transientStorage)?.detail, "target_visibility_unverified_exhausted");
   assert.equal(commandIntakeRecord(transientStorage, intake.commandVersionId), null);
+  transientPublic = true;
   const transientRedelivery = await transientQueue.fetch(request());
   assert.equal(transientRedelivery.status, 202);
   assert.deepEqual(await transientRedelivery.json(), {

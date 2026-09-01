@@ -4,7 +4,7 @@ import fs, { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 
 import { hydrateState } from "../../scripts/hydrate-state.ts";
 import { materializeWorkerItems } from "../../scripts/worker-records.ts";
@@ -12,6 +12,21 @@ import { materializeWorkerItems } from "../../scripts/worker-records.ts";
 const repoSlug = "openclaw-openclaw";
 const itemNumber = 111745;
 const webhookSecret = "single-record-test-secret";
+
+function captureRetryDelays(t: TestContext) {
+  const delays: number[] = [];
+  const immediateSetTimeout = (
+    callback: (...args: unknown[]) => void,
+    delay?: number,
+    ...args: unknown[]
+  ) => {
+    delays.push(Number(delay));
+    queueMicrotask(() => callback(...args));
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  };
+  t.mock.method(globalThis, "setTimeout", immediateSetTimeout as typeof setTimeout);
+  return delays;
+}
 
 test("focused batch hydration ignores unavailable snapshots and preserves complete item tuples", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-batch-"));
@@ -265,7 +280,8 @@ test("single-issue hydration refuses corrupt Worker content without replacing lo
   assert.equal(readFileSync(preservedPath, "utf8"), "keep\n");
 });
 
-test("single-issue hydration retries malformed successful edge responses", async () => {
+test("single-issue hydration retries malformed successful edge responses", async (t) => {
+  const delays = captureRetryDelays(t);
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-edge-"));
   const content = "current canonical report\n";
   let reads = 0;
@@ -291,13 +307,15 @@ test("single-issue hydration retries malformed successful edge responses", async
     fetch: fetchImpl as typeof fetch,
   });
   assert.equal(reads, 2);
+  assert.deepEqual(delays, [30_000]);
   assert.equal(
     readFileSync(join(root, "records", repoSlug, "items", `${itemNumber}.md`), "utf8"),
     content,
   );
 });
 
-test("single-issue hydration retries malformed Worker record envelopes", async () => {
+test("single-issue hydration retries malformed Worker record envelopes", async (t) => {
+  const delays = captureRetryDelays(t);
   const content = "current canonical report\n";
   const digest = createHash("sha256").update(content).digest("hex");
   for (const malformed of [
@@ -328,9 +346,11 @@ test("single-issue hydration retries malformed Worker record envelopes", async (
       content,
     );
   }
+  assert.deepEqual(delays, [30_000, 30_000, 30_000, 30_000, 30_000]);
 });
 
-test("single-issue hydration bounds repeated malformed Worker record envelopes", async () => {
+test("single-issue hydration bounds repeated malformed Worker record envelopes", async (t) => {
+  const delays = captureRetryDelays(t);
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-focused-envelope-failure-"));
   let reads = 0;
   await assert.rejects(
@@ -348,6 +368,7 @@ test("single-issue hydration bounds repeated malformed Worker record envelopes",
     /invalid_json_body/,
   );
   assert.equal(reads, 3);
+  assert.deepEqual(delays, [30_000, 60_000]);
 });
 
 test("failed staged record installation restores the existing canonical record tree", async () => {

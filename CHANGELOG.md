@@ -108,7 +108,6 @@ checkpoint, and status-only commits are intentionally omitted.
 - Kept projected GitHub reads out of the durable ETag cache so incompatible response shapes cannot hide requested reviewers from close guards. Thanks @goutamadwant! (#1242)
 - Normalized unexpected exact-review failures at the Worker boundary without weakening Durable Object transaction rollback. Thanks @yetval and @vincentkoc! (#1240)
 - Terminal live verification waits for finite commands to complete within the existing proof budget before judging output, keeps missing assertions unverified, and preserves usable PTY descriptors for detached child processes.
-- Restricted hosted reviews to eligible public targets from configured profiles and the existing `openclaw/*` and `steipete/*` owner fallbacks, revalidating resumed publication batches and durable command intake before credentials.
 - Replaced public Worker exception text with endpoint-owned error codes and bounded direct-publication rejection categories, preserving distinct operational fingerprints without exposing submitted values or stack traces.
 - Replaced terminal live proof's authenticated `xvfb-run` wrapper with a TCP-disabled local Xvfb display so readiness probes and recording can connect without X authorization failures.
 - Made terminal live-proof recording wait for Xvfb and ffmpeg readiness and clean finalization, with tmux pane diagnostics on failure.
