@@ -248,7 +248,7 @@ test("OpenClaw review jobs provision the pinned sibling Codex source before revi
 
 test("Codex source setup normalizes OpenClaw casing and stays out of the OpenClaw runner", () => {
   const action = YAML.parse(readText(".github/actions/setup-openclaw-codex-source/action.yml")) as {
-    runs: { steps: Array<{ id?: string; if?: string; uses?: string }> };
+    runs: { steps: Array<{ id?: string; if?: string; uses?: string; run?: string }> };
   };
   const normalize = action.runs.steps.find((step) => step.id === "target");
   const cache = action.runs.steps.find((step) => step.uses === "actions/cache@v6");
@@ -257,6 +257,10 @@ test("Codex source setup normalizes OpenClaw casing and stays out of the OpenCla
   assert.match(cache?.if ?? "", /env\.CLAWSWEEPER_RUNNER != 'openclaw'/u);
   const setup = action.runs.steps.at(-1);
   assert.match(setup?.if ?? "", /env\.CLAWSWEEPER_RUNNER != 'openclaw'/u);
+  assert.match(
+    setup?.run ?? "",
+    /setup_status.*-eq 80[\s\S]*deferring the decision to the materialized review tree[\s\S]*exit 0/,
+  );
 });
 
 test("automatic OpenClaw bug dispatch uses one gate across direct and deferred publication", () => {

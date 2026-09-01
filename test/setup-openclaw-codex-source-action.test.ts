@@ -165,6 +165,24 @@ test("reuses a complete same-pin cache without network access", (t) => {
   );
 });
 
+test("publishes the runtime contract before deferring an incompatible base pin", (t) => {
+  const fixture = useFixture(t);
+  writePin(fixture.target, "^1.2.3");
+
+  const incompatible = runSetup(fixture);
+  assert.equal(incompatible.status, 80, incompatible.stderr);
+  const environment = readFileSync(fixture.githubEnv, "utf8");
+  for (const name of [
+    "CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT",
+    "CLAWSWEEPER_OPENCLAW_CODEX_TARGET_DIR",
+    "CLAWSWEEPER_OPENCLAW_CODEX_ARTIFACT_DIR",
+    "CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR",
+    "CLAWSWEEPER_OPENCLAW_CODEX_SOURCE_URL",
+  ]) {
+    assert.match(environment, new RegExp(`^${name}=`, "m"));
+  }
+});
+
 test("retargets to a cached pin offline and replaces a wrong dirty checkout", (t) => {
   const fixture = useFixture(t);
   assert.equal(runSetup(fixture).status, 0);

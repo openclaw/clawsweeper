@@ -60,6 +60,16 @@ if [[ "$pin_root" != "$target_root" ]] &&
   exit 1
 fi
 
+if [[ -n "${GITHUB_ENV:-}" ]]; then
+  {
+    echo "CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT=$setup_script"
+    echo "CLAWSWEEPER_OPENCLAW_CODEX_TARGET_DIR=$target_root"
+    echo "CLAWSWEEPER_OPENCLAW_CODEX_ARTIFACT_DIR=$review_artifact_root"
+    echo "CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR=$cache_dir"
+    echo "CLAWSWEEPER_OPENCLAW_CODEX_SOURCE_URL=$source_url"
+  } >> "$GITHUB_ENV"
+fi
+
 package_json_input="$pin_root/extensions/codex/package.json"
 if [[ ! -f "$package_json_input" || -L "$package_json_input" ]]; then
   echo "OpenClaw Codex version pin must be a regular file." >&2
@@ -164,15 +174,5 @@ elif [[ -e "$review_sibling" ]]; then
   exit 1
 fi
 ln -s "$source_dir" "$review_sibling"
-
-if [[ -n "${GITHUB_ENV:-}" ]]; then
-  {
-    echo "CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT=$setup_script"
-    echo "CLAWSWEEPER_OPENCLAW_CODEX_TARGET_DIR=$target_root"
-    echo "CLAWSWEEPER_OPENCLAW_CODEX_ARTIFACT_DIR=$review_artifact_root"
-    echo "CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR=$cache_dir"
-    echo "CLAWSWEEPER_OPENCLAW_CODEX_SOURCE_URL=$source_url"
-  } >> "$GITHUB_ENV"
-fi
 
 echo "Prepared Codex $version source for OpenClaw review at $source_dir."
