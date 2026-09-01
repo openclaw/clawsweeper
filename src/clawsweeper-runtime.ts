@@ -405,6 +405,7 @@ function reviewPolicyHash(options: {
   sandboxMode?: string;
   serviceTier?: string;
 }): string {
+  const policyTargetRepo = targetRepo();
   return sha256(
     stableJson({
       version: REVIEW_POLICY_VERSION,
@@ -423,7 +424,10 @@ function reviewPolicyHash(options: {
       // hash value so tier changes cannot mark every stored review policy-stale
       // and trigger a fleet-wide re-review wave.
       serviceTier: "",
-      targetRepo: targetRepo(),
+      targetRepo: policyTargetRepo,
+      ...(policyTargetRepo.toLowerCase() === "openclaw/openclaw"
+        ? { openclawCodexSourceProvisioning: "v1" }
+        : {}),
       repositoryProfile: targetProfile(),
       prompt: reviewPromptTemplate(),
       schema: reviewDecisionSchemaText(),
