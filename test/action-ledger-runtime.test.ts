@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import childProcess, { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
@@ -2332,7 +2333,7 @@ test("producer locks reclaim fresh dead owners and never evict a live holder by 
   );
   const deadContent = `${actionLedgerJson({
     schema: "clawsweeper.action-ledger-producer-lock",
-    schema_version: 1,
+    schema_version: process.platform === "darwin" ? 2 : 1,
     pid: 2_147_483_647,
     process_incarnation_sha256: "0".repeat(64),
     acquired_at_ms: Date.now(),
@@ -2357,7 +2358,7 @@ test("producer locks reclaim fresh dead owners and never evict a live holder by 
   assert.ok(currentIncarnation);
   const reusedContent = `${actionLedgerJson({
     schema: "clawsweeper.action-ledger-producer-lock",
-    schema_version: 1,
+    schema_version: process.platform === "darwin" ? 2 : 1,
     pid: process.pid,
     process_incarnation_sha256:
       currentIncarnation === "0".repeat(64) ? "1".repeat(64) : "0".repeat(64),
@@ -2393,7 +2394,7 @@ const processIncarnation = processIncarnationIdentitySha256();
 if (!processIncarnation) process.exit(2);
 const content = actionLedgerJson({
   schema: "clawsweeper.action-ledger-producer-lock",
-  schema_version: 1,
+  schema_version: process.platform === "darwin" ? 2 : 1,
   pid: process.pid,
   process_incarnation_sha256: processIncarnation,
   acquired_at_ms: Date.now() - 5 * 60_000 + 75,
@@ -2436,6 +2437,128 @@ release();
   assert.equal(readOutputEvents(outputRoot, paths).length, 2);
 });
 
+for (const kind of ["producer", "import"] as const) {
+  test(
+    `macOS ${kind} locks retain live V1 owners and recover dead V1 owners`,
+    { skip: process.platform === "darwin" ? false : "requires macOS lock identity transition" },
+    () => {
+      const root = tempRoot();
+      const source = tempRoot();
+      const first = recordReviewNumber(root, 61);
+      assert.ok(first);
+      writeActionEventShard(source, shardIdentity(first), [first]);
+      const target = prepareSafeWriteTarget(
+        root,
+        kind === "producer" ? producerLockRelativePath(first) : ".action-ledger-import.lock",
+        `legacy ${kind} lock`,
+      );
+      const currentIncarnation = processIncarnationIdentitySha256();
+      assert.ok(currentIncarnation);
+      const owner = {
+        schema: `clawsweeper.action-ledger-${kind}-lock`,
+        schema_version: 1,
+        pid: process.pid,
+        process_incarnation_sha256:
+          currentIncarnation === "0".repeat(64) ? "1".repeat(64) : "0".repeat(64),
+        acquired_at_ms: Date.now(),
+        nonce: "00000000-0000-4000-8000-000000000006",
+      };
+      const invoke = () =>
+        kind === "producer" ? recordReviewNumber(root, 62) : importActionEventShards(source, root);
+      const liveContent = `${actionLedgerJson(owner)}\n`;
+      const releaseLive = tryAcquireUtf8FileLockNoFollow(target, liveContent);
+      assert.ok(releaseLive);
+      try {
+        const startedAt = Date.now();
+        assert.throws(invoke, /lock timed out after 10000ms/);
+        assert.ok(Date.now() - startedAt >= 10_000);
+        assert.equal(fs.readFileSync(target.path, "utf8"), liveContent);
+      } finally {
+        releaseLive();
+      }
+
+      const deadContent = `${actionLedgerJson({ ...owner, pid: 2_147_483_647 })}\n`;
+      const releaseDead = tryAcquireUtf8FileLockNoFollow(target, deadContent);
+      assert.ok(releaseDead);
+      const deadStartedAt = Date.now();
+      assert.ok(invoke());
+      assert.ok(Date.now() - deadStartedAt < 5_000);
+      assert.doesNotThrow(releaseDead);
+    },
+  );
+
+  test(`${kind} locks reclaim current-version PID reuse and reject unknown versions`, () => {
+    const root = tempRoot();
+    const source = tempRoot();
+    const first = recordReviewNumber(root, 71);
+    assert.ok(first);
+    writeActionEventShard(source, shardIdentity(first), [first]);
+    const target = prepareSafeWriteTarget(
+      root,
+      kind === "producer" ? producerLockRelativePath(first) : ".action-ledger-import.lock",
+      `versioned ${kind} lock`,
+    );
+    const currentIncarnation = processIncarnationIdentitySha256();
+    assert.ok(currentIncarnation);
+    const invoke = () =>
+      kind === "producer" ? recordReviewNumber(root, 72) : importActionEventShards(source, root);
+    for (const version of [0, 3, process.platform === "darwin" ? 2 : 1]) {
+      const content = `${actionLedgerJson({
+        schema: `clawsweeper.action-ledger-${kind}-lock`,
+        schema_version: version,
+        pid: process.pid,
+        process_incarnation_sha256:
+          currentIncarnation === "0".repeat(64) ? "1".repeat(64) : "0".repeat(64),
+        acquired_at_ms: Date.now(),
+        nonce: "00000000-0000-4000-8000-000000000007",
+      })}\n`;
+      const release = tryAcquireUtf8FileLockNoFollow(target, content);
+      assert.ok(release);
+      try {
+        if (version === 0 || version === 3) {
+          assert.throws(invoke, /invalid action event .*lock/);
+          assert.equal(fs.readFileSync(target.path, "utf8"), content);
+        } else {
+          const startedAt = Date.now();
+          assert.ok(invoke());
+          assert.ok(Date.now() - startedAt < 5_000);
+        }
+      } finally {
+        release();
+      }
+    }
+  });
+}
+
+test("producer and import writers serialize the platform's lock identity version", () => {
+  const root = tempRoot();
+  const source = tempRoot();
+  const captured: Array<{ schema: string; schema_version: number }> = [];
+  const originalLinkSync = fs.linkSync;
+  fs.linkSync = ((existing, destination) => {
+    const result = originalLinkSync(existing, destination);
+    if (String(destination).endsWith(".lock")) {
+      captured.push(JSON.parse(fs.readFileSync(destination, "utf8")));
+    }
+    return result;
+  }) as typeof fs.linkSync;
+  try {
+    const first = recordReviewNumber(root, 73);
+    assert.ok(first);
+    writeActionEventShard(source, shardIdentity(first), [first]);
+    assert.equal(importActionEventShards(source, root).created, 1);
+  } finally {
+    fs.linkSync = originalLinkSync;
+  }
+  assert.deepEqual(
+    captured.map(({ schema, schema_version }) => ({ schema, schema_version })),
+    ["producer", "import"].map((kind) => ({
+      schema: `clawsweeper.action-ledger-${kind}-lock`,
+      schema_version: process.platform === "darwin" ? 2 : 1,
+    })),
+  );
+});
+
 test(
   "macOS process identities distinguish processes started within the same second",
   { skip: process.platform === "darwin" ? false : "requires macOS proc_pidinfo" },
@@ -2469,6 +2592,145 @@ process.stdout.write(JSON.stringify({
     const sameSecond = [...bySecond.values()].sort((left, right) => right.length - left.length)[0]!;
     assert.ok(sameSecond.length >= 2);
     assert.equal(new Set(sameSecond.map((sample) => sample.identity)).size, sameSecond.length);
+  },
+);
+
+test(
+  "macOS process identities remain stable when a live holder is stopped",
+  { skip: process.platform === "darwin" ? false : "requires macOS proc_pidinfo" },
+  async () => {
+    const root = tempRoot();
+    const readyPath = path.join(root, "holder-identity");
+    const filesModuleUrl = pathToFileURL(
+      path.join(process.cwd(), "dist", "action-ledger-files.js"),
+    ).href;
+    await withImportRaceChildren(async (own) => {
+      const holder = spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `import fs from "node:fs";
+const { processIncarnationIdentitySha256 } = await import(${JSON.stringify(filesModuleUrl)});
+fs.writeFileSync(process.argv[1] + ".tmp", JSON.stringify(processIncarnationIdentitySha256()));
+fs.renameSync(process.argv[1] + ".tmp", process.argv[1]);
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);`,
+          readyPath,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      own(holder);
+      await waitForPath(readyPath);
+      const identity = JSON.parse(fs.readFileSync(readyPath, "utf8"));
+      assert.ok(identity);
+      assert.equal(holder.kill("SIGSTOP"), true);
+      const deadline = Date.now() + 2_000;
+      for (;;) {
+        const result = spawnSync("/bin/ps", ["-p", String(holder.pid), "-o", "state="], {
+          encoding: "utf8",
+          timeout: 2_000,
+        });
+        assert.equal(result.status, 0, result.stderr);
+        if (result.stdout.trim().startsWith("T")) break;
+        assert.ok(Date.now() < deadline, "holder did not stop");
+      }
+      assert.equal(processIncarnationIdentitySha256(holder.pid, { fresh: true }), identity);
+      assert.doesNotThrow(() => process.kill(holder.pid!, 0));
+    });
+  },
+);
+
+test(
+  "macOS process identity query failures remain unknown and recover on the next query",
+  { skip: process.platform === "darwin" ? false : "requires macOS proc_pidinfo" },
+  () => {
+    const identity = processIncarnationIdentitySha256(process.pid, { fresh: true });
+    assert.ok(identity);
+    const originalSpawnSync = childProcess.spawnSync;
+    for (const failedCommand of ["/usr/bin/python3", "/usr/sbin/sysctl"]) {
+      let injected = false;
+      childProcess.spawnSync = ((command, ...args) => {
+        if (command === failedCommand) {
+          injected = true;
+          return { status: 1, stdout: "", stderr: "" };
+        }
+        return originalSpawnSync(command, ...args);
+      }) as typeof spawnSync;
+      syncBuiltinESMExports();
+      try {
+        assert.equal(processIncarnationIdentitySha256(process.pid, { fresh: true }), null);
+        assert.equal(injected, true);
+      } finally {
+        childProcess.spawnSync = originalSpawnSync;
+        syncBuiltinESMExports();
+      }
+      assert.equal(processIncarnationIdentitySha256(), identity);
+    }
+  },
+);
+
+test(
+  "macOS process identities ignore the observer timezone",
+  { skip: process.platform === "darwin" ? false : "requires macOS proc_pidinfo" },
+  () => {
+    const priorTimezone = process.env.TZ;
+    try {
+      process.env.TZ = "UTC";
+      const utcIdentity = processIncarnationIdentitySha256(process.pid, { fresh: true });
+      assert.ok(utcIdentity);
+      process.env.TZ = "America/Los_Angeles";
+      assert.equal(
+        processIncarnationIdentitySha256(process.pid, { fresh: true }),
+        utcIdentity,
+        "observer timezone must not change the same live process incarnation",
+      );
+    } finally {
+      if (priorTimezone === undefined) delete process.env.TZ;
+      else process.env.TZ = priorTimezone;
+      processIncarnationIdentitySha256(process.pid, { fresh: true });
+    }
+  },
+);
+
+test(
+  "macOS process identities reject malformed boot timestamps and recover",
+  { skip: process.platform === "darwin" ? false : "requires macOS proc_pidinfo" },
+  () => {
+    const identity = processIncarnationIdentitySha256(process.pid, { fresh: true });
+    assert.ok(identity);
+    const originalSpawnSync = childProcess.spawnSync;
+    for (const bootTime of [
+      "not a boot timestamp",
+      "{ sec = 123 }",
+      "{ sec = 0, usec = 0 }",
+      "{ sec = 9007199254740992, usec = 0 }",
+      "{ sec = 123, usec = -1 }",
+      "{ sec = 123, usec = 1000000 }",
+      "{ sec = 123.5, usec = 0 }",
+    ]) {
+      let injected = false;
+      childProcess.spawnSync = ((command, ...args) => {
+        if (command === "/usr/sbin/sysctl") {
+          injected = true;
+          return { status: 0, stdout: bootTime, stderr: "" };
+        }
+        return originalSpawnSync(command, ...args);
+      }) as typeof spawnSync;
+      syncBuiltinESMExports();
+      try {
+        assert.equal(
+          processIncarnationIdentitySha256(process.pid, { fresh: true }),
+          null,
+          bootTime,
+        );
+        assert.equal(injected, true);
+      } finally {
+        childProcess.spawnSync = originalSpawnSync;
+        syncBuiltinESMExports();
+        processIncarnationIdentitySha256(process.pid, { fresh: true });
+      }
+      assert.equal(processIncarnationIdentitySha256(), identity);
+    }
   },
 );
 

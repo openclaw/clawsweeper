@@ -87,6 +87,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Stopped retrying unchanged PR revisions after an incomplete-source scan refusal while preserving newer queued revisions. Thanks @sallyom. (#1311)
 - Stopped stored-data and SQLite warnings for colocated test-support files while preserving production persistence, rename, and incomplete-evidence warnings.
+- macOS action-ledger locks use stable process identity, treat unavailable observations as unknown, and fail closed for live legacy owners during the version 2 lock transition.
 - Aligned PR proof comments and status labels with the existing host requirement when a reviewer records proof as not applicable, while preserving recorded assessments and merge gates.
 - Preserved authoritative whole-range Git line counts in local reviews and report rendering, allowing review to complete with unavailable best-effort statistics while requiring complete file enumeration under its prior capture and timeout contract and never showing unknown counts as verified zero totals.
 - Classified the explicitly approved autoreview fixture only by its exact full-URI digest and canonical or vendored source path, enforcing the same digest/path/mode policy at every scanned endpoint for all reviewed fixtures while preserving scanner gates and value-free audits.

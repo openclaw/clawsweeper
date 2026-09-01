@@ -225,7 +225,7 @@ type WorkflowProducerFinalization = {
 
 type ActionEventLock = {
   schema: "clawsweeper.action-ledger-producer-lock" | "clawsweeper.action-ledger-import-lock";
-  schema_version: 1;
+  schema_version: 1 | 2;
   pid: number;
   process_incarnation_sha256: string;
   acquired_at_ms: number;
@@ -2115,7 +2115,7 @@ function withActionEventLock<T>(
   }
   const lock: ActionEventLock = {
     schema,
-    schema_version: 1,
+    schema_version: process.platform === "darwin" ? 2 : 1,
     pid: process.pid,
     process_incarnation_sha256: processIncarnation,
     acquired_at_ms: Date.now(),
@@ -2163,7 +2163,7 @@ function parseActionEventLock(
     typeof value !== "object" ||
     Array.isArray(value) ||
     lock.schema !== schema ||
-    lock.schema_version !== 1 ||
+    (lock.schema_version !== 1 && lock.schema_version !== 2) ||
     !Number.isSafeInteger(lock.pid) ||
     Number(lock.pid) < 1 ||
     typeof lock.process_incarnation_sha256 !== "string" ||
@@ -2181,6 +2181,8 @@ function parseActionEventLock(
 
 function actionEventLockOwnerIsStale(owner: ActionEventLock): boolean {
   if (!processIsAlive(owner.pid)) return true;
+  // Legacy macOS hashes use a different identity scheme; a live owner is unverified.
+  if (process.platform === "darwin" && owner.schema_version === 1) return false;
   const currentIncarnation = processIncarnationIdentitySha256(owner.pid, { fresh: true });
   return currentIncarnation !== null && currentIncarnation !== owner.process_incarnation_sha256;
 }
