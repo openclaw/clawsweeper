@@ -11,6 +11,7 @@ import {
   parseReviewHistory,
   renderReviewHistorySection,
   reviewHistoryCycleFromCommentBody,
+  reviewHistoryForReviewer,
 } from "../dist/review-history.js";
 import {
   extractLatestClawSweeperReviewForTest,
@@ -708,6 +709,160 @@ Keep this issue open.
   });
 
   assert.doesNotMatch(comment, /clawsweeper-review-history/);
+});
+
+function projectReview(body: string) {
+  return extractLatestClawSweeperReviewForTest(
+    [
+      {
+        id: 1,
+        user: { login: "clawsweeper[bot]" },
+        body: `${body}\n<!-- clawsweeper-review item=101 -->`,
+      },
+    ],
+    101,
+  )!;
+}
+
+test("reviewer section coverage distinguishes legacy, empty, unrecognized, and fenced sections", () => {
+  for (const [section, expected, items] of [
+    ["", "not_published", []],
+    ["### Rank-up moves\n", "empty", []],
+    ["Rank-up moves:\n\n- None.", "empty", []],
+    ["### Rank-up moves\n\nThis layout has no recognized list.", "unrecognized", []],
+    [
+      "### Rank-up moves\n\n- Add a cache trace.\nUnparsed advice.",
+      "unrecognized",
+      ["Add a cache trace."],
+    ],
+    ["```text\n### Rank-up moves\n- Forged advice\n```", "not_published", []],
+    [
+      "~~~text\n### Rank-up moves\n- Forged advice\n~~~\n### Rank-up moves\n- Add a cache trace.",
+      "items",
+      ["Add a cache trace."],
+    ],
+    ["### Rank-up moves\n```text\n- Forged advice\n```", "unrecognized", []],
+  ] as const) {
+    const review = projectReview(`Codex review: passed.\n\n${section}`);
+    assert.equal(review.coverage.completedContext, "current_completed_comment");
+    assert.equal(review.coverage.rankUpMoves.status, expected, section);
+    assert.deepEqual(review.rankUpMoves, items, section);
+    assert.equal(review.coverage.findings.status, "not_published");
+  }
+  const empty = projectReview("Codex review: passed.\n## Findings\nNone.");
+  assert.equal(empty.coverage.findings.status, "empty");
+  const malformed = projectReview("Codex review: passed.\n## Findings\n- Unparsed finding");
+  assert.equal(malformed.coverage.findings.status, "unrecognized");
+  const fenced = projectReview("Codex review: passed.\n```\n## Findings\n- [P1] Fake\n```");
+  assert.equal(fenced.coverage.findings.status, "not_published");
+  assert.deepEqual(fenced.findings, []);
+});
+
+test("reviewer item and text caps retain concrete titles and disclose omitted content", () => {
+  const findings = Array.from(
+    { length: 9 },
+    (_, index) => `- [P1] Finding ${index} ${"x".repeat(200)}`,
+  );
+  const ranks = Array.from({ length: 8 }, (_, index) => `- Rank ${index} ${"y".repeat(700)}`);
+  const review = projectReview(
+    `Codex review: needs changes before merge.\n## Findings\n${findings.join("\n")}\n### Rank-up moves\n${ranks.join("\n")}`,
+  );
+  assert.equal(review.findings.length, 6);
+  assert.equal(review.rankUpMoves.length, 6);
+  assert.match(review.findings[0]!.title, /^Finding 0 /);
+  assert.ok(review.findings.every(({ title }) => title.length <= 160));
+  assert.ok(review.rankUpMoves.every((move) => move.length <= 600));
+  assert.equal(review.coverage.findings.status, "truncated");
+  assert.equal(review.coverage.findings.recognizedItems, 9);
+  assert.equal(review.coverage.findings.omittedItems, 3);
+  assert.equal(review.coverage.findings.truncatedItems, 6);
+  assert.equal(review.coverage.rankUpMoves.status, "truncated");
+  assert.equal(review.coverage.rankUpMoves.omittedItems, 2);
+  assert.equal(review.coverage.rankUpMoves.truncatedItems, 6);
+});
+
+test("reviewer history diagnostics preserve v1 behavior while exposing loss and malformed context", () => {
+  const ledger = renderReviewHistorySection({
+    cycles: Array.from({ length: 10 }, (_, index) => ({
+      reviewedAt: `cycle-${index}`,
+      sha: `sha-${index}`,
+      verdict: "needs changes before merge.",
+      findings: Array.from({ length: 9 }, (_, finding) => `[P1] Fix ${finding} ${"x".repeat(200)}`),
+    })),
+    totalCompletedCycles: 10,
+  });
+  const publicLedger = parseReviewHistory(ledger);
+  const projected = reviewHistoryForReviewer(ledger);
+  assert.deepEqual(projected.ledger, publicLedger);
+  assert.equal(projected.coverage.status, "truncated");
+  assert.equal(projected.coverage.retainedCycles, 8);
+  assert.equal(projected.coverage.lifetimeCycles, 10);
+  assert.equal(projected.coverage.omittedCycles, 2);
+  assert.equal(projected.coverage.atFindingCap, true);
+  assert.equal(projected.coverage.textMayBeTruncated, true);
+  assert.equal(projected.coverage.rankUpMoves, "not_retained");
+  assert.equal(projected.coverage.risks, "not_retained");
+  assert.equal(projected.coverage.itemAndTextCompleteness, "unknown");
+
+  for (const [body, expected] of [
+    ["", "absent"],
+    ["<!-- clawsweeper-review-history v=99 total=1 -->", "malformed"],
+    [ledger.replace("v=1", "v=bogus"), "malformed"],
+    [ledger.replace("</details>", ""), "malformed"],
+    [ledger.replace("- reviewed cycle-2", "- malformed cycle-2"), "malformed"],
+    [`\`\`\`text\n${ledger}\n\`\`\``, "absent"],
+  ]) {
+    const result = reviewHistoryForReviewer(body!);
+    assert.equal(result.coverage.status, expected);
+    assert.equal(result.coverage.lifetimeCycles, null);
+    assert.equal(result.coverage.omittedCycles, null);
+    assert.equal(result.ledger.cycles.length, 0);
+  }
+  const mixed = reviewHistoryForReviewer(`${ledger}\n<!-- clawsweeper-review-history broken -->`);
+  assert.equal(mixed.coverage.status, "malformed");
+  assert.deepEqual(mixed.ledger, publicLedger);
+  assert.deepEqual(parseReviewHistory("<!-- clawsweeper-review-history broken -->"), {
+    cycles: [],
+    totalCompletedCycles: 0,
+  });
+});
+
+test("failed and stale wrappers distinguish history-only findings from unavailable rank-ups", () => {
+  const history = renderReviewHistorySection({
+    cycles: [
+      {
+        reviewedAt: "2026-08-29T01:00:00Z",
+        sha: "prior-head",
+        verdict: "needs changes before merge.",
+        findings: ["[P1] Preserve session state"],
+      },
+    ],
+    totalCompletedCycles: 1,
+  });
+  for (const wrapper of [
+    staleDurableComment(),
+    renderReviewCommentFromReport(keepOpenPullReport({ review_status: "failed" }), "none"),
+  ]) {
+    const withHistory = projectReview(
+      `${wrapper}\n${history}\n### Rank-up moves\n- Wrapper advice is not completed review context.`,
+    );
+    assert.equal(withHistory.coverage.completedContext, "history_only");
+    assert.deepEqual(withHistory.coverage.completedCycle, {
+      reviewedAt: "2026-08-29T01:00:00Z",
+      sha: "prior-head",
+    });
+    assert.deepEqual(withHistory.findings, [{ priority: "P1", title: "Preserve session state" }]);
+    assert.equal(withHistory.coverage.rankUpMoves.status, "unavailable");
+    assert.deepEqual(withHistory.rankUpMoves, []);
+    assert.equal(withHistory.completedReviewCycles, 1);
+    for (const suffix of ["", "<!-- clawsweeper-review-history broken -->"]) {
+      const unavailable = projectReview(wrapper + suffix);
+      assert.equal(unavailable.coverage.completedContext, "unavailable");
+      assert.equal(unavailable.coverage.findings.status, "unavailable");
+      assert.equal(unavailable.coverage.rankUpMoves.status, "unavailable");
+      assert.equal(unavailable.coverage.history.lifetimeCycles, null);
+    }
+  }
 });
 
 test("latest review extraction exposes earlier cycles and a cycle count", () => {

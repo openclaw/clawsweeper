@@ -11,10 +11,21 @@ import {
   reviewPromptForTest,
   reviewPromptTelemetryForTest,
   reviewPromptTemplate,
+  extractLatestClawSweeperReviewForTest,
+  filterReviewContextCommentsForTest,
+  renderReviewCommentFromReport,
+  reviewAutomationMarkersFromReport,
 } from "../dist/clawsweeper.js";
 import { parseArgs as parseClawsweeperArgs } from "../dist/clawsweeper-args.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
-import { git, item } from "./helpers.ts";
+import {
+  git,
+  item,
+  markedReviewCommentForTest,
+  prRatingReportSection,
+  realBehaviorProofReportSection,
+  reportFrontMatter,
+} from "./helpers.ts";
 import type { PrimaryBodyContext } from "../dist/clawsweeper-primary-body.js";
 import {
   assertBodyCoverage,
@@ -110,6 +121,145 @@ for (const [layout, body] of [
       assert.ok(compact.bodyCoverage.omittedUnits > 0);
       assert.equal(compact.bodyCoverage.complete, false);
       assert.equal(compact.bodyCoverage.status, undefined);
+    }
+  });
+}
+
+for (const scenario of ["optional", "recursive", "concrete", "missing-context"] as const) {
+  test(`review continuity owner round trip preserves ${scenario} evidence and publisher behavior`, () => {
+    const recursiveWarning =
+      "The latest review was filtered from discussion, so its unspecified rank-up moves must be checked before merge.";
+    const concreteRisk = "The session cache still reuses revoked credentials after invalidation.";
+    const missingContext =
+      "The retained history omits cycle one; its reported session-invalidation finding cannot yet be verified.";
+    const risk =
+      scenario === "recursive"
+        ? recursiveWarning
+        : scenario === "concrete"
+          ? concreteRisk
+          : scenario === "missing-context"
+            ? missingContext
+            : "None.";
+    const rank =
+      scenario === "recursive"
+        ? "Check unspecified filtered prior rank-up moves before merge."
+        : "Document the cache eviction boundary.";
+    const report = `${reportFrontMatter({
+      type: "pull_request",
+      number: "101",
+      review_status: "complete",
+      reviewed_at: "2026-08-30T10:00:00Z",
+      pull_head_sha: "abc123",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      work_candidate: "none",
+    })}
+
+## Summary
+
+Review the session-cache change.
+
+## What This Changes
+
+Changes cache invalidation.
+
+## Best Possible Solution
+
+None.
+
+${realBehaviorProofReportSection({ summary: "Synthetic fixture records successful cache invalidation." })}
+
+${prRatingReportSection({ nextSteps: `- ${rank}` })}
+
+## Risks / Open Questions
+
+${risk}
+
+## Review Findings
+
+Overall correctness: ${scenario === "concrete" ? "patch is incorrect" : "patch is correct"}
+
+Overall confidence: 0.9
+
+Full review comments:
+
+${scenario === "concrete" ? "- **[P1] Invalidate revoked credentials:** `src/cache.ts:10-12`\n  - body: A revoked session still reuses the cached credential.\n  - confidence: 0.9" : "- none"}
+`;
+    const body = markedReviewCommentForTest(101, renderReviewCommentFromReport(report, "none"));
+    const previousComment = {
+      id: 80,
+      html_url: "https://github.com/openclaw/example/pull/101#issuecomment-80",
+      updated_at: "2026-08-30T10:00:00Z",
+      user: { login: "clawsweeper[bot]" },
+      body,
+    };
+    const disposition = {
+      id: 81,
+      user: { login: "maintainer" },
+      body: "Rank-up disposition: the cache boundary is documented. Unspecified recursive advice is skipped; no code finding is waived.",
+    };
+    const comments = [previousComment, disposition];
+    const filtered = filterReviewContextCommentsForTest(comments, 101);
+    const previous = extractLatestClawSweeperReviewForTest(comments, 101)!;
+    const prompt = reviewPromptForTest(
+      item({ kind: "pull_request", number: 101 }),
+      {
+        comments: filtered.included,
+        previousClawSweeperReview: previous,
+      },
+      git,
+    );
+    const input = JSON.parse(
+      prompt.split("## GitHub Context\n")[1]!.match(/```json\n([\s\S]*?)\n```/)![1]!,
+    );
+    assert.deepEqual(input.comments, [disposition]);
+    assert.deepEqual(input.previousClawSweeperReview, previous);
+    assert.equal(previous.coverage.completedContext, "current_completed_comment");
+    assert.equal(
+      previous.coverage.discussion,
+      "raw_self_comment_intentionally_omitted_replaced_by_this_projection",
+    );
+    assert.equal(previous.commentId, previousComment.id);
+    assert.equal(previous.commentUrl, previousComment.html_url);
+    assert.doesNotMatch(
+      JSON.stringify(input),
+      /Agent review details|Optional improvements that raise the rating/,
+    );
+    assert.match(prompt, /Intentional\s+self-comment filtering alone is not missing evidence/);
+    assert.match(
+      prompt,
+      /Apply each applicable rank-up move\s+or explicitly justify its exception before landing/,
+    );
+    assert.match(prompt, /Disclose genuinely material missing, malformed, or truncated context/);
+
+    // Controlled follow-up report, not a model evaluation: concrete risks still publish.
+    const rerendered = renderReviewCommentFromReport(report, "none", {
+      previousReviewCommentBody: body,
+    });
+    const again = extractLatestClawSweeperReviewForTest(
+      [{ ...previousComment, body: markedReviewCommentForTest(101, rerendered) }],
+      101,
+    )!;
+    assert.deepEqual(again.findings, previous.findings);
+    assert.deepEqual(again.rankUpMoves, previous.rankUpMoves);
+    assert.equal(again.verdictDigest, previous.verdictDigest);
+    if (scenario === "concrete") {
+      assert.deepEqual(previous.findings, [
+        { priority: "P1", title: "Invalidate revoked credentials" },
+      ]);
+      assert.match(rerendered, /- \[ \].*Invalidate revoked credentials/);
+      assert.doesNotMatch(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+    } else {
+      assert.deepEqual(previous.findings, []);
+      assert.equal(previous.coverage.findings.status, "empty");
+      assert.deepEqual(previous.rankUpMoves, [rank]);
+      assert.equal(previous.coverage.rankUpMoves.status, "items");
+    }
+    if (scenario === "optional") {
+      assert.match(rerendered, /## Before merge\n\nNone\./);
+    } else {
+      assert.ok(rerendered.includes(`- [ ] **Resolve merge risk (P1)** - ${risk}`));
+      if (scenario === "recursive") assert.equal(previous.nextStep, recursiveWarning);
     }
   });
 }

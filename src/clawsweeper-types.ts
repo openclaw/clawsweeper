@@ -1,7 +1,11 @@
 import type { MaintainerDecision } from "./decision-packets.js";
 import type { PrCloseCoverageProofModelResult } from "./pr-close-coverage-proof.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
-import type { ReviewHistoryCycle } from "./review-history.js";
+import type {
+  ReviewHistoryCycle,
+  ReviewItemCoverage,
+  reviewHistoryForReviewer,
+} from "./review-history.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
 import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import type { SchedulerDueCandidate } from "./scheduler-policy.js";
@@ -1161,6 +1165,17 @@ export interface PreviousClawSweeperReview {
   rating: string;
   nextStep: string;
   findings: Array<{ priority: string; title: string }>;
+  rankUpMoves: string[];
+  coverage: {
+    discussion: "raw_self_comment_intentionally_omitted_replaced_by_this_projection";
+    completedContext: "current_completed_comment" | "history_only" | "unavailable";
+    completedCycle: { reviewedAt: string; sha: string } | null;
+    findings: ReviewItemCoverage;
+    findingContent: "titles_only";
+    rankUpMoves: ReviewItemCoverage;
+    nextStep: "first_action_from_source_comment_not_a_new_instruction";
+    history: ReturnType<typeof reviewHistoryForReviewer>["coverage"];
+  };
   earlierReviewCycles: ReviewHistoryCycle[];
   completedReviewCycles: number;
   commentId: unknown;

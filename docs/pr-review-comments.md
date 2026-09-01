@@ -294,6 +294,38 @@ with `lateFinding: true` only after comparing the current file with an earlier
 reviewed SHA, so review churn stays measurable without guessing from titles or
 line numbers.
 
+Trusted raw self-comments are deliberately removed from discussion and replaced
+by this reviewer-only projection. It now includes bounded parsed `rankUpMoves`
+from the current completed comment, alongside the existing source comment id,
+URL, and digest. Coverage distinguishes a completed comment from a history-only
+fallback or unavailable completed context. Section states distinguish recognized
+items, explicit empty content, no published section, unrecognized content, and
+truncation. An unpublished or legacy field is not evidence that no advice existed.
+Finding titles keep the six-item cap and a 160-character input limit; rank-ups
+retain up to six items of 600 characters each. Coverage records recognized,
+retained, omitted, and shortened item counts. It does not claim full finding bodies.
+
+The persisted public v1 ledger, append/deduplication, hashing, and publisher
+contracts are unchanged. Reviewer history coverage separates retained from
+lifetime cycle counts and absent, malformed, or cycle-capped history. Its bounded
+finding titles do not retain full risks or rank-ups; original item/text counts
+are unknown, and observed item/text caps are flagged. A history-only fallback
+therefore supplies known finding titles with unavailable rank-up context.
+
+Continuity instructions require checking concrete prior items against current
+evidence and recorded dispositions. Historical next steps, including old
+context-only warnings, remain evidence rather than fresh instructions to repeat
+them. Intentional filtering alone must not create a finding, risk, decision,
+next step, or rank-up requiring another reading of unspecified advice. Genuine
+material missing or malformed context remains disclosed with the affected item
+or uncertainty. Concrete unresolved blockers and the pre-land requirement to
+apply applicable rank-ups or explicitly justify exceptions are unchanged, as are
+proof/security gates and optional-rank-up semantics. This prompt change updates
+the existing review-policy hash used for cache reuse.
+
+OpenClaw Bay is unaffected: this is reviewer input and guidance only, with no
+observer schema, routes, or control changes.
+
 ## Repair Markers
 
 For an actionable PR repair request, ClawSweeper appends both markers:

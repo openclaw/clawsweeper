@@ -9,12 +9,16 @@ import {
   previousReviewRating,
   previousReviewReviewedAt,
   previousReviewStatus,
+  sectionLabeledValue,
 } from "./clawsweeper-markdown.js";
 import { REVIEW_COMMENT_MARKER_PREFIX } from "./clawsweeper-policy.js";
 import type { ContextHydration, PreviousClawSweeperReview } from "./clawsweeper-types.js";
 import {
-  parseReviewHistory,
+  boundedReviewItems,
+  reviewFindingsForReviewer,
+  reviewHistoryForReviewer,
   reviewHistoryCycleFromCommentBody,
+  reviewRankUpMovesForReviewer,
   type ReviewHistoryCycle,
 } from "./review-history.js";
 
@@ -120,10 +124,36 @@ export function previousClawSweeperReviewFromComment(
   const body = rawCommentBody(value);
   const verdictMarker = htmlMarkerWithPrefix(body, "clawsweeper-verdict:");
   const actionMarker = htmlMarkerWithPrefix(body, "clawsweeper-action:");
-  const history = parseReviewHistory(body);
+  const { ledger: history, coverage: historyCoverage } = reviewHistoryForReviewer(body);
   const currentCycle = reviewHistoryCycleFromCommentBody(body);
   const latestCompletedCycle = currentCycle ?? history.cycles.at(-1);
   const earlierReviewCycles = currentCycle ? history.cycles : history.cycles.slice(0, -1);
+  const findings = currentCycle
+    ? reviewFindingsForReviewer(body)
+    : boundedReviewItems(
+        latestCompletedCycle?.findings ?? [],
+        latestCompletedCycle
+          ? latestCompletedCycle.findings.length
+            ? "items"
+            : "empty"
+          : "unavailable",
+        6,
+        160,
+      );
+  if (
+    currentCycle &&
+    findings.coverage.status === "not_published" &&
+    /^Findings:\s*None\.?$/i.test(sectionLabeledValue(body, "Verification", "Findings:"))
+  ) {
+    findings.coverage.status = "empty";
+  }
+  const rankUpMoves = currentCycle
+    ? reviewRankUpMovesForReviewer(body)
+    : boundedReviewItems([], "unavailable", 6, 600);
+  const findingTitles = reviewHistoryFindings(
+    latestCompletedCycle ? { ...latestCompletedCycle, findings: findings.items } : undefined,
+  );
+  if (findingTitles.length !== findings.items.length) findings.coverage.status = "unrecognized";
   return {
     status: previousReviewStatus(body),
     verdictDigest: context.reviewCommentBodyDigest(body),
@@ -144,7 +174,24 @@ export function previousClawSweeperReviewFromComment(
       ? firstBeforeMergeAction(body)
       : firstNonEmptyLine(markdownSection(body, "Next step before merge")) ||
         firstNonEmptyLine(markdownSection(body, "Next step")),
-    findings: reviewHistoryFindings(latestCompletedCycle),
+    findings: findingTitles,
+    rankUpMoves: rankUpMoves.items,
+    coverage: {
+      discussion: "raw_self_comment_intentionally_omitted_replaced_by_this_projection",
+      completedContext: currentCycle
+        ? "current_completed_comment"
+        : latestCompletedCycle
+          ? "history_only"
+          : "unavailable",
+      completedCycle: latestCompletedCycle
+        ? { reviewedAt: latestCompletedCycle.reviewedAt, sha: latestCompletedCycle.sha }
+        : null,
+      findings: findings.coverage,
+      findingContent: "titles_only",
+      rankUpMoves: rankUpMoves.coverage,
+      nextStep: "first_action_from_source_comment_not_a_new_instruction",
+      history: historyCoverage,
+    },
     earlierReviewCycles,
     completedReviewCycles: history.totalCompletedCycles + (currentCycle ? 1 : 0),
     commentId: comment.id,

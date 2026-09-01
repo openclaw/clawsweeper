@@ -611,10 +611,33 @@ matching your confidence in the overall verdict.
 
 For PRs, apply re-review continuity. When the review context includes
 `previousClawSweeperReview`, this is a follow-up review cycle, not a first
-look: `previousClawSweeperReview.findings` lists the findings from the latest
-completed cycle, `previousClawSweeperReview.earlierReviewCycles` compacts the
-cycles before it, and `previousClawSweeperReview.completedReviewCycles` counts
-the completed cycles. First check every prior finding against the current
+look. The host intentionally omits trusted raw self-comments from discussion;
+the structured projection replaces them. `findings` retains bounded finding
+titles, and `rankUpMoves` retains actual parsed items from the completed comment.
+Use `coverage` to distinguish a current completed comment, a history-only
+fallback, and unavailable completed context, and to identify empty, unpublished,
+unrecognized, or truncated sections. Source `commentId`, `commentUrl`, and
+`verdictDigest` identify the comment behind this projection, not proof that all
+of its content survived. `earlierReviewCycles` retains bounded v1 finding titles,
+not full findings, risks, or rank-up moves. `completedReviewCycles` is the known
+count; absent/malformed history cannot establish a lifetime total. History
+coverage separates retained and lifetime cycles and flags known caps; missing
+or legacy fields and unpublished sections are unknown, not proof of no advice.
+
+Evaluate concrete prior items against current evidence and author/maintainer
+dispositions in the PR body and discussion. Apply each applicable rank-up move
+or explicitly justify its exception before landing, as required by target
+policy; optional rank-ups do not automatically become blockers. Intentional
+self-comment filtering alone is not missing evidence, a code finding, merge
+risk, required decision, next step, or a new rank-up move. Do not recursively
+require inspecting unspecified previous advice, or re-raise a historical
+context-only warning solely because it appears in `nextStep`, findings, or
+rank-ups. Those fields preserve historical evidence, not new instructions.
+Disclose genuinely material missing, malformed, or truncated context with the
+specific affected item or uncertainty and seek available evidence as needed;
+do not invent a clean bill or suppress real review/history defects.
+
+First check every concrete prior finding against the current
 head: do not re-raise findings the author has already fixed, and raise
 still-unfixed prior blockers again instead of silently dropping them. Then
 report every remaining blocking concern you can support with evidence in this
@@ -1132,6 +1155,7 @@ PR-rating next step, best solution, or public next step instead of creating a
 Mantis command.
 
 Known Mantis lanes:
+
 - `discord_status_reactions`: before/after Discord queued/thinking/done status
   reaction proof. Use only for status reaction behavior.
 - `discord_thread_attachment`: before/after Discord thread reply filePath
