@@ -570,9 +570,17 @@ The host classifies the reviewed synthetic malformed-configuration URI in
 `test/action-ledger-runtime.test.ts` and the explicitly approved autoreview
 negative-test URI in the [canonical autoreview test](https://github.com/openclaw/agent-skills/blob/a8466c1d860588a083610fe41fd277c1d88b14e0/skills/autoreview/tests/test_autoreview_hardening.py)
 or its [vendored OpenClaw copy](https://github.com/openclaw/openclaw/blob/136eab023035dd5943818f791d3c3db7d92e4491/.agents/skills/autoreview/tests/test_autoreview_hardening.py)
-as non-sensitive after a complete scan. Static host policy associates each
+as non-sensitive after a complete scan. The same exact-fixture policy covers
+the reviewed OpenClaw Browser CDP authentication and credential-redaction fixtures in
+[`chrome.test.ts`](https://github.com/openclaw/openclaw/blob/8e03b0c62e76dc25c77045a84ab3098a111a7be3/extensions/browser/src/browser/chrome.test.ts),
+the [remote-CDP coverage](https://github.com/openclaw/openclaw/blob/58da2f5897feb6840937d8e50cf7ee6f26aa57d7/extensions/browser/src/browser/chrome.test.ts),
+and the [server-context redaction test](https://github.com/openclaw/openclaw/blob/4b5987829d0f82ea44ae50f2f418ffe5ea445e7f/extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts)
+after a complete scan. Static host policy associates each
 exact full-URI SHA-256 with only its approved source paths, requiring a literal
 at the reported line of a host-staged Git blob from mode `100644`.
+One source path may contain multiple independently reviewed fixtures; each
+digest/path/mode tuple must match exactly, so source membership alone never
+qualifies a finding.
 Deduplicated blobs retain every scanned logical endpoint's path and Git mode,
 including mode-only transitions and shared-path aliases. Every captured reference
 must qualify under the same digest's exact path and mode `100644` policy before

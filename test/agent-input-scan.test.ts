@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   truncateSync,
@@ -25,7 +26,6 @@ import {
   reviewToolBootstrapEnvironment,
   scanAgentInput,
 } from "../dist/agent-input-scan.js";
-import { reviewedFixtureForSource } from "../dist/agent-input-scan-fixtures.js";
 import {
   captureTargetCheckoutBinding,
   withTargetReviewSnapshot,
@@ -280,7 +280,12 @@ test(
     const target = join(f.cwd, "managed-scanner-cache");
     symlinkSync(target, cacheRoot);
     assert.throws(
-      () => managedScannerCacheRoot({ CLAWSWEEPER_REVIEW_TOOLS_DIR: cacheRoot }, f.cwd, f.cwd),
+      () =>
+        managedScannerCacheRoot(
+          { CLAWSWEEPER_REVIEW_TOOLS_DIR: cacheRoot },
+          realpathSync(f.cwd),
+          f.cwd,
+        ),
       /unsafe_path/,
     );
     assert.equal(existsSync(target), false, "rejected cache symlinks must not create their target");
@@ -532,28 +537,17 @@ const autoreviewSources = [
   "skills/autoreview/tests/test_autoreview_hardening.py",
   ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
 ];
-
-test("reviewed fixture registry binds exact digests to exact regular-file source paths", () => {
-  for (const [source, digest] of [
-    [ledgerSource, "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e"],
-    ...autoreviewSources.map((source) => [
-      source,
-      "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83",
-    ]),
-  ]) {
-    assert.deepEqual(reviewedFixtureForSource(source!, "100644"), {
-      fixtureSha256: digest,
-      source,
-    });
-    for (const mode of ["100755", "120000", "160000", "000000", "644"])
-      assert.equal(reviewedFixtureForSource(source!, mode), undefined);
-    for (const alias of [`./${source}`, `other/${source}`, `${source}.bak`, source!.toUpperCase()])
-      assert.equal(reviewedFixtureForSource(alias, "100644"), undefined);
-  }
-});
+const browserChromeSource = "extensions/browser/src/browser/chrome.test.ts";
+const browserServerContextSource =
+  "extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts";
+const ledgerFixtureSha256 = "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e";
 
 for (const scenario of [
   "reviewed fixture",
+  "browser local Chrome fixture",
+  "browser remote Chrome fixture",
+  "browser remote server fixture",
+  "browser local server mismatch",
   "PLAIN duplicate",
   "HTML duplicate",
   "shared approved path OIDs",
@@ -614,17 +608,21 @@ for (const scenario of [
       new URL("./action-ledger-runtime.test.ts", import.meta.url),
       "utf8",
     );
-    const uri = [...existing.matchAll(/"([^"\n]+)"/g)]
+    let uri = [...existing.matchAll(/"([^"\n]+)"/g)]
       .map((match) => match[1]!)
-      .find(
-        (value) =>
-          createHash("sha256").update(value).digest("hex") ===
-          "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e",
-      );
+      .find((value) => createHash("sha256").update(value).digest("hex") === ledgerFixtureSha256);
+    if (scenario.startsWith("browser ")) {
+      const local = scenario.includes("local");
+      const url = new URL(local ? "http://127.0.0.1" : "https://browserless.example.com");
+      url.username = local ? "browser-user" : "user";
+      url.password = local ? "browser-password" : "pass";
+      uri = url.href.slice(0, -1);
+    }
     assert.ok(uri, "reviewed synthetic fixture is present");
     const f = fixture(t, scenario === "prompt" ? uri : undefined);
-    const files =
-      scenario === "shared approved path OIDs"
+    const files = scenario.startsWith("browser ")
+      ? [scenario.includes("server") ? browserServerContextSource : browserChromeSource]
+      : scenario === "shared approved path OIDs"
         ? [...autoreviewSources, ledgerSource]
         : scenario === "shared approved and unapproved path OIDs"
           ? [ledgerSource, "other.test.ts"]
@@ -764,6 +762,9 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
     if (
       [
         "reviewed fixture",
+        "browser local Chrome fixture",
+        "browser remote Chrome fixture",
+        "browser remote server fixture",
         "PLAIN duplicate",
         "HTML duplicate",
         "repeated regular snapshot OID",
@@ -779,11 +780,8 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
       );
       const notice = JSON.parse(String(notices[0]![0]));
       assert.equal(notice.event, "agent_input_scan_classified");
-      assert.equal(notice.source, ledgerSource);
-      assert.equal(
-        notice.fixtureSha256,
-        reviewedFixtureForSource(ledgerSource, "100644")!.fixtureSha256,
-      );
+      assert.equal(notice.source, files[0]);
+      assert.equal(notice.fixtureSha256, createHash("sha256").update(uri).digest("hex"));
       assert.equal(notice.detector, "URI");
       assert.match(notice.notice, /classified as non-sensitive/);
       assert.equal(
