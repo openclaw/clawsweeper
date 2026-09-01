@@ -2612,10 +2612,14 @@ test("bun-based target toolchain installs deps and runs configured validation", 
   ]);
 });
 
-test("dependency setup permits inert package-manager config files", () => {
+test("dependency setup permits install-safe package-manager config files", () => {
   for (const [configName, contents] of [
     [".npmrc", ""],
     [".npmrc", "# Registry and auth settings belong in the runner environment.\n; npm comment\n"],
+    [
+      ".npmrc",
+      "min-release-age=7\nmin-release-age-exclude[]=@openai/codex\nmin-release-age-exclude[]=@openai/codex-*\n",
+    ],
     ["bunfig.toml", "# Install settings belong in the runner environment.\n"],
   ] as const) {
     const cwd = gitBunPackageFixture({ check: "bun x tsc --noEmit" });
@@ -2638,11 +2642,17 @@ test("dependency setup permits inert package-manager config files", () => {
   }
 });
 
-test("dependency setup permits pnpm integrity strings containing double slashes", () => {
+test("dependency setup permits multi-document pnpm lockfiles with integrity strings", () => {
   const cwd = gitBunPackageFixture({ check: "bun x tsc --noEmit" });
   fs.writeFileSync(
     path.join(cwd, "pnpm-lock.yaml"),
     [
+      "---",
+      "lockfileVersion: '9.0'",
+      "packages: {}",
+      "snapshots: {}",
+      "",
+      "---",
       "lockfileVersion: '9.0'",
       "",
       "packages:",
@@ -2998,6 +3008,11 @@ test("dependency setup rejects target-controlled network destinations", () => {
       "cafile=./target-controlled-ca.pem\n",
       "fetch-retries=9\n",
       "future-network-setting=value\n",
+      "min-release-age=0\n",
+      "min-release-age=seven\n",
+      "min-release-age-exclude[]=*\n",
+      "min-release-age-exclude[]=@openai/*\n",
+      "min-release-age-exclude[]=https://attacker.example/payload\n",
       "# comment\rregistry=http://attacker.example/\n",
     ].map((contents) => ({
       expected: /network config is not allowed: \.npmrc/,
@@ -3036,7 +3051,7 @@ test("dependency setup rejects target-controlled network destinations", () => {
         const cwd = gitPackageFixture({ check: 'node -e ""' });
         fs.writeFileSync(
           path.join(cwd, "pnpm-lock.yaml"),
-          "lockfileVersion: '9.0'\npackages:\n  payload:\n    resolution:\n      tarball: http://169.254.169.254/latest/meta-data/\n",
+          "---\nlockfileVersion: '9.0'\npackages: {}\n---\nlockfileVersion: '9.0'\npackages:\n  payload:\n    resolution:\n      tarball: http://169.254.169.254/latest/meta-data/\n",
         );
         return {
           cwd,
@@ -3647,7 +3662,8 @@ test(
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
-    const binDir = makeFixtureDir("clawsweeper-bun-setup-containment-");
+    // Native containment can read the target checkout, not arbitrary host temp scripts.
+    const binDir = fs.mkdtempSync(path.join(cwd, ".test-bin-"));
     writeNodeCommandShim(
       binDir,
       "bun",
@@ -3701,7 +3717,7 @@ test(
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
-    const binDir = makeFixtureDir("clawsweeper-npm-setup-containment-");
+    const binDir = fs.mkdtempSync(path.join(cwd, ".test-bin-"));
     writeNodeCommandShim(
       binDir,
       "npm",
@@ -4714,13 +4730,14 @@ test("intermediate validation cannot tamper with fresh runtime outputs before ar
   );
 });
 
-test("changed-gate fallback preserves and protects pending fresh runtime output", () => {
-  for (const tamperWithFreshRuntime of [false, true]) {
+test("changed-gate caches restore while pending fresh runtime output stays protected", () => {
+  for (const scenario of ["success", "fallback", "tamper"] as const) {
     const cwd = gitPackageFixture({
       "build:ci-artifacts": "node scripts/build-runtime.mjs",
+      ...(scenario === "success" ? { "check:changed": "node scripts/build-runtime.mjs" } : {}),
       "test:serial": "node --test",
     });
-    fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n");
+    fs.appendFileSync(path.join(cwd, ".gitignore"), "dist/\n.cache/\n");
     const scripts = path.join(cwd, "scripts");
     fs.mkdirSync(scripts, { recursive: true });
     fs.writeFileSync(path.join(scripts, "build-runtime.mjs"), "// trusted fixture shim\n");
@@ -4740,6 +4757,11 @@ test("changed-gate fallback preserves and protects pending fresh runtime output"
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
     fs.writeFileSync(path.join(cwd, "test", "example.test.ts"), "export const value = 2;\n");
+    const caches = [".cache/vitest", "node_modules/.cache", "node_modules/.vite"];
+    for (const cache of caches) {
+      fs.mkdirSync(path.join(cwd, cache), { recursive: true });
+      fs.writeFileSync(path.join(cwd, cache, "previous.bin"), "trusted cache\n");
+    }
 
     const binDir = makeFixtureDir("clawsweeper-runtime-fallback-");
     writeNodeCommandShim(
@@ -4753,10 +4775,15 @@ test("changed-gate fallback preserves and protects pending fresh runtime output"
         '  fs.writeFileSync("dist/runtime.js", "fresh runtime\\n");',
         "}",
         'if (args.includes("check:changed")) {',
-        '  console.error("terminating stalled Vitest process");',
-        "  process.exit(1);",
+        `  for (const cache of ${JSON.stringify(caches)}) {`,
+        '    fs.writeFileSync(`${cache}/previous.bin`, "rewritten cache\\n");',
+        '    fs.writeFileSync(`${cache}/generated.bin`, "generated cache\\n");',
+        "  }",
+        ...(scenario === "success"
+          ? []
+          : ['  console.error("terminating stalled Vitest process");', "  process.exit(1);"]),
         "}",
-        ...(tamperWithFreshRuntime
+        ...(scenario === "tamper"
           ? [
               'if (args.includes("test:serial")) {',
               '  fs.writeFileSync("dist/runtime.js", "tampered runtime\\n");',
@@ -4775,6 +4802,7 @@ test("changed-gate fallback preserves and protects pending fresh runtime output"
           cwd,
           validationOptions("openclaw/openclaw", {
             allowExpensiveValidation: true,
+            strictTargetValidation: scenario === "success",
             pinnedBaseRef: "origin/main",
             toolchain: {
               packageManager: "pnpm",
@@ -4785,22 +4813,32 @@ test("changed-gate fallback preserves and protects pending fresh runtime output"
         ),
       );
 
-    if (tamperWithFreshRuntime) {
+    if (scenario === "tamper") {
       assert.throws(
         execute,
         /unsafe validation command mutated fresh runtime build output \(pnpm test:serial test\/example\.test\.ts\)/,
       );
-      continue;
+    } else {
+      assert.deepEqual(execute(), [
+        "pnpm build:ci-artifacts",
+        ...(scenario === "success"
+          ? ["pnpm check:changed"]
+          : ["git diff --check origin/main...HEAD", "pnpm test:serial test/example.test.ts"]),
+        smoke,
+      ]);
+      assert.equal(
+        fs.readFileSync(path.join(cwd, "dist", "runtime.js"), "utf8"),
+        "fresh runtime\n",
+      );
+      assert.equal(fs.existsSync(path.join(cwd, "dist-runtime-build.tar.zst")), false);
     }
-
-    assert.deepEqual(execute(), [
-      "pnpm build:ci-artifacts",
-      "git diff --check origin/main...HEAD",
-      "pnpm test:serial test/example.test.ts",
-      smoke,
-    ]);
-    assert.equal(fs.readFileSync(path.join(cwd, "dist", "runtime.js"), "utf8"), "fresh runtime\n");
-    assert.equal(fs.existsSync(path.join(cwd, "dist-runtime-build.tar.zst")), false);
+    for (const cache of caches) {
+      assert.equal(
+        fs.readFileSync(path.join(cwd, cache, "previous.bin"), "utf8"),
+        "trusted cache\n",
+      );
+      assert.equal(fs.existsSync(path.join(cwd, cache, "generated.bin")), false);
+    }
   }
 });
 
@@ -5060,6 +5098,77 @@ test("OpenClaw changed-gate compiler cache is disposable and preserves existing 
       );
     } else {
       assert.equal(fs.existsSync(compilerCache), false);
+    }
+  }
+});
+
+test("OpenClaw changed-gate caches are disposable without exempting sibling runtime inputs", () => {
+  for (const poisonedPath of [null, ".cache/stable.txt", "node_modules/dependency/runtime.js"]) {
+    const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), ".cache/\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const preserved = [
+      [".cache/vitest/previous.bin", "previous Vitest cache\n"],
+      ["node_modules/.cache/jiti/previous.mjs", "previous Jiti cache\n"],
+      ["node_modules/.vite/vitest/results.json", "previous Vite cache\n"],
+      [".cache/stable.txt", "trusted cache sibling\n"],
+      ["node_modules/dependency/runtime.js", "trusted dependency\n"],
+    ] as const;
+    for (const [relativePath, contents] of preserved) {
+      const target = path.join(cwd, relativePath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, contents);
+    }
+
+    const generated = [
+      ".cache/vitest/generated.bin",
+      "node_modules/.cache/jiti/generated.mjs",
+      "node_modules/.vite/vitest/generated.json",
+    ];
+    const binDir = makeFixtureDir("clawsweeper-changed-gate-cache-");
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      [
+        'const fs = require("node:fs");',
+        `for (const relativePath of ${JSON.stringify(generated)}) {`,
+        "  fs.mkdirSync(require('node:path').dirname(relativePath), { recursive: true });",
+        '  fs.writeFileSync(relativePath, "generated cache\\n");',
+        "}",
+        ...(poisonedPath
+          ? [`fs.writeFileSync(${JSON.stringify(poisonedPath)}, "poisoned\\n");`]
+          : []),
+      ].join("\n"),
+    );
+    const execute = () =>
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          ["pnpm check:changed"],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            pinnedBaseRef: "origin/main",
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+            },
+          }),
+        ),
+      );
+
+    if (poisonedPath) {
+      assert.throws(execute, /unsafe validation command mutated checkout identity/);
+    } else {
+      assert.deepEqual(execute(), ["pnpm check:changed"]);
+    }
+    for (const [relativePath, contents] of preserved.slice(0, 3)) {
+      assert.equal(fs.readFileSync(path.join(cwd, relativePath), "utf8"), contents);
+    }
+    for (const relativePath of generated) {
+      assert.equal(fs.existsSync(path.join(cwd, relativePath)), false);
     }
   }
 });
@@ -8751,7 +8860,7 @@ test(
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
-    const binDir = makeFixtureDir("clawsweeper-detached-pnpm-");
+    const binDir = fs.mkdtempSync(path.join(cwd, ".test-bin-"));
     const pnpmPath = path.join(binDir, "pnpm.js");
     fs.writeFileSync(
       pnpmPath,
