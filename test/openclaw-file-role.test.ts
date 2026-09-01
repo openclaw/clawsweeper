@@ -43,6 +43,22 @@ test("explicit test directories retain non-code assets at root and nested bounda
   }
 });
 
+test("Go test suffixes establish a test role only at the filename boundary", () => {
+  for (const root of ["", "src/runtime/", "scripts/translation/"]) {
+    assert.equal(isOpenClawTestRolePath(`${root}diagnostics_test.go`), true);
+    for (const leaf of [
+      "diagnostics.go",
+      "test.go",
+      "diagnostics_test.go/production.go",
+      "diagnostics_test.go.bak",
+      "diagnostics_test.Go",
+      "diagnostics_TEST.go",
+    ]) {
+      assert.equal(isOpenClawTestRolePath(`${root}${leaf}`), false, `${root}${leaf}`);
+    }
+  }
+});
+
 test("generic names and nonterminal test roles do not establish a test role", () => {
   for (const role of ["support", "helper", "helpers", "harness", "fixture", "fixtures", "utils"]) {
     for (const path of [`src/config/schema.${role}.ts`, `src/${role}/schema.ts`]) {

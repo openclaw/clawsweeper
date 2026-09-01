@@ -116,7 +116,7 @@ interface ReportParsingDependencies {
       "triagePriority" | "impactLabels" | "mergeRiskLabels" | "maturityLabels"
     >,
   ) => string[];
-  splitFileAndLine: (file: string) => { file: string; line?: number };
+  normalizeEvidence: (entry: Evidence, legacyReportRepo?: string) => Evidence;
 }
 
 const LIVE_PROOF_SECTION_HEADING = REVIEW_SECTIONS.liveProof;
@@ -264,36 +264,47 @@ export function createReportParser({
   sectionLineValue,
   sectionList,
   selectedReviewLabels,
-  splitFileAndLine,
+  normalizeEvidence,
 }: ReportParsingDependencies) {
   function reportEvidence(markdown: string): Evidence[] {
     const evidence = reviewSectionValue(markdown, "evidence");
     const entries: Evidence[] = [];
     let current: Evidence | null = null;
+    let legacy = true;
+    const finish = () => {
+      if (current)
+        entries.push(normalizeEvidence(current, legacy ? markdownRepository(markdown) : undefined));
+    };
     for (const line of evidence.split("\n")) {
       const heading = parseBoldListHeading(line);
       if (heading) {
-        if (current) entries.push(current);
+        finish();
+        legacy = true;
         current = evidenceEntry({
+          repo: null,
           label: heading.label,
           detail: heading.detail,
         });
         continue;
       }
       if (!current) continue;
-      const file = line.match(/^\s+- file: \[([^\]]+)\]/);
-      if (file?.[1]) {
-        const location = splitFileAndLine(file[1]);
-        current.file = location.file;
-        current.line = location.line ?? null;
+      const repo = line.match(/^\s+- repo: (.*)$/);
+      if (repo) {
+        legacy = false;
+        current.repo = repo[1] === "null" ? null : repo[1]!;
         continue;
       }
-      const sha = line.match(/^\s+- sha: \[([^\]]+)\]/);
+      const file = line.match(/^\s+- file: (.+)$/);
+      if (file?.[1]) {
+        current.file = file[1];
+        continue;
+      }
+      const sha = line.match(/^\s+- sha: (.+)$/);
       if (sha?.[1]) current.sha = sha[1];
       const command = line.match(/^\s+- command: `([\s\S]+)`$/);
       if (command?.[1]) current.command = command[1];
     }
-    if (current) entries.push(current);
+    finish();
     return entries;
   }
 

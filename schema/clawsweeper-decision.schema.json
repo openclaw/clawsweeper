@@ -115,8 +115,12 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["label", "detail", "file", "line", "command", "sha"],
+        "required": ["repo", "label", "detail", "file", "line", "command", "sha"],
         "properties": {
+          "repo": {
+            "type": ["string", "null"],
+            "description": "Verified owner/repository of this evidence. Use the target repository for target source, the actual dependency repository for dependency source, and null when ownership is unknown. Never infer ownership from a sibling checkout path."
+          },
           "label": {
             "type": "string"
           },
