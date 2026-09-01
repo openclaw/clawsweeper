@@ -18,7 +18,9 @@ import { runAgentCheckoutInspection, runAgentProcess } from "../dist/agent-runne
 import { createReviewActionLedger } from "../dist/clawsweeper-review-ledger.js";
 import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
 import { closeDecision } from "./helpers.ts";
-import { AgentInputScanError } from "../dist/agent-input-scan.js";
+import { AgentInputScanError, agentInputScanFailureExitCode } from "../dist/agent-input-scan.js";
+import { prepareOpenClawCodexSourceForReview } from "../dist/openclaw-codex-source.js";
+import { reviewStatusForDecision } from "../dist/clawsweeper-report-document.js";
 
 import { parseArgs } from "../dist/clawsweeper-args.js";
 import {
@@ -152,8 +154,14 @@ test("cache preflight promotes legacy carried reports to runner-owned provenance
 for (const scenario of [
   "structural-clean",
   "structural-refusal",
+  "structural-exact-refusal",
   "content-refusal",
+  "content-exact-refusal",
   "changed-pr-refusal",
+  "changed-pr-exact-refusal",
+  "changed-pr-exact-incomplete-refusal",
+  "changed-pr-exact-preparation-failure",
+  "changed-pr-exact-checkout-failure",
   "changed-pr-codex-failure",
   "changed-pr-exact-codex-failure",
   "changed-pr-clean",
@@ -164,6 +172,9 @@ for (const scenario of [
     const refuseScan = scenario.endsWith("refusal");
     const codexFailure = scenario.endsWith("codex-failure");
     const exactFailure = scenario.includes("exact");
+    const incompleteSource = scenario.includes("incomplete");
+    const preparationFailure = scenario.endsWith("preparation-failure");
+    const checkoutFailure = scenario.endsWith("checkout-failure");
     const changedPr = scenario.startsWith("changed-pr-");
     const fresh = scenario === "fresh-refusal" || changedPr;
     const hydrated = fresh || scenario.startsWith("content-");
@@ -294,6 +305,7 @@ for (const scenario of [
     let structuralFetches = 0;
     let cachedCompletions = 0;
     let checkoutInspectionCalls = 0;
+    let reviewTreeCleanupCalls = 0;
     let activeReviewMutationRunner = null;
 
     const oldEnv = process.env;
@@ -311,6 +323,7 @@ for (const scenario of [
       GITHUB_JOB: "review",
       GITHUB_SHA: headSha,
       EXACT_REVIEW_ITEM_KEY: exactFailure ? `${REPO}#${ITEM_NUMBER}` : "",
+      EXACT_REVIEW_SOURCE_HEAD_SHA: changedPr ? headSha : priorRecord.sourceRevision,
     };
     t.after(() => {
       process.env = oldEnv;
@@ -351,6 +364,13 @@ for (const scenario of [
       collectItemContext: () => {
         hydrationCalls += 1;
         if (!hydrated) throw new Error("scheduled structural cache hit must not hydrate");
+        if (preparationFailure) {
+          prepareOpenClawCodexSourceForReview({
+            targetRepo: REPO,
+            reviewDir: target,
+            env: { CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT: "fixture-setup" },
+          });
+        }
         return context;
       },
       completePullChecksContext: (checks) => checks?.complete === true,
@@ -431,11 +451,15 @@ for (const scenario of [
       pullHeadShaFromContext: (value) => value.pullRequest?.head.sha ?? null,
       reviewStructuralPullStateFromContext: () => pull,
       materializePullRequestReviewTree: ({ worktreeDir }) => {
+        if (checkoutFailure) return false;
         mkdirSync(worktreeDir, { recursive: true });
         git("clone", "-q", target, worktreeDir);
         return true;
       },
-      removePullRequestReviewTree: () => true,
+      removePullRequestReviewTree: () => {
+        reviewTreeCleanupCalls += 1;
+        return true;
+      },
       localExactReviewItem: () => false,
       makeTreeReadOnly: () => [],
       postReviewStartStatusComment: () => {
@@ -468,9 +492,15 @@ for (const scenario of [
       buildReviewPrompt: () => ({ text: "Review the current item." }),
       itemSnapshotHash: () => digest("snapshot"),
       codexFailureLogKind: () => "codex_execution",
-      codexReviewFailureRetryable: () => true,
+      codexReviewFailureRetryable: (error: unknown) => !(error instanceof AgentInputScanError),
       codexFailureDecision: () => {
-        if (codexFailure) return closeDecision({ decision: "keep_open", closeReason: null });
+        if (codexFailure || checkoutFailure)
+          return closeDecision({
+            decision: "keep_open",
+            closeReason: null,
+            summary: "Codex review failed: source preparation.",
+            localCheckoutAccess: "unverified",
+          });
         throw new Error("scan refusal must not become a decision");
       },
       runCodex: () => {
@@ -486,19 +516,25 @@ for (const scenario of [
             label: "fresh-review",
             cwd: target,
             prompt: "Review the current item.",
-            scanSource: { kind: "prompt" },
+            scanSource: incompleteSource
+              ? { kind: "committed", baseSha, headSha: "f".repeat(40) }
+              : { kind: "prompt" },
             model: "internal",
             env: { ...process.env, CODEX_BIN: provider },
             timeoutMs: 30_000,
           });
         assert.equal(changedPr, true, "unchanged input must use the cache");
-        return closeDecision({ decision: "keep_open", closeReason: null });
+        return closeDecision({
+          decision: "keep_open",
+          closeReason: null,
+          localCheckoutAccess: "verified",
+        });
       },
       attachFixedPullRequest: (decision) => decision,
       verifyRegressionProvenance: (decision) => decision,
       reviewActionForDecision: () => ({ actionTaken: "none" }),
-      markdownFor: () =>
-        "---\nreview_status: complete\ndecision: keep_open\n---\nFresh Codex review\n",
+      markdownFor: ({ decision }) =>
+        `---\nreview_status: ${reviewStatusForDecision(decision)}\ndecision: keep_open\n---\nFresh Codex review\n`,
       selectCandidates: () => ({ candidates: [{ ...item }], scannedPages: 1 }),
       suppliedReviewStartLeaseFromArgs,
       targetRepo: () => REPO,
@@ -531,7 +567,13 @@ for (const scenario of [
         );
 
       if (refuseScan) {
-        assert.throws(execute, AgentInputScanError);
+        const reason = incompleteSource ? "incomplete_source" : "findings";
+        assert.throws(execute, (error) => {
+          assert.ok(error instanceof AgentInputScanError);
+          assert.equal(error.reason, reason);
+          assert.equal(agentInputScanFailureExitCode(error), incompleteSource ? 78 : null);
+          return true;
+        });
         assert.equal(checkoutInspectionCalls, fresh ? 0 : 1);
         assert.equal(hydrationCalls, hydrated ? 1 : 0);
         assert.equal(existsSync(providerCalls), false);
@@ -543,10 +585,45 @@ for (const scenario of [
         assert.equal(cachedCompletions, 0);
         assert.equal(generationCalls, fresh ? 1 : 0);
         assert.equal(existsSync(join(artifactDir, `${ITEM_NUMBER}.md`)), false);
+        assert.equal(existsSync(join(artifactDir, "failure-diagnostics")), exactFailure);
+        if (exactFailure) {
+          const manifest = JSON.parse(
+            readFileSync(join(artifactDir, "failure-diagnostics", "manifest.json"), "utf8"),
+          );
+          assert.deepEqual(manifest.failure, { stage: "agent_input_scan", reason_code: reason });
+          assert.equal(manifest.retryable, false);
+          assert.equal(manifest.process.workflow_exit, incompleteSource ? 78 : 1);
+          assert.equal(manifest.source.sha, changedPr ? headSha : priorRecord.sourceRevision);
+        }
         return;
       }
-      if (codexFailure) {
+      if (preparationFailure) {
+        assert.throws(execute, { diagnosticStage: "source_preparation" });
+        assert.equal(generationCalls, 0);
+        assert.equal(checkoutInspectionCalls, 0);
+        assert.equal(existsSync(providerCalls), false);
+        assert.equal(existsSync(join(artifactDir, `${ITEM_NUMBER}.md`)), false);
+        const manifest = JSON.parse(
+          readFileSync(join(artifactDir, "failure-diagnostics", "manifest.json"), "utf8"),
+        );
+        assert.deepEqual(manifest.failure, {
+          stage: "source_preparation",
+          reason_code: "configuration_missing",
+        });
+        assert.equal(manifest.source.sha, headSha);
+        const terminal = readAllSpooledActionEvents(root).filter(
+          (event) => event.action.status === "failed",
+        );
+        assert.equal(terminal.length, 3);
+        assert.ok(terminal.every((event) => event.action.retryable === true));
+        return;
+      }
+      if (codexFailure || checkoutFailure) {
         assert.throws(execute, /Codex failed/);
+        assert.match(
+          readFileSync(join(artifactDir, `${ITEM_NUMBER}.md`), "utf8"),
+          /^review_status: failed$/m,
+        );
         assert.equal(existsSync(join(artifactDir, "failure-diagnostics")), exactFailure);
         if (exactFailure) {
           const manifest = JSON.parse(
@@ -556,8 +633,13 @@ for (const scenario of [
           assert.equal(manifest.classification, "source_preparation");
           assert.deepEqual(manifest.failure, {
             stage: "source_preparation",
-            reason_code: "setup_script_failed",
+            reason_code: checkoutFailure ? "review_checkout_unavailable" : "setup_script_failed",
           });
+          assert.equal(manifest.source.sha, headSha);
+          if (checkoutFailure) {
+            assert.equal(generationCalls, 0);
+            assert.equal(reviewTreeCleanupCalls, 1);
+          }
         }
         return;
       }

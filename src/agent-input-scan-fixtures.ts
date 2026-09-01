@@ -1,8 +1,14 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 
+interface ReviewedFixture {
+  fixtureSha256: string;
+  rawSha256?: string;
+  sources: readonly string[];
+}
+
 // This is host policy, never an allowlist loaded from the reviewed checkout.
-const REVIEWED_FIXTURES = [
+const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
   {
     // Maintainer-reviewed malformed-config fixture introduced by d68b1861172120fc.
     fixtureSha256: "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e",
@@ -29,7 +35,18 @@ const REVIEWED_FIXTURES = [
       "extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts",
     ],
   },
-] as const;
+  {
+    // OpenClaw remote-CDP documentation example introduced by bf15c87d2b12.
+    fixtureSha256: "e6907dddaccdec944b0f02e14fe9186293e2d513ff753db0a95b3460aa5dc1d9",
+    sources: ["docs/tools/browser.md"],
+  },
+  {
+    // OpenClaw credentialed-page rejection fixture introduced by d5fb4903f1b1.
+    fixtureSha256: "d8996b8fdec57910e379c720611bc37f9433f1cb7027b6f6262d785f1506e9ff",
+    rawSha256: "8d3331ee208c72c30fba199e4e2b8a65d69a5034e49875a2f20dbea3a4f2f976",
+    sources: ["extensions/browser/src/browser-tool.test.ts"],
+  },
+];
 
 export interface ReviewedFixtureBlob {
   bytes: Buffer;
@@ -38,7 +55,8 @@ export interface ReviewedFixtureBlob {
 
 interface ClassifiedFinding {
   blob: string;
-  line: number;
+  scannerLine: number;
+  literalLine: number;
   decoder: string;
   occurrences: number;
 }
@@ -100,6 +118,7 @@ export function classifyReviewedFixtureScan(
     )
       return undefined;
 
+    const literalLines = new Map<string, number>();
     const classified = new Map<
       string,
       { fixtureSha256: string; source: string; findings: Map<string, ClassifiedFinding> }
@@ -114,17 +133,23 @@ export function classifyReviewedFixtureScan(
         typeof finding.VerificationError !== "string" ||
         !finding.VerificationError ||
         typeof finding.Raw !== "string" ||
-        // URI Raw omits the path; RawV2 must match the complete reviewed value.
-        finding.RawV2 !== finding.Raw ||
+        typeof finding.RawV2 !== "string" ||
         finding.ExtraData !== null ||
         finding.StructuredData !== null
       )
         return undefined;
-      const digest = createHash("sha256").update(finding.Raw).digest("hex");
-      const fixture = REVIEWED_FIXTURES.find((entry) => entry.fixtureSha256 === digest);
+      // URI Raw omits the path; bind both outputs to the complete reviewed value.
+      const digest = createHash("sha256").update(finding.RawV2).digest("hex");
+      const rawDigest = createHash("sha256").update(finding.Raw).digest("hex");
+      const fixture = REVIEWED_FIXTURES.find(
+        (entry) =>
+          entry.fixtureSha256 === digest && (entry.rawSha256 ?? entry.fixtureSha256) === rawDigest,
+      );
       if (!fixture) return undefined;
       const source = object(object(object(finding.SourceMetadata).Data).Filesystem);
-      const staged = typeof source.file === "string" ? sourceBlobs.get(source.file) : undefined;
+      const file = source.file;
+      if (typeof file !== "string") return undefined;
+      const staged = sourceBlobs.get(file);
       if (
         !staged ||
         !staged.references.length ||
@@ -137,13 +162,7 @@ export function classifyReviewedFixtureScan(
         source.line <= 0
       )
         return undefined;
-      const line = new TextDecoder("utf-8", { fatal: true }).decode(staged.bytes).split("\n")[
-        source.line - 1
-      ];
-      // HTML may rediscover an unchanged literal. Encoded-only occurrences,
-      // numeric staging files (prompt/schema/diff), and forged paths never qualify.
-      if (!line?.includes(finding.Raw)) return undefined;
-      const uri = new URL(finding.Raw);
+      const uri = new URL(finding.RawV2);
       const parts = object(finding.SecretParts);
       if (
         Object.keys(parts).length !== 3 ||
@@ -152,7 +171,26 @@ export function classifyReviewedFixtureScan(
         parts.password !== uri.password
       )
         return undefined;
-      const blob = basename(source.file as string);
+      const valueKey = `${file}:${digest}`;
+      let literalLine = literalLines.get(valueKey);
+      if (literalLine === undefined) {
+        // Decoding can shift coordinates, and deduplication can drop the plain
+        // finding. Bind to staged bytes and record one literal witness separately
+        // from the scanner's location, without allocating unbounded line lists.
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(staged.bytes);
+        const offset = text.indexOf(finding.RawV2);
+        if (offset < 0) return undefined;
+        literalLine = 1;
+        for (
+          let newline = text.indexOf("\n");
+          newline !== -1 && newline < offset;
+          newline = text.indexOf("\n", newline + 1)
+        ) {
+          literalLine++;
+        }
+        literalLines.set(valueKey, literalLine);
+      }
+      const blob = basename(file);
       const key = `${blob}:${source.line}:${finding.DecoderName}`;
       const sources = new Set(staged.references.map(({ source }) => source));
       for (const path of sources) {
@@ -165,7 +203,8 @@ export function classifyReviewedFixtureScan(
         const previous = group.findings.get(key);
         group.findings.set(key, {
           blob,
-          line: source.line,
+          scannerLine: source.line,
+          literalLine,
           decoder: finding.DecoderName,
           occurrences: (previous?.occurrences ?? 0) + 1,
         });

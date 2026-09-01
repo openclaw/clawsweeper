@@ -540,6 +540,8 @@ const autoreviewSources = [
 const browserChromeSource = "extensions/browser/src/browser/chrome.test.ts";
 const browserServerContextSource =
   "extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts";
+const browserDocsSource = "docs/tools/browser.md";
+const browserToolSource = "extensions/browser/src/browser-tool.test.ts";
 const ledgerFixtureSha256 = "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e";
 
 for (const scenario of [
@@ -548,6 +550,20 @@ for (const scenario of [
   "browser remote Chrome fixture",
   "browser remote server fixture",
   "browser local server mismatch",
+  "browser docs fixture",
+  "browser page URL fixture",
+  "browser docs source mismatch",
+  "browser page URL source mismatch",
+  "browser page URL changed path",
+  "browser page URL changed query",
+  "browser docs shifted HTML",
+  "browser docs shifted HTML first",
+  "browser docs shifted HTML without companion",
+  "browser docs shifted HTML repeated literal",
+  "browser docs literal in other blob",
+  "browser remote Chrome different approved literal",
+  "browser docs shifted HTML encoded-only",
+  "shifted PLAIN",
   "PLAIN duplicate",
   "HTML duplicate",
   "shared approved path OIDs",
@@ -569,7 +585,8 @@ for (const scenario of [
   "mixed findings",
   "unapproved first",
   "wrong source",
-  "wrong line",
+  "invalid line",
+  "invalid UTF-8 literal blob",
   "other file",
   "prompt",
   "schema",
@@ -611,17 +628,54 @@ for (const scenario of [
     let uri = [...existing.matchAll(/"([^"\n]+)"/g)]
       .map((match) => match[1]!)
       .find((value) => createHash("sha256").update(value).digest("hex") === ledgerFixtureSha256);
+    const browserDocsFixture = scenario.startsWith("browser docs");
+    const browserPageFixture = scenario.startsWith("browser page URL");
     if (scenario.startsWith("browser ")) {
       const local = scenario.includes("local");
-      const url = new URL(local ? "http://127.0.0.1" : "https://browserless.example.com");
+      const url = new URL(
+        browserDocsFixture
+          ? "https://provider.example"
+          : browserPageFixture
+            ? "https://example.com/path"
+            : local
+              ? "http://127.0.0.1"
+              : "https://browserless.example.com",
+      );
       url.username = local ? "browser-user" : "user";
-      url.password = local ? "browser-password" : "pass";
-      uri = url.href.slice(0, -1);
+      url.password = browserPageFixture ? "secret" : local ? "browser-password" : "pass";
+      if (scenario === "browser page URL changed path") url.pathname = "/changed";
+      if (scenario === "browser page URL changed query") url.search = "?changed=1";
+      uri = browserPageFixture ? url.href : url.href.slice(0, -1);
     }
     assert.ok(uri, "reviewed synthetic fixture is present");
+    const authority = new URL(uri);
+    authority.pathname = "";
+    authority.search = "";
+    authority.hash = "";
+    const raw = browserPageFixture ? authority.href.slice(0, -1) : uri;
+    let otherReviewedUri: string | undefined;
+    if (scenario.endsWith("different approved literal")) {
+      const other = new URL("http://127.0.0.1");
+      other.username = "browser-user";
+      other.password = "browser-password";
+      otherReviewedUri = other.href.slice(0, -1);
+    }
+    const findingValues = [uri, raw, ...(otherReviewedUri ? [otherReviewedUri] : [])];
     const f = fixture(t, scenario === "prompt" ? uri : undefined);
     const files = scenario.startsWith("browser ")
-      ? [scenario.includes("server") ? browserServerContextSource : browserChromeSource]
+      ? [
+          browserDocsFixture
+            ? scenario.endsWith("source mismatch")
+              ? browserToolSource
+              : browserDocsSource
+            : browserPageFixture
+              ? scenario.endsWith("source mismatch")
+                ? browserDocsSource
+                : browserToolSource
+              : scenario.includes("server")
+                ? browserServerContextSource
+                : browserChromeSource,
+        ]
       : scenario === "shared approved path OIDs"
         ? [...autoreviewSources, ledgerSource]
         : scenario === "shared approved and unapproved path OIDs"
@@ -637,13 +691,25 @@ for (const scenario of [
                       ? "other.test.ts"
                       : ledgerSource,
               ];
-    const value = scenario === "decoded only" ? uri.replace(":", "&#58;") : uri;
-    const contents = "// context\n".repeat(40) + JSON.stringify(value) + "\n";
+    const value =
+      scenario === "decoded only" || scenario.endsWith("encoded-only")
+        ? uri.replace(":", "&#58;")
+        : uri;
+    const contents =
+      "// context\n".repeat(40) +
+      JSON.stringify(otherReviewedUri ?? value) +
+      "\n" +
+      (scenario.endsWith("repeated literal") ? JSON.stringify(value) + "\n" : "");
+    const fixtureContent = (prefix: string) =>
+      Buffer.concat([
+        Buffer.from(prefix + contents),
+        ...(scenario === "invalid UTF-8 literal blob" ? [Buffer.from([0xff])] : []),
+      ]);
     for (const file of files) {
       mkdirSync(dirname(join(f.cwd, file)), { recursive: true });
       writeFileSync(
         join(f.cwd, file),
-        scenario === "diff" ? "// before\n" : "// before\n" + contents,
+        scenario === "diff" ? "// before\n" : fixtureContent("// before\n"),
       );
       if (scenario === "executable source" || scenario === "shared endpoint OID 755 to 644")
         chmodSync(join(f.cwd, file), 0o755);
@@ -653,7 +719,13 @@ for (const scenario of [
       if (scenario === "shared endpoint OID 644 to 755" || scenario === "executable head snapshot")
         chmodSync(join(f.cwd, file), 0o755);
       else if (scenario === "shared endpoint OID 755 to 644") chmodSync(join(f.cwd, file), 0o644);
-      else writeFileSync(join(f.cwd, file), "// after\n" + contents);
+      else
+        writeFileSync(
+          join(f.cwd, file),
+          scenario === "browser docs literal in other blob"
+            ? "// after: no reviewed literal\n"
+            : fixtureContent("// after\n"),
+        );
     }
     const headSha = f.commit();
     const modeOnly =
@@ -675,9 +747,9 @@ for (const scenario of [
     } else if (scenario === "executable worktree snapshot") {
       chmodSync(join(f.cwd, ledgerSource), 0o755);
     } else if (scenario === "repeated regular snapshot OID") {
-      writeFileSync(join(f.cwd, ledgerSource), "// before\n" + contents);
+      writeFileSync(join(f.cwd, ledgerSource), fixtureContent("// before\n"));
       f.git("add", "--", ledgerSource);
-      writeFileSync(join(f.cwd, ledgerSource), "// after\n" + contents);
+      writeFileSync(join(f.cwd, ledgerSource), fixtureContent("// after\n"));
     }
     const receipt = join(f.root, "scan-root");
     const schemaPath = join(f.root, "schema.json");
@@ -686,12 +758,13 @@ for (const scenario of [
       t,
       String.raw`
 const uri = ${JSON.stringify(uri)};
+const raw = ${JSON.stringify(raw)};
 const scenario = ${JSON.stringify(scenario)};
 fs.writeFileSync(${JSON.stringify(receipt)}, path.dirname(inputDir));
 const parsed = new URL(uri);
 const blobs = inputs.filter(({name}) => /^[a-f0-9]{40}$/.test(name));
 assert.equal(blobs.length, ${modeOnly ? 1 : 2});
-const findings = inputs.filter(({name, bytes}) =>
+let findings = inputs.filter(({name, bytes}) =>
   (/^[a-f0-9]{40}$/.test(name) && (scenario !== 'diff' || bytes.includes(uri))) ||
   (scenario === 'prompt' && name === 'prompt') ||
   (scenario === 'schema' && name === 'schema') ||
@@ -699,11 +772,25 @@ const findings = inputs.filter(({name, bytes}) =>
   (scenario === 'diff' && /^\d+$/.test(name) && bytes.includes(uri))
 ).map(({name, bytes}) => ({
   SourceType: 15, DetectorType: 17, DetectorName: 'URI', DecoderName: 'PLAIN', Verified: false,
-  VerificationError: 'synthetic verification error', Raw: uri, RawV2: uri,
+  VerificationError: 'synthetic verification error', Raw: raw, RawV2: uri,
   SourceMetadata: {Data: {Filesystem: {file: path.join(inputDir, name), line: /^[a-f0-9]{40}$/.test(name) ? 42 : bytes.toString().split('\n').findIndex(line => line.includes(uri)) + 1}}},
   SecretParts: {host: parsed.host, username: parsed.username, password: parsed.password},
   ExtraData: null, StructuredData: null,
 }));
+if (scenario.includes('shifted HTML')) {
+  const plain = findings;
+  const html = plain.map(finding => ({
+    ...finding, DecoderName: 'HTML',
+    SourceMetadata: {Data: {Filesystem: {...finding.SourceMetadata.Data.Filesystem, line: 38}}},
+  }));
+  findings = scenario.endsWith('first') ? [...html, ...plain] : [...plain, ...html];
+  if (scenario.endsWith('without companion')) findings = [html[0], plain[1], html[1]];
+  if (scenario.endsWith('encoded-only')) findings = html;
+  if (scenario.endsWith('repeated literal')) findings.unshift(...plain.map(finding => ({
+    ...finding, SourceMetadata: {Data: {Filesystem: {...finding.SourceMetadata.Data.Filesystem, line: 43}}},
+  })));
+}
+if (scenario === 'shifted PLAIN') for (const finding of findings) finding.SourceMetadata.Data.Filesystem.line++;
 if (scenario === 'PLAIN duplicate') findings.push({...findings[0]});
 if (scenario === 'HTML duplicate') findings.push({...findings[0], DecoderName: 'HTML'});
 if (scenario === 'changed raw') findings[0].Raw += 'changed';
@@ -713,7 +800,7 @@ if (scenario === 'verified') findings[0].Verified = true;
 if (scenario === 'mixed findings') findings.push({...findings[0], Raw: 'unreviewed', RawV2: 'unreviewed'});
 if (scenario === 'unapproved first') findings.unshift({...findings[0], Raw: 'unreviewed', RawV2: 'unreviewed'});
 if (scenario === 'wrong source') findings[0].SourceMetadata.Data.Filesystem.file = path.join(inputDir, 'prompt');
-if (scenario === 'wrong line') findings[0].SourceMetadata.Data.Filesystem.line++;
+if (scenario === 'invalid line') findings[0].SourceMetadata.Data.Filesystem.line = 0;
 if (scenario === 'wrong detector') findings[0].DetectorType = 18;
 if (scenario === 'wrong source type') findings[0].SourceType = 16;
 if (scenario === 'wrong decoder') findings[0].DecoderName = 'BASE64';
@@ -765,6 +852,13 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
         "browser local Chrome fixture",
         "browser remote Chrome fixture",
         "browser remote server fixture",
+        "browser docs fixture",
+        "browser page URL fixture",
+        "browser docs shifted HTML",
+        "browser docs shifted HTML first",
+        "browser docs shifted HTML without companion",
+        "browser docs shifted HTML repeated literal",
+        "shifted PLAIN",
         "PLAIN duplicate",
         "HTML duplicate",
         "repeated regular snapshot OID",
@@ -774,7 +868,7 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
       assert.equal(readFileSync(f.calls, "utf8"), "called");
       assert.equal(notices.length, 1);
       assert.equal(
-        JSON.stringify(notices).includes(uri),
+        findingValues.some((candidate) => JSON.stringify(notices).includes(candidate)),
         false,
         "audit never exposes finding bytes",
       );
@@ -784,23 +878,58 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
       assert.equal(notice.fixtureSha256, createHash("sha256").update(uri).digest("hex"));
       assert.equal(notice.detector, "URI");
       assert.match(notice.notice, /classified as non-sensitive/);
+      const shiftedHtml = scenario.includes("shifted HTML");
+      const expectedLocations = (
+        shiftedHtml
+          ? [
+              { scannerLine: 42, decoder: "PLAIN" },
+              ...(scenario.endsWith("without companion")
+                ? []
+                : [{ scannerLine: 42, decoder: "PLAIN" }]),
+              ...(scenario.endsWith("repeated literal")
+                ? [
+                    { scannerLine: 43, decoder: "PLAIN" },
+                    { scannerLine: 43, decoder: "PLAIN" },
+                  ]
+                : []),
+              { scannerLine: 38, decoder: "HTML" },
+              { scannerLine: 38, decoder: "HTML" },
+            ]
+          : [
+              { scannerLine: scenario === "shifted PLAIN" ? 43 : 42, decoder: "PLAIN" },
+              { scannerLine: scenario === "shifted PLAIN" ? 43 : 42, decoder: "PLAIN" },
+              ...(scenario === "HTML duplicate" ? [{ scannerLine: 42, decoder: "HTML" }] : []),
+            ]
+      ).map((location) => ({ ...location, literalLine: 42 }));
+      const expectedFindings = expectedLocations.length;
       assert.equal(
         notice.findings.reduce(
           (sum: number, finding: { occurrences: number }) => sum + finding.occurrences,
           0,
         ),
-        scenario.endsWith("duplicate") ? 3 : 2,
+        expectedFindings + (scenario === "PLAIN duplicate" ? 1 : 0),
       );
-      assert.equal(notice.findings.length, scenario === "HTML duplicate" ? 3 : 2);
-      for (const finding of notice.findings) {
-        assert.match(finding.blob, /^[a-f0-9]{40}$/);
-        assert.equal(finding.line, 42);
-      }
+      assert.equal(notice.findings.length, expectedFindings);
+      const locations = notice.findings.map(
+        ({ blob, occurrences, ...location }: Record<string, unknown>) => {
+          assert.match(String(blob), /^[a-f0-9]{40}$/);
+          assert.ok(Number(occurrences) > 0);
+          return location;
+        },
+      );
+      const orderLocations = (a: Record<string, unknown>, b: Record<string, unknown>) =>
+        Number(a.scannerLine) - Number(b.scannerLine) ||
+        String(a.decoder).localeCompare(String(b.decoder));
+      assert.deepEqual(locations.sort(orderLocations), expectedLocations.sort(orderLocations));
     } else {
       assert.throws(run, (error) => {
         assert.ok(error instanceof AgentInputScanError);
         assert.equal(error.reason, scenario === "source drift" ? "source_drift" : "findings");
-        assert.equal(String(error).includes(uri), false, "finding bytes stay private");
+        assert.equal(
+          findingValues.some((candidate) => String(error).includes(candidate)),
+          false,
+          "finding bytes stay private",
+        );
         return true;
       });
       assert.equal(existsSync(f.calls), false);

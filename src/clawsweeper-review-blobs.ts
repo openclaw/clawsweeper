@@ -1,16 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readReviewGit, reviewMergeBase } from "./pr-review-evidence.js";
-import { MAX_SCAN_BYTES } from "./agent-input-scan.js";
+import { AgentInputScanError, MAX_SCAN_BYTES } from "./agent-input-scan.js";
+import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 
 const MAX_BLOB_SIZE_OBJECTS = 160;
 const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
 const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/i;
-
-export type ReviewBlobHydration = {
-  hydrated: boolean;
-  blobs: number;
-};
 
 function gitCommitExists(targetDir: string, sha: string): boolean {
   return (
@@ -164,7 +160,9 @@ export function hydratePullRequestReviewHistory(options: {
       destinationRef: `refs/clawsweeper/review-cache/merge-${itemNumber}`,
     });
   }
-  return reviewMergeBase(targetDir, baseSha, headSha).sha;
+  const mergeBase = reviewMergeBase(targetDir, baseSha, headSha);
+  if (mergeBase.status === "ambiguous") throw new AgentInputScanError("incomplete_source");
+  return mergeBase.sha;
 }
 
 function reviewTreeMatchesCommit({ targetDir, sha }: { targetDir: string; sha: string }): boolean {
@@ -239,9 +237,9 @@ export function hydratePullRequestReviewBlobs({
   baseSha: string;
   headSha: string;
   resolveBlobSizes?: (objectIds: readonly string[]) => ReadonlyMap<string, number>;
-}): ReviewBlobHydration {
+}): number {
   if (!GIT_OBJECT_ID.test(baseSha) || !GIT_OBJECT_ID.test(headSha)) {
-    return { hydrated: false, blobs: 0 };
+    throw new AgentInputScanError("incomplete_source");
   }
   const deadlineAt = Date.now() + 30_000;
   const readOptions = { deadlineAt, maxBytes: MAX_GIT_OUTPUT_BYTES };
@@ -262,14 +260,18 @@ export function hydratePullRequestReviewBlobs({
     ],
     readOptions,
   );
-  if (!raw) return { hydrated: false, blobs: 0 };
+  if (!raw) {
+    throw new AgentInputScanError(Date.now() >= deadlineAt ? "deadline" : "incomplete_source");
+  }
   let fields: string[];
   try {
     fields = new TextDecoder("utf-8", { fatal: true }).decode(raw).split("\0");
   } catch {
-    return { hydrated: false, blobs: 0 };
+    throw new AgentInputScanError("incomplete_source");
   }
-  if (fields.pop() !== "" || fields.length % 2 !== 0) return { hydrated: false, blobs: 0 };
+  if (fields.pop() !== "" || fields.length % 2 !== 0) {
+    throw new AgentInputScanError("incomplete_source");
+  }
   const paths = new Set<string>();
   const objectIds = new Set<string>();
   for (let index = 0; index < fields.length; index += 2) {
@@ -277,7 +279,8 @@ export function hydratePullRequestReviewBlobs({
       fields[index]!,
     );
     const path = safeReviewPath(fields[index + 1]);
-    if (!match || !path) return { hydrated: false, blobs: 0 };
+    if (!match) throw new AgentInputScanError("incomplete_source");
+    if (!path) throw new AgentInputScanError("unsafe_path");
     paths.add(path);
     for (const [mode, oid] of [
       [match[1]!, match[3]!],
@@ -285,12 +288,14 @@ export function hydratePullRequestReviewBlobs({
     ]) {
       // Gitlinks are not blobs; the scanner still refuses changed gitlinks.
       if (mode === "000000" || mode === "160000") continue;
-      if (!["100644", "100755", "120000"].includes(mode!)) return { hydrated: false, blobs: 0 };
+      if (!["100644", "100755", "120000"].includes(mode!)) {
+        throw new AgentInputScanError("unsupported_content");
+      }
       objectIds.add(oid!);
     }
   }
 
-  if (objectIds.size === 0) return { hydrated: true, blobs: 0 };
+  if (objectIds.size === 0) return 0;
   // Git before 2.45 exits without batch output when GIT_NO_LAZY_FETCH blocks a promisor fetch.
   // Traverse only the two commit trees: this emits their blobs without walking either history.
   // rev-list's missing-object mode suppresses lazy fetches and reports them on older clients too.
@@ -320,7 +325,7 @@ export function hydratePullRequestReviewBlobs({
     },
   );
   if (objectAvailability.error || objectAvailability.status !== 0) {
-    return { hydrated: false, blobs: 0 };
+    throw new AgentInputScanError(Date.now() >= deadlineAt ? "deadline" : "incomplete_source");
   }
   const observed = new Set<string>();
   const missing = new Set<string>();
@@ -330,7 +335,7 @@ export function hydratePullRequestReviewBlobs({
     observed.add(match[2]!);
     if (match[1] === "?") missing.add(match[2]!);
   }
-  if (observed.size !== objectIds.size) return { hydrated: false, blobs: 0 };
+  if (observed.size !== objectIds.size) throw new AgentInputScanError("incomplete_source");
 
   const sizes = new Map<string, number>();
   const localObjectIds = [...objectIds].filter((objectId) => !missing.has(objectId));
@@ -340,28 +345,31 @@ export function hydratePullRequestReviewBlobs({
       ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
       { ...readOptions, input: Buffer.from(`${localObjectIds.join("\n")}\n`) },
     );
-    if (!localObjects) return { hydrated: false, blobs: 0 };
+    if (!localObjects) {
+      throw new AgentInputScanError(Date.now() >= deadlineAt ? "deadline" : "incomplete_source");
+    }
     const found = localObjects.toString().trim().split("\n");
-    if (found.length !== localObjectIds.length) return { hydrated: false, blobs: 0 };
+    if (found.length !== localObjectIds.length) throw new AgentInputScanError("incomplete_source");
     for (const entry of found) {
       const [objectId, type, size] = entry.split(" ");
       if (!objectId || !objectIds.has(objectId) || type !== "blob") {
-        return { hydrated: false, blobs: 0 };
+        throw new AgentInputScanError("incomplete_source");
       }
       sizes.set(objectId, Number(size));
     }
   }
   if (missing.size > 0) {
-    if (!resolveBlobSizes) return { hydrated: false, blobs: 0 };
+    if (!resolveBlobSizes) throwBlobMetadataUnavailable();
     let remoteSizes: ReadonlyMap<string, number>;
     try {
       remoteSizes = resolveBlobSizes([...missing]);
-    } catch {
-      return { hydrated: false, blobs: 0 };
+    } catch (error) {
+      if (error instanceof AgentInputScanError) throw error;
+      throwBlobMetadataUnavailable();
     }
     for (const objectId of missing) {
       const bytes = remoteSizes.get(objectId);
-      if (bytes === undefined) return { hydrated: false, blobs: 0 };
+      if (bytes === undefined) throwBlobMetadataUnavailable();
       sizes.set(objectId, bytes);
     }
   }
@@ -369,18 +377,14 @@ export function hydratePullRequestReviewBlobs({
   let objectBytes = 0;
   for (const objectId of objectIds) {
     const bytes = sizes.get(objectId);
-    if (
-      bytes === undefined ||
-      !Number.isSafeInteger(bytes) ||
-      bytes < 0 ||
-      bytes > MAX_SCAN_BYTES - objectBytes
-    ) {
-      return { hydrated: false, blobs: 0 };
+    if (bytes === undefined || !Number.isSafeInteger(bytes) || bytes < 0) {
+      throwBlobMetadataUnavailable();
     }
+    if (bytes > MAX_SCAN_BYTES - objectBytes) throw new AgentInputScanError("staging_limit");
     objectBytes += bytes;
   }
 
-  if (Date.now() >= deadlineAt) return { hydrated: false, blobs: 0 };
+  if (Date.now() >= deadlineAt) throw new AgentInputScanError("deadline");
   if (missing.size > 0) {
     const fetched = spawnSync(
       "git",
@@ -404,9 +408,22 @@ export function hydratePullRequestReviewBlobs({
         maxBuffer: MAX_GIT_OUTPUT_BYTES,
       },
     );
-    if (fetched.error || fetched.status !== 0) return { hydrated: false, blobs: 0 };
+    if (fetched.error || fetched.status !== 0) {
+      if (Date.now() >= deadlineAt) throw new AgentInputScanError("deadline");
+      throw new ReviewSourcePreparationError(
+        "review_blobs_unavailable",
+        "Could not fetch required review blobs before restricted inspection.",
+      );
+    }
   }
-  return { hydrated: true, blobs: objectIds.size };
+  return objectIds.size;
+}
+
+function throwBlobMetadataUnavailable(): never {
+  throw new ReviewSourcePreparationError(
+    "review_blob_metadata_unavailable",
+    "Could not obtain complete review blob size metadata.",
+  );
 }
 
 export function githubReviewBlobSizes({
@@ -428,7 +445,7 @@ export function githubReviewBlobSizes({
   const result = new Map<string, number>();
   const deadlineAt = Date.now() + 30_000;
   for (let offset = 0; offset < objectIds.length; offset += MAX_BLOB_SIZE_OBJECTS) {
-    if (Date.now() >= deadlineAt) throw new Error("review blob metadata deadline exceeded");
+    if (Date.now() >= deadlineAt) throw new AgentInputScanError("deadline");
     const batch = objectIds.slice(offset, offset + MAX_BLOB_SIZE_OBJECTS);
     const objects = batch.map(
       (objectId, index) => `b${index}: object(oid: "${objectId}") { ... on Blob { byteSize } }`,

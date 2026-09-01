@@ -24,6 +24,8 @@ import {
   removePullRequestReviewTree,
 } from "../dist/clawsweeper-review-blobs.js";
 import { MAX_SCAN_BYTES } from "../dist/agent-input-scan.js";
+import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
+import { asRecord } from "../dist/clawsweeper-item-policy.js";
 import { readReviewGit, reviewMergeBase } from "../dist/pr-review-evidence.js";
 
 function git(cwd: string, ...args: string[]): string {
@@ -209,6 +211,8 @@ function reviewHistoryFixture({
   git(origin, "config", "uploadpack.allowFilter", "true");
   git(origin, "config", "uploadpack.allowAnySHA1InWant", "true");
   git(source, "init", "-q", "-b", "main");
+  // Keep history-fixture construction from racing Git's detached maintenance.
+  git(source, "config", "maintenance.auto", "false");
   git(source, "config", "user.name", "ClawSweeper Review Test");
   git(source, "config", "user.email", "review-test@example.com");
   git(source, "config", "commit.gpgsign", "false");
@@ -460,8 +464,7 @@ test("restricted PR review can inspect changed blobs from a genuine blobless clo
       resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
     });
 
-    assert.equal(result.hydrated, true);
-    assert.equal(result.blobs, 6);
+    assert.equal(result, 6);
     assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), true);
     assert.equal(objectExistsOffline(fixture.target, fixture.changedBlobSha), true);
     git(fixture.target, "remote", "set-url", "origin", "https://invalid.invalid/offline.git");
@@ -557,29 +560,43 @@ test("review hydration refuses unsafe Git paths and missing source without fetch
       const headSha = git(fixture.source, "rev-parse", "HEAD");
       git(fixture.source, "push", "-q", "origin", "HEAD:refs/heads/unsafe");
       git(fixture.target, "fetch", "-q", "--filter=blob:none", "origin", "refs/heads/unsafe");
-      assert.deepEqual(
-        hydratePullRequestReviewBlobs({
-          targetDir: fixture.target,
-          baseSha: fixture.baseSha,
-          headSha,
-          resolveBlobSizes: () => {
-            throw new Error("unsafe paths must refuse before metadata");
-          },
-        }),
-        { hydrated: false, blobs: 0 },
+      assert.throws(
+        () =>
+          hydratePullRequestReviewBlobs({
+            targetDir: fixture.target,
+            baseSha: fixture.baseSha,
+            headSha,
+            resolveBlobSizes: () => {
+              throw new Error("unsafe paths must refuse before metadata");
+            },
+          }),
+        { name: "AgentInputScanError", reason: "unsafe_path", retryable: false },
       );
       git(fixture.source, "rm", "-q", "--", filename);
     }
-    for (const baseSha of ["--unsafe", "f".repeat(40), fixture.baseSha]) {
-      assert.deepEqual(
-        hydratePullRequestReviewBlobs({
-          targetDir: fixture.target,
-          baseSha,
-          headSha: fixture.headSha,
-        }),
-        { hydrated: false, blobs: 0 },
+    for (const baseSha of ["--unsafe", "f".repeat(40)]) {
+      assert.throws(
+        () =>
+          hydratePullRequestReviewBlobs({
+            targetDir: fixture.target,
+            baseSha,
+            headSha: fixture.headSha,
+          }),
+        { name: "AgentInputScanError", reason: "incomplete_source", retryable: false },
       );
     }
+    assert.throws(
+      () =>
+        hydratePullRequestReviewBlobs({
+          targetDir: fixture.target,
+          baseSha: fixture.baseSha,
+          headSha: fixture.headSha,
+        }),
+      {
+        diagnosticStage: "source_preparation",
+        diagnosticReason: "review_blob_metadata_unavailable",
+      },
+    );
     assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
@@ -636,7 +653,7 @@ test("missing partial-clone objects are fetched in one bounded network request",
     const explicitFetches = traceEvents.filter(
       (event) => event.event === "start" && event.argv?.includes("fetch"),
     );
-    assert.deepEqual(result, { hydrated: true, blobs: 18 });
+    assert.equal(result, 18);
     assert.equal(revLists.length, 1);
     assert.ok(revLists[0]!.argv?.includes(`${fixture.baseSha}^{tree}`));
     assert.ok(revLists[0]!.argv?.includes(`${fixture.headSha}^{tree}`));
@@ -657,30 +674,168 @@ test("missing partial-clone objects are fetched in one bounded network request",
 test("review hydration rejects aggregate scan budget overflow and incomplete size metadata before fetching", () => {
   const fixture = partialCloneFixture();
   try {
-    for (const size of [MAX_SCAN_BYTES + 1, Math.ceil(MAX_SCAN_BYTES / 2), NaN, -1, undefined]) {
-      assert.deepEqual(
-        hydratePullRequestReviewBlobs({
-          targetDir: fixture.target,
-          baseSha: fixture.baseSha,
-          headSha: fixture.headSha,
-          resolveBlobSizes: (ids) => new Map(ids.map((id) => [id, size as number])),
-        }),
-        { hydrated: false, blobs: 0 },
+    for (const size of [MAX_SCAN_BYTES + 1, Math.ceil(MAX_SCAN_BYTES / 2)]) {
+      assert.throws(
+        () =>
+          hydratePullRequestReviewBlobs({
+            targetDir: fixture.target,
+            baseSha: fixture.baseSha,
+            headSha: fixture.headSha,
+            resolveBlobSizes: (ids) => new Map(ids.map((id) => [id, size as number])),
+          }),
+        { name: "AgentInputScanError", reason: "staging_limit", retryable: false },
+      );
+      assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+    }
+    for (const size of [NaN, -1, undefined]) {
+      assert.throws(
+        () =>
+          hydratePullRequestReviewBlobs({
+            targetDir: fixture.target,
+            baseSha: fixture.baseSha,
+            headSha: fixture.headSha,
+            resolveBlobSizes: (ids) => new Map(ids.map((id) => [id, size as number])),
+          }),
+        {
+          diagnosticStage: "source_preparation",
+          diagnosticReason: "review_blob_metadata_unavailable",
+        },
       );
       assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
     }
     git(fixture.target, "remote", "set-url", "origin", join(fixture.root, "unavailable.git"));
-    assert.deepEqual(
-      hydratePullRequestReviewBlobs({
-        targetDir: fixture.target,
-        baseSha: fixture.baseSha,
-        headSha: fixture.headSha,
-        resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
-      }),
-      { hydrated: false, blobs: 0 },
+    assert.throws(
+      () =>
+        hydratePullRequestReviewBlobs({
+          targetDir: fixture.target,
+          baseSha: fixture.baseSha,
+          headSha: fixture.headSha,
+          resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
+        }),
+      { diagnosticStage: "source_preparation", diagnosticReason: "review_blobs_unavailable" },
     );
     assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
   } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("source preparation reports unavailable historical blobs before restricted inspection", () => {
+  const fixture = partialCloneFixture({ historicalBase: true, prefetchHead: false });
+  const reviewTree = join(fixture.root, "review-tree");
+  const unavailable = () => {
+    throw new Error("Unexpected external dependency in local source-preparation fixture");
+  };
+  const { hydratePullRequestReviewSource } = createContextHydration(
+    new Proxy(
+      {
+        asRecord,
+        stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
+        isSafeGitBranchName: (branch: string) => branch === "main",
+        targetRepo: () => "fixture/repository",
+        ghJson: (args: string[]) => {
+          const query = args.find((arg) => arg.startsWith("query="));
+          assert.ok(query);
+          const ids = [...query.matchAll(/b(\d+): object\(oid: "([0-9a-f]+)"\)/g)];
+          assert.ok(ids.length);
+          const sizes = resolveFixtureBlobSizes(fixture.source)(ids.map((match) => match[2]!));
+          return {
+            data: {
+              repository: Object.fromEntries(
+                ids.map((match) => ["b" + match[1], { byteSize: sizes.get(match[2]!) }]),
+              ),
+            },
+          };
+        },
+      },
+      { get: (target, key) => Reflect.get(target, key) ?? unavailable },
+    ) as Parameters<typeof createContextHydration>[0],
+  );
+  try {
+    // Construct a main-only unsafe path in Git without relying on host filesystem
+    // filename support. Its optional endpoint delta must not block the PR delta.
+    const previousBase = git(fixture.source, "rev-parse", "HEAD");
+    const mainBlob = git(fixture.source, "rev-parse", "HEAD:changed.txt");
+    const baseTree = execFileSync("git", ["ls-tree", "-z", "HEAD"], { cwd: fixture.source });
+    const treeSha = execFileSync("git", ["mktree", "-z"], {
+      cwd: fixture.source,
+      encoding: "utf8",
+      input: Buffer.concat([
+        baseTree,
+        Buffer.from("100644 blob " + mainBlob + "\tbase-only\npath\0"),
+      ]),
+    }).trim();
+    const baseSha = git(
+      fixture.source,
+      "commit-tree",
+      treeSha,
+      "-p",
+      previousBase,
+      "-m",
+      "main-only path",
+    );
+    git(fixture.source, "update-ref", "refs/heads/main", baseSha);
+    git(fixture.source, "push", "-q", "origin", "main");
+    git(fixture.target, "fetch", "-q", "--filter=blob:none", "origin", "main");
+    const removedOid = git(fixture.source, "rev-parse", fixture.baseSha + ":removed.txt");
+    assert.ok(
+      ensurePullRequestReviewHead({
+        targetDir: fixture.target,
+        itemNumber: 982,
+        headSha: fixture.headSha,
+      }),
+    );
+    assert.equal(reviewMergeBase(fixture.target, baseSha, fixture.headSha).sha, fixture.baseSha);
+    assert.equal(objectExistsOffline(fixture.target, removedOid), false);
+    const prepare = () =>
+      hydratePullRequestReviewSource({
+        itemNumber: 982,
+        targetDir: fixture.target,
+        pullRequest: {
+          base: { ref: "main", sha: baseSha },
+          head: { sha: fixture.headSha },
+        },
+      });
+    const origin = git(fixture.target, "remote", "get-url", "origin");
+    git(fixture.target, "remote", "set-url", "origin", join(fixture.root, "unavailable.git"));
+    assert.throws(prepare, {
+      diagnosticStage: "source_preparation",
+      diagnosticReason: "review_blobs_unavailable",
+    });
+    assert.equal(objectExistsOffline(fixture.target, removedOid), false);
+
+    git(fixture.target, "remote", "set-url", "origin", origin);
+    prepare();
+    assert.ok(
+      materializePullRequestReviewTree({
+        targetDir: fixture.target,
+        worktreeDir: reviewTree,
+        itemNumber: 982,
+        headSha: fixture.headSha,
+      }),
+    );
+    assert.equal(git(reviewTree, "rev-parse", "HEAD"), fixture.headSha);
+    assert.equal(reviewMergeBase(reviewTree, baseSha, fixture.headSha).sha, fixture.baseSha);
+    git(fixture.target, "remote", "set-url", "origin", join(fixture.root, "offline.git"));
+    const args = [
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-renames",
+      "--ignore-submodules=none",
+      fixture.baseSha,
+      fixture.headSha,
+      "--patch",
+      "--binary",
+      "--full-index",
+      "--",
+    ];
+    const patch = readReviewGit(reviewTree, args);
+    assert.ok(patch);
+    assert.deepEqual(patch, readReviewGit(fixture.source, args));
+    assert.equal(git(reviewTree, "status", "--porcelain"), "");
+  } finally {
+    removePullRequestReviewTree({ targetDir: fixture.target, worktreeDir: reviewTree });
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
@@ -777,7 +932,7 @@ test("large pinned deltas hydrate historical blobs after head checkout and produ
           },
         }),
     });
-    assert.deepEqual(result, { hydrated: true, blobs: 349 });
+    assert.equal(result, 349);
     assert.deepEqual(batches, [160, 13]);
     assert.equal(objectExistsOffline(reviewTree, removedOid), true);
     git(fixture.target, "remote", "set-url", "origin", join(fixture.root, "offline.git"));
@@ -793,7 +948,7 @@ test("large pinned deltas hydrate historical blobs after head checkout and produ
     t.diagnostic(
       JSON.stringify({
         changedFiles: 178,
-        blobs: result.blobs,
+        blobs: result,
         metadataBatches: batches,
         patchBytes: patch.length,
         patchSha256: createHash("sha256").update(patch).digest("hex"),

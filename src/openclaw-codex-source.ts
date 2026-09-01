@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 
 const OPENCLAW_REPOSITORY = "openclaw/openclaw";
 const DEFAULT_CODEX_SOURCE_URL = "https://github.com/openai/codex.git";
@@ -7,20 +8,6 @@ type Spawn = (
   command: string,
   args: string[],
 ) => { error?: Error; status: number | null; stderr: string };
-
-type SourcePreparationFailureReason = "configuration_missing" | "setup_script_failed";
-
-class OpenClawCodexSourcePreparationError extends Error {
-  readonly diagnosticStage = "source_preparation";
-
-  constructor(
-    readonly diagnosticReason: SourcePreparationFailureReason,
-    message: string,
-  ) {
-    super(message);
-    this.name = "OpenClawCodexSourcePreparationError";
-  }
-}
 
 export function prepareOpenClawCodexSourceForReview(options: {
   targetRepo: string;
@@ -49,7 +36,7 @@ export function prepareOpenClawCodexSourceForReview(options: {
   ]);
   if (result.error || result.status !== 0) {
     const detail = result.stderr.trim() || result.error?.message || `exit ${result.status}`;
-    throw new OpenClawCodexSourcePreparationError(
+    throw new ReviewSourcePreparationError(
       "setup_script_failed",
       `Could not prepare the PR-pinned Codex source: ${detail}`,
     );
@@ -59,7 +46,7 @@ export function prepareOpenClawCodexSourceForReview(options: {
 function requiredEnvironmentPath(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name]?.trim();
   if (!value) {
-    throw new OpenClawCodexSourcePreparationError(
+    throw new ReviewSourcePreparationError(
       "configuration_missing",
       `Missing ${name} for OpenClaw Codex source setup.`,
     );

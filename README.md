@@ -574,10 +574,18 @@ as non-sensitive after a complete scan. The same exact-fixture policy covers
 the reviewed OpenClaw Browser CDP authentication and credential-redaction fixtures in
 [`chrome.test.ts`](https://github.com/openclaw/openclaw/blob/8e03b0c62e76dc25c77045a84ab3098a111a7be3/extensions/browser/src/browser/chrome.test.ts),
 the [remote-CDP coverage](https://github.com/openclaw/openclaw/blob/58da2f5897feb6840937d8e50cf7ee6f26aa57d7/extensions/browser/src/browser/chrome.test.ts),
-and the [server-context redaction test](https://github.com/openclaw/openclaw/blob/4b5987829d0f82ea44ae50f2f418ffe5ea445e7f/extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts)
+the [server-context redaction test](https://github.com/openclaw/openclaw/blob/4b5987829d0f82ea44ae50f2f418ffe5ea445e7f/extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts),
+the [remote-CDP documentation example](https://github.com/openclaw/openclaw/blob/bf15c87d2b1223610b42775b8154b8eec60b541d/docs/tools/browser.md),
+and the [credentialed-page rejection fixtures](https://github.com/openclaw/openclaw/blob/d5fb4903f1b13a4309d479f1011d995b1fc706ae/extensions/browser/src/browser-tool.test.ts)
 after a complete scan. Static host policy associates each
-exact full-URI SHA-256 with only its approved source paths, requiring a literal
-at the reported line of a host-staged Git blob from mode `100644`.
+exact full-URI SHA-256 with only its approved source paths and exact scanner `Raw`
+digest, including when `Raw` omits a path retained by `RawV2`. The complete value
+must be a literal in a host-staged Git blob from mode `100644`.
+The host locates that exact literal independently in the staged blob. Decoder
+coordinates can shift, and TruffleHog can omit a companion plain-text finding,
+so admission does not depend on another finding or a reported line matching the
+original source. Repeated literals remain eligible; finding order and duplicate
+records do not change the exact value, path, and mode checks.
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.
@@ -588,7 +596,7 @@ any source is eligible for classification or an audit notice.
 The policy does not trust checkout ignore rules, domain patterns, fixture words,
 test names, or unchanged-line inference; no nearby fixture is implicitly approved.
 Findings attributed to prompt, schema, diff, additional-input, other-path, or
-encoded-only occurrences remain blocking, as do other findings, verified findings,
+encoded-only blobs remain blocking, as do other findings, verified findings,
 and incomplete scans. Unverified findings alone never qualify: every finding must
 match the exact bytes, source association, and strict detector contract. This
 classification does not expand TruffleHog's detection coverage.
@@ -596,8 +604,11 @@ The classification is pinned to TruffleHog 3.97.1's output contract; scanner
 upgrades require requalification. See `src/agent-input-scan-fixtures.ts`.
 After successful cleanup and final source fences, each accepted fixture/source
 pair emits a host-side structured stderr notice with `event`, `fixtureSha256`,
-`source`, `detector`, and `findings` entries containing `blob`, `line`, `decoder`,
-and `occurrences`. Counts are per source: a shared blob can appear in both source
+`source`, `detector`, and `findings` entries containing `blob`, `decoder`, and
+`occurrences`. Each finding retains its reported `scannerLine` and a `literalLine`
+for the first exact literal in the staged blob. This bounded witness establishes
+literal presence; it does not identify which occurrence produced a decoded hit.
+Counts are per source: a shared blob can appear in both source
 notices and those counts must not be summed across sources. A refused or drifted
 scan emits no success notice. Raw values and verification diagnostics never
 appear in that audit notice.

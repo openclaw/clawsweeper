@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTION_EVENT_REASON_CODES, ACTION_EVENT_STATUSES } from "./action-ledger.js";
-import { AgentInputScanError } from "./agent-input-scan.js";
+import { AgentInputScanError, agentInputScanFailureExitCode } from "./agent-input-scan.js";
 import type { Args } from "./clawsweeper-args.js";
 import {
   isBulkFilerExemptRepositoryPermission as isVerifiedMaintainerRepositoryPermission,
@@ -38,6 +38,7 @@ import { reviewContentCacheHit } from "./scheduler-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
 import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
+import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 
 function reviewStartLeaseCommentUpdatedAt(
   comment: Record<string, unknown> | undefined,
@@ -340,10 +341,33 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         let pullRequestReviewTreeDir: string | null = null;
         let pullRequestReviewTreeSha: string | null = null;
         let pullRequestReviewTreeFailure: Error | null = null;
+        let diagnosticPrompt = "";
+        let diagnosticSourceSha = process.env.EXACT_REVIEW_SOURCE_HEAD_SHA;
+        const recordFailureDiagnostics = (error: unknown, classification = "codex_execution") => {
+          if (!process.env.EXACT_REVIEW_ITEM_KEY) return;
+          try {
+            writeExactReviewFailureDiagnostics({
+              artifactDir,
+              error,
+              prompt: diagnosticPrompt,
+              model,
+              classification,
+              repo: item.repo,
+              itemKind: item.kind,
+              itemNumber: item.number,
+              sourceSha: diagnosticSourceSha,
+              retryable: codexReviewFailureRetryable(error),
+              workflowExit: agentInputScanFailureExitCode(error) ?? 1,
+            });
+          } catch {
+            console.error("[review] exact-review failure diagnostics could not be written.");
+          }
+        };
         let cachePreflightState: "not_run" | "passed" | "failed" = "not_run";
         let structuralScanIdentity: { baseSha: string; headSha: string } | null = null;
         const preparePullRequestReviewTree = (headSha: string): boolean => {
           if (item.kind !== "pull_request") return true;
+          diagnosticSourceSha = headSha;
           if (pullRequestReviewTreeDir && pullRequestReviewTreeSha === headSha) return true;
           if (pullRequestReviewTreeDir) {
             restoreTreeModes(itemReadonlyModeSnapshots);
@@ -876,12 +900,16 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         if (!localRangeData && item.kind === "pull_request") {
           const headSha = pullHeadShaFromContext(context);
           if (!headSha || !preparePullRequestReviewTree(headSha)) {
-            pullRequestReviewTreeFailure ??= new Error(
+            pullRequestReviewTreeFailure ??= new ReviewSourcePreparationError(
+              "review_checkout_unavailable",
               `Read-only checkout inspection failed: pull request #${item.number} head ${headSha ?? "unknown"} was unavailable in the restricted review checkout`,
             );
             cachePreflightState = "failed";
           }
         }
+        diagnosticSourceSha = item.kind === "pull_request"
+          ? pullHeadShaFromContext(context) ?? undefined
+          : context.sourceRevision ?? diagnosticSourceSha;
         if (previousLocalReviewCommentBody) {
           const previousLocalReview = extractClawSweeperReviewCommentBody(
             previousLocalReviewCommentBody,
@@ -1240,6 +1268,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           additionalPrompt,
           { ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof), targetDir: reviewOpenclawDir },
         );
+        diagnosticPrompt = prompt.text;
         const snapshotHash = itemSnapshotHash(item, context);
         let decision: Decision;
         let codexElapsedMs = 0;
@@ -1348,24 +1377,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               : {}),
         });
         writeFileSync(reportPath, reportMarkdown, "utf8");
-        if (codexFailureError && process.env.EXACT_REVIEW_ITEM_KEY) {
-          try {
-            writeExactReviewFailureDiagnostics({
-              artifactDir,
-              error: codexFailureError,
-              prompt: prompt.text,
-              model,
-              classification: codexFailureLogKind(reportMarkdown),
-              repo: item.repo,
-              itemKind: item.kind,
-              itemNumber: item.number,
-              sourceSha: context.sourceRevision ?? process.env.EXACT_REVIEW_SOURCE_HEAD_SHA,
-              retryable: codexFailureRetryable,
-              workflowExit: 1,
-            });
-          } catch {
-            console.error("[review] exact-review failure diagnostics could not be written.");
-          }
+        if (codexFailureError) {
+          recordFailureDiagnostics(codexFailureError, codexFailureLogKind(reportMarkdown));
         }
         if (itemLocalReviewHistoryPath) {
           const nextLocalReviewCommentBody =
@@ -1419,6 +1432,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         }
         } catch (error) {
           reviewItemFailed = true;
+          if (error instanceof AgentInputScanError || error instanceof ReviewSourcePreparationError) {
+            recordFailureDiagnostics(error);
+          }
           throw error;
         } finally {
           try {

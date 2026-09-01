@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
+import { AgentInputScanError, agentInputScanFailureExitCode } from "../dist/agent-input-scan.js";
 
 const expectedFiles = ["error.txt", "manifest.json", "stderr.tail.txt", "stdout.error.txt"];
 
@@ -136,7 +137,7 @@ test("source-preparation diagnostics survive unsafe raw detail", () => {
   try {
     const error = Object.assign(new Error(`fetch failed for ${"a1".repeat(20)}`), {
       diagnosticStage: "source_preparation",
-      diagnosticReason: "setup_script_failed",
+      diagnosticReason: "review_blobs_unavailable",
     });
     const output = writeExactReviewFailureDiagnostics({
       artifactDir: root,
@@ -157,12 +158,47 @@ test("source-preparation diagnostics survive unsafe raw detail", () => {
     assert.equal(manifest.retryable, true);
     assert.deepEqual(manifest.failure, {
       stage: "source_preparation",
-      reason_code: "setup_script_failed",
+      reason_code: "review_blobs_unavailable",
     });
     assert.equal(
       readFileSync(join(output, "error.txt"), "utf8"),
       "[omitted: unsafe diagnostic content]\n",
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("scan diagnostics retain refusal identity without scanner output", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-diagnostics-"));
+  try {
+    for (const reason of ["findings", "incomplete_source"] as const) {
+      const error = Object.assign(new AgentInputScanError(reason), {
+        stdout: '{"type":"turn.failed","error":{"message":"raw scanner finding"}}',
+        stderr: "raw scanner verification detail",
+      });
+      const output = writeExactReviewFailureDiagnostics({
+        artifactDir: join(root, reason),
+        error,
+        prompt: "private prompt",
+        model: "private-model",
+        classification: "codex_execution",
+        repo: "openclaw/openclaw",
+        itemKind: "pull_request",
+        itemNumber: 1338,
+        sourceSha: "a".repeat(40),
+        retryable: false,
+        workflowExit: agentInputScanFailureExitCode(error) ?? 1,
+        env: {},
+      });
+      const manifest = JSON.parse(readFileSync(join(output, "manifest.json"), "utf8"));
+      assert.equal(manifest.classification, "agent_input_scan");
+      assert.deepEqual(manifest.failure, { stage: "agent_input_scan", reason_code: reason });
+      assert.equal(manifest.retryable, false);
+      assert.equal(manifest.process.workflow_exit, reason === "incomplete_source" ? 78 : 1);
+      const text = expectedFiles.map((name) => readFileSync(join(output, name), "utf8")).join("\n");
+      assert.doesNotMatch(text, /raw scanner/);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

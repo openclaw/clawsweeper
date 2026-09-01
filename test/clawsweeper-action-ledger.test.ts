@@ -500,7 +500,6 @@ test("review candidates start lazily and deferred items cannot remain active", (
     reviewLoop,
     /activeReviewMutationRunner = reviewMutationRunner\(reviewLedger, item\)/,
   );
-  assert.match(reviewLoop, /catch \(error\) \{\s*reviewItemFailed = true;\s*throw error;/);
   assert.match(
     reviewLoop,
     /finally \{[\s\S]*!reviewItemFailed[\s\S]*finishReviewActionLedgerItem\(\{[\s\S]*completionReason: "coordination_deferred"[\s\S]*activeReviewItem = null;/,

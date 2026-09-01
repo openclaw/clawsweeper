@@ -1282,11 +1282,9 @@ process.stdin.on("end", () => process.exit(1));
 
     assert.equal(missingHeadResult.status, 1);
     assert.equal(existsSync(codexMarker), false);
-    assert.match(missingHeadResult.stderr, /Codex review failed/);
-    const missingHeadReport = readFileSync(join(missingHeadArtifactDir, "96221.md"), "utf8");
-    assert.match(missingHeadReport, /^review_status: failed$/m);
-    assert.match(missingHeadReport, /^review_checkout_inspection_failed: true$/m);
-    assert.match(missingHeadReport, /^local_checkout_access: unverified$/m);
+    assert.match(missingHeadResult.stderr, /Could not prepare the pinned review commits\./);
+    assert.doesNotMatch(missingHeadResult.stderr, /Running Codex review|Review complete/);
+    assert.equal(existsSync(join(missingHeadArtifactDir, "96221.md")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { AgentInputScanError } from "./agent-input-scan.js";
 import { codexJsonlFailureDetail } from "./codex-transient.js";
 
 const FILE_LIMITS = { "error.txt": 4096, "stdout.error.txt": 4096, "stderr.tail.txt": 12_288 };
@@ -41,16 +42,26 @@ export function writeExactReviewFailureDiagnostics(options: {
   env?: NodeJS.ProcessEnv;
 }): string {
   const error = record(options.error);
-  const diagnosticStage = safeCode(error.diagnosticStage, /^(?:source_preparation)$/);
-  const diagnosticReason = safeCode(
-    error.diagnosticReason,
-    /^(?:configuration_missing|setup_script_failed)$/,
-  );
+  const scanFailure = options.error instanceof AgentInputScanError;
+  const diagnosticStage = scanFailure
+    ? "agent_input_scan"
+    : safeCode(error.diagnosticStage, /^source_preparation$/);
+  const diagnosticReason = scanFailure
+    ? safeCode(
+        error.reason,
+        /^(?:scanner_unavailable|scanner_failed|findings|deadline|staging_limit|incomplete_source|source_drift|unsafe_path|unsupported_content)$/,
+      )
+    : diagnosticStage
+      ? safeCode(
+          error.diagnosticReason,
+          /^(?:configuration_missing|setup_script_failed|review_commits_unavailable|review_history_unavailable|review_blob_metadata_unavailable|review_blobs_unavailable|review_checkout_unavailable)$/,
+        )
+      : null;
   const values = exactValues(options.prompt, options.model, options.env ?? process.env);
   const inputs = {
     "error.txt": options.error instanceof Error ? options.error.message : String(options.error),
-    "stdout.error.txt": codexJsonlFailureDetail(stringValue(error.stdout)),
-    "stderr.tail.txt": stringValue(error.stderr),
+    "stdout.error.txt": scanFailure ? "" : codexJsonlFailureDetail(stringValue(error.stdout)),
+    "stderr.tail.txt": scanFailure ? "" : stringValue(error.stderr),
   };
   const files = Object.entries(inputs).map(([name, value]) => {
     const result = sanitize(value, values, FILE_LIMITS[name as keyof typeof FILE_LIMITS]);
