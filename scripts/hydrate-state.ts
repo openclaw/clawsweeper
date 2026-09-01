@@ -7,7 +7,7 @@ import { parseArgs as parseNodeArgs } from "node:util";
 import { materializeStateBlobs } from "./worker-blobs.ts";
 import {
   discoverWorkerRecordRepoSlugs,
-  materializeWorkerRecord,
+  materializeWorkerItems,
   materializeWorkerRecords,
 } from "./worker-records.ts";
 
@@ -24,7 +24,7 @@ type Args = {
   worktree?: string;
   recordsUrl?: string;
   recordsRepoSlugs?: string[];
-  recordsItemNumber?: number;
+  recordsItemNumbers?: number[];
   hydrateStateBlobs?: boolean;
   hydrateGitState?: boolean;
 };
@@ -58,8 +58,8 @@ export async function hydrateState(
 
   const explicitRepoSlugs =
     args.recordsRepoSlugs ?? parseRepoSlugs(env.CLAWSWEEPER_RECORDS_REPO_SLUGS);
-  if (args.recordsItemNumber !== undefined && explicitRepoSlugs?.length !== 1) {
-    throw new Error("Single-record hydration requires exactly one explicit repository slug");
+  if (args.recordsItemNumbers !== undefined && explicitRepoSlugs?.length !== 1) {
+    throw new Error("Focused record hydration requires exactly one explicit repository slug");
   }
   const repoSlugs =
     explicitRepoSlugs ??
@@ -73,7 +73,7 @@ export async function hydrateState(
   if (!repoSlugs.length) throw new Error("canonical record store returned no repository slugs");
 
   const worker =
-    args.recordsItemNumber === undefined
+    args.recordsItemNumbers === undefined
       ? await materializeWorkerRecords({
           worktreeRoot,
           baseUrl,
@@ -82,12 +82,12 @@ export async function hydrateState(
           cacheRoot: env.CLAWSWEEPER_RECORDS_CACHE_DIR,
           fetch: fetchImpl,
         })
-      : await materializeWorkerRecord({
+      : await materializeWorkerItems({
           worktreeRoot,
           baseUrl,
           webhookSecret,
           repoSlug: repoSlugs[0]!,
-          itemNumber: args.recordsItemNumber,
+          itemNumbers: args.recordsItemNumbers,
           fetch: fetchImpl,
         });
   const blobs = hydrateStateBlobs
@@ -168,21 +168,19 @@ function parseArgs(argv: string[]): Args {
     },
   });
   const itemNumber = values["records-item-number"];
-  if (
-    itemNumber !== undefined &&
-    (!/^\d+$/.test(itemNumber) ||
-      !Number.isSafeInteger(Number(itemNumber)) ||
-      Number(itemNumber) < 1)
-  ) {
-    throw new Error("--records-item-number requires a positive safe integer");
-  }
+  const itemNumbers = itemNumber?.split(",").map((value) => {
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 1) {
+      throw new Error("--records-item-number requires positive safe integers separated by commas");
+    }
+    return Number(value);
+  });
   return {
     stateDir: values["state-dir"],
     worktree: values.worktree,
     recordsUrl: values["records-url"],
     hydrateStateBlobs: values["skip-state-blobs"] ? false : undefined,
     hydrateGitState: values["skip-git-state"] ? false : undefined,
-    recordsItemNumber: itemNumber === undefined ? undefined : Number(itemNumber),
+    recordsItemNumbers: itemNumbers,
     ...(values["records-repo-slugs"] === undefined
       ? {}
       : { recordsRepoSlugs: parseRepoSlugs(values["records-repo-slugs"]) ?? [] }),

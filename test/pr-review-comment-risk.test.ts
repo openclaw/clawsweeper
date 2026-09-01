@@ -6,6 +6,9 @@ import {
   reviewAutomationMarkersFromReport,
 } from "../dist/clawsweeper.js";
 import { detailsBody, reportFrontMatter } from "./helpers.ts";
+import { asRecord } from "../dist/clawsweeper-item-policy.js";
+import { createReportOrchestrationFoundation } from "../dist/clawsweeper-orchestration-foundation.js";
+import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
 
 test("security-needs-attention reports block unopted repair and automerge pass markers", () => {
   const securitySection = `
@@ -625,6 +628,144 @@ Keep this open.
 
   assert.doesNotMatch(otherRepoComment, /PR surface:/);
   assert.doesNotMatch(issueComment, /PR surface:/);
+});
+
+function surfaceReport(files: unknown, truncated = false): string {
+  return `${reportFrontMatter({
+    repository: "openclaw/openclaw",
+    type: "pull_request",
+    decision: "keep_open",
+    close_reason: "none",
+    work_candidate: "none",
+    pr_surface_files: JSON.stringify(files),
+    pr_surface_files_truncated: String(truncated),
+  })}\n\n## Summary\n\nReview completed.\n`;
+}
+
+// Use the existing production factories; the CLI regression covers actual report persistence.
+const surfaceFoundation = createReportOrchestrationFoundation({
+  ...createRecordMetadata({} as Parameters<typeof createRecordMetadata>[0]),
+  asRecord,
+  labelPolicy: {},
+} as Parameters<typeof createReportOrchestrationFoundation>[0]);
+
+test("PR surface context and report normalization preserve strict counts and exact paths", () => {
+  const files = surfaceFoundation.prSurfaceFilesFromContext({
+    issue: {},
+    comments: [],
+    timeline: [],
+    pullFiles: [
+      { filename: " src/space.ts ", additions: 0, deletions: 0 },
+      { filename: "src/max.ts", additions: Number.MAX_SAFE_INTEGER, deletions: 1 },
+    ],
+    counts: { comments: 0, timeline: 0, pullFiles: 2, pullFilesHydrated: 2 },
+  });
+  assert.deepEqual(files, [
+    { path: " src/space.ts ", additions: 0, deletions: 0 },
+    { path: "src/max.ts", additions: Number.MAX_SAFE_INTEGER, deletions: 1 },
+  ]);
+  assert.deepEqual(surfaceFoundation.prSurfaceFilesFromReport(surfaceReport(files)), files);
+  const zero = renderReviewCommentFromReport(surfaceReport([files![0]]), "none");
+  assert.match(zero, /\| \*\*Total\*\* \| \*\*1\*\* \| \*\*0\*\* \| \*\*0\*\* \| \*\*0\*\* \|/);
+});
+
+test("PR surface missing or invalid statistics round-trip as unknown, never partial totals", () => {
+  for (const value of [
+    undefined,
+    null,
+    "",
+    "0",
+    "3",
+    "invalid",
+    false,
+    {},
+    [],
+    -1,
+    0.5,
+    NaN,
+    Infinity,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    for (const field of ["additions", "deletions"]) {
+      const input = { filename: "src/unknown.ts", additions: 0, deletions: 0, [field]: value };
+      const files = surfaceFoundation.prSurfaceFilesFromContext({
+        issue: {},
+        comments: [],
+        timeline: [],
+        pullFiles: [input, { filename: "src/known.ts", additions: 4, deletions: 2 }],
+      });
+      assert.deepEqual(files?.[0], {
+        path: input.filename,
+        additions: 0,
+        deletions: 0,
+        [field]: null,
+      });
+      const report = surfaceReport(files);
+      assert.deepEqual(surfaceFoundation.prSurfaceFilesFromReport(report), files);
+      // Old persisted reports may contain malformed values without passing through context extraction.
+      const directReport = surfaceReport([
+        { path: input.filename, additions: 0, deletions: 0, [field]: value },
+        files![1],
+      ]);
+      assert.deepEqual(surfaceFoundation.prSurfaceFilesFromReport(directReport), files);
+      for (const candidate of [report, directReport]) {
+        const comment = renderReviewCommentFromReport(candidate, "none");
+        assert.match(comment, /PR surface statistics unavailable: complete line counts/);
+        assert.doesNotMatch(comment, /\| \*\*Total\*\* \|/);
+      }
+    }
+  }
+});
+
+test("PR surface incomplete file lists cannot produce a numeric aggregate", () => {
+  const file = { filename: "src/a.ts", additions: 1, deletions: 0 };
+  for (const counts of [
+    { pullFilesTruncated: true },
+    { pullFiles: 2 },
+    { pullFilesHydrated: 2 },
+    { pullFiles: 0 },
+    { pullFilesHydrated: 0 },
+    { pullFiles: -1 },
+    { pullFiles: null },
+    { pullFiles: "1" },
+  ]) {
+    assert.equal(
+      surfaceFoundation.prSurfaceFilesFromContext({
+        issue: {},
+        comments: [],
+        timeline: [],
+        pullFiles: [file],
+        counts: { comments: 0, timeline: 0, ...counts },
+      }),
+      null,
+    );
+  }
+  for (const entry of [{ omitted: 1 }, { filename: "", additions: 0, deletions: 0 }, null]) {
+    assert.equal(
+      surfaceFoundation.prSurfaceFilesFromContext({
+        issue: {},
+        comments: [],
+        timeline: [],
+        pullFiles: [file, entry],
+      }),
+      null,
+    );
+  }
+  const known = { path: "src/a.ts", additions: 1, deletions: 0 };
+  for (const report of [
+    surfaceReport([known], true),
+    surfaceReport([known, { omitted: 1 }]),
+    surfaceReport([known, {}]),
+    surfaceReport([known, null]),
+    surfaceReport(null),
+    surfaceReport({ files: [known] }),
+    surfaceReport([known]).replace(/^pr_surface_files: .*$/m, 'pr_surface_files: [{"path":'),
+  ]) {
+    assert.equal(surfaceFoundation.prSurfaceFilesFromReport(report), null);
+    const comment = renderReviewCommentFromReport(report, "none");
+    assert.match(comment, /PR surface statistics unavailable: the file list is incomplete/);
+    assert.doesNotMatch(comment, /\| \*\*Total\*\* \|/);
+  }
 });
 
 function mergeRiskReviewComment({

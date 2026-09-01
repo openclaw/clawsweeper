@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -70,9 +70,9 @@ const attemptId = actionAttemptId(operationId, {
 });
 
 function tempRoot(): string {
-  return fs.realpathSync.native(
-    fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-ledger-")),
-  );
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-ledger-"));
+  after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return fs.realpathSync.native(root);
 }
 
 function createDirectoryLink(target: string, link: string): void {

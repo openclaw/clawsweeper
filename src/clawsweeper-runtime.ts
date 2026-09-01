@@ -7,7 +7,7 @@ import { flushWorkflowActionEvents } from "./action-ledger-runtime.js";
 import { boolArg, itemNumbersArg, parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
 import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-dispatch.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
-import { runText } from "./command.js";
+import { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "./command.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
 import {
   DEFAULT_TARGET_REPO,
@@ -67,6 +67,7 @@ import {
   unsponsoredFeatureAgeSkipReason,
 } from "./clawsweeper-item-policy.js";
 import { createLabelPolicy } from "./clawsweeper-label-policy.js";
+import { createRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import { createLiveProofCommands } from "./live-proof/commands.js";
 import { publishReviewLiveProofArtifacts } from "./live-proof/publication-artifacts.js";
 import { executeReviewLiveProofs, inspectReviewLiveProofs } from "./live-proof/review-artifacts.js";
@@ -311,7 +312,7 @@ function run(
   return runText(command, args, {
     cwd: options.cwd ?? ROOT,
     env: options.env,
-    maxBuffer: 128 * 1024 * 1024,
+    maxBuffer: SWEEPER_COMMAND_MAX_BUFFER_BYTES,
     stdio: ["ignore", "pipe", "pipe"],
     timeoutMs: options.timeoutMs,
     trim: "both",
@@ -324,7 +325,7 @@ const gitHubRuntime = createGitHubRuntime({
   targetRepo,
 });
 export const { untrustedCodexEnvForTest } = gitHubRuntime;
-const { GitHubRuntimeBudgetError, sleepMs, untrustedCodexEnv } = gitHubRuntime;
+const { GitHubRuntimeBudgetError, untrustedCodexEnv } = gitHubRuntime;
 
 const githubExecution = createGitHubExecution({
   ROOT,
@@ -503,14 +504,21 @@ const {
   reportPrRating,
 } = reportParser;
 
+const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
+  ...recordMetadata,
+  isDocsOnlyPullRequestReport,
+  isExternalPullRequestReport,
+  reportAttachedLiveVerification,
+  reportRealBehaviorProof,
+});
+
 const labelPolicy = createLabelPolicy({
   asRecord,
   frontMatterValue,
   isAutomationReportAuthor,
   mergeRiskOptionsFromReport,
-  reportAttachedLiveVerification,
   reportOverallCorrectness,
-  reportRealBehaviorProof,
+  reportRealBehaviorProofPolicy,
   reportReviewFindings,
   reportSecurityReview,
   stringOrUndefined,
@@ -746,7 +754,6 @@ const reviewRuntime = createReviewRuntime({
   targetRepo,
   evidenceEntry,
   run,
-  sleepMs,
   untrustedCodexEnv,
   ghJson,
   asRecord,
@@ -756,7 +763,6 @@ const reviewRuntime = createReviewRuntime({
   stringOrUndefined,
 });
 export const {
-  combinedCodexReviewRetryableForTest,
   codexFailureDecisionForTest,
   codexFailureLogKindForTest,
   codexReviewFailureRetryableForTest,
@@ -846,7 +852,6 @@ const regressionProvenanceVerifier = createRegressionProvenanceVerifier({
       "-H",
       "Accept: application/vnd.github.v3.diff",
     ]),
-  runGit: (args, options) => run("git", args, options),
 });
 
 function verifyRegressionProvenance(
@@ -901,15 +906,15 @@ const reviewPresentation = createReviewPresentation({
   linkedSha,
   markdownLink,
   publicTableCell: (...args) => publicTableCell(...args),
-  reportAttachedLiveVerification,
   reportEvidence,
-  reportRealBehaviorProof,
+  reportRealBehaviorProofPolicy,
   securityConcernLocation,
   splitFileAndLine,
 });
 const { isSupportedMantisScenario, sentence, validMantisMaintainerComment } = reviewPresentation;
 
 const reportOrchestration = createReportOrchestration({
+  reportRealBehaviorProofPolicy,
   agentsPolicyStatusLine: (...args) => agentsPolicyStatusLine(...args),
   asRecord,
   ...reviewPresentation,

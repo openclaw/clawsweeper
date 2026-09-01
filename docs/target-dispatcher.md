@@ -394,6 +394,11 @@ reviews per target repository. Keep the Actions
 dispatcher installed as a compatibility fallback; its legacy dispatch is
 bridged into the same queue before Codex starts.
 
+The standalone Node listener limits raw request bodies to 2 MiB before verifying
+their signature. Declared-length and chunked deliveries are supported. Oversized
+bodies receive HTTP 400 and a closed connection; Node owns HTTP framing and
+connection teardown.
+
 The receiver keeps the review lane proposal-only, then runs exact apply for the
 selected item with only immediate-safe close reasons enabled:
 `implemented_on_main` and `duplicate_or_superseded`. Normal scheduled apply

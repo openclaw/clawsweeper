@@ -50,6 +50,15 @@ const behaviorProof: {
     reconstructionQueries: number;
     nextCursor: number | null;
   } | null;
+  failureCorrelation: {
+    responseStatus: number;
+    responseBody: { error: string };
+    traceId: string;
+    durableObject: Record<string, unknown>;
+    worker: Record<string, unknown>;
+    pairedTraceId: boolean;
+    contentRedacted: boolean;
+  } | null;
 } = {
   claim:
     "a signed records export stays within source-byte and reconstruction-work budgets, advances its cursor, and repeated calls materialize the exact fixture",
@@ -60,6 +69,7 @@ const behaviorProof: {
   expectedManifest: [],
   materializedManifest: [],
   oversizedFirst: null,
+  failureCorrelation: null,
 };
 
 test.after(() => {
@@ -289,6 +299,9 @@ test("signed record export bounds reconstruction work and source bytes while pag
     const cursor = nextCursor;
     storage.sql.resetQueryHistory();
     const page = await exportPage(env, cursor);
+    const candidateQueries = storage.sql.queriesMatching(/SELECT export\.repo_slug/);
+    assert.equal(candidateQueries.length, 1);
+    assert.equal(candidateQueries[0]?.bindings.at(-1), EXPECTED_RECORD_WORK_BUDGET);
     const reconstructed = reconstructedRecords(storage, recordsByIdentity);
     const reconstructedBytes = reconstructed.reduce((sum, record) => sum + record.byteLength, 0);
     assert.ok(reconstructed.length <= EXPECTED_RECORD_WORK_BUDGET);
@@ -326,6 +339,60 @@ test("signed record export bounds reconstruction work and source bytes while pag
   behaviorProof.expectedManifest = manifest(fixtures);
   behaviorProof.materializedManifest = manifest(received);
   behaviorProof.manifestParity = true;
+});
+
+test("signed record export does not advertise an empty page at the record boundary", async () => {
+  const { env, storage } = await exportHarness();
+  for (let index = 1; index <= EXPECTED_RECORD_WORK_BUDGET; index += 1) {
+    seedFixtureRecord(
+      storage,
+      fixtureRecord({
+        source: "canonical",
+        section: "items",
+        id: String(index),
+        content: `record-${index}:`.padEnd(1024, String(index % 10)),
+        storeRevision: index,
+      }),
+    );
+  }
+
+  for (let index = EXPECTED_RECORD_WORK_BUDGET + 1; index <= 150; index += 1) {
+    seedFixtureRecord(
+      storage,
+      fixtureRecord({
+        source: "canonical",
+        section: "closed",
+        id: String(index),
+        content: `closed-${index}:`.padEnd(1024, String(index % 10)),
+        storeRevision: index,
+      }),
+    );
+  }
+
+  const page = await exportPage(env, 0, ["items"]);
+
+  assert.equal(page.records.length, EXPECTED_RECORD_WORK_BUDGET);
+  assert.equal(page.nextCursor, null);
+  const candidateQueries = storage.sql.queriesMatching(/SELECT export\.repo_slug/);
+  assert.equal(candidateQueries.length, 1);
+  assert.equal(candidateQueries[0]?.bindings.at(-1), EXPECTED_RECORD_WORK_BUDGET);
+  assert.equal(
+    storage.sql.queriesMatching(/SELECT 1\s+FROM exact_review_record_export_index/).length,
+    1,
+  );
+  const plan = Array.from(
+    storage.sql.exec(
+      `EXPLAIN QUERY PLAN
+       SELECT 1 FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+        WHERE repo_slug = ? AND section IN (?) AND store_revision > ?
+        LIMIT 1`,
+      REPO_SLUG,
+      "items",
+      EXPECTED_RECORD_WORK_BUDGET,
+    ),
+    (row) => String(row.detail),
+  ).join("\n");
+  assert.match(plan, /exact_review_record_export_by_repo_section_revision/);
 });
 
 test("signed record export preserves historical backfill items and canonical tombstones", async () => {
@@ -479,7 +546,8 @@ test("signed record export hides missing and invalid logical byte metadata", asy
     const missingResponse = await exportResponse(missingHarness.env, 0);
     assert.equal(missingResponse.status, 500);
     assert.equal(missingResponse.headers.get("content-type"), "application/json; charset=utf-8");
-    assert.deepEqual(await missingResponse.json(), { error: "exact_review_queue_unavailable" });
+    const missingResponseBody = (await missingResponse.json()) as { error: string };
+    assert.deepEqual(missingResponseBody, { error: "exact_review_queue_unavailable" });
 
     const invalidHarness = await exportHarness();
     const invalid = fixtureRecord({
@@ -502,10 +570,140 @@ test("signed record export hides missing and invalid logical byte metadata", asy
     assert.equal(invalidResponse.status, 500);
     assert.equal(invalidResponse.headers.get("content-type"), "application/json; charset=utf-8");
     assert.deepEqual(await invalidResponse.json(), { error: "exact_review_queue_unavailable" });
-    assert.deepEqual(errors, [
-      ["exact_review_queue_request_failed"],
-      ["exact_review_queue_request_failed"],
-    ]);
+    const malformedHarness = await exportHarness();
+    const malformed = fixtureRecord({
+      source: "backfill",
+      section: "commits",
+      id: "c".repeat(40),
+      content: "malformed-chunk",
+      storeRevision: 1,
+    });
+    seedFixtureRecord(malformedHarness.storage, malformed);
+    malformedHarness.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
+          SET content = NULL, byte_length = 1, chunk_count = 1
+        WHERE repo_slug = ? AND section = ? AND record_id = ?`,
+      REPO_SLUG,
+      malformed.section,
+      malformed.id,
+    );
+    malformedHarness.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_RECORD_BACKFILL_CHUNK_TABLE}
+         (repo_slug, section, record_id, chunk_index, content_base64)
+       VALUES (?, ?, ?, 0, '%%%')`,
+      REPO_SLUG,
+      malformed.section,
+      malformed.id,
+    );
+    const malformedResponse = await exportResponse(malformedHarness.env, 0);
+    assert.equal(malformedResponse.status, 500);
+    assert.deepEqual(await malformedResponse.json(), { error: "exact_review_queue_unavailable" });
+
+    const invalidUtf8Harness = await exportHarness();
+    const invalidUtf8 = fixtureRecord({
+      source: "backfill",
+      section: "commits",
+      id: "d".repeat(40),
+      content: "invalid-utf8",
+      storeRevision: 1,
+    });
+    seedFixtureRecord(invalidUtf8Harness.storage, invalidUtf8);
+    invalidUtf8Harness.storage.sql.exec(
+      `UPDATE ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
+          SET content = NULL, byte_length = 1, chunk_count = 1
+        WHERE repo_slug = ? AND section = ? AND record_id = ?`,
+      REPO_SLUG,
+      invalidUtf8.section,
+      invalidUtf8.id,
+    );
+    invalidUtf8Harness.storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_RECORD_BACKFILL_CHUNK_TABLE}
+         (repo_slug, section, record_id, chunk_index, content_base64)
+       VALUES (?, ?, ?, 0, '/w==')`,
+      REPO_SLUG,
+      invalidUtf8.section,
+      invalidUtf8.id,
+    );
+    const invalidUtf8Response = await exportResponse(invalidUtf8Harness.env, 0);
+    assert.equal(invalidUtf8Response.status, 500);
+    assert.deepEqual(await invalidUtf8Response.json(), { error: "exact_review_queue_unavailable" });
+
+    const malformedCanonicalHarness = await exportHarness();
+    const malformedCanonical = fixtureRecord({
+      source: "canonical",
+      section: "items",
+      id: "2",
+      content: "canonical-malformed".repeat(EXACT_REVIEW_CANONICAL_INLINE_BYTES),
+      storeRevision: 1,
+    });
+    seedFixtureRecord(malformedCanonicalHarness.storage, malformedCanonical);
+    malformedCanonicalHarness.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_CANONICAL_RECORD_CHUNK_TABLE}
+        WHERE repo_slug = ? AND section = ? AND item_id = ?`,
+      REPO_SLUG,
+      malformedCanonical.section,
+      Number(malformedCanonical.id),
+    );
+    const malformedCanonicalResponse = await exportResponse(malformedCanonicalHarness.env, 0);
+    assert.equal(malformedCanonicalResponse.status, 500);
+    assert.deepEqual(await malformedCanonicalResponse.json(), {
+      error: "exact_review_queue_unavailable",
+    });
+
+    assert.equal(errors.length, 10);
+    for (let index = 0; index < errors.length; index += 2) {
+      assert.equal(errors[index]?.[0], "exact_review_queue_handler_failed");
+      assert.equal(errors[index + 1]?.[0], "exact_review_queue_request_failed");
+      const handler = errors[index]?.[1] as Record<string, unknown>;
+      const request = errors[index + 1]?.[1] as Record<string, unknown>;
+      assert.match(
+        String(handler.trace_id),
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+      assert.equal(request.trace_id, handler.trace_id);
+      assert.deepEqual(handler, {
+        phase: "fetch",
+        trace_id: handler.trace_id,
+        endpoint: "records_export",
+        failure_category: "record_export_consistency",
+        location: null,
+      });
+      assert.deepEqual(request, {
+        trace_id: handler.trace_id,
+        endpoint: "records_export",
+        phase: "request",
+        transport: "throw",
+        upstream_status: null,
+        remote: false,
+        retryable: false,
+        overloaded: false,
+        failure_category: "request_exception",
+      });
+    }
+    const serializedErrors = JSON.stringify(errors);
+    assert.equal(serializedErrors.includes(REPO_SLUG), false);
+    assert.equal(serializedErrors.includes("missing-metadata"), false);
+    assert.equal(serializedErrors.includes("invalid-metadata"), false);
+    assert.equal(serializedErrors.includes("malformed-chunk"), false);
+    assert.equal(serializedErrors.includes("invalid-utf8"), false);
+    assert.equal(serializedErrors.includes("canonical-malformed"), false);
+    const proofHandler = errors[0]?.[1] as Record<string, unknown>;
+    const proofWorker = errors[1]?.[1] as Record<string, unknown>;
+    behaviorProof.failureCorrelation = {
+      responseStatus: missingResponse.status,
+      responseBody: missingResponseBody,
+      traceId: String(proofHandler.trace_id),
+      durableObject: proofHandler,
+      worker: proofWorker,
+      pairedTraceId: proofHandler.trace_id === proofWorker.trace_id,
+      contentRedacted:
+        !serializedErrors.includes(REPO_SLUG) &&
+        !serializedErrors.includes("missing-metadata") &&
+        !serializedErrors.includes("invalid-metadata") &&
+        !serializedErrors.includes("malformed-chunk") &&
+        !serializedErrors.includes("invalid-utf8") &&
+        !serializedErrors.includes("canonical-malformed"),
+    };
   } finally {
     console.error = originalError;
   }

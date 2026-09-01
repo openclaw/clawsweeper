@@ -1212,6 +1212,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         recordRefreshedReviewStaleReason,
         recordReviewLeaseSkip,
         refreshedReviewStaleReason,
+        verifiedNewerReviewTuple,
         shouldCheckCanonicalCommentSync,
       } = reviewGuards;
       canonicalBoundStaleReviewReason = reviewGuards.canonicalBoundStaleReviewReason;
@@ -1450,7 +1451,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       }
       const earlyStaleReason = refreshedReviewStaleReason(existingReviewComment);
       if (state === "open" && earlyStaleReason) {
-        if (recordRefreshedReviewStaleReason(earlyStaleReason)) break;
+        if (recordRefreshedReviewStaleReason(earlyStaleReason, existingReviewComment)) break;
         continue;
       }
       if (isUpgradedCloseCandidate && !syncCommentsOnly) {
@@ -1557,6 +1558,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           number,
           action: "skipped_stale_review_comment_sync",
           reason: staleReviewCommentReason,
+          ...(emitEventApplyProof &&
+          verifiedNewerReviewTuple(markdown, existingReviewComment, staleReviewCommentReason)
+            ? { newerReviewTupleVerified: true }
+            : {}),
         });
         processedCount += 1;
         maybeLogProgress(`skipped stale review comment sync #${number}`);
@@ -1628,7 +1633,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         }
         const lateStaleReason = refreshedReviewStaleReason(lateLeaseState.comment);
         if (lateStaleReason) {
-          if (recordRefreshedReviewStaleReason(lateStaleReason)) break;
+          if (recordRefreshedReviewStaleReason(lateStaleReason, lateLeaseState.comment)) break;
           continue;
         }
         if (lateLeaseState.preserve && lateLeaseState.lease) {
@@ -2181,6 +2186,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             number,
             action: "skipped_stale_review_comment_sync",
             reason: staleSyncReason,
+            ...(emitEventApplyProof &&
+            verifiedNewerReviewTuple(markdown, existingReviewComment, staleSyncReason)
+              ? { newerReviewTupleVerified: true }
+              : {}),
           });
           processedCount += 1;
           maybeLogProgress(`skipped stale review comment sync #${number}`);
@@ -2244,6 +2253,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 number,
                 action: "skipped_stale_review_comment_sync",
                 reason: latestStaleSyncReason,
+                ...(emitEventApplyProof &&
+                verifiedNewerReviewTuple(markdown, existingReviewComment, latestStaleSyncReason)
+                  ? { newerReviewTupleVerified: true }
+                  : {}),
               });
               processedCount += 1;
               maybeLogProgress(`skipped stale review comment sync #${number}`);

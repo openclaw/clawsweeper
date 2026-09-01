@@ -137,6 +137,98 @@ globalThis.fetch = async (url, init) => {
   }
 });
 
+test("batch completion terminalizes a superseded member without a publication mutation", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-batch-cli-superseded-"));
+  try {
+    const member = batchMember("openclaw/openclaw#804@publish:8040:1", 804);
+    const outcomePath = join(root, "superseded.json");
+    const manifestPath = join(root, "manifest.json");
+    const receiptPath = join(root, "receipt.json");
+    const completionPath = join(root, "completion.json");
+    const postsPath = join(root, "posts.json");
+    const preloadPath = join(root, "fetch-preload.cjs");
+    writeFileSync(outcomePath, JSON.stringify({ kind: "superseded" }));
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        batchId: "batch-superseded-proof",
+        leaseOwner: "proof-worker",
+        configuredBatchSize: 1,
+        batchWaitMs: 0,
+        items: [{ ...member, outcomePath }],
+      }),
+    );
+    writeFileSync(
+      preloadPath,
+      `const fs = require("node:fs");
+const manifest = JSON.parse(fs.readFileSync(process.env.EXACT_REVIEW_BATCH_MANIFEST, "utf8"));
+const wireItems = manifest.items.map((item) => ({ item_key: item.itemKey, revision: item.revision, claim_generation: item.claimGeneration, decision: item.decision }));
+const response = (value) => new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+globalThis.fetch = async (url, init) => {
+  const target = String(url);
+  if (target.endsWith("/publication-batches/fetch")) {
+    return response({ batch: { batch_id: manifest.batchId, lease_owner: manifest.leaseOwner, lease_expires_at: "2026-08-01T00:00:00.000Z", items: wireItems }, items: wireItems, superseded: 0 });
+  }
+  if (target.endsWith("/publication-batches/heartbeat")) {
+    return response({ batch: { batch_id: manifest.batchId, lease_owner: manifest.leaseOwner, lease_expires_at: "2026-08-01T00:00:00.000Z", items: wireItems } });
+  }
+  if (target.endsWith("/publication-batch-results")) {
+    fs.appendFileSync(process.env.BATCH_CLI_POSTS, init.body + "\\n");
+    return response({ ok: true, accepted: true, deduped: false, superseded: false });
+  }
+  if (target.endsWith("/publication-batches/complete")) {
+    fs.writeFileSync(process.env.BATCH_CLI_COMPLETION, init.body);
+    return response({ accepted: 1, skipped: 0, batch: { batch_id: manifest.batchId, lease_owner: manifest.leaseOwner, lease_expires_at: "2026-08-01T00:00:00.000Z", items: [] } });
+  }
+  throw new Error("unexpected mock fetch target: " + target);
+};
+`,
+    );
+    const env = {
+      ...process.env,
+      CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+      EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+      EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+      EXACT_REVIEW_BATCH_RECEIPT: receiptPath,
+      BATCH_CLI_COMPLETION: completionPath,
+      BATCH_CLI_POSTS: postsPath,
+    };
+    const commitResult = spawnSync(
+      process.execPath,
+      ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", "commit"],
+      { cwd: process.cwd(), encoding: "utf8", env },
+    );
+    assert.equal(commitResult.status, 0, commitResult.stderr);
+    assert.equal(readFileSync(postsPath, { encoding: "utf8", flag: "a+" }), "");
+    assert.deepEqual(JSON.parse(readFileSync(receiptPath, "utf8")).outcomes, [
+      {
+        canonicalTargetKey: "openclaw/openclaw#804",
+        fenceKey: member.itemKey,
+        outcome: "superseded",
+        revision: 1,
+        claimGeneration: 1,
+      },
+    ]);
+
+    const completeResult = spawnSync(
+      process.execPath,
+      ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", "complete"],
+      { cwd: process.cwd(), encoding: "utf8", env },
+    );
+    assert.equal(completeResult.status, 0, completeResult.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(completionPath, "utf8")).items, [
+      {
+        item_key: member.itemKey,
+        revision: member.revision,
+        claim_generation: member.claimGeneration,
+        terminal_outcome: "superseded",
+      },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 const publicationFailureCases = [
   {
     name: "network errors",

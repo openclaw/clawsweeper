@@ -1,3 +1,4 @@
+import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import { PR_STATUS_LABELS } from "./clawsweeper-policy.js";
 import type {
   ActionTaken,
@@ -287,11 +288,12 @@ export interface CreateReportOrchestrationDependencies {
   prStatusLabelForKind: (kind: PrStatusLabelKind) => (typeof PR_STATUS_LABELS)[number];
   prStatusLabelKindFromReportLabels: (markdown: string) => PrStatusLabelKind | null;
   publicFailedReviewReadinessBlock: (markdown: string) => string;
+  publicHistoricalVerificationBlockerLine: () => string;
   publicLikelyOwnerRole: (role: string) => string;
   publicMantisRecommendationBlock: (recommendation: MantisRecommendation) => string;
   publicMergeReadinessBlock: (
     rating: PrRating,
-    proof: RealBehaviorProof,
+    policy: RealBehaviorProofPolicy,
     priority: TriagePriority,
     bottomLine: string,
     remainingItemCount: number,
@@ -303,10 +305,10 @@ export interface CreateReportOrchestrationDependencies {
   publicPriorityBulletIfActionable: (text: string, fallback: PublicPriority) => string;
   publicPriorityFromText: (text: string, fallback: PublicPriority) => PublicPriority;
   publicRankDetailsBlock: () => string;
-  publicRealBehaviorProofLine: (proof: RealBehaviorProof) => string;
+  publicRealBehaviorProofLine: (policy: RealBehaviorProofPolicy) => string;
   publicReviewScoresBlock: (
     rating: PrRating,
-    proof: RealBehaviorProof,
+    policy: RealBehaviorProofPolicy,
     findings: readonly ReviewFinding[],
     securityReview: SecurityReview,
   ) => string;
@@ -316,7 +318,7 @@ export interface CreateReportOrchestrationDependencies {
   publicSecurityReviewLine: (review: SecurityReview) => string;
   publicTableCell: (value: string) => string;
   publicVerificationBlock: (
-    proof: RealBehaviorProof,
+    policy: RealBehaviorProofPolicy,
     evidence: readonly Evidence[],
     findings: readonly ReviewFinding[],
     securityReview: SecurityReview,
@@ -347,6 +349,7 @@ export interface CreateReportOrchestrationDependencies {
   reportOverallCorrectness: (markdown: string) => OverallCorrectness;
   reportPrRating: (markdown: string) => PrRating;
   reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
+  reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
   reportAttachedLiveVerification: (markdown: string) => AttachedLiveVerification;
   reportReviewFindings: (markdown: string) => ReviewFinding[];
   reportRootCauseCluster: (markdown: string) => RootCauseClusterAssessment;

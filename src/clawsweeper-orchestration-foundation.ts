@@ -1,6 +1,5 @@
 import { hasDataModelUpgradeProof } from "./clawsweeper-change-detection.js";
 import { createLabelSynchronization } from "./clawsweeper-label-sync.js";
-import { AUTHORITY_CHAIN_PROOF_MARKER, PROOF_OVERRIDE_LABEL } from "./clawsweeper-policy.js";
 import type {
   CloseReason,
   Evidence,
@@ -35,8 +34,6 @@ export function createReportOrchestrationFoundation(
     isBulkFilerExemptAuthorAssociation,
     isBulkFilerExemptRepositoryPermission,
     isDigitsOnly,
-    isDocsOnlyPullRequestReport,
-    isExternalPullRequestReport,
     labelPolicy,
     markdownLink,
     markdownRepository,
@@ -45,8 +42,7 @@ export function createReportOrchestrationFoundation(
     publicReviewTextDiffers,
     publicTableCell,
     repoUrlFor,
-    reportAttachedLiveVerification,
-    reportRealBehaviorProof,
+    reportRealBehaviorProofPolicy,
     reportSecurityReview,
     reviewSectionValue,
     sentence,
@@ -276,41 +272,51 @@ export function createReportOrchestrationFoundation(
     );
   }
 
-  function prSurfaceFilesFromContext(context: ItemContext): PrSurfaceFile[] {
-    if (context.counts?.pullFilesTruncated) return [];
-    return (context.pullFiles ?? [])
-      .map((entry) => {
-        const file = asRecord(entry);
-        const path = typeof file.filename === "string" ? file.filename.trim() : "";
-        if (!path) return null;
-        return {
-          path,
-          additions: nonNegativeInteger(file.additions),
-          deletions: nonNegativeInteger(file.deletions),
-        };
-      })
-      .filter((entry): entry is PrSurfaceFile => Boolean(entry));
+  function prSurfaceFilesFromContext(context: ItemContext): PrSurfaceFile[] | null {
+    const entries = context.pullFiles ?? [];
+    if (
+      context.counts?.pullFilesTruncated ||
+      [context.counts?.pullFiles, context.counts?.pullFilesHydrated].some(
+        (count) => count !== undefined && nonNegativeInteger(count) !== entries.length,
+      )
+    ) {
+      return null;
+    }
+    return prSurfaceFilesFromEntries(entries, "filename");
   }
 
-  function nonNegativeInteger(value: unknown): number {
-    const number = Number(value);
-    return Number.isInteger(number) && number > 0 ? number : 0;
+  function nonNegativeInteger(value: unknown): number | null {
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
   }
 
-  function prSurfaceFilesFromReport(markdown: string): PrSurfaceFile[] {
-    if (frontMatterBoolean(markdown, "pr_surface_files_truncated")) return [];
-    return frontMatterJsonArray(markdown, "pr_surface_files")
-      .map((entry) => {
-        const file = asRecord(entry);
-        const path = typeof file.path === "string" ? file.path.trim() : "";
-        if (!path) return null;
-        return {
-          path,
-          additions: nonNegativeInteger(file.additions),
-          deletions: nonNegativeInteger(file.deletions),
-        };
-      })
-      .filter((entry): entry is PrSurfaceFile => Boolean(entry));
+  function prSurfaceFilesFromEntries(
+    entries: unknown[],
+    pathKey: "filename" | "path",
+  ): PrSurfaceFile[] | null {
+    const files: PrSurfaceFile[] = [];
+    for (const entry of entries) {
+      const file = asRecord(entry);
+      const path = file[pathKey];
+      if (typeof path !== "string" || !path || "omitted" in file) return null;
+      files.push({
+        path,
+        additions: nonNegativeInteger(file.additions),
+        deletions: nonNegativeInteger(file.deletions),
+      });
+    }
+    return files;
+  }
+
+  function prSurfaceFilesFromReport(markdown: string): PrSurfaceFile[] | null {
+    if (frontMatterBoolean(markdown, "pr_surface_files_truncated")) return null;
+    const raw = frontMatterValue(markdown, "pr_surface_files");
+    if (!raw) return [];
+    try {
+      const entries: unknown = JSON.parse(raw);
+      return Array.isArray(entries) ? prSurfaceFilesFromEntries(entries, "path") : null;
+    } catch {
+      return null;
+    }
   }
 
   function shouldRenderOpenClawPrSurface(markdown: string): boolean {
@@ -323,8 +329,12 @@ export function createReportOrchestrationFoundation(
   function renderOpenClawPrSurfaceFromReport(markdown: string): string {
     if (!shouldRenderOpenClawPrSurface(markdown)) return "";
     const files = prSurfaceFilesFromReport(markdown);
+    if (files === null) return "PR surface statistics unavailable: the file list is incomplete.";
     if (files.length === 0) return "";
     const stats = buildOpenClawPrSurfaceStats(files);
+    if (stats === null) {
+      return "PR surface statistics unavailable: complete line counts are not available for every file.";
+    }
     const summary = renderOpenClawPrSurfaceSummary(stats);
     if (!summary) return "";
     const details = collapsedDetailsBlock("View PR surface stats", [
@@ -461,25 +471,7 @@ export function createReportOrchestrationFoundation(
   } = labelSynchronization;
 
   function realBehaviorProofBlocksMerge(markdown: string): boolean {
-    const attached = reportAttachedLiveVerification(markdown);
-    if (attached.status === "failed" || attached.status === "malformed") return true;
-    if (frontMatterValue(markdown, "review_status") === "failed") return false;
-    if (frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL)) return false;
-    if (isDocsOnlyPullRequestReport(markdown)) return false;
-    const proof = reportRealBehaviorProof(markdown);
-    const authorityChainProofRequired = reviewSectionValue(markdown, "realBehaviorProof")
-      .split("\n")
-      .some((line) => line.trimStart().startsWith(`Summary: ${AUTHORITY_CHAIN_PROOF_MARKER}`));
-    if (!isExternalPullRequestReport(markdown) && !authorityChainProofRequired) {
-      return false;
-    }
-    return (
-      proof.needsContributorAction ||
-      proof.status === "missing" ||
-      proof.status === "mock_only" ||
-      proof.status === "insufficient" ||
-      (proof.status !== "sufficient" && proof.status !== "override")
-    );
+    return reportRealBehaviorProofPolicy(markdown).blocksMerge;
   }
 
   function normalizedLabelSet(labels: readonly string[]): Set<string> {

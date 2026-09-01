@@ -2,7 +2,6 @@ import type {
   GitHubUser,
   Item,
   ItemContext,
-  LinkedPullRequestSupersession,
   MergeRiskOption,
   PullRequestClosePromotion,
 } from "./clawsweeper-types.js";
@@ -141,26 +140,6 @@ export function createPullRequestClosePromotion(
     };
   }
 
-  function linkedPullRequestSupersessionPromotion(
-    linkedPull: LinkedPullRequestSupersession,
-  ): PullRequestClosePromotion {
-    const stateText = linkedPull.mergedAt
-      ? `merged at ${linkedPull.mergedAt}`
-      : "still open as the canonical replacement";
-    return {
-      closeReason: "duplicate_or_superseded",
-      summary: `Close this PR as superseded by ${linkedPull.url}.`,
-      coverageProofFallbackRefs: true,
-      bestSolution: `Close this PR as superseded by ${linkedPull.url}.`,
-      evidence: [
-        `- **linked superseding PR:** ${linkedPull.url} (${linkedPull.title}) is ${stateText}.`,
-        "- **cluster evidence:** the durable review links that PR in the work cluster or recommended risk path.",
-        "- **no human follow-up:** live comments and timeline hydrated by apply contain no non-automation activity after the ClawSweeper review.",
-      ].join("\n"),
-      closeComment: `Thanks for the contribution. I’m closing this PR as superseded by ${linkedPull.url}, which is ${stateText}.`,
-    };
-  }
-
   function pullRequestClosePromotion(
     markdown: string,
     item: Item,
@@ -175,14 +154,11 @@ export function createPullRequestClosePromotion(
     if (frontMatterValue(markdown, "review_status") !== "complete") return null;
     if (closePromotionHasNonAutomationActivityAfterReview(markdown, context)) return null;
     const linkedSupersession = linkedPullRequestSupersession(markdown, item, options);
-    if (linkedSupersession.candidate) {
-      return linkedPullRequestSupersessionPromotion(linkedSupersession.candidate);
-    }
     const pauseOrClose = pauseOrClosePromotion(markdown, item, staleMinAgeDays);
     if (pauseOrClose) return pauseOrClose;
-    // A live canonical candidate that is itself unsafe cannot justify treating the
-    // source as generic low-signal work. Missing or non-covering references can.
-    if (linkedSupersession.unsafeReason) return null;
+    // Removing supersession promotion must not turn its candidates into generic
+    // low-signal closures. Missing or non-covering references can still qualify.
+    if (linkedSupersession.candidate || linkedSupersession.unsafeReason) return null;
     return staleFRatedPullRequestPromotion(markdown, item, context, staleMinAgeDays);
   }
 
@@ -190,7 +166,6 @@ export function createPullRequestClosePromotion(
     recommendedPauseOrCloseOption,
     staleFRatedPullRequestPromotion,
     pauseOrClosePromotion,
-    linkedPullRequestSupersessionPromotion,
     pullRequestClosePromotion,
   };
 }

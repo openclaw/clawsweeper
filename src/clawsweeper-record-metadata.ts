@@ -11,6 +11,7 @@ import {
   REVIEW_SECTIONS,
 } from "./clawsweeper-policy.js";
 import { escapeRegExp } from "./clawsweeper-text.js";
+import { readReportFrontMatterField, type FrontMatterField } from "./report-front-matter.js";
 import type {
   ApplyKind,
   CloseReason,
@@ -51,11 +52,6 @@ interface RecordMetadataDependencies {
   numberForMarkdownFile: (file: string) => number;
 }
 
-export type FrontMatterField =
-  | { status: "absent" }
-  | { status: "ambiguous" }
-  | { status: "value"; value: string };
-
 export function createRecordMetadata({
   reportFileName,
   markdownRepository,
@@ -69,16 +65,9 @@ export function createRecordMetadata({
   numberForMarkdownFile,
 }: RecordMetadataDependencies) {
   function frontMatterField(markdown: string, key: string): FrontMatterField {
-    const frontMatterMatch = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-    if (!frontMatterMatch) return { status: "absent" };
-    const frontMatter = frontMatterMatch[1] ?? "";
-    const remainder = markdown.slice(frontMatterMatch[0].length);
-    const escapedKey = escapeRegExp(key);
-    if (new RegExp(`^${escapedKey}:`, "m").test(remainder)) return { status: "ambiguous" };
-    const matches = [...frontMatter.matchAll(new RegExp(`^${escapedKey}:\\s*(.*)$`, "gm"))];
-    if (matches.length === 0) return { status: "absent" };
-    if (matches.length !== 1) return { status: "ambiguous" };
-    const value = matches[0]?.[1]?.trim();
+    const field = readReportFrontMatterField(markdown, key);
+    if (field.status !== "value") return field;
+    const value = field.value.trim();
     if (!value) return { status: "ambiguous" };
     return {
       status: "value",

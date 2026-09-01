@@ -32,6 +32,9 @@ export const EXACT_REVIEW_LIFECYCLE_BAY_MAX_JOURNEY_MS = 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_LIFECYCLE_BAY_COVERAGE_RACE_MS = 60_000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_TIDE_THRESHOLD = 20;
 export const EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT = 10_000;
+const EXACT_REVIEW_LIFECYCLE_RECONCILIATION_CANDIDATE_LIMIT =
+  EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT * 10;
+const EXACT_REVIEW_LIFECYCLE_RECONCILIATION_PAGE_SIZE = 512;
 export const EXACT_REVIEW_LIFECYCLE_BAY_RECOVERY_BATCH_LIMIT = 256;
 
 // The empty string is the valid durable scope for an explicitly empty public
@@ -187,6 +190,44 @@ export type ExactReviewBayLifecycleSnapshot = {
     terminal_buffer: BayTerminalRecord[];
     recently_washed: BayTerminalRecord[];
   } | null;
+};
+
+export type ExactReviewBayTelemetryReconciliation = {
+  version: 1;
+  source: "canonical-lifecycle-projection-v1";
+  generated_at: string;
+  scope: { repository_count: number };
+  collection:
+    | { state: "complete" }
+    | { state: "unknown"; reason: "unavailable" | "over_cap" | "mixed" };
+  window: {
+    started_at: string;
+    ended_at: string;
+    minutes: number;
+    event_limit: number;
+    candidate_scan_limit: number;
+    candidates_scanned: number;
+  } | null;
+  comparison: {
+    canonical_events: number;
+    aggregate_events: number;
+    missing_events: number;
+    unexpected_events: number;
+    mismatched_events: number;
+    event_sets_match: boolean;
+    public_snapshot_matches_aggregate: boolean;
+    canonical: BayReconciliationAggregate;
+    aggregate: BayReconciliationAggregate;
+  } | null;
+};
+
+type BayReconciliationAggregate = {
+  normal_direct: { average_ms: number | null; median_ms: number | null; samples: number };
+  including_legacy_batch: {
+    average_ms: number | null;
+    median_ms: number | null;
+    samples: number;
+  };
 };
 
 const TERMINAL_CLASSES: LifecycleTerminalDisposition[] = [
@@ -1027,6 +1068,220 @@ export class ExactReviewLifecycleTelemetryStore {
       };
     } catch {
       return unknownBaySnapshot("unavailable");
+    }
+  }
+
+  /**
+   * Authenticated summary-only audit of the public timing aggregate. The comparison
+   * never returns lifecycle identities or rows: they are used only inside the Durable
+   * Object to recompute the current public window from the canonical projection.
+   */
+  reconcileBaySnapshot(
+    now = Date.now(),
+    allowedRepositories: ReadonlySet<string> = new Set(),
+  ): ExactReviewBayTelemetryReconciliation {
+    const unknown = (
+      reason: "unavailable" | "over_cap" | "mixed",
+    ): ExactReviewBayTelemetryReconciliation => ({
+      version: 1,
+      source: "canonical-lifecycle-projection-v1",
+      generated_at: new Date(now).toISOString(),
+      scope: { repository_count: allowedRepositories.size },
+      collection: { state: "unknown", reason },
+      window: null,
+      comparison: null,
+    });
+    try {
+      this.ensureSchemaSync();
+      const repositoryFilter = bayRepositoryFilter(allowedRepositories, "canonical_target_key");
+      const aggregateRepositoryFilter = bayRepositoryFilter(
+        allowedRepositories,
+        "events.canonical_target_key",
+      );
+      if (!repositoryFilter || !aggregateRepositoryFilter || this.hasBayLifecyclePending()) {
+        return unknown("unavailable");
+      }
+      const scopeRow = this.tideScopeRowSync();
+      if (!scopeRow || scopeRow.scope !== repositoryFilter.scope) return unknown("unavailable");
+      const timingCutoff = Math.max(
+        now - EXACT_REVIEW_LIFECYCLE_BAY_TIMING_WINDOW_MS,
+        scopeRow.progress.coverageStartedAt,
+      );
+      const triggerCoverageStartedAt = scopeRow.triggerCoverageStartedAt;
+      // Every projection mutation refreshes updated_at. A projection whose current
+      // completion falls inside the timing window must therefore have been updated
+      // inside that window too. Apply that indexed, scalar bound before parsing any
+      // JSON so retained lifecycle history cannot turn this operator audit into an
+      // unbounded projection-table scan.
+      const canonicalEvents: BayLifecycleEvent[] = [];
+      let candidatesScanned = 0;
+      let cursor: {
+        updatedAt: number;
+        canonicalTargetKey: string;
+        fenceKey: string;
+        revision: number;
+      } | null = null;
+      while (true) {
+        const cursorWhere: string = cursor
+          ? `AND (
+               updated_at < ?
+               OR (updated_at = ? AND canonical_target_key > ?)
+               OR (updated_at = ? AND canonical_target_key = ? AND fence_key > ?)
+               OR (updated_at = ? AND canonical_target_key = ? AND fence_key = ? AND revision < ?)
+             )`
+          : "";
+        const cursorBindings: unknown[] = cursor
+          ? [
+              cursor.updatedAt,
+              cursor.updatedAt,
+              cursor.canonicalTargetKey,
+              cursor.updatedAt,
+              cursor.canonicalTargetKey,
+              cursor.fenceKey,
+              cursor.updatedAt,
+              cursor.canonicalTargetKey,
+              cursor.fenceKey,
+              cursor.revision,
+            ]
+          : [];
+        const projectionRows: Array<Record<string, unknown>> = Array.from(
+          this.storage.sql.exec(
+            `SELECT projection_json, updated_at, canonical_target_key, fence_key, revision
+               FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+              WHERE updated_at >= ?
+                ${cursorWhere}
+                ${repositoryFilter.where}
+              ORDER BY updated_at DESC, canonical_target_key, fence_key, revision DESC
+              LIMIT ?`,
+            timingCutoff,
+            ...cursorBindings,
+            ...repositoryFilter.bindings,
+            EXACT_REVIEW_LIFECYCLE_RECONCILIATION_PAGE_SIZE,
+          ),
+        );
+        if (projectionRows.length === 0) break;
+        candidatesScanned += projectionRows.length;
+        if (candidatesScanned > EXACT_REVIEW_LIFECYCLE_RECONCILIATION_CANDIDATE_LIMIT) {
+          return unknown("over_cap");
+        }
+        for (const row of projectionRows) {
+          const projection = projectionFromRow(String(row.projection_json || ""));
+          if (!projection) return unknown("mixed");
+          let event = bayLifecycleEvent(projection);
+          // A later requeue or other canonical non-timing terminal state can retain
+          // the earlier final-review receipt timestamp used by the bounded query.
+          // The aggregate retracts that event, so it is intentionally absent from
+          // both sides of the reconciliation rather than making the audit unknown.
+          if (!event) continue;
+          if (event.completed_at < timingCutoff || event.completed_at > now) continue;
+          if (triggerCoverageStartedAt !== null && event.triggered_at < triggerCoverageStartedAt) {
+            continue;
+          }
+          if (
+            event.legacy_batch_path &&
+            this.hasAcceptedDirectOutcomeSync(
+              projection.canonicalTargetKey,
+              projection.fenceKey,
+              projection.revision,
+            )
+          ) {
+            event = { ...event, legacy_batch_path: false };
+          }
+          canonicalEvents.push(event);
+          if (canonicalEvents.length > EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT) {
+            return unknown("over_cap");
+          }
+        }
+        if (projectionRows.length < EXACT_REVIEW_LIFECYCLE_RECONCILIATION_PAGE_SIZE) break;
+        const last: Record<string, unknown> = projectionRows.at(-1)!;
+        const updatedAt: number = Number(last.updated_at);
+        const canonicalTargetKey: string = String(last.canonical_target_key || "");
+        const fenceKey: string = String(last.fence_key || "");
+        const revision: number = Number(last.revision);
+        if (
+          !validTimestamp(updatedAt) ||
+          !validCanonicalTargetKey(canonicalTargetKey) ||
+          !fenceKey ||
+          !Number.isSafeInteger(revision) ||
+          revision < 1
+        ) {
+          return unknown("mixed");
+        }
+        cursor = { updatedAt, canonicalTargetKey, fenceKey, revision };
+      }
+      const aggregateRows = Array.from(
+        this.storage.sql.exec(
+          `SELECT events.event_id, events.canonical_target_key, events.outcome,
+                  events.triggered_at, events.completed_at, events.legacy_batch_path
+             FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} AS events
+            WHERE events.completed_at >= ? AND events.completed_at <= ?
+              AND (? = 0 OR events.triggered_at >= ?)
+              ${aggregateRepositoryFilter.where}
+            ORDER BY events.completed_at, events.event_id LIMIT ?`,
+          timingCutoff,
+          now,
+          Number(triggerCoverageStartedAt !== null),
+          triggerCoverageStartedAt ?? 0,
+          ...aggregateRepositoryFilter.bindings,
+          EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT + 1,
+        ),
+      );
+      if (aggregateRows.length > EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT) {
+        return unknown("over_cap");
+      }
+      const aggregateEvents = aggregateRows.map(bayLifecycleEventFromTimingRow);
+      const canonicalById = new Map(canonicalEvents.map((event) => [event.event_id, event]));
+      const aggregateById = new Map(aggregateEvents.map((event) => [event.event_id, event]));
+      let missingEvents = 0;
+      let mismatchedEvents = 0;
+      for (const [eventId, expected] of canonicalById) {
+        const observed = aggregateById.get(eventId);
+        if (!observed) missingEvents += 1;
+        else if (!sameBayLifecycleEvent(expected, observed)) mismatchedEvents += 1;
+      }
+      let unexpectedEvents = 0;
+      for (const eventId of aggregateById.keys()) {
+        if (!canonicalById.has(eventId)) unexpectedEvents += 1;
+      }
+      const canonical = bayReconciliationAggregate(canonicalEvents);
+      const aggregate = bayReconciliationAggregate(aggregateEvents);
+      const publicSnapshot = this.baySnapshot(now, allowedRepositories);
+      const publicSnapshotMatchesAggregate =
+        publicSnapshot.collection.state === "complete" &&
+        publicSnapshot.timings !== null &&
+        sameBayTimingAggregate(publicSnapshot.timings.overall, aggregate.normal_direct) &&
+        sameBayTimingAggregate(
+          publicSnapshot.timings.including_legacy_batch.overall,
+          aggregate.including_legacy_batch,
+        );
+      return {
+        version: 1,
+        source: "canonical-lifecycle-projection-v1",
+        generated_at: new Date(now).toISOString(),
+        scope: { repository_count: allowedRepositories.size },
+        collection: { state: "complete" },
+        window: {
+          started_at: new Date(timingCutoff).toISOString(),
+          ended_at: new Date(now).toISOString(),
+          minutes: EXACT_REVIEW_LIFECYCLE_BAY_TIMING_WINDOW_MS / 60_000,
+          event_limit: EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT,
+          candidate_scan_limit: EXACT_REVIEW_LIFECYCLE_RECONCILIATION_CANDIDATE_LIMIT,
+          candidates_scanned: candidatesScanned,
+        },
+        comparison: {
+          canonical_events: canonicalEvents.length,
+          aggregate_events: aggregateEvents.length,
+          missing_events: missingEvents,
+          unexpected_events: unexpectedEvents,
+          mismatched_events: mismatchedEvents,
+          event_sets_match: missingEvents === 0 && unexpectedEvents === 0 && mismatchedEvents === 0,
+          public_snapshot_matches_aggregate: publicSnapshotMatchesAggregate,
+          canonical,
+          aggregate,
+        },
+      };
+    } catch {
+      return unknown("unavailable");
     }
   }
 
@@ -2092,6 +2347,41 @@ function bayTimingAggregate(durations: readonly number[]) {
     ),
     samples: durations.length,
   };
+}
+
+function bayReconciliationAggregate(
+  events: readonly BayLifecycleEvent[],
+): BayReconciliationAggregate {
+  const allDurations = events.map((event) => event.completed_at - event.triggered_at);
+  const directDurations = events
+    .filter((event) => !event.legacy_batch_path)
+    .map((event) => event.completed_at - event.triggered_at);
+  return {
+    normal_direct: bayTimingAggregate(directDurations),
+    including_legacy_batch: bayTimingAggregate(allDurations),
+  };
+}
+
+function sameBayTimingAggregate(
+  left: { average_ms: number | null; median_ms: number | null; samples: number | null },
+  right: { average_ms: number | null; median_ms: number | null; samples: number },
+) {
+  return (
+    left.average_ms === right.average_ms &&
+    left.median_ms === right.median_ms &&
+    left.samples === right.samples
+  );
+}
+
+function sameBayLifecycleEvent(left: BayLifecycleEvent, right: BayLifecycleEvent) {
+  return (
+    left.event_id === right.event_id &&
+    left.item_key === right.item_key &&
+    left.outcome === right.outcome &&
+    left.triggered_at === right.triggered_at &&
+    left.completed_at === right.completed_at &&
+    left.legacy_batch_path === right.legacy_batch_path
+  );
 }
 
 function hadBayLifecycleTerminalEvent(projection: ExactReviewLifecycleProjection) {

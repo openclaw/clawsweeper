@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import http from "node:http";
 import test from "node:test";
 
 import {
@@ -769,7 +770,7 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
   const dispatchBodies: Array<Record<string, unknown>> = [];
   process.env.CLAWSWEEPER_APP_ID = "12345";
   delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
-  process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0,0,0";
+  process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0";
   process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
     .export({ type: "pkcs1", format: "pem" })
     .toString();
@@ -884,6 +885,7 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
   const previousAppId = process.env.CLAWSWEEPER_APP_ID;
   const previousClientId = process.env.CLAWSWEEPER_APP_CLIENT_ID;
   const previousPrivateKey = process.env.CLAWSWEEPER_APP_PRIVATE_KEY;
+  const previousSettleDelays = process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS;
   const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   let commentLookups = 0;
   let deletedAck = 0;
@@ -893,6 +895,7 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
   });
   process.env.CLAWSWEEPER_APP_ID = "12345";
   delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
+  process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0";
   process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
     .export({ type: "pkcs1", format: "pem" })
     .toString();
@@ -912,7 +915,7 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
     }
     if (path.startsWith("/repos/openclaw/openclaw/issues/71898/comments?") && method === "GET") {
       commentLookups += 1;
-      if (commentLookups <= 2) {
+      if (commentLookups === 1) {
         return jsonResponse([
           {
             id: 9001,
@@ -979,12 +982,15 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
 
     assert.deepEqual(result, { statusCode: 202, body: { ok: true, status_comment_id: 9001 } });
     await deleted;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(commentLookups, 2);
     assert.equal(deletedAck, 9001);
   } finally {
     globalThis.fetch = previousFetch;
     restoreEnv("CLAWSWEEPER_APP_ID", previousAppId);
     restoreEnv("CLAWSWEEPER_APP_CLIENT_ID", previousClientId);
     restoreEnv("CLAWSWEEPER_APP_PRIVATE_KEY", previousPrivateKey);
+    restoreEnv("CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS", previousSettleDelays);
   }
 });
 
@@ -998,6 +1004,99 @@ test("webhook signature verification uses sha256 body hmac", () => {
     () => verifyGitHubSignature({ secret, signature: "sha256=bad", body }),
     /invalid GitHub webhook signature/,
   );
+});
+
+test("webhook GitHub requests have a deadline through the response body", async (t) => {
+  const previousFetch = globalThis.fetch;
+  const previousTimeout = AbortSignal.timeout;
+  for (const name of [
+    "CLAWSWEEPER_APP_ID",
+    "CLAWSWEEPER_APP_CLIENT_ID",
+    "CLAWSWEEPER_APP_PRIVATE_KEY",
+  ]) {
+    const previous = process.env[name];
+    t.after(() => restoreEnv(name, previous));
+  }
+  process.env.CLAWSWEEPER_APP_ID = "12345";
+  delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
+  process.env.CLAWSWEEPER_APP_PRIVATE_KEY = crypto
+    .generateKeyPairSync("rsa", { modulusLength: 2048 })
+    .privateKey.export({ type: "pkcs1", format: "pem" })
+    .toString();
+
+  let mode = "success";
+  let calls = 0;
+  const server = http.createServer((request, response) => {
+    calls++;
+    if (mode === "headers") return;
+    response.writeHead(200, { "content-type": "application/json" });
+    if (mode === "body") {
+      response.write('{"id":');
+      return;
+    }
+    response.end(
+      JSON.stringify(
+        request.url?.endsWith("/installation")
+          ? { id: 999 }
+          : request.url?.endsWith("/access_tokens")
+            ? { token: "synthetic-token" }
+            : {},
+      ),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(
+    () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  );
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  t.mock.method(globalThis, "fetch", (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    assert.equal(url.origin, "https://api.github.com");
+    return previousFetch(`http://127.0.0.1:${address.port}${url.pathname}`, init);
+  });
+  t.mock.method(AbortSignal, "timeout", (ms: number) => {
+    assert.equal(ms, 15_000);
+    return previousTimeout(mode === "success" ? 2_000 : 50);
+  });
+
+  for (mode of ["success", "headers", "body"]) {
+    await t.test(mode, { timeout: 3_000 }, async () => {
+      calls = 0;
+      const result = handleGitHubWebhook({
+        event: "pull_request",
+        payload: {
+          action: "opened",
+          repository: {
+            full_name: "openclaw/openclaw",
+            default_branch: "main",
+            private: false,
+            archived: false,
+            fork: false,
+            has_issues: true,
+          },
+          pull_request: { number: 91095, head: { sha: "e".repeat(40) } },
+          installation: { id: 123 },
+        },
+      });
+      if (mode === "success") {
+        assert.deepEqual(await result, {
+          statusCode: 202,
+          body: { ok: true, dispatched: "clawsweeper_item" },
+        });
+        assert.equal(calls, 3);
+      } else {
+        await assert.rejects(result, (error: Error) =>
+          /^(AbortError|TimeoutError)$/.test(error.name),
+        );
+        assert.equal(calls, 1);
+      }
+    });
+  }
 });
 
 function jsonResponse(value: unknown) {

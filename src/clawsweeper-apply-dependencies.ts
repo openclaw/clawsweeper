@@ -490,6 +490,11 @@ export interface CreateApplyDecisionWorkflowDependencies {
     number: number,
     context?: ItemContext,
   ) => string | null;
+  newerDurableReviewTupleVerified: (
+    markdown: string,
+    existingReviewComment: Record<string, unknown> | undefined,
+    number: number,
+  ) => boolean;
   staleVersionBugApplyBlockReasonSafe: (
     number: number,
     item: Pick<Item, "createdAt">,

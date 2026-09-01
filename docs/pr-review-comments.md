@@ -107,17 +107,43 @@ review metrics, stored-data warnings, root-cause clusters, proof suggestions,
 merge-risk options, full review comments, labels, evidence, optional rank-up
 moves, the rank legend, workflow notes, and review history.
 
+The recorded reviewer proof assessment and the host's existing proof requirement
+are separate. An applicable external PR assessed as `not_applicable` still needs
+proof: the verdict, readiness, verification, checklist, and status label explain
+that the assessment does not satisfy current policy. Put relevant after-change
+evidence in the main PR body, then request a fresh review. This includes root
+`README.md` changes; the existing docs exemption requires a complete, nonempty
+file list entirely under `docs/`. Recorded proof fields, summaries, ratings, and
+rating labels remain unchanged; the comment identifies reviewer context without
+presenting it as a host exemption.
+
+Failed or malformed historical verification receipts remain separate,
+maintainer-owned blockers. They do not erase independently sufficient contributor
+proof or turn an exempt change into a contributor proof request. These projections
+do not change merge, repair, or close eligibility. OpenClaw Bay needs no code or
+schema change because its observer projection does not consume this assessment
+or checklist.
+
 For OpenClaw PRs, stored-data warnings flag possible persistence changes in
 production source or documented storage contracts, not setup in test, fixture,
-or example source paths. Markdown beside source is still documentation: ordinary
+or example source paths. Colocated `*.test-support.*` files are test code too,
+even when their guards or setup mention metadata, serialization, or SQL.
+Markdown beside source is still documentation: ordinary
 prose mentioning sessions or metadata is not a stored-format change. Explicit
 storage formats, SQL DDL, and structured storage keys (including frontmatter)
 remain evidence. Renames retain evidence from either production path. Missing,
-empty, or truncated patches on likely production persistence paths or hook
+empty, or truncated patches on explicit production persistence paths or hook
 descriptors, and truncated file lists, still produce conservative unknown
-warnings. The warning requests review; it does not prove a persisted contract
-changed. This classification does not change the separate `docs/` exemption for
-contributor behavior proof.
+warnings. Generic `state`, `session`, and `history` path names and typed runtime
+parameters alone do not establish persistence, including when their patches are
+truncated. Explicit serialization, browser storage (local/session storage and
+IndexedDB), durable storage, and schema/migration evidence remain eligible in
+UI code too. Unchanged storage context in the same diff hunk can establish the
+boundary for changed stored fields; an in-memory map or display-only comment
+never vetoes that evidence. Ordinary validation fields in a `schema` file alone
+do not establish persisted database columns. The warning requests review; it
+does not prove a persisted contract changed. This classification does not change
+the separate `docs/` exemption for contributor behavior proof.
 
 ## PR Introduction Evidence
 
@@ -169,6 +195,33 @@ still read as `Codex review: passed.` in the durable review comment.
 
 Issues use `**Next step**` instead of the PR-specific `**Next step before
 merge**` heading. Non-PR comments are never repair triggers.
+
+## History Attribution
+
+The public related-people section separates routing judgment from Git facts.
+Reviewers may propose up to five source-line history pointers, identifying the
+recorded checkout's path/line, a commit, and either its author or committer.
+ClawSweeper verifies the actual line change against every parent recorded in
+`git cat-file commit`, using the same reader for structured regression provenance.
+Blame boundary markers, graph-truncated parents, or root-style display alone do
+not prove introduction. Configured blame revision exclusions are cleared so they
+cannot substitute an older line version. Whole-commit rename metadata identifies
+exact file moves as carried forward; inexact rename mappings remain unknown.
+Other unchanged lines are carried forward; missing objects, quoted blame paths,
+oversized reads, or expired verification budgets remain unknown.
+Reads reuse the trusted local Git boundary, share a five-second budget per
+verification set, and never fetch history or invoke target callbacks. Replacement
+refs and legacy grafts are disabled. Parent records must follow the tree record
+consecutively; identities, porcelain metadata, and diff hunks split only on LF,
+never embedded CR or Unicode line separators.
+
+Public actor names and roles come from raw commit metadata, not reviewer prose.
+Author, committer, PR author, and merger remain separate; line history does not
+establish feature responsibility. Other candidates retain only a low-confidence
+routing suggestion. Host projections carry `raw_parent_line_v1` in the existing
+report representation; older unmarked attribution cannot regain verified status
+when comments are rendered. Stored reports and live comments are not rewritten by
+this reader change. OpenClaw Bay needs no change: no observer API or controls change.
 
 ## Primary Body Coverage
 

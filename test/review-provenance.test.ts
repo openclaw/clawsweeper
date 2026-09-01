@@ -205,6 +205,31 @@ test("missing or shallow ancestry cannot turn endpoint drift into introduced evi
   }
 });
 
+test("test-merge parents must be consecutive LF records after the tree", () => {
+  const f = fixture();
+  try {
+    const tree = git(f.root, "rev-parse", `${f.T}^{tree}`);
+    const ident = "Fixture <fixture@example.invalid> 1700000000 +0000";
+    for (const [label, header] of [
+      ["late parent headers", `author ${ident}\ncommitter ${ident}\nparent ${f.M}\nparent ${f.H}`],
+      [
+        "CRs in one identity",
+        `author A\rparent ${f.M}\rparent ${f.H}\r${ident}\ncommitter ${ident}`,
+      ],
+    ]) {
+      const rawFile = join(f.root, ".git", "fixture-commit");
+      writeFileSync(rawFile, `tree ${tree}\n${header}\n\nfixture\n`);
+      const fakeMerge = git(f.root, "hash-object", "-t", "commit", "-w", rawFile);
+      assert.equal(git(f.root, "show", "-s", "--format=%P", fakeMerge), "", label);
+      const { evidence } = promptEvidence(f, { mergeCommitSha: fakeMerge });
+      assert.equal(evidence.testMerge.status, "stale", label);
+      assert.deepEqual(evidence.testMerge.parents, [], label);
+    }
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
 test("production history hydration recovers a shallow PR tip and fetches only the pinned test merge", () => {
   const f = fixture();
   const clone = mkdtempSync(join(tmpdir(), "clawsweeper-provenance-clone-"));

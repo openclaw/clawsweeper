@@ -918,22 +918,18 @@ test(
   { timeout: 60_000 },
   async () => {
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-live-proof-directory-fd-"));
-    const helperPath = join(root, "directory-holder.mjs");
-    writeFileSync(
-      helperPath,
-      [
-        'import { fstatSync } from "node:fs";',
-        "if (!fstatSync(9).isDirectory()) process.exit(2);",
-        "if (process.stdin.isTTY || process.stdout.isTTY || process.stderr.isTTY) process.exit(2);",
-        "process.stdout.write('ready\\n');",
-        "setInterval(() => {}, 1_000);",
-      ].join("\n"),
-    );
+    const helperSource = [
+      'import { fstatSync } from "node:fs";',
+      "if (!fstatSync(9).isDirectory()) process.exit(2);",
+      "if (process.stdin.isTTY || process.stdout.isTTY || process.stderr.isTTY) process.exit(2);",
+      "process.stdout.write('ready\\n');",
+      "setInterval(() => {}, 1_000);",
+    ].join("\n");
     const checkout = root;
     const helper = (() => {
       const checkoutFd = openSync(checkout, "r");
       try {
-        return spawn(process.execPath, [helperPath], {
+        return spawn(process.execPath, ["--input-type=module", "--eval", helperSource], {
           detached: true,
           stdio: [
             "ignore",

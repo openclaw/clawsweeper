@@ -13,6 +13,7 @@ import {
   isVerifiedRegressionProvenance,
   regressionAssessmentPublicLine,
   regressionProvenancePublicLine,
+  publicLikelyOwner,
 } from "./clawsweeper-regression-provenance.js";
 import type {
   Action,
@@ -554,8 +555,11 @@ export function createReportDocumentRendering(
       : "- none";
     const likelyOwners = options.decision.likelyOwners.length
       ? options.decision.likelyOwners
+          .map(publicLikelyOwner)
           .map((owner) => {
             const bits = [`- **${owner.person}:** ${publicLikelyOwnerRole(owner.role)}`];
+            if (owner.attributionSource)
+              bits.push(`  - attribution source: ${owner.attributionSource}`);
             bits.push(`  - reason: ${owner.reason}`);
             bits.push(`  - confidence: ${owner.confidence}`);
             if (owner.commits.length) bits.push(`  - commits: ${owner.commits.join(", ")}`);
@@ -634,6 +638,7 @@ regression_provenance_merge_sha: ${verifiedRegressionProvenance?.mergeCommitSha 
 regression_provenance_source_path: ${regressionProvenance?.sourcePath ?? "unknown"}
 regression_provenance_source_line: ${regressionProvenance?.sourceLine ?? "unknown"}
 regression_provenance_evidence_type: ${regressionProvenance?.evidenceType ?? "unknown"}
+regression_provenance_verification_source: ${regressionProvenance?.verificationSource ?? "unknown"}
 regression_provenance_merged_at: ${verifiedRegressionProvenance?.mergedAt ?? "unknown"}
 regression_provenance_reviewed_sha: ${regressionProvenance && "reviewedCommitSha" in regressionProvenance ? regressionProvenance.reviewedCommitSha : "unknown"}
 regression_provenance_source_commit_sha: ${regressionProvenance?.sourceCommitSha ?? "unknown"}
@@ -727,8 +732,8 @@ data_model_change: ${dataModelChange.change}
 data_model_surfaces: ${jsonFrontMatterValue(dataModelChange.surfaces)}
 sqlite_schema_change: ${sqliteSchemaChange.change}
 sqlite_schema_files: ${jsonFrontMatterValue(sqliteSchemaChange.files)}
-pr_surface_files: ${jsonFrontMatterValue(prSurfaceFiles)}
-pr_surface_files_truncated: ${pullFilesTruncated}
+pr_surface_files: ${jsonFrontMatterValue(prSurfaceFiles ?? [])}
+pr_surface_files_truncated: ${prSurfaceFiles === null}
 item_category: ${options.decision.itemCategory}
 reproduction_status: ${options.decision.reproductionStatus}
 reproduction_confidence: ${options.decision.reproductionConfidence}

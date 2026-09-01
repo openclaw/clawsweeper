@@ -9358,6 +9358,94 @@ for (const retryKind of ["coordination", "throttle"] as const) {
   });
 }
 
+test("exact-review queue terminates incomplete source only for the unchanged revision", async () => {
+  const storage = new MemoryDurableStorage();
+  const terminal = leasedExactReviewQueueItem(709, "7090");
+  const transient = leasedExactReviewQueueItem(710, "7100");
+  const newer = leasedExactReviewQueueItem(711, "7110");
+  newer.revision = 2;
+  newer.decision = { ...newer.decision, sourceAction: "synchronize" };
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: {
+      "openclaw/openclaw#709": terminal,
+      "openclaw/openclaw#710": transient,
+      "openclaw/openclaw#711": newer,
+    },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const complete = (itemNumber: number, runId: string, reviewFailureReason?: string) =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: `lease-${itemNumber}`,
+          item_key: `openclaw/openclaw#${itemNumber}`,
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: runId,
+          run_attempt: 1,
+          outcome: "failure",
+          ...(reviewFailureReason ? { review_failure_reason: reviewFailureReason } : {}),
+        }),
+      }),
+    );
+
+  const terminalResponse = await complete(709, "7090", "incomplete_source");
+  assert.equal(terminalResponse.status, 200);
+  assert.deepEqual(await terminalResponse.json(), { ok: true, requeued: false });
+
+  const transientResponse = await complete(710, "7100");
+  assert.equal(transientResponse.status, 200);
+  assert.deepEqual(await transientResponse.json(), { ok: true, requeued: true });
+
+  const newerResponse = await complete(711, "7110", "incomplete_source");
+  assert.equal(newerResponse.status, 200);
+  assert.deepEqual(await newerResponse.json(), { ok: true, requeued: true });
+
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, Record<string, unknown>>;
+  };
+  assert.equal(state.items["openclaw/openclaw#709"], undefined);
+  assert.equal(state.items["openclaw/openclaw#710"].state, "pending");
+  assert.equal(state.items["openclaw/openclaw#710"].reviewFailureAttempts, 1);
+  assert.equal(state.items["openclaw/openclaw#711"].state, "pending");
+  assert.equal(state.items["openclaw/openclaw#711"].revision, 2);
+  assert.equal(state.items["openclaw/openclaw#711"].reviewFailureAttempts, 0);
+});
+
+test("exact-review queue validates terminal review failure reasons", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  for (const [body, error] of [
+    [
+      { outcome: "failure", review_failure_reason: "scanner_failed" },
+      "invalid_review_failure_reason",
+    ],
+    [
+      { outcome: "success", review_failure_reason: "incomplete_source" },
+      "review_failure_reason_without_failure",
+    ],
+    [
+      {
+        outcome: "failure",
+        review_failure_reason: "incomplete_source",
+        retry_kind: "coordination",
+        retry_at: new Date(Date.now() + 60_000).toISOString(),
+      },
+      "review_failure_reason_with_retry",
+    ],
+  ] as const) {
+    const response = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({ lease_id: "lease-1", run_id: "1", ...body }),
+      }),
+    );
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error });
+  }
+});
+
 test("exact-review queue spends review attempts for an untyped retry deadline", async () => {
   const storage = new MemoryDurableStorage();
   const retryAt = Date.now() + 45 * 60_000;

@@ -396,10 +396,11 @@ test("review actions only propose valid closes and never apply directly", () => 
       action.closeComment.indexOf("What I checked:"),
   );
   assert.match(action.closeComment, /Likely related people:/);
-  assert.match(action.closeComment, /@alice/);
-  assert.match(action.closeComment, /@bob/);
-  assert.doesNotMatch(action.closeComment, /role: recent maintainer/);
-  assert.match(action.closeComment, /role: recent area contributor/);
+  for (const person of ["alice", "bob"]) {
+    assert.match(action.closeComment, new RegExp(`@${String.fromCodePoint(0x200b)}${person}`));
+  }
+  assert.doesNotMatch(action.closeComment, /@alice|@bob|role: introduced behavior|role: recent/);
+  assert.match(action.closeComment, /role: unverified routing candidate; confidence: low/);
   assert.match(action.closeComment, /Codex review notes: model gpt-5\.6-sol, reasoning high;/);
 });
 
@@ -878,32 +879,6 @@ test("review details show missing AGENTS.md policy status", () => {
 
   assert.equal(action.actionTaken, "proposed_close");
   assert.match(action.closeComment, /AGENTS\.md: not found in the target repository\./);
-});
-
-test("likely owner commit links ignore non-sha values", () => {
-  const action = reviewActionForDecision({
-    item: item(),
-    decision: closeDecision({
-      likelyOwners: [
-        {
-          person: "@alice",
-          role: "feature contributor",
-          reason: "The changelog credits a pull request for this feature surface.",
-          commits: ["https://github.com/openclaw/openclaw/pull/76079", " abcdef1234567890 "],
-          files: ["CHANGELOG.md"],
-          confidence: "medium",
-        },
-      ],
-    }),
-    git,
-  });
-
-  assert.equal(action.actionTaken, "proposed_close");
-  assert.doesNotMatch(action.closeComment, /\/commit\/https:/);
-  assert.match(
-    action.closeComment,
-    /\[abcdef123456\]\(https:\/\/github\.com\/openclaw\/openclaw\/commit\/abcdef1234567890\)/,
-  );
 });
 
 test("skill-only OpenClaw PRs can close through ClawHub with upload guidance", () => {

@@ -395,7 +395,10 @@ The workflow needs:
   request fails in time for the executor to write a blocked report and upload
   debug artifacts. `CLAWSWEEPER_GIT_NETWORK_TIMEOUT_MS` and
   `CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS` can override the Git and GitHub CLI
-  portions separately.
+  portions separately. Shared repair GitHub CLI calls use the merged per-call
+  environment for these settings, default to two minutes, and enforce a
+  30-second minimum for environment-configured budgets. An explicit `timeoutMs`
+  call option takes precedence and may select a shorter positive deadline.
 - optional `CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS` and `CLAWSWEEPER_RESOLVE_REVIEW_THREADS` variables for agentic merge-prep review loops; the review attempt default is `4`, with the last failed internal review converted into one final Codex review-fix pass when changed-surface validation can still prove the branch safe to push for exact-head review
 - optional `CLAWSWEEPER_MAX_REPAIRS_PER_PR` and
   `CLAWSWEEPER_MAX_REPAIRS_PER_HEAD` variables for trusted

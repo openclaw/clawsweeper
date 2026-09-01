@@ -57,6 +57,11 @@ import {
   type ExactReviewIngress,
 } from "./exact-review-queue.ts";
 import {
+  EXACT_REVIEW_QUEUE_TRACE_HEADER,
+  exactReviewQueueEndpointTemplate,
+  newExactReviewQueueTraceId,
+} from "./exact-review-queue-observability.ts";
+import {
   AUTOMERGE_METRICS_EVENT_TYPE,
   AUTOMERGE_METRICS_EVENT_KEY_PREFIX,
   AUTOMERGE_METRICS_EVENT_ID_KEY_PREFIX,
@@ -1036,6 +1041,21 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewOperatorRequest(request, env, "/lifecycle-audit/inventory");
+    if (
+      url.pathname === "/internal/exact-review/telemetry-reconciliation" &&
+      request.method === "POST"
+    ) {
+      const scope = new URLSearchParams();
+      for (const repository of verifiedPublicBayRepositories(env)) {
+        scope.append("public_repo", repository);
+      }
+      const query = scope.size ? `?${scope.toString()}` : "";
+      return authenticatedExactReviewOperatorRequest(
+        request,
+        env,
+        `/telemetry-reconciliation${query}`,
+      );
+    }
     if (url.pathname === "/internal/exact-review/dead-letters/replay" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/replay");
     if (
@@ -1292,14 +1312,121 @@ async function healthHistoryJson(request: Request, env: DashboardEnv) {
   const samples = [...samplesBySlot.values()]
     .sort((left, right) => Date.parse(left.at) - Date.parse(right.at))
     .slice(-sampleLimit);
+  const contract = publicHealthHistoryContract(range, samples, now);
   return cors(
     json({
       schema_version: 1,
       range,
       retention_days: HEALTH_HISTORY_RETENTION_DAYS,
+      generated_at: new Date(now).toISOString(),
+      coverage: contract.coverage,
+      freshness: contract.freshness,
       samples,
     }),
   );
+}
+
+export function publicHealthHistoryContract(range, samples, now = Date.now()) {
+  const rangeMs =
+    range === "6h"
+      ? 6 * 60 * 60 * 1000
+      : range === "7d"
+        ? 7 * 24 * 60 * 60 * 1000
+        : range === "24h"
+          ? 24 * 60 * 60 * 1000
+          : 0;
+  if (!rangeMs || !Number.isFinite(now)) {
+    return {
+      coverage: {
+        state: "unavailable",
+        expected_slots: null,
+        observed_slots: null,
+        usable_slots: null,
+        failed_slots: null,
+        missing_slots: null,
+        coverage_percent: null,
+        largest_gap_slots: null,
+        largest_gap_ms: null,
+        window_started_at: null,
+        window_ended_at: null,
+      },
+      freshness: {
+        state: "unavailable",
+        latest_sample_at: null,
+        age_ms: null,
+        maximum_age_ms: 12 * 60_000,
+      },
+    };
+  }
+  const windowStartedAt = now - rangeMs;
+  const firstExpectedSlot = Math.ceil(windowStartedAt / HEALTH_HISTORY_SAMPLE_MS);
+  const lastExpectedSlot = Math.floor(now / HEALTH_HISTORY_SAMPLE_MS);
+  const expectedSlots = Math.max(0, lastExpectedSlot - firstExpectedSlot + 1);
+  const observed = new Map<number, { at: number; usable: boolean }>();
+  for (const sample of Array.isArray(samples) ? samples : []) {
+    const at = Date.parse(String(sample?.at || ""));
+    if (!Number.isFinite(at)) continue;
+    const collectionOk = sample?.exact_review?.collection_ok;
+    if (typeof collectionOk !== "boolean") continue;
+    const slot = Math.floor(at / HEALTH_HISTORY_SAMPLE_MS);
+    if (slot < firstExpectedSlot || slot > lastExpectedSlot) continue;
+    const current = observed.get(slot);
+    if (!current || current.at < at) {
+      observed.set(slot, {
+        at,
+        usable: collectionOk,
+      });
+    }
+  }
+  const usable = new Set<number>();
+  let latestSampleAt: number | null = null;
+  for (const [slot, sample] of observed) {
+    if (!sample.usable) continue;
+    usable.add(slot);
+    latestSampleAt = Math.max(latestSampleAt ?? sample.at, sample.at);
+  }
+  let largestGapSlots = 0;
+  let currentGapSlots = 0;
+  for (let slot = firstExpectedSlot; slot <= lastExpectedSlot; slot += 1) {
+    if (usable.has(slot)) currentGapSlots = 0;
+    else {
+      currentGapSlots += 1;
+      largestGapSlots = Math.max(largestGapSlots, currentGapSlots);
+    }
+  }
+  const observedSlots = observed.size;
+  const usableSlots = usable.size;
+  const failedSlots = observedSlots - usableSlots;
+  const missingSlots = Math.max(0, expectedSlots - observedSlots);
+  const freshnessMaximumAgeMs = 12 * 60_000;
+  const ageMs = latestSampleAt === null ? null : Math.max(0, now - latestSampleAt);
+  return {
+    coverage: {
+      state:
+        latestSampleAt === null
+          ? "unavailable"
+          : usableSlots === expectedSlots
+            ? "complete"
+            : "partial",
+      expected_slots: expectedSlots,
+      observed_slots: observedSlots,
+      usable_slots: usableSlots,
+      failed_slots: failedSlots,
+      missing_slots: missingSlots,
+      coverage_percent:
+        expectedSlots === 0 ? null : Math.round((usableSlots / expectedSlots) * 10_000) / 100,
+      largest_gap_slots: largestGapSlots,
+      largest_gap_ms: largestGapSlots * HEALTH_HISTORY_SAMPLE_MS,
+      window_started_at: new Date(windowStartedAt).toISOString(),
+      window_ended_at: new Date(now).toISOString(),
+    },
+    freshness: {
+      state: ageMs === null ? "unavailable" : ageMs <= freshnessMaximumAgeMs ? "fresh" : "stale",
+      latest_sample_at: latestSampleAt === null ? null : new Date(latestSampleAt).toISOString(),
+      age_ms: ageMs,
+      maximum_age_ms: freshnessMaximumAgeMs,
+    },
+  };
 }
 
 function healthHistoryDates(fromMs: number, toMs: number) {
@@ -3023,15 +3150,58 @@ function statusSnapshotResponse(snapshot, cacheState, env) {
   responseHeaders.set("content-type", "application/json; charset=utf-8");
   responseHeaders.set("cache-control", "no-store");
   responseHeaders.set("x-clawsweeper-cache", cacheState);
-  return cors(
-    new Response(
-      JSON.stringify(publicStatusProjection(snapshot, verifiedPublicBayRepositories(env)), null, 2),
-      {
-        status: 200,
-        headers: responseHeaders,
-      },
-    ),
+  const projection = publicStatusProjection(snapshot, verifiedPublicBayRepositories(env));
+  const freshness = publicStatusFreshness(
+    projection.public_projection_complete === true ? snapshot : null,
+    cacheState,
+    numberFrom(env.CACHE_TTL_SECONDS, 60) * 1000,
   );
+  return cors(
+    new Response(JSON.stringify({ ...projection, freshness }, null, 2), {
+      status: 200,
+      headers: responseHeaders,
+    }),
+  );
+}
+
+export function publicStatusFreshness(
+  snapshot,
+  cacheState,
+  maximumAgeMs = 60_000,
+  now = Date.now(),
+) {
+  const generatedAt = publicTimestamp(snapshot?.generated_at);
+  const boundedMaximumAgeMs =
+    Number.isSafeInteger(maximumAgeMs) && maximumAgeMs > 0
+      ? Math.min(maximumAgeMs, STALE_CACHE_TTL_SECONDS * 1000)
+      : 60_000;
+  if (!generatedAt || !Number.isFinite(now)) {
+    return {
+      state: "unavailable",
+      cache_state: cacheState === "stale" || cacheState === "fresh" ? cacheState : "miss",
+      generated_at: null,
+      age_ms: null,
+      maximum_age_ms: boundedMaximumAgeMs,
+    };
+  }
+  const generatedAtMs = Date.parse(generatedAt);
+  if (generatedAtMs > now) {
+    return {
+      state: "unavailable",
+      cache_state: cacheState === "stale" || cacheState === "fresh" ? cacheState : "miss",
+      generated_at: null,
+      age_ms: null,
+      maximum_age_ms: boundedMaximumAgeMs,
+    };
+  }
+  const ageMs = now - generatedAtMs;
+  return {
+    state: cacheState === "stale" || ageMs > boundedMaximumAgeMs ? "stale" : "fresh",
+    cache_state: cacheState === "stale" || cacheState === "fresh" ? cacheState : "miss",
+    generated_at: generatedAt,
+    age_ms: ageMs,
+    maximum_age_ms: boundedMaximumAgeMs,
+  };
 }
 
 function refreshStatus(request, env) {
@@ -3701,7 +3871,9 @@ async function githubWebhook(request, env, ctx) {
     });
     const queue = exactReviewQueueStub(env);
     if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
-    const intakeResponse = await queue.fetch(
+    const { response: intakeResponse } = await exactReviewQueueFetch(
+      queue,
+      "/command-intake",
       new Request("https://clawsweeper-exact-review-queue/command-intake", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -4540,7 +4712,9 @@ async function recordLifecycleCommandAcknowledgement(env, completion) {
   const queue = exactReviewQueueStub(env);
   if (!queue) return { accepted: true, sourceDeliveryId: null, bayJourneyDeliveryId: null };
   const observedAt = Date.parse(String(completion.completed_at || ""));
-  const response = await queue.fetch(
+  const { response } = await exactReviewQueueFetch(
+    queue,
+    "/lifecycle/command-ack/observed",
     new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4578,7 +4752,9 @@ async function reserveExactReviewSourceAuthority(
 ): Promise<{ deduped: true } | { sourceAuthoritySeq: number } | null> {
   const queue = exactReviewQueueStub(env);
   if (!queue) return null;
-  const response = await queue.fetch(
+  const { response } = await exactReviewQueueFetch(
+    queue,
+    "/source-authority",
     new Request("https://clawsweeper-exact-review-queue/source-authority", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4610,7 +4786,9 @@ async function completeExactReviewSourceAuthority(
 ) {
   const queue = exactReviewQueueStub(env);
   if (!queue) throw new Error("exact-review queue not configured");
-  const response = await queue.fetch(
+  const { response } = await exactReviewQueueFetch(
+    queue,
+    "/source-authority/complete",
     new Request("https://clawsweeper-exact-review-queue/source-authority/complete", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4627,29 +4805,79 @@ async function completeExactReviewSourceAuthority(
   }
 }
 
-async function exactReviewQueueRequest(env, path, request?: Request) {
-  const queue = exactReviewQueueStub(env);
-  if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
+async function exactReviewQueueFetch(queue: DurableObjectStub, path: string, request?: Request) {
   const body = request ? await request.text() : undefined;
+  const traceId = newExactReviewQueueTraceId();
+  const endpoint = exactReviewQueueEndpointTemplate(path);
   try {
+    const headers = new Headers(body ? { "content-type": "application/json" } : undefined);
+    headers.set(EXACT_REVIEW_QUEUE_TRACE_HEADER, traceId);
     const response = await queue.fetch(
       new Request(`https://clawsweeper-exact-review-queue${path}`, {
         method: request?.method || "GET",
-        headers: body ? { "content-type": "application/json" } : undefined,
+        headers,
         ...(body ? { body } : {}),
       }),
     );
-    if (response.status < 500) return response;
+    if (response.status < 500) return { response, malformedServerResponse: false };
     const responseBody = await response.clone().text();
     try {
       JSON.parse(responseBody);
-      return response;
+      console.error("exact_review_queue_structured_server_response", {
+        trace_id: traceId,
+        endpoint,
+        phase: "request",
+        transport: "structured_5xx",
+        upstream_status: response.status,
+        failure_category: "structured_server_response",
+      });
+      return { response, malformedServerResponse: false };
     } catch {
-      console.error("exact_review_queue_malformed_server_response");
-      return json({ error: "exact_review_queue_unavailable" }, response.status);
+      console.error("exact_review_queue_malformed_server_response", {
+        trace_id: traceId,
+        endpoint,
+        phase: "request",
+        transport: "non_json_5xx",
+        upstream_status: response.status,
+        failure_category: "malformed_server_response",
+      });
+      return { response, malformedServerResponse: true };
     }
+  } catch (error) {
+    const failure = objectValue(error);
+    const remote = failure.remote === true;
+    const retryable = failure.retryable === true;
+    const overloaded = failure.overloaded === true;
+    console.error("exact_review_queue_request_failed", {
+      trace_id: traceId,
+      endpoint,
+      phase: "request",
+      transport: "throw",
+      upstream_status: null,
+      remote,
+      retryable,
+      overloaded,
+      failure_category: overloaded
+        ? "platform_overloaded"
+        : retryable
+          ? "platform_retryable"
+          : remote
+            ? "remote_exception"
+            : "request_exception",
+    });
+    throw error;
+  }
+}
+
+async function exactReviewQueueRequest(env, path, request?: Request) {
+  const queue = exactReviewQueueStub(env);
+  if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
+  try {
+    const { response, malformedServerResponse } = await exactReviewQueueFetch(queue, path, request);
+    return malformedServerResponse
+      ? json({ error: "exact_review_queue_unavailable" }, response.status)
+      : response;
   } catch {
-    console.error("exact_review_queue_request_failed");
     return json({ error: "exact_review_queue_unavailable" }, 500);
   }
 }
@@ -5990,7 +6218,9 @@ async function enqueueExactReview({
 }) {
   const queue = exactReviewQueueStub(env);
   if (!queue) return null;
-  const response = await queue.fetch(
+  const { response } = await exactReviewQueueFetch(
+    queue,
+    "/enqueue",
     new Request("https://clawsweeper-exact-review-queue/enqueue", {
       method: "POST",
       headers: { "content-type": "application/json" },

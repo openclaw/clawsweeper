@@ -1025,7 +1025,7 @@ test("codex failure decisions trust a final stderr model access denial", () => {
   assert.equal(decision.codexTerminalFailure, true);
 });
 
-test("runCodex retries a transient failure in a fresh process", () => {
+test("runCodex leaves exhausted transport failures to the durable queue", () => {
   const root = mkdtempSync(tmpPrefix);
   const openclawDir = join(root, "openclaw");
   const workDir = join(root, "codex-work");
@@ -1086,167 +1086,10 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
   process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS = "2";
   process.env.CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS = "1";
   try {
-    const decision = runCodexForTest({
-      item: item({ number: 83394 }),
-      context: { issue: {}, comments: [], timeline: [] },
-      git: { mainSha: "abc123", latestRelease: null },
-      model: "internal",
-      openclawDir,
-      reasoningEffort: "high",
-      sandboxMode: "read-only",
-      serviceTier: "",
-      timeoutMs: 10_000,
-      workDir,
-      prompt: "Return a review decision.",
-    });
-
-    assert.equal(readFileSync(attemptsPath, "utf8"), "2");
-    assert.equal(decision.summary, "Review completed after a fresh Codex process.");
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("runCodex keeps high reasoning for the final transport retry", () => {
-  const root = mkdtempSync(tmpPrefix);
-  const openclawDir = join(root, "openclaw");
-  const workDir = join(root, "codex-work");
-  const binDir = join(root, "bin");
-  const attemptsPath = join(root, "attempts");
-  const attemptTimesPath = join(root, "attempt-times");
-  mkdirSync(openclawDir, { recursive: true });
-  mkdirSync(binDir, { recursive: true });
-  initTrackedRepo(openclawDir);
-  const codexPath = join(binDir, "codex");
-  writeFileSync(
-    codexPath,
-    `#!/usr/bin/env node
-${fakeCodexSandboxPass}
-const fs = require("node:fs");
-const cfg = process.argv.find((a) => a.startsWith("model_reasoning_effort="));
-const effort = cfg ? cfg.split("=")[1].replace(/"/g, "") : "";
-const attemptsPath = process.env.CODEX_ATTEMPTS_PATH;
-const n = fs.existsSync(attemptsPath) ? Number(fs.readFileSync(attemptsPath, "utf8")) + 1 : 1;
-fs.writeFileSync(attemptsPath, String(n));
-fs.appendFileSync(process.env.CODEX_ATTEMPT_TIMES_PATH, \`\${Date.now()}\\n\`);
-if (effort !== "high") {
-  process.stderr.write(\`unexpected reasoning effort: \${effort}\\n\`);
-  process.exit(9);
-}
-if (n < 3) {
-  process.stderr.write("Rate limit reached on tokens per min (TPM). Please try again in 100ms.\\n");
-  process.exit(1);
-}
-const outputIndex = process.argv.indexOf("--output-last-message");
-fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON);
-`,
-  );
-  chmodSync(codexPath, 0o755);
-  const previous = {
-    PATH: process.env.PATH,
-    CODEX_ATTEMPTS_PATH: process.env.CODEX_ATTEMPTS_PATH,
-    CODEX_ATTEMPT_TIMES_PATH: process.env.CODEX_ATTEMPT_TIMES_PATH,
-    CODEX_DECISION_JSON: process.env.CODEX_DECISION_JSON,
-    CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS,
-    CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS: process.env.CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS,
-    CLAWSWEEPER_CODEX_FALLBACK_MIN_BUDGET_MS: process.env.CLAWSWEEPER_CODEX_FALLBACK_MIN_BUDGET_MS,
-  };
-  process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
-  process.env.CODEX_ATTEMPTS_PATH = attemptsPath;
-  process.env.CODEX_ATTEMPT_TIMES_PATH = attemptTimesPath;
-  process.env.CODEX_DECISION_JSON = JSON.stringify(
-    closeDecision({
-      decision: "close",
-      closeReason: "duplicate_or_superseded",
-      confidence: "high",
-      summary: "Resolved on main already.",
-      bestSolution: "Close as superseded.",
-      closeComment: "Superseded by main.",
-      workReason: "No additional implementation is required.",
-    }),
-  );
-  process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS = "2";
-  process.env.CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS = "1";
-  process.env.CLAWSWEEPER_CODEX_FALLBACK_MIN_BUDGET_MS = "1";
-  try {
-    const decision = runCodexForTest({
-      item: item({ number: 92181 }),
-      context: { issue: {}, comments: [], timeline: [] },
-      git: { mainSha: "abc123", latestRelease: null },
-      model: "internal",
-      openclawDir,
-      reasoningEffort: "high",
-      sandboxMode: "read-only",
-      serviceTier: "",
-      timeoutMs: 10_000,
-      workDir,
-      prompt: "Return a review decision.",
-    });
-
-    assert.equal(readFileSync(attemptsPath, "utf8"), "3");
-    const attemptTimes = readFileSync(attemptTimesPath, "utf8").trim().split("\n").map(Number);
-    assert.equal(attemptTimes.length, 3);
-    assert.ok((attemptTimes[2] ?? 0) - (attemptTimes[1] ?? 0) >= 90);
-    assert.equal(decision.decision, "close");
-    assert.equal(decision.confidence, "high");
-    assert.equal(decision.summary, "Resolved on main already.");
-    assert.equal(
-      decision.evidence.some((entry) => entry.label === "degraded review mode"),
-      false,
-    );
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("runCodex keeps the transport classification when the final high retry also fails", () => {
-  const root = mkdtempSync(tmpPrefix);
-  const openclawDir = join(root, "openclaw");
-  const workDir = join(root, "codex-work");
-  const binDir = join(root, "bin");
-  const attemptsPath = join(root, "attempts");
-  mkdirSync(openclawDir, { recursive: true });
-  mkdirSync(binDir, { recursive: true });
-  initTrackedRepo(openclawDir);
-  const codexPath = join(binDir, "codex");
-  writeFileSync(
-    codexPath,
-    `#!/usr/bin/env node
-${fakeCodexSandboxPass}
-const fs = require("node:fs");
-const attemptsPath = process.env.CODEX_ATTEMPTS_PATH;
-const n = fs.existsSync(attemptsPath) ? Number(fs.readFileSync(attemptsPath, "utf8")) + 1 : 1;
-fs.writeFileSync(attemptsPath, String(n));
-process.stderr.write("Rate limit reached on tokens per min (TPM). Please try again in 1ms.\\n");
-process.exit(1);
-`,
-  );
-  chmodSync(codexPath, 0o755);
-  const previous = {
-    PATH: process.env.PATH,
-    CODEX_ATTEMPTS_PATH: process.env.CODEX_ATTEMPTS_PATH,
-    CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS,
-    CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS: process.env.CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS,
-    CLAWSWEEPER_CODEX_FALLBACK_MIN_BUDGET_MS: process.env.CLAWSWEEPER_CODEX_FALLBACK_MIN_BUDGET_MS,
-  };
-  process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
-  process.env.CODEX_ATTEMPTS_PATH = attemptsPath;
-  process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS = "2";
-  process.env.CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS = "1";
-  process.env.CLAWSWEEPER_CODEX_FALLBACK_MIN_BUDGET_MS = "1";
-  try {
     assert.throws(
       () =>
         runCodexForTest({
-          item: item({ number: 92181 }),
+          item: item({ number: 83394 }),
           context: { issue: {}, comments: [], timeline: [] },
           git: { mainSha: "abc123", latestRelease: null },
           model: "internal",
@@ -1258,81 +1101,14 @@ process.exit(1);
           workDir,
           prompt: "Return a review decision.",
         }),
-      (error: unknown) => {
-        const reviewError = error as Error;
-        assert.equal(readFileSync(attemptsPath, "utf8"), "3");
-        assert.match(reviewError.message, /Final high-reasoning retry also failed/);
-        const failure = codexFailureDecisionForTest(
-          1,
-          reviewError.message,
-          (reviewError as { stdout?: string }).stdout ?? "",
-          (reviewError as { stderr?: string }).stderr ?? "",
-        );
-        assert.match(failure.summary, /retryable codex transport failure \(capacity\)/);
+      (error: Error & { retryable?: boolean }) => {
+        assert.equal(error.retryable, true);
+        assert.match(error.message, /Rate limit reached/);
+        assert.doesNotMatch(error.message, /contributor-quoted-model/);
         return true;
       },
     );
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("runCodex skips the final high retry when the time budget is too small", () => {
-  const root = mkdtempSync(tmpPrefix);
-  const openclawDir = join(root, "openclaw");
-  const workDir = join(root, "codex-work");
-  const binDir = join(root, "bin");
-  const attemptsPath = join(root, "attempts");
-  mkdirSync(openclawDir, { recursive: true });
-  mkdirSync(binDir, { recursive: true });
-  initTrackedRepo(openclawDir);
-  const codexPath = join(binDir, "codex");
-  writeFileSync(
-    codexPath,
-    `#!/usr/bin/env node
-${fakeCodexSandboxPass}
-const fs = require("node:fs");
-const attemptsPath = process.env.CODEX_ATTEMPTS_PATH;
-const n = fs.existsSync(attemptsPath) ? Number(fs.readFileSync(attemptsPath, "utf8")) + 1 : 1;
-fs.writeFileSync(attemptsPath, String(n));
-process.stderr.write("Rate limit reached on tokens per min (TPM). Please try again in 1ms.\\n");
-process.exit(1);
-`,
-  );
-  chmodSync(codexPath, 0o755);
-  const previous = {
-    PATH: process.env.PATH,
-    CODEX_ATTEMPTS_PATH: process.env.CODEX_ATTEMPTS_PATH,
-    CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS,
-    CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS: process.env.CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS,
-    CLAWSWEEPER_CODEX_FALLBACK_MIN_BUDGET_MS: process.env.CLAWSWEEPER_CODEX_FALLBACK_MIN_BUDGET_MS,
-  };
-  process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
-  process.env.CODEX_ATTEMPTS_PATH = attemptsPath;
-  process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS = "2";
-  process.env.CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS = "1";
-  process.env.CLAWSWEEPER_CODEX_FALLBACK_MIN_BUDGET_MS = "10000000";
-  try {
-    assert.throws(() =>
-      runCodexForTest({
-        item: item({ number: 92181 }),
-        context: { issue: {}, comments: [], timeline: [] },
-        git: { mainSha: "abc123", latestRelease: null },
-        model: "internal",
-        openclawDir,
-        reasoningEffort: "high",
-        sandboxMode: "read-only",
-        serviceTier: "",
-        timeoutMs: 10_000,
-        workDir,
-        prompt: "Return a review decision.",
-      }),
-    );
-    assert.equal(readFileSync(attemptsPath, "utf8"), "2");
+    assert.equal(readFileSync(attemptsPath, "utf8"), "1");
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];

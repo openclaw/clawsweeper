@@ -26,6 +26,121 @@ import {
 } from "./helpers.ts";
 import { scheduledReviewSemanticSourceRevision } from "../scripts/classify-scheduled-review-noop.ts";
 
+test("exact review failure annotation follows logical generation and preserves the failure gate", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const failure = workflow.jobs["event-review-apply"].steps.find(
+    (entry: { name?: string }) => entry.name === "Fail unsuccessful exact review generation",
+  );
+  const evaluate = (template: string, values: Record<string, string>) => {
+    const expression = template
+      .replace(/^\s*\$\{\{\s*|\s*\}\}\s*$/g, "")
+      .replace(/\balways\(\)/g, "true")
+      .replace(
+        /steps\.([a-z0-9-]+)\.(outputs\.([a-z0-9_]+)|outcome)/g,
+        (_match, stepId: string, access: string, output?: string) =>
+          JSON.stringify(values[`${stepId}.${output ?? access}`] ?? ""),
+      );
+    return Function(`"use strict"; return (${expression});`)();
+  };
+  // Exhaust the independent gate facts; raw process outcome must not override
+  // typed deferrals or content failures reported after an exit-zero process.
+  for (let mask = 0; mask < 256; mask += 1) {
+    const [claimed, accepted, completed, superseded, held, itemSuperseded, generated, deferred] =
+      Array.from({ length: 8 }, (_, bit) => Boolean(mask & (1 << bit)));
+    if (superseded && held) continue;
+    const values = {
+      "claim-exact-review-queue.claimed": String(claimed),
+      "direct-exact-review-publication.accepted": String(accepted),
+      "complete-exact-review-queue.outcome": completed ? "success" : "failure",
+      "reserve-exact-review-lease.status": superseded ? "superseded" : held ? "held" : "posted",
+      "review-exact-event-item.superseded": String(itemSuperseded),
+      "exact-review-generation-result.outcome": generated ? "success" : "failure",
+      "exact-review-generation-result.retry_kind": deferred ? "throttle" : "",
+    };
+    const generationFailed = !generated && !deferred && !held && !superseded;
+    const expected =
+      claimed && ((!accepted && !completed && !superseded && !itemSuperseded) || generationFailed);
+    assert.equal(evaluate(failure.if, values), expected, JSON.stringify(values));
+    assert.equal(
+      evaluate(failure.env.CLASSIFICATION, values),
+      generationFailed ? "codex_or_content_failure" : "queue_completion_failure",
+    );
+  }
+  for (const scenario of [
+    {
+      name: "completion only",
+      generation: "success",
+      process: "success",
+      retry: "",
+      reservation: "posted",
+      completion: "failure",
+      expected: "queue_completion_failure",
+    },
+    {
+      name: "held deferral",
+      generation: "failure",
+      process: "skipped",
+      retry: "coordination",
+      reservation: "held",
+      completion: "failure",
+      expected: "queue_completion_failure",
+    },
+    {
+      name: "throttle process failure",
+      generation: "failure",
+      process: "failure",
+      retry: "throttle",
+      reservation: "posted",
+      completion: "failure",
+      expected: "queue_completion_failure",
+    },
+    {
+      name: "exit-zero content failure",
+      generation: "failure",
+      process: "success",
+      retry: "",
+      reservation: "posted",
+      completion: "success",
+      expected: "codex_or_content_failure",
+    },
+    {
+      name: "simultaneous failures",
+      generation: "failure",
+      process: "failure",
+      retry: "",
+      reservation: "posted",
+      completion: "failure",
+      expected: "codex_or_content_failure",
+    },
+  ]) {
+    const values = {
+      "claim-exact-review-queue.claimed": "true",
+      "direct-exact-review-publication.accepted": "false",
+      "exact-review-generation-result.outcome": scenario.generation,
+      "exact-review-generation-result.retry_kind": scenario.retry,
+      "review-exact-event-item.outcome": scenario.process,
+      "review-exact-event-item.exit_code": scenario.process === "failure" ? "1" : "0",
+      "complete-exact-review-queue.outcome": scenario.completion,
+      "reserve-exact-review-lease.status": scenario.reservation,
+    };
+    assert.equal(evaluate(failure.if, values), true, scenario.name);
+    const env = Object.fromEntries(
+      Object.entries(failure.env).map(([key, value]) => [
+        key,
+        String(evaluate(String(value), values)),
+      ]),
+    );
+    const result = spawnSync("bash", ["-c", failure.run], { env, encoding: "utf8" });
+    assert.equal(result.status, 1, scenario.name);
+    assert.match(result.stdout, new RegExp(`classification=${scenario.expected} `), scenario.name);
+    assert.match(
+      result.stdout,
+      new RegExp(`queue_completion=${scenario.completion}`),
+      scenario.name,
+    );
+  }
+});
+
 test("sweep keeps optional media tooling out of review startup", () => {
   const workflow = readText(".github/workflows/sweep.yml");
 
@@ -326,24 +441,10 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
   ]) {
     assert.equal(step("publish", name)["continue-on-error"], true, `${name} must fail open`);
   }
-  const artifactSync = step("publish", "Sync before applying artifacts");
-  assert.match(artifactSync.if ?? "", /setup-publish-state\.outcome == 'success'/);
-  assert.match(artifactSync.if ?? "", /setup-publish-pnpm\.outcome == 'success'/);
-  assert.match(artifactSync.if ?? "", /download-review-artifacts\.outcome == 'success'/);
-  assert.doesNotMatch(artifactSync.if ?? "", /action-ledger/);
-  assert.match(
-    artifactSync.run ?? "",
-    /no such ref was fetched\|couldn.t find remote ref/,
-    "a vanished reviewed branch must complete publication as a superseded no-op",
-  );
-  assert.match(artifactSync.run ?? "", /superseded=true/);
   const artifactApply = step("publish", "Apply review artifacts");
-  assert.match(artifactApply.if ?? "", /sync-review-artifacts\.outcome == 'success'/);
-  assert.match(
-    artifactApply.if ?? "",
-    /sync-review-artifacts\.outputs\.superseded != 'true'/,
-    "superseded sync must skip artifact application",
-  );
+  assert.match(artifactApply.if ?? "", /setup-publish-state\.outcome == 'success'/);
+  assert.match(artifactApply.if ?? "", /download-review-artifacts\.outcome == 'success'/);
+  assert.doesNotMatch(artifactApply.if ?? "", /action-ledger/);
   assert.match(artifactApply.run ?? "", /review_batch_succeeded=/);
   assert.match(artifactApply.run ?? "", /artifacts_applied=true/);
   const artifactLedger = step("publish", "Publish review artifact action ledger");
@@ -357,7 +458,6 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
     "Dispatch high-confidence bug implementation candidates",
     "Dispatch vision-fit implementation candidates",
     "Backfill viable open issue implementation candidates",
-    "Dispatch background review comment sync",
     "Sync selected review comments",
   ]) {
     const condition = step("publish", name).if ?? "";
@@ -899,6 +999,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(step(reviewer, "Review exact event item").run ?? "", /source_head_sha/);
   assert.match(
     step(reviewer, "Review exact event item").run ?? "",
+    /review_exit_code.*-eq 78[\s\S]*failure_reason=incomplete_source/,
+  );
+  assert.match(
+    step(reviewer, "Review exact event item").run ?? "",
     /kill -TERM -- "-\$review_pgid"/,
   );
   assert.match(step(reviewer, "Review exact event item").run ?? "", /sleep 60/);
@@ -926,6 +1030,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   const deferHeldReview = step(reviewer, "Defer exact review while same-head lease is held");
   const failGeneration = step(reviewer, "Fail unsuccessful exact review generation");
   const releaseGeneration = step(reviewer, "Release unsuccessful workflow-owned review lease");
+  const markUnsuccessful = step(reviewer, "Mark unsuccessful re-review");
   assert.match(create.if ?? "", /review-exact-event-item\.outcome == 'success'/);
   assert.match(create.if ?? "", /review-exact-event-item\.outputs\.retry_at == ''/);
   assert.match(create.if ?? "", /review-exact-event-item\.outputs\.superseded != 'true'/);
@@ -1134,7 +1239,12 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     complete.env?.RETRY_KIND,
     "${{ steps.exact-review-generation-result.outputs.retry_kind }}",
   );
+  assert.equal(
+    complete.env?.REVIEW_FAILURE_REASON,
+    "${{ steps.review-exact-event-item.outputs.failure_reason || '' }}",
+  );
   assert.match(complete.run ?? "", /retry_kind: retryKind/);
+  assert.match(complete.run ?? "", /review_failure_reason: process\.env\.REVIEW_FAILURE_REASON/);
   assert.match(complete.run ?? "", /requeue_latest: true/);
   assert.match(deferHeldReview.if ?? "", /reserve-exact-review-lease\.outputs\.status == 'held'/);
   assert.match(deferHeldReview.run ?? "", /retry deferred/);
@@ -1145,6 +1255,14 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.match(failGeneration.if ?? "", /review-exact-event-item\.outputs\.superseded != 'true'/);
   assert.match(failGeneration.if ?? "", /complete-exact-review-queue\.outcome != 'success'/);
+  assert.equal(
+    markUnsuccessful.env?.REVIEW_FAILURE_REASON,
+    "${{ steps.review-exact-event-item.outputs.failure_reason || '' }}",
+  );
+  assert.match(
+    markUnsuccessful.run ?? "",
+    /incomplete_source[\s\S]*will not retry this unchanged revision/,
+  );
   assert.match(
     failGeneration.if ?? "",
     /exact-review-generation-result\.outputs\.retry_kind == ''/,
@@ -1232,6 +1350,55 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
       evaluateFailureGate(failureGateCase.values),
       failureGateCase.expected,
       failureGateCase.name,
+    );
+  }
+  const evaluateClassification = (values: Record<string, string>): string => {
+    const expression = (failGeneration.env?.CLASSIFICATION ?? "")
+      .replace(/^\s*\$\{\{\s*|\s*\}\}\s*$/g, "")
+      .replace(
+        /steps\.([a-z0-9-]+)\.(outputs\.([a-z0-9_]+)|outcome)/g,
+        (_match, stepId: string, access: string, outputName?: string) =>
+          JSON.stringify(values[`${stepId}.${outputName ?? access}`] ?? ""),
+      );
+    return String(Function(`"use strict"; return (${expression});`)());
+  };
+  const classificationCases = [
+    {
+      name: "completion failure after a successful review",
+      values: {
+        "complete-exact-review-queue.outcome": "failure",
+        "reserve-exact-review-lease.status": "posted",
+        "exact-review-generation-result.outcome": "success",
+        "exact-review-generation-result.retry_kind": "",
+      },
+      expected: "queue_completion_failure",
+    },
+    {
+      name: "completion failure after a held deferral",
+      values: {
+        "complete-exact-review-queue.outcome": "failure",
+        "reserve-exact-review-lease.status": "held",
+        "exact-review-generation-result.outcome": "failure",
+        "exact-review-generation-result.retry_kind": "coordination",
+      },
+      expected: "queue_completion_failure",
+    },
+    {
+      name: "review lane failure after a durable completion",
+      values: {
+        "complete-exact-review-queue.outcome": "success",
+        "reserve-exact-review-lease.status": "posted",
+        "exact-review-generation-result.outcome": "failure",
+        "exact-review-generation-result.retry_kind": "",
+      },
+      expected: "codex_or_content_failure",
+    },
+  ] as const;
+  for (const classificationCase of classificationCases) {
+    assert.equal(
+      evaluateClassification(classificationCase.values),
+      classificationCase.expected,
+      classificationCase.name,
     );
   }
   assert.match(releaseGeneration.if ?? "", /reserve-exact-review-lease\.outputs\.status != 'held'/);
@@ -2358,7 +2525,6 @@ test("every sweep tuple mutator hands publish-main a captured canonical baseline
     commitReview,
     /CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: \.artifacts\/review-canonical-baseline/,
   );
-  assert.match(commitReview, /--canonical-record-baseline-dir/);
 
   const selectedComments = stepBlock("Sync selected review comments");
   assert.ok(
@@ -5153,16 +5319,6 @@ test("sweep target tokens fall back when an org app installation is missing", ()
   assert.doesNotMatch(workflow, /CLAWSWEEPER_PROOF_INSPECTION_TOKEN:.*\|\| github\.token/);
   assert.ok(
     workflow.includes(
-      "if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.hot_intake != 'true'",
-    ),
-  );
-  assert.ok(
-    workflow.includes(
-      "if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch'",
-    ),
-  );
-  assert.ok(
-    workflow.includes(
       "if: ${{ always() && !cancelled() && steps.sync-selected-review-comments.outputs.sync_succeeded == 'true' && steps.target-write-token.outputs.token != '' && github.event.inputs.apply_after_review == 'true' }}",
     ),
   );
@@ -5562,9 +5718,6 @@ test("sweep workflow coalesces durable issue and PR comment sync batches", () =>
     applyHelper,
     /if \[ "\$\{scheduled_comment_sync:-false\}" = "true" \]; then\s+apply_kind="all"\s+comment_sync_min_age_days=0\s+fi/,
   );
-  const backgroundSyncStart = workflow.indexOf("- name: Dispatch background review comment sync");
-  const selectedSyncStart = workflow.indexOf("- name: Sync selected review comments");
-  const backgroundSync = workflow.slice(backgroundSyncStart, selectedSyncStart);
   const cursorPreselectStart = workflow.indexOf("- name: Reconcile before apply preselect");
   const cursorApplyStart = workflow.indexOf(
     "- name: Apply unchanged proposed decisions with checkpoints",
@@ -5572,11 +5725,6 @@ test("sweep workflow coalesces durable issue and PR comment sync batches", () =>
   );
   const cursorPreselect = workflow.slice(cursorPreselectStart, cursorApplyStart);
   const cursorExecution = workflow.slice(cursorApplyStart);
-  assert.match(backgroundSync, /-f apply_item_numbers=__cursor__/);
-  assert.match(backgroundSync, /-f apply_kind=all/);
-  assert.match(backgroundSync, /-f apply_min_age_days=0/);
-  assert.match(backgroundSync, /-f apply_comment_sync_min_age_days=0/);
-  assert.doesNotMatch(backgroundSync, /-f apply_item_numbers="\$item_numbers"/);
   assert.match(
     cursorPreselect,
     /if: \$\{\{ .*github\.event\.inputs\.apply_sync_comments_only == 'true' \|\| github\.event\.inputs\.apply_item_numbers == '__cursor__'.*\}\}/,
@@ -5649,7 +5797,7 @@ test("target hot sweep dispatches honor shard cap payload", () => {
   assert.match(modeBlock, /shard_count="\$hot_intake_shards"/);
 });
 
-test("review publication routes hot intake once without changing other producers", () => {
+test("batch publication updates the durable comment once across replay", () => {
   type PublishStep = { name?: string; if?: string; run?: string };
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
     jobs: Record<string, { steps: PublishStep[] }>;
@@ -5660,75 +5808,7 @@ test("review publication routes hot intake once without changing other producers
     assert.ok(value, name);
     return value;
   };
-  const background = step("Dispatch background review comment sync");
   const selected = step("Sync selected review comments");
-
-  assert.equal(
-    background.if,
-    "${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.hot_intake != 'true' && (github.event_name != 'repository_dispatch' || github.event.action == 'clawsweeper_target_sweep') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) }}",
-  );
-  assert.equal(
-    selected.if,
-    "${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep') || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '' || needs.plan.outputs.hot_intake == 'true') }}",
-  );
-
-  type RouteInput = {
-    event: "workflow_dispatch" | "repository_dispatch" | "schedule";
-    action?: string;
-    hot: boolean;
-    itemNumber?: string;
-    itemNumbers?: string;
-  };
-  const routes = ({ event, action = "", hot, itemNumber = "", itemNumbers = "" }: RouteInput) => ({
-    background:
-      !hot &&
-      (event !== "repository_dispatch" || action === "clawsweeper_target_sweep") &&
-      (event !== "workflow_dispatch" || (itemNumber === "" && itemNumbers === "")),
-    selected:
-      (event === "repository_dispatch" && action !== "clawsweeper_target_sweep") ||
-      itemNumber !== "" ||
-      itemNumbers !== "" ||
-      hot,
-  });
-  const scenarios: Array<[string, RouteInput, "background" | "selected"]> = [
-    ["broad hot workflow dispatch", { event: "workflow_dispatch", hot: true }, "selected"],
-    ["normal workflow dispatch", { event: "workflow_dispatch", hot: false }, "background"],
-    [
-      "explicit item workflow dispatch",
-      { event: "workflow_dispatch", hot: false, itemNumber: "125204" },
-      "selected",
-    ],
-    [
-      "explicit items workflow dispatch",
-      { event: "workflow_dispatch", hot: false, itemNumbers: "125204,125205" },
-      "selected",
-    ],
-    [
-      "hot target repository dispatch",
-      { event: "repository_dispatch", action: "clawsweeper_target_sweep", hot: true },
-      "selected",
-    ],
-    [
-      "normal target repository dispatch",
-      { event: "repository_dispatch", action: "clawsweeper_target_sweep", hot: false },
-      "background",
-    ],
-    [
-      "exact repository dispatch",
-      { event: "repository_dispatch", action: "clawsweeper_exact_review", hot: false },
-      "selected",
-    ],
-    ["scheduled background review", { event: "schedule", hot: false }, "background"],
-  ];
-  for (const [name, input, expected] of scenarios) {
-    const result = routes(input);
-    assert.equal(result[expected], true, `${name}: expected ${expected}`);
-    assert.equal(
-      Number(result.background) + Number(result.selected),
-      1,
-      `${name}: exactly one terminal-publication route`,
-    );
-  }
 
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -5844,9 +5924,6 @@ if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
   process.exit(1);
 }
 `;
-    const broadHotRoute = routes({ event: "workflow_dispatch", hot: true });
-    assert.equal(broadHotRoute.selected, true);
-    assert.equal(broadHotRoute.background, false);
     withMockGh(root, ghMock, () => {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         runApplyDecisionsForTest({
@@ -6596,6 +6673,104 @@ test("sweep issue and PR event reviews and target fanout avoid storm amplificati
   assert.match(fanoutBlock, /--publish-url "\$REVIEW_COVERAGE_URL"/);
   assert.match(fanoutBlock, /target-fanout -- coverage --window-days 7/);
   assert.match(fanoutBlock, /GITHUB_STEP_SUMMARY/);
+});
+
+test("batch publication accepts empty artifacts and isolates comment credentials", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs.publish.steps;
+  const find = (id: string) => steps.find((step: { id?: string }) => step.id === id);
+  const resolveItems = find("reviewed-items");
+  assert.equal(find("target-write-token")["continue-on-error"], true);
+  assert.equal(
+    find("setup-publish-state").if,
+    "${{ steps.reviewed-items.outputs.item_numbers != '' }}",
+  );
+  assert.doesNotMatch(find("commit-review-records").if, /target-write-token/);
+  assert.match(find("sync-selected-review-comments").if, /target-write-token.outputs.token != ''/);
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const artifacts = join(root, "artifacts");
+    const output = join(root, "output");
+    mkdirSync(artifacts);
+    writeFileSync(join(artifacts, "metrics.json"), "{}");
+    const run = resolveItems.run.replace(
+      "--artifact-dir artifacts",
+      '--artifact-dir "$TEST_ARTIFACT_DIR"',
+    );
+    execFileSync("bash", ["-e", "-c", run], {
+      env: { ...process.env, TEST_ARTIFACT_DIR: artifacts, GITHUB_OUTPUT: output },
+    });
+    assert.equal(readFileSync(output, "utf8").trim(), "item_numbers=");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("batch publication reconciles only reviewed tuples before canonical writes", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const publish = workflow.jobs.publish.steps.find(
+    (step: { id?: string }) => step.id === "commit-review-records",
+  );
+  assert.equal(publish.env.ITEM_NUMBERS, "${{ steps.reviewed-items.outputs.item_numbers }}");
+  assert.match(publish.run, /--item-numbers "\$ITEM_NUMBERS"/);
+  assert.match(publish.run, /--only-item-numbers/);
+  assert.ok(
+    publish.run.indexOf("pnpm run reconcile") < publish.run.indexOf("pnpm run repair:publish-main"),
+  );
+});
+
+test("explicit-item planning hydrates exactly the items selected for review", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs.plan.steps;
+  const setup = steps.findIndex((step: { uses?: string }) => step.uses?.endsWith("/setup-pnpm"));
+  const parser = steps.findIndex((step: { id?: string }) => step.id === "requested-items");
+  const hydration = steps.findIndex((step: { uses?: string }) =>
+    step.uses?.endsWith("/setup-state"),
+  );
+  assert.ok(setup >= 0 && setup < parser && parser < hydration);
+  assert.equal(
+    YAML.parse(readText(".github/actions/setup-pnpm/action.yml")).inputs["node-version"].default,
+    "24",
+  );
+  const requested = steps.find((step: { id?: string }) => step.id === "requested-items");
+  const hydrate = steps.find((step: { uses?: string }) => step.uses?.endsWith("/setup-state"));
+  const select = steps.find((step: { id?: string }) => step.id === "select");
+  assert.equal(
+    hydrate.with["records-item-number"],
+    "${{ steps.requested-items.outputs.item_numbers }}",
+  );
+  assert.equal(select.env.ITEM_NUMBERS, hydrate.with["records-item-number"]);
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    for (const [single, multiple, expected] of [
+      ["", "", ""],
+      ["133034", "", "133034"],
+      ["", "133035,133034,133035", "133034,133035"],
+      ["133034", "133035", "133034,133035"],
+      ["133034", "router-receipt-123", "133034"],
+    ]) {
+      const output = join(root, "output");
+      writeFileSync(output, "");
+      execFileSync("bash", ["-e", "-c", requested.run], {
+        env: { ...process.env, ITEM_NUMBER: single, ITEM_NUMBERS: multiple, GITHUB_OUTPUT: output },
+      });
+      assert.equal(readFileSync(output, "utf8").trim(), `item_numbers=${expected}`);
+    }
+    const invalid = spawnSync("bash", ["-e", "-c", requested.run], {
+      env: {
+        ...process.env,
+        ITEM_NUMBER: "",
+        ITEM_NUMBERS: "none",
+        GITHUB_OUTPUT: join(root, "invalid"),
+      },
+      encoding: "utf8",
+    });
+    assert.equal(invalid.status, 2);
+    assert.match(invalid.stderr, /no valid item numbers/);
+    assert.equal(existsSync(join(root, "invalid")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("setup-state defaults to an auth-safe shallow checkout", () => {

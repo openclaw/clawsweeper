@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
@@ -1316,72 +1317,78 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
   }
 });
 
-test("issue apply CAS blocks a newer durable review tuple published after preflight", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    const logPath = join(root, "gh.log");
-    const commentReadCountPath = join(root, "comment-read-count");
-    const number = 74490;
-    const reviewedAt = "2026-05-01T00:00:00Z";
-    const newerReviewedAt = "2026-05-01T00:10:00Z";
-    const issue = {
-      number,
-      title: "Do not apply a stale issue review",
-      body: "Issue body remains unchanged while a newer exact review publishes.",
-      html_url: `https://github.com/openclaw/clawsweeper/issues/${number}`,
-      created_at: "2026-04-01T00:00:00Z",
-      updated_at: reviewedAt,
-      closed_at: null,
-      state: "open",
-      locked: false,
-      active_lock_reason: null,
-      author_association: "CONTRIBUTOR",
-      user: { login: "reporter" },
-      labels: [],
-      comments: 1,
-      pull_request: null,
-    };
-    const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+for (const scenario of [
+  { name: "verified newer", lease: "9200", owner: "new-review-owner", verified: true },
+  { name: "equal lease", lease: "9100", owner: "new-review-owner", verified: false },
+  { name: "unknown owner", lease: "9200", owner: "unknown", verified: false },
+  { name: "unsafe lease", lease: "9007199254740992", owner: "new-review-owner", verified: false },
+]) {
+  test(`issue apply CAS and publisher preserve ${scenario.name} tuple evidence`, () => {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "items");
+      const closedDir = join(root, "closed");
+      const plansDir = join(root, "plans");
+      const reportPath = join(root, "apply-report.json");
+      const logPath = join(root, "gh.log");
+      const commentReadCountPath = join(root, "comment-read-count");
+      const number = 74490;
+      const reviewedAt = "2026-05-01T00:00:00Z";
+      const newerReviewedAt = "2026-05-01T00:10:00Z";
+      const issue = {
+        number,
+        title: "Do not apply a stale issue review",
+        body: "Issue body remains unchanged while a newer exact review publishes.",
+        html_url: `https://github.com/openclaw/clawsweeper/issues/${number}`,
+        created_at: "2026-04-01T00:00:00Z",
+        updated_at: reviewedAt,
+        closed_at: null,
+        state: "open",
+        locked: false,
+        active_lock_reason: null,
+        author_association: "CONTRIBUTOR",
+        user: { login: "reporter" },
+        labels: [],
+        comments: 1,
+        pull_request: null,
+      };
+      const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
+      mkdirSync(itemsDir, { recursive: true });
+      mkdirSync(plansDir, { recursive: true });
 
-    const oldReport = workPlanCandidateReport({
-      number,
-      title: issue.title,
-      reviewed_at: reviewedAt,
-      item_updated_at: reviewedAt,
-      item_snapshot_hash: "reviewed-snapshot",
-      item_source_revision: sourceRevision,
-      review_lease_owner: "old-review-owner",
-      review_lease_comment_id: "9100",
-      labels: JSON.stringify([]),
-    });
-    const oldSynced = reportWithSyncedReviewComment(oldReport, number);
-    writeFileSync(join(itemsDir, `${number}.md`), oldSynced.report, "utf8");
+      const oldReport = workPlanCandidateReport({
+        number,
+        title: issue.title,
+        reviewed_at: reviewedAt,
+        item_updated_at: reviewedAt,
+        item_snapshot_hash: "reviewed-snapshot",
+        item_source_revision: sourceRevision,
+        review_lease_owner: "old-review-owner",
+        review_lease_comment_id: "9100",
+        labels: JSON.stringify([]),
+      });
+      const oldSynced = reportWithSyncedReviewComment(oldReport, number);
+      writeFileSync(join(itemsDir, `${number}.md`), oldSynced.report, "utf8");
 
-    const newerReport = workPlanCandidateReport({
-      number,
-      title: issue.title,
-      reviewed_at: newerReviewedAt,
-      item_updated_at: reviewedAt,
-      item_snapshot_hash: "newer-snapshot",
-      item_source_revision: sourceRevision,
-      review_lease_owner: "new-review-owner",
-      review_lease_comment_id: "9200",
-      labels: JSON.stringify([]),
-    });
-    const newerComment = reportWithSyncedReviewComment(newerReport, number).comment;
-    const oldLiveComment = [
-      "Codex review: stale body that would be patched without the final apply CAS.",
-      "",
-      `<!-- clawsweeper-review item=${number} -->`,
-    ].join("\n");
+      const newerReport = workPlanCandidateReport({
+        number,
+        title: issue.title,
+        reviewed_at: newerReviewedAt,
+        item_updated_at: reviewedAt,
+        item_snapshot_hash: "newer-snapshot",
+        item_source_revision: sourceRevision,
+        review_lease_owner: scenario.owner,
+        review_lease_comment_id: scenario.lease,
+        labels: JSON.stringify([]),
+      });
+      const newerComment = reportWithSyncedReviewComment(newerReport, number).comment;
+      const oldLiveComment = [
+        "Codex review: stale body that would be patched without the final apply CAS.",
+        "",
+        `<!-- clawsweeper-review item=${number} -->`,
+      ].join("\n");
 
-    const ghMock = `
+      const ghMock = `
 const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("fs");
 const logPath = ${JSON.stringify(logPath)};
 const countPath = ${JSON.stringify(commentReadCountPath)};
@@ -1427,39 +1434,82 @@ if (args[0] === "api" && args[1] === "-i" && new RegExp("/issues/${number}/timel
   process.exit(1);
 }
 `;
-    withMockGh(root, ghMock, () => {
-      runApplyDecisionsForTest({
-        itemsDir,
-        closedDir,
-        plansDir,
-        reportPath,
-        extraArgs: ["--item-numbers", String(number), "--comment-sync-min-age-days", "0"],
+      withMockGh(root, ghMock, () => {
+        runApplyDecisionsForTest({
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--item-numbers",
+            String(number),
+            "--comment-sync-min-age-days",
+            "0",
+            "--event-apply-proof",
+            "--exact-event-publication",
+          ],
+        });
+        const workRoot = join(root, "publication");
+        const artifacts = join(workRoot, "artifacts/event");
+        const output = join(workRoot, "github-output");
+        const batch = join(workRoot, "batch.json");
+        mkdirSync(artifacts, { recursive: true });
+        writeFileSync(join(artifacts, `${number}.md`), oldSynced.report);
+        const result = spawnSync(
+          process.execPath,
+          [resolve("dist/repair/publish-event-result.js")],
+          {
+            cwd: workRoot,
+            encoding: "utf8",
+            timeout: 30_000,
+            env: {
+              ...process.env,
+              CLAWSWEEPER_CODE_ROOT: process.cwd(),
+              EXACT_REVIEW_WORK_ROOT: workRoot,
+              EXACT_EVENT_PUBLICATION: "true",
+              REVIEW_ONLY: "true",
+              TARGET_REPO: "openclaw/clawsweeper",
+              ITEM_NUMBER: String(number),
+              EXACT_REVIEW_BATCH_MUTATION_OUTPUT: batch,
+              GITHUB_OUTPUT: output,
+            },
+          },
+        );
+        assert.equal(result.status, scenario.verified ? 0 : 1, result.stdout + result.stderr);
+        const disposition = JSON.parse(readFileSync(batch, "utf8"));
+        assert.equal(disposition.kind, scenario.verified ? "superseded" : "permanent_failure");
+        assert.equal(disposition.plan, undefined);
+        if (scenario.verified) {
+          assert.deepEqual(disposition.disposition, { requeueLatestExpected: false });
+          assert.match(readFileSync(output, "utf8"), /^completion_kind=superseded$/m);
+          assert.match(readFileSync(output, "utf8"), /^reason_code=remote_newer_tuple$/m);
+        }
       });
-    });
 
-    const calls = readFileSync(logPath, "utf8")
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as string[]);
-    assert.ok(Number(readFileSync(commentReadCountPath, "utf8")) >= 6);
-    assert.equal(
-      calls.some((args) => args[0] === "external-mutation"),
-      false,
-    );
-    assert.equal(existsSync(join(closedDir, `${number}.md`)), false);
-    assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
-      {
-        number,
-        action: "skipped_stale_review_comment_sync",
-        reason:
-          "live durable review tuple is newer than the local report: comment lease=9200, report lease=9100",
-      },
-    ]);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+      const calls = readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as string[]);
+      assert.ok(Number(readFileSync(commentReadCountPath, "utf8")) >= 6);
+      assert.equal(
+        calls.some((args) => args[0] === "external-mutation"),
+        false,
+      );
+      assert.equal(existsSync(join(closedDir, `${number}.md`)), false);
+      assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
+        {
+          number,
+          action: "skipped_stale_review_comment_sync",
+          reason: `live durable review tuple is newer than the local report: comment lease=${scenario.lease}, report lease=9100`,
+          ...(scenario.verified ? { newerReviewTupleVerified: true } : {}),
+        },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("issue apply rejects a stable live source revision that differs from the report", () => {
   const root = mkdtempSync(tmpPrefix);

@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "./lib.js";
 import { isJsonObject } from "./json-types.js";
+import { readReportFrontMatterField, type FrontMatterField } from "../report-front-matter.js";
 import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "../limits.js";
 import {
   fetchExactReviewQueuePressure,
@@ -2630,21 +2631,10 @@ function checkpointNumber(name: string): number {
   return Number(name.match(/\d+/)?.[0] ?? 0);
 }
 
-type FrontMatterField =
-  | { status: "absent" }
-  | { status: "ambiguous" }
-  | { status: "value"; value: string };
-
 function frontMatterField(markdown: string, key: string): FrontMatterField {
-  const frontMatterMatch = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-  if (!frontMatterMatch) return { status: "absent" };
-  const frontMatter = frontMatterMatch[1] ?? "";
-  const remainder = markdown.slice(frontMatterMatch[0].length);
-  if (new RegExp(`^${key}:`, "m").test(remainder)) return { status: "ambiguous" };
-  const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.*)$`, "gm"))];
-  if (matches.length === 0) return { status: "absent" };
-  if (matches.length !== 1) return { status: "ambiguous" };
-  const value = matches[0]?.[1]?.trim().replace(/^"|"$/g, "") ?? "";
+  const field = readReportFrontMatterField(markdown, key);
+  if (field.status !== "value") return field;
+  const value = field.value.trim().replace(/^"|"$/g, "");
   return value ? { status: "value", value } : { status: "ambiguous" };
 }
 

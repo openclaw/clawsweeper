@@ -16,9 +16,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { reviewToolCacheRoot } from "./review-tool-bootstrap.js";
 import { readReviewGit, reviewMergeBase, type ReviewGitReadOptions } from "./pr-review-evidence.js";
+import {
+  classifyReviewedFixtureScan,
+  type ReviewedFixtureBlob,
+} from "./agent-input-scan-fixtures.js";
 
 export type AgentScanSource =
   | { kind: "prompt" }
@@ -54,9 +59,31 @@ export class AgentInputScanError extends Error {
   }
 }
 
+export const INCOMPLETE_AGENT_INPUT_SOURCE_EXIT_CODE = 78;
+
+export function agentInputScanFailureExitCode(error: unknown): number | null {
+  return error instanceof AgentInputScanError && error.reason === "incomplete_source"
+    ? INCOMPLETE_AGENT_INPUT_SOURCE_EXIT_CODE
+    : null;
+}
+
 const MAX_SCAN_BYTES = 256 * 1024 * 1024;
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const hostRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const REVIEW_TOOL_BOOTSTRAP_ENV = [
+  "SystemRoot",
+  "HOME",
+  "USERPROFILE",
+  "LOCALAPPDATA",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "NODE_USE_ENV_PROXY",
+  "NODE_EXTRA_CA_CERTS",
+] as const;
 
 function within(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -95,6 +122,112 @@ function trustedExecutable(name: string, cwd: string, lexicalCwd: string): strin
   throw new AgentInputScanError("scanner_unavailable");
 }
 
+function realpathWithMissingTail(path: string): string {
+  const tail: string[] = [];
+  const seenLinks = new Set<string>();
+  let current = path;
+  for (;;) {
+    try {
+      if (lstatSync(current).isSymbolicLink()) {
+        if (seenLinks.has(current)) throw new Error("Scanner cache symlink cycle.");
+        seenLinks.add(current);
+        // A cache below an external alias such as macOS /tmp is safe when its
+        // canonical location is outside the checkouts. Resolve the link and
+        // let the caller apply that canonical boundary check.
+        current = resolve(dirname(current), readlinkSync(current));
+        continue;
+      }
+      return resolve(realpathSync(current), ...tail);
+    } catch (error) {
+      if (error instanceof AgentInputScanError) throw error;
+      const parent = dirname(current);
+      if (parent === current)
+        throw new Error("Could not resolve scanner cache location.", { cause: error });
+      tail.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+export function managedScannerCacheRoot(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  lexicalCwd: string,
+): string {
+  let root: string;
+  try {
+    root = reviewToolCacheRoot(env);
+  } catch (error) {
+    if (error instanceof AgentInputScanError) throw error;
+    throw new AgentInputScanError("scanner_unavailable");
+  }
+  const protectedRoots = [cwd, resolve(lexicalCwd), hostRoot, realpathSync(hostRoot)];
+  let resolvedRoot: string;
+  try {
+    resolvedRoot = realpathWithMissingTail(root);
+  } catch (error) {
+    if (error instanceof AgentInputScanError) throw error;
+    throw new AgentInputScanError("scanner_unavailable");
+  }
+  if (
+    protectedRoots.some(
+      (protectedRoot) => within(protectedRoot, root) || within(protectedRoot, resolvedRoot),
+    )
+  )
+    throw new AgentInputScanError("unsafe_path");
+  return root;
+}
+
+export function reviewToolBootstrapEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const child: NodeJS.ProcessEnv = {};
+  for (const name of REVIEW_TOOL_BOOTSTRAP_ENV) {
+    const value = env[name];
+    if (value !== undefined) child[name] = value;
+  }
+  return child;
+}
+
+function trustedScanner(cwd: string, lexicalCwd: string, timeoutMs: number): string {
+  try {
+    return trustedExecutable("trufflehog", cwd, lexicalCwd);
+  } catch (error) {
+    if (!(error instanceof AgentInputScanError) || error.reason !== "scanner_unavailable")
+      throw error;
+  }
+  const cacheRoot = managedScannerCacheRoot(process.env, cwd, lexicalCwd);
+  const installer = join(hostRoot, "scripts", "setup-review-tools.mjs");
+  const result = spawnSync(process.execPath, [installer, "--timeout-ms", String(timeoutMs)], {
+    encoding: "utf8",
+    env: {
+      ...reviewToolBootstrapEnvironment(process.env),
+      // The child receives only the parent-validated absolute location, so it
+      // cannot create a managed cache inside either checkout before refusal.
+      CLAWSWEEPER_REVIEW_TOOLS_DIR: cacheRoot,
+    },
+    timeout: timeoutMs,
+    maxBuffer: 4096,
+    windowsHide: true,
+  });
+  const path = result.status === 0 ? result.stdout.trim() : "";
+  if (!path || !isAbsolute(path) || path.includes("\0"))
+    throw new AgentInputScanError("scanner_unavailable");
+  let actual: string;
+  try {
+    actual = realpathSync(path);
+    const stat = lstatSync(actual);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("unsafe scanner cache entry");
+  } catch {
+    throw new AgentInputScanError("scanner_unavailable");
+  }
+  if (
+    [cwd, resolve(lexicalCwd), hostRoot, realpathSync(hostRoot)].some((root) =>
+      within(root, actual),
+    )
+  )
+    throw new AgentInputScanError("unsafe_path");
+  return actual;
+}
+
 export function scanAgentInput(options: {
   cwd: string;
   prompt: string;
@@ -111,14 +244,16 @@ export function scanAgentInput(options: {
   };
   let root: string | undefined;
   let failure: AgentInputScanError | undefined;
+  let classified: ReturnType<typeof classifyReviewedFixtureScan>;
   try {
     const cwd = realpathSync(options.cwd);
-    const scanner = trustedExecutable("trufflehog", cwd, options.cwd);
+    const scanner = trustedScanner(cwd, options.cwd, remaining());
     root = mkdtempSync(join(realpathSync(tmpdir()), "clawsweeper-input-scan-"));
     if (within(cwd, root) || within(realpathSync(hostRoot), root))
       throw new AgentInputScanError("unsafe_path");
     const inputDir = join(root, "input");
     mkdirSync(inputDir, { mode: 0o700 });
+    const reviewedFixtureBlobs = new Map<string, ReviewedFixtureBlob>();
     let staged = 0;
     let ordinal = 0;
     const stage = (bytes: Buffer, name = String(ordinal++)) => {
@@ -331,7 +466,7 @@ export function scanAgentInput(options: {
         };
       }
       assertCurrent();
-      const blobs = new Set<string>();
+      const blobs = new Map<string, { source: string; mode: string }[]>();
       const endpoints =
         source.kind === "snapshot"
           ? [mergeBase.sha, source.headSha, source.indexTreeSha, source.treeSha]
@@ -376,7 +511,10 @@ export function scanAgentInput(options: {
             if (!["100644", "100755", "120000"].includes(mode!))
               throw new AgentInputScanError("unsupported_content");
             if (!OBJECT_ID.test(oid!)) throw new AgentInputScanError("incomplete_source");
-            blobs.add(oid!);
+            // An OID identifies bytes, not each scanned endpoint's path/mode eligibility.
+            const references = blobs.get(oid!) ?? [];
+            references.push({ source: path, mode: mode! });
+            blobs.set(oid!, references);
           }
         }
         stage(git([...args, "--patch", "--binary", "--full-index", "--"]));
@@ -384,7 +522,7 @@ export function scanAgentInput(options: {
       // Only live committed checkouts need normalized raw files staged here;
       // snapshot objects were already captured and fenced before preparation.
       if (source.kind === "committed") assertCurrent();
-      for (const oid of blobs) {
+      for (const [oid, references] of blobs) {
         const size = Number(git(["cat-file", "-s", oid], 100).toString().trim());
         if (!Number.isSafeInteger(size) || size < 0)
           throw new AgentInputScanError("incomplete_source");
@@ -397,6 +535,7 @@ export function scanAgentInput(options: {
           throw new AgentInputScanError("unsupported_content");
         // OID names preserve multiline bytes and make symlinks ordinary scan files.
         stage(bytes, oid);
+        reviewedFixtureBlobs.set(join(inputDir, oid), { bytes, references });
       }
     }
     const result = spawnSync(
@@ -425,11 +564,19 @@ export function scanAgentInput(options: {
         maxBuffer: 1024 * 1024,
       },
     );
-    if (result.status === 183 || result.stdout?.length) throw new AgentInputScanError("findings");
     if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")
       throw new AgentInputScanError("deadline");
-    if (result.error || result.signal || result.status !== 0)
+    if (result.error || result.signal || (result.status !== 0 && result.status !== 183))
       throw new AgentInputScanError("scanner_failed");
+    if (result.status === 183 || result.stdout?.length) {
+      if (result.status === 183)
+        classified = classifyReviewedFixtureScan(
+          result.stdout,
+          result.stderr,
+          reviewedFixtureBlobs,
+        );
+      if (!classified) throw new AgentInputScanError("findings");
+    }
     remaining();
     assertCurrent();
     remaining();
@@ -447,4 +594,14 @@ export function scanAgentInput(options: {
     }
   }
   if (failure) throw failure;
+  // Emit from the host after cleanup: successful callers can discard provider
+  // stderr, but this classification must remain visible without exposing values.
+  for (const classification of classified ?? [])
+    console.error(
+      JSON.stringify({
+        event: "agent_input_scan_classified",
+        notice: "Reviewed synthetic fixture findings classified as non-sensitive.",
+        ...classification,
+      }),
+    );
 }
