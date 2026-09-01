@@ -3653,7 +3653,8 @@ test(
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
-    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-bun-setup-containment-"));
+    // Native containment can read the target checkout, not arbitrary host temp scripts.
+    const binDir = fs.mkdtempSync(path.join(cwd, ".test-bin-"));
     writeNodeCommandShim(
       binDir,
       "bun",
@@ -3707,7 +3708,7 @@ test(
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
-    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-npm-setup-containment-"));
+    const binDir = fs.mkdtempSync(path.join(cwd, ".test-bin-"));
     writeNodeCommandShim(
       binDir,
       "npm",
@@ -8850,7 +8851,7 @@ test(
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
-    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-detached-pnpm-"));
+    const binDir = fs.mkdtempSync(path.join(cwd, ".test-bin-"));
     const pnpmPath = path.join(binDir, "pnpm.js");
     fs.writeFileSync(
       pnpmPath,
