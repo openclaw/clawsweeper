@@ -1,6 +1,7 @@
 # Review Cache
 
-Scheduled keep-open reviews use three independent cache stages.
+Scheduled keep-open reviews use two exact-input cache stages. Codex judges
+changed content; ClawSweeper does not infer source equivalence.
 
 ## Structural Stage
 
@@ -48,49 +49,9 @@ review always disables reuse. ClawSweeper then refreshes target and release stat
 and repeats the bounded metadata and check-state probes under that lease; any
 intervening drift forces full hydration.
 
-## Semantic Stage
-
-After hydration, pull requests can reuse a prior completed keep-open report when
-the code is semantically unchanged even if the head SHA or ordinary formatting
-changed. TypeScript and JavaScript patches are parsed through the TypeScript
-compiler AST service. Whitespace and ordinary comments are ignored where
-lexical state is established, while every non-trivia syntax fragment,
-`@ts-*`, triple-slash reference, source-map, source URL, shebang, legal
-`/*!`/`//!`, global declarations, coverage/static-analysis suppressions,
-formatter controls, and tooling directives remain part of the digest at their
-exact syntax attachment. Complete JSON hunks are parsed and compacted without
-reordering object keys. Scheduled shards receive a bounded shared runtime
-archive, then install the exact TypeScript native package for their own platform
-and architecture only after its tarball matches the committed lockfile SRI and
-every installation parent is proven to be a real directory.
-
-Semantic reuse requires:
-
-- complete bounded patches for every changed file;
-- exact base/head Git tree modes for regular blobs, included in the code digest;
-- a supported modified or added TypeScript, JavaScript, or complete JSON file;
-- unchanged title, body, human discussion, relations, reviews, review threads,
-  labels including maintainer proof overrides, base and target state, release
-  state from a complete lookup, full commit-message revision, merge readiness,
-  checks, policy, and model;
-- a prior completed keep-open report within the normal 14-day ceiling; and
-- the normal durable review lease.
-
-Unsupported languages, isolated mid-file or multi-hunk compiler patches,
-compiler parse failures, deletions, renames, binary or missing patches, prompt
-truncation, malformed hunks, lexical ambiguity, partial JSON, missing or
-unsupported Git tree modes, incomplete check state, and truncated commit
-context retain an exact digest for audit but cannot use semantic reuse.
-
-Before carrying a semantic hit, ClawSweeper repeats the target, release,
-structural metadata, and check-state probes under the lease. Any drift or
-incomplete release lookup releases the lease and defers the item for a fresh
-hydrated review. Full cache-only patches are never included in the model prompt,
-report frontmatter, or metrics.
-
 ## Content Stage
 
-When the structural and semantic stages miss, the existing exact content digest
+When the structural stage misses, the exact content digest
 may still reuse an unchanged keep-open verdict after the full context is
 proven.
 
@@ -99,16 +60,29 @@ No cache stage can promote a report to close.
 Every reused review passes the host-owned scan preflight before checkout
 inspection. Structural reuse scans current reuse metadata and the pinned source
 delta against the base/head pair from the same fresh structural probe; hydrated
-semantic/content reuse also scans current context. Complete raw before/after blobs
-are scanned even when the AST digest ignores a comment-only change. Historical
+content reuse also scans current context and complete raw before/after blobs. Historical
 outcomes predating scan admission are rejected by the review policy version.
 Scan refusal cannot return a cached success or launch a fallback reviewer.
+
+## Changed Input and Runtime
+
+Changed PR content, including source comments and formatting, goes to Codex.
+Git history and blob hydration still make both sides of the PR available in
+the restricted review checkout. There is no compiler-backed cache, separate
+cache-only patch payload, or source-equivalence revalidation path.
+
+The deployed review artifact contains compiled JavaScript, runtime libraries,
+and matching configuration, prompts, and schemas. TypeScript is a build
+dependency; review shards neither load nor install a compiler. Historical
+`review_semantic_*` report fields are ignored and disappear when a full review
+replaces the report. Existing reports keep their normal freshness deadline;
+this change does not trigger a fleet-wide re-review.
 
 ## Metrics
 
 Each review run writes `review-cache-metrics.json` in its artifact directory.
 It reports structural checks, hits, probe failures, probe time, miss reasons,
-semantic eligibility and miss reasons, post-lease revalidation results,
+post-lease revalidation results,
 content-cache hits, and full hydration count. The final review log emits the
 same high-level counters. Metrics contain only counts, timings, and bounded
 reason names.

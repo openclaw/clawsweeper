@@ -38,25 +38,10 @@ continuations: due items win first, and if fewer than 38 items are due, the
 planner fills the floor with the stalest currently-reviewed eligible items so
 review capacity stays warm around the clock.
 
-## Review reuse
-
-ClawSweeper reuses a completed kept-open review only when its exact inputs
-remain unchanged. A structural probe can avoid full hydration; otherwise the
-hydrated content digest can avoid a model call. Both paths retain their
-policy, freshness, durable-comment identity, checkout-access, and lease checks.
-Explicit reviews and maintainer re-review requests bypass these caches.
-
-Changed PR content, including comments and formatting in source files, goes to
-Codex. ClawSweeper does not parse source syntax to infer that two revisions
-mean the same thing. Git history and blob hydration still make both sides of
-the PR available inside the restricted review checkout.
-
-The deployed review artifact contains compiled JavaScript, runtime libraries,
-and the matching configuration, prompts, and schemas. TypeScript is a build dependency; review shards neither load nor
-install a compiler. Historical `review_semantic_*` report fields are ignored
-and disappear when a full review replaces the report. Existing reports keep
-their normal freshness deadline; this change does not trigger a fleet-wide
-re-review.
+Scheduled reviews can reuse exact unchanged inputs through structural or
+content caches. Changed PR content goes to Codex, including source comments
+and formatting. See [Review Cache](review-cache.md) for admission, freshness,
+and runtime packaging rules.
 
 ## Workflow
 
