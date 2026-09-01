@@ -47,6 +47,7 @@ export function closeDecision(overrides = {}) {
     architectureDiagram: "",
     evidence: [
       {
+        repo: "openclaw/openclaw",
         label: "implementation",
         detail: "The feature is present in source.",
         file: "src/example.ts",
@@ -55,6 +56,7 @@ export function closeDecision(overrides = {}) {
         sha: "abcdef1234567890",
       },
       {
+        repo: "openclaw/openclaw",
         label: "git history provenance",
         detail: "git blame traces the implemented line to abcdef1234567890.",
         file: "src/example.ts",
@@ -63,6 +65,7 @@ export function closeDecision(overrides = {}) {
         sha: "abcdef1234567890",
       },
       {
+        repo: "openclaw/openclaw",
         label: "release provenance",
         detail: "The fix is on current main and no containing release tag was found.",
         file: null,

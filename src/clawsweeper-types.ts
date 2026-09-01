@@ -349,6 +349,7 @@ export interface GitInfo {
 }
 
 export interface Evidence {
+  repo: string | null;
   label: string;
   detail: string;
   file: string | null;

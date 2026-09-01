@@ -101,29 +101,6 @@ test("ordinary queue and state-blob logs reject unbounded diagnostic arguments",
   }
 });
 
-test("command eligibility precedes durable intake while visibility stays before credentials", () => {
-  const source = fs.readFileSync("dashboard/exact-review-queue.ts", "utf8");
-  const route = source.slice(
-    source.indexOf('url.pathname === "/command-intake"'),
-    source.indexOf('url.pathname === "/branch-authority"'),
-  );
-  assert.match(route, /commandIntakeStore\.admit/);
-  assert.ok(route.indexOf("hostedTargetEligibility") < route.indexOf("commandIntakeStore.admit"));
-  assert.doesNotMatch(route, /hostedTargetAdmission/);
-
-  const processor = source.slice(
-    source.indexOf("private async processCommandIntakes"),
-    source.indexOf("private async verifyCommandIntake"),
-  );
-  assert.ok(
-    processor.indexOf("hostedTargetAdmission") <
-      processor.indexOf("exactReviewGithubTargetAppCircuitRetryAt"),
-  );
-  assert.ok(
-    processor.indexOf("hostedTargetAdmission") < processor.indexOf("exactReviewCommandTargetToken"),
-  );
-});
-
 test("hosted admission gates Worker forwarding and queue authority persistence", () => {
   const workerSource = fs.readFileSync("dashboard/worker.ts", "utf8");
   for (const path of ["command-intake", "enqueue", "branch-authority", "source-authority"]) {

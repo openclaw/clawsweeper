@@ -1,0 +1,23 @@
+{
+  "pullRequest": "https://github.com/openclaw/openclaw/pull/134934",
+  "headSha": "5322da7104f142eaeab14bcf2207f1a3e75c40ef",
+  "mergeCommit": "addb509571ee2e77a5ed72f0c4cae29c1711df73",
+  "provenance": "Exact patches from the captured seven-file PR diff, pinned to the reviewed PR head. Both match the local squash-merge commit diff byte-for-byte.",
+  "sourceSha256": "d841164a97a4fd8a8c31dec347d6c2787bc6ba40bb9f20a964e6bfe50ebb896f",
+  "pullFiles": [
+    {
+      "filename": "scripts/docs-i18n/doc_chunk_diagnostics_test.go",
+      "status": "added",
+      "additions": 54,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,54 @@\n+package main\n+\n+import (\n+\t\"bytes\"\n+\t\"context\"\n+\t\"errors\"\n+\t\"fmt\"\n+\t\"log\"\n+\t\"strings\"\n+\t\"testing\"\n+)\n+\n+func TestDocChunkRejectedBodyDiagnostics(t *testing.T) {\n+\tconst source = \"  Keep __OC_I18N_900000__ once.\\n\"\n+\tconst response = \"Keep __OC_I18N_900000__ twice: __OC_I18N_900000__.\"\n+\tconst chunkID = \"channels/example.md.chunk-001\"\n+\tconst rejection = \"placeholder duplicated: __OC_I18N_900000__ count=2\"\n+\tfor _, enabled := range []string{\"\", \"0\", \"1\"} {\n+\t\tt.Run(\"enabled=\"+enabled, func(t *testing.T) {\n+\t\t\tt.Setenv(\"OPENCLAW_DOCS_I18N_LOG_REJECTED_BODY\", enabled)\n+\t\t\tvar logs bytes.Buffer\n+\t\t\tpreviousOutput := log.Writer()\n+\t\t\tlog.SetOutput(&logs)\n+\t\t\tt.Cleanup(func() { log.SetOutput(previousOutput) })\n+\t\t\tcalls := 0\n+\t\t\ttranslator := &CodexTranslator{\n+\t\t\t\trunPrompt: func(context.Context, codexPromptRequest) (string, error) {\n+\t\t\t\t\tcalls++\n+\t\t\t\t\tif calls == 1 {\n+\t\t\t\t\t\treturn response, nil\n+\t\t\t\t\t}\n+\t\t\t\t\treturn \"\", errors.New(\"synthetic leaf failure\")\n+\t\t\t\t},\n+\t\t\t}\n+\n+\t\t\ttranslated, err := translateDocBlockGroup(context.Background(), translator, chunkID,\n+\t\t\t\t[]string{source}, []string{\"__OC_I18N_900000__\"}, nil, \"en\", \"ko\")\n+\t\t\tif translated != \"\" || err == nil || err.Error() != chunkID+\": \"+rejection {\n+\t\t\t\tt.Fatalf(\"diagnostics changed the rejection: translated=%q err=%v\", translated, err)\n+\t\t\t}\n+\t\t\tif calls != 2 {\n+\t\t\t\tt.Fatalf(\"expected raw attempt and leaf fallback, got %d prompts\", calls)\n+\t\t\t}\n+\t\t\tfor _, want := range []string{\n+\t\t\t\tfmt.Sprintf(\"rejected raw chunk %s input=%q output=%q err=%s\", chunkID, strings.TrimPrefix(source, \"  \"), response+\"\\n\", rejection),\n+\t\t\t\t\"chunk leaf-fallback failed \" + chunkID + \" err=synthetic leaf failure\",\n+\t\t\t} {\n+\t\t\t\tif strings.Contains(logs.String(), want) != (enabled == \"1\") {\n+\t\t\t\t\tt.Errorf(\"diagnostic presence for %q does not match opt-in %q; logs:\\n%s\", want, enabled, &logs)\n+\t\t\t\t}\n+\t\t\t}\n+\t\t})\n+\t}\n+}"
+    },
+    {
+      "filename": "scripts/docs-i18n/doc_chunked_raw.go",
+      "status": "modified",
+      "additions": 6,
+      "deletions": 0,
+      "patch": "@@ -156,6 +156,10 @@ func translateDocBlockGroup(ctx context.Context, translator docsTranslator, chun\n \tif err == nil {\n \t\terr = validatePlaceholders(translated, placeholdersInText(normalizedSource, protectedPlaceholders))\n \t}\n+\tif err != nil && os.Getenv(\"OPENCLAW_DOCS_I18N_LOG_REJECTED_BODY\") == \"1\" {\n+\t\t// Capture the rejected translator boundary before normalization or leaf fallback loses it.\n+\t\tlog.Printf(\"docs-i18n: rejected raw chunk %s input=%q output=%q err=%v\", chunkID, normalizedSource, translated, err)\n+\t}\n \tif err == nil {\n \t\ttranslated = sanitizeDocChunkProtocolWrappers(source, translated)\n \t\ttranslated = preserveDocChunkBoundaryWhitespace(normalizedSource, translated)\n@@ -175,6 +179,8 @@ func translateDocBlockGroup(ctx context.Context, translator docsTranslator, chun\n \tif len(blocks) <= 1 {\n \t\tif fallback, fallbackErr := translateDocLeafBlock(ctx, translator, chunkID, source, protectedPlaceholders, listPlaceholders, srcLang, tgtLang); fallbackErr == nil {\n \t\t\treturn fallback, nil\n+\t\t} else if os.Getenv(\"OPENCLAW_DOCS_I18N_LOG_REJECTED_BODY\") == \"1\" {\n+\t\t\tlog.Printf(\"docs-i18n: chunk leaf-fallback failed %s err=%v\", chunkID, fallbackErr)\n \t\t}\n \t\tif plan, ok := planSingletonDocChunkRetry(source, docsI18nDocChunkMaxBytes(), docsI18nDocChunkPromptBudget()); ok {\n \t\t\tlogDocChunkPlanSplit(chunkID, plan, source)"
+    }
+  ]
+}

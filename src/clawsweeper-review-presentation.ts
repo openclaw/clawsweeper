@@ -23,26 +23,29 @@ import type {
 } from "./clawsweeper-types.js";
 
 interface ReviewPresentationDependencies {
-  docsPageUrl: (file: string) => string | null;
-  fileUrl: (file: string, sha: string, line?: number) => string;
+  docsPageUrl: (file: string, repo?: string) => string | null;
+  fileUrl: (file: string, sha: string, line?: number, repo?: string) => string;
+  normalizeEvidence: (entry: Evidence) => Evidence;
   frontMatterStringArray: (markdown: string, key: string) => string[];
   frontMatterValue: (markdown: string, key: string) => string | undefined;
   hasDispatchableMantisScenario: (recommendation: MantisRecommendation) => boolean;
   hasRepairLoopPauseLabel: (labels: readonly string[]) => boolean;
   isCommitSha: (value: string) => boolean;
-  latestFileUrl: (file: string) => string;
-  linkedSha: (sha: string) => string;
+  latestFileUrl: (file: string, repo?: string) => string;
+  linkedSha: (sha: string, repo?: string) => string;
   markdownLink: (label: string, url: string) => string;
   publicTableCell: (value: string) => string;
   reportEvidence: (markdown: string) => Evidence[];
   reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
   securityConcernLocation: (concern: SecurityConcern) => string;
   splitFileAndLine: (file: string) => { file: string; line?: number };
+  targetRepo: () => string;
 }
 
 export function createReviewPresentation({
   docsPageUrl,
   fileUrl,
+  normalizeEvidence,
   frontMatterStringArray,
   frontMatterValue,
   hasDispatchableMantisScenario,
@@ -56,6 +59,7 @@ export function createReviewPresentation({
   reportRealBehaviorProofPolicy,
   securityConcernLocation,
   splitFileAndLine,
+  targetRepo,
 }: ReviewPresentationDependencies) {
   function sentence(value: string): string {
     const trimmed = value.trim();
@@ -98,30 +102,39 @@ export function createReviewPresentation({
     return ["AGENTS.md", "CHANGELOG.md", "README.md", "VISION.md"].includes(file);
   }
 
-  function linkInlineSourceRefs(value: string, sha?: string | null): string {
-    if (!sha) return value;
+  function linkInlineSourceRefs(value: string, evidence: Evidence): string {
+    if (!evidence.sha || !evidence.repo) return value;
     return value.replace(
-      /`([^`]+\.(?:css|js|json|jsx|md|mdx|mjs|sh|ts|tsx|yaml|yml)(?::\d+)?)`/g,
-      (match, ref: string) => {
+      /\[[^\]\n]*\]\([^\s)]+\)|`([^`]+\.(?:css|js|json|jsx|md|mdx|mjs|sh|ts|tsx|yaml|yml)(?::\d+)?)`/g,
+      (match, ref: string | undefined) => {
+        if (!ref) return match;
         const { file, line } = splitFileAndLine(ref);
-        if (!isLinkableSourceRef(file)) return match;
-        const docsUrl = docsPageUrl(file);
+        const source = normalizeEvidence({ ...evidence, file, line: line ?? null });
+        if (!isLinkableSourceRef(file) || !source.repo || !source.sha) return match;
+        const docsUrl = docsPageUrl(file, source.repo);
         const url =
           docsUrl ??
-          (file === "VISION.md" && !line ? latestFileUrl(file) : fileUrl(file, sha, line));
+          (file === "VISION.md" && !line && source.repo === targetRepo()
+            ? latestFileUrl(file, source.repo)
+            : fileUrl(file, source.sha, line, source.repo));
         return markdownLink(`\`${ref}\``, url);
       },
     );
   }
 
   function linkPrimaryEvidenceFile(value: string, evidence: Evidence): string {
-    if (!evidence.file || !evidence.sha) return value;
-    const docsUrl = docsPageUrl(evidence.file);
+    if (!evidence.file || !evidence.sha || !evidence.repo) return value;
+    const docsUrl = docsPageUrl(evidence.file, evidence.repo);
     if (docsUrl && !value.includes(docsUrl)) {
       return `${value} Public docs: ${markdownLink(`\`${evidence.file}\``, docsUrl)}.`;
     }
     if (evidence.file !== "VISION.md" || value.includes("VISION.md")) return value;
-    const link = markdownLink("`VISION.md`", latestFileUrl(evidence.file));
+    const link = markdownLink(
+      "`VISION.md`",
+      evidence.repo === targetRepo()
+        ? latestFileUrl(evidence.file, evidence.repo)
+        : fileUrl(evidence.file, evidence.sha, evidence.line ?? undefined, evidence.repo),
+    );
     const linked = value
       .replace(/\b(?:the project vision|project vision|the vision|VISION)\b/i, link)
       .replace(/^Current main says\b/, `${link} says`)
@@ -133,21 +146,24 @@ export function createReviewPresentation({
     const parts: string[] = [];
     if (evidence.file) {
       const location = evidence.line ? `${evidence.file}:${evidence.line}` : evidence.file;
-      const docsUrl = docsPageUrl(evidence.file);
-      const sourceUrl = evidence.sha
-        ? fileUrl(evidence.file, evidence.sha, evidence.line ?? undefined)
-        : null;
+      const docsUrl = evidence.repo ? docsPageUrl(evidence.file, evidence.repo) : null;
+      const sourceUrl =
+        evidence.sha && evidence.repo
+          ? fileUrl(evidence.file, evidence.sha, evidence.line ?? undefined, evidence.repo)
+          : null;
       const url = docsUrl ?? sourceUrl;
       parts.push(url ? markdownLink(`\`${location}\``, url) : `\`${location}\``);
     }
-    if (evidence.sha) parts.push(linkedSha(evidence.sha));
+    if (evidence.sha)
+      parts.push(evidence.repo ? linkedSha(evidence.sha, evidence.repo) : `\`${evidence.sha}\``);
     return parts.length ? ` (${parts.join(", ")})` : "";
   }
 
   function closeEvidenceLine(evidence: Evidence): string {
+    evidence = normalizeEvidence(evidence);
     const label = evidence.label.trim();
     const detail = linkPrimaryEvidenceFile(
-      linkInlineSourceRefs(sentence(evidence.detail), evidence.sha),
+      linkInlineSourceRefs(sentence(evidence.detail), evidence),
       evidence,
     );
     const prefix = label ? `**${label}:** ` : "";
